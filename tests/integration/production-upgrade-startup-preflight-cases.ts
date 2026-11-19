@@ -21,9 +21,11 @@ import {
 } from "../helpers/production-upgrade-recovery-state.ts";
 import {
   controller,
+  execute,
   newController,
   skipWithoutHelm,
 } from "../helpers/production-upgrade-recovery-tools.ts";
+import { restartInventory } from "../helpers/production-upgrade-retained-fleet-preflight.ts";
 import { registerPreflightCleanupTests } from "../helpers/production-upgrade-preflight-cleanup.ts";
 import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
@@ -878,14 +880,17 @@ export function registerStartupPreflightCases({
   // Bash must not remove a NUL and turn malformed output into the literal ready marker.
   test("startup preflight rejects a ready marker containing a NUL byte", async (t) => {
     const f = await fixture(t, {
+      agent: true,
       controllerOnly: true,
+      inventoryResponses: [restartInventory("original-worker-required")],
       preflightResults: {
         api: { phase: "Succeeded", log: "installation-startup-\0ready\n" },
       },
     });
     await assert.rejects(f.run("--preflight-only"), /cannot read the api startup preflight logs/);
     assert.equal(existsSync(join(f.evidence, "startup-preflight-passed")), false);
-    await assertStoppedBeforeWriters(f);
+    assert.equal(existsSync(join(f.evidence, "preflight-blocked-original-worker")), false);
+    await assertStoppedBeforeWriters(f, ["revision-read rev_old"]);
   });
 
   test("kubectl log warnings do not reject a valid migration check", async (t) => {
@@ -899,7 +904,13 @@ export function registerStartupPreflightCases({
     await f.run("--preflight-only");
     assert.equal(await f.readEvidence("preflight-migration.log"), log);
     assert.equal(await f.readEvidence("preflight-migration-logs.err"), warning);
-    assert.ok(existsSync(join(f.evidence, "startup-preflight-passed")));
+    const { stdout } = await execute(
+      "scripts/upgrade-production",
+      ["status", "--evidence-dir", f.evidence],
+      { cwd: repository },
+    );
+    assert.match(stdout, /Candidate startup checks passed/u);
+    assert.doesNotMatch(stdout, /original worker/u);
     await assertStoppedBeforeWriters(f);
   });
 

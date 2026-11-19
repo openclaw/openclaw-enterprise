@@ -68,13 +68,24 @@ Keep reviewed optional arguments, such as candidate-file flags, identical for th
 occ installation upgrade --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/upgrade-1
 ```
 
-Use fresh evidence directories for preflight and upgrade. After an interruption, inspect the original private evidence without contacting the cluster:
+Use fresh evidence directories for preflight and upgrade. To inspect an attempt
+without contacting the cluster, use its original private evidence directory:
 
 ```bash
 occ installation upgrade status --evidence-dir /secure/occ/upgrade-1
 ```
 
-Status reports local markers only. A Helm intent marker does not prove Helm completed; a lock marker does not prove a process is running. Reconcile the original operation and preserve its evidence and dispatch journal before using the same profile, checkout, and upgrade evidence directory:
+Status reports historical observations from two passes over the same markers.
+If the observations differ, run `status` again. For standalone preflight, it
+reports recorded candidate checks and any original-worker blocker. Use the
+[maintenance handoff](production-upgrade.md#rehearse-before-the-maintenance-window) to resolve it
+and run the upgrade with fresh evidence. Standalone preflight provides no
+authority to stop writers or resume.
+
+After an interruption, reconcile the original operation and preserve its
+evidence and dispatch journal. Helm intent and lock markers require independent
+confirmation of the Helm outcome and whether a process is running. Use the same
+profile, checkout, and upgrade evidence directory to resume:
 
 ```bash
 occ installation upgrade resume --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/upgrade-1

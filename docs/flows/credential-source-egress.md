@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-19
-last_updated_session: authoring-run/325438da-aa59-4666-b988-77550741b87d
+last_updated_session: authoring-run/1e600b38-4f1f-4f70-8c5b-c769e7274b93
 ---
 
 # Protected credential request flow
@@ -71,10 +71,12 @@ return 409 on mismatch; refused adoption preserves the Gateway copy.
 `admitStaticEgressSource` rechecks both declarations before reading and injecting material.
 
 OCC checks source and Secret grants; adoption requires consent. Version 3 binds
-Sandbox and Proxy to one Driver. `admitProxyPlan` derives routes from saved Harness
-settings and consent; empty routes deny all. Plans retain execution, digest, grant
-and source generation. `checkEgressUseIn` rechecks delivery and send authorization;
-`createCredentialProxy` rechecks ownership after metadata lookup, before Secret reads.
+Sandbox and Proxy to one Driver. `admitProxyPlan` derives routes from Harness
+settings and consent; empty routes deny all. Plans pin execution, digest, grant
+and source generation. Deployment rechecks the unique compatible provider before
+provisioning transport credentials and saving the revision. `checkEgressUseIn`
+rechecks send and delivery; `createCredentialProxy` rechecks ownership between
+metadata and material reads.
 `apps/controller/src/console/agents/detail.mts:requestedHarnessOverrides` captures
 submitted settings for OCC normalization and grant checks.
 
@@ -146,20 +148,17 @@ original launch witness or startup acknowledgment.
 
 ### 2. Capture identity, operation and first authority decision
 
-Each TLS `HttpInstallationExchange.Exchange` authenticates a bearer, then challenges
-its supervisor with 32 random bytes. Up to 1,024 openings, 256 per Sandbox, wait
-for acceptance, closure or a 30-second deadline. The owner rechecks the bearer,
+TLS `HttpInstallationExchange.Exchange` authenticates a bearer and challenges the supervisor
+with 32 random bytes. At most 1,024 openings, 256 per Sandbox, await acceptance, closure
+or a 30-second deadline. The owner rechecks the bearer,
 gateway-signed `exchange_key` and supervisor Ed25519 signature over
-`openshell-exchange-v1`, zero byte, challenge and binary opening. Request JSON
-cannot supply a key; bearer-only calls refuse. Online authorization
+`openshell-exchange-v1`, zero byte, challenge and binary opening. JSON cannot supply a key; bearer-only calls refuse. Online authorization
 (`apps/controller/src/drivers/egress-proxy/openshell-online-authority.ts:createAuthority`)
-has the same capacity limits.
+shares these limits.
 
-Before awaiting work, the adapter copies the request and binds a private capability
-to the stream. Credential Proxy bounds body size, reserves capacity and copies
+Before awaiting work, the adapter copies the request and binds a private stream capability. Credential Proxy bounds body size, reserves capacity and copies
 headers, body and authenticated peer. Send and response require the same sender,
-Sandbox, instance, exchange, installation and optional peer key. Any key change
-refuses. Peer expiry must remain valid at resolution, send and response lookup.
+Sandbox, instance, exchange, installation and optional peer key; key changes refuse. Peer expiry must cover resolution, send and response lookup.
 Bearers and handles cannot transfer custody. Closure cancels the stream; cancellation
 or expiry releases material. Pending policy or receipt work retains its slot. No pipelining.
 
@@ -179,78 +178,66 @@ its private key outside the Agent and pin its actual reply sink before queueing.
 unqualified. Required capability `openshell.supervisor-middleware.installation-exchange.v1`
 cannot be substituted by an old executable-restricted grant.
 
-Each check requires a fresh platform transaction; enclosing transactions refuse to
-prevent IAM snapshot reuse. It verifies current Namespace/Agent state, admitted revision,
+Each check requires a fresh platform transaction; nesting is refused to prevent IAM snapshot reuse. It verifies current Namespace/Agent state, admitted revision,
 installation, source generation, withdrawal and exact Agent source permission.
 `credentialNamespace` supplies Compute's runtime placement to the Driver; IAM and audit
 retain logical Namespace identity. The Driver requeries policy-status evidence against
-the stored fence. Replacement, missing evidence or changed configuration refuses even
-if the saved installation was valid. Denials record phase and internal request attribution
+the stored fence. Replacement, missing evidence or changed configuration refuses despite prior installation validity. Denials record phase and internal request attribution
 without material.
 
 ### 3. Resolve versioned material and authorize its sole send
 
 The Secret Driver verifies ownership and reads authoritative UID/resourceVersion.
-Static and prepared GitHub reads share one `{ signal, deadlineAt }` lifetime through
-namespace verification, GET and retries. Child scopes inherit cancellation and the earliest
-deadline. Each HTTP dispatch checks expiry independently of timers. Invalid deadlines
-fail closed; per-attempt timeouts cannot extend the lifetime.
-GitHub acquisition validation, transport and metadata injection share a wire check:
-1–16,384 bytes of nonspace printable ASCII, not authentication.
+Static and prepared GitHub reads share `{ signal, deadlineAt }` through namespace
+verification, GET and retries. Child scopes inherit cancellation and the earliest
+deadline. Every HTTP dispatch checks expiry independently of timers; invalid deadlines fail
+closed, and per-attempt timeouts cannot extend the lifetime.
+GitHub acquisition validation, transport and metadata injection check 1–16,384 bytes
+of nonspace printable ASCII, not authentication.
 
 `apps/controller/src/drivers/repo/github/access/prepared-lifecycle.ts:resolve` checks source registration and token lifetime, reading ciphertext only for the selected issuer, attempt and version. Decryption rechecks deadline and cancellation. Without a timely eligible token, OCC withholds the header. Background cleanup can access retired material.
 
-Before send, `packages/occ/src/state/prepared-github-state.ts:postgresPreparedGitHubProof`
-queries current material metadata in the active platform transaction, without another
-checkout. Lifecycle issuer/trust identity, shared metadata predicates and exact evidence
-fence stale selections. The port exposes neither ciphertext nor caller-supplied SQL.
-Statement and lock timeouts respect tighter caller limits. Successful SQL restores the
-original settings in the same unit before rechecking cancellation and absolute expiry;
+`packages/occ/src/state/prepared-github-state.ts:postgresPreparedGitHubProof` queries
+current material metadata before send in the active platform transaction, without another checkout. Lifecycle issuer/trust identity, shared metadata predicates and exact evidence
+fence stale selections. The port accepts no caller SQL and exposes no ciphertext.
+Statement and lock timeouts respect tighter caller limits. Successful SQL restores settings in that unit, then rechecks cancellation and absolute expiry;
 SQL errors leave rollback to the transaction owner. OCC checks withdrawal, rejection
 and binding in that unit.
 
 Same-stream authorization echoes the original deadline, evidence and injection digest.
 The registry reserves the handle; `packages/occ/src/egress-send-receipts.ts:EgressSendReceipts.begin`
-commits possible dispatch before permission. The key includes authenticated sender Ref,
-instance, stable request/use ID and attempt ID; the binding includes exact store-qualified
-material and original deadline. Existing attempts, failed writes or unknown commits
-refuse permission, even after authority restart.
+commits possible dispatch before permission. The key binds authenticated sender Ref, instance, stable request/use ID and attempt ID;
+the binding adds exact store-qualified material and original deadline. Existing attempts,
+failed writes and unknown commits refuse permission, across authority restart.
 
 The sender and OCC bind the same Sandbox, instance, configuration, peer key, policy hash,
 authority scope and plan to the exchange. The Git recipient has its own delivery evidence.
 
-After reservation, OCC’s `authorizeSend` port verifies the current runtime before opening
-the send transaction. The selected `IAMDriver.authorize` method makes the fresh decision for
-the exact service principal, `operate` action and Credential Source. For native IAM, the
-Namespace lock orders that decision and receipt commit against supported Namespace binding
-changes. An external IAM decision occurs before the transaction and cannot share that ordering.
-OCC rechecks the selected route, installation, material and rejection fence, then mints the
-permit and calls `EgressSendReceipts.authorizeIn` in the same transaction. The receipt binds
-the execution, installation fence, exchange, response custody, request and injection digests,
-authorization time and send-start deadline. The deadline is at most one second away and cannot
-outlive the request, material or identity.
+After reservation, OCC’s `authorizeSend` checks runtime before opening the send transaction.
+`IAMDriver.authorize` makes a fresh decision for the exact service principal, `operate` action
+and Credential Source. Native IAM’s Namespace lock orders the decision and receipt commit
+against supported binding changes; external IAM decides beforehand and cannot share that ordering.
+OCC rechecks route, installation, material and rejection fence, mints the permit and calls
+`EgressSendReceipts.authorizeIn` in that transaction. The receipt binds execution, installation
+fence, exchange, response custody, request and injection digests, authorization time and send-start
+deadline: at most one second away, bounded by request, material and identity.
 
-Before returning permission, the registry rechecks cancellation, ownership and the persisted
-deadline. A lost acknowledgment, handle or deadline yields no permit. Restart cannot
+Before permission, the registry rechecks cancellation, ownership and persisted deadline. A lost acknowledgment, handle or deadline yields no permit. Restart cannot
 reauthorize the attempt. Revocation may race an authorized send; an origin write with a
 lost reply remains a possible effect and must not be retried.
 
 ### 4. Protect response and finish
 
-`packages/occ/src/credential-proxy.ts:protectResponse` binds the complete response to its peer,
-request and exchange, removes unlisted headers, and withholds bytes pending approval. The request
-deadline bounds the first byte. On progress, `renewResponse` checks policy at most once every
-15 seconds, including outages. Unavailability preserves the deadline; denial cuts the stream;
+`packages/occ/src/credential-proxy.ts:protectResponse` binds the complete response to peer, request and exchange, removes unlisted headers, and withholds bytes pending approval. The request deadline bounds first-byte arrival. On progress, `renewResponse` checks policy at most once every 15 seconds, including outages. Unavailability preserves the deadline; denial cuts the stream;
 recovery can renew before expiry. Authenticated peer expiry caps leases and held responses
 despite progress. Limits: five minutes idle, fifteen minutes total, 4 MiB and 16,384 events.
 
 `openai-responses.ts:isResponsesEvent` validates Responses envelopes, including
-response-only null local-tool metadata and the optional effective image policy.
+response-only null local-tool metadata and optional effective image policy.
 Unknown or invalid fields withhold all bytes. Protection scans SDK snapshots,
-joined assistant text and completed/streamed Codex Plans, refusing ambiguous order or indexes.
-Reasoning summary parts open only at the next index; unopened or skipped summary deltas withhold bytes.
-Reasoning text has no part event: its first delta, not completion, opens the next content index;
-gaps withhold. Per-index scans withhold material split within a part despite interleaved deltas.
+joined assistant text and completed/streamed Codex Plans; ambiguous order or indexes refuse.
+Reasoning summary parts open only at the next index; unopened or skipped deltas withhold bytes.
+Reasoning text has no part event; only its first delta opens the next content index. Gaps withhold. Per-index scans withhold material split within a part despite interleaved deltas.
 Function arguments parse once as bounded JSON. The
 [supported profile](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
 preserves safe bytes. The origin received the credential.
@@ -259,13 +246,11 @@ Only this exchange can claim the response. `EgressSendReceipts.observe` atomical
 the decision and any exact rejection fence without bodies, headers, credentials or handles.
 Failure withholds bytes; success requires cancellation and deadline checks.
 
-Structured OpenAI `invalid_api_key` can establish rejection; a bare 401 cannot. At
-its next scheduled check, the prepared owner excludes a positively rejected version.
+Structured OpenAI `invalid_api_key` can establish rejection; a bare 401 cannot. At its next scheduled check, the prepared owner excludes positively rejected versions.
 Concurrent owners coalesce replacement; uncertain issuance blocks it; late feedback
 cannot invalidate its successor. GitHub metadata has no positive rejection classifier.
 
-Erase material after response handling or at deadline. Only pre-permission refusals
-can settle as undispatched. Inspect any possibly permitted attempt without retrying;
+Erase material after response handling or deadline. Only pre-permission refusals settle as undispatched. Inspect possibly permitted attempts without retrying;
 returned bytes do not prove delivery.
 
 ### 5. Configure the regular Harness caller
@@ -275,10 +260,9 @@ local tools, disabling provider tools, WebSockets and retries (including startup
 
 `apps/controller/src/drivers/egress-proxy/openai-provider.ts:createOpenAiStaticProvider`
 checks the [request policy](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
-via `openai-responses.ts:responsesRequestFailure` before Secret resolution. The grant binds
-the request model and destination. Inline rasters are allowed in user content and structured local tool
-output; resumed reasoning accepts `content: null`. The signed exchange bounds the complete
-serialized request.
+via `openai-responses.ts:responsesRequestFailure` before Secret resolution. The grant binds request model and destination. User content and structured local tool output allow
+inline rasters; resumed reasoning accepts `content: null`. The signed exchange bounds the
+complete serialized request.
 
 ### 6. Reduce the live credential policy
 
@@ -348,7 +332,9 @@ None.
 
 ## Changelog
 
+- 2026-11-19 13:46: Reconcile inline raster and provider admission flow. (authoring-run/1e600b38-4f1f-4f70-8c5b-c769e7274b93 - 14658d3ae12585ae088df4164ed37789831c49a7)
 - 2026-11-19 12:50: Condense request and response flow. (authoring-run/325438da-aa59-4666-b988-77550741b87d - 8f58785f4626fb1e844b0c2e1e1578e0a60b3c75)
+- 2026-11-19 10:37: Check admitted provider identity. (authoring-run/8062b878-7f8a-4aa8-a012-826e230839f4 - 6ff25175b)
 - 2026-11-19 09:31: Check static source lifecycles. (authoring-run/176872aa-dcf6-4c9b-9f11-31d19a4c5dcf - d3749595bd)
 - 2026-11-19 04:26: Admit inline rasters within the request bound. (authoring-run/7ccb9fb8-c9b6-440b-90a2-e9331fc81393 - f6443620ddc03fea6e7799367d723278f11fe06f)
 - 2026-11-19 02:07: Fence static material reads. (authoring-run/5de05faa-098d-4671-b34e-4148f7a14d08 - cea7d46c69)

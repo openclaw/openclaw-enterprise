@@ -241,14 +241,14 @@ COPY deploy/runtime/openclaw-terminated-gateway-namespace.patch /tmp/openclaw-te
 RUN echo '09a448c28e306410dbb3d1ae002620ec4c46f11487893c107e7bebce38e55cb5  /tmp/openclaw-terminated-gateway-namespace.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-terminated-gateway-namespace.patch
 
-# Forward the scoped Google placeholder and the OpenShell TLS root to native worker children.
+# Forward the scoped Google placeholder to native worker children.
 COPY deploy/runtime/openclaw-google-worker-placeholder.patch /tmp/openclaw-google-worker-placeholder.patch
-RUN echo '55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31  /tmp/openclaw-google-worker-placeholder.patch' | sha256sum --check --strict \
+RUN echo 'cfd027b90c833f0a0266c94e01dc9387143a265c711868d168fb01864468bb38  /tmp/openclaw-google-worker-placeholder.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-google-worker-placeholder.patch
 
 # TODO: Remove this bridge after selecting native setup renewal with bounded saved-device fallback.
 COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-renewal.patch
-RUN echo 'cdda7e94a154b3508cf3eaf1513d0dee62cb58b0127c035a769911a86fd51b1e  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
+RUN echo '1cba704e3888ff7764d62613b0bbb4918ceccb66352a1fc2baf31d72ec8d0df6  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
 # Remove after the pinned core includes upstream #196972 and its final-write handoff prerequisite.
@@ -286,7 +286,6 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     src/node-host/runner.test.ts \
     src/node-host/gateway-candidate-connection.test.ts \
     src/node-host/runner-lifecycle-lock.test.ts \
-    src/node-host/openclaw-id-join.test.ts \
     src/cli/node-cli/register.test.ts \
     src/cli/node-cli/gateway-options.test.ts \
     src/cli/connect-cli.test.ts \
@@ -298,9 +297,6 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     packages/gateway-client/src/reconnect-policy.test.ts \
     src/node-host/runtime.worker-hosting.test.ts \
     src/node-host/gateway-cloudflare-access.test.ts \
-    src/cli/connect-cli-access.test.ts \
-    src/cli/node-cli/daemon.test.ts \
-    src/cli/node-cli/daemon.restore.test.ts \
     packages/gateway-protocol/src/frame-guards.test.ts \
     src/node-host/runtime.commands.test.ts \
     src/node-host/config.test.ts \
@@ -313,13 +309,9 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     src/node-host/runtime.worker-supervisor.test.ts \
     src/node-host/startup-state-readiness.test.ts \
     src/gateway/desktop/computer-authority.runtime.test.ts \
-    src/infra/dotenv.test.ts \
-    src/daemon/systemd.environment-preservation.test.ts \
     src/node-host/runner.auto-update.test.ts \
-    src/commands/doctor-node-services.test.ts \
     src/node-host/codex-node-plugin.integration.test.ts \
     test/node-host-launcher.test.ts \
-    src/plugins/computer-use-contract.test.ts \
     src/daemon/program-args.test.ts \
     src/gateway/server-methods.session-main-start.test.ts \
     src/gateway/server.chat-main-session-narrow.test.ts \
@@ -331,21 +323,14 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     src/gateway/session-restart-resume.test.ts src/gateway/session-restart-resume-custody.test.ts \
     src/config/sessions/session-entry-json.test.ts \
     && rm -rf .artifacts
-# These CUA lifecycle cases use the supported SDK adapter boundary. The two
-# native SDK import cases need desktop libraries absent from this build image.
-RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
-    OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
-    node --import ./scripts/tsx.mjs scripts/test-projects.mts extensions/cua-computer/src/driver-client.test.ts \
-    -t '^(?!.*(?:matches the installed CUA Driver desktop input enum contract|preserves typed SDK click refusals in the shared driver result))' \
-    && rm -rf .artifacts
 # Type-check production and the native/UI test graphs touched by the bridges.
 # The upstream runner generates database types and compiler cache under .artifacts.
 RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     node scripts/run-tsgo-core-test-shards.mjs --ci-graphs-json '["core","core-test-packages","core-test-config-cli","core-test-gateway-other","core-test-gateway-root","core-test-gateway-server","core-test-infra","core-test-services","core-test-commands-doctor","test-root-other","core-test-plugins-platform","core-test-ui-chat","core-test-ui-app"]' \
     && rm -rf .artifacts
-# Check changed CUA and Codex extensions with upstream strict compiler settings.
+# Check the changed Codex extension with upstream strict compiler settings.
 RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
-    node -e 'const fs=require("node:fs");fs.writeFileSync(".artifacts/tsconfig.changed-extensions-production.json",JSON.stringify({"extends": "../tsconfig.extensions.json", "include": ["../src/**/*.d.ts", "../ui/src/**/*.d.ts", "../extensions/cua-computer/**/*", "../extensions/codex/**/*"], "compilerOptions": {"rootDir": ".."}}));fs.writeFileSync(".artifacts/tsconfig.changed-extensions-test.json",JSON.stringify({"extends": "../test/tsconfig/tsconfig.extensions.test.json", "include": ["../test/types/vitest-codex-attempt-runtime.d.ts", "../src/**/*.d.ts", "../ui/**/*.d.ts", "../extensions/**/*.d.ts", "../extensions/cua-computer/**/*.test.ts", "../extensions/cua-computer/**/*.test.tsx", "../extensions/codex/**/*.test.ts", "../packages/**/*.d.ts"]}));' && \
+    node -e 'const fs=require("node:fs");fs.writeFileSync(".artifacts/tsconfig.changed-extensions-production.json",JSON.stringify({"extends": "../tsconfig.extensions.json", "include": ["../src/**/*.d.ts", "../ui/src/**/*.d.ts", "../extensions/codex/**/*"], "compilerOptions": {"rootDir": ".."}}));fs.writeFileSync(".artifacts/tsconfig.changed-extensions-test.json",JSON.stringify({"extends": "../test/tsconfig/tsconfig.extensions.test.json", "include": ["../test/types/vitest-codex-attempt-runtime.d.ts", "../src/**/*.d.ts", "../ui/**/*.d.ts", "../extensions/**/*.d.ts", "../extensions/codex/**/*.test.ts", "../packages/**/*.d.ts"]}));' && \
     node scripts/run-tsgo.mjs -p .artifacts/tsconfig.changed-extensions-production.json --incremental --tsBuildInfoFile .artifacts/changed-extensions-production.tsbuildinfo && \
     node scripts/run-tsgo.mjs -p .artifacts/tsconfig.changed-extensions-test.json --incremental --tsBuildInfoFile .artifacts/changed-extensions-test.tsbuildinfo \
     && rm -rf .artifacts

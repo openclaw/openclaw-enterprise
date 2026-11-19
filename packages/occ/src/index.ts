@@ -78,6 +78,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   CredentialProxy,
+  supportsStaticCredentials,
   resolveCredentialProxyCapacity,
   type CredentialProxyCapacity,
   type ExchangeProvider,
@@ -1474,6 +1475,16 @@ function registeredCredentialProvider(
     return "ambiguous";
   }
   return matches.length === 1 && isDeepStrictEqual(matches[0]!.ref, ref) ? matches[0] : undefined;
+}
+
+function matchesAdmittedSourceType(
+  source: CredentialSource,
+  provider: CredentialProviderDefinition,
+) {
+  return (
+    source.egress?.adoption !== "live" ||
+    (provider.sourceType.type === source.type && supportsStaticCredentials(provider.sourceType))
+  );
 }
 
 /** The revision was admitted with the source, as its Harness authentication or in its list. */
@@ -7854,6 +7865,9 @@ export class OpenClawController {
       return deny("stale_configuration");
     }
     const provider = selectedProvider.receiver;
+    if (!matchesAdmittedSourceType(source, provider)) {
+      return deny("stale_configuration");
+    }
     try {
       const routes = Reflect.apply(selectedProvider.methods.routes, provider, [
         source,
@@ -8250,7 +8264,7 @@ export class OpenClawController {
     repositoryGit?: RepositoryRevisionState,
     harnessAuth?: HarnessAuthSnapshot,
     harnessConfiguration?: Readonly<Record<string, unknown>>,
-  ): Promise<ProxyPlan | undefined> {
+  ): Promise<{ plan: ProxyPlan; assertProvidersCurrent: () => void } | undefined> {
     const sources: CredentialSource[] = [];
     let harnessCredentialSource: ProxyPlan["harnessCredentialSource"];
     for (const binding of agent.credentialSources ?? []) {
@@ -8374,14 +8388,27 @@ export class OpenClawController {
       revisionId,
       executionId: repositoryGit ? randomBytes(24).toString("base64url") : crypto.randomUUID(),
     };
-    const routes = sources.flatMap((source) => {
+    const control = driver.sourceControl;
+    const requireProvider = (source: CredentialSource, expected?: CredentialProviderDefinition) => {
       const admitted = source.egress!;
-      const provider = driver.sourceControl.providers.find((entry) =>
-        isDeepStrictEqual(entry.ref, admitted.key.provider),
-      );
-      if (!provider || !isDeepStrictEqual(driver.sourceControl.backend, admitted.key.backend)) {
+      const provider = registeredCredentialProvider(control.providers, admitted.key.provider);
+      if (
+        provider === "ambiguous" ||
+        (expected && provider !== expected) ||
+        (provider && !matchesAdmittedSourceType(source, provider))
+      ) {
+        throw new ResourceStateConflictError(
+          "The admitted credential provider changed or is incompatible. Ask an Installation administrator to restore its unique registration.",
+        );
+      }
+      if (!provider || !isDeepStrictEqual(control.backend, admitted.key.backend)) {
         throw new DependencyUnavailableError("The admitted egress composition is unavailable.");
       }
+      return provider;
+    };
+    const registrations = sources.map((source) => ({ source, provider: requireProvider(source) }));
+    const routes = registrations.flatMap(({ source, provider }) => {
+      const admitted = source.egress!;
       const grant = provider.normalizeGrant([modelId], source.config);
       let digestGrant = grant;
       if (source.type === credentialFreeMetadataType && admitted.adoption === "credential_free") {
@@ -8407,7 +8434,7 @@ export class OpenClawController {
         harnessConfiguration,
       );
     });
-    return immutableCopy({
+    const plan: ProxyPlan = immutableCopy({
       id: crypto.randomUUID(),
       generation: 1,
       execution,
@@ -8423,6 +8450,21 @@ export class OpenClawController {
       ...(harnessCredentialSource && { harnessCredentialSource }),
       routes,
     });
+    // The plan is durable; the receiver identities stay local to this admission.
+    const assertProvidersCurrent = () => {
+      if (registrations.length === 0) {
+        return;
+      }
+      if (this.selectedProxyOwner() !== owner || driver.sourceControl !== control) {
+        throw new ResourceStateConflictError(
+          "The selected Credential Proxy changed during deployment.",
+        );
+      }
+      for (const { source, provider } of registrations) {
+        requireProvider(source, provider);
+      }
+    };
+    return { plan, assertProvidersCurrent };
   }
 
   /**
@@ -13529,7 +13571,7 @@ export class OpenClawController {
       // PostgreSQL restamps createdAt on its own clock; the response carries the stored value.
       // The repository credential deadline above stays on this controller's clock.
       const revisionId = this.nextIdentifier("agent_revision");
-      const egressPlan = await this.admitProxyPlan(
+      const proxyAdmission = await this.admitProxyPlan(
         state,
         lockedAgent,
         revisionId,
@@ -13539,6 +13581,7 @@ export class OpenClawController {
         harnessAuth,
         revisionHarness.configuration,
       );
+      const egressPlan = proxyAdmission?.plan;
       let executionAdmission: ExecutionAdmission;
       if (egressPlan === undefined) {
         executionAdmission = { version: 2, mode: "unprotected" };
@@ -13649,6 +13692,7 @@ export class OpenClawController {
             });
           }
           // The Driver creates only missing owned Secrets; a failed admission can reuse them.
+          proxyAdmission?.assertProvidersCurrent();
           const provisioned = this.runtimeCredentialStatus(
             await this.runtimeCredentialOperation(() =>
               compute.provisionAgentRuntimeCredentials!(binding, {}),
@@ -13705,20 +13749,19 @@ export class OpenClawController {
         },
       });
       const runtimeInputs = compute.snapshotRuntimeInputs?.(admittedDraft);
+      const candidate = freezeAgentRevision({
+        ...admittedDraft,
+        compute: {
+          ...admittedDraft.compute,
+          ...(runtimeInputs === undefined ? {} : { runtimeInputs }),
+        },
+      });
       // Database locks do not freeze process-local selections across awaited Driver calls.
       if (prepared !== undefined) {
         this.assertPreparedDeploymentDrivers(prepared);
       }
-      const revision = await state.revisions.createRevision(
-        freezeAgentRevision({
-          ...admittedDraft,
-          compute: {
-            ...admittedDraft.compute,
-            ...(runtimeInputs === undefined ? {} : { runtimeInputs }),
-          },
-        }),
-        first?.digest,
-      );
+      proxyAdmission?.assertProvidersCurrent();
+      const revision = await state.revisions.createRevision(candidate, first?.digest);
       if (
         lockedAgent.activeRevisionId &&
         (lockedAgent.desiredRuntimeState === "stopped" ||
@@ -17236,12 +17279,10 @@ export class OpenClawController {
     type: CredentialSourceType,
     provider?: CredentialSourceType,
   ): boolean {
-    // Externally rotated static inputs still use explicit Secret updates, not Refresh.
-    const isStatic = (candidate: CredentialSourceType) =>
-      candidate.rotation !== "refresh" &&
-      candidate.deviceAuthorization === undefined &&
-      candidate.harnessAuth?.loginMode !== "chatgptAuthTokens";
-    return isStatic(type) && (provider === undefined || isStatic(provider));
+    return (
+      supportsStaticCredentials(type) &&
+      (provider === undefined || supportsStaticCredentials(provider))
+    );
   }
 
   private staticSourceTypeAvailable(type: CredentialSourceType): boolean {

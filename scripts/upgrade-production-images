@@ -1871,6 +1871,8 @@ if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]]; then
   verify_installation_switch
 fi
 if ((preflight_only)) && [[ -n "$retained_revision_blockers" ]]; then
+  touch "$evidence_dir/preflight-blocked-original-worker" ||
+    die "cannot record the original-worker blocker in the evidence directory."
   die "Candidate startup and migration checks passed and temporary resources are gone. The upgrade remains blocked because retained Agent revisions require their original worker:
 $retained_revision_blockers
 Stop and settle these Agents under an authorized interruption, or plan a normal revision replacement. Inspect $inventory for the complete inventory. No OCC writer was stopped. Same-revision continuity is unverified."
