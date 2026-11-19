@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 import { certificateAuthority, signedLeaf } from "./certificates.ts";
-import type { CleanupRegistrar } from "./console-file-app.ts";
+import type { CleanupRegistrar } from "./cleanup-registrar.ts";
 import { temporaryDirectory } from "./temporary-directory.ts";
 
 /**
