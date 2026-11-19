@@ -1,13 +1,13 @@
 ---
-rfc: ../rfcs/0045-installation-network-policy-ceiling.md
+rfc: ../rfcs/20261106-installation-network-policy-ceiling.md
 ---
 
 # Implementation plan: Manage the Installation network policy ceiling
 
-- **ID:** RFC-0045
+- **ID:** RFC-20261106-installation-network-policy-ceiling
 - **Delivery status:** In progress
 - **Owner:** russellb
-- **Authority:** [RFC-0045](../rfcs/0045-installation-network-policy-ceiling.md)
+- **Authority:** [RFC-20261106-installation-network-policy-ceiling](../rfcs/20261106-installation-network-policy-ceiling.md)
 - **Source baseline:** `6bf16386658e8b1f81a7f90a04ccd0697c23805c`
 
 ## Outcome and scope
@@ -313,7 +313,7 @@ Main `30fb467c8` subsequently owns RFC-0043 and migration 0083. The ceiling now 
 RFC-0044 and migrations 0084–0085. SQL, published history, Manual Notes and decision
 status remain unchanged.
 
-Main `a99a9c852` owns RFC-0044; this ceiling proposal and linked plan now use RFC-0045.
+Main `a99a9c852` owns RFC-0044; the ceiling now uses RFC-20261106-installation-network-policy-ceiling under date-and-title naming.
 
 ## Manual Notes
 
