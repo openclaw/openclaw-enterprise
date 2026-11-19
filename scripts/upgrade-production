@@ -17,7 +17,8 @@ from urllib.parse import urlsplit
 
 
 NEW_RUNS = ("apply", "preflight", "migration-check")
-OPERATIONS = ("plan", *NEW_RUNS, "status", "resume", "cleanup-preflight")
+APPROVED_OPERATIONS = ("apply", "resume", "migration-apply")
+OPERATIONS = ("plan", *NEW_RUNS, "status", "resume", "migration-apply", "cleanup-preflight")
 REQUIRED = (
     "kubeconfig",
     "context",
@@ -47,6 +48,7 @@ PROTECTED = {
     "--auto-approve",
     "--preflight-only",
     "--migration-check-only",
+    "--migration-apply-only",
     "--resume",
     "--cleanup-preflight",
     "--help",
@@ -122,6 +124,8 @@ def report_status(parser, directory, *, allow_missing=False):
         ("prepared", False),
         ("database-migration-handoff.json", False),
         ("migration-check-passed", False),
+        ("migration-deploy-apply", True),
+        ("migration-deploy-verify", True),
         ("helm-started", False),
         ("completed", False),
         ("native-command-failures.tsv", False),
@@ -156,7 +160,7 @@ def report_status(parser, directory, *, allow_missing=False):
             fd = os.open(Path(directory), os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_DIRECTORY)
         except FileNotFoundError:
             if not allow_missing:
-                parser.error("resume requires the original native evidence directory; inspect RUN and reconcile the outcome")
+                parser.error("this operation requires the original native evidence directory; inspect RUN and reconcile the outcome")
             print("Status: no native evidence exists at this path. The run outcome is unknown.")
             print("Verify the original path and reconcile any prior request before another write.")
             return
@@ -185,6 +189,8 @@ def report_status(parser, directory, *, allow_missing=False):
         print("Helm intent was recorded; its outcome remains uncertain without completion evidence.")
     elif observed["database-migration-handoff.json"]:
         print("A migration pause was recorded; confirm migration history before an authorized resume.")
+        if observed["migration-deploy-apply"] or observed["migration-deploy-verify"]:
+            print("Migration Job evidence exists. Use migration apply with the original inputs to reconcile it.")
     elif observed["migration-check-passed"]:
         print("The migration compatibility check and Job cleanup were recorded. This evidence cannot resume an upgrade.")
     elif observed[startup] and not (
@@ -607,7 +613,7 @@ def check_preview_inputs(parser, paths, digests):
             parser.error(f"{role} changed after the preview; review a fresh plan")
 
 
-def show_plan(parser, profile, profile_relative_path, input_names, effects, resume_run):
+def show_plan(parser, profile, profile_relative_path, input_names, effects, operation, original_run):
     images = profile.get("images", {})
     if not images:
         parser.error("select a controller, broker, or runtime image before planning")
@@ -626,7 +632,10 @@ def show_plan(parser, profile, profile_relative_path, input_names, effects, resu
         if problem:
             parser.error(f"{name} must be a valid immutable SHA-256 image reference")
 
-    print("Resume preview (offline)" if resume_run else "Image upgrade plan (offline)")
+    if operation == "migration-apply":
+        print("Separate database migration preview (offline)")
+    else:
+        print("Resume preview (offline)" if original_run else "Image upgrade plan (offline)")
     print(f"  Kubeconfig: {profile_relative_path(profile['kubeconfig'])}")
     print(f"  Context: {profile['context']}")
     print(f"  Namespace: {profile['namespace']}")
@@ -636,7 +645,9 @@ def show_plan(parser, profile, profile_relative_path, input_names, effects, resu
     for name in IMAGE_FLAGS:
         if name in images:
             print(f"  {name}: {images[name]}")
-    if "runtime" in images:
+    if operation == "migration-apply":
+        print("  The selected controller comes from the original prepared run.")
+    elif "runtime" in images:
         print("  Agents: redeploy those running at the start of the upgrade")
     else:
         print("  Agents: keep current revisions")
@@ -646,13 +657,17 @@ def show_plan(parser, profile, profile_relative_path, input_names, effects, resu
     for effect in effects:
         print(f"  {effect}")
     print("No cluster contact or writes occurred during this preview. Current images and migration requirements are unknown.")
-    if resume_run:
-        print(f"Resume run: {Path(resume_run).absolute()}")
+    if operation == "migration-apply":
+        print(f"Original run: {Path(original_run).absolute()}")
+        report_status(parser, original_run)
+        print("Migration apply can commit irreversible SQL. Keep OCC writers stopped.")
+    elif original_run:
+        print(f"Resume run: {Path(original_run).absolute()}")
         print(
             "Resume can still write the recorded local Installation, replace the live mutable "
             "Installation Secret, or switch to the recorded immutable Secret."
         )
-        report_status(parser, resume_run)
+        report_status(parser, original_run)
         print("Resume can continue deployment. Reconcile previous effects before approving.")
     else:
         print("Apply runs preflight and can stop OCC writers. Use the maintenance window.")
@@ -660,9 +675,12 @@ def show_plan(parser, profile, profile_relative_path, input_names, effects, resu
 
 def confirm(parser, operation):
     sys.stdout.flush()
+    label = "migration apply" if operation == "migration-apply" else operation
     if not sys.stdin.isatty() or not sys.stdout.isatty():
-        parser.exit(2, f"Approval required. Run {operation} in a terminal or pass --auto-approve.\n")
-    print(f"{operation.capitalize()} this image upgrade? Type yes to continue: ", end="", flush=True)
+        parser.exit(2, f"Approval required. Run {label} in a terminal or pass --auto-approve.\n")
+    prompt = ("Apply irreversible database migrations for this original run?"
+              if operation == "migration-apply" else f"{operation.capitalize()} this image upgrade?")
+    print(f"{prompt} Type yes to continue: ", end="", flush=True)
     try:
         answer = sys.stdin.readline(5)
     except (KeyboardInterrupt, OSError, UnicodeError):
@@ -670,7 +688,7 @@ def confirm(parser, operation):
     if answer != "yes\n":
         if not answer:
             print()
-        parser.exit(1, f"{operation.capitalize()} cancelled; no command dispatched.\n")
+        parser.exit(1, f"{label.capitalize()} cancelled; no command dispatched.\n")
 
 
 def evidence_parent(parser, checkout, base):
@@ -722,7 +740,7 @@ def fresh_evidence(parser, checkout, value):
     if locator.name in ("", ".", ".."):
         parser.error("choose a new name for --evidence-dir")
     locator = evidence_parent(parser, checkout, locator.parent) / locator.name
-    if os.path.lexists(locator) or os.path.lexists(str(locator) + ".dispatch-state"):
+    if any(os.path.lexists(str(locator) + suffix) for suffix in ("", ".dispatch-state", ".migration-state.json")):
         parser.error("evidence or its dispatch journal already exists; choose a fresh --evidence-dir")
     return str(locator)
 
@@ -753,7 +771,7 @@ def main():
     )
     parser.add_argument("operation", choices=OPERATIONS)
     parser.add_argument("--profile", help="Owner-only operator JSON file")
-    parser.add_argument("--auto-approve", action="store_true", help="Apply or resume without an interactive confirmation")
+    parser.add_argument("--auto-approve", action="store_true", help="Apply, resume, or apply database migrations without an interactive confirmation")
     parser.add_argument(
         "--evidence-dir",
         help="New evidence path (default: private run beside the profile), or the original path for recovery",
@@ -762,8 +780,8 @@ def main():
     split = argv.index("--") if "--" in argv else len(argv)
     args = parser.parse_args(argv[:split])
     extra = argv[split + 1 :] if split < len(argv) else []
-    if args.auto_approve and args.operation not in ("apply", "resume"):
-        parser.error("--auto-approve is only valid with apply or resume")
+    if args.auto_approve and args.operation not in APPROVED_OPERATIONS:
+        parser.error("--auto-approve is only valid with apply, resume, or migration apply")
     if args.evidence_dir is not None and (
         not args.evidence_dir.strip() or not str(Path(args.evidence_dir).absolute()).isprintable()
     ):
@@ -794,7 +812,7 @@ def main():
             "original expert option after --: occ installation upgrade preflight "
             "--profile PROFILE -- ORIGINAL_EXPERT_OPTIONS"
         )
-    if args.operation in ("plan", *NEW_RUNS) and extra_flags & RECOVERY_SWITCHES:
+    if args.operation in ("plan", *NEW_RUNS, "migration-apply") and extra_flags & RECOVERY_SWITCHES:
         parser.error(
             "recovery attestations require the original run. After reconciling its outcome, "
             "use occ installation upgrade resume RUN --profile PROFILE -- ORIGINAL_OPTIONS_AND_ATTESTATIONS"
@@ -841,16 +859,17 @@ def main():
         args.evidence_dir = fresh_evidence(parser, checkout, args.evidence_dir)
     if args.operation != "cleanup-preflight":
         options = expert_options(parser, args.operation, extra)
-    if args.operation in ("plan", "apply", "resume"):
+    if args.operation in ("plan", *APPROVED_OPERATIONS):
         check_revision(parser, checkout, profile["sourceRevision"])
     paths, digests, trust = preview_target(parser, profile, path)
-    if args.operation in ("plan", "apply", "resume", "preflight"):
+    if args.operation in ("plan", "preflight", *APPROVED_OPERATIONS):
         effects = preview_inputs(
-            parser, profile, path, options, paths, digests, validate_candidate=args.operation != "resume",
+            parser, profile, path, options, paths, digests, validate_candidate=args.operation not in ("resume", "migration-apply"),
         )
-    if args.operation in ("plan", "apply", "resume"):
-        resume_run = args.evidence_dir if args.operation == "resume" else None
-        show_plan(parser, profile, path, paths, [trust, *effects], resume_run)
+    if args.operation in ("plan", *APPROVED_OPERATIONS):
+        original_run = args.evidence_dir if args.operation in ("resume", "migration-apply") else None
+        plan_effects = [trust] if args.operation == "migration-apply" else [trust, *effects]
+        show_plan(parser, profile, path, paths, plan_effects, args.operation, original_run)
         if args.operation == "plan":
             return
         if not args.auto_approve:
@@ -915,6 +934,8 @@ def main():
             command.append("--preflight-only")
         elif args.operation == "migration-check":
             command.append("--migration-check-only")
+        elif args.operation == "migration-apply":
+            command.append("--migration-apply-only")
         elif args.operation == "resume":
             command.append("--resume")
 

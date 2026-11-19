@@ -6,7 +6,7 @@ import {
   type WorkspaceSetup,
 } from "../../packages/contracts/src/index.ts";
 import { ConfigurationHarnessError } from "../../packages/occ/src/index.ts";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 import {
   dockerAgentRevision,
