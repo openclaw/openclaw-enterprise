@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: "2026-11-17 01:37"
-last_updated_session: "authoring-run/28767d0f-55e0-4d91-abb6-1f25ff793a2a"
+updated: "2026-11-19 05:58"
+last_updated_session: "authoring-run/1fcb383d-724a-485f-a14b-fc6c7141fb08"
 ---
 
 # Compose development startup
@@ -306,10 +306,18 @@ a build secret. Selecting an existing runtime image skips this build.
 
 `internal/occdev/kubernetes.go:engineImageReference` resolves engine names,
 defaults tags to `:latest`, and rejects missing or ambiguous matches.
-`internal/occdev/k3d_import.go:stageDevelopmentPlatformChild` stages a registry
-platform child for complete single-platform export of digest-pinned multi-arch
-images. Unlisted sources or failed pulls keep the original reference and filter.
-`importDevelopmentImage` resolves cluster digests. Both paths call
+`internal/occdev/kubernetes.go:importDevelopmentImage` keeps the configured-registry
+pull path. For other images, it freezes a local tag to its image ID or uses the
+selected digest. `internal/occdev/k3d_import.go:resolveDevelopmentPlatformChild`
+selects a complete platform child when available; unlisted sources or failed
+pulls keep the pinned reference and platform filter.
+`internal/occdev/k3d_import.go:prepareDevelopmentImageArchive` assigns the import
+name inside a private Docker archive with one image. It preserves config and
+layer contents, removes
+the competing OCI layout and index metadata, and rejects ambiguous or incomplete
+archives. The importer does not create or remove host staging tags. It resolves
+the imported node digest and removes its own temporary directory on success or
+failure. Both paths call
 `internal/occdev/status_proxy_k3d.go:developmentStatusProxySource` before
 `writeInstallation`, retaining caller context for node inventory.
 
@@ -393,6 +401,9 @@ Helpers and CI retain one allowlisted final failure record, including older form
 Ambiguity, success and cleanup yield none; stdout is unauthenticated.
 [Field meanings](../../reference/cli/local-development.md).
 
+- `go test -count=1 ./internal/occdev -run 'TestDevelopmentImageImport'`
+  checks archive custody and digest handling through inert engine and k3d
+  commands. It does not prove a live container-engine import.
 - `node --test tests/integration/dev-up-compose-startup.test.ts tests/integration/dev-up-compose.test.mjs tests/integration/dev-up.test.mjs`
   exercises profile selection, generated configuration, authenticated readiness,
   rollback, and cleanup with inert engine and cluster commands.
@@ -420,6 +431,8 @@ Ambiguity, success and cleanup yield none; stdout is unauthenticated.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 05:58: Move general development-image staging into owned archives in the accompanying uncommitted implementation. (authoring-run/1fcb383d-724a-485f-a14b-fc6c7141fb08 - 6f67f5745a814fe1d4ac001c01cb3cbb93d2701f)
 
 - 2026-11-17 01:37: Remove duplicate full-access probe; retain real Agent qualification. (authoring-run/28767d0f-55e0-4d91-abb6-1f25ff793a2a - 8d3f95dd5)
 

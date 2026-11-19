@@ -1,10 +1,15 @@
 package occdev
 
 import (
+	"archive/tar"
 	"context"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path"
 	"strings"
 	"time"
 )
@@ -15,22 +20,9 @@ const k3dDirectImportAttempts = 3
 
 const k3dImportOutputLimit = 64 << 10
 
-// stageDevelopmentPlatformChild reports whether it retagged the image for export.
-// Docker's containerd store can save an incomplete archive for a manifest list,
-// or refuse a platform-filtered save when the child blobs are missing. Tagging
-// the platform child directly lets the importer save one complete image.
-// If the child is unavailable, the caller can still export the original source.
-func (r *runner) stageDevelopmentPlatformChild(ctx context.Context, source, platform, stagingTag string) (bool, error) {
-	resolved, err := r.resolveDevelopmentPlatformChild(ctx, source, platform)
-	if err != nil || resolved == source {
-		return false, err
-	}
-	if err := r.run(ctx, r.engine, "tag", resolved, stagingTag); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
+// Docker's containerd store can save an incomplete manifest-list archive.
+// Export its platform child directly when available, retaining the pinned
+// source if the local store cannot obtain that child.
 func (r *runner) resolveDevelopmentPlatformChild(ctx context.Context, source, platform string) (string, error) {
 	if !strings.Contains(source, "@") {
 		return source, nil
@@ -55,6 +47,152 @@ func (r *runner) resolveDevelopmentPlatformChild(ctx context.Context, source, pl
 		return source, nil
 	}
 	return resolved, nil
+}
+
+const developmentArchiveManifestLimit = 20 << 20
+
+type developmentArchiveEntry struct {
+	kind byte
+	link string
+}
+
+// prepareDevelopmentImageArchive assigns one import name without touching the
+// daemon's mutable tags. Docker's containerd-backed exporter can include both
+// Docker and OCI metadata; containerd prefers OCI when oci-layout is present.
+// Emit only the Docker representation so manifest.json owns the imported name.
+// The config and layer contents remain unchanged.
+func prepareDevelopmentImageArchive(ctx context.Context, source, destination, name string) (resultErr error) {
+	input, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer func() { resultErr = errors.Join(resultErr, input.Close()) }()
+	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	writer := tar.NewWriter(output)
+	defer func() { resultErr = errors.Join(resultErr, writer.Close(), output.Close()) }()
+	reader := tar.NewReader(input)
+	entries := make(map[string]developmentArchiveEntry)
+	var required []string
+	foundManifest := false
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if header.Typeflag == tar.TypeDir && path.Clean(header.Name) == "." {
+			continue
+		}
+		entryName, err := developmentArchivePath(header.Name)
+		if err != nil {
+			return err
+		}
+		if previous, exists := entries[entryName]; exists {
+			if header.Typeflag == tar.TypeDir && previous.kind == tar.TypeDir {
+				continue
+			}
+			return fmt.Errorf("duplicate image archive entry %q", entryName)
+		}
+		entry := developmentArchiveEntry{kind: header.Typeflag}
+		switch header.Typeflag {
+		case tar.TypeReg, tar.TypeRegA, tar.TypeDir:
+		case tar.TypeSymlink:
+			if path.IsAbs(header.Linkname) {
+				return fmt.Errorf("absolute image archive link %q", entryName)
+			}
+			entry.link, err = developmentArchivePath(path.Join(path.Dir(entryName), header.Linkname))
+			if err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("unsupported image archive entry %q", entryName)
+		}
+		entries[entryName] = entry
+		header.Name = entryName
+		if entryName == "oci-layout" || entryName == "index.json" || entryName == "repositories" {
+			continue
+		}
+		if entryName == "manifest.json" {
+			if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA || header.Size > developmentArchiveManifestLimit {
+				return fmt.Errorf("invalid Docker image archive manifest")
+			}
+			data, err := io.ReadAll(reader)
+			if err != nil {
+				return err
+			}
+			var manifests []map[string]jsontext.Value
+			if err := json.Unmarshal(data, &manifests); err != nil || len(manifests) != 1 || manifests[0] == nil {
+				return fmt.Errorf("image archive must contain exactly one Docker manifest")
+			}
+			var config string
+			var layers []string
+			if json.Unmarshal(manifests[0]["Config"], &config) != nil || config == "" || json.Unmarshal(manifests[0]["Layers"], &layers) != nil {
+				return fmt.Errorf("invalid Docker image archive manifest")
+			}
+			required = append([]string{config}, layers...)
+			tags, err := json.Marshal([]string{name})
+			if err != nil {
+				return err
+			}
+			manifests[0]["RepoTags"] = tags
+			data, err = json.Marshal(manifests)
+			if err != nil {
+				return err
+			}
+			header.Size = int64(len(data))
+			if err := writer.WriteHeader(header); err != nil {
+				return err
+			}
+			if _, err := writer.Write(data); err != nil {
+				return err
+			}
+			foundManifest = true
+			continue
+		}
+		if err := writer.WriteHeader(header); err != nil {
+			return err
+		}
+		if _, err := io.Copy(writer, reader); err != nil {
+			return err
+		}
+	}
+	if !foundManifest {
+		return fmt.Errorf("image archive has no Docker manifest")
+	}
+	for _, requiredName := range required {
+		clean, err := developmentArchivePath(requiredName)
+		if err != nil || clean != requiredName {
+			return fmt.Errorf("invalid image archive content path %q", requiredName)
+		}
+		if clean == "manifest.json" || clean == "oci-layout" || clean == "index.json" || clean == "repositories" {
+			return fmt.Errorf("image archive content %q is missing or invalid", requiredName)
+		}
+		entry, exists := entries[clean]
+		if exists && entry.kind == tar.TypeSymlink {
+			clean = entry.link
+			entry, exists = entries[entry.link]
+		}
+		if !exists || (entry.kind != tar.TypeReg && entry.kind != tar.TypeRegA) || clean == "manifest.json" || clean == "oci-layout" || clean == "index.json" || clean == "repositories" {
+			return fmt.Errorf("image archive content %q is missing or invalid", requiredName)
+		}
+	}
+	return nil
+}
+
+func developmentArchivePath(name string) (string, error) {
+	clean := path.Clean(name)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || path.IsAbs(clean) {
+		return "", fmt.Errorf("invalid image archive path %q", name)
+	}
+	return clean, nil
 }
 
 // developmentPlatformChild names the manifest-list child the registry serves

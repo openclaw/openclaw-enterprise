@@ -299,33 +299,36 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 		return r.pullDevelopmentImage(ctx, s, image, port, path)
 	}
 	selected := image
+	source := image
 	if strings.Contains(image, "@") {
 		digest := sha256.Sum256([]byte(image))
 		selected = fmt.Sprintf("openclaw-development/import-%x:%s", digest[:6], s.Cluster)
-		if _, err := r.output(ctx, r.engine, "image", "inspect", selected); err == nil {
-			return "", fmt.Errorf("development staging image already exists: %s", selected)
+		if r.engine == "podman" {
+			selected = "localhost/" + selected
 		}
-		if err := r.run(ctx, r.engine, "tag", image, selected); err != nil {
+	} else {
+		// Keep the engine's recorded name, including Podman's localhost prefix,
+		// but freeze its content before exporting a mutable local build tag.
+		recorded, err := r.engineImageReference(ctx, image)
+		if err != nil {
 			return "", err
 		}
-		defer func() {
-			if _, err := r.output(context.WithoutCancel(ctx), r.engine, "image", "rm", selected); err != nil {
-				resultErr = errors.Join(resultErr, fmt.Errorf("remove development staging image: %w", err))
-			}
-		}()
+		selected = recorded
+		id, err := r.output(ctx, r.engine, "image", "inspect", "--format", "{{.Id}}", selected)
+		if err != nil {
+			return "", err
+		}
+		source = string(id)
+		if len(source) == 64 {
+			source = "sha256:" + source
+		}
+		if !imageDigest.MatchString(source) {
+			return "", fmt.Errorf("invalid local image identity for %s", image)
+		}
 	}
-	// Use the name the engine actually recorded. Podman qualifies an
-	// unqualified local build as `localhost/<name>`, and both k3d and
-	// containerd match that recorded name exactly, so the requested name finds
-	// nothing to import or verify.
-	recorded, err := r.engineImageReference(ctx, selected)
-	if err != nil {
-		return "", err
-	}
-	selected = recorded
 	// Export the selected platform explicitly for every image. Tag-based k3d
 	// imports can report success without registering the built image in the node.
-	platformData, err := r.output(ctx, r.engine, "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", selected)
+	platformData, err := r.output(ctx, r.engine, "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", source)
 	if err != nil {
 		return "", err
 	}
@@ -333,28 +336,39 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 	if !strings.HasPrefix(platform, "linux/") {
 		return "", fmt.Errorf("development image must contain a Linux platform: %s", image)
 	}
-	childStaged, err := r.stageDevelopmentPlatformChild(ctx, image, platform, selected)
+	resolved, err := r.resolveDevelopmentPlatformChild(ctx, source, platform)
 	if err != nil {
 		return "", err
 	}
-	// Images are imported concurrently, so each needs its own archive.
-	archive := filepath.Join(s.directory, developmentImportArchive(selected))
+	// The import name exists only in an owned archive. A daemon tag cannot be
+	// created or removed conditionally, even after an image inspection.
+	directory, err := os.MkdirTemp(s.directory, "development-import-")
+	if err != nil {
+		return "", err
+	}
 	defer func() {
-		if err := os.Remove(archive); err != nil && !os.IsNotExist(err) {
+		if err := os.RemoveAll(directory); err != nil {
 			resultErr = errors.Join(resultErr, fmt.Errorf("remove development image archive: %w", err))
 		}
 	}()
-	// The staging tag names one complete image once it points at the platform
-	// child, so the archive needs no platform selection. Without a resolved
+	exported := filepath.Join(directory, "source.tar")
+	archive := filepath.Join(directory, developmentImportArchive(selected))
+	// A resolved platform child names one complete image. Without a resolved
 	// child, keep the platform filter: it still works where the engine can
 	// resolve it, and names the failure otherwise.
 	saveArgs := []string{"image", "save"}
-	if r.engine == "docker" && !childStaged {
+	if r.engine == "docker" && resolved == source {
 		saveArgs = append(saveArgs, "--platform", platform)
 	}
-	saveArgs = append(saveArgs, "--output", archive, selected)
+	saveArgs = append(saveArgs, "--output", exported, resolved)
 	if err := r.run(ctx, r.engine, saveArgs...); err != nil {
 		return "", err
+	}
+	if err := prepareDevelopmentImageArchive(ctx, exported, archive, selected); err != nil {
+		return "", fmt.Errorf("prepare development image archive: %w", err)
+	}
+	if err := os.Remove(exported); err != nil {
+		return "", fmt.Errorf("remove development image export: %w", err)
 	}
 	if err := r.importArchiveDirect(ctx, archive, s.Cluster); err != nil {
 		return "", err
