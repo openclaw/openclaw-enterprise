@@ -85,14 +85,34 @@ revision's `ProxyPlan.authorization` records the admitted profile. Deployment st
 admission and source `operate` permission for the operator and Agent.
 
 Bundled `openai-online-request` generation 1 requires native IAM for the same
-OCC state, a dedicated Codex HTTPS Responses route, an explicit model and no
-provider-hosted tools. V8 admits this model route. V9 adds independently
-authorized online Git with a separate binding, approval, session and registry.
+OCC state and a dedicated Codex HTTPS Responses route. Body-scoped authorization
+checks the admitted model and rejects provider-hosted tools. V8 admits this model
+route. V9 adds independently authorized online Git with a separate binding,
+approval, session and registry.
 Both versions refuse `policyReduction`. Withdrawing Git standing approval
 denies fresh Git requests and can retire the runtime. Removing either binding
 can stop or redeploy it. Installed proof that model-source IAM denial preserves
 authorized Git remains pending. See [repository standing approval](../../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent)
 and [installed model qualification](../../guides/credential-proxy/model-requests.md).
+
+Setting `drivers.credential_proxy.configuration.endpointOnly` selects
+endpoint-only authorization for a single dedicated Codex Agent and bound
+CredentialSource by `agentId` and `sourceId` on deployment. This profile requires the signed OpenShell
+supervisor identity and an approved HTTPS origin, `POST /v1/responses`, an empty
+query and approved headers visible to the hook. Header names must be unique.
+If the Codex Responses Lite header is present, its value must be exactly `true`.
+OpenShell can exclude headers
+such as `Cookie` from the hook's view. Apply any required filtering for
+hidden headers before the hook or at the upstream provider. OpenShell sends zero payload bytes to the mandatory
+`HTTP_REQUEST` hook at `PRE_CREDENTIALS`. On approval, OCC returns
+`continue_without_body`. OCC receives neither request nor response body.
+The upstream provider enforces model, tool, storage and body rules. OCC still
+checks the current revision, binding and IAM and requires one-use redemption
+with `cache_ttl: 0`. Other bindings, including other Agents using the same
+CredentialSource, use the body-scoped unary hook.
+OpenShell's unary transport caps requests at 4 MiB, and OCC authorization
+caps the inspected body at 1 MiB. See the
+[endpoint-only setup](../../guides/credential-proxy/model-requests.md#enable-endpoint-only-authorization).
 
 The API verifies the live recipient against the opaque `requestConfigurationId`.
 OpenShell binds the full policy, model provider and profile, and Sandbox and

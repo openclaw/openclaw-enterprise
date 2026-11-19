@@ -528,7 +528,7 @@ export class CredentialProxy implements CredentialProxyExchange {
       !Number.isFinite(Date.parse(input.replayUntilAt)) ||
       Date.parse(input.replayUntilAt) < Date.parse(input.deadlineAt) ||
       Date.parse(input.replayUntilAt) > this.ports.now() + 3_600_000 ||
-      input.http.body.byteLength > 1024 * 1024 ||
+      (input.http.body?.byteLength ?? 0) > 1024 * 1024 ||
       !input.requestId ||
       input.requestId.length > 256 ||
       !input.bindingId ||
@@ -536,12 +536,13 @@ export class CredentialProxy implements CredentialProxyExchange {
     ) {
       return undefined;
     }
-    const request = {
-      ...immutableCopy({ ...input, http: { ...input.http, body: undefined } }),
-      http: {
-        ...immutableCopy({ ...input.http, body: undefined }),
-        body: new Uint8Array(input.http.body),
-      },
+    const {
+      http: { body, ...head },
+      ...binding
+    } = input;
+    const request: RequestCredentialInput = {
+      ...immutableCopy(binding),
+      http: { ...immutableCopy(head), ...(body !== undefined && { body: new Uint8Array(body) }) },
     };
     const selected = await this.withRequestCredential<RequestCredentialSelection>(
       request.recipient.id,

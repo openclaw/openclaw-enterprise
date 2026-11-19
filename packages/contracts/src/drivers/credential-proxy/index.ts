@@ -98,6 +98,8 @@ export interface InferenceGrant {
   readonly kind: "inference";
   readonly models: readonly string[];
   readonly providerTools: "none";
+  /** An operator assigned request-body enforcement to the upstream provider. */
+  readonly requestInspection?: "endpoint";
 }
 
 export interface EgressBinding {
@@ -305,6 +307,7 @@ export interface CredentialProviderDefinition {
   normalizeGrant(
     models: readonly string[],
     config?: Readonly<Record<string, string>>,
+    binding?: { readonly agentId: string; readonly sourceId: string },
   ): InferenceGrant | GitHubMetadataGrant | CredentialFreeMetadataGrant | PreparedTokenGrant;
   routes(
     source: Readonly<CredentialSource>,
@@ -321,6 +324,8 @@ export interface CredentialProviderDefinition {
     request: EgressRequest,
     refused?: (rule: number) => void,
   ): EgressOperation | undefined;
+  /** Authorize a pinned endpoint-only grant from the actual request head. */
+  authorizeRequestEndpoint?(route: EgressRoute, request: Omit<EgressRequest, "body">): boolean;
   inject(value: string): readonly (readonly [string, string])[];
   /** Positive provider evidence only; status alone never identifies rejected credentials. */
   credentialRejected(response: EgressResponse): boolean;

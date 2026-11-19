@@ -1,6 +1,7 @@
 import {
   requestCredentialBinding,
   authorizeOpenShellRequest,
+  createOpenShellEndpointRequestHook,
 } from "./openshell-request-credential.ts";
 import type { CredentialProxyExchange } from "@openclaw-enterprise/contracts";
 import { randomBytes } from "node:crypto";
@@ -24,6 +25,7 @@ import { OpenShellEgressIdentity } from "./openshell-identity.ts";
 import {
   advertisesOpenShellExecutionProfile,
   openShellExchangeCapabilities,
+  openShellHttpHooksCapability,
 } from "./openshell-exchange-capabilities.ts";
 
 type Wire = Record<string, unknown>;
@@ -106,20 +108,26 @@ export interface OpenShellHttpPolicySet {
 export function describeOpenShellMiddleware(
   gateway: unknown,
   audience: string,
-  implementation: "static-egress" | "online-request-authorization",
+  implementation:
+    "static-egress" | "online-request-authorization" | "endpoint-request-authorization",
   httpPolicySet?: OpenShellHttpPolicySet,
   requestTimeCredentials = false,
 ): Wire | undefined {
   const execution = implementation === "static-egress";
+  const endpointOnly = implementation === "endpoint-request-authorization";
   const peer = record(gateway);
   const supported = peer.supported_capabilities;
   const required = peer.required_capabilities;
   const strictExecution = execution && advertisesOpenShellExecutionProfile(supported);
-  const profile = [contractCapability, ...(strictExecution ? openShellExchangeCapabilities : [])];
+  const profile = [
+    contractCapability,
+    ...(strictExecution ? openShellExchangeCapabilities : []),
+    ...(endpointOnly ? [openShellHttpHooksCapability] : []),
+  ];
   if (
     record(peer.protocol_version).major !== 1 ||
     !Array.isArray(supported) ||
-    !supported.includes(contractCapability) ||
+    !profile.every((capability) => supported.includes(capability)) ||
     (execution && !strictExecution && !requestTimeCredentials) ||
     // Describe precedes protected-policy selection; only the base contract is required here.
     !Array.isArray(required) ||
@@ -157,7 +165,7 @@ export function describeOpenShellMiddleware(
     bindings: bindings.map(([operation, phase]) => ({
       operation,
       phase,
-      max_payload_bytes: 4 * 1024 * 1024,
+      max_payload_bytes: endpointOnly ? 0 : 4 * 1024 * 1024,
     })),
   };
 }
@@ -182,6 +190,7 @@ export function createOpenShellEgressAuthority(
     createCredentialProxy: (owner: OpenShellEgressIdentity) => CredentialProxyExchange;
   },
   registrationName?: string,
+  endpointOnly?: { readonly name: string; readonly identity: OpenShellEgressIdentity },
 ): Server {
   // Strict exchange streams retain possession and response-custody checks. The optional
   // request hook has its own authenticated input and cannot manufacture a strict exchange.
@@ -209,17 +218,25 @@ export function createOpenShellEgressAuthority(
   const requestTimeCredentials = !!registrationName && !!authorize;
   server.addService(service.SupervisorMiddleware!.service, {
     Describe: unary(async (call) => {
+      const bearer = middlewareBearer(call.metadata);
+      const endpointIdentity = endpointOnly?.identity;
       const description =
-        (identity.verifyControl(middlewareBearer(call.metadata)) ||
-          (requestTimeCredentials &&
-            identity.credentialSandbox(middlewareBearer(call.metadata)))) &&
-        describeOpenShellMiddleware(
-          call.request.gateway,
-          identity.audience,
-          "static-egress",
-          undefined,
-          requestTimeCredentials,
-        );
+        endpointIdentity &&
+        (endpointIdentity.verifyControl(bearer) || endpointIdentity.credentialSandbox(bearer))
+          ? describeOpenShellMiddleware(
+              call.request.gateway,
+              endpointIdentity.audience,
+              "endpoint-request-authorization",
+            )
+          : (identity.verifyControl(bearer) ||
+              (requestTimeCredentials && identity.credentialSandbox(bearer))) &&
+            describeOpenShellMiddleware(
+              call.request.gateway,
+              identity.audience,
+              "static-egress",
+              undefined,
+              requestTimeCredentials,
+            );
       if (!description) {
         throw new Error("Unsupported or unauthenticated counterpart.");
       }
@@ -233,7 +250,12 @@ export function createOpenShellEgressAuthority(
           call.request.middleware_name === registrationName &&
           !!requestCredentialBinding(call.request.config) &&
           (identity.verifyControl(middlewareBearer(call.metadata)) ||
-            !!identity.credentialSandbox(middlewareBearer(call.metadata)))),
+            !!identity.credentialSandbox(middlewareBearer(call.metadata)))) ||
+        (endpointOnly !== undefined &&
+          call.request.middleware_name === endpointOnly.name &&
+          !!requestCredentialBinding(call.request.config) &&
+          (endpointOnly.identity.verifyControl(middlewareBearer(call.metadata)) ||
+            !!endpointOnly.identity.credentialSandbox(middlewareBearer(call.metadata)))),
     })),
     EvaluateHttpRequest: unary(async (call) => {
       // Malformed request-bound configuration cannot fall back to the strict identity check.
@@ -266,6 +288,15 @@ export function createOpenShellEgressAuthority(
       };
     }),
   });
+  if (endpointOnly) {
+    server.addService(service.HttpHooks!.service, {
+      EvaluateHttpRequestHook: createOpenShellEndpointRequestHook(
+        endpointOnly.identity,
+        endpointOnly.name,
+        forwarder,
+      ),
+    });
+  }
   const resolve = async (call: AuthorityCall): Promise<Wire> => {
     if (call.request.audience !== identity.audience) {
       return refused("denied");

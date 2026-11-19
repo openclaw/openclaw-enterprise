@@ -21,7 +21,8 @@ export interface CredentialHttpRequest {
     readonly method: string;
   };
   readonly headers: readonly (readonly [string, string])[];
-  readonly body: Uint8Array;
+  /** Absent only when an endpoint-only transport captured no request body. */
+  readonly body?: Uint8Array;
 }
 
 /** The installed sender supplies the authenticated recipient and immutable route binding. */

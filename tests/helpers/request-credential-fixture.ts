@@ -88,6 +88,7 @@ export async function requestCredentialFixture(
     verifyAdmissionPolicy?: boolean;
     retainStrictBeforePolicy?: boolean;
     includeLegacy?: boolean;
+    endpointOnly?: boolean;
   } = {},
 ) {
   let owner!: InstalledDriver;
@@ -388,6 +389,9 @@ export async function requestCredentialFixture(
         unit.credentialSources.findCredentialSource(namespace.id, source.id),
       );
       assert.deepEqual(stored?.egress?.key.provider, createOpenAiRequestProvider().ref);
+      if (configuration.endpointOnly) {
+        providers[0] = createOpenAiRequestProvider({ agentId: agent.id, sourceId: source.id });
+      }
       const result = await app.request("PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`, {
         body: {
           configurationId: agent.configurationId,

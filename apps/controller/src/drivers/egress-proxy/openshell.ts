@@ -40,7 +40,7 @@ import {
   RepositoryGitSenderUnqualifiedError,
   RetryLaterError,
 } from "@openclaw-enterprise/occ";
-import { asRecord, immutableCopy, sha256Hex } from "@openclaw-enterprise/utils";
+import { asRecord, immutableCopy, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
 import { type OpenShellGateway, openShellWorkspaceName } from "../../backends/openshell.ts";
 import {
   confirmSandboxAbsent,
@@ -48,7 +48,10 @@ import {
 } from "../sandbox/openshell-gateway-errors.ts";
 import {
   advertisesOpenShellExecutionProfile,
+  openShellEndpointRequestRegistration,
   openShellExchangeCapabilities as capabilities,
+  openShellHttpHooksCapability,
+  type OpenShellEndpointOnlySelection,
 } from "./openshell-exchange-capabilities.ts";
 import { createOpenAiStaticProvider, createOpenAiRequestProvider } from "./openai-provider.ts";
 import { openShellProtectedCodexArtifacts } from "../sandbox/openshell-codex-artifacts.ts";
@@ -83,14 +86,23 @@ export interface OpenShellProxyOptions {
     readonly audience: string;
     readonly tokenEndpoint: string;
     readonly grpcEndpoint: string;
+    readonly endpointOnly?: OpenShellEndpointOnlySelection;
   };
 }
 
 function validRequestCredentials(input: unknown): boolean {
   const value = asRecord(input);
+  const selection = asRecord(value?.endpointOnly);
   if (
     !value ||
-    Object.keys(value).length !== 3 ||
+    Object.keys(value).some(
+      (key) => !["audience", "tokenEndpoint", "grpcEndpoint", "endpointOnly"].includes(key),
+    ) ||
+    (value.endpointOnly !== undefined &&
+      (!selection ||
+        Object.keys(selection).some((key) => key !== "agentId" && key !== "sourceId") ||
+        !isNonEmptyString(selection.agentId) ||
+        !isNonEmptyString(selection.sourceId))) ||
     typeof value.audience !== "string" ||
     !value.audience.trim() ||
     typeof value.tokenEndpoint !== "string" ||
@@ -355,6 +367,15 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           audience: { type: "string", minLength: 1 },
           tokenEndpoint: { type: "string", minLength: 1 },
           grpcEndpoint: { type: "string", minLength: 1 },
+          endpointOnly: {
+            type: "object",
+            additionalProperties: false,
+            required: ["agentId", "sourceId"],
+            properties: {
+              agentId: { type: "string", minLength: 1 },
+              sourceId: { type: "string", minLength: 1 },
+            },
+          },
         },
       },
     },
@@ -408,6 +429,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     },
   ) {
     requireConfiguration(OpenShellCredentialProxyDriver, options);
+    this.options = immutableCopy(options);
     if (selection.sandbox.harnessResource === undefined) {
       throw new Error("Invalid protected OpenShell egress configuration.");
     }
@@ -438,6 +460,12 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           selection.tokenGrant && {
             registrationName: options.middlewareName,
             tokenGrant: selection.tokenGrant,
+            ...(this.options.requestCredentials?.endpointOnly && {
+              endpointOnly: openShellEndpointRequestRegistration(
+                options.middlewareName,
+                exchange.audience,
+              ),
+            }),
           },
         );
     }
@@ -450,7 +478,6 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     this.id = selection.id;
     this.backend = selection.backend;
     this.sandbox = selection.sandbox;
-    this.options = immutableCopy(options);
     if (options.requestCredentials) {
       this.requestTimeCredentials = Object.freeze({
         assertAvailable: (signal: AbortSignal) => this.assertRequestCredentialsAvailable(signal),
@@ -464,7 +491,9 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       resolver: { id: `${selection.id}/resolver`, generation: 1 },
       providers: [
         createOpenAiStaticProvider(),
-        ...(options.requestCredentials ? [createOpenAiRequestProvider()] : []),
+        ...(this.options.requestCredentials
+          ? [createOpenAiRequestProvider(this.options.requestCredentials.endpointOnly)]
+          : []),
         credentialFreeMetadataProvider,
         ...(selection.preparedProviders ?? []),
       ],
@@ -531,7 +560,11 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     });
   }
 
-  private async assertRequestCredentialsAvailable(signal: AbortSignal): Promise<void> {
+  private async assertRequestCredentialsAvailable(
+    signal: AbortSignal,
+    registrationName = this.options.middlewareName,
+    endpointOnly = false,
+  ): Promise<void> {
     const client = this.backend.client.clientForNamespace("");
     const info = await client.getGatewayInfo?.(signal);
     const extensions = info?.extensions;
@@ -541,9 +574,12 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       !extensions.some((value) => {
         const item = asRecord(value);
         return (
-          item?.configured_name === this.options.middlewareName &&
+          item?.configured_name === registrationName &&
           (item.kind === "EXTENSION_KIND_SUPERVISOR_MIDDLEWARE" || item.kind === 4) &&
-          item.protocol_major === 1
+          item.protocol_major === 1 &&
+          (!endpointOnly ||
+            (Array.isArray(item.required_capabilities) &&
+              item.required_capabilities.includes(openShellHttpHooksCapability)))
         );
       })
     ) {
@@ -589,7 +625,11 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     if (!expected) {
       return undefined;
     }
-    await this.assertRequestCredentialsAvailable(signal);
+    await this.assertRequestCredentialsAvailable(
+      signal,
+      expected.registration.name,
+      expected.endpointOnly,
+    );
     const context = { namespace, revision, plan, signal };
     const ref = this.sandbox.harnessResource!(context);
     const client = this.backend.client.clientForNamespace(ref.namespaceName);

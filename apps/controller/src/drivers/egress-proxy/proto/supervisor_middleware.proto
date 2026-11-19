@@ -51,6 +51,70 @@ service HttpResponsePreReturn {
       returns (stream HttpResponseEventResult);
 }
 
+// The preflight-only subset of stock OpenShell HttpHooks.
+service HttpHooks {
+  rpc EvaluateHttpRequestHook(stream HttpRequestHookEvent)
+      returns (stream HttpRequestHookResult);
+}
+
+message HttpRequestHookEvent {
+  oneof event {
+    HttpRequestHookPreflight preflight = 1;
+    MiddlewareSessionEnd session_end = 6;
+  }
+}
+
+message HttpRequestHookPreflight {
+  HttpRequestPreflightHead request = 1;
+  SupervisorMiddlewarePhase phase = 2;
+  RequestContext context = 3;
+  string middleware_name = 4;
+  google.protobuf.Struct config = 5;
+  repeated int32 permitted_body_modes = 6;
+  repeated HttpBodyModeUnavailable unavailable_body_modes = 7;
+  HttpBodyLimits limits = 8;
+  // Stock OpenShell supplies the declared input length when framing makes it known.
+  optional uint64 declared_body_bytes = 9;
+}
+
+message HttpRequestPreflightHead {
+  HttpRequestTarget target = 1;
+  repeated HttpHeader headers = 2;
+}
+
+message HttpBodyModeUnavailable {
+  int32 mode = 1;
+  int32 reason = 2;
+}
+
+message HttpBodyLimits {
+  uint64 max_chunk_bytes = 1;
+  uint64 max_whole_body_bytes = 2;
+}
+
+message HttpRequestHookResult {
+  oneof result {
+    HttpPreflightResult preflight_result = 1;
+    HttpDenial deny = 6;
+  }
+}
+
+message HttpPreflightResult {
+  oneof decision {
+    HttpContinue continue_without_body = 1;
+  }
+}
+
+message HttpContinue {}
+
+message HttpDenial {
+  MiddlewareDiagnostics diagnostics = 1;
+}
+
+message MiddlewareDiagnostics {
+  string reason_code = 2;
+}
+
 // Historical unary wire shape. Current protected policy requires HttpInstallationExchange;
 // supervisors must never fall back to a bearer-authenticated unary credential send.
 // Implementations must authenticate the supervisor, bind its immutable sandbox

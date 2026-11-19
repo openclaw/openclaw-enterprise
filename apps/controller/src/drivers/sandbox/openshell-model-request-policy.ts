@@ -3,6 +3,10 @@ import type { AgentRevision, ProxyPlan } from "@openclaw-enterprise/contracts";
 import { SandboxRevisionUnsupportedError } from "@openclaw-enterprise/occ";
 import { asRecord, sha256Hex } from "@openclaw-enterprise/utils";
 import type { OpenShellProxyOptions } from "../egress-proxy/openshell.ts";
+import {
+  matchesEndpointOnlyBinding,
+  openShellEndpointRequestRegistration,
+} from "../egress-proxy/openshell-exchange-capabilities.ts";
 import { isOpenShellRequestHost } from "../egress-proxy/openshell-http-request.ts";
 import { wirePolicy } from "../egress-proxy/openshell-wire-policy.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "./openshell-codex-artifacts.ts";
@@ -46,6 +50,22 @@ export function openShellModelRequestPolicy(
   ) {
     unsupported("Online model authorization requires one dedicated Codex Responses binding.");
   }
+  const endpointOnly = route.binding.grant.requestInspection === "endpoint";
+  if (
+    endpointOnly &&
+    !matchesEndpointOnlyBinding(
+      registration.endpointOnly,
+      revision.agentId,
+      route.binding.source.source.id,
+    )
+  ) {
+    unsupported(
+      "The operator has not enabled endpoint-only authorization for this Agent and model source.",
+    );
+  }
+  const middleware = endpointOnly
+    ? openShellEndpointRequestRegistration(options.middlewareName, registration.audience)
+    : { name: options.middlewareName, audience: registration.audience };
   const origin = new URL(route.origin);
   const host = origin.hostname;
   if (
@@ -70,7 +90,7 @@ export function openShellModelRequestPolicy(
   const middlewares = {
     "oce-model": {
       name: "oce-model",
-      middleware: options.middlewareName,
+      middleware: middleware.name,
       config: {
         fields: Object.fromEntries(
           Object.entries(fields).map(([key, value]) => [key, { stringValue: value }]),
@@ -120,7 +140,8 @@ export function openShellModelRequestPolicy(
     provider: { name, profile },
     environment: { OPENAI_API_KEY: "oce:request-authorized:model" },
     host,
-    registration: { name: options.middlewareName, ...registration },
+    ...(endpointOnly && { endpointOnly: true as const }),
+    registration: { ...registration, ...middleware },
   };
 }
 
@@ -204,6 +225,8 @@ export function verifyModelRequestPolicy(
     (registration.binding_policy !== 2 && registration.binding_policy !== 3) ||
     !Array.isArray(registration.bindings) ||
     !registration.bindings.includes(1) ||
+    (expected.endpointOnly &&
+      (registration.bindings.length !== 1 || Number(registration.max_payload_bytes ?? 0) !== 0)) ||
     typeof registration.grpc_endpoint !== "string" ||
     (registration.grpc_endpoint !== expected.registration.grpcEndpoint &&
       registration.grpc_endpoint !== expected.registration.grpcEndpoint + "/")

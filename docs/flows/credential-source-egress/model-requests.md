@@ -1,7 +1,7 @@
 ---
 created: "2026-11-10"
-updated: 2026-11-18
-last_updated_session: authoring-run/e9ec324d-033c-4ca2-b52b-f303b2cc7f5e
+updated: 2026-11-19
+last_updated_session: authoring-run/a0e804f8-90d6-41a8-bae7-936d2d894355
 ---
 
 # Authorize model credentials per request
@@ -32,7 +32,7 @@ defines the guarantee. Existing strict exchanges retain their
 
 ```mermaid
 graph TD
-  A["Supervisor captures<br/>HTTPS model request"] --> B{"Current route, model<br/>and permission?"}
+  A["Supervisor captures<br/>HTTPS model request"] --> B{"Current route, request<br/>scope and permission?"}
   B -->|No| X["Refuse credential"]
   B -->|Yes| C["OCC reserves<br/>the replay ID"]
   C --> K{"Transport accepts<br/>the decision?"}
@@ -107,13 +107,30 @@ credential material.
 ### 2. Approve the captured request
 
 `openshell-request-credential.ts:authorizeOpenShellRequest` authenticates the
-Gateway-signed supervisor identity, reads the installed binding, and passes the
-captured method, target, headers and body to OCC. Malformed binding configuration
-is denied. `packages/occ/src/index.ts:checkRequestCredential` verifies the current
-recipient, installation, revision, source, route, provider and IAM permission,
-then classifies the actual request against the admitted model grant. It rejects
-unsupported IAM with `unsupported_authority` before live recipient verification
-or Secret lookup; it never calls an external IAM provider on this path. It calls
+Gateway-signed supervisor identity and reads the installed binding. The
+body-scoped unary hook passes the captured method, target, headers and body to
+OCC. Deployment requires the endpoint registration only for the Agent and
+bound CredentialSource selected by `endpointOnly.agentId` and
+`endpointOnly.sourceId`. It uses stock OpenShell v0.1.9's
+`openshell.supervisor-middleware.http-hooks` capability with a zero-byte
+`HTTP_REQUEST` binding at `PRE_CREDENTIALS`. The preflight passes only the
+captured method, target and headers. Malformed binding configuration is denied.
+
+`packages/occ/src/index.ts:checkRequestCredential` verifies the current recipient,
+installation, revision, source, route, provider and IAM permission.
+`apps/controller/src/drivers/egress-proxy/openai-provider.ts:createOpenAiRequestProvider`
+classifies body-scoped requests against the admitted model grant. For endpoint-only
+requests, it rechecks the Agent and source selection and verifies the exact
+HTTPS origin, `POST /v1/responses`, an empty query and approved headers visible
+to the hook. Endpoint preflight rejects duplicate header names and admits the
+optional Codex Responses Lite header only when its value is exactly `true`.
+On approval, the endpoint preflight returns
+`continue_without_body`. OpenShell redeems the same single-use approval and relays
+the body and response. The upstream provider owns model, tool, storage and body
+semantics.
+
+OCC rejects unsupported IAM with `unsupported_authority` before live recipient verification
+or Secret lookup; it never calls an external IAM provider on this path. OCC calls
 `requestTimeCredentials.verifyRequestInstallation` with the persisted installation
 and authenticated recipient. The bundled
 `apps/controller/src/drivers/egress-proxy/openshell.ts:verifyRequestInstallation`
@@ -261,6 +278,12 @@ continuity during binding removal.
 None.
 
 ## Changelog
+
+- 2026-11-19 06:59: Document Codex Responses Lite header admission during endpoint preflight. (authoring-run/a0e804f8-90d6-41a8-bae7-936d2d894355 - fdc24a6ffab03ab357b36a03cab9155e8ed66a37)
+
+- 2026-11-19 06:03: Limit endpoint authorization to the selected Agent and source and describe which headers the hook can check. (authoring-run/d835039a-3f8c-4a49-9e1f-cd6987689d9f - f17f526dc21f57f8818f415ab0e4531f6a8e4e0c)
+
+- 2026-11-19 05:48: Trace endpoint-only preflight and the upstream provider's body policy. (authoring-run/96d321d8-e40a-4b12-99d2-68dc5d4a4982 - f17f526dc21f57f8818f415ab0e4531f6a8e4e0c)
 
 - 2026-11-18 12:08: Require current Worker authorization before candidate preparation and clear it on stop or reclaim. (authoring-run/e9ec324d-033c-4ca2-b52b-f303b2cc7f5e - d5c331fb8da1b65683cbc9bf027c5e206f4a2e9f)
 

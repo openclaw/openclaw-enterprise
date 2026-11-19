@@ -794,6 +794,7 @@
       "path": "tests/integration/credential-proxy-request-transport.test.ts",
       "expectedTests": [
         "signed model request middleware redeems once through TLS after startup release (PostgreSQL)",
+        "signed endpoint hooks require the selected Agent and source without accepting a unary downgrade (PostgreSQL)",
         "strict static exchange preserves control identity across material metadata (PostgreSQL)",
         "credential source HTTP creation and protection readback follow installed policy and exact registrations (PostgreSQL)",
         "model source admission fences changed authority and transport (PostgreSQL)",

@@ -17,3 +17,23 @@ export function advertisesOpenShellExecutionProfile(value: unknown): boolean {
     return index !== -1 && index === value.lastIndexOf(capability);
   });
 }
+
+export const openShellHttpHooksCapability = "openshell.supervisor-middleware.http-hooks";
+
+export interface OpenShellEndpointOnlySelection {
+  readonly agentId: string;
+  readonly sourceId: string;
+}
+
+export function matchesEndpointOnlyBinding(
+  selection: OpenShellEndpointOnlySelection | undefined,
+  agentId: string,
+  sourceId: string,
+): boolean {
+  return selection?.agentId === agentId && selection.sourceId === sourceId;
+}
+
+/** Two registration audiences select distinct manifests on the same TLS listener. */
+export function openShellEndpointRequestRegistration(name: string, audience: string) {
+  return { name: `${name}-endpoint`, audience: `${audience}/endpoint` };
+}

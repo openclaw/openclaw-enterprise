@@ -1,8 +1,11 @@
 # Set up per-request model credential authorization
 
-Use this path to give a dedicated Codex Agent access to one admitted OpenAI
-Responses model while keeping the API key outside the guest. It requires a source admitted with the
-`request-time` protection and a qualified OpenShell installation.
+Use this path to give a dedicated Codex Agent access to the OpenAI Responses
+endpoint while keeping the API key outside the guest. It requires a source
+admitted with `request-time` protection and a qualified OpenShell installation.
+By default, OpenClaw Control Plane (OCC) checks the model and other request
+body fields. An operator can select [endpoint-only authorization](#enable-endpoint-only-authorization) for one
+dedicated Codex Agent and its bound CredentialSource if the upstream provider can enforce those restrictions.
 The source implementation is available; it does not establish qualification of
 an installed OpenShell and Codex pair. Complete the checks below before rollout.
 Agent deployment rejects an online source paired with OpenClaw or a Harness that
@@ -175,8 +178,8 @@ for a dedicated Codex Agent, exact source binding, API-key authentication and
 Agent service-principal `operate` permission. Select one authorized model and
 the HTTPS Responses provider. The runtime must use the generated custom Codex
 provider with WebSockets disabled, not the built-in OpenAI provider's WebSocket
-transport. The current profile permits one `/v1/responses` route; it does not
-admit Chat Completions or provider-hosted tools.
+transport. The body-scoped profile permits one `/v1/responses` route and denies
+requests that use provider-hosted tools.
 
 Before deploying, save the identical destination in the dedicated Codex
 Harness's `modelProvider.baseUrl` using [deployment overrides](../topics/agent-revisions.md#choose-a-harness-destination):
@@ -194,6 +197,41 @@ match; changing only the Agent endpoint is refused. Keep the Gateway's
 Check the requested deployment and runtime status. A ready source does not prove
 that the workload passed installation checks or can answer a model turn.
 
+## Enable endpoint-only authorization
+
+Use this option with stock OpenShell v0.1.9 when Codex requests need to exceed
+the legacy unary transport's 4 MiB limit. Body-scoped OCC authorization also
+caps inspection at 1 MiB. Choose a provider and key whose policy can enforce
+the required models, tools and storage settings. For this Agent and source, the provider
+owns all request and response body semantics. OCC authorizes the destination
+and credential release for each request.
+
+1. Set `drivers.credential_proxy.configuration.endpointOnly` to an object with
+   `agentId` set to the dedicated Codex Agent ID and `sourceId` set to the
+   bound CredentialSource ID (`AGENT_ID` and `SOURCE_ID` above).
+2. Add a separate registration under `[[openshell.supervisor.middleware]]`.
+   Use the existing model registration's HTTPS `grpc_endpoint`, trusted
+   `tls_ca_cert_path` and `timeout`. For example, if the model middleware is
+   `oce-authority` and `authority.audience` is `oce-egress`, configure these fields
+   in the new entry.
+
+   ```toml
+   name = "oce-authority-endpoint"
+   audience = "oce-egress/endpoint"
+   binding_policy = "exact"
+   bindings = ["http_request_pre_credentials"]
+   max_payload_bytes = 0
+   ```
+
+   Use `${middlewareName}-endpoint` for the name and
+   `${authority.audience}/endpoint` for the Gateway JWT audience. Keep Gateway JWT
+   authentication enabled and keep the existing model and Git registrations.
+
+3. Apply the Installation settings, restart the OpenShell Gateway to load the
+   new registration, and redeploy the dedicated Codex Agent with the same source
+   and HTTPS Responses destination. The newly deployed revision must install the
+   required endpoint registration. Run the checks below before rollout.
+
 ## Verify the installed path
 
 Run these checks against the exact images and configuration selected for rollout:
@@ -202,9 +240,14 @@ Run these checks against the exact images and configuration selected for rollout
    before deployment, send an actual Codex model turn and inspect its streamed
    response. Prove that the expected key reaches the allowed
    request while the guest has only a placeholder. Keep keys and SVIDs out of logs.
-2. Attempt another model, an unapproved path, a direct route and credential
-   redemption without the supervisor identity. Require refusal with no new
-   origin request. Confirm the guest cannot access the Workload API socket.
+2. Attempt an unapproved origin, method, path, query or header visible to the
+   hook, a direct route, and credential redemption without the supervisor identity. Require refusal
+   with no new origin request. Confirm the guest cannot access the Workload API
+   socket. For body-scoped authorization, also attempt another model and require
+   refusal before dispatch. For endpoint-only authorization, send a request
+   larger than 4 MiB and confirm the origin receives it during a streamed Codex
+   turn. Verify the upstream provider's model, tool and storage restrictions for
+   the selected key.
 3. Redeem an approval twice; only the first may release material. Withdraw the
    source after approval but before redemption; that redemption must be denied
    with no new origin request.

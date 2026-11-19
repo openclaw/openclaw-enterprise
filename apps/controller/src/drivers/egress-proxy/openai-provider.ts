@@ -18,6 +18,10 @@ import { validChatRequest, responsesRequestFailure } from "./openai-responses.ts
 import { protectedResponseOutput, protectedResponsesStream } from "./openai-responses-stream.ts";
 import { parseUnambiguousJson } from "../json-members.ts";
 import { openAiRequestProviderRef } from "../openai-request-adapter.ts";
+import {
+  matchesEndpointOnlyBinding,
+  type OpenShellEndpointOnlySelection,
+} from "./openshell-exchange-capabilities.ts";
 
 export { openAiRequestProviderRef } from "../openai-request-adapter.ts";
 
@@ -217,24 +221,48 @@ function openAiRoute(
   });
 }
 
-const classify: CredentialProviderDefinition["classify"] = (route, request, refused) => {
+function matchesRequestEndpoint(route: EgressRoute, request: Omit<EgressRequest, "body">): boolean {
   let url: URL;
   try {
     url = new URL(request.url);
   } catch {
-    return undefined;
+    return false;
   }
-  if (
-    url.href !== request.url ||
-    url.protocol !== "https:" ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash ||
-    request.method !== route.method ||
-    url.origin !== route.origin ||
-    url.pathname !== route.path
-  ) {
+  return (
+    url.href === request.url &&
+    url.protocol === "https:" &&
+    !url.username &&
+    !url.password &&
+    !url.search &&
+    !url.hash &&
+    request.method === route.method &&
+    url.origin === route.origin &&
+    url.pathname === route.path
+  );
+}
+
+const endpointRequestHeaders = new Set([
+  "accept",
+  "accept-encoding",
+  "content-type",
+  "originator",
+  "session-id",
+  "thread-id",
+  "user-agent",
+  "version",
+  "x-client-request-id",
+  "x-codex-beta-features",
+  "x-codex-installation-id",
+  "x-codex-parent-thread-id",
+  "x-codex-turn-metadata",
+  "x-codex-turn-state",
+  "x-codex-window-id",
+  "x-openai-subagent",
+]);
+const responsesLiteHeader = "x-openai-internal-codex-responses-lite";
+
+const classify: CredentialProviderDefinition["classify"] = (route, request, refused) => {
+  if (!matchesRequestEndpoint(route, request)) {
     return undefined;
   }
   const body = jsonRequest(request);
@@ -310,16 +338,31 @@ export function createOpenAiStaticProvider(): CredentialProviderDefinition {
   });
 }
 
-/** The same bounded request policy, with online release instead of dispatch/response custody. */
-export function createOpenAiRequestProvider(): CredentialProviderDefinition {
+/** Online release for body-scoped requests and one operator-selected Agent and source binding. */
+export function createOpenAiRequestProvider(
+  endpointOnly?: OpenShellEndpointOnlySelection,
+): CredentialProviderDefinition {
+  const selection = endpointOnly && immutableCopy(endpointOnly);
   return Object.freeze<CredentialProviderDefinition>({
     ref: openAiRequestProviderRef,
     authorization: "online-request",
     schemaVersion: 1,
     sourceType: openAiSourceType(),
     normalizeConfig,
-    normalizeGrant,
+    normalizeGrant(models, config, binding) {
+      const grant = normalizeGrant(models, config);
+      return binding && matchesEndpointOnlyBinding(selection, binding.agentId, binding.sourceId)
+        ? immutableCopy({ ...grant, requestInspection: "endpoint" as const })
+        : grant;
+    },
     routes(source, binding, harnessConfiguration) {
+      if (
+        binding.grant.kind === "inference" &&
+        binding.grant.requestInspection === "endpoint" &&
+        !matchesEndpointOnlyBinding(selection, binding.execution.agentId, source.id)
+      ) {
+        return [];
+      }
       const base = openAiDestination(source, harnessConfiguration);
       return [
         openAiRoute(base, binding, "responses", {
@@ -329,6 +372,19 @@ export function createOpenAiRequestProvider(): CredentialProviderDefinition {
       ];
     },
     classify,
+    authorizeRequestEndpoint(route, request) {
+      const headers = new Map(request.headers.map(([name, value]) => [name.toLowerCase(), value]));
+      return (
+        matchesRequestEndpoint(route, request) &&
+        route.path === "/v1/responses" &&
+        jsonType.test(contentType(request.headers)) &&
+        validHeaders(request.headers, []) &&
+        headers.size === request.headers.length &&
+        [...headers].every(([name, value]) =>
+          name === responsesLiteHeader ? value === "true" : endpointRequestHeaders.has(name),
+        )
+      );
+    },
     inject,
     // Online authorization never receives the upstream response.
     credentialRejected: () => false,

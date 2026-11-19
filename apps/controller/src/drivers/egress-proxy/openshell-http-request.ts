@@ -19,7 +19,7 @@ export interface OpenShellHttpRequestView {
     readonly query: string;
   };
   readonly headers: readonly (readonly [string, string])[];
-  readonly body: Uint8Array;
+  readonly body?: Uint8Array;
 }
 
 /** Model routes and captured requests share this DNS-only destination contract. */
@@ -43,10 +43,11 @@ function httpMethod(value: unknown): value is OpenShellHttpRequestView["target"]
 export function readOpenShellHttpRequest(
   request: Wire,
   sandboxId: string,
+  captureBody: boolean,
 ): OpenShellHttpRequestView | undefined {
   const context = record(request.context);
   const target = record(request.target);
-  const body = request.body ?? new Uint8Array();
+  const body = captureBody ? (request.body ?? new Uint8Array()) : undefined;
   const rawHeaders = request.headers ?? [];
   const query = target.query ?? "";
   if (
@@ -66,8 +67,7 @@ export function readOpenShellHttpRequest(
     /[?#]/.test(target.path) ||
     typeof query !== "string" ||
     !/^[\x21-\x7e]{0,4096}$/.test(query) ||
-    !(body instanceof Uint8Array) ||
-    body.byteLength > 4 * 1024 * 1024 ||
+    (captureBody && (!(body instanceof Uint8Array) || body.byteLength > 4 * 1024 * 1024)) ||
     !Array.isArray(rawHeaders) ||
     rawHeaders.length > 128
   ) {
@@ -105,6 +105,6 @@ export function readOpenShellHttpRequest(
       query,
     },
     headers,
-    body,
+    ...(body instanceof Uint8Array && { body }),
   };
 }
