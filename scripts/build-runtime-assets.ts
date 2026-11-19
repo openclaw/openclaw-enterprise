@@ -62,7 +62,7 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "openclaw-runtime-audit.patch",
-    sha256: "7fdcb6d38f125e837195d47b036bd53078a2ac813cdd94d09667ed6b2d2c4064",
+    sha256: "0fa9617acc088f5ec12094241fe2536ac3ee2d0b4334a8153d8ede1c583d3998",
   },
   {
     file: "openclaw-codex-runtime-audit.patch",

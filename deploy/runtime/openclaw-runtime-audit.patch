@@ -1978,3 +1978,35 @@ index a799cd7..3205a5c 100644
        if (
          parsed.method === workerTurnAdmission.WORKER_TURN_ADMISSION_METHOD &&
          workerTurnAdmission.validateWorkerTurnAdmissionParams(parsed.params)
+diff --git a/src/agents/command/attempt-execution.shared.ts b/src/agents/command/attempt-execution.shared.ts
+index c03d05f..19f06cd 100644
+--- a/src/agents/command/attempt-execution.shared.ts
++++ b/src/agents/command/attempt-execution.shared.ts
+@@ -10,6 +10,7 @@ import {
+ } from "../../config/sessions/session-source-authority.js";
+ import { normalizeStoreSessionKey } from "../../config/sessions/store-entry.js";
+ import type { SessionEntry } from "../../config/sessions/types.js";
++import { recordGatewaySessionAudit } from "../../infra/openclaw-runtime-audit.js";
+ type PersistSessionEntryParams = {
+   agentId: string;
+   sessionStore: Record<string, SessionEntry>;
+@@ -29,7 +30,10 @@ export async function persistAgentSession(
+ ): Promise<SessionEntry | undefined> {
+   let rejectedMissingEntry = false;
+   let published = false;
++  let previousSessionId: string | undefined;
+   const buildEntry = (current: SessionEntry | undefined) => {
++    // A concurrent first turn can create the entry after command preparation.
++    previousSessionId = current?.sessionId;
+     const shouldPersistCurrent = params.shouldPersist?.(current);
+     if ((!current && shouldPersistCurrent !== true) || shouldPersistCurrent === false) {
+       rejectedMissingEntry = !current;
+@@ -94,6 +98,8 @@ export async function persistAgentSession(
+   }
+   if (!published) {
+     params.sessionStore[params.sessionKey] = persisted;
++  } else if (persisted.sessionId !== previousSessionId) {
++    await recordGatewaySessionAudit("openclaw.runtime.session.started", persisted.sessionId);
+   }
+   return persisted;
+ }
