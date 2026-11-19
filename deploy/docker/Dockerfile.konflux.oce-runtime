@@ -257,13 +257,6 @@ RUN --mount=type=bind,from=matrix-sdk-crypto,source=/out,target=/tmp/matrix-sdk-
         --config.supportedArchitectures.libc=glibc \
     && rm -rf /tmp/pnpm-store
 COPY --from=openclaw-source /source/ ./
-# Exercise the original caller through the public RPC before and after the
-# placement acknowledgment, including revocation, against this exact source.
-RUN --mount=type=bind,from=oce-source,source=/oce/deploy/runtime,target=/tmp/oce-runtime \
-    git apply /tmp/oce-runtime/openclaw-required-worker-authority-regression.patch
-# Remove this bridge when the pinned Control UI offers a browser navigation after access refusal.
-RUN --mount=type=bind,from=oce-source,source=/oce/deploy/runtime,target=/tmp/oce-runtime \
-    git apply /tmp/oce-runtime/openclaw-control-ui-browser-reconnect.patch
 # The runtime needs supervised recovery across private PID namespaces. Native
 # lock reinspection and custody still guard every destructive operation.
 RUN --mount=type=bind,from=oce-source,source=/oce/deploy/runtime,target=/tmp/oce-runtime \
@@ -277,9 +270,6 @@ RUN --mount=type=bind,from=oce-source,source=/oce/deploy/runtime,target=/tmp/oce
 # Remove after the pinned core includes upstream #196972 and its final-write handoff prerequisite.
 RUN --mount=type=bind,from=oce-source,source=/oce/deploy/runtime,target=/tmp/oce-runtime \
     git apply /tmp/oce-runtime/openclaw-planned-completion.patch
-# Remove when the pinned OpenClaw retries safe restart admission and passive Codex recovery.
-RUN --mount=type=bind,from=oce-source,source=/oce/deploy/runtime,target=/tmp/oce-runtime \
-    git apply /tmp/oce-runtime/openclaw-restart-harness-readiness.patch
 
 # Run the bridge tests alongside the build using the same patched source.
 # Packaging mounts this stage so a failed test still blocks the runtime image.
@@ -301,12 +291,12 @@ RUN --mount=type=bind,source=deploy/runtime/Dockerfile,target=/tmp/oce/Dockerfil
 # OpenClaw refuses temp roots under a group/world-writable ancestor without the
 # sticky bit, and /tmp loses that bit on the CI runners' build storage, so the
 # test steps restore the usual 1777 mode first.
-# The gateway test helpers, as the regression bridge patch leaves them, allow
-# each RPC the 10 second default of onceMessage; slow x86_64 runners take longer
-# to answer agents.list while the gateway warms up. Allow 30 seconds in this
-# test-only stage, which the image never copies from. The worker provider identity transport cases also
-# fail intermittently in CI with a missing identity-turn.identity.json, so each
-# of them gets two retries. The two chained runs follow the fork's Dockerfile:
+# The gateway test helpers allow each RPC the 10 second default of onceMessage;
+# slow x86_64 runners take longer to answer agents.list while the gateway warms
+# up. Allow 30 seconds in this test-only stage, which the image never copies
+# from. The worker provider identity transport cases also fail intermittently in
+# CI with a missing identity-turn.identity.json, so each of them gets two
+# retries. The two chained runs follow the fork's Dockerfile:
 # the first runs only the named run-loop case, the second the restart-resume
 # files, and both reuse the compiled tree.
 RUN --network=none chmod 1777 /tmp && test -k /tmp && rm -rf .artifacts && mkdir .artifacts \
@@ -319,7 +309,7 @@ RUN --network=none chmod 1777 /tmp && test -k /tmp && rm -rf .artifacts && mkdir
         src/node-host/runtime.worker-supervisor.test.ts \
     && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts \
-    $(grep -vx 'src/infra/private-store-file.test.ts' /opt/oce-bridge-tests/files) \
+    $(cat /opt/oce-bridge-tests/files) \
     && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/cli/gateway-cli/run-loop.test.ts \
     -t "keeps the fenced process alive until the supervisor sends SIGTERM" \
@@ -328,29 +318,14 @@ RUN --network=none chmod 1777 /tmp && test -k /tmp && rm -rf .artifacts && mkdir
     src/gateway/session-restart-resume.test.ts src/gateway/session-restart-resume-custody.test.ts \
     src/config/sessions/session-entry-json.test.ts \
     && rm -rf .artifacts
-# The private-store setgid test needs directories to inherit the setgid bit, which a
-# runner's build storage does not always do, so it gets a tmpfs /tmp. Its own
-# invocation also keeps it from loading the timing-sensitive gateway tests above.
-RUN --network=none --mount=type=tmpfs,target=/tmp rm -rf .artifacts && mkdir .artifacts \
-    && grep -qx 'src/infra/private-store-file.test.ts' /opt/oce-bridge-tests/files \
-    && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
-    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/infra/private-store-file.test.ts \
-    && rm -rf .artifacts
-# These CUA lifecycle cases use the supported SDK adapter boundary. The two
-# native SDK import cases need desktop libraries absent from this build image.
-RUN --network=none chmod 1777 /tmp && test -k /tmp && rm -rf .artifacts && mkdir .artifacts && \
-    OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
-    node --import ./scripts/tsx.mjs scripts/test-projects.mts extensions/cua-computer/src/driver-client.test.ts \
-    -t '^(?!.*(?:matches the installed CUA Driver desktop input enum contract|preserves typed SDK click refusals in the shared driver result))' \
-    && rm -rf .artifacts
 # Type-check production and the native/UI test graphs touched by the bridges.
 # The upstream runner generates database types and compiler cache under .artifacts.
 RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     node scripts/run-tsgo-core-test-shards.mjs --ci-graphs-json "$(cat /opt/oce-bridge-tests/graphs.json)" \
     && rm -rf .artifacts
-# Check changed CUA and Codex extensions with upstream strict compiler settings.
+# Check the changed Codex extension with upstream strict compiler settings.
 RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
-    node -e 'const fs=require("node:fs");fs.writeFileSync(".artifacts/tsconfig.changed-extensions-production.json",JSON.stringify({"extends": "../tsconfig.extensions.json", "include": ["../src/**/*.d.ts", "../ui/src/**/*.d.ts", "../extensions/cua-computer/**/*", "../extensions/codex/**/*"], "compilerOptions": {"rootDir": ".."}}));fs.writeFileSync(".artifacts/tsconfig.changed-extensions-test.json",JSON.stringify({"extends": "../test/tsconfig/tsconfig.extensions.test.json", "include": ["../test/types/vitest-codex-attempt-runtime.d.ts", "../src/**/*.d.ts", "../ui/**/*.d.ts", "../extensions/**/*.d.ts", "../extensions/cua-computer/**/*.test.ts", "../extensions/cua-computer/**/*.test.tsx", "../extensions/codex/**/*.test.ts", "../packages/**/*.d.ts"]}));' && \
+    node -e 'const fs=require("node:fs");fs.writeFileSync(".artifacts/tsconfig.changed-extensions-production.json",JSON.stringify({"extends": "../tsconfig.extensions.json", "include": ["../src/**/*.d.ts", "../ui/src/**/*.d.ts", "../extensions/codex/**/*"], "compilerOptions": {"rootDir": ".."}}));fs.writeFileSync(".artifacts/tsconfig.changed-extensions-test.json",JSON.stringify({"extends": "../test/tsconfig/tsconfig.extensions.test.json", "include": ["../test/types/vitest-codex-attempt-runtime.d.ts", "../src/**/*.d.ts", "../ui/**/*.d.ts", "../extensions/**/*.d.ts", "../extensions/codex/**/*.test.ts", "../packages/**/*.d.ts"]}));' && \
     node scripts/run-tsgo.mjs -p .artifacts/tsconfig.changed-extensions-production.json --incremental --tsBuildInfoFile .artifacts/changed-extensions-production.tsbuildinfo && \
     node scripts/run-tsgo.mjs -p .artifacts/tsconfig.changed-extensions-test.json --incremental --tsBuildInfoFile .artifacts/changed-extensions-test.tsbuildinfo \
     && rm -rf .artifacts
@@ -358,7 +333,7 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
 # Vite server on localhost, which Buildah's network-less RUN cannot resolve.
 RUN --network=none chmod 1777 /tmp && test -k /tmp && cd ui && node ../scripts/run-node-package-bin.mts vitest run --config vitest.config.ts \
     --project unit --project unit-node \
-    src/api/gateway-reachability.node.test.ts src/app/gateway-store.observers.test.ts src/app/app-shell-view.test.ts \
+    src/api/gateway-reachability.node.test.ts \
     src/app/gateway-page-activation.test.ts src/lib/session-method-access.test.ts \
     src/pages/chat/chat-history-subscription-errors.test.ts
 
