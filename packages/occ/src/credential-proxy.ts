@@ -145,6 +145,9 @@ export const STREAM_LEASE_CEILING_MS = 15 * 60_000;
 /** Progress sooner than this after the last policy check attempt keeps the lease unchanged. */
 export const STREAM_LEASE_RECHECK_MS = 15_000;
 const maximumStreamBodyBytes = 4 * 1024 * 1024;
+// Online authorization retains a detached request until its policy and approval settle.
+// Bound aggregate payload memory independently from the operation-count capacity.
+const maximumOnlineCapturedBodyBytes = 64 * 1024 * 1024;
 /**
  * Default bound on remembered request IDs across all Sandboxes of this process. Each ID is
  * held until its UUIDv7 creation time plus 30 s, so this also bounds the protected request
@@ -441,6 +444,7 @@ export class CredentialProxy implements CredentialProxyExchange {
   private readonly operationShares = new Map<string, number>();
   private activeOperations = 0;
   private authenticating = 0;
+  private onlineCapturedBodyBytes = 0;
   private readonly ports: EgressAuthorityPorts;
   /** The bounds this registry enforces, fixed at construction. */
   readonly capacity: CredentialProxyCapacity;
@@ -535,11 +539,18 @@ export class CredentialProxy implements CredentialProxyExchange {
       return Promise.resolve(undefined);
     }
     let request: RequestCredentialInput;
+    let capturedBytes = 0;
     return this.withRequestCredential<"credential">(
       input.recipient.id,
       input.deadlineAt,
       signal,
       async (ports, lifetime) => {
+        const bodyBytes = input.http.body.byteLength;
+        if (bodyBytes > maximumOnlineCapturedBodyBytes - this.onlineCapturedBodyBytes) {
+          return undefined;
+        }
+        this.onlineCapturedBodyBytes += bodyBytes;
+        capturedBytes = bodyBytes;
         // Detach the caller's body once capacity is charged and before policy can await.
         const {
           http: { body, ...http },
@@ -555,7 +566,9 @@ export class CredentialProxy implements CredentialProxyExchange {
         current() && (await ports.approve(request, lifetime, () => current() && accept()))
           ? decision
           : undefined,
-    );
+    ).finally(() => {
+      this.onlineCapturedBodyBytes -= capturedBytes;
+    });
   }
 
   acquireRequestAuthentication(): (() => void) | undefined {

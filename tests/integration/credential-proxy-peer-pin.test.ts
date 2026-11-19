@@ -5,6 +5,7 @@ import type {
   AcceptedEgressAssociation,
   CapturedEgressUse,
   EgressPeer,
+  RequestCredentialInput,
 } from "../../packages/contracts/src/index.ts";
 import {
   CredentialProxy,
@@ -192,6 +193,74 @@ test("exchange send rejects identity changes before receipt creation", async (t)
       assert.equal((await e.send(ready)).kind, "refused");
       assert.equal(await e.receipt(ready), undefined);
     });
+  }
+});
+
+test("online credential authorization bounds retained request bytes and frees capacity", async (t) => {
+  const fixture = await syntheticDispatchFixture(t);
+  const waiting: ReturnType<typeof deferred<void>>[] = [];
+  const proxy = new CredentialProxy({
+    ...fixture.ports,
+    requestCredentials: {
+      sender: fixture.sender,
+      async check() {
+        const gate = deferred();
+        waiting.push(gate);
+        await gate.promise;
+        return undefined;
+      },
+      approve: async () => false,
+      consume: async () => undefined,
+      validate: () => false,
+      deny: async () => {},
+    },
+  });
+  const body = new Uint8Array(4 * 1024 * 1024);
+  const now = fixture.ports.now();
+  const request = (index: number): RequestCredentialInput => ({
+    recipient: { id: "fixture-sandbox" },
+    requestId: `fixture-request-${index}`,
+    bindingId: "fixture-binding",
+    deadlineAt: new Date(now + 25_000).toISOString(),
+    replayUntilAt: new Date(now + 30_000).toISOString(),
+    execution: {
+      namespaceId: "fixture-namespace",
+      agentId: "fixture-agent",
+      revisionId: "fixture-revision",
+    },
+    http: {
+      target: {
+        reportedScheme: "https",
+        host: "provider.example.test",
+        port: 443,
+        method: "POST",
+        path: "/v1/responses",
+        query: "",
+      },
+      headers: [],
+      body,
+    },
+  });
+  const pending: Promise<unknown>[] = [];
+  try {
+    // Hold policy reads to exhaust the process byte budget before this Sandbox's
+    // operation-count quota is reached.
+    for (let index = 0; index < 16; index++) {
+      pending.push(proxy.authorizeRequestCredential(request(index), t.signal, () => true));
+    }
+    assert.equal(waiting.length, 16);
+    const overBudget = proxy.authorizeRequestCredential(request(16), t.signal, () => true);
+    pending.push(overBudget);
+    assert.equal(waiting.length, 16, "exhausted byte capacity must refuse before policy work");
+    assert.equal(await overBudget, undefined);
+
+    waiting[0]!.resolve();
+    await pending[0];
+    pending.push(proxy.authorizeRequestCredential(request(17), t.signal, () => true));
+    assert.equal(waiting.length, 17, "settled authorization restores its captured-byte capacity");
+  } finally {
+    for (const gate of waiting) gate.resolve();
+    await Promise.allSettled(pending);
   }
 });
 

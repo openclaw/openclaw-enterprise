@@ -280,7 +280,8 @@ Each value is an integer from 1 to its maximum. Omitted shares default to a
 quarter of their pool, rounded down to at least 1. Oversized shares and unknown
 fields fail startup and upgrade checks with `DRIVER_CONFIGURATION_INVALID`.
 Strict dispatch accepts 1 MiB. Online model authorization accepts 4 MiB per
-request, or 4 GiB of bodies at default concurrency and 32 GiB at maximum.
+request and retains at most 64 MiB of captured bodies per API process across
+concurrent authorizations. Capacity returns when each authorization settles.
 Transport buffers and parsing use additional memory. Restart API Pods after
 capacity changes.
 

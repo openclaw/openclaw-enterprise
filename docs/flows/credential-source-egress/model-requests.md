@@ -113,7 +113,9 @@ captured method, target, headers and body to OCC. The adapter refuses malformed
 binding configuration. Both the adapter and
 `packages/occ/src/credential-proxy.ts:authorizeRequestCredential` refuse request
 bodies above the advertised 4 MiB limit before policy checks or Secret access.
-OCC copies the admitted body after charging an operation slot.
+OCC reserves an operation slot and captured-body byte capacity before copying the
+body. The process admits at most 64 MiB of captured bodies until their policy and
+approval work settles.
 `packages/occ/src/index.ts:checkRequestCredential` verifies the current
 recipient, installation, revision, source, route, provider and IAM permission,
 then classifies the actual request against the admitted model grant. It rejects
