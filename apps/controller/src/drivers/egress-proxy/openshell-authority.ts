@@ -1,6 +1,7 @@
 import {
   requestCredentialBinding,
   authorizeOpenShellRequest,
+  createOpenShellRequestHook,
 } from "./openshell-request-credential.ts";
 import type { CredentialProxyExchange } from "@openclaw-enterprise/contracts";
 import { randomBytes } from "node:crypto";
@@ -24,6 +25,8 @@ import { OpenShellEgressIdentity } from "./openshell-identity.ts";
 import {
   advertisesOpenShellExecutionProfile,
   openShellExchangeCapabilities,
+  openShellHttpHooksCapability,
+  openShellWithheldRequestCapability,
 } from "./openshell-exchange-capabilities.ts";
 
 type Wire = Record<string, unknown>;
@@ -115,7 +118,16 @@ export function describeOpenShellMiddleware(
   const supported = peer.supported_capabilities;
   const required = peer.required_capabilities;
   const strictExecution = execution && advertisesOpenShellExecutionProfile(supported);
-  const profile = [contractCapability, ...(strictExecution ? openShellExchangeCapabilities : [])];
+  const protectedStream =
+    requestTimeCredentials &&
+    Array.isArray(supported) &&
+    supported.includes(openShellHttpHooksCapability) &&
+    supported.includes(openShellWithheldRequestCapability);
+  const profile = [
+    contractCapability,
+    ...(strictExecution ? openShellExchangeCapabilities : []),
+    ...(protectedStream ? [openShellHttpHooksCapability, openShellWithheldRequestCapability] : []),
+  ];
   if (
     record(peer.protocol_version).major !== 1 ||
     !Array.isArray(supported) ||
@@ -266,6 +278,11 @@ export function createOpenShellEgressAuthority(
       };
     }),
   });
+  if (requestTimeCredentials) {
+    server.addService(service.HttpHooks!.service, {
+      EvaluateHttpRequestHook: createOpenShellRequestHook(identity, registrationName!, forwarder),
+    });
+  }
   const resolve = async (call: AuthorityCall): Promise<Wire> => {
     if (call.request.audience !== identity.audience) {
       return refused("denied");

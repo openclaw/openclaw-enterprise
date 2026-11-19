@@ -10,6 +10,9 @@ import type {
   EgressRoute,
 } from "./drivers/credential-proxy/index.ts";
 
+/** Largest complete online request accepted for one credential decision. Strict dispatch has its own limit. */
+export const MAX_REQUEST_CREDENTIAL_BODY_BYTES = 16 * 1024 * 1024;
+
 /** The request inspected before the sender injects any provider material. */
 export interface CredentialHttpRequest {
   readonly target: {

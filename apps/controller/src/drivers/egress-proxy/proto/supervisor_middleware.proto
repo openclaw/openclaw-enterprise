@@ -35,6 +35,82 @@ service SupervisorMiddleware {
       returns (stream WebSocketSessionEventResult);
 }
 
+// Request-side subset of OpenShell's current HttpHooks service. Unimplemented
+// response hooks fail closed; strict response custody uses InstallationExchange.
+service HttpHooks {
+  rpc EvaluateHttpRequestHook(stream HttpRequestHookEvent)
+      returns (stream HttpRequestHookResult);
+}
+
+message HttpRequestHookEvent {
+  oneof event {
+    HttpRequestHookPreflight preflight = 1;
+    HttpBegin begin = 2;
+    HttpWholeBody whole_body = 3;
+    HttpInputChunk input_chunk = 4;
+    HttpInputEnd input_end = 5;
+    MiddlewareSessionEnd session_end = 6;
+  }
+}
+
+message HttpRequestHookResult {
+  oneof result {
+    HttpPreflightResult preflight_result = 1;
+    HttpOutputStart output_start = 3;
+    HttpOutputChunk output_chunk = 4;
+    HttpFinish finish = 5;
+    HttpDenial deny = 6;
+  }
+}
+
+enum HttpBodyMode {
+  HTTP_BODY_MODE_UNSPECIFIED = 0;
+  HTTP_BODY_MODE_WHOLE_BODY = 1;
+  HTTP_BODY_MODE_DUPLEX = 2;
+}
+
+message HttpRequestHookPreflight {
+  HttpRequestPreflightHead request = 1;
+  SupervisorMiddlewarePhase phase = 2;
+  RequestContext context = 3;
+  string middleware_name = 4;
+  google.protobuf.Struct config = 5;
+  repeated HttpBodyMode permitted_body_modes = 6;
+  HttpBodyLimits limits = 8;
+  optional uint64 declared_body_bytes = 9;
+}
+
+message HttpRequestPreflightHead {
+  HttpRequestTarget target = 1;
+  repeated HttpHeader headers = 2;
+}
+
+message HttpBodyLimits {
+  uint64 max_chunk_bytes = 1;
+  uint64 max_whole_body_bytes = 2;
+  google.protobuf.Duration idle_timeout = 3;
+  optional uint64 max_output_body_bytes = 4;
+}
+
+message HttpPreflightResult {
+  oneof decision {
+    HttpContinue continue_without_body = 1;
+    HttpInspect inspect = 2;
+  }
+}
+message HttpContinue {}
+message HttpInspect { HttpDuplexMode duplex = 2; }
+message HttpDuplexMode {}
+message HttpBegin { repeated HttpHeader headers = 1; }
+message HttpWholeBody { bytes data = 1; repeated HttpHeader trailers = 2; }
+message HttpInputChunk { bytes data = 1; }
+message HttpInputEnd { repeated HttpHeader trailers = 1; }
+message HttpOutputStart { optional uint64 output_body_bytes = 2; }
+message HttpOutputChunk { bytes data = 1; }
+message HttpFinish {}
+message HttpDenial { MiddlewareDiagnostics diagnostics = 1; }
+message MiddlewareDiagnostics { string reason = 1; string reason_code = 2; }
+
 message MiddlewareDescribeRequest {
   // Gateway or supervisor protocol metadata. Middleware must reject unmet
   // requirements before accepting traffic.

@@ -40,6 +40,36 @@ function validHeaders(headers: EgressRequest["headers"], forbidden: string[]): b
   );
 }
 
+// Larger model requests are usually long strings. Bound the number of values
+// and parser frames before JSON.parse and duplicate-member detection allocate
+// them. Grammar and decoded keys are still checked by parseUnambiguousJson.
+function fitsModelJsonBudget(text: string): boolean {
+  let inString = false;
+  let depth = 0;
+  let entries = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inString && c === "\\") {
+      i++;
+    } else if (c === '"') {
+      inString = !inString;
+    } else if (!inString) {
+      if (c === "[" || c === "{") {
+        depth++;
+        entries++;
+      } else if (c === "]" || c === "}") {
+        depth--;
+      } else if (c === ",") {
+        entries++;
+      }
+      if (depth > 256 || entries > 131_072) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 function jsonRequest(request: EgressRequest): Record<string, unknown> | undefined {
   const headers = request.headers;
   if (
@@ -55,7 +85,11 @@ function jsonRequest(request: EgressRequest): Record<string, unknown> | undefine
     return undefined;
   }
   try {
-    return asRecord(parseUnambiguousJson(utf8.decode(request.body)));
+    const text = utf8.decode(request.body);
+    if (request.body.byteLength > 1024 * 1024 && !fitsModelJsonBudget(text)) {
+      return undefined;
+    }
+    return asRecord(parseUnambiguousJson(text));
   } catch {
     return undefined;
   }

@@ -17,3 +17,6 @@ export function advertisesOpenShellExecutionProfile(value: unknown): boolean {
     return index !== -1 && index === value.lastIndexOf(capability);
   });
 }
+export const openShellHttpHooksCapability = "openshell.supervisor-middleware.http-hooks";
+export const openShellWithheldRequestCapability =
+  "openshell.supervisor-middleware.withheld-http-request";

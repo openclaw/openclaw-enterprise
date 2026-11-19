@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import { MAX_REQUEST_CREDENTIAL_BODY_BYTES } from "@openclaw-enterprise/contracts";
 import { asRecord, hasControlCharacter } from "@openclaw-enterprise/utils";
 
 type Wire = Record<string, unknown>;
@@ -67,7 +68,7 @@ export function readOpenShellHttpRequest(
     typeof query !== "string" ||
     !/^[\x21-\x7e]{0,4096}$/.test(query) ||
     !(body instanceof Uint8Array) ||
-    body.byteLength > 4 * 1024 * 1024 ||
+    body.byteLength > MAX_REQUEST_CREDENTIAL_BODY_BYTES ||
     !Array.isArray(rawHeaders) ||
     rawHeaders.length > 128
   ) {

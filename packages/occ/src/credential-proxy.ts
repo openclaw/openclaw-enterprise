@@ -39,7 +39,10 @@ import type {
   StaticEgressSource,
   VersionedSecretValue,
 } from "@openclaw-enterprise/contracts";
-import { egressAssociationInstallation } from "@openclaw-enterprise/contracts";
+import {
+  egressAssociationInstallation,
+  MAX_REQUEST_CREDENTIAL_BODY_BYTES,
+} from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 
 export type {
@@ -150,6 +153,7 @@ export const STREAM_LEASE_CEILING_MS = 15 * 60_000;
 /** Progress sooner than this after the last policy check attempt keeps the lease unchanged. */
 export const STREAM_LEASE_RECHECK_MS = 15_000;
 const maximumStreamBodyBytes = 4 * 1024 * 1024;
+const maximumOnlineCapturedBodyBytes = 64 * 1024 * 1024;
 /**
  * Default bound on remembered request IDs across all Sandboxes of this process. Each ID is
  * held until its UUIDv7 creation time plus 30 s, so this also bounds the protected request
@@ -446,6 +450,7 @@ export class CredentialProxy implements CredentialProxyExchange {
   private readonly operationShares = new Map<string, number>();
   private activeOperations = 0;
   private authenticating = 0;
+  private onlineCapturedBodyBytes = 0;
   private readonly ports: EgressAuthorityPorts;
   /** The bounds this registry enforces, fixed at construction. */
   readonly capacity: CredentialProxyCapacity;
@@ -528,7 +533,7 @@ export class CredentialProxy implements CredentialProxyExchange {
       !Number.isFinite(Date.parse(input.replayUntilAt)) ||
       Date.parse(input.replayUntilAt) < Date.parse(input.deadlineAt) ||
       Date.parse(input.replayUntilAt) > this.ports.now() + 3_600_000 ||
-      input.http.body.byteLength > 1024 * 1024 ||
+      input.http.body.byteLength > MAX_REQUEST_CREDENTIAL_BODY_BYTES ||
       !input.requestId ||
       input.requestId.length > 256 ||
       !input.bindingId ||
@@ -536,18 +541,30 @@ export class CredentialProxy implements CredentialProxyExchange {
     ) {
       return undefined;
     }
-    const request = {
-      ...immutableCopy({ ...input, http: { ...input.http, body: undefined } }),
-      http: {
-        ...immutableCopy({ ...input.http, body: undefined }),
-        body: new Uint8Array(input.http.body),
-      },
-    };
+    const deadlineAt = input.deadlineAt;
+    let request: RequestCredentialInput;
+    let capturedBytes = 0;
     const selected = await this.withRequestCredential<RequestCredentialSelection>(
-      request.recipient.id,
-      request.deadlineAt,
+      input.recipient.id,
+      deadlineAt,
       signal,
-      (ports, lifetime) => ports.check(request, lifetime),
+      (ports, lifetime) => {
+        const bodyBytes = input.http.body.byteLength;
+        if (bodyBytes > maximumOnlineCapturedBodyBytes - this.onlineCapturedBodyBytes) {
+          return Promise.resolve(undefined);
+        }
+        this.onlineCapturedBodyBytes += bodyBytes;
+        capturedBytes = bodyBytes;
+        const {
+          http: { body, ...http },
+          ...rest
+        } = input;
+        request = {
+          ...immutableCopy(rest),
+          http: { ...immutableCopy(http), body: new Uint8Array(body) },
+        };
+        return ports.check(request, lifetime);
+      },
       async (selection, ports, lifetime, current) =>
         current() &&
         selection.isCurrent() &&
@@ -559,8 +576,10 @@ export class CredentialProxy implements CredentialProxyExchange {
         ))
           ? selection
           : undefined,
-    );
-    return selected && !signal.aborted && this.ports.now() < Date.parse(request.deadlineAt)
+    ).finally(() => {
+      this.onlineCapturedBodyBytes -= capturedBytes;
+    });
+    return selected && !signal.aborted && this.ports.now() < Date.parse(deadlineAt)
       ? ("credential" as const)
       : undefined;
   }

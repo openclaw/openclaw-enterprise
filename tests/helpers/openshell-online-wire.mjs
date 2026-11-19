@@ -8,7 +8,13 @@ const require = createRequire(new URL("../../apps/controller/package.json", impo
 export const grpc = require("@grpc/grpc-js");
 const loader = require("@grpc/proto-loader");
 
-export function token(keys, kind, sandboxId, audience = "online-authorizer") {
+export function token(
+  keys,
+  kind,
+  sandboxId,
+  audience = "online-authorizer",
+  lifetimeSeconds = 300,
+) {
   const now = Math.floor(Date.now() / 1000);
   const header = Buffer.from(
     JSON.stringify({ alg: "EdDSA", typ: "openshell-ext+jwt", kid: "gateway-key" }),
@@ -22,7 +28,7 @@ export function token(keys, kind, sandboxId, audience = "online-authorizer") {
           ? "https://gateway.example.test"
           : `spiffe://openshell/sandbox/${sandboxId}`,
       iat: now,
-      exp: now + 300,
+      exp: now + lifetimeSeconds,
       jti: randomUUID(),
       caller_kind: kind,
       ...(kind === "supervisor" ? { sandbox_id: sandboxId } : {}),
@@ -98,7 +104,7 @@ export async function openShellOnlineWire(
   };
 }
 
-export function openShellMiddlewareClient(t, port, caBundle) {
+export function openShellMiddlewareClient(t, port, caBundle, service = "SupervisorMiddleware") {
   // An independently supplied released OpenShell proto can serve as the client decoder.
   const proto =
     process.env.OCC_TEST_OPENSHELL_MIDDLEWARE_PROTO ??
@@ -115,8 +121,7 @@ export function openShellMiddlewareClient(t, port, caBundle) {
     defaults: false,
     oneofs: true,
   });
-  const Client =
-    grpc.loadPackageDefinition(definition).openshell.middleware.v1.SupervisorMiddleware;
+  const Client = grpc.loadPackageDefinition(definition).openshell.middleware.v1[service];
   const client = new Client(`localhost:${port}`, grpc.credentials.createSsl(Buffer.from(caBundle)));
   t.after(() => client.close());
   return client;

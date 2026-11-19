@@ -86,7 +86,11 @@ admission and source `operate` permission for the operator and Agent.
 
 Bundled `openai-online-request` generation 1 requires native IAM for the same
 OCC state, a dedicated Codex HTTPS Responses route, an explicit model and no
-provider-hosted tools. V8 admits this model route. V9 adds independently
+provider-hosted tools. A peer that advertises HTTP hooks and withheld HTTP requests
+uses DUPLEX. The upgraded authority accepts up to 4 MiB through unary authorization for peers without those capabilities. The streaming hook refuses a
+preflight without a held final-output limit. It authorizes
+the complete request before returning its exact bytes, grant redemption and upstream
+delivery. Online bodies are limited to 16 MiB per request. V8 admits this model route. V9 adds independently
 authorized online Git with a separate binding, approval, session and registry.
 Both versions refuse `policyReduction`. Withdrawing Git standing approval
 denies fresh Git requests and can retire the runtime. Removing either binding
@@ -232,8 +236,11 @@ Online model replay quotas are shared across API processes.
 
 Values are integers from 1 to the maximum. Shares cannot exceed their pool.
 Omitted shares round down to at least 1. Invalid values and unknown fields fail
-startup and upgrade checks with `DRIVER_CONFIGURATION_INVALID`. An operation
-can hold a 1 MiB body, or about 8 GiB of bodies at maximum concurrency.
+startup and upgrade checks with `DRIVER_CONFIGURATION_INVALID`. A strict operation
+can hold a 1 MiB body, or about 8 GiB of bodies at maximum concurrency. Online
+authorization separately caps detached bodies at 64 MiB per process. The bundled
+request hook has its own 64 MiB capture budget, 64 active streams per authority
+and 16 per verified Sandbox. Capacity exhaustion denies the request.
 Restart API Pods to apply changes.
 
 Handle deadlines are at most 30 seconds. Authentication charges the global

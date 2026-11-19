@@ -81,9 +81,13 @@ identity. A mounted public trust bundle alone is insufficient.
 
 Register the model middleware as a required pre-credential binding. Its HTTPS
 endpoint uses the token-grant service host and the configured authority port.
-Use the configured audience and set `timeout = "5s"` in the
-model middleware registration to allow live installation and IAM checks; this
-is a recommended timeout, not a guarantee that a request completes within it.
+Use the configured audience and set `timeout = "30s"` in the model middleware
+registration to allow request upload, live installation and IAM checks. The
+OpenShell peer must support HTTP hooks and withheld HTTP requests to accept bodies
+above 4 MiB. It holds the final request before token-grant redemption and upstream
+delivery. Streaming requests above 16 MiB are denied. The upgraded authority accepts up to 4 MiB through unary authorization for older peers.
+For bodies above 1 MiB, the model policy also rejects JSON deeper than 256 levels or
+with more than 131,072 container openings and commas outside strings.
 The existing Gateway-signed extension
 identity authenticates that middleware call. The JWT-SVID independently
 authenticates credential redemption. Use a distinct middleware name for
