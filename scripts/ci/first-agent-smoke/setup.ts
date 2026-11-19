@@ -373,12 +373,12 @@ export async function signInConsole(
   return api;
 }
 
-export function setLocalSetupAudit(
+export async function setLocalSetupAudit(
   stack: Pick<LocalSetup, "directory" | "context" | "kubeconfig" | "state">,
   enabled: boolean,
   options?: RunOptions,
 ) {
-  return run(
+  await run(
     "helm",
     [
       "upgrade",
@@ -399,6 +399,26 @@ export function setLocalSetupAudit(
       "5m",
     ],
     { timeout: 6 * minute, ...options },
+  );
+
+  // Helm checks the Pod directly. Wait for the local proxy to reach the
+  // replacement API through its Service before sending the next request.
+  const ready = `http://127.0.0.1:${stack.state.apiPort}/readyz`;
+  await waitFor(
+    "the local API after the audit setting changes",
+    async () => {
+      const timeout = AbortSignal.timeout(3000);
+      const signal = options?.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+      try {
+        const response = await fetch(ready, { redirect: "error", signal });
+        await response.body?.cancel();
+        return { done: response.status === 200, state: response.status };
+      } catch {
+        options?.signal?.throwIfAborted();
+        return { done: false, state: "unreachable" };
+      }
+    },
+    minute,
   );
 }
 
