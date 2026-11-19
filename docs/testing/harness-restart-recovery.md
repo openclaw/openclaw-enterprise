@@ -91,7 +91,9 @@ it does not reconstruct an OS process, tool handle, or execution stack. The
 Agent must check existing work before repeating an uncertain effect.
 
 This case does not qualify abrupt whole-Pod loss, simultaneous crash of both
-workloads, OpenShell replacement, hung remote executors, or exactly-once external effects. A live wrapper can
+workloads, replacement of only the Harness Pod (the turn ends; see
+[interrupted turns](../reference/agents/interrupted-turns.md#recovery-boundary)),
+OpenShell replacement, hung remote executors, or exactly-once external effects. A live wrapper can
 reap its native child and release that child's state lock. A replacement Pod
 cannot assume an old lock owner is dead. Preserve the lock refusal and use the
 [state-owner recovery procedure](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner);

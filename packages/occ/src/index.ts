@@ -7741,6 +7741,8 @@ export class OpenClawController {
         check: (use, material, stream, provider) =>
           this.checkEgressUse(use, material, stream, provider),
         read: async (source, lifetime, isProviderCurrent) => {
+          const owner = this.selectedProxyOwner();
+          const control = owner.require("credential_proxy").sourceControl;
           const secret = await this.state.read((state) =>
             state.secrets.findSecret(source.secret.namespaceId, source.secret.id),
           );
@@ -7751,7 +7753,14 @@ export class OpenClawController {
           if (!driver.readCredentialInput) {
             throw new DependencyUnavailableError("Versioned credential reading is unavailable.");
           }
-          if (!isProviderCurrent()) {
+          if (
+            this.selectedProxyOwner() !== owner ||
+            owner.require("credential_proxy").sourceControl !== control ||
+            !isDeepStrictEqual(control.backend, source.key.backend) ||
+            !isDeepStrictEqual(control.sender, source.sender) ||
+            !isDeepStrictEqual(control.resolver, source.resolver) ||
+            !isProviderCurrent()
+          ) {
             throw new DependencyUnavailableError("Selected credential provider changed.");
           }
           return {

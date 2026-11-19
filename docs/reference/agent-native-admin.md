@@ -124,8 +124,9 @@ Only a user-activated (`Sec-Fetch-User: ?1`) top-level HTML navigation is redire
 Native HTTP admission returns `503 DEPENDENCY_UNAVAILABLE` on session-store failure,
 timeout, failed denial audit or, for an authorized caller, a deployment replacing or
 activating the version, so the Agent UI keeps reconnecting. Stopped and unsupported
-Agents return `403`. Callers without access get the same `403` in every state;
-refused WebSocket upgrades close. Retry after recovery.
+Agents return `403`; an authorized caller's eligible navigation shows **Agent
+unavailable** with a Console return link. Callers without access get the same `403` in
+every state; refused WebSocket upgrades close. Retry after recovery.
 
 The Console’s authenticated `GET /native-admin/return/<key>` operation checks exact Agent `operate` or `administer` access and returns the Namespace and Agent IDs even if the Agent is stopped. Unknown and unauthorized keys receive the same `404`. Recovery ends at Agent detail; opening native chat is a separate action.
 

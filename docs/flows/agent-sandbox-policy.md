@@ -97,10 +97,10 @@ unauthorized requests retain resource errors.
 omitting records with Unicode control characters.
 
 Staged `validateDeploymentPolicy(policy, context)` checks source approval, reviewed requests and
-projection per binding. OCC supplies trusted context. The proxy checks each binding and request
-against the proposed policy. Static approvals match method, host, port and path together
-(`null` permits any method). The Sandbox qualifies complete HTTP rules and exact MCP paths.
-Discovery can remain credentialless. Providers enforce OAuth scopes.
+projections using trusted binding, source and consumer authority. Only proposed proxy configuration
+receives a source-bound resolver. The proxy qualifies bindings and requests. Static approvals match
+method, host, port and path (`null` permits any method). The Sandbox qualifies HTTP rules and exact
+MCP paths. Discovery can be credentialless; providers enforce OAuth scopes.
 
 `packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
 Agent `manage_policy` and SandboxPolicy `update`, holds the shared ceiling lock,
@@ -292,6 +292,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 07:54: Separate credential acquisition. (authoring-run/a7f97564-0c7b-4c61-b72f-0b866891ade8 - 1eb271262)
 
 - 2026-11-19 09:03: Separate policy and validation context. (authoring-run/2ca60020-2ed8-48c5-943c-ba2890e5bb12 - 9dd2694f3cdbbed2c2e26222d503a2253af93ee9)
 

@@ -25,10 +25,21 @@ SSH recovery depends on the operator-installed native runtime.
 | Operation                                                | Interrupted work                                                            |
 | -------------------------------------------------------- | --------------------------------------------------------------------------- |
 | Redeployment with retained state and a supported Harness | Eligible work can continue in the same session.                             |
-| Gateway or Harness replacement                           | Eligible work can continue after reconnection.                              |
+| Gateway replacement, alone or with the Harness           | Eligible work can continue after reconnection.                              |
+| Replacement of only the Harness (dedicated Codex)        | The turn ends and does not resume; send the request again.                  |
 | [Stop](deployment.md#stop-and-resume), then deployment   | Stop shuts down the workload; the later startup may continue eligible work. |
 | Harmless configuration change                            | No OCE compatibility filter prevents recovery. Native checks still apply.   |
 | Explicit native `chat.abort`                             | Cancelled work does not become eligible on startup.                         |
+
+Recovery runs only when a Gateway starts. When only the Harness of a dedicated
+Codex Agent is replaced while its Gateway keeps running, for example after a node
+drain or failure, an eviction, a Harness container restart, or a repository
+session replacement, the Gateway sees its Codex connection close and ends the
+turn. The reply shows "Couldn't finish this reply", and its details can say the
+work may still be running, but the running command stopped with the Harness. The
+session and its history remain. Check for partial effects, then send the request
+again or select **Try again**. Redeployment, Stop then deployment, and upgrades
+replace the Gateway too and use normal recovery.
 
 Deploying a stopped Agent currently starts it again. Keeping stopped Agents
 stopped on deployment is tracked separately by
