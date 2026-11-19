@@ -128,6 +128,27 @@ async function smoke() {
     ]),
   );
   let diagnosticStack: (LocalSetup & Partial<SmokeStack>) | undefined;
+  const auditFailures: string[] = [];
+  // Keep a failed audit phase visible in the timing report. Finish every
+  // independent check before stopping Agents or changing the audit setting.
+  async function auditStep(
+    phase: Parameters<typeof smokeStep>[0],
+    ...checks: (() => Promise<void>)[]
+  ) {
+    try {
+      await smokeStep(phase, async () => {
+        const results = await Promise.allSettled(checks.map((check) => check()));
+        const errors = results.filter((result) => result.status === "rejected");
+        if (errors.length > 0) {
+          throw new Error(errors.map(({ reason }) => String(reason)).join("\n"));
+        }
+      });
+    } catch (error) {
+      const message = `${phase}: ${String(error)}`;
+      log(message);
+      auditFailures.push(message);
+    }
+  }
   try {
     const installed = await smokeStep("local-setup", () => startLocalSetup(environment));
     diagnosticStack = installed;
@@ -169,23 +190,23 @@ async function smoke() {
       control: () =>
         createCodexAgent(stack, reader, "reader-control", modelCredentials["reader-control"]),
     });
-    const readCodexAudit = await smokeStep("codex-chat", async () => {
-      const readAudit = await allowAgentAuditRead(stack, codex.agent, adminPassword);
-      await chatCodexWithAudit(stack, codex.agent, codex.revisionId, readAudit);
-      await expectPersistedRuntimeAudit(stack, codex.revisionId, await readAudit());
-      return readAudit;
-    });
-    const readEmbeddedAudit = await smokeStep("embedded-audit", async () => {
-      const readAudit = await allowAgentAuditRead(stack, embedded.agent, adminPassword);
-      await assertAgentTurnAudit(readAudit, {
-        label: embedded.agent.label,
-        revisionId: embedded.revisionId,
-        runtimeSource: "openclaw",
-        model: defaultAgentModel,
-      });
-      await expectPersistedRuntimeAudit(stack, embedded.revisionId, await readAudit());
-      return readAudit;
-    });
+    const readCodexAudit = await allowAgentAuditRead(stack, codex.agent, adminPassword);
+    const readEmbeddedAudit = await allowAgentAuditRead(stack, embedded.agent, adminPassword);
+    await Promise.all([
+      auditStep("codex-chat", async () => {
+        await chatCodexWithAudit(stack, codex.agent, codex.revisionId, readCodexAudit);
+        await expectPersistedRuntimeAudit(stack, codex.revisionId, await readCodexAudit());
+      }),
+      auditStep("embedded-audit", async () => {
+        await assertAgentTurnAudit(readEmbeddedAudit, {
+          label: embedded.agent.label,
+          revisionId: embedded.revisionId,
+          runtimeSource: "openclaw",
+          model: defaultAgentModel,
+        });
+        await expectPersistedRuntimeAudit(stack, embedded.revisionId, await readEmbeddedAudit());
+      }),
+    ]);
     await smokeStep("public-read", () => publicReadTurn(stack, codex, reader));
     const retiredRevision = await smokeStep("reader-retirement", () =>
       proveRetirement(stack, codex, control, reader, proofResults),
@@ -206,14 +227,13 @@ async function smoke() {
     );
     assert.notEqual(embeddedRevision, embedded.revisionId, "start must admit a new revision");
     assert.notEqual(codexRevision, retiredRevision, "start must admit a new revision");
-    await smokeStep("chat-after-start", async () => {
-      await Promise.all([
-        chatWithAudit(stack, embedded.agent, embeddedRevision, readEmbeddedAudit, "openclaw"),
-        chatCodexWithAudit(stack, codex.agent, codexRevision, readCodexAudit),
-      ]);
-      assert.deepEqual(await apiProcess(stack), servingApi, "the API restarted during enrollment");
-    });
-    await smokeStep("codex-audit-interruptions", async () => {
+    await auditStep(
+      "chat-after-start",
+      () => chatWithAudit(stack, embedded.agent, embeddedRevision, readEmbeddedAudit, "openclaw"),
+      () => chatCodexWithAudit(stack, codex.agent, codexRevision, readCodexAudit),
+    );
+    assert.deepEqual(await apiProcess(stack), servingApi, "the API restarted during enrollment");
+    await auditStep("codex-audit-interruptions", async () => {
       await proveCodexAuditInterruptions(stack, codex.agent, codexRevision, readCodexAudit);
       assert.deepEqual(
         await apiProcess(stack),
@@ -228,6 +248,7 @@ async function smoke() {
       await chatTurn(stack, embedded.agent, unauditedRevision);
       await expectNoRuntimeAuditRows(stack, unauditedRevision);
     });
+    assert.equal(auditFailures.length, 0, auditFailures.join("\n"));
   } catch (error) {
     await diagnostics(diagnosticStack);
     throw error;
