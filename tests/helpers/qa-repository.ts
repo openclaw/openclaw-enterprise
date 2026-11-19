@@ -30,10 +30,335 @@ import { dumpYaml, loadYaml, yamlMapping } from "./kubernetes-yaml.ts";
 import { waitFor } from "./qa-wait.ts";
 import { protectedText, redactedQaTail, registerQaSecret } from "./qa-secrets.ts";
 
+type QaRepositoryEntry = ReturnType<typeof selectPreparedQaRepository>;
+type QaInstallationConfiguration = Parameters<typeof applyQaRepositoryInstallation>[0] & {
+  drivers: { compute: { configuration: { images: { agent: string } } } };
+};
+type QaCommandOptions = {
+  env?: NodeJS.ProcessEnv;
+  timeout?: number;
+  input?: string | undefined;
+  privateFailureOutput?: boolean;
+  allowExitCodes?: number[];
+};
+type QaRecorder = (name: string, value: unknown) => Promise<string>;
+type QaApi = (method: string, path: string, body?: object) => Promise<unknown>;
+type QaPod = {
+  metadata?: {
+    namespace?: string;
+    name?: string;
+    deletionTimestamp?: string | null;
+    finalizers?: string[];
+    labels?: Record<string, string>;
+  };
+  status?: {
+    phase?: string;
+    startTime?: string;
+    conditions?: { type: string; status: string }[];
+    containerStatuses?: {
+      name: string;
+      restartCount: number;
+      lastState?: { terminated?: { reason?: string; exitCode?: number; finishedAt?: string } };
+    }[];
+  };
+  spec?: { containers: { env?: { name: string }[] }[] };
+};
+type QaRuntimePod = QaPod & {
+  metadata: { namespace: string; name: string };
+  spec: { containers: { env?: { name: string }[] }[] };
+};
+type QaStopAgent = { id: string; namespaceId: string; stopCalls?: number; stopped?: boolean };
+type QaAgent = QaStopAgent & {
+  preset: string;
+  configuration: { id: string };
+  revision: object;
+};
+type QaStopFixture = {
+  controlPlane: string;
+  env?: NodeJS.ProcessEnv;
+  state: { platformNamespace: string };
+  api: QaApi;
+  kubectl: (...args: string[]) => Promise<string>;
+  record: QaRecorder;
+};
+type QaInputFixture = {
+  repositoryInput?: string;
+  suffix: string;
+  repositoryEntry?: QaRepositoryEntry;
+};
+type QaPrepareFixture = QaInputFixture &
+  QaStopFixture & {
+    directory: string;
+    stateDirectory: string;
+    cluster: string;
+    namespace: { id: string };
+    controllerDockerImage: string;
+    configuration: QaInstallationConfiguration;
+    cleanupRepositoryInputs?: () => Promise<void>;
+    run: (command: string, args: string[], options?: QaCommandOptions) => Promise<string>;
+    compose: (...args: string[]) => Promise<string>;
+    apply: (object: object) => Promise<void>;
+    saveInstallation: (configuration: QaInstallationConfiguration) => Promise<void>;
+  };
+type QaVerifyFixture = QaPrepareFixture & {
+  repositoryEntry: QaRepositoryEntry;
+  retained: boolean;
+  pendingRepositories: Set<string>;
+  deployAndWait: (agent: QaAgent) => Promise<void>;
+  pod: (agent: QaAgent, role: string) => Promise<QaRuntimePod>;
+};
+type QaStopCurrent = { desiredRuntimeState?: string; activeRevisionId?: string | null };
+type StopObservation = { current: QaStopCurrent; pods: QaPod[] };
+type StopSummary = {
+  desiredRuntimeState?: string;
+  activeRevisionId: string | null;
+  pods: {
+    namespace?: string;
+    name?: string;
+    phase?: string;
+    deletionTimestamp: string | null;
+    finalizers: string[];
+  }[];
+  omittedPods?: number;
+};
+type StopTiming = { timeout?: number; slowAfter?: number; now?: () => number; interval?: number };
+type SlowStop = {
+  thresholdMs: number;
+  observedAfterMs: number;
+  observation: StopSummary;
+  platformLogs?: string;
+  platformLogsUnavailable?: string[];
+};
+type ProbeEvidence = {
+  hostname: string;
+  addresses: string[];
+  address?: string;
+  tlsVerified?: boolean;
+  httpStatus?: number;
+  error?: string;
+};
+type LogFailure = { unavailable: string[] };
+type LogTail = string[] | LogFailure;
+type PlatformPod = ReturnType<typeof podRestarts>;
+type PlatformEvent = {
+  time: string | null;
+  type?: string;
+  reason?: string;
+  object: string;
+  count: number;
+  message: string;
+};
+type PlatformLogs = {
+  api: LogTail;
+  worker: LogTail;
+  platformPods: PlatformPod[] | LogFailure;
+  workerPods?: Record<string, LogTail>;
+  workerPrevious?: Record<string, LogTail>;
+  events: Record<string, PlatformEvent[] | LogFailure>;
+  gatewayDrain?: Record<string, LogTail>;
+};
+type CredentialSession = {
+  state: string;
+  activeUses: number;
+  cleanup: { active: number; pending: number; uncertain: number; auxiliaryPending: boolean };
+};
+type CredentialAttempt = { repositoryRef: string; sessionId: string };
+type RepositoryRemote = { id: string | number; full_name: string; default_branch: string };
+type ConfigurationValues = {
+  agents: { defaults: { workspace?: string; sandbox?: { mode: string } } };
+  plugins?: Record<string, unknown>;
+  tools?: { allow?: string[]; fs?: Record<string, unknown>; exec?: Record<string, unknown> };
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function record(value: unknown, label: string): Record<string, unknown> {
+  assert.ok(isRecord(value), `invalid ${label}`);
+  return value;
+}
+
+function array(value: unknown, label: string): unknown[] {
+  assert.ok(Array.isArray(value), `invalid ${label}`);
+  return value;
+}
+
+function text(value: unknown, label: string): string {
+  assert.ok(typeof value === "string", `invalid ${label}`);
+  return value;
+}
+
+function parseJson(value: string): unknown {
+  return JSON.parse(value);
+}
+
+function captureQaChild(
+  program: string,
+  args: string[],
+  options: { env?: NodeJS.ProcessEnv | undefined; timeout: number },
+): ReturnType<typeof captureChild> {
+  const captureOptions = { encoding: "utf8", ...options };
+  return captureChild(program, args, captureOptions);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isQaPod(value: unknown): value is QaPod {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const { metadata, status, spec } = value;
+  if (
+    metadata !== undefined &&
+    (!isRecord(metadata) ||
+      [metadata.namespace, metadata.name, metadata.deletionTimestamp].some(
+        (v) => v != null && typeof v !== "string",
+      ) ||
+      (metadata.finalizers !== undefined &&
+        (!Array.isArray(metadata.finalizers) ||
+          !metadata.finalizers.every((v) => typeof v === "string"))) ||
+      (metadata.labels !== undefined &&
+        (!isRecord(metadata.labels) ||
+          !Object.values(metadata.labels).every((v) => typeof v === "string"))))
+  ) {
+    return false;
+  }
+  if (
+    status !== undefined &&
+    (!isRecord(status) ||
+      [status.phase, status.startTime].some((v) => v !== undefined && typeof v !== "string") ||
+      (status.conditions !== undefined &&
+        (!Array.isArray(status.conditions) ||
+          !status.conditions.every(
+            (v) => isRecord(v) && typeof v.type === "string" && typeof v.status === "string",
+          ))) ||
+      (status.containerStatuses !== undefined &&
+        (!Array.isArray(status.containerStatuses) ||
+          !status.containerStatuses.every((v) => {
+            if (!isRecord(v) || typeof v.name !== "string" || typeof v.restartCount !== "number") {
+              return false;
+            }
+            if (v.lastState === undefined) {
+              return true;
+            }
+            if (!isRecord(v.lastState)) {
+              return false;
+            }
+            const terminated = v.lastState.terminated;
+            return (
+              terminated === undefined ||
+              (isRecord(terminated) &&
+                (terminated.reason === undefined || typeof terminated.reason === "string") &&
+                (terminated.exitCode === undefined || typeof terminated.exitCode === "number") &&
+                (terminated.finishedAt === undefined || typeof terminated.finishedAt === "string"))
+            );
+          }))))
+  ) {
+    return false;
+  }
+  if (
+    spec !== undefined &&
+    (!isRecord(spec) ||
+      !Array.isArray(spec.containers) ||
+      !spec.containers.every(
+        (v) =>
+          isRecord(v) &&
+          (v.env === undefined ||
+            (Array.isArray(v.env) &&
+              v.env.every((e) => isRecord(e) && typeof e.name === "string"))),
+      ))
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function podsFromJson(value: string): QaPod[] {
+  const items = array(record(parseJson(value), "Pod list").items, "Pod list items");
+  assert.ok(items.every(isQaPod), "invalid Pod list item");
+  return items;
+}
+
+function stopCurrent(value: unknown): QaStopCurrent {
+  const current = record(value, "Agent stop response");
+  assert.ok(
+    current.desiredRuntimeState === undefined || typeof current.desiredRuntimeState === "string",
+  );
+  assert.ok(current.activeRevisionId == null || typeof current.activeRevisionId === "string");
+  return current as QaStopCurrent;
+}
+
+function probeEvidence(value: unknown): ProbeEvidence {
+  const evidence = record(value, "worker probe evidence");
+  assert.equal(evidence.hostname, "api.github.com");
+  assert.ok(
+    Array.isArray(evidence.addresses) && evidence.addresses.every((v) => typeof v === "string"),
+  );
+  assert.ok(evidence.address === undefined || typeof evidence.address === "string");
+  assert.ok(evidence.tlsVerified === undefined || typeof evidence.tlsVerified === "boolean");
+  assert.ok(evidence.httpStatus === undefined || typeof evidence.httpStatus === "number");
+  assert.ok(evidence.error === undefined || typeof evidence.error === "string");
+  return {
+    hostname: "api.github.com",
+    addresses: evidence.addresses,
+    ...(typeof evidence.address === "string" ? { address: evidence.address } : {}),
+    ...(typeof evidence.tlsVerified === "boolean" ? { tlsVerified: evidence.tlsVerified } : {}),
+    ...(typeof evidence.httpStatus === "number" ? { httpStatus: evidence.httpStatus } : {}),
+    ...(typeof evidence.error === "string" ? { error: evidence.error } : {}),
+  };
+}
+
+function repositoryRemote(value: unknown): RepositoryRemote {
+  const remote = record(value, "GitHub repository");
+  assert.ok(typeof remote.id === "string" || typeof remote.id === "number");
+  return {
+    id: remote.id,
+    full_name: text(remote.full_name, "repository full name"),
+    default_branch: text(remote.default_branch, "repository default branch"),
+  };
+}
+
+function configurationValues(value: unknown): ConfigurationValues {
+  const values = record(value, "configuration values");
+  const agents = record(values.agents, "configuration agents");
+  record(agents.defaults, "configuration defaults");
+  if (values.plugins !== undefined) {
+    record(values.plugins, "configuration plugins");
+  }
+  if (values.tools !== undefined) {
+    const tools = record(values.tools, "configuration tools");
+    if (tools.fs !== undefined) {
+      record(tools.fs, "configuration filesystem tools");
+    }
+    if (tools.exec !== undefined) {
+      record(tools.exec, "configuration execution tools");
+    }
+  }
+  return values as ConfigurationValues;
+}
+
+function optionalRecord(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined;
+}
+
+function codexAppServer(values: ConfigurationValues): Record<string, unknown> {
+  const plugins = record(values.plugins, "configuration plugins");
+  const entries = record(plugins.entries, "configuration plugin entries");
+  const codex = record(entries.codex, "configuration Codex plugin");
+  const config = record(codex.config, "configuration Codex config");
+  return record(config.appServer, "configuration app server");
+}
+
 // Run where prepared GitHub issuance runs, before any QA Agent binds this repository.
 // Node HTTPS keeps production's DNS selection, agent:false and verified TLS. This
 // public request proves transport only: even a 403 does not prove App credentials.
-async function probeQaRepositoryWorker(f, { cidrs, approved }) {
+async function probeQaRepositoryWorker(
+  f: QaPrepareFixture,
+  { cidrs, approved }: Awaited<ReturnType<typeof readQaRepositoryUpstreamPolicy>>,
+): Promise<void> {
   const script = String.raw`
     const { lookup } = await import("node:dns/promises");
     const { request } = await import("node:https");
@@ -125,22 +450,23 @@ async function probeQaRepositoryWorker(f, { cidrs, approved }) {
         "-e",
         script,
       ];
-  let evidence;
-  let status;
+  let evidence: ProbeEvidence;
+  let status: number | null | undefined;
   try {
-    const output = await captureChild(kubernetes ? "kubectl" : "docker", args, {
+    const output = await captureQaChild(kubernetes ? "kubectl" : "docker", args, {
       env: f.env,
       timeout: 15_000,
     });
-    status = output.status;
-    evidence = JSON.parse(output.stdout);
-    assert.equal(evidence.hostname, "api.github.com");
-    assert.ok(Array.isArray(evidence.addresses));
+    const captured = record(output, "worker probe output");
+    assert.ok(captured.status === null || typeof captured.status === "number");
+    status = captured.status;
+    evidence = probeEvidence(parseJson(text(captured.stdout, "worker probe stdout")));
   } catch {
     // Never copy exec stderr or an unstructured process failure into the artifact.
     evidence = { hostname: "api.github.com", addresses: [], error: "worker-probe-unavailable" };
   }
-  const contains = (address) => isIP(address ?? "") === 4 && approved.check(address, "ipv4");
+  const contains = (address: string | undefined) =>
+    address !== undefined && isIP(address) === 4 && approved.check(address, "ipv4");
   await f.record("repository-provider-worker-preflight", {
     scope: "worker",
     controlPlane: f.controlPlane,
@@ -153,6 +479,7 @@ async function probeQaRepositoryWorker(f, { cidrs, approved }) {
     status === 0 &&
       evidence.tlsVerified === true &&
       contains(evidence.address) &&
+      typeof evidence.httpStatus === "number" &&
       Number.isInteger(evidence.httpStatus) &&
       evidence.httpStatus >= 100 &&
       evidence.httpStatus <= 599,
@@ -160,24 +487,25 @@ async function probeQaRepositoryWorker(f, { cidrs, approved }) {
   );
 }
 
-export async function prepareQaRepository(f) {
+export async function prepareQaRepository(f: QaInputFixture | QaPrepareFixture): Promise<void> {
   const input = f.repositoryInput;
   assert.ok(input, "OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY is required");
   const registry = await readQaRepositoryRegistry(input);
   const entry = selectPreparedQaRepository(registry, f.suffix);
   f.repositoryEntry = entry;
   const upstreamPolicy = await readQaRepositoryUpstreamPolicy(input);
+  assert.ok("controlPlane" in f, "valid repository inputs require a prepared QA Installation");
   // Record the runner's DNS view, not cluster reachability. Only these two fixed
   // provider hostnames are queried; this does not change the approved egress policy.
   try {
     const { cidrs, approved } = upstreamPolicy;
     const hosts = await Promise.all(
       ["api.github.com", "github.com"].map(async (hostname) => {
-        let deadline;
+        let deadline: ReturnType<typeof setTimeout> | undefined;
         try {
           const addresses = await Promise.race([
             lookup(hostname, { family: 4, all: true }),
-            new Promise((_, reject) => {
+            new Promise<never>((_, reject) => {
               deadline = setTimeout(
                 () =>
                   reject(
@@ -195,9 +523,12 @@ export async function prepareQaRepository(f) {
             })),
           };
         } catch (error) {
-          const code = ["EAI_AGAIN", "ENOTFOUND", "ECONNREFUSED", "ETIMEOUT"].includes(error.code)
-            ? error.code
-            : "unavailable";
+          const errorCode = isRecord(error) ? error.code : undefined;
+          const code =
+            typeof errorCode === "string" &&
+            ["EAI_AGAIN", "ENOTFOUND", "ECONNREFUSED", "ETIMEOUT"].includes(errorCode)
+              ? errorCode
+              : "unavailable";
           return { hostname, error: code };
         } finally {
           clearTimeout(deadline);
@@ -221,7 +552,7 @@ export async function prepareQaRepository(f) {
   for (const child of ["registry", "inputs", "ca", "control/private", "prepared"]) {
     await mkdir(join(directory, child), { recursive: true, mode: 0o700 });
   }
-  const write = async (name, value) =>
+  const write = async (name: string, value: object | string) =>
     writeFile(join(directory, name), typeof value === "string" ? value : JSON.stringify(value), {
       mode: 0o600,
     });
@@ -259,7 +590,7 @@ export async function prepareQaRepository(f) {
   const path = join(f.stateDirectory, "compose.yaml");
   const compose = yamlMapping(loadYaml(await readFile(path, "utf8")));
   const services = yamlMapping(compose, "services");
-  const mount = (source, target, readOnly = true) => ({
+  const mount = (source: string, target: string, readOnly = true) => ({
     type: "volume",
     source: `qa-repository-${source}`,
     target,
@@ -285,28 +616,35 @@ export async function prepareQaRepository(f) {
   }
   // New named volumes keep private inputs owned by the actual non-root readers.
   // The trusted control-plane image initializes them without host bind mounts.
-  let reader;
+  let reader: number[] | undefined;
   for (const readerImage of new Set([image, f.controllerDockerImage])) {
-    const identity = JSON.parse(
-      await f.run("docker", [
-        "run",
-        "--rm",
-        "--network",
-        "none",
-        "--read-only",
-        "--cap-drop",
-        "ALL",
-        "--security-opt",
-        "no-new-privileges:true",
-        "--entrypoint",
-        "node",
-        readerImage,
-        "-p",
-        "JSON.stringify([process.getuid(),process.getgid()])",
-      ]),
+    const identity = array(
+      parseJson(
+        await f.run("docker", [
+          "run",
+          "--rm",
+          "--network",
+          "none",
+          "--read-only",
+          "--cap-drop",
+          "ALL",
+          "--security-opt",
+          "no-new-privileges:true",
+          "--entrypoint",
+          "node",
+          readerImage,
+          "-p",
+          "JSON.stringify([process.getuid(),process.getgid()])",
+        ]),
+      ),
+      "repository reader identity",
     );
-    assert.ok(Array.isArray(identity) && identity.length === 2);
-    assert.ok(identity.every((id) => Number.isInteger(id) && id > 0));
+    assert.equal(identity.length, 2);
+    assert.ok(
+      identity.every(
+        (id): id is number => typeof id === "number" && Number.isInteger(id) && id > 0,
+      ),
+    );
     if (reader) {
       assert.deepEqual(
         identity,
@@ -326,13 +664,19 @@ export async function prepareQaRepository(f) {
   const volumes = Object.fromEntries(
     Object.keys(volumeFiles).map((name) => [name, `${f.cluster}-repository-${name}`]),
   );
-  const created = [];
+  const created: string[] = [];
   // Called only after a confirmed successful dev-down. A retained Installation
   // keeps its private volumes for the existing credential recovery obligations.
   f.cleanupRepositoryInputs = async () => {
     for (const name of created) {
-      const [volume] = JSON.parse(await f.run("docker", ["volume", "inspect", name]));
-      assert.equal(volume.Labels?.["openclaw.dev/qa-repository"], f.suffix);
+      const [rawVolume] = array(
+        parseJson(await f.run("docker", ["volume", "inspect", name])),
+        "Docker volume inspection",
+      );
+      const volume = record(rawVolume, "Docker volume");
+      const labels =
+        volume.Labels == null ? undefined : record(volume.Labels, "Docker volume labels");
+      assert.equal(labels?.["openclaw.dev/qa-repository"], f.suffix);
       await f.run("docker", ["volume", "rm", name]);
     }
   };
@@ -359,12 +703,18 @@ export async function prepareQaRepository(f) {
       `openclaw.dev/qa-repository=${f.suffix}`,
       volume,
     ]);
-    const [result] = JSON.parse(await f.run("docker", ["volume", "inspect", volume]));
-    assert.equal(result.Labels?.["openclaw.dev/qa-repository"], f.suffix);
+    const [rawResult] = array(
+      parseJson(await f.run("docker", ["volume", "inspect", volume])),
+      "Docker volume inspection",
+    );
+    const result = record(rawResult, "Docker volume");
+    const resultLabels =
+      result.Labels == null ? undefined : record(result.Labels, "Docker volume labels");
+    assert.equal(resultLabels?.["openclaw.dev/qa-repository"], f.suffix);
     created.push(volume);
     composeVolumes[`qa-repository-${name}`] = { external: true, name: volume };
   }
-  const files = {};
+  const files: Record<string, Record<string, string>> = {};
   for (const [name, names] of Object.entries(volumeFiles)) {
     files[name] = Object.fromEntries(
       await Promise.all(
@@ -417,11 +767,11 @@ export async function prepareQaRepository(f) {
          }
          fs.chownSync(root, uid, gid);
        }`,
-      ...reader.map(String),
+      ...reader!.map(String),
     ],
     { input: JSON.stringify(files), privateFailureOutput: true, timeout: 30_000 },
   );
-  const inputOwnership = JSON.parse(
+  const inputOwnership = parseJson(
     await f.run(
       "docker",
       [
@@ -431,7 +781,7 @@ export async function prepareQaRepository(f) {
         "none",
         "--read-only",
         "--user",
-        reader.join(":"),
+        reader!.join(":"),
         "--cap-drop",
         "ALL",
         "--security-opt",
@@ -514,25 +864,34 @@ export async function prepareQaRepository(f) {
   const broker = (await f.compose("ps", "-a", "-q", "repository-credentials")).trim();
   assert.ok(broker, "Compose must create the real repository broker");
   await waitFor("Compose broker control socket ready", async () => {
-    const container = JSON.parse(await f.run("docker", ["inspect", broker]))[0];
-    const state = container.State;
+    const [rawContainer] = array(
+      parseJson(await f.run("docker", ["inspect", broker])),
+      "Docker container inspection",
+    );
+    const container = record(rawContainer, "Docker container");
+    const state = record(container.State, "Docker container state");
     if (!state.Running) {
       try {
-        let logs = "unavailable";
+        let logs: string | string[] = "unavailable";
         try {
-          const output = await captureChild("docker", ["logs", "--tail", "80", broker], {
+          const output = await captureQaChild("docker", ["logs", "--tail", "80", broker], {
             env: f.env,
             timeout: 15_000,
           });
-          logs = redactedQaTail(`${output.stdout}\n${output.stderr}`, qaLogEnv(f), {
-            lines: 40,
-            lineChars: 512,
-          });
+          const captured = record(output, "broker log output");
+          logs = redactedQaTail(
+            `${text(captured.stdout, "broker stdout")}\n${text(captured.stderr, "broker stderr")}`,
+            qaLogEnv(f),
+            {
+              lines: 40,
+              lineChars: 512,
+            },
+          );
         } catch {
           // Preserve the startup failure when Docker cannot return its logs.
         }
         await f.record("repository-broker-startup-failure", {
-          imageUser: container.Config.User,
+          imageUser: record(container.Config, "Docker container config").User,
           runnerUid: process.getuid?.(),
           exitCode: state.ExitCode,
           storage: "run-owned Docker volumes",
@@ -559,9 +918,19 @@ export async function prepareQaRepository(f) {
       ).trim() === "true"
     );
   });
-  const ip = JSON.parse(await f.run("docker", ["inspect", broker]))[0].NetworkSettings.Networks[
-    `${f.cluster}_development`
-  ].IPAddress;
+  const [rawBroker] = array(
+    parseJson(await f.run("docker", ["inspect", broker])),
+    "Docker broker inspection",
+  );
+  const brokerInfo = record(rawBroker, "Docker broker");
+  const networks = record(
+    record(brokerInfo.NetworkSettings, "Docker network settings").Networks,
+    "Docker networks",
+  );
+  const ip = text(
+    record(networks[`${f.cluster}_development`], "Docker development network").IPAddress,
+    "Docker broker IP",
+  );
   const labels = {
     "app.kubernetes.io/name": "qa-repository-relay",
     "app.kubernetes.io/component": "worker",
@@ -678,23 +1047,30 @@ export const QA_SLOW_STOP_MS = 60_000;
 // `now` is the clock for both the slow-stop threshold and the timeout; tests pass a
 // fake one with `interval: 0`, so neither bound costs real time.
 export async function stopQaAgent(
-  f,
-  agent,
-  { timeout = QA_STOP_TIMEOUT_MS, slowAfter = QA_SLOW_STOP_MS, now = Date.now, interval } = {},
-) {
+  f: QaStopFixture,
+  agent: QaStopAgent,
+  {
+    timeout = QA_STOP_TIMEOUT_MS,
+    slowAfter = QA_SLOW_STOP_MS,
+    now = Date.now,
+    interval,
+  }: StopTiming = {},
+): Promise<void> {
   // Evidence files are created exclusively: a repeated stop of one Agent gets its own names.
   agent.stopCalls = (agent.stopCalls ?? 0) + 1;
   const label = agent.stopCalls === 1 ? agent.id : `${agent.id}-${agent.stopCalls}`;
   const startedAt = now();
   await f.api("POST", `/namespaces/${agent.namespaceId}/agents/${agent.id}/stop`);
-  let last;
-  let slow;
+  let last: StopObservation | undefined;
+  let slow: SlowStop | undefined;
   try {
     await waitFor(
       "ordinary Agent stop removes every runtime Pod",
       async () => {
-        const current = await f.api("GET", `/namespaces/${agent.namespaceId}/agents/${agent.id}`);
-        const pods = JSON.parse(
+        const current = stopCurrent(
+          await f.api("GET", `/namespaces/${agent.namespaceId}/agents/${agent.id}`),
+        );
+        const pods = podsFromJson(
           await f.kubectl(
             "get",
             "pods",
@@ -704,7 +1080,7 @@ export async function stopQaAgent(
             "-o",
             "json",
           ),
-        ).items;
+        );
         last = { current, pods };
         const done =
           current.desiredRuntimeState === "stopped" &&
@@ -716,17 +1092,21 @@ export async function stopQaAgent(
         return done;
       },
       timeout,
-      { describe: () => describeStopObservation(last), interval, now },
+      {
+        describe: () => describeStopObservation(last),
+        ...(interval === undefined ? {} : { interval }),
+        now,
+      },
     );
   } catch (error) {
-    if (last && /^Timed out: /.test(error.message)) {
+    if (last && error instanceof Error && /^Timed out: /.test(error.message)) {
       try {
         const file = await recordPlatformLogs(f, `${label}-stop-timeout`, last.pods);
         if (file) {
           error.message += `; API and worker logs: ${file}`;
         }
       } catch (logError) {
-        error.message += `; API and worker logs unavailable (${logError.message})`;
+        error.message += `; API and worker logs unavailable (${errorMessage(logError)})`;
       }
       if (slow?.platformLogs) {
         error.message += `; drain evidence after ${Math.round(slow.observedAfterMs / 1000)} s: ${slow.platformLogs}`;
@@ -749,16 +1129,25 @@ export async function stopQaAgent(
   agent.stopped = true;
 }
 
-async function captureSlowStop(f, label, observation, elapsedMs, thresholdMs) {
-  const slow = {
+async function captureSlowStop(
+  f: QaStopFixture,
+  label: string,
+  observation: StopObservation,
+  elapsedMs: number,
+  thresholdMs: number,
+): Promise<SlowStop> {
+  const slow: SlowStop = {
     thresholdMs,
     observedAfterMs: elapsedMs,
-    observation: JSON.parse(describeStopObservation(observation)),
+    observation: stopSummary(observation),
   };
   try {
-    slow.platformLogs = await recordPlatformLogs(f, `${label}-slow-stop`, observation.pods);
+    const file = await recordPlatformLogs(f, `${label}-slow-stop`, observation.pods);
+    if (file !== undefined) {
+      slow.platformLogs = file;
+    }
   } catch (error) {
-    slow.platformLogsUnavailable = redactedQaTail(error.message, qaLogEnv(f), {
+    slow.platformLogsUnavailable = redactedQaTail(errorMessage(error), qaLogEnv(f), {
       lines: 4,
       lineChars: 400,
     });
@@ -767,24 +1156,26 @@ async function captureSlowStop(f, label, observation, elapsedMs, thresholdMs) {
 }
 
 // Only identifiers and lifecycle fields: no specs, environments or Secret data.
-export function describeStopObservation(observation) {
-  if (!observation) {
-    return "none";
-  }
-  const { current, pods } = observation;
+function stopSummary({ current, pods }: StopObservation): StopSummary {
   const remaining = pods.slice(0, 10).map(({ metadata = {}, status = {} }) => ({
-    namespace: metadata.namespace,
-    name: metadata.name,
-    phase: status.phase,
+    ...(metadata.namespace === undefined ? {} : { namespace: metadata.namespace }),
+    ...(metadata.name === undefined ? {} : { name: metadata.name }),
+    ...(status.phase === undefined ? {} : { phase: status.phase }),
     deletionTimestamp: metadata.deletionTimestamp ?? null,
     finalizers: metadata.finalizers ?? [],
   }));
-  return JSON.stringify({
-    desiredRuntimeState: current?.desiredRuntimeState,
-    activeRevisionId: current?.activeRevisionId ?? null,
+  return {
+    ...(current.desiredRuntimeState === undefined
+      ? {}
+      : { desiredRuntimeState: current.desiredRuntimeState }),
+    activeRevisionId: current.activeRevisionId ?? null,
     pods: remaining,
     ...(pods.length > remaining.length ? { omittedPods: pods.length - remaining.length } : {}),
-  });
+  };
+}
+
+export function describeStopObservation(observation: StopObservation | undefined): string {
+  return observation ? JSON.stringify(stopSummary(observation)) : "none";
 }
 
 const platformLogLines = 600;
@@ -815,7 +1206,7 @@ const extraWorkerLogLines = 200;
 const platformEvents = 60;
 
 // Lifecycle fields only: which Pods ran, when they started and why they restarted.
-function podRestarts({ metadata = {}, status = {} }) {
+function podRestarts({ metadata = {}, status = {} }: QaPod) {
   return {
     name: metadata.name,
     component: metadata.labels?.["app.kubernetes.io/component"],
@@ -836,7 +1227,7 @@ function podRestarts({ metadata = {}, status = {} }) {
   };
 }
 
-function qaLogEnv(f) {
+function qaLogEnv(f: Pick<QaStopFixture, "env">): NodeJS.ProcessEnv {
   return Object.fromEntries(
     Object.entries(f.env ?? {}).filter(([name]) => !publicLauncherSettings.has(name)),
   );
@@ -848,22 +1239,26 @@ function qaLogEnv(f) {
 // Pod during a rollout, a restarted worker's previous log, platform Pod restarts, recent
 // Events in the platform and remaining Agent Namespaces, and the drain lines of each
 // remaining Gateway Pod. Returns the file name.
-async function recordPlatformLogs(f, label, remainingPods = []) {
+async function recordPlatformLogs(
+  f: QaStopFixture,
+  label: string,
+  remainingPods: QaPod[] = [],
+): Promise<string | undefined> {
   if (f.controlPlane !== "kubernetes") {
     return;
   }
   const env = qaLogEnv(f);
-  const tail = (text, lines = platformLogLines, lineChars = platformLogLineChars) =>
+  const tail = (text: string, lines = platformLogLines, lineChars = platformLogLineChars) =>
     redactedQaTail(text, env, { lines, lineChars });
-  const attempt = async (read) => {
+  const attempt = async <T>(read: () => Promise<T>): Promise<T | LogFailure> => {
     try {
       return await read();
     } catch (error) {
-      return { unavailable: tail(error.message, 12, 800) };
+      return { unavailable: tail(errorMessage(error), 12, 800) };
     }
   };
   const platformNamespace = f.state.platformNamespace;
-  const containerTail = async (target, container, ...options) => {
+  const containerTail = async (target: string, container: string, ...options: string[]) => {
     const lines = target.startsWith("deployment/") ? platformLogLines : extraWorkerLogLines;
     return tail(
       await f.kubectl(
@@ -881,13 +1276,12 @@ async function recordPlatformLogs(f, label, remainingPods = []) {
       lines,
     );
   };
-  const logs = {};
-  logs.api = await attempt(() => containerTail("deployment/openclaw-enterprise-api", "api"));
-  logs.worker = await attempt(() =>
+  const api = await attempt(() => containerTail("deployment/openclaw-enterprise-api", "api"));
+  const worker = await attempt(() =>
     containerTail("deployment/openclaw-enterprise-worker", "worker"),
   );
   const platformPods = await attempt(async () =>
-    JSON.parse(
+    podsFromJson(
       await f.kubectl(
         "-n",
         platformNamespace,
@@ -897,21 +1291,25 @@ async function recordPlatformLogs(f, label, remainingPods = []) {
         "json",
         "--request-timeout=30s",
       ),
-    ).items.map(podRestarts),
+    ).map(podRestarts),
   );
-  logs.platformPods = platformPods;
+  const logs: PlatformLogs = { api, worker, platformPods, events: {} };
   // `logs deployment/...` reads one Pod and never its previous container: during
   // a rollout read every worker Pod by name, and a restarted one's previous log.
   const workerPods = Array.isArray(platformPods)
     ? platformPods.filter(({ component }) => component === "worker")
     : [];
   for (const pod of workerPods) {
-    if (workerPods.length > 1) {
-      (logs.workerPods ??= {})[pod.name] = await attempt(() => containerTail(pod.name, "worker"));
+    const { name } = pod;
+    if (!name) {
+      continue;
     }
-    if (pod.containers.find(({ name }) => name === "worker")?.restartCount > 0) {
-      (logs.workerPrevious ??= {})[pod.name] = await attempt(() =>
-        containerTail(pod.name, "worker", "--previous"),
+    if (workerPods.length > 1) {
+      (logs.workerPods ??= {})[name] = await attempt(() => containerTail(name, "worker"));
+    }
+    if ((pod.containers.find(({ name }) => name === "worker")?.restartCount ?? 0) > 0) {
+      (logs.workerPrevious ??= {})[name] = await attempt(() =>
+        containerTail(name, "worker", "--previous"),
       );
     }
   }
@@ -920,37 +1318,72 @@ async function recordPlatformLogs(f, label, remainingPods = []) {
     ...new Set(
       remainingPods
         .map(({ metadata }) => metadata?.namespace)
-        .filter((namespace) => namespace && namespace !== platformNamespace),
+        .filter((namespace): namespace is string => !!namespace && namespace !== platformNamespace),
     ),
   ];
-  logs.events = {};
   for (const namespace of eventNamespaces) {
     logs.events[namespace] = await attempt(async () =>
-      JSON.parse(
-        await f.kubectl("-n", namespace, "get", "events", "-o", "json", "--request-timeout=30s"),
+      array(
+        record(
+          parseJson(
+            await f.kubectl(
+              "-n",
+              namespace,
+              "get",
+              "events",
+              "-o",
+              "json",
+              "--request-timeout=30s",
+            ),
+          ),
+          "Kubernetes event list",
+        ).items,
+        "Kubernetes events",
       )
-        .items.map((event) => ({
-          time: event.lastTimestamp ?? event.eventTime ?? event.metadata?.creationTimestamp ?? null,
-          type: event.type,
-          reason: event.reason,
-          object: `${event.involvedObject?.kind}/${event.involvedObject?.name}`,
-          count: event.count ?? 1,
-          message: tail(event.message ?? "", 1, 400)[0] ?? "",
-        }))
+        .map((rawEvent): PlatformEvent => {
+          const event = record(rawEvent, "Kubernetes event");
+          const metadata =
+            event.metadata == null ? undefined : record(event.metadata, "event metadata");
+          const involved =
+            event.involvedObject == null
+              ? undefined
+              : record(event.involvedObject, "event involved object");
+          const time =
+            event.lastTimestamp ?? event.eventTime ?? metadata?.creationTimestamp ?? null;
+          assert.ok(time === null || typeof time === "string");
+          assert.ok(event.type === undefined || typeof event.type === "string");
+          assert.ok(event.reason === undefined || typeof event.reason === "string");
+          assert.ok(event.count == null || typeof event.count === "number");
+          return {
+            time,
+            ...(typeof event.type === "string" ? { type: event.type } : {}),
+            ...(typeof event.reason === "string" ? { reason: event.reason } : {}),
+            object: `${involved?.kind}/${involved?.name}`,
+            count: typeof event.count === "number" ? event.count : 1,
+            message:
+              tail(event.message == null ? "" : text(event.message, "event message"), 1, 400)[0] ??
+              "",
+          };
+        })
         .sort((left, right) => String(left.time ?? "").localeCompare(String(right.time ?? "")))
         .slice(-platformEvents),
     );
   }
   for (const { metadata = {} } of remainingPods) {
-    if (metadata.labels?.["openclaw.dev/workload-role"] !== "gateway") {
+    if (
+      metadata.labels?.["openclaw.dev/workload-role"] !== "gateway" ||
+      !metadata.name ||
+      !metadata.namespace
+    ) {
       continue;
     }
-    (logs.gatewayDrain ??= {})[metadata.name] = await attempt(async () => {
+    const { name, namespace } = metadata;
+    (logs.gatewayDrain ??= {})[name] = await attempt(async () => {
       const text = await f.kubectl(
         "-n",
-        metadata.namespace,
+        namespace,
         "logs",
-        metadata.name,
+        name,
         "--container",
         "gateway",
         "--timestamps",
@@ -967,7 +1400,11 @@ async function recordPlatformLogs(f, label, remainingPods = []) {
 // "git-write" pushes one commit to the run's granted branch. "git-push-denied" pushes
 // to another branch, which the grant does not cover. Both bind git-write: prepared
 // native Git serves no other profile.
-export async function verifyQaRepository(f, agent, scenario = "git-write") {
+export async function verifyQaRepository(
+  f: QaVerifyFixture,
+  agent: QaAgent,
+  scenario = "git-write",
+): Promise<void> {
   assert.ok(["git-write", "git-push-denied"].includes(scenario));
   const denied = scenario === "git-push-denied";
   assert.ok(!f.retained, "unresolved repository cleanup prevents opening another session");
@@ -978,6 +1415,11 @@ export async function verifyQaRepository(f, agent, scenario = "git-write") {
   );
   const entry = f.repositoryEntry;
   const repository = entry.repository;
+  const repositoryId = record(entry, "repository registration").repositoryId;
+  assert.ok(
+    typeof repositoryId === "string" || typeof repositoryId === "number",
+    "invalid repository ID",
+  );
   const observerTokenPath = process.env.OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE;
   const observerAppInput = process.env.OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY;
   const observerBinary = process.env.OCC_TEST_QA_GITHUB_OBSERVER_BINARY;
@@ -1011,9 +1453,11 @@ export async function verifyQaRepository(f, agent, scenario = "git-write") {
               .map((name) => [name, process.env[name]]),
       );
   for (const value of Object.values(observerEnvironment)) {
-    registerQaSecret(value);
+    if (value !== undefined) {
+      registerQaSecret(value);
+    }
   }
-  const runObserverCommand = (cmd, args, options) =>
+  const runObserverCommand = (cmd: string, args: string[], options?: QaCommandOptions) =>
     f.run(cmd, args, {
       ...options,
       env: { ...f.env, ...options?.env, ...observerEnvironment },
@@ -1029,12 +1473,16 @@ export async function verifyQaRepository(f, agent, scenario = "git-write") {
         binary: observerBinary ?? "gh",
         run: runObserverCommand,
       });
-  const { data: remote } = await observe("GET");
-  assert.equal(String(remote.id), String(entry.repositoryId));
+  const { data: rawRemote } = await observe("GET");
+  const remote = repositoryRemote(rawRemote);
+  assert.equal(String(remote.id), String(repositoryId));
   assert.equal(remote.full_name.toLowerCase(), repository.toLowerCase());
   const base = remote.default_branch;
   const { data: baseline } = await observe("GET", `git/ref/heads/${encodeURIComponent(base)}`);
-  const baseSha = baseline.object.sha;
+  const baseSha = text(
+    record(record(baseline, "GitHub baseline ref").object, "GitHub ref object").sha,
+    "GitHub base SHA",
+  );
   assert.match(baseSha, /^[a-f0-9]{40}$/);
   const suffix = `${f.suffix}-${agent.preset.toLowerCase()}-${scenario}`;
   const branch = denied ? `${qaRepositoryBranch(f.suffix)}-denied` : qaRepositoryBranch(f.suffix);
@@ -1048,13 +1496,13 @@ export async function verifyQaRepository(f, agent, scenario = "git-write") {
     "GET",
     `/namespaces/${agent.namespaceId}/configurations/${agent.configuration.id}`,
   );
-  const values = currentConfiguration.values;
+  const values = configurationValues(record(currentConfiguration, "configuration response").values);
   values.agents.defaults.workspace = dedicated
     ? "/home/node/workspace"
     : "/home/node/.openclaw/workspace";
   values.agents.defaults.sandbox = { mode: "off" };
   if (dedicated) {
-    Object.assign(values.plugins.entries.codex.config.appServer, {
+    Object.assign(codexAppServer(values), {
       approvalPolicy: "never",
       sandbox: "workspace-write",
       remoteWorkspaceRoot: "/home/node/workspace",
@@ -1076,23 +1524,31 @@ export async function verifyQaRepository(f, agent, scenario = "git-write") {
     { values },
   );
   if (dedicated) {
-    const saved = savedConfiguration?.values;
-    const appServer = saved?.plugins?.entries?.codex?.config?.appServer;
+    const saved = optionalRecord(optionalRecord(savedConfiguration)?.values);
+    const defaults = optionalRecord(optionalRecord(saved?.agents)?.defaults);
+    const appServer = optionalRecord(
+      optionalRecord(
+        optionalRecord(optionalRecord(optionalRecord(saved?.plugins)?.entries)?.codex)?.config,
+      )?.appServer,
+    );
+    const savedTools = optionalRecord(saved?.tools);
     try {
       await f.record(`${suffix}-saved-native-policy`, {
         evidenceKind: "diagnostic-only",
         source: "saved-configuration-response-not-effective-turn",
         configurationResponseKnown: saved !== undefined,
         savedOpenClawSandboxOff: saved
-          ? saved.agents?.defaults?.sandbox?.mode === "off"
+          ? optionalRecord(defaults?.sandbox)?.mode === "off"
           : "unknown",
         savedAppServerWorkspaceWrite: saved ? appServer?.sandbox === "workspace-write" : "unknown",
         savedApprovalNever: saved ? appServer?.approvalPolicy === "never" : "unknown",
         savedWorkspaceMatchesExpected: saved
           ? appServer?.remoteWorkspaceRoot === "/home/node/workspace"
           : "unknown",
-        savedExecFull: saved ? saved.tools?.exec?.mode === "full" : "unknown",
-        savedFsWorkspaceOnly: saved ? saved.tools?.fs?.workspaceOnly === true : "unknown",
+        savedExecFull: saved ? optionalRecord(savedTools?.exec)?.mode === "full" : "unknown",
+        savedFsWorkspaceOnly: saved
+          ? optionalRecord(savedTools?.fs)?.workspaceOnly === true
+          : "unknown",
       });
     } catch {
       // Optional saved-policy evidence cannot replace the actual repository failure.
@@ -1102,10 +1558,10 @@ export async function verifyQaRepository(f, agent, scenario = "git-write") {
     configurationId: agent.configuration.id,
     repositoryBindings: [{ repositoryRef: entry.repositoryRef, profile: "git-write" }],
   });
-  let workFailure;
-  let remoteEvidence;
-  let attempt;
-  let readSession;
+  let workFailure: unknown;
+  let remoteEvidence: { commitSha?: string } | undefined;
+  let attempt: CredentialAttempt | undefined;
+  let readSession: ((id: string) => Promise<CredentialSession>) | undefined;
   try {
     // Deployment can open provider credentials even if its response is lost.
     // A rejected draft update above creates no session-cleanup obligation.
@@ -1115,7 +1571,14 @@ export async function verifyQaRepository(f, agent, scenario = "git-write") {
     const gateway = await f.pod(agent, "gateway");
     const consumer = dedicated ? await f.pod(agent, "agent") : gateway;
     const consumerName = dedicated ? "agent" : "gateway";
-    const execIn = (pod, container, script, args = [], input, timeout = 30_000) =>
+    const execIn = (
+      pod: QaRuntimePod,
+      container: string,
+      script: string,
+      args: string[] = [],
+      input?: string,
+      timeout = 30_000,
+    ) =>
       f.run(
         "kubectl",
         [
@@ -1142,21 +1605,30 @@ export async function verifyQaRepository(f, agent, scenario = "git-write") {
         ],
         { input, timeout },
       );
-    const exec = (...args) => execIn(gateway, "gateway", ...args);
-    const consumerExec = (...args) => execIn(consumer, consumerName, ...args);
-    const material = JSON.parse(
-      await consumerExec(
-        "const fs=require('fs'),p='/run/oce/repository-credentials/manifest.json',m=JSON.parse(fs.readFileSync(p)),s=fs.statSync(p);console.log(JSON.stringify({uid:s.uid,mode:s.mode&511,bindings:m.bindings.map(b=>({repositoryRef:b.repositoryRef,sessionId:b.sessionId}))}))",
+    type ExecArguments = [script: string, args?: string[], input?: string, timeout?: number];
+    const exec = (...args: ExecArguments) => execIn(gateway, "gateway", ...args);
+    const consumerExec = (...args: ExecArguments) => execIn(consumer, consumerName, ...args);
+    const material = record(
+      parseJson(
+        await consumerExec(
+          "const fs=require('fs'),p='/run/oce/repository-credentials/manifest.json',m=JSON.parse(fs.readFileSync(p)),s=fs.statSync(p);console.log(JSON.stringify({uid:s.uid,mode:s.mode&511,bindings:m.bindings.map(b=>({repositoryRef:b.repositoryRef,sessionId:b.sessionId}))}))",
+        ),
       ),
+      "repository material",
     );
     assert.equal(material.uid, 1000);
     assert.equal(material.mode, 0o600);
-    assert.equal(material.bindings.length, 1);
-    assert.equal(material.bindings[0].repositoryRef, entry.repositoryRef);
-    attempt = material.bindings[0];
+    const bindings = array(material.bindings, "repository material bindings");
+    assert.equal(bindings.length, 1);
+    const binding = record(bindings[0], "repository binding");
+    assert.equal(binding.repositoryRef, entry.repositoryRef);
+    attempt = {
+      repositoryRef: text(binding.repositoryRef, "repository reference"),
+      sessionId: text(binding.sessionId, "repository session ID"),
+    };
     const workers =
       f.controlPlane === "kubernetes"
-        ? JSON.parse(
+        ? podsFromJson(
             await f.kubectl(
               "-n",
               f.state.platformNamespace,
@@ -1167,14 +1639,14 @@ export async function verifyQaRepository(f, agent, scenario = "git-write") {
               "-o",
               "json",
             ),
-          ).items
+          )
         : [];
     const workerPod = workers.find(
       (p) =>
-        !p.metadata.deletionTimestamp &&
-        p.status.conditions?.some((c) => c.type === "Ready" && c.status === "True"),
+        !p.metadata?.deletionTimestamp &&
+        p.status?.conditions?.some((c) => c.type === "Ready" && c.status === "True"),
     );
-    const executeWorker = (script, args, timeout) =>
+    const executeWorker = (script: string, args: string[], timeout: number) =>
       f.controlPlane === "compose"
         ? f.run(
             "docker",
@@ -1204,7 +1676,7 @@ export async function verifyQaRepository(f, agent, scenario = "git-write") {
               "-n",
               f.state.platformNamespace,
               "exec",
-              workerPod.metadata.name,
+              text(workerPod?.metadata?.name, "ready worker Pod name"),
               "-c",
               "worker",
               "--",
@@ -1215,7 +1687,19 @@ export async function verifyQaRepository(f, agent, scenario = "git-write") {
             ],
             { timeout },
           );
-    readSession = (id) => readInstalledCredentialSession(executeWorker, id);
+    readSession = async (id) => {
+      const value: unknown = await readInstalledCredentialSession(executeWorker, id);
+      const session = record(value, "credential session");
+      const cleanup = record(session.cleanup, "credential session cleanup");
+      assert.ok(typeof session.state === "string" && typeof session.activeUses === "number");
+      assert.ok(
+        typeof cleanup.active === "number" &&
+          typeof cleanup.pending === "number" &&
+          typeof cleanup.uncertain === "number" &&
+          typeof cleanup.auxiliaryPending === "boolean",
+      );
+      return session as CredentialSession;
+    };
     assert.equal((await readSession(attempt.sessionId)).state, "OPEN");
     for (const pod of [gateway, consumer]) {
       assert.ok(
@@ -1235,9 +1719,9 @@ export async function verifyQaRepository(f, agent, scenario = "git-write") {
       ...f,
       suffix,
       gatewayHostname: undefined,
-      record: (name, value) => f.record(`${suffix}-${name}`, value),
+      record: (name: string, value: unknown) => f.record(`${suffix}-${name}`, value),
     };
-    remoteEvidence = await verifyNativeRepositoryJourney({
+    const evidence: unknown = await verifyNativeRepositoryJourney({
       f: scenarioFixture,
       dedicated,
       readOnly,
@@ -1260,39 +1744,50 @@ export async function verifyQaRepository(f, agent, scenario = "git-write") {
       submitTask: exec,
       consumerExec,
       observe,
-      app: { repositoryId: String(entry.repositoryId) },
+      app: { repositoryId: String(repositoryId) },
       remote,
       readSession,
       submitViaLoopback: true,
       pullRequest: false,
     });
+    if (evidence !== undefined) {
+      const result = record(evidence, "repository journey evidence");
+      assert.ok(result.commitSha === undefined || typeof result.commitSha === "string");
+      remoteEvidence = result.commitSha === undefined ? {} : { commitSha: result.commitSha };
+    }
   } catch (error) {
     workFailure = error;
   }
-  let cleanupFailure;
+  let cleanupFailure: unknown;
   try {
     await stopQaAgent(f, agent);
     if (attempt && readSession) {
       const session = await waitFor("broker session DISPOSED", async () => {
-        const value = await readSession(attempt.sessionId);
+        const value = await readSession!(attempt!.sessionId);
         return value.state === "DISPOSED" && value;
       });
       assert.equal(session.activeUses, 0);
-      for (const counter of ["active", "pending", "uncertain"]) {
+      for (const counter of ["active", "pending", "uncertain"] as const) {
         assert.equal(session.cleanup[counter], 0, `session cleanup ${counter}`);
       }
       assert.equal(session.cleanup.auxiliaryPending, false);
-      const materials = JSON.parse(
-        await f.kubectl(
-          "get",
-          "secrets",
-          "-A",
-          "-l",
-          `openclaw.dev/agent=${agent.id},openclaw.dev/repository-material=session`,
-          "-o",
-          "json",
-        ),
-      ).items;
+      const materials = array(
+        record(
+          parseJson(
+            await f.kubectl(
+              "get",
+              "secrets",
+              "-A",
+              "-l",
+              `openclaw.dev/agent=${agent.id},openclaw.dev/repository-material=session`,
+              "-o",
+              "json",
+            ),
+          ),
+          "repository Secret list",
+        ).items,
+        "repository Secrets",
+      );
       assert.equal(materials.length, 0);
       await f.record(`${suffix}-disposal`, session);
       f.pendingRepositories.delete(agent.id);
@@ -1302,7 +1797,7 @@ export async function verifyQaRepository(f, agent, scenario = "git-write") {
       await cleanupRepositoryJourney({
         observe,
         repository,
-        repositoryId: entry.repositoryId,
+        repositoryId,
         branch,
         base,
         baseSha,
@@ -1357,15 +1852,20 @@ export async function verifyQaRepository(f, agent, scenario = "git-write") {
             "100",
             "worker-kubernetes",
           ];
-      const output = await captureChild(kubernetes ? "kubectl" : "docker", args, {
+      const output = await captureQaChild(kubernetes ? "kubectl" : "docker", args, {
         env: f.env,
         timeout: 15_000,
       });
+      const captured = record(output, "repository failure log output");
       await f.record(`${agent.id}-repository-failure`, {
-        logs: redactedQaTail(`${output.stdout}\n${output.stderr}`, qaLogEnv(f), {
-          lines: 60,
-          lineChars: 1200,
-        }),
+        logs: redactedQaTail(
+          `${text(captured.stdout, "worker stdout")}\n${text(captured.stderr, "worker stderr")}`,
+          qaLogEnv(f),
+          {
+            lines: 60,
+            lineChars: 1200,
+          },
+        ),
       });
     } catch {
       // Diagnostics must not replace the repository failure or its cleanup obligations.
