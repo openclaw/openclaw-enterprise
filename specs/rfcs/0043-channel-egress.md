@@ -30,7 +30,7 @@ status or authorize its implementation.
 The [Channel Driver](../../docs/reference/drivers/channel.md) currently validates
 credentials and looks up provider identities. Kubernetes Compute separately
 recognizes Slack and Microsoft Teams and grants enabled Gateways access to one
-configured proxy. The [bundled Slack server](../../apps/controller/src/slack-proxy.mjs)
+configured proxy. The [bundled Slack server](https://github.com/openclaw/openclaw-enterprise/blob/b401e36cb8754af762120e28cbf150e379482fef/apps/controller/src/slack-proxy.mjs)
 allows CONNECT to Slack domains on port 443. It cannot express different
 destination sets for different Agents.
 
@@ -327,7 +327,22 @@ delivery. Record these decisions before implementation begins.
 On implementation, update the Channel Driver reference, Slack guide, Gateway
 networking reference, relevant flows, configuration cheat sheet, and the affected
 architecture ownership claim. This draft changes no current-behavior reference.
-No runtime qualification has been performed for this proposal.
+Initial qualification is recorded in the
+[implementation plan](../plans/0043-channel-egress.md#qualification-gate).
+Envoy Gateway v1.6.7's supported resources do not enforce upstream-address
+restrictions. Adding downstream resolved-address RBAC to Envoy v1.36.6 also
+failed a real test: a DNS answer's public first address passed authorization,
+but an alternate loopback address received the connection.
+
+The implementation proposes retaining Envoy Gateway v1.6.7 and using a separate
+egress fleet pinned to Envoy v1.39.4. A scoped `EnvoyPatchPolicy` would install
+CONNECT-target RBAC, dynamic-forward-proxy strict-DNS subclusters, and upstream
+RBAC before the upstream codec. Strict-DNS subclusters give each selected host
+one concrete address; upstream RBAC checks that address on every attempt.
+Native probes passed Slack TLS and rejected the selected private alternate
+addresses. Gateway integration, revocation, and capacity remain unqualified.
+This extension and image change require explicit review before production
+implementation; they do not change the private workspace ingress fleet.
 
 ## Rationale and alternatives
 
@@ -348,4 +363,4 @@ No runtime qualification has been performed for this proposal.
 - [Envoy dynamic forward proxy and address risks](https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/dynamic_forward_proxy_filter.html).
 - [Kubernetes NetworkPolicy semantics](https://kubernetes.io/docs/concepts/services-networking/network-policies/).
 - [SPIRE and Envoy integration](https://spiffe.io/docs/latest/microservices/envoy/).
-- [Current Compute owner](../../apps/controller/src/drivers/compute/kubernetes/index.ts) and [Slack Helm resources](../../deploy/helm/openclaw-enterprise/templates/slack-proxy.yaml).
+- [Current Compute owner](../../apps/controller/src/drivers/compute/kubernetes/index.ts) and [Slack Helm resources](https://github.com/openclaw/openclaw-enterprise/blob/b401e36cb8754af762120e28cbf150e379482fef/deploy/helm/openclaw-enterprise/templates/slack-proxy.yaml).

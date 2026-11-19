@@ -1,10 +1,9 @@
+import { installManagedChannelEgressFixture } from "./managed-channel-egress-k3d.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { asRecord } from "../../packages/utils/src/objects.ts";
-import { dumpYaml, loadYaml, yamlDocuments, yamlMapping } from "./kubernetes-yaml.ts";
 import { waitFor } from "./qa-wait.ts";
 import { protectedText, grantQaSecret } from "./qa-secrets.ts";
 import { slackApi } from "./slack-web-api.ts";
@@ -13,78 +12,31 @@ import { parseGatewayObservation } from "./normal-agent-observation-receipts.ts"
 import { sessionEvidenceScript } from "./normal-agent-gateway-evidence.ts";
 
 export async function prepareQaSlack(f) {
+  assert.equal(
+    f.controlPlane,
+    "kubernetes",
+    "live channel egress proof requires the Helm-installed Kubernetes control plane",
+  );
   const configuration = f.configuration.drivers.compute.configuration;
-  if (f.controlPlane === "compose") {
-    const path = join(f.stateDirectory, "compose.yaml");
-    const compose = loadYaml(await readFile(path, "utf8"));
-    const services = yamlMapping(compose, "services");
-    services["slack-proxy"] = {
-      image: f.controllerDockerImage,
-      entrypoint: ["node", "apps/controller/src/slack-proxy.mjs"],
-      environment: { NODE_ENV: "production", OCC_SLACK_PROXY_PORT: "3128" },
-      networks: { development: {} },
-      read_only: true,
-      cap_drop: ["ALL"],
-      security_opt: ["no-new-privileges:true"],
-      mem_limit: "128m",
-    };
-    await writeFile(path, dumpYaml(compose), { mode: 0o600 });
-    await f.compose("up", "-d", "--no-deps", "slack-proxy");
-    const id = (await f.compose("ps", "-q", "slack-proxy")).trim();
-    const ip = JSON.parse(await f.run("docker", ["inspect", id]))[0].NetworkSettings.Networks[
-      `${f.cluster}_development`
-    ].IPAddress;
-    const proxyUrl = `http://${ip}:3128`;
-    configuration.runtime.channels = { proxyUrl };
-    yamlMapping(services, "controller", "environment").OCC_CHANNEL_DIRECTORY_PROXY_URL = proxyUrl;
-    await writeFile(path, dumpYaml(compose), { mode: 0o600 });
-  } else {
-    const hostname = `openclaw-enterprise-slack-proxy.${f.state.platformNamespace}.svc`;
-    configuration.runtime.channels = {
-      proxyUrl: `http://${hostname}:3128`,
-      managedProxy: {
-        hostname,
-        namespace: f.state.platformNamespace,
-        podLabels: {
-          "app.kubernetes.io/name": "openclaw-enterprise",
-          "app.kubernetes.io/instance": "openclaw-enterprise",
-          "app.kubernetes.io/component": "slack-proxy",
-        },
-        port: 3128,
-      },
-    };
-    const path = join(f.stateDirectory, "helm-values.json");
-    const values = JSON.parse(await readFile(path, "utf8"));
-    values.slackProxy = { enabled: true };
-    await writeFile(path, JSON.stringify(values), { mode: 0o600 });
-    const manifests = await f.run("helm", [
-      "template",
-      "openclaw-enterprise",
-      "deploy/helm/openclaw-enterprise",
-      "-n",
-      f.state.platformNamespace,
-      "-f",
-      path,
-    ]);
-    const selected = yamlDocuments(manifests)
-      .filter((doc) => {
-        const object = asRecord(loadYaml(doc));
-        const name = asRecord(object?.metadata)?.name;
-        return (
-          (typeof name === "string" && name.includes("slack-proxy")) ||
-          ((object?.kind === "Deployment" || object?.kind === "NetworkPolicy") &&
-            name === "openclaw-enterprise-api")
-        );
-      })
-      .join("\n---\n");
-    await f.kubectl(
-      "-n",
-      f.state.platformNamespace,
-      "apply",
-      "-f",
-      await f.write("slack-resources.yaml", selected),
-    );
-  }
+  const path = join(f.stateDirectory, "helm-values.json");
+  const values = JSON.parse(await readFile(path, "utf8"));
+  const { channelEgress } = await installManagedChannelEgressFixture({
+    namespace: f.state.platformNamespace,
+    controllerImage: values.images.controller,
+    workspaceGateway: {
+      apiPodLabels: { "app.kubernetes.io/instance": "openclaw-enterprise" },
+      routing: configuration.gatewayRouting,
+    },
+    controller: { account: "openclaw-enterprise-worker", apiAccount: "openclaw-enterprise-api" },
+    resource: async (kind, name, namespace) =>
+      JSON.parse(await f.kubectl("get", kind, name, "--namespace", namespace, "-o", "json")),
+    kubectl: (...args) => f.kubectl(...args),
+    applyManifest: async (manifest) =>
+      f.kubectl("apply", "-f", await f.write("channel-egress-resources.json", manifest)),
+  });
+  configuration.runtime.channelEgress = channelEgress;
+  values.channelEgress = { ...channelEgress, enabled: true };
+  await writeFile(path, JSON.stringify(values), { mode: 0o600 });
   await f.saveInstallation(f.configuration);
 }
 

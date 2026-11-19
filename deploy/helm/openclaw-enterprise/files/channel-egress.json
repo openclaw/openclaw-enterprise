@@ -1,0 +1,738 @@
+{
+  "image": "envoyproxy/envoy@sha256:ccb37e93d8274a525fe00d67287716dbe3d58bc4237d7627af9e64fae0fd25c8",
+  "excludedIpv4Cidrs": [
+    "0.0.0.0/8",
+    "10.0.0.0/8",
+    "100.64.0.0/10",
+    "127.0.0.0/8",
+    "169.254.0.0/16",
+    "172.16.0.0/12",
+    "192.0.0.0/24",
+    "192.0.2.0/24",
+    "192.88.99.0/24",
+    "192.168.0.0/16",
+    "198.18.0.0/15",
+    "198.51.100.0/24",
+    "203.0.113.0/24",
+    "224.0.0.0/4",
+    "240.0.0.0/4"
+  ],
+  "occFilterChain": {
+    "name": "occ-82ef31b40d7d07b145365f45",
+    "filters": [
+      {
+        "name": "envoy.filters.network.http_connection_manager",
+        "typed_config": {
+          "@type": "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager",
+          "stat_prefix": "occ-82ef31b40d7d07b145365f45",
+          "stream_idle_timeout": "0s",
+          "upgrade_configs": [
+            {
+              "upgrade_type": "CONNECT"
+            }
+          ],
+          "route_config": {
+            "name": "occ-82ef31b40d7d07b145365f45",
+            "virtual_hosts": [
+              {
+                "name": "occ-82ef31b40d7d07b145365f45",
+                "domains": [
+                  "*"
+                ],
+                "routes": [
+                  {
+                    "match": {
+                      "connect_matcher": {}
+                    },
+                    "route": {
+                      "cluster": "channel-egress-forward",
+                      "timeout": "0s",
+                      "upgrade_configs": [
+                        {
+                          "upgrade_type": "CONNECT",
+                          "connect_config": {}
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "http_filters": [
+            {
+              "name": "envoy.filters.http.rbac",
+              "typed_config": {
+                "@type": "type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC",
+                "rules": {
+                  "action": "ALLOW",
+                  "policies": {
+                    "destinations": {
+                      "principals": [
+                        {
+                          "any": true
+                        }
+                      ],
+                      "permissions": [
+                        {
+                          "and_rules": {
+                            "rules": [
+                              {
+                                "or_rules": {
+                                  "rules": [
+                                    {
+                                      "and_rules": {
+                                        "rules": [
+                                          {
+                                            "header": {
+                                              "name": ":method",
+                                              "string_match": {
+                                                "exact": "CONNECT"
+                                              }
+                                            }
+                                          },
+                                          {
+                                            "header": {
+                                              "name": ":authority",
+                                              "string_match": {
+                                                "safe_regex": {
+                                                  "regex": "(?i:slack\\.com):(?:443)"
+                                                }
+                                              }
+                                            }
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    {
+                                      "and_rules": {
+                                        "rules": [
+                                          {
+                                            "header": {
+                                              "name": ":method",
+                                              "string_match": {
+                                                "exact": "CONNECT"
+                                              }
+                                            }
+                                          },
+                                          {
+                                            "header": {
+                                              "name": ":authority",
+                                              "string_match": {
+                                                "safe_regex": {
+                                                  "regex": "(?i:(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+slack\\.com):(?:443)"
+                                                }
+                                              }
+                                            }
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    {
+                                      "and_rules": {
+                                        "rules": [
+                                          {
+                                            "header": {
+                                              "name": ":method",
+                                              "string_match": {
+                                                "exact": "CONNECT"
+                                              }
+                                            }
+                                          },
+                                          {
+                                            "header": {
+                                              "name": ":authority",
+                                              "string_match": {
+                                                "safe_regex": {
+                                                  "regex": "(?i:slack-edge\\.com):(?:443)"
+                                                }
+                                              }
+                                            }
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    {
+                                      "and_rules": {
+                                        "rules": [
+                                          {
+                                            "header": {
+                                              "name": ":method",
+                                              "string_match": {
+                                                "exact": "CONNECT"
+                                              }
+                                            }
+                                          },
+                                          {
+                                            "header": {
+                                              "name": ":authority",
+                                              "string_match": {
+                                                "safe_regex": {
+                                                  "regex": "(?i:(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+slack-edge\\.com):(?:443)"
+                                                }
+                                              }
+                                            }
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    {
+                                      "and_rules": {
+                                        "rules": [
+                                          {
+                                            "header": {
+                                              "name": ":method",
+                                              "string_match": {
+                                                "exact": "CONNECT"
+                                              }
+                                            }
+                                          },
+                                          {
+                                            "header": {
+                                              "name": ":authority",
+                                              "string_match": {
+                                                "safe_regex": {
+                                                  "regex": "(?i:slack-msgs\\.com):(?:443)"
+                                                }
+                                              }
+                                            }
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    {
+                                      "and_rules": {
+                                        "rules": [
+                                          {
+                                            "header": {
+                                              "name": ":method",
+                                              "string_match": {
+                                                "exact": "CONNECT"
+                                              }
+                                            }
+                                          },
+                                          {
+                                            "header": {
+                                              "name": ":authority",
+                                              "string_match": {
+                                                "safe_regex": {
+                                                  "regex": "(?i:(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+slack-msgs\\.com):(?:443)"
+                                                }
+                                              }
+                                            }
+                                          }
+                                        ]
+                                      }
+                                    }
+                                  ]
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "envoy.filters.http.dynamic_forward_proxy",
+              "typed_config": {
+                "@type": "type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig",
+                "sub_cluster_config": {}
+              }
+            },
+            {
+              "name": "envoy.filters.http.router",
+              "typed_config": {
+                "@type": "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router",
+                "upstream_http_filters": [
+                  {
+                    "name": "envoy.filters.http.upstream_rbac",
+                    "typed_config": {
+                      "@type": "type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC",
+                      "rules": {
+                        "action": "ALLOW",
+                        "policies": {
+                          "destinations": {
+                            "principals": [
+                              {
+                                "any": true
+                              }
+                            ],
+                            "permissions": [
+                              {
+                                "and_rules": {
+                                  "rules": [
+                                    {
+                                      "or_rules": {
+                                        "rules": [
+                                          {
+                                            "and_rules": {
+                                              "rules": [
+                                                {
+                                                  "header": {
+                                                    "name": ":method",
+                                                    "string_match": {
+                                                      "exact": "CONNECT"
+                                                    }
+                                                  }
+                                                },
+                                                {
+                                                  "header": {
+                                                    "name": ":authority",
+                                                    "string_match": {
+                                                      "safe_regex": {
+                                                        "regex": "(?i:slack\\.com):(?:443)"
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              ]
+                                            }
+                                          },
+                                          {
+                                            "and_rules": {
+                                              "rules": [
+                                                {
+                                                  "header": {
+                                                    "name": ":method",
+                                                    "string_match": {
+                                                      "exact": "CONNECT"
+                                                    }
+                                                  }
+                                                },
+                                                {
+                                                  "header": {
+                                                    "name": ":authority",
+                                                    "string_match": {
+                                                      "safe_regex": {
+                                                        "regex": "(?i:(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+slack\\.com):(?:443)"
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              ]
+                                            }
+                                          },
+                                          {
+                                            "and_rules": {
+                                              "rules": [
+                                                {
+                                                  "header": {
+                                                    "name": ":method",
+                                                    "string_match": {
+                                                      "exact": "CONNECT"
+                                                    }
+                                                  }
+                                                },
+                                                {
+                                                  "header": {
+                                                    "name": ":authority",
+                                                    "string_match": {
+                                                      "safe_regex": {
+                                                        "regex": "(?i:slack-edge\\.com):(?:443)"
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              ]
+                                            }
+                                          },
+                                          {
+                                            "and_rules": {
+                                              "rules": [
+                                                {
+                                                  "header": {
+                                                    "name": ":method",
+                                                    "string_match": {
+                                                      "exact": "CONNECT"
+                                                    }
+                                                  }
+                                                },
+                                                {
+                                                  "header": {
+                                                    "name": ":authority",
+                                                    "string_match": {
+                                                      "safe_regex": {
+                                                        "regex": "(?i:(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+slack-edge\\.com):(?:443)"
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              ]
+                                            }
+                                          },
+                                          {
+                                            "and_rules": {
+                                              "rules": [
+                                                {
+                                                  "header": {
+                                                    "name": ":method",
+                                                    "string_match": {
+                                                      "exact": "CONNECT"
+                                                    }
+                                                  }
+                                                },
+                                                {
+                                                  "header": {
+                                                    "name": ":authority",
+                                                    "string_match": {
+                                                      "safe_regex": {
+                                                        "regex": "(?i:slack-msgs\\.com):(?:443)"
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              ]
+                                            }
+                                          },
+                                          {
+                                            "and_rules": {
+                                              "rules": [
+                                                {
+                                                  "header": {
+                                                    "name": ":method",
+                                                    "string_match": {
+                                                      "exact": "CONNECT"
+                                                    }
+                                                  }
+                                                },
+                                                {
+                                                  "header": {
+                                                    "name": ":authority",
+                                                    "string_match": {
+                                                      "safe_regex": {
+                                                        "regex": "(?i:(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+slack-msgs\\.com):(?:443)"
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              ]
+                                            }
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    {
+                                      "matcher": {
+                                        "name": "envoy.rbac.matchers.upstream_ip_port",
+                                        "typed_config": {
+                                          "@type": "type.googleapis.com/envoy.extensions.rbac.matchers.upstream_ip_port.v3.UpstreamIpPortMatcher",
+                                          "upstream_ip": {
+                                            "address_prefix": "0.0.0.0",
+                                            "prefix_len": 0
+                                          }
+                                        }
+                                      }
+                                    },
+                                    {
+                                      "not_rule": {
+                                        "or_rules": {
+                                          "rules": [
+                                            {
+                                              "matcher": {
+                                                "name": "envoy.rbac.matchers.upstream_ip_port",
+                                                "typed_config": {
+                                                  "@type": "type.googleapis.com/envoy.extensions.rbac.matchers.upstream_ip_port.v3.UpstreamIpPortMatcher",
+                                                  "upstream_ip": {
+                                                    "address_prefix": "0.0.0.0",
+                                                    "prefix_len": 8
+                                                  }
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "matcher": {
+                                                "name": "envoy.rbac.matchers.upstream_ip_port",
+                                                "typed_config": {
+                                                  "@type": "type.googleapis.com/envoy.extensions.rbac.matchers.upstream_ip_port.v3.UpstreamIpPortMatcher",
+                                                  "upstream_ip": {
+                                                    "address_prefix": "10.0.0.0",
+                                                    "prefix_len": 8
+                                                  }
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "matcher": {
+                                                "name": "envoy.rbac.matchers.upstream_ip_port",
+                                                "typed_config": {
+                                                  "@type": "type.googleapis.com/envoy.extensions.rbac.matchers.upstream_ip_port.v3.UpstreamIpPortMatcher",
+                                                  "upstream_ip": {
+                                                    "address_prefix": "100.64.0.0",
+                                                    "prefix_len": 10
+                                                  }
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "matcher": {
+                                                "name": "envoy.rbac.matchers.upstream_ip_port",
+                                                "typed_config": {
+                                                  "@type": "type.googleapis.com/envoy.extensions.rbac.matchers.upstream_ip_port.v3.UpstreamIpPortMatcher",
+                                                  "upstream_ip": {
+                                                    "address_prefix": "127.0.0.0",
+                                                    "prefix_len": 8
+                                                  }
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "matcher": {
+                                                "name": "envoy.rbac.matchers.upstream_ip_port",
+                                                "typed_config": {
+                                                  "@type": "type.googleapis.com/envoy.extensions.rbac.matchers.upstream_ip_port.v3.UpstreamIpPortMatcher",
+                                                  "upstream_ip": {
+                                                    "address_prefix": "169.254.0.0",
+                                                    "prefix_len": 16
+                                                  }
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "matcher": {
+                                                "name": "envoy.rbac.matchers.upstream_ip_port",
+                                                "typed_config": {
+                                                  "@type": "type.googleapis.com/envoy.extensions.rbac.matchers.upstream_ip_port.v3.UpstreamIpPortMatcher",
+                                                  "upstream_ip": {
+                                                    "address_prefix": "172.16.0.0",
+                                                    "prefix_len": 12
+                                                  }
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "matcher": {
+                                                "name": "envoy.rbac.matchers.upstream_ip_port",
+                                                "typed_config": {
+                                                  "@type": "type.googleapis.com/envoy.extensions.rbac.matchers.upstream_ip_port.v3.UpstreamIpPortMatcher",
+                                                  "upstream_ip": {
+                                                    "address_prefix": "192.0.0.0",
+                                                    "prefix_len": 24
+                                                  }
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "matcher": {
+                                                "name": "envoy.rbac.matchers.upstream_ip_port",
+                                                "typed_config": {
+                                                  "@type": "type.googleapis.com/envoy.extensions.rbac.matchers.upstream_ip_port.v3.UpstreamIpPortMatcher",
+                                                  "upstream_ip": {
+                                                    "address_prefix": "192.0.2.0",
+                                                    "prefix_len": 24
+                                                  }
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "matcher": {
+                                                "name": "envoy.rbac.matchers.upstream_ip_port",
+                                                "typed_config": {
+                                                  "@type": "type.googleapis.com/envoy.extensions.rbac.matchers.upstream_ip_port.v3.UpstreamIpPortMatcher",
+                                                  "upstream_ip": {
+                                                    "address_prefix": "192.88.99.0",
+                                                    "prefix_len": 24
+                                                  }
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "matcher": {
+                                                "name": "envoy.rbac.matchers.upstream_ip_port",
+                                                "typed_config": {
+                                                  "@type": "type.googleapis.com/envoy.extensions.rbac.matchers.upstream_ip_port.v3.UpstreamIpPortMatcher",
+                                                  "upstream_ip": {
+                                                    "address_prefix": "192.168.0.0",
+                                                    "prefix_len": 16
+                                                  }
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "matcher": {
+                                                "name": "envoy.rbac.matchers.upstream_ip_port",
+                                                "typed_config": {
+                                                  "@type": "type.googleapis.com/envoy.extensions.rbac.matchers.upstream_ip_port.v3.UpstreamIpPortMatcher",
+                                                  "upstream_ip": {
+                                                    "address_prefix": "198.18.0.0",
+                                                    "prefix_len": 15
+                                                  }
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "matcher": {
+                                                "name": "envoy.rbac.matchers.upstream_ip_port",
+                                                "typed_config": {
+                                                  "@type": "type.googleapis.com/envoy.extensions.rbac.matchers.upstream_ip_port.v3.UpstreamIpPortMatcher",
+                                                  "upstream_ip": {
+                                                    "address_prefix": "198.51.100.0",
+                                                    "prefix_len": 24
+                                                  }
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "matcher": {
+                                                "name": "envoy.rbac.matchers.upstream_ip_port",
+                                                "typed_config": {
+                                                  "@type": "type.googleapis.com/envoy.extensions.rbac.matchers.upstream_ip_port.v3.UpstreamIpPortMatcher",
+                                                  "upstream_ip": {
+                                                    "address_prefix": "203.0.113.0",
+                                                    "prefix_len": 24
+                                                  }
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "matcher": {
+                                                "name": "envoy.rbac.matchers.upstream_ip_port",
+                                                "typed_config": {
+                                                  "@type": "type.googleapis.com/envoy.extensions.rbac.matchers.upstream_ip_port.v3.UpstreamIpPortMatcher",
+                                                  "upstream_ip": {
+                                                    "address_prefix": "224.0.0.0",
+                                                    "prefix_len": 4
+                                                  }
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "matcher": {
+                                                "name": "envoy.rbac.matchers.upstream_ip_port",
+                                                "typed_config": {
+                                                  "@type": "type.googleapis.com/envoy.extensions.rbac.matchers.upstream_ip_port.v3.UpstreamIpPortMatcher",
+                                                  "upstream_ip": {
+                                                    "address_prefix": "240.0.0.0",
+                                                    "prefix_len": 4
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  ]
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "name": "envoy.filters.http.upstream_codec",
+                    "typed_config": {
+                      "@type": "type.googleapis.com/envoy.extensions.filters.http.upstream_codec.v3.UpstreamCodec"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "forwardCluster": {
+    "name": "channel-egress-forward",
+    "connect_timeout": "5s",
+    "lb_policy": "CLUSTER_PROVIDED",
+    "dns_lookup_family": "V4_ONLY",
+    "cluster_type": {
+      "name": "envoy.clusters.dynamic_forward_proxy",
+      "typed_config": {
+        "@type": "type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig",
+        "sub_clusters_config": {
+          "lb_policy": "ROUND_ROBIN",
+          "max_sub_clusters": 256
+        }
+      }
+    }
+  },
+  "inspectionCluster": {
+    "name": "channel-egress-inspection",
+    "type": "STATIC",
+    "connect_timeout": "1s",
+    "load_assignment": {
+      "cluster_name": "channel-egress-inspection",
+      "endpoints": [
+        {
+          "lb_endpoints": [
+            {
+              "endpoint": {
+                "address": {
+                  "socket_address": {
+                    "address": "127.0.0.1",
+                    "port_value": 19000
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "inspectionFilterChain": {
+    "name": "channel-egress-inspection",
+    "filters": [
+      {
+        "name": "envoy.filters.network.http_connection_manager",
+        "typed_config": {
+          "@type": "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager",
+          "stat_prefix": "channel-egress-inspection",
+          "http_filters": [
+            {
+              "name": "envoy.filters.http.router",
+              "typed_config": {
+                "@type": "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router"
+              }
+            }
+          ],
+          "route_config": {
+            "name": "inspection",
+            "virtual_hosts": [
+              {
+                "name": "inspection",
+                "domains": [
+                  "*"
+                ],
+                "routes": [
+                  {
+                    "match": {
+                      "path": "/config_dump",
+                      "headers": [
+                        {
+                          "name": ":method",
+                          "string_match": {
+                            "exact": "GET"
+                          }
+                        }
+                      ]
+                    },
+                    "route": {
+                      "cluster": "channel-egress-inspection"
+                    }
+                  },
+                  {
+                    "match": {
+                      "prefix": "/"
+                    },
+                    "direct_response": {
+                      "status": 404
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    ]
+  }
+}

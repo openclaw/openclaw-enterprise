@@ -167,6 +167,12 @@ for the provisioning sequence.
 
 ## Drivers
 
+Channel Drivers declare provider destinations. Kubernetes Compute enforces each
+Agent's enabled-channel requirements through a dedicated Envoy egress fleet,
+separate from private workspace ingress. Protected listener ports select Agent
+policies until verified Gateway workload identities are available. See
+[channel egress](reference/drivers/kubernetes-compute/channel-egress.md).
+
 Installation configuration selects compute, configuration, IAM, and Secret
 implementations, plus channel and optional service-account, plugin, repository, Sandbox, and
 Credential Gateway integrations. [Driver development](contributing/driver-development.md)

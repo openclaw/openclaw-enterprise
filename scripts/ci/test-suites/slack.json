@@ -40,8 +40,15 @@
     {
       "path": "tests/integration/harness-topology-k3d-slack-real.test.mjs",
       "expectedTests": [
-        "production k3d gateway replies once to a real Slack message through its approved proxy and Codex Agent"
+        "production k3d gateway replies once to a real Slack message through its assigned Envoy listener and Codex Agent"
+      ]
+    },
+    {
+      "path": "tests/integration/channel-egress-kubernetes-real.test.ts",
+      "expectedTests": [
+        "channel egress isolates current Driver generations and retires real Agent bindings"
       ]
     }
-  ]
+  ],
+  "fileConcurrency": 1
 }

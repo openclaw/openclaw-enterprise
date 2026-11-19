@@ -186,10 +186,13 @@ already checked in step 3 with the API's `parseCidr` rules
 IPv4-mapped address, and no range that covers every IPv4 peer. Like the chart,
 preflight also refuses a zone ID, which the API accepts.
 
-When `channels.managedSlackProxy` is true, the values also enable the
-chart-managed Slack proxy Service. The chart allows that proxy public IPv4 HTTPS
-egress, excluding private and reserved ranges, and the proxy authorizes Slack
-hostnames. Repository values render only when the input explicitly sets
+When `channels.managedEgress` is true, the renderer writes matching
+`channelEgress` Helm values and `runtime.channelEgress` Compute configuration.
+The operator supplies installation address exclusions. OCC derives its reserved
+listener from that configuration; Compute assigns each enabled Agent its own
+listener. See [channel egress](channel-egress.md).
+
+Repository values render only when the input explicitly sets
 `repository.enabled: true`. Repository provider CIDRs pass through unchanged,
 so operators can keep their existing GitHub ranges without DNS snapshots. The
 renderer copies `repository.serviceName` only when the input sets it, and only

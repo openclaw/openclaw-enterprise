@@ -1,3 +1,5 @@
+import { browserSlackSender } from "../helpers/browser-slack-sender.ts";
+import { writeFile } from "node:fs/promises";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -25,22 +27,28 @@ const topologyTeardown = (testContext) =>
   boundedTeardown(testContext, { label: "production topology teardown" });
 
 test(
-  "production k3d gateway replies once to a real Slack message through its approved proxy and Codex Agent",
-  { ...requiresLiveSlack, timeout: 780_000 },
+  "production k3d gateway replies once to a real Slack message through its assigned Envoy listener and Codex Agent",
+  { ...requiresLiveSlack, timeout: 1_800_000 },
   async (testContext) => {
     const { context } = topologyTeardown(testContext);
-    for (const key of [
-      "OCC_TEST_SLACK_CHANNEL_ID",
-      "OCC_TEST_SLACK_SENDER_BOT_TOKEN",
-      "SLACK_APP_TOKEN",
-      "SLACK_BOT_TOKEN",
-    ]) {
+    for (const key of ["OCC_TEST_SLACK_CHANNEL_ID", "SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"]) {
       assert.ok(process.env[key], `${key} is required for explicitly requested live Slack proof.`);
     }
-    const [gatewayIdentity, senderIdentity] = await Promise.all([
-      slackApi("auth.test", process.env.SLACK_BOT_TOKEN),
-      slackApi("auth.test", process.env.OCC_TEST_SLACK_SENDER_BOT_TOKEN),
-    ]);
+    const browserDirectory = process.env.OCC_TEST_SLACK_BROWSER_DIRECTORY;
+    const gatewayIdentity = await slackApi("auth.test", process.env.SLACK_BOT_TOKEN);
+    if (browserDirectory) {
+      assert.match(process.env.OCC_TEST_SLACK_SENDER_USER_ID ?? "", /^U[A-Z0-9]+$/);
+      assert.match(process.env.SLACK_TEAM_ID ?? "", /^T[A-Z0-9]+$/);
+      assert.match(process.env.SLACK_APP_ID ?? "", /^A[A-Z0-9]+$/);
+    } else {
+      assert.ok(
+        process.env.OCC_TEST_SLACK_SENDER_BOT_TOKEN,
+        "An explicitly provisioned distinct sender bot is required without browser coordination.",
+      );
+    }
+    const senderIdentity = browserDirectory
+      ? { user_id: process.env.OCC_TEST_SLACK_SENDER_USER_ID, team_id: process.env.SLACK_TEAM_ID }
+      : await slackApi("auth.test", process.env.OCC_TEST_SLACK_SENDER_BOT_TOKEN);
     assert.equal(
       gatewayIdentity.team_id,
       senderIdentity.team_id,
@@ -64,16 +72,16 @@ test(
       "Slack requires a Socket Mode app token",
     );
     assert.equal(slack.botToken.startsWith("xoxb-"), true, "Slack requires an approved bot token");
-    assert.equal(
-      slack.senderBotToken.startsWith("xoxb-"),
-      true,
-      "Slack end-to-end proof requires an approved second bot token",
-    );
-    // Check both identities before provisioning or posting. Report membership
-    // separately so a missing channel invitation has an actionable failure.
+    if (!browserDirectory) {
+      assert.equal(slack.senderBotToken.startsWith("xoxb-"), true);
+    }
+    // The browser coordinator supplies the human identity. Slack history verifies
+    // that this exact person authored the one message; no sender token is invented.
     const members = [
       { role: "gateway", token: slack.botToken, userId: gatewayIdentity.user_id },
-      { role: "sender", token: slack.senderBotToken, userId: senderIdentity.user_id },
+      ...(browserDirectory
+        ? []
+        : [{ role: "sender", token: slack.senderBotToken, userId: senderIdentity.user_id }]),
     ];
     const memberships = await Promise.allSettled(
       members.map(({ token }) =>
@@ -145,39 +153,42 @@ test(
       );
     }
     assert.equal(
-      JSON.stringify(topology.revision.configuration).includes(slack.senderBotToken),
+      slack.senderBotToken
+        ? JSON.stringify(topology.revision.configuration).includes(slack.senderBotToken)
+        : false,
       false,
       "Agent revisions must not persist the external sender credential",
     );
+    const proxyUrl = gatewayEnvironment.find(({ name }) => name === "HTTPS_PROXY")?.value;
+    assert.ok(proxyUrl, "Gateway must receive its assigned Envoy listener");
+    const bindingId = gateway.spec.template.metadata.labels["openclaw.dev/channel-egress-binding"];
+    assert.ok(bindingId);
+    const policyList = JSON.parse(
+      await kubectl(
+        "get",
+        "networkpolicy",
+        "--namespace",
+        topology.gatewayPlacement,
+        "--selector",
+        `openclaw.dev/channel-egress-binding=${bindingId}`,
+        "-o",
+        "json",
+      ),
+    ).items;
+    assert.equal(policyList.length, 1);
+    const policy = policyList[0];
     assert.equal(
-      gatewayEnvironment.find(({ name }) => name === "HTTPS_PROXY")?.value,
-      slack.proxyUrl,
+      policy.spec.podSelector.matchLabels["openclaw.dev/revision"],
+      topology.revision.id,
     );
-    const policy = await resource(
-      "networkpolicy",
-      `allow-gateway-channels-${suffix}`,
-      topology.gatewayPlacement,
+    assert.equal(policy.spec.podSelector.matchLabels["openclaw.dev/agent"], topology.agent.id);
+    assert.equal(policy.spec.podSelector.matchLabels["openclaw.dev/workload-role"], "gateway");
+    assert.equal(
+      policy.spec.podSelector.matchLabels["openclaw.dev/channel-egress-binding"],
+      bindingId,
     );
-    // NetworkPolicy scopes its Pod selector to the owning Kubernetes namespace.
-    assert.equal(policy.metadata.namespace, topology.gatewayPlacement);
-    assert.deepEqual(policy.spec.podSelector.matchLabels, {
-      "openclaw.dev/network-profile": "broad-egress-v1",
-      "openclaw.dev/workload-role": "gateway",
-      "openclaw.dev/agent": topology.agent.id,
-    });
-    assert.deepEqual(policy.spec.egress, [
-      {
-        to: [
-          {
-            namespaceSelector: {
-              matchLabels: { "kubernetes.io/metadata.name": slack.managedProxy.namespace },
-            },
-            podSelector: { matchLabels: slack.managedProxy.podLabels },
-          },
-        ],
-        ports: [{ protocol: "TCP", port: slack.managedProxy.port }],
-      },
-    ]);
+    const proxyPort = Number(new URL(proxyUrl).port);
+    assert.deepEqual(policy.spec.egress[0].ports, [{ protocol: "TCP", port: proxyPort }]);
     const target = await resource("pod", topology.approvedClient, topology.platformNamespace);
     await assertDeniedConnection(
       topology.gatewayPlacement,
@@ -189,26 +200,29 @@ test(
     // Exercise the enforcing policy rather than checking selectors alone.
     const proxyService = await resource(
       "service",
-      "openclaw-enterprise-slack-proxy",
-      topology.platformNamespace,
+      slack.channelEgress.serviceName,
+      slack.channelEgress.envoyNamespace,
     );
     await assertDeniedConnection(
       topology.placement,
       topology.harnessPod.metadata.name,
       proxyService.spec.clusterIP,
-      slack.managedProxy.port,
+      proxyPort,
     );
-    const proxyDeployment = await resource(
-      "deployment",
-      "openclaw-enterprise-slack-proxy",
-      topology.platformNamespace,
+    const fleet = JSON.parse(
+      await kubectl(
+        "get",
+        "pods",
+        "--namespace",
+        slack.channelEgress.envoyNamespace,
+        "--selector",
+        `gateway.envoyproxy.io/owning-gateway-name=${slack.channelEgress.gatewayName}`,
+        "-o",
+        "json",
+      ),
     );
-    for (const token of [slack.appToken, slack.botToken, slack.senderBotToken]) {
-      assert.equal(
-        JSON.stringify(proxyDeployment).includes(token),
-        false,
-        "the tunneling proxy must not receive Slack credentials",
-      );
+    for (const token of [slack.appToken, slack.botToken, slack.senderBotToken].filter(Boolean)) {
+      assert.ok(!JSON.stringify(fleet).includes(token), "Envoy must not receive Slack credentials");
     }
 
     await waitFor("a genuine authenticated Slack Socket Mode connection", async () => {
@@ -221,7 +235,7 @@ test(
       assert.equal(logs.includes(slack.appToken), false, "gateway logs must not expose app tokens");
       assert.equal(logs.includes(slack.botToken), false, "gateway logs must not expose bot tokens");
       assert.equal(
-        logs.includes(slack.senderBotToken),
+        slack.senderBotToken ? logs.includes(slack.senderBotToken) : false,
         false,
         "gateway logs must not expose the external sender's token",
       );
@@ -229,11 +243,22 @@ test(
     });
     // TODO: retire this delivery caller after the protected QA matrix lane is qualified.
     // Keep the focused lane's acceptance coverage during the transition, without resends.
-    await verifySingleSlackDelivery({
+    const delivery = await verifySingleSlackDelivery({
       slack,
       gatewayIdentity,
       senderIdentity,
       replyMode: "root",
+      ...(browserDirectory
+        ? {
+            sendMessage: browserSlackSender({
+              directory: browserDirectory,
+              workspaceId: gatewayIdentity.team_id,
+              channelId: slack.channelId,
+              appId: process.env.SLACK_APP_ID,
+              senderUserId: senderIdentity.user_id,
+            }),
+          }
+        : {}),
       nativeEvidence: async (nonce) => {
         const execGateway = (...args) =>
           kubectl(
@@ -294,8 +319,13 @@ test(
         return matches[0];
       },
     });
+    if (process.env.OCC_TEST_SLACK_EVIDENCE_PATH) {
+      await writeFile(process.env.OCC_TEST_SLACK_EVIDENCE_PATH, JSON.stringify(delivery, null, 2), {
+        mode: 0o600,
+      });
+    }
     context.diagnostic(
-      "Channel credential isolation, approved proxy, and single-message native Codex Slack delivery verified.",
+      "Channel credential isolation, assigned Envoy listener, and single-message native Codex Slack delivery verified.",
     );
   },
 );

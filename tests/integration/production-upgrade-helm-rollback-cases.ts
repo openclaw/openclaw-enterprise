@@ -105,30 +105,16 @@ export function registerHelmRollbackCases({ fixture }: { fixture: RecoveryFixtur
     assert.equal(existsSync(join(f.evidence, "helm-recovery")), false);
   }
 
-  // Clearing this proxy is an allowed candidate-values change. Stock Helm can
-  // leave its old NetworkPolicy behind when interrupted before ordinary updates.
-  async function interruptedProxyRemoval(t: TestContext, selectedProxy = "") {
+  // A chart revision may retire an ordinary policy. Retain the predecessor
+  // inventory while simulating an interrupted Helm response; the recovery
+  // protocol must verify actual absence before acknowledging the candidate.
+  async function interruptedPolicyRetirement(t: TestContext) {
     const f = await fixture(t, { recoveryHooks: true });
-    const values = requiredRecord(
-      await yamlFile(join(f.directory, "values.json")),
-      "expected Helm values",
-    );
-    values.api = { ...asRecord(values.api), channelDirectoryProxyUrl: "http://198.51.100.25:3128" };
-    for (const file of ["values.json", "live-values"]) {
-      await writeFile(join(f.directory, file), JSON.stringify(values));
-    }
-    const candidate = structuredClone(values);
-    requiredRecord(
-      candidate.api,
-      "expected API values after staging the predecessor",
-    ).channelDirectoryProxyUrl = selectedProxy;
-    const candidatePath = join(f.directory, "remove-proxy.json");
-    await writeFile(candidatePath, JSON.stringify(candidate), { mode: 0o600 });
     const policy = {
       apiVersion: "networking.k8s.io/v1",
       kind: "NetworkPolicy",
       metadata: {
-        name: "openclaw-enterprise-api-channel-directory-egress",
+        name: "openclaw-enterprise-retired-client-ingress",
         namespace: "system",
         uid: "old-egress-policy",
         resourceVersion: "1",
@@ -145,15 +131,15 @@ export function registerHelmRollbackCases({ fixture }: { fixture: RecoveryFixtur
       },
     };
     const state = await f.state();
-    state.recoveryBaselineResources = selectedProxy ? [] : [policy];
+    state.recoveryBaselineResources = [policy];
     await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
-    const run = (...args: string[]) => f.run("--candidate-values", candidatePath, ...args);
+    const run = f.run;
     const pending = await loseHelmResponseWithCompletedHook(f, run);
     return { f, run, pending, policy, key: `${policy.kind}/${policy.metadata.name}` };
   }
 
   test("same-candidate recovery refuses retained predecessor resources and checks their absence on resume", async (t) => {
-    const { f, run, pending, policy, key } = await interruptedProxyRemoval(t);
+    const { f, run, pending, policy, key } = await interruptedPolicyRetirement(t);
     const originalIntent = await f.readEvidence("helm-started");
     for (const mode of ["live", "deleting", "keep", "forbidden"]) {
       await t.test(mode, async () => {
@@ -180,7 +166,7 @@ export function registerHelmRollbackCases({ fixture }: { fixture: RecoveryFixtur
       });
     }
     const withRetiredEnv = structuredClone(pending);
-    const oldEnv = { name: "OCC_CHANNEL_DIRECTORY_PROXY_URL", value: "http://198.51.100.25:3128" };
+    const oldEnv = { name: "NODE_OPTIONS", value: "--max-old-space-size=512" };
     apiEnvironment(withRetiredEnv).push(oldEnv);
     await assertRecoveryRefusedBeforeRollback(f, withRetiredEnv, /live environment differs/, run);
     // Explicit operator reconciliation removes the retired policy and env entry. If a later
@@ -212,16 +198,13 @@ export function registerHelmRollbackCases({ fixture }: { fixture: RecoveryFixtur
     assert.equal(await f.readEvidence("helm-started"), originalIntent);
   });
 
-  test("same-candidate recovery verifies a changed retained environment selection after rollback", async (t) => {
-    const { f, run, pending } = await interruptedProxyRemoval(t, "http://198.51.100.26:3128");
-    // A retained scalar can legitimately differ before rollback. This protocol
-    // fault keeps its old value afterward; it must not receive acknowledgement.
-    const entries = apiEnvironment(pending);
-    const proxy = asRecord(
-      entries.find((entry) => asRecord(entry)?.name === "OCC_CHANNEL_DIRECTORY_PROXY_URL"),
+  test("same-candidate recovery verifies retained environment after rollback", async (t) => {
+    const { f, run, pending } = await interruptedPolicyRetirement(t);
+    const configPath = asRecord(
+      apiEnvironment(pending).find((entry) => asRecord(entry)?.name === "OCC_CONFIG_PATH"),
     );
-    assert.ok(proxy, "expected the candidate directory proxy variable");
-    proxy.value = "http://198.51.100.25:3128";
+    assert.ok(configPath);
+    configPath.value = "/etc/openclaw/installation/incorrect.yaml";
     await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
     await assert.rejects(run(...recoverHelm), /live environment differs/);
     assert.equal((await f.state()).rollbackSubmissions, 1);
@@ -233,7 +216,7 @@ export function registerHelmRollbackCases({ fixture }: { fixture: RecoveryFixtur
     ["after rollback", 1],
   ] as const) {
     test(`same-candidate recovery refuses a predecessor resource recreated ${stage}`, async (t) => {
-      const { f, run, pending, key, policy } = await interruptedProxyRemoval(t);
+      const { f, run, pending, key, policy } = await interruptedPolicyRetirement(t);
       const originalIntent = await f.readEvidence("helm-started");
       pending.retiredResourceRecreation = { stage, key, resource: policy };
       await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));

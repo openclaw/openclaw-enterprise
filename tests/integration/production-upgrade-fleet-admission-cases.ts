@@ -204,10 +204,6 @@ export function registerFleetAdmissionCases({
     const liveValues = requireObject(
       JSON.parse((await execute("yq", ["-o=json", ".", join(f.directory, "live-values")])).stdout),
     );
-    assert.equal(
-      requireObject(liveValues.api).channelDirectoryProxyUrl,
-      "http://198.51.100.25:3128",
-    );
     assert.equal(requireObject(liveValues.images).controller, newController);
     assert.equal(
       requireObject(liveValues.repositoryCredentials).hostname,
@@ -256,7 +252,7 @@ export function registerFleetAdmissionCases({
     assert.equal(events.filter((event) => event === "secret-replaced").length, 1);
     assert.ok(!events.includes("migration"), "Helm must wait for an acknowledged Secret write");
     const candidate = requireObject(JSON.parse(await readFile(path, "utf8")));
-    requireObject(candidate.api).channelDirectoryProxyUrl = "http://198.51.100.26:3128";
+    requireObject(candidate.api).replicas = 3;
     await writeFile(path, JSON.stringify(candidate));
     await assert.rejects(f.run("--resume"), /reviewed candidate values changed after preparation/);
     assert.deepEqual(await f.events(), events);

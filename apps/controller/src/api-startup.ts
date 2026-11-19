@@ -60,15 +60,7 @@ type SharedApiSettings = HumanLoginConfiguration & {
 
 type ApiSettings = SharedApiSettings &
   (
-    | Pick<
-        ProductionConfig,
-        | "mode"
-        | "host"
-        | "clientAddress"
-        | "channelDirectoryProxyUrl"
-        | "channelDirectoryManagedProxyHost"
-        | "apiHttpsEgressOpen"
-      >
+    | Pick<ProductionConfig, "mode" | "host" | "clientAddress">
     | Pick<
         PostgresDevelopmentConfig,
         "mode" | "host" | "trustedDevelopmentBridgeCidr" | "trustedDevelopmentForwarderCidr"
@@ -273,8 +265,15 @@ function configuration(env: ApiEnvironment): ApiSettings {
   }
 
   const gatewayApiKeyPath = env.OCC_GATEWAY_API_KEY_PATH;
-  const channelDirectoryProxyUrl = env.OCC_CHANNEL_DIRECTORY_PROXY_URL;
-  const channelDirectoryManagedProxyHost = env.OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST;
+  if (
+    env.OCC_CHANNEL_DIRECTORY_PROXY_URL !== undefined ||
+    env.OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST !== undefined ||
+    env.OCC_API_HTTPS_EGRESS_OPEN !== undefined
+  ) {
+    throw new Error(
+      "Legacy channel proxy settings are unsupported; configure managed channel egress.",
+    );
+  }
   if (gatewayApiKeyPath !== undefined) {
     validateGatewayApiKeyPath(gatewayApiKeyPath);
   }
@@ -354,12 +353,6 @@ function configuration(env: ApiEnvironment): ApiSettings {
       ...settings,
       ...listener,
       ...(clientAddress === undefined ? {} : { clientAddress }),
-      ...(channelDirectoryProxyUrl === undefined ? {} : { channelDirectoryProxyUrl }),
-      ...(channelDirectoryManagedProxyHost === undefined
-        ? {}
-        : { channelDirectoryManagedProxyHost }),
-      // The chart sets it when a sign-in egress rule opens HTTPS to any address (finding 2533).
-      apiHttpsEgressOpen: optionalBooleanEnvironment(env, "OCC_API_HTTPS_EGRESS_OPEN"),
     });
   }
 

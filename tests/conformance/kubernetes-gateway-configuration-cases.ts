@@ -1,3 +1,5 @@
+import { createChannelTestCompute as createKubernetesComputeDriver } from "../helpers/channel-egress.ts";
+import { channelEgressOptions, slackChannelDrivers } from "../helpers/channel-egress.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import {
   ComputeGatewaySettingError,
@@ -15,10 +17,7 @@ import { unexpectedNodeEnrollment } from "./kubernetes-namespace-placement-cases
 import { workspaceSetupFixture } from "../helpers/kubernetes-workspace-setup.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
-import {
-  createKubernetesComputeDriver,
-  KubernetesComputeDriver,
-} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { managedGatewayConfiguration } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
@@ -121,7 +120,10 @@ export function refuseGatewayBreakersBeforeDedicatedCutover() {
   // Refuse configurations that would fail preparation or crash-loop the new Gateway.
   // An Installation with runtime storage, gateway routing and node enrollment: every dedicated
   // Gateway hosts the Agent's workspace node.
-  const enrollment = { nodeEnrollment: unexpectedNodeEnrollment() };
+  const enrollment = {
+    nodeEnrollment: unexpectedNodeEnrollment(),
+    channelDrivers: slackChannelDrivers,
+  };
   const routed = new KubernetesComputeDriver(
     routedOptions({ runtime: gatewayRuntime }),
     enrollment,
@@ -130,7 +132,7 @@ export function refuseGatewayBreakersBeforeDedicatedCutover() {
     ...enrollment,
     sandboxDriver: admissionSandboxDriver(),
   });
-  const unrouted = new KubernetesComputeDriver(options());
+  const unrouted = new KubernetesComputeDriver(options(), { channelDrivers: slackChannelDrivers });
   // Without runtime storage no Gateway hosts a workspace node. (Runtime storage without node
   // enrollment refuses every dedicated deployment at admission.)
   const withoutNode = [unrouted, new KubernetesComputeDriver(routedOptions(), enrollment)];
@@ -407,7 +409,7 @@ function checkChannelAdmission(unrouted: KubernetesComputeDriver) {
   assert.throws(
     () => unrouted.validateHarnessAuth(codex, apiKeyAuth, { ...codexBase, ...slack }),
     channelRefusal(
-      "is enabled, but this Installation has no channel runtime: enabled channels require isolated credentials and a reviewed proxy",
+      "is enabled, but this Installation has no channel runtime: enabled channels require isolated credentials and managed per-Agent routing",
     ),
   );
   const embeddedChannelsRefusal = channelRefusal(
@@ -415,9 +417,9 @@ function checkChannelAdmission(unrouted: KubernetesComputeDriver) {
   );
   const withChannels = new KubernetesComputeDriver(
     routedOptions({
-      runtime: { ...gatewayRuntime, channels: { proxyUrl: "http://10.42.0.15:3128" } },
+      runtime: { ...gatewayRuntime, channelEgress: channelEgressOptions },
     }),
-    { nodeEnrollment: unexpectedNodeEnrollment() },
+    { nodeEnrollment: unexpectedNodeEnrollment(), channelDrivers: slackChannelDrivers },
   );
   assert.throws(
     () => withChannels.validateHarnessAuth(embedded, apiKeyAuth, { ...openClawBase, ...slack }),

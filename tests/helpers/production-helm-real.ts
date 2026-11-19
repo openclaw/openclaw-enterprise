@@ -1,3 +1,4 @@
+import type { ChannelEgressOptions } from "../../apps/controller/src/drivers/compute/kubernetes/channel-egress-policy.ts";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
@@ -113,7 +114,7 @@ type PrepareOptions = HelmTarget &
     installationName: string;
     bootstrapCredentials?: "generate" | "existing";
     apiClients: readonly PodPeer[];
-    channelDirectoryProxyUrl?: string | undefined;
+    channelEgress?: ChannelEgressOptions | undefined;
     databaseName?: string | undefined;
     databaseTLS?:
       | {
@@ -157,7 +158,7 @@ export async function prepareProductionHelmControlPlane({
   agentNativeAdminDomain,
   installationName,
   apiClients,
-  channelDirectoryProxyUrl,
+  channelEgress,
   repositoryCredentials,
   gatewayRouting,
   controlPlane,
@@ -386,6 +387,7 @@ export async function prepareProductionHelmControlPlane({
   const adminEmail = `admin-${suffix}@example.invalid`;
   const values = {
     images: { controller: images.controller },
+    ...(channelEgress ? { channelEgress: { ...channelEgress, enabled: true } } : {}),
     installation: { name: installationName },
     auth: { baseUrl: authBaseURL },
     agentNativeAdmin: { domain: agentNativeAdminDomain },
@@ -404,7 +406,6 @@ export async function prepareProductionHelmControlPlane({
     },
     api: {
       clients: apiClients,
-      ...(channelDirectoryProxyUrl !== undefined && { channelDirectoryProxyUrl }),
     },
     resources,
     // Callers without prepared routing exercise the supported direct-access installation.

@@ -93,16 +93,19 @@ export function registerCliCases(): void {
     ]);
     assert.match(openclaw.values, /agentNativeAdmin:\n {2}enabled: true/);
     assert.match(openclaw.values, /repositoryCredentials:\n {2}enabled: false/);
-    assert.match(openclaw.values, /slackProxy:\n {2}enabled: true/);
-    assert.match(
-      openclaw.installation,
-      /channels:\n\s+proxyUrl: http:\/\/openclaw-enterprise-slack-proxy\.openclaw-system\.svc:3128/,
+    assert.equal(propertyAt(loadYaml(openclaw.values), "channelEgress", "enabled"), true);
+    assert.equal(
+      propertyAt(
+        loadYaml(openclaw.installation),
+        "drivers",
+        "compute",
+        "configuration",
+        "runtime",
+        "channelEgress",
+        "gatewayName",
+      ),
+      "openclaw-channel-egress",
     );
-    assert.match(
-      openclaw.installation,
-      /managedProxy:\n\s+hostname: openclaw-enterprise-slack-proxy\.openclaw-system\.svc/,
-    );
-    assert.match(openclaw.installation, /app\.kubernetes\.io\/component: slack-proxy/);
 
     const codex = renderCli("codex", codexInput());
     assert.equal(codex.summary.ok, true);
@@ -111,12 +114,8 @@ export function registerCliCases(): void {
       { id: "codex-plugin", configuration: { catalogSource: "hosted" } },
     ]);
     assert.doesNotMatch(codex.installation, /service_account: chatgpt-service-accounts/);
-    assert.match(codex.values, /slackProxy:\n {2}enabled: true/);
-    assert.match(
-      codex.installation,
-      /channels:\n\s+proxyUrl: http:\/\/openclaw-enterprise-slack-proxy\.openclaw-system\.svc:3128/,
-    );
-    assert.match(codex.preflight.prerequisites.join("\n"), /Slack consumers remain inactive/);
+    assert.equal(propertyAt(loadYaml(codex.values), "channelEgress", "enabled"), true);
+    assert.match(codex.preflight.prerequisites.join("\n"), /EnvoyPatchPolicy/);
     assert.match(codex.preflight.warnings.join("\n"), /existing codex_pat token/);
   });
 
@@ -303,12 +302,23 @@ export function registerCliCases(): void {
           const releaseName = "r".repeat(length);
           input.controlPlane.releaseName = releaseName;
           const output = await render(profile, input);
+          const routingName = propertyAt(
+            loadYaml(output.installation),
+            "drivers",
+            "compute",
+            "configuration",
+            "gatewayRouting",
+            "gatewayName",
+          );
           const gateway = helmTemplate(output, [], releaseName)
             .split(/\n---\n/)
-            .find((document) => /\nkind: Gateway\n/.test(document));
+            .find(
+              (document) =>
+                /\nkind: Gateway\n/.test(document) &&
+                propertyAt(loadYaml(document), "metadata", "name") === routingName,
+            );
           assert.ok(gateway, "Helm must render the Gateway referenced by Compute");
           const gatewayName = gateway.match(/^ {2}name: "([^"]+)"$/m)?.[1];
-          const routingName = output.installation.match(/^\s+gatewayName: (\S+)$/m)?.[1];
           assert.ok(gatewayName && gatewayName.length <= 63);
           assert.equal(routingName, gatewayName, `${profile}: release length ${length}`);
         }

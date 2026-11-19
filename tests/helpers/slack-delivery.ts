@@ -66,12 +66,19 @@ export function assertSlackBotAuthor(message: SlackMessage, identity: SlackIdent
 }
 
 interface DeliveryCheck<Native> {
-  readonly slack: { readonly channelId: string; readonly senderBotToken: string };
+  readonly slack: {
+    readonly channelId: string;
+    readonly senderBotToken?: string;
+    readonly botToken?: string;
+  };
   readonly gatewayIdentity: SlackIdentity;
   readonly senderIdentity: SlackIdentity;
   readonly nativeEvidence: (nonce: string) => Native | PromiseLike<Native>;
   readonly replyMode?: "thread" | "root";
   readonly observationMs?: number;
+  readonly sendMessage?: (
+    text: string,
+  ) => Promise<{ readonly channel: string; readonly ts: string }>;
 }
 
 // Only the reads are polled. A lost ingress event is a failure, never a reason
@@ -83,6 +90,7 @@ export async function verifySingleSlackDelivery<Native>({
   nativeEvidence,
   replyMode = "thread",
   observationMs = 60_000,
+  sendMessage,
 }: DeliveryCheck<Native>) {
   const botId = gatewayIdentity.bot_id ?? "";
   assert.match(botId, /^B[A-Z0-9]+$/, "auth.test must identify the expected bot");
@@ -90,28 +98,49 @@ export async function verifySingleSlackDelivery<Native>({
   assert.equal(gatewayIdentity.team_id, senderIdentity.team_id);
   assert.ok(observationMs >= 60_000 && observationMs <= 300_000);
   const nonce = `OCC-SLACK-${randomUUID()}`;
-  const sent = await slackApi("chat.postMessage", slack.senderBotToken, {
-    channel: slack.channelId,
-    text: `<@${gatewayIdentity.user_id}> Reply with exactly this nonce and no other text: ${nonce}`,
-  });
+  const text = `<@${gatewayIdentity.user_id}> Reply with exactly this nonce and no other text: ${nonce}`;
+  const readerToken = slack.senderBotToken ?? slack.botToken;
+  assert.ok(readerToken, "a provisioned Slack credential must observe delivery");
+  assert.ok(
+    sendMessage || slack.senderBotToken,
+    "the test requires an authorized human sender or a distinct sender bot",
+  );
+  const sent = sendMessage
+    ? await sendMessage(text)
+    : await slackApi("chat.postMessage", slack.senderBotToken!, { channel: slack.channelId, text });
   assert.equal(sent.channel, slack.channelId);
   assert.match(sent.ts, /^\d+\.\d+$/);
   const deadline = Date.now() + 240_000;
   let firstObserved: number | undefined;
   let response: SlackMessage | undefined;
   while (Date.now() < (firstObserved ? firstObserved + observationMs : deadline)) {
-    const roots = await allMessages("conversations.history", slack.senderBotToken, {
+    const roots = await allMessages("conversations.history", readerToken, {
       channel: slack.channelId,
       oldest: sent.ts,
       inclusive: true,
     });
-    const thread = await allMessages("conversations.replies", slack.senderBotToken, {
+    const thread = await allMessages("conversations.replies", readerToken, {
       channel: slack.channelId,
       ts: sent.ts,
     });
     const unique = [
       ...new Map([...roots, ...thread].map((message) => [message.ts, message])).values(),
     ];
+    const initial = unique.find((message) => message.ts === sent.ts);
+    assert.ok(initial, "Slack must expose the exact initial message");
+    if (senderIdentity.bot_id) {
+      assertSlackBotAuthor(initial, senderIdentity);
+    } else {
+      assert.equal(
+        initial.user,
+        senderIdentity.user_id,
+        "the confirmed human must author the message",
+      );
+    }
+    assert.ok(
+      initial.text?.includes(nonce),
+      "the confirmed initial message must contain this run's nonce",
+    );
     const matches = unique.filter(
       (message) => message.ts !== sent.ts && message.text?.includes(nonce),
     );

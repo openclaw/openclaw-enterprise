@@ -678,10 +678,6 @@ export function createRecoveryFixture(tools: RecoveryTools) {
     if (candidates) {
       const candidateValues = asRecord(JSON.parse(values));
       assert.ok(candidateValues);
-      candidateValues.api = {
-        ...asRecord(candidateValues.api),
-        channelDirectoryProxyUrl: "http://198.51.100.25:3128",
-      };
       const candidateInstallation = asRecord(JSON.parse(installation));
       const drivers = asRecord(candidateInstallation?.drivers);
       assert.ok(drivers);

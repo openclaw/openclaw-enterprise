@@ -155,6 +155,7 @@ command from the repository root with the pinned Node version.
 
 - API CA programs: `node deploy/helm/src/generate-api-ca.ts`
 - Installation check: `node deploy/helm/src/generate-installation-check.ts`
+- Channel egress policy: `node deploy/helm/src/generate-channel-egress.ts`; `--check` verifies the packaged policy against current Drivers.
 
 Commit any generated chart updates with their sources. The OIDC CA integration
 suite checks the packaged CA programs. The Installation preflight suite checks

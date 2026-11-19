@@ -57,7 +57,7 @@ function baseInput(overrides = {}) {
       transportSecretPrefix: "openclaw-agent-transport",
     },
     channels: {
-      managedSlackProxy: true,
+      managedEgress: true,
     },
     ...overrides,
   };
