@@ -162,7 +162,7 @@ type DeploymentReadiness = {
 };
 
 type ClientMount = {
-  mountPath: string;
+  directoryPrefix: string;
   subPath: boolean | null;
   claim: boolean | null;
   volumes: ({
@@ -187,7 +187,7 @@ type MountedCertificateSecret = {
 type ObservedTlsSecret = {
   metadata?: NamedMetadata;
   certificate: string;
-  keys?: string[] | null;
+  requiredKeysPresent?: boolean | null;
 };
 
 type QuotaResource = "count/jobs.batch" | "count/replicasets.apps";
@@ -817,6 +817,7 @@ function clientWorkloadProjection({
     {{- $foundMount := false -}}
     {{- $overlap := false -}}
     {{- $validPaths := true -}}
+    {{- $directoryPrefix := "" -}}
     {{- if eq (printf "%T" $container.volumeMounts) "[]interface {}" -}}
       {{- range $candidate := $container.volumeMounts -}}
         {{- if not (and (eq (printf "%T" $candidate) "map[string]interface {}")
@@ -852,6 +853,7 @@ function clientWorkloadProjection({
           {{- $overlap = $foundMount -}}
           {{- $foundMount = true -}}
           {{- $mount = $candidate -}}
+          {{- $directoryPrefix = $prefix -}}
         {{- end -}}
       {{- end -}}
     {{- else if ne (printf "%T" $container.volumeMounts) "<nil>" -}}
@@ -860,7 +862,7 @@ function clientWorkloadProjection({
     {{- if not $validPaths -}}[null]
     {{- else if or (not $foundMount) $overlap -}}[]
     {{- else -}}
-        [{"mountPath":{{template "text" $mount.mountPath}},
+        [{"directoryPrefix":{{template "text" $directoryPrefix}},
          "subPath":{{- $subPath := "false" -}}
            {{- range $field, $value := $mount -}}
              {{- if or (eq $field "subPath") (eq $field "subPathExpr") -}}
@@ -961,10 +963,17 @@ const deploymentReadinessProjection = `${observationTemplates}
 const tlsSecretFields = `${observationTemplates}
 {"metadata":{{template "identity" .metadata}},
  "certificate":{{if exists . "data" "tls.crt"}}{{template "text" (index .data "tls.crt")}}{{else}}""{{end}}`;
-const secretKeyNames = `,
- "keys":{{if eq (printf "%T" .data) "map[string]interface {}"}}
-   [{{$first := true}}{{range $key, $value := .data}}{{if $first}}{{$first = false}}{{else}},{{end}}{{printf "%q" $key}}{{end}}]
- {{else if eq (printf "%T" .data) "<nil>"}}[]{{else}}null{{end}}`;
+
+function requiredSecretKeysProjection(requiredKeys: string[]): string {
+  if (!requiredKeys.length) {
+    return "";
+  }
+  const presence = requiredKeys.map((key) => `(exists .data ${JSON.stringify(key)})`).join(" ");
+  return `,
+ "requiredKeysPresent":{{if eq (printf "%T" .data) "map[string]interface {}"}}
+   {{and ${presence}}}
+ {{else if eq (printf "%T" .data) "<nil>"}}false{{else}}null{{end}}`;
+}
 
 function inspectCertificate(
   selection: DeploymentSelection,
@@ -981,16 +990,17 @@ function inspectCertificate(
   if (secret.metadata?.deletionTimestamp) {
     return failure("The selected TLS Secret is terminating.");
   }
-  const { certificate, keys } = secret;
+  const { certificate, requiredKeysPresent } = secret;
   if (requiredKeys.length) {
-    if (!Array.isArray(keys) || keys.some((key) => typeof key !== "string")) {
+    if (typeof requiredKeysPresent !== "boolean") {
       return {
         status: "unknown",
-        summary: "The response did not establish which keys the selected TLS Secret contains.",
+        summary:
+          "The response did not establish whether the selected TLS Secret has the required keys.",
         resources,
       };
     }
-    if (requiredKeys.some((key) => !keys.includes(key))) {
+    if (!requiredKeysPresent) {
       return failure("The selected Secret volume maps a required key that the Secret lacks.");
     }
   }
@@ -1081,7 +1091,7 @@ function mountedClientSecret(
     return undefined;
   }
   const path = selection.certificatePath;
-  const prefix = mount.mountPath.endsWith("/") ? mount.mountPath : `${mount.mountPath}/`;
+  const prefix = mount.directoryPrefix;
   if (!path.startsWith(prefix)) {
     return undefined;
   }
@@ -1097,6 +1107,9 @@ function mountedClientSecret(
   if (secret.items.length) {
     const keys: string[] = [];
     for (const { key, path: target } of secret.items) {
+      if (typeof key !== "string" || !/^[A-Za-z0-9_.-]{1,253}(?![\s\S])/u.test(key)) {
+        throw new DiagnosticError("The selected Secret volume has an invalid item key.");
+      }
       // Match what the volume writer resolves, including "./" and repeated slashes.
       if (
         !target ||
@@ -1230,14 +1243,14 @@ async function diagnose(
   const readCertificate = async (
     selection: DeploymentSelection,
     serverName?: string,
-    requiredKeys?: string[],
+    requiredKeys: string[] = [],
   ) =>
     inspectCertificate(
       selection,
       await projectNamed(
         "secret",
         selection,
-        `${tlsSecretFields}${requiredKeys?.length ? secretKeyNames : ""}}`,
+        `${tlsSecretFields}${requiredSecretKeysProjection(requiredKeys)}}`,
       ),
       serverName,
       requiredKeys,

@@ -621,6 +621,19 @@ test(
       );
     }
     protectedValues.push(clientLeaf.cert, Buffer.from(clientLeaf.cert).toString("base64"));
+    const unrelatedSecretKey = "unrelated-fixture-key";
+    const unrelatedSecretValue = Buffer.from(randomUUID()).toString("base64");
+    await kubectl(
+      "-n",
+      namespace,
+      "patch",
+      "secret",
+      clientSecret,
+      "--type=merge",
+      "-p",
+      JSON.stringify({ data: { [unrelatedSecretKey]: unrelatedSecretValue } }),
+    );
+    protectedValues.push(unrelatedSecretKey, unrelatedSecretValue);
     const clientLabels = { app: clientName };
     const excludedValue = randomUUID();
     const mountPath = "/etc/openclaw/openshell";
@@ -722,6 +735,13 @@ if (args.includes("get") && args.includes("deployments.apps") && args.includes($
     stderrDiscarded: stderr.isCharacterDevice() && stderr.rdev === statSync("/dev/null").rdev,
   };
 }
+if (args.includes("get") && args.includes("secret") && args.includes(${JSON.stringify(clientSecret)})) {
+  observation = {
+    secret: true,
+    unrelatedSecretData: [${JSON.stringify(unrelatedSecretKey)}, ${JSON.stringify(unrelatedSecretValue)}]
+      .some((value) => result.stdout?.includes(value)),
+  };
+}
 appendFileSync(${JSON.stringify(commandLog)}, JSON.stringify(observation) + "\n");
 process.stdout.write(result.stdout ?? "");
 process.stderr.write(result.stderr ?? "");
@@ -773,11 +793,13 @@ process.exit(result.status ?? 1);
       "the selected certificate Deployment has zero replicas",
     );
     assert.equal(rollout?.resource, `${namespace}/${clientName}@${workloadIdentity.uid}`);
-    const workloadOutput = (await readFile(commandLog, "utf8"))
+    const observations = (await readFile(commandLog, "utf8"))
       .trim()
       .split("\n")
-      .map((line) => JSON.parse(line))
-      .filter(({ workload }) => workload);
+      .map((line) => JSON.parse(line));
+    const secretOutput = observations.filter(({ secret }) => secret);
+    assert.deepEqual(secretOutput, [{ secret: true, unrelatedSecretData: false }]);
+    const workloadOutput = observations.filter(({ workload }) => workload);
     assert.deepEqual(workloadOutput, [
       {
         workload: true,
@@ -1012,11 +1034,8 @@ process.exit(result.status ?? 1);
     assert.match(deniedSecret?.summary ?? "", /named resource could not be read.*get access/u);
     assert.deepEqual(deniedSecret?.resources, [workloadIdentity]);
 
-    // A differently written parent path still shadows the selected file. The
-    // reader has no Secret access, so a premature Secret GET would be unknown.
-    const shadow = { name: "scratch", mountPath: "/etc/openclaw//./" };
-    const shadowMount = "/spec/template/spec/containers/0/volumeMounts";
-    async function patchShadow(operations: object[]) {
+    const workerMounts = "/spec/template/spec/containers/0/volumeMounts";
+    async function patchWorkerMounts(operations: object[]) {
       await kubectl(
         "-n",
         namespace,
@@ -1028,7 +1047,15 @@ process.exit(result.status ?? 1);
         JSON.stringify(operations),
       );
     }
-    await patchShadow([{ op: "add", path: `${shadowMount}/-`, value: shadow }]);
+    const selectedMount = `${workerMounts}/0/mountPath`;
+    // An equivalent spelling of the only mount path still resolves to the leaf.
+    await patchWorkerMounts([{ op: "replace", path: selectedMount, value: `${mountPath}//./` }]);
+    assert.equal((await clientCheck())?.status, "passed");
+
+    // A differently written parent path still shadows the selected file. The
+    // reader has no Secret access, so a premature Secret GET would be unknown.
+    const shadow = { name: "scratch", mountPath: "/etc/openclaw//./" };
+    await patchWorkerMounts([{ op: "add", path: `${workerMounts}/-`, value: shadow }]);
     await waitFor("shadow mount Deployment generation observation", async () => {
       const deployment = await resource("deployment", clientName);
       return deployment.status?.observedGeneration === deployment.metadata.generation;
@@ -1041,9 +1068,10 @@ process.exit(result.status ?? 1);
     assert.equal(shadowed?.status, "failed");
     assert.match(shadowed?.summary ?? "", /does not resolve to one mounted tls\.crt/u);
     assert.deepEqual(shadowed?.resources, [await identity("Deployment", "deployment", clientName)]);
-    await patchShadow([
-      { op: "test", path: `${shadowMount}/2/mountPath`, value: shadow.mountPath },
-      { op: "remove", path: `${shadowMount}/2` },
+    await patchWorkerMounts([
+      { op: "test", path: `${workerMounts}/2/mountPath`, value: shadow.mountPath },
+      { op: "remove", path: `${workerMounts}/2` },
+      { op: "replace", path: selectedMount, value: mountPath },
     ]);
 
     // A Secret read under this identity would be unknown, like the control above.
