@@ -1689,15 +1689,15 @@ export type {
 
 export {
   credentialProxyRoutingDetails,
-  deploymentPolicyAdmissionDetails,
   networkGrantAdmissionDetails,
   sandboxNetworkGrantsWithinCeiling,
+  validateDeploymentPolicy,
 } from "./deployment-policy.ts";
 export type {
   CredentialBindingAuthority,
   CredentialInjectionCapabilities,
   DeploymentPolicy,
-  DeploymentPolicyAdmissionInput,
+  DeploymentPolicyValidationContext,
   NetworkPolicyCapabilities,
 } from "./deployment-policy.ts";
 

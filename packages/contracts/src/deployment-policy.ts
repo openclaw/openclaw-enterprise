@@ -235,8 +235,8 @@ export interface DeploymentPolicy {
   readonly injectionPolicies: readonly CredentialInjectionPolicy[];
 }
 
-/** Trusted inputs used to validate a proposed deployment policy. */
-export interface DeploymentPolicyAdmissionInput extends DeploymentPolicy {
+/** OCC supplies the current authority and enforcement capabilities for this deployment. */
+export interface DeploymentPolicyValidationContext {
   readonly ceiling: readonly SandboxNetworkGrant[];
   readonly sandbox: NetworkPolicyCapabilities;
   /** OCC resolves source and consumer authority. Plugin authority includes only the named connection's reviewed request rules. */
@@ -251,21 +251,18 @@ export interface DeploymentPolicyAdmissionInput extends DeploymentPolicy {
   readonly proxy?: CredentialInjectionCapabilities;
 }
 
-export function deploymentPolicyAdmissionDetails(
-  input: DeploymentPolicyAdmissionInput,
+export function validateDeploymentPolicy(
+  policy: DeploymentPolicy,
+  context: DeploymentPolicyValidationContext,
 ): ErrorDetail[] {
-  const { networkAccessPolicy, proxy } = input;
-  const deployment: DeploymentPolicy = {
-    networkAccessPolicy,
-    bindings: input.bindings,
-    injectionPolicies: input.injectionPolicies,
-  };
+  const { networkAccessPolicy } = policy;
+  const { proxy } = context;
   const bindings = new Map<
     string,
     { binding: DeploymentCredentialBinding; authority: CredentialBindingAuthority }
   >();
   const environments = new Set<string>();
-  for (const [index, binding] of input.bindings.entries()) {
+  for (const [index, binding] of policy.bindings.entries()) {
     const path = `/bindings/${index}`;
     if (
       typeof binding?.bindingRef !== "string" ||
@@ -302,7 +299,7 @@ export function deploymentPolicyAdmissionDetails(
     const { bindingRef, sourceRef, driverId } = binding;
     let authority: CredentialBindingAuthority | undefined;
     try {
-      authority = input.authorityForBinding?.({ bindingRef, sourceRef, driverId, consumer });
+      authority = context.authorityForBinding?.({ bindingRef, sourceRef, driverId, consumer });
     } catch {
       return [invalid(path, "The binding's current authority is unavailable.")];
     }
@@ -325,12 +322,16 @@ export function deploymentPolicyAdmissionDetails(
     bindings.set(bindingRef, { binding, authority });
     environments.add(projection.environment);
   }
-  const details = deploymentNetworkAccessDetails(networkAccessPolicy, input.ceiling, input.sandbox);
+  const details = deploymentNetworkAccessDetails(
+    networkAccessPolicy,
+    context.ceiling,
+    context.sandbox,
+  );
   if (details.length) {
     return details;
   }
   if (
-    input.targetMayHoldPlaceholders !== false &&
+    context.targetMayHoldPlaceholders !== false &&
     networkAccessPolicy.allowed.length &&
     proxy?.rejectsStaleAndMisplacedPlaceholders !== true
   ) {
@@ -341,14 +342,14 @@ export function deploymentPolicyAdmissionDetails(
       ),
     ];
   }
-  for (const [index, policy] of input.injectionPolicies.entries()) {
+  for (const [index, injectionPolicy] of policy.injectionPolicies.entries()) {
     const path = `/injectionPolicies/${index}`;
-    const resolved = bindings.get(policy?.bindingRef);
+    const resolved = bindings.get(injectionPolicy?.bindingRef);
     if (
       !resolved ||
-      !Array.isArray(policy.allowedRequests) ||
-      !policy.allowedRequests.length ||
-      Object.keys(policy).some((key) => key !== "bindingRef" && key !== "allowedRequests")
+      !Array.isArray(injectionPolicy.allowedRequests) ||
+      !injectionPolicy.allowedRequests.length ||
+      Object.keys(injectionPolicy).some((key) => key !== "bindingRef" && key !== "allowedRequests")
     ) {
       return [invalid(path, "Supply one nonempty injection policy for each admitted binding.")];
     }
@@ -362,7 +363,7 @@ export function deploymentPolicyAdmissionDetails(
         ),
       ];
     }
-    const allowedRequests: readonly DeploymentRequestMatch[] = policy.allowedRequests;
+    const allowedRequests: readonly DeploymentRequestMatch[] = injectionPolicy.allowedRequests;
     const issues = validateMatches(allowedRequests, path + "/allowedRequests");
     if (issues.length) {
       return issues;
@@ -389,7 +390,7 @@ export function deploymentPolicyAdmissionDetails(
         ];
       }
       if (
-        !supported(() => proxy.supportsBindingRequest(binding, rule, deployment)) ||
+        !supported(() => proxy.supportsBindingRequest(binding, rule, policy)) ||
         !safelyComposed(rule, allowedRequests, networkAccessPolicy, proxy)
       ) {
         return [

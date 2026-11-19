@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   credentialProxyRoutingDetails,
-  deploymentPolicyAdmissionDetails,
-  type DeploymentPolicyAdmissionInput,
+  validateDeploymentPolicy,
   type DeploymentPolicy,
+  type DeploymentPolicyValidationContext,
   type DeploymentRequestMatch,
   type DeploymentRequestPolicy,
 } from "../../packages/contracts/src/index.ts";
@@ -36,29 +36,31 @@ function credentialPolicyFixture<Policy extends DeploymentRequestPolicy>(
     allowedRequests: [request],
     projection: { environment: "WORK_TOKEN", presentation: "bearer" } as const,
   };
-  const input = {
+  const policy = {
+    networkAccessPolicy: { allowed: [request] },
+    bindings: [binding],
+    injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [request] }],
+  } satisfies DeploymentPolicy;
+  const context = {
     targetMayHoldPlaceholders: false,
     ceiling: [{ id: "api", ...destination }],
     sandbox: { wildcards: false, portRanges: false, supportsNetworkPolicy: () => true },
-    networkAccessPolicy: { allowed: [request] },
-    bindings: [binding],
     authorityForBinding: ({ sourceRef, consumer }) =>
       sourceRef.id === "cs_work" && consumer.kind === "plugin" && consumer.connection === "work"
         ? authority
         : undefined,
-    injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [request] }],
     proxy: {
       distinguishesExecutable: false,
       distinguishesPort: false,
       rejectsStaleAndMisplacedPlaceholders: true,
       supportsBindingRequest: (binding) => binding.projection.presentation === "bearer",
     },
-  } satisfies DeploymentPolicyAdmissionInput;
-  return { input, request, binding, authority };
+  } satisfies DeploymentPolicyValidationContext;
+  return { policy, context, request, binding, authority };
 }
 
-function policyRefusals(input: DeploymentPolicyAdmissionInput) {
-  return deploymentPolicyAdmissionDetails(input).map(({ path, code }) => [path, code]);
+function policyRefusals(policy: DeploymentPolicy, context: DeploymentPolicyValidationContext) {
+  return validateDeploymentPolicy(policy, context).map(({ path, code }) => [path, code]);
 }
 
 export function registerDeploymentPolicyCases(): void {
@@ -76,38 +78,48 @@ export function registerDeploymentPolicyCases(): void {
       [mcp, { ...mcp, toolName: "events_write" }],
     ] as const) {
       // Source and reviewed consumer policy permit the injected request. Only the network differs.
-      const { input, request } = credentialPolicyFixture(other);
-      assert.deepEqual(policyRefusals(input), []);
+      const { policy, context, request } = credentialPolicyFixture(other);
+      assert.deepEqual(policyRefusals(policy, context), []);
       assert.deepEqual(
-        policyRefusals({
-          ...input,
-          networkAccessPolicy: { allowed: [{ ...request, requestPolicy: allowed }] },
-        }),
+        policyRefusals(
+          {
+            ...policy,
+            networkAccessPolicy: { allowed: [{ ...request, requestPolicy: allowed }] },
+          },
+          context,
+        ),
         [["/injectionPolicies/0/allowedRequests/0", "INVALID_VALUE"]],
       );
     }
   });
 
   test("a proxy qualifies the proposed deployment policy without admission authority", () => {
-    const { input } = credentialPolicyFixture({ type: "http", method: "GET", path: "/events" });
-    let observed: DeploymentPolicy | undefined;
-    const proxy: NonNullable<DeploymentPolicyAdmissionInput["proxy"]> = {
-      ...input.proxy,
-      supportsBindingRequest(_binding, _request, deployment) {
-        observed = deployment;
+    const { policy, context, binding, request } = credentialPolicyFixture({
+      type: "http",
+      method: "GET",
+      path: "/events",
+    });
+    const expected = [binding, request, { ...policy }];
+    let observed: unknown;
+    const proxy: NonNullable<DeploymentPolicyValidationContext["proxy"]> = {
+      ...context.proxy,
+      supportsBindingRequest(...args) {
+        observed = args;
         return true;
       },
     };
-    assert.deepEqual(policyRefusals({ ...input, proxy }), []);
-    assert.deepEqual(observed, {
-      networkAccessPolicy: input.networkAccessPolicy,
-      bindings: input.bindings,
-      injectionPolicies: input.injectionPolicies,
-    });
+    assert.deepEqual(policyRefusals(policy, { ...context, proxy }), []);
+    assert.deepEqual(observed, expected);
   });
 
   test("a source subtree includes its base and descendants while same-host discovery stays credentialless", () => {
-    const { input, request, binding, authority } = credentialPolicyFixture({
+    const {
+      policy: calendar,
+      context,
+      request,
+      binding,
+      authority,
+    } = credentialPolicyFixture({
       type: "http",
       method: "GET",
       path: "/calendar/**",
@@ -119,8 +131,7 @@ export function registerDeploymentPolicyCases(): void {
     // The consumer can use either endpoint, but this particular account is scoped to Calendar.
     const reviewed = { ...authority, allowedRequests: [atPath("/**")] };
     const policy = {
-      ...input,
-      authorityForBinding: () => reviewed,
+      ...calendar,
       networkAccessPolicy: {
         allowed: [
           request,
@@ -131,10 +142,13 @@ export function registerDeploymentPolicyCases(): void {
       },
     };
     function inject(path: string) {
-      return policyRefusals({
-        ...policy,
-        injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [atPath(path)] }],
-      });
+      return policyRefusals(
+        {
+          ...policy,
+          injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [atPath(path)] }],
+        },
+        { ...context, authorityForBinding: () => reviewed },
+      );
     }
     for (const path of ["/calendar/**", "/calendar", "/calendar/events", "/calendar/events/**"]) {
       assert.deepEqual(inject(path), [], path);
@@ -149,7 +163,7 @@ export function registerDeploymentPolicyCases(): void {
   });
 
   test("each injection destination needs a source endpoint covering its host, port, path and method together", () => {
-    const { input, binding, request, authority } = credentialPolicyFixture({
+    const { policy, context, binding, request, authority } = credentialPolicyFixture({
       type: "http",
       method: "GET",
       path: "/calendar/**",
@@ -165,23 +179,28 @@ export function registerDeploymentPolicyCases(): void {
       { ...httpOnly, requestPolicy: { type: "mcp", path: "/mcp", method: "tools/list" } },
     ] satisfies DeploymentRequestMatch[]) {
       const allowedRequests = [rule];
-      const result = policyRefusals({
-        ...input,
-        authorityForBinding: () => ({
-          ...authority,
-          destinations: [
-            ...authority.destinations,
-            { host: "other.example.org", port: 444, path: "/calendar/**", method: null },
-            // Neither a transport allowance nor an MCP selector guarantees the HTTP verb.
-            { host: httpOnly.host, port: 443, path: "/**", method: "POST" },
-          ],
-          allowedRequests,
-        }),
-        ceiling: [{ id: "route", binary, host: rule.host, ports: rule.ports }],
-        sandbox: { ...input.sandbox, portRanges: true },
-        networkAccessPolicy: { allowed: allowedRequests },
-        injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests }],
-      });
+      const result = policyRefusals(
+        {
+          ...policy,
+          networkAccessPolicy: { allowed: allowedRequests },
+          injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests }],
+        },
+        {
+          ...context,
+          authorityForBinding: () => ({
+            ...authority,
+            destinations: [
+              ...authority.destinations,
+              { host: "other.example.org", port: 444, path: "/calendar/**", method: null },
+              // Neither a transport allowance nor an MCP selector guarantees the HTTP verb.
+              { host: httpOnly.host, port: 443, path: "/**", method: "POST" },
+            ],
+            allowedRequests,
+          }),
+          ceiling: [{ id: "route", binary, host: rule.host, ports: rule.ports }],
+          sandbox: { ...context.sandbox, portRanges: true },
+        },
+      );
       assert.deepEqual(result, [["/injectionPolicies/0/allowedRequests/0", "INVALID_VALUE"]]);
     }
   });
@@ -189,15 +208,18 @@ export function registerDeploymentPolicyCases(): void {
   test("staged MCP admission compares canonical UTF-8 recipient paths exactly", () => {
     const operation = { type: "mcp", method: "tools/list" } as const;
     for (const path of ["/caf%C3%A9/mcp", "/team%20space/mcp"]) {
-      const { input } = credentialPolicyFixture({ ...operation, path });
-      assert.deepEqual(policyRefusals(input), [], path);
+      const { policy, context } = credentialPolicyFixture({ ...operation, path });
+      assert.deepEqual(policyRefusals(policy, context), [], path);
     }
 
     // The supplied source destination uses the composed spelling. The decomposed path is distinct.
-    const { input, authority } = credentialPolicyFixture({ ...operation, path: "/cafe%CC%81/mcp" });
+    const { policy, context, authority } = credentialPolicyFixture({
+      ...operation,
+      path: "/cafe%CC%81/mcp",
+    });
     assert.deepEqual(
-      policyRefusals({
-        ...input,
+      policyRefusals(policy, {
+        ...context,
         authorityForBinding: () => ({
           ...authority,
           destinations: authority.destinations.map((endpoint) => ({
@@ -219,12 +241,21 @@ export function registerDeploymentPolicyCases(): void {
       "/%EF%BC%8E%EF%BC%8E/mcp", // Two fullwidth dots normalize to a parent segment.
     ]) {
       const invalid = credentialPolicyFixture({ ...operation, path });
-      assert.deepEqual(policyRefusals(invalid.input), [["/bindings/0", "INVALID_VALUE"]], path);
+      assert.deepEqual(
+        policyRefusals(invalid.policy, invalid.context),
+        [["/bindings/0", "INVALID_VALUE"]],
+        path,
+      );
     }
   });
 
   test("a reviewed MCP connection limits the executable, method and tool despite network permission", () => {
-    const { input, request, binding } = credentialPolicyFixture({
+    const {
+      policy: calendar,
+      context,
+      request,
+      binding,
+    } = credentialPolicyFixture({
       type: "mcp",
       method: "tools/call",
       path: "/mcp",
@@ -233,37 +264,45 @@ export function registerDeploymentPolicyCases(): void {
     const { binary, host, ports } = request;
     const otherBinary = "/usr/bin/curl";
     const policy = {
-      ...input,
+      ...calendar,
       networkAccessPolicy: {
         allowed: [
           { binary, host, ports },
           { binary: otherBinary, host, ports },
         ],
       },
-      ceiling: [...input.ceiling, { id: "client", binary: otherBinary, host, ports }],
-      proxy: { ...input.proxy, distinguishesExecutable: true },
     };
-    assert.deepEqual(policyRefusals(policy), []);
+    const enforced = {
+      ...context,
+      ceiling: [...context.ceiling, { id: "client", binary: otherBinary, host, ports }],
+      proxy: { ...context.proxy, distinguishesExecutable: true },
+    };
+    assert.deepEqual(policyRefusals(policy, enforced), []);
     for (const extra of [
       { ...request, binary: otherBinary },
       { ...request, requestPolicy: { type: "mcp", path: "/mcp", method: "tools/list" } },
       { ...request, requestPolicy: { ...request.requestPolicy, toolName: "events_write" } },
     ] satisfies DeploymentRequestMatch[]) {
       assert.deepEqual(
-        policyRefusals({
-          ...policy,
-          injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [extra] }],
-        }),
+        policyRefusals(
+          {
+            ...policy,
+            injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [extra] }],
+          },
+          enforced,
+        ),
         [["/injectionPolicies/0/allowedRequests/0", "INVALID_VALUE"]],
       );
     }
   });
 
   test("the Sandbox must qualify the exact union of overlapping HTTP grants", () => {
-    const { input, request, binding } = credentialPolicyFixture(
-      { type: "http", method: "GET", path: "/calendar/**" },
-      8443,
-    );
+    const {
+      policy: calendar,
+      context,
+      request,
+      binding,
+    } = credentialPolicyFixture({ type: "http", method: "GET", path: "/calendar/**" }, 8443);
     const { binary, host, ports } = request;
     const https = [{ from: 443, to: 443 }];
     const bothPorts = [...https, ...ports];
@@ -278,49 +317,62 @@ export function registerDeploymentPolicyCases(): void {
       ],
     };
     const policy = {
-      ...input,
-      ceiling: [{ id: "api", binary, host, ports: bothPorts }],
       networkAccessPolicy: network,
       bindings: [],
       injectionPolicies: [],
     };
-    assert.deepEqual(policyRefusals(policy), []);
+    const bothPortsContext = {
+      ...context,
+      ceiling: [{ id: "api", binary, host, ports: bothPorts }],
+    };
+    assert.deepEqual(policyRefusals(policy, bothPortsContext), []);
     assert.deepEqual(
-      policyRefusals({
-        ...policy,
-        sandbox: { ...input.sandbox, supportsNetworkPolicy: () => false },
+      policyRefusals(policy, {
+        ...bothPortsContext,
+        sandbox: { ...context.sandbox, supportsNetworkPolicy: () => false },
       }),
       [["/networkAccessPolicy/allowed", "INVALID_VALUE"]],
     );
     // An unrestricted rule at the same endpoint could also allow every unselected operation.
     assert.deepEqual(
-      policyRefusals({
-        ...policy,
-        networkAccessPolicy: { allowed: [request, { binary, host, ports }] },
-      }),
+      policyRefusals(
+        {
+          ...policy,
+          networkAccessPolicy: { allowed: [request, { binary, host, ports }] },
+        },
+        bothPortsContext,
+      ),
       [["/networkAccessPolicy/allowed/1", "INVALID_VALUE"]],
     );
     // The source and consumer permit the subtree on 8443. Only its events path has network access there.
-    const bound = {
-      ...input,
-      ceiling: policy.ceiling,
-      networkAccessPolicy: network,
-      proxy: { ...input.proxy, distinguishesPort: true },
+    const bound = { ...calendar, networkAccessPolicy: network };
+    const portAware = {
+      ...bothPortsContext,
+      proxy: { ...context.proxy, distinguishesPort: true },
     };
     assert.deepEqual(
-      policyRefusals({
-        ...bound,
-        injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [events] }],
-      }),
+      policyRefusals(
+        {
+          ...bound,
+          injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [events] }],
+        },
+        portAware,
+      ),
       [],
     );
-    assert.deepEqual(policyRefusals(bound), [
+    assert.deepEqual(policyRefusals(bound, portAware), [
       ["/injectionPolicies/0/allowedRequests/0", "INVALID_VALUE"],
     ]);
   });
 
   test("a proxy must distinguish every reachable executable and port outside the binding", () => {
-    const { input, request, binding, authority } = credentialPolicyFixture({
+    const {
+      policy: calendar,
+      context,
+      request,
+      binding,
+      authority,
+    } = credentialPolicyFixture({
       type: "http",
       method: "GET",
       path: "/calendar/**",
@@ -341,19 +393,19 @@ export function registerDeploymentPolicyCases(): void {
       [{ ...request, ports: [{ from: 8443, to: 8443 }] }, "distinguishesPort"],
     ];
     for (const [extra, distinction] of additionalRoutes) {
-      const policy = {
-        ...input,
+      const policy = { ...calendar, networkAccessPolicy: { allowed: [request, extra] } };
+      const reachable = {
+        ...context,
         ceiling: [
-          ...input.ceiling,
+          ...context.ceiling,
           { id: "other", binary: extra.binary, host: extra.host, ports: extra.ports },
         ],
-        networkAccessPolicy: { allowed: [request, extra] },
       };
-      assert.deepEqual(policyRefusals(policy), [
+      assert.deepEqual(policyRefusals(policy, reachable), [
         ["/injectionPolicies/0/allowedRequests/0", "INVALID_VALUE"],
       ]);
       assert.deepEqual(
-        policyRefusals({ ...policy, proxy: { ...input.proxy, [distinction]: true } }),
+        policyRefusals(policy, { ...reachable, proxy: { ...context.proxy, [distinction]: true } }),
         [],
       );
     }
@@ -365,22 +417,33 @@ export function registerDeploymentPolicyCases(): void {
     };
     const allowedRequests = [request, narrow];
     assert.deepEqual(
-      policyRefusals({
-        ...input,
-        ceiling: [
-          ...input.ceiling,
-          { id: "curl", host: narrow.host, ports: narrow.ports, binary: narrow.binary },
-        ],
-        networkAccessPolicy: { allowed: allowedRequests },
-        authorityForBinding: () => ({ ...authority, allowedRequests }),
-        injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests }],
-      }),
+      policyRefusals(
+        {
+          ...calendar,
+          networkAccessPolicy: { allowed: allowedRequests },
+          injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests }],
+        },
+        {
+          ...context,
+          ceiling: [
+            ...context.ceiling,
+            { id: "curl", host: narrow.host, ports: narrow.ports, binary: narrow.binary },
+          ],
+          authorityForBinding: () => ({ ...authority, allowedRequests }),
+        },
+      ),
       [],
     );
   });
 
   test("consumer bindings sharing a source keep separate policies and presentations", () => {
-    const { input, binding, request, authority } = credentialPolicyFixture({
+    const {
+      policy: calendar,
+      context,
+      binding,
+      request,
+      authority,
+    } = credentialPolicyFixture({
       type: "http",
       method: "GET",
       path: "/calendar/**",
@@ -406,9 +469,13 @@ export function registerDeploymentPolicyCases(): void {
     };
     const eventsPolicy = { bindingRef: events.bindingRef, allowedRequests: [other] };
     const policy = {
-      ...input,
+      ...calendar,
       networkAccessPolicy: { allowed: [request, other] },
       bindings: [binding, events],
+      injectionPolicies: [...calendar.injectionPolicies, eventsPolicy],
+    };
+    const bothConsumers = {
+      ...context,
       authorityForBinding: (id) =>
         id.bindingRef === events.bindingRef &&
         id.sourceRef.id === binding.sourceRef.id &&
@@ -416,88 +483,105 @@ export function registerDeploymentPolicyCases(): void {
         id.consumer.pluginId === "events" &&
         id.consumer.connection === "events"
           ? eventsAuthority
-          : input.authorityForBinding(id),
-      injectionPolicies: [...input.injectionPolicies, eventsPolicy],
-    } satisfies DeploymentPolicyAdmissionInput;
+          : context.authorityForBinding(id),
+    } satisfies DeploymentPolicyValidationContext;
     // Two consumers share the source but keep distinct placeholders and reviewed request policies.
-    assert.deepEqual(policyRefusals(policy), []);
+    assert.deepEqual(policyRefusals(policy, bothConsumers), []);
     assert.deepEqual(
-      policyRefusals({
-        ...policy,
-        bindings: [events],
-        injectionPolicies: [eventsPolicy],
-      }),
+      policyRefusals(
+        {
+          ...policy,
+          bindings: [events],
+          injectionPolicies: [eventsPolicy],
+        },
+        bothConsumers,
+      ),
       [],
     );
     assert.deepEqual(
-      policyRefusals({ ...policy, networkAccessPolicy: { allowed: [other, request] } }),
+      policyRefusals(
+        { ...policy, networkAccessPolicy: { allowed: [other, request] } },
+        bothConsumers,
+      ),
       [],
     );
     // A unique environment variable can still differ from the one reviewed for this connection.
     assert.deepEqual(
-      policyRefusals({
-        ...input,
-        bindings: [
-          { ...binding, projection: { ...binding.projection, environment: "OTHER_TOKEN" } },
-        ],
-      }),
+      policyRefusals(
+        {
+          ...calendar,
+          bindings: [
+            { ...binding, projection: { ...binding.projection, environment: "OTHER_TOKEN" } },
+          ],
+        },
+        context,
+      ),
       [["/bindings/0", "INVALID_VALUE"]],
     );
+    assert.deepEqual(policyRefusals(policy, context), [["/bindings/1", "INVALID_VALUE"]]);
     assert.deepEqual(
-      policyRefusals({ ...policy, authorityForBinding: input.authorityForBinding }),
-      [["/bindings/1", "INVALID_VALUE"]],
-    );
-    assert.deepEqual(
-      policyRefusals({
-        ...policy,
-        injectionPolicies: [
-          ...input.injectionPolicies,
-          { bindingRef: events.bindingRef, allowedRequests: [request] },
-        ],
-      }),
+      policyRefusals(
+        {
+          ...policy,
+          injectionPolicies: [
+            ...calendar.injectionPolicies,
+            { bindingRef: events.bindingRef, allowedRequests: [request] },
+          ],
+        },
+        bothConsumers,
+      ),
       [["/injectionPolicies/1/allowedRequests/0", "INVALID_VALUE"]],
     );
-    assert.deepEqual(policyRefusals({ ...policy, bindings: [binding] }), [
+    assert.deepEqual(policyRefusals({ ...policy, bindings: [binding] }, bothConsumers), [
       ["/injectionPolicies/1", "INVALID_VALUE"],
     ]);
-    assert.deepEqual(policyRefusals({ ...policy, injectionPolicies: input.injectionPolicies }), [
-      ["/injectionPolicies", "INVALID_VALUE"],
-    ]);
     assert.deepEqual(
-      policyRefusals({
-        ...policy,
-        bindings: [binding, { ...events, projection: binding.projection }],
-      }),
+      policyRefusals({ ...policy, injectionPolicies: calendar.injectionPolicies }, bothConsumers),
+      [["/injectionPolicies", "INVALID_VALUE"]],
+    );
+    assert.deepEqual(
+      policyRefusals(
+        {
+          ...policy,
+          bindings: [binding, { ...events, projection: binding.projection }],
+        },
+        bothConsumers,
+      ),
       [["/bindings/1", "INVALID_VALUE"]],
     );
     assert.deepEqual(
-      policyRefusals({
-        ...input,
-        proxy: { ...input.proxy, rejectsStaleAndMisplacedPlaceholders: false },
+      policyRefusals(calendar, {
+        ...context,
+        proxy: { ...context.proxy, rejectsStaleAndMisplacedPlaceholders: false },
       }),
       [["/injectionPolicies/0", "INVALID_VALUE"]],
     );
     assert.deepEqual(
-      policyRefusals({
-        ...input,
-        authorityForBinding: () => ({
-          ...authority,
-          projection: { ...authority.projection, presentation: "repository_git" },
-        }),
-        bindings: [
-          {
-            ...binding,
-            consumer: { kind: "repository", repositoryId: "repo_calendar" },
-            projection: { ...binding.projection, presentation: "repository_git" },
-          },
-        ],
-      }),
+      policyRefusals(
+        {
+          ...calendar,
+          bindings: [
+            {
+              ...binding,
+              consumer: { kind: "repository", repositoryId: "repo_calendar" },
+              projection: { ...binding.projection, presentation: "repository_git" },
+            },
+          ],
+        },
+        {
+          ...context,
+          authorityForBinding: () => ({
+            ...authority,
+            projection: { ...authority.projection, presentation: "repository_git" },
+          }),
+        },
+      ),
       [["/injectionPolicies/0/allowedRequests/0", "INVALID_VALUE"]],
     );
   });
 
   test("a model POST requires static source approval for that method at the same destination", () => {
-    const { input, request, binding, authority } = credentialPolicyFixture({
+    const { policy, context, request, binding, authority } = credentialPolicyFixture({
       type: "http",
       method: "POST",
       path: "/v1/responses",
@@ -510,15 +594,17 @@ export function registerDeploymentPolicyCases(): void {
     const get = { host: request.host, port: 443, path: "/v1/responses", method: "GET" };
     const post = { ...get, method: "POST" };
     function admit(destinations: (typeof get)[]) {
-      return policyRefusals({
-        ...input,
-        bindings: [model],
-        authorityForBinding: () => ({
-          ...authority,
-          destinations,
-          projection: { environment: "MODEL_KEY", presentation: "bearer" },
-        }),
-      });
+      return policyRefusals(
+        { ...policy, bindings: [model] },
+        {
+          ...context,
+          authorityForBinding: () => ({
+            ...authority,
+            destinations,
+            projection: { environment: "MODEL_KEY", presentation: "bearer" },
+          }),
+        },
+      );
     }
     // The model profile and network allow POST on 443. A source may approve a different method there.
     const refused = [["/injectionPolicies/0/allowedRequests/0", "INVALID_VALUE"]];
@@ -531,7 +617,12 @@ export function registerDeploymentPolicyCases(): void {
   });
 
   test("model admission checks the reviewed provider presentation before proxy support", () => {
-    const { input, binding, authority } = credentialPolicyFixture({
+    const {
+      policy: calendar,
+      context,
+      binding,
+      authority,
+    } = credentialPolicyFixture({
       type: "http",
       method: "POST",
       path: "/v1/messages",
@@ -547,7 +638,7 @@ export function registerDeploymentPolicyCases(): void {
       projection: { environment: "MODEL_KEY", presentation: "x-api-key" } as const,
     };
     const authorityForBinding: NonNullable<
-      DeploymentPolicyAdmissionInput["authorityForBinding"]
+      DeploymentPolicyValidationContext["authorityForBinding"]
     > = ({ bindingRef, sourceRef, consumer, driverId }) =>
       bindingRef === binding.bindingRef &&
       driverId === "occ" &&
@@ -557,21 +648,22 @@ export function registerDeploymentPolicyCases(): void {
       consumer.providerId === "approved-messages"
         ? reviewed
         : undefined;
-    const policy = { ...input, bindings: [model], authorityForBinding };
-    const bothHeaders = { ...input.proxy, supportsBindingRequest: () => true };
-    assert.deepEqual(policyRefusals({ ...policy, proxy: bothHeaders }), []);
-    assert.deepEqual(policyRefusals(policy), [
+    const policy = { ...calendar, bindings: [model] };
+    const modelContext = { ...context, authorityForBinding };
+    const bothHeaders = { ...context.proxy, supportsBindingRequest: () => true };
+    assert.deepEqual(policyRefusals(policy, { ...modelContext, proxy: bothHeaders }), []);
+    assert.deepEqual(policyRefusals(policy, modelContext), [
       ["/injectionPolicies/0/allowedRequests/0", "INVALID_VALUE"],
     ]);
     const refused = [["/bindings/0", "INVALID_VALUE"]];
-    const missingLookup = { ...policy, proxy: bothHeaders };
+    const missingLookup = { ...modelContext, proxy: bothHeaders };
     Reflect.deleteProperty(missingLookup, "authorityForBinding");
-    assert.deepEqual(policyRefusals(missingLookup), refused);
+    assert.deepEqual(policyRefusals(policy, missingLookup), refused);
     const missingProjection = { ...reviewed };
     Reflect.deleteProperty(missingProjection, "projection");
     assert.deepEqual(
-      policyRefusals({
-        ...policy,
+      policyRefusals(policy, {
+        ...modelContext,
         proxy: bothHeaders,
         authorityForBinding: () => missingProjection,
       }),
@@ -582,24 +674,28 @@ export function registerDeploymentPolicyCases(): void {
       projection: { ...model.projection, presentation: "bearer" },
     } as const;
     assert.deepEqual(
-      policyRefusals({ ...policy, bindings: [bearer], proxy: bothHeaders }),
+      policyRefusals({ ...policy, bindings: [bearer] }, { ...modelContext, proxy: bothHeaders }),
       refused,
     );
   });
 
   test("withdrawing the last binding still guards the remaining network routes", () => {
-    const { input } = credentialPolicyFixture({ type: "http", method: "GET", path: "/events" });
+    const { policy, context } = credentialPolicyFixture({
+      type: "http",
+      method: "GET",
+      path: "/events",
+    });
     const retained = {
-      ...input,
+      ...policy,
       bindings: [],
       injectionPolicies: [],
-      targetMayHoldPlaceholders: true,
     };
-    assert.deepEqual(policyRefusals(retained), []);
+    const afterWithdrawal = { ...context, targetMayHoldPlaceholders: true };
+    assert.deepEqual(policyRefusals(retained, afterWithdrawal), []);
     assert.deepEqual(
-      policyRefusals({
-        ...retained,
-        proxy: { ...input.proxy, rejectsStaleAndMisplacedPlaceholders: false },
+      policyRefusals(retained, {
+        ...afterWithdrawal,
+        proxy: { ...context.proxy, rejectsStaleAndMisplacedPlaceholders: false },
       }),
       [["/injectionPolicies", "INVALID_VALUE"]],
     );

@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-11-18"
-last_updated_session: "01a1eb01-27e9-7d91-a1e5-c673380d2fc8"
+updated: "2026-11-19"
+last_updated_session: "authoring-run/2ca60020-2ed8-48c5-943c-ba2890e5bb12"
 ---
 
 # Agent sandbox policy flow
@@ -59,22 +59,21 @@ Agent discovery and policy GET
 use the same descriptor with owner-generated facet action URLs and current
 availability. The registry never selects a Driver from submitted additions.
 
-`validateAgentSandboxPolicy` authorizes the Agent and policy, checks editing,
-version and pending work, then validates grants against the schema and Driver rules.
+`validateAgentSandboxPolicy` checks Agent and policy authorization, editing, version,
+pending work, grant schemas and Driver rules.
 `packages/contracts/src/deployment-policy.ts:networkGrantAdmissionDetails` checks
 executables, hosts and port ranges against the Installation ceiling and Sandbox
 support for wildcards and ranges. Preview writes nothing. Save and deploy repeat admission.
 
-Validation errors identify the field and failed check.
-Stale and unauthorized requests retain their resource errors.
+Validation errors identify failed fields and checks. Stale and unauthorized requests retain resource errors.
 `internal/occclient/transport.go:APIError.Error` prints up to 32 escaped details,
 omitting records with Unicode control characters.
 
-Staged `deploymentPolicyAdmissionDetails` checks source approval, reviewed requests and projection
-per binding. Static approvals match method, host, port and path; unrestricted methods require
-`null`. The Sandbox qualifies complete HTTP rules and exact MCP paths. Discovery can remain
-credentialless. The proxy receives policies and bindings; OCC supplies authority separately.
-The provider enforces OAuth scopes.
+Staged `validateDeploymentPolicy(policy, context)` checks source approval, reviewed requests and
+projection per binding. OCC supplies trusted context. The proxy checks each binding and request
+against the proposed policy. Static approvals match method, host, port and path together
+(`null` permits any method). The Sandbox qualifies complete HTTP rules and exact MCP paths.
+Discovery can remain credentialless. Providers enforce OAuth scopes.
 
 `packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
 Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
@@ -272,6 +271,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 09:03: Separate policy and validation context. (authoring-run/2ca60020-2ed8-48c5-943c-ba2890e5bb12 - 9dd2694f3cdbbed2c2e26222d503a2253af93ee9)
 
 - 2026-11-18 21:48: Preserve source-approved HTTP methods. (01a1eb01-27e9-7d91-a1e5-c673380d2fc8 - 7ee6a09585aa160de6feab9c133bf5c090ff05f5)
 
