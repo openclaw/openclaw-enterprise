@@ -5,7 +5,7 @@ import test from "node:test";
 
 import {
   aggregateArgs,
-  createRunnerFixture as fixture,
+  createRunnerFixture,
   currentSha,
   laneArgs,
   runRunnerSync,
@@ -58,6 +58,17 @@ function writeSingleLaneManifest(
   return writeRunnerManifest(root, { lanes: { [lane]: { files } }, groups });
 }
 
+function readAggregateReceipt(
+  result: ReturnType<typeof runRunnerSync>,
+  exitCode: 0 | 1,
+  diagnostic = result.stderr,
+): AggregateReceipt {
+  assert.equal(result.status, exitCode, diagnostic);
+  const receipt = JSON.parse(result.stdout) as AggregateReceipt;
+  assert.equal(receipt.status, exitCode === 0 ? "passed" : "failed");
+  return receipt;
+}
+
 async function aggregateWithNeeds(root: string, target: string, needs: unknown) {
   const needsFile = "needs.json";
   await writeJson(join(root, needsFile), needs);
@@ -65,7 +76,7 @@ async function aggregateWithNeeds(root: string, target: string, needs: unknown) 
 }
 
 test("aggregate requires fixed lane outputs, successful needs, and matching source SHA", async (t) => {
-  const root = await fixture(t);
+  const root = await createRunnerFixture(t);
   const sha = currentSha();
   const baselinePath = "tests/integration/a.test.mjs";
   await writeRunnerManifest(root, {
@@ -93,8 +104,7 @@ test("aggregate requires fixed lane outputs, successful needs, and matching sour
     runtime: { result: "failure" },
   });
 
-  assert.equal(result.status, 1);
-  const summary = JSON.parse(result.stdout) as AggregateReceipt;
+  const summary = readAggregateReceipt(result, 1);
   assert.deepEqual(summary.issues.map((entry) => entry.code).sort(), [
     "missing-lane-output",
     "missing-need",
@@ -109,7 +119,7 @@ test("aggregate requires fixed lane outputs, successful needs, and matching sour
 });
 
 test("aggregate accepts a lane as a singleton target and rejects tampered result evidence", async (t) => {
-  const root = await fixture(t);
+  const root = await createRunnerFixture(t);
   const sha = currentSha();
   const file = "tests/integration/model.test.mjs";
   const name = "real model case";
@@ -138,9 +148,8 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
 
   const args = aggregateArgs(root, "docker-model");
   const tampered = runRunnerSync(args);
-  assert.equal(tampered.status, 1);
   assert.deepEqual(
-    (JSON.parse(tampered.stdout) as AggregateReceipt).issues.map((entry) => entry.code),
+    readAggregateReceipt(tampered, 1).issues.map((entry) => entry.code),
     ["missing-lane-evidence"],
   );
 
@@ -160,18 +169,8 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
   );
   assert.equal(produced.status, 0, produced.stderr);
 
-  const checkOutcome = (
-    result: ReturnType<typeof runRunnerSync>,
-    exitCode: number,
-    diagnostic: string,
-  ) => {
-    assert.equal(result.status, exitCode, diagnostic);
-    const summary = JSON.parse(result.stdout) as AggregateReceipt;
-    assert.equal(summary.status, exitCode === 0 ? "passed" : "failed");
-    return summary;
-  };
   const passed = runRunnerSync(args);
-  const summary = checkOutcome(passed, 0, passed.stderr);
+  const summary = readAggregateReceipt(passed, 0);
   assert.deepEqual(
     summary.lanes.map((entry) => entry.lane),
     ["docker-model"],
@@ -223,7 +222,7 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
   ] as const) {
     await t.test(label, async () => {
       const result = await aggregateFiles(files);
-      const aggregate = checkOutcome(result, 1, result.stdout || result.stderr);
+      const aggregate = readAggregateReceipt(result, 1, result.stdout || result.stderr);
       assert.deepEqual(aggregate.issues, [duplicateFileIssue, ...issues]);
     });
   }
@@ -232,13 +231,11 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
     const unregisteredPath = "tests/integration/untrusted-receipt-path-canary.test.mjs";
     const unregisteredFile = { ...fileEvidence, path: unregisteredPath };
     const result = await aggregateFiles([fileEvidence, unregisteredFile, unregisteredFile]);
-    assert.equal(result.status, 1, result.stderr);
+    const aggregate = readAggregateReceipt(result, 1);
     assert.ok(
       !result.stdout.includes(unregisteredPath) && !result.stderr.includes(unregisteredPath),
       "aggregate printed an unregistered receipt path",
     );
-    const aggregate = JSON.parse(result.stdout) as AggregateReceipt;
-    assert.equal(aggregate.status, "failed");
     assert.deepEqual(aggregate.issues, [
       {
         code: "duplicate-lane-file",
@@ -292,14 +289,14 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
         !result.stdout.includes(marker) && !result.stderr.includes(marker),
         "aggregate printed untrusted case status",
       );
-      const aggregate = checkOutcome(result, issues.length === 0 ? 0 : 1, result.stdout);
+      const aggregate = readAggregateReceipt(result, issues.length === 0 ? 0 : 1, result.stdout);
       assert.deepEqual(aggregate.issues, issues);
     });
   }
 });
 
 test("aggregate requires successful job gates and unambiguous lane ownership", async (t) => {
-  const root = await fixture(t);
+  const root = await createRunnerFixture(t);
   const sha = currentSha();
   const baselinePath = "tests/integration/baseline.test.mjs";
   await writeSingleLaneManifest(root, "baseline", [{ path: baselinePath }], {
@@ -311,9 +308,7 @@ test("aggregate requires successful job gates and unambiguous lane ownership", a
     baseline: { result: "success" },
   });
 
-  assert.equal(result.status, 1);
-  const summary = JSON.parse(result.stdout) as AggregateReceipt;
-  assert.equal(summary.status, "failed");
+  const summary = readAggregateReceipt(result, 1);
   assert.deepEqual(
     summary.issues.map((entry) => entry.code),
     ["need-not-success"],
@@ -326,8 +321,7 @@ test("aggregate requires successful job gates and unambiguous lane ownership", a
     const observed = await aggregateWithNeeds(root, "ci", {
       matrix: { result: state, lanes: ["baseline", "unselected-sibling"] },
     });
-    assert.equal(observed.status, state === "success" ? 0 : 1, observed.stderr);
-    const aggregated = JSON.parse(observed.stdout) as AggregateReceipt;
+    const aggregated = readAggregateReceipt(observed, state === "success" ? 0 : 1);
     assert.deepEqual(
       aggregated.issues.map((entry) => entry.code),
       state === "success" ? [] : ["need-not-success"],
@@ -341,9 +335,8 @@ test("aggregate requires successful job gates and unambiguous lane ownership", a
   // Valid artifacts cannot replace missing ownership, and malformed ownership
   // must fail even when a separate direct job could otherwise satisfy the lane.
   const missing = await aggregateWithNeeds(root, "ci", {});
-  assert.equal(missing.status, 1);
   assert.deepEqual(
-    (JSON.parse(missing.stdout) as AggregateReceipt).issues.map((entry) => entry.code),
+    readAggregateReceipt(missing, 1).issues.map((entry) => entry.code),
     ["missing-need"],
   );
   for (const lanes of [null, "baseline", [], [""], ["baseline", "baseline"], [1]]) {
@@ -351,9 +344,8 @@ test("aggregate requires successful job gates and unambiguous lane ownership", a
       baseline: { result: "success" },
       matrix: { result: "success", lanes },
     });
-    assert.equal(malformed.status, 1);
     assert.ok(
-      (JSON.parse(malformed.stdout) as AggregateReceipt).issues.some(
+      readAggregateReceipt(malformed, 1).issues.some(
         (entry) => entry.code === "invalid-need-lanes",
       ),
     );
@@ -367,9 +359,8 @@ test("aggregate requires successful job gates and unambiguous lane ownership", a
       matrix: { result: "success", lanes: ["baseline"] },
       ...other,
     });
-    assert.equal(ambiguous.status, 1);
     assert.deepEqual(
-      (JSON.parse(ambiguous.stdout) as AggregateReceipt).issues.map((entry) => entry.code),
+      readAggregateReceipt(ambiguous, 1).issues.map((entry) => entry.code),
       ["ambiguous-need"],
     );
   }
