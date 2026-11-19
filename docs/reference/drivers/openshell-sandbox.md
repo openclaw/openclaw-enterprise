@@ -115,8 +115,10 @@ mounts, and `/sandbox/.openclaw-runtime`.
 
 An explicit policy replaces these defaults. The Driver still adds required
 mounts, the runtime root, and `/tmp`. Add `/opt/devtools` to
-`policy.filesystem.readOnly` for packaged native tools. Deploy a new Agent
-revision to apply the policy.
+`policy.filesystem.readOnly` for packaged native tools.
+
+An existing Sandbox keeps its launch policy. Deploy a new Agent revision to
+apply a different policy.
 
 Startup rejects unknown Kubernetes, policy, and Gateway readiness keys. Set
 `kubernetes.agentResources` using quoted, non-negative Kubernetes quantities.
