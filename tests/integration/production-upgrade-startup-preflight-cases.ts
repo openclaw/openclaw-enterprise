@@ -315,7 +315,10 @@ async function stopAtApplyCleanup(prepared: Awaited<ReturnType<typeof prepareSep
   const apply = evidenceObject(stages.apply, "apply journal entry");
   assert.equal(apply.state, "cleaning");
   assert.equal(apply.history, "preAuthenticationStates");
-  const job = await readEvidenceObject(f, "migration-deploy-apply/preflight-migration-identity.json");
+  const job = await readEvidenceObject(
+    f,
+    "migration-deploy-apply/preflight-migration-identity.json",
+  );
   const pod = await readEvidenceObject(
     f,
     "migration-deploy-apply/preflight-migration-pod-identity.json",
@@ -535,7 +538,8 @@ export function registerStartupPreflightCases({
         adminEmail: bootstrap.adminEmail,
         ...(bootstrap.credentials ? { credentials: bootstrap.credentials } : {}),
       };
-      const render = (path: string) => renderInitializerChart(helm, repository, path, "--is-upgrade");
+      const render = (path: string) =>
+        renderInitializerChart(helm, repository, path, "--is-upgrade");
       return { f, valuesPath, livePath, candidatePath, baseline, values, retained, render };
     };
 
@@ -787,164 +791,171 @@ exec ${parser} "$@"
     const helm = realHelm;
     const prepare = (t: TestContext) => prepareSeparateMigration(t, fixture, helm, repository);
 
-    await t.test("a lost apply CREATE response preserves the original create witness", async (t) => {
-      const { f, initializer, statePath, stopped, attempt, assertHeld } = await prepare(t);
+    await t.test(
+      "a lost apply CREATE response preserves the original create witness",
+      async (t) => {
+        const { f, initializer, statePath, stopped, attempt, assertHeld } = await prepare(t);
 
-      await chmod(f.directory, 0o777);
-      try {
-        await assert.rejects(attempt(), {
-          stderr: /migration journal's parent must protect files/,
-        });
-        await assertHeld(0);
-      } finally {
-        await chmod(f.directory, 0o700);
-      }
-      // The Deployment name and zero replicas alone cannot authorize SQL.
-      for (const worker of [{ uid: "replacement-worker" }, { generation: 999 }]) {
+        await chmod(f.directory, 0o777);
+        try {
+          await assert.rejects(attempt(), {
+            stderr: /migration journal's parent must protect files/,
+          });
+          await assertHeld(0);
+        } finally {
+          await chmod(f.directory, 0o700);
+        }
+        // The Deployment name and zero replicas alone cannot authorize SQL.
+        for (const worker of [{ uid: "replacement-worker" }, { generation: 999 }]) {
+          await writeFile(
+            statePath,
+            JSON.stringify({
+              ...stopped,
+              deploymentIdentities: { ...asRecord(stopped.deploymentIdentities), worker },
+            }),
+          );
+          await assert.rejects(attempt(), /worker Deployment changed/);
+          await assertHeld(0);
+        }
+        // A changed migrator reference in the live hook invalidates the
+        // original predecessor even with the same release revision.
+        const otherInitializer = structuredClone(initializer);
+        const pod = jobTemplate(
+          evidenceObject(asRecord(otherInitializer)?.spec, "initializer spec"),
+        );
+        const migration = podContainers(pod.spec, "initContainers").find(
+          ({ name }) => name === "migration",
+        );
+        assert.ok(migration);
+        const database = containerEnvironment(migration).find(
+          ({ name }) => name === "OCC_MIGRATION_DATABASE_URL",
+        );
+        assert.ok(database);
+        evidenceObject(
+          evidenceObject(database.valueFrom, "migrator value source").secretKeyRef,
+          "migrator Secret reference",
+        ).key = "replacement-key";
         await writeFile(
           statePath,
           JSON.stringify({
             ...stopped,
-            deploymentIdentities: { ...asRecord(stopped.deploymentIdentities), worker },
+            installationRelease: { hooks: [{ manifest: JSON.stringify(otherInitializer) }] },
           }),
         );
-        await assert.rejects(attempt(), /worker Deployment changed/);
+        await assert.rejects(attempt(), /deployed Helm revision or hooks changed/);
         await assertHeld(0);
-      }
-      // A changed migrator reference in the live hook invalidates the
-      // original predecessor even with the same release revision.
-      const otherInitializer = structuredClone(initializer);
-      const pod = jobTemplate(
-        evidenceObject(asRecord(otherInitializer)?.spec, "initializer spec"),
-      );
-      const migration = podContainers(pod.spec, "initContainers").find(
-        ({ name }) => name === "migration",
-      );
-      assert.ok(migration);
-      const database = containerEnvironment(migration).find(
-        ({ name }) => name === "OCC_MIGRATION_DATABASE_URL",
-      );
-      assert.ok(database);
-      evidenceObject(
-        evidenceObject(database.valueFrom, "migrator value source").secretKeyRef,
-        "migrator Secret reference",
-      ).key = "replacement-key";
-      await writeFile(
-        statePath,
-        JSON.stringify({
-          ...stopped,
-          installationRelease: { hooks: [{ manifest: JSON.stringify(otherInitializer) }] },
-        }),
-      );
-      await assert.rejects(attempt(), /deployed Helm revision or hooks changed/);
-      await assertHeld(0);
 
-      await writeFile(
-        statePath,
-        JSON.stringify({
-          ...stopped,
-          preflightFault: { target: "migration", mode: "lost" },
-        }),
-      );
-      await assert.rejects(attempt(), /apply Job create outcome is unknown/);
-      assert.match(
-        await f.readEvidence("migration-deploy-apply/preflight-migration-create.err"),
-        /create acknowledgement lost/,
-      );
-      const retained = await assertHeld(1);
-      const jobs = evidenceObject(retained.jobs, "retained migration Jobs");
-      assert.equal(Object.keys(jobs).length, 1);
-      await assert.rejects(attempt(), /apply Job create outcome is unknown/);
-      await assert.rejects(
-        f.run("--resume", "--migration-history-checked"),
-        /Job outcomes or cleanup are unresolved/,
-      );
-      await f.cleanup("--previous-process-settled", "--evidence-unrestored");
-      assert.deepEqual((await assertHeld(1)).jobs, jobs);
-      // Restoring in-directory evidence cannot reset the sibling create witness.
-      await rm(join(f.evidence, "migration-deploy-apply"), { recursive: true });
-      await assert.rejects(attempt(), /original separate migration journal/);
-      await assertHeld(1);
-    });
+        await writeFile(
+          statePath,
+          JSON.stringify({
+            ...stopped,
+            preflightFault: { target: "migration", mode: "lost" },
+          }),
+        );
+        await assert.rejects(attempt(), /apply Job create outcome is unknown/);
+        assert.match(
+          await f.readEvidence("migration-deploy-apply/preflight-migration-create.err"),
+          /create acknowledgement lost/,
+        );
+        const retained = await assertHeld(1);
+        const jobs = evidenceObject(retained.jobs, "retained migration Jobs");
+        assert.equal(Object.keys(jobs).length, 1);
+        await assert.rejects(attempt(), /apply Job create outcome is unknown/);
+        await assert.rejects(
+          f.run("--resume", "--migration-history-checked"),
+          /Job outcomes or cleanup are unresolved/,
+        );
+        await f.cleanup("--previous-process-settled", "--evidence-unrestored");
+        assert.deepEqual((await assertHeld(1)).jobs, jobs);
+        // Restoring in-directory evidence cannot reset the sibling create witness.
+        await rm(join(f.evidence, "migration-deploy-apply"), { recursive: true });
+        await assert.rejects(attempt(), /original separate migration journal/);
+        await assertHeld(1);
+      },
+    );
 
-    await t.test("an accepted apply CREATE with failed local receipt publication keeps writers stopped", async (t) => {
-      const { f, statePath, frozen, stopped, beforeJobs, attempt, assertHeld } = await prepare(t);
-      assert.deepEqual([frozen.api, frozen.worker], [0, 0]);
-      await writeFile(
-        statePath,
-        JSON.stringify({
-          ...stopped,
-          preflightFault: { target: "migration", mode: "migration-apply-ack-staging" },
-          preflightResults: {
-            "--apply-for-installation": {
-              phase: "Succeeded",
-              log: '{"event":"migration.completed","history":"preAuthenticationStates"}\n',
+    await t.test(
+      "an accepted apply CREATE with failed local receipt publication keeps writers stopped",
+      async (t) => {
+        const { f, statePath, frozen, stopped, beforeJobs, attempt, assertHeld } = await prepare(t);
+        assert.deepEqual([frozen.api, frozen.worker], [0, 0]);
+        await writeFile(
+          statePath,
+          JSON.stringify({
+            ...stopped,
+            preflightFault: { target: "migration", mode: "migration-apply-ack-staging" },
+            preflightResults: {
+              "--apply-for-installation": {
+                phase: "Succeeded",
+                log: '{"event":"migration.completed","history":"preAuthenticationStates"}\n',
+              },
             },
-          },
-        }),
-      );
-      const failure = await runForFailure(attempt);
-      assert.equal(failure.code, 1);
-      assert.match(
-        failure.stderr,
-        /preflight create acknowledged, but local identity evidence could not be confirmed/i,
-      );
-      const preflight = await assertHeld(1);
-      const jobs = evidenceObject(preflight.jobs, "accepted apply Job");
-      const pods = evidenceObject(preflight.pods, "accepted apply Pod");
-      const [name] = Object.keys(jobs);
-      assert.ok(name);
-      assert.deepEqual(Object.keys(jobs), [name]);
-      const uid = field(field(jobs[name], "metadata"), "uid");
-      assert.ok(typeof uid === "string" && uid.length > 0);
-      assert.deepEqual(evidenceArray(preflight.created, "preflight creations").slice(beforeJobs), [
-        { kind: "job.batch", name, uid },
-      ]);
-      assert.deepEqual(Object.keys(pods), [`${name}-child`]);
-      const child = evidenceObject(pods[`${name}-child`], "original apply Pod");
-      const childMetadata = evidenceObject(child.metadata, "original apply Pod metadata");
-      assert.ok(typeof childMetadata.uid === "string" && childMetadata.uid.length > 0);
-      assert.deepEqual(childMetadata.ownerReferences, [
-        { apiVersion: "batch/v1", kind: "Job", name, uid, controller: true },
-      ]);
+          }),
+        );
+        const failure = await runForFailure(attempt);
+        assert.equal(failure.code, 1);
+        assert.match(
+          failure.stderr,
+          /preflight create acknowledged, but local identity evidence could not be confirmed/i,
+        );
+        const preflight = await assertHeld(1);
+        const jobs = evidenceObject(preflight.jobs, "accepted apply Job");
+        const pods = evidenceObject(preflight.pods, "accepted apply Pod");
+        const [name] = Object.keys(jobs);
+        assert.ok(name);
+        assert.deepEqual(Object.keys(jobs), [name]);
+        const uid = field(field(jobs[name], "metadata"), "uid");
+        assert.ok(typeof uid === "string" && uid.length > 0);
+        assert.deepEqual(
+          evidenceArray(preflight.created, "preflight creations").slice(beforeJobs),
+          [{ kind: "job.batch", name, uid }],
+        );
+        assert.deepEqual(Object.keys(pods), [`${name}-child`]);
+        const child = evidenceObject(pods[`${name}-child`], "original apply Pod");
+        const childMetadata = evidenceObject(child.metadata, "original apply Pod metadata");
+        assert.ok(typeof childMetadata.uid === "string" && childMetadata.uid.length > 0);
+        assert.deepEqual(childMetadata.ownerReferences, [
+          { apiVersion: "batch/v1", kind: "Job", name, uid, controller: true },
+        ]);
 
-      const directory = "migration-deploy-apply";
-      const obstacle = join(directory, ".preflight-migration-identity.json.tmp");
-      assert.equal(await f.readEvidence(obstacle), uid + "\n");
-      assert.equal(await f.readEvidence(join(directory, "preflight-migration-create.err")), "");
-      assert.equal(
-        existsSync(join(f.evidence, directory, "preflight-migration-identity.json")),
-        false,
-      );
-      const journalPath = `${f.evidence}.migration-state.json`;
-      const journal = await readFile(journalPath, "utf8");
-      const stages = await readMigrationStages(f);
-      assert.deepEqual(Object.keys(stages), ["apply"]);
-      assert.equal(field(stages.apply, "name"), name);
-      assert.equal(field(stages.apply, "state"), "creating");
-      assert.equal(field(stages.apply, "job"), null);
-      const intentPath = join(directory, "migration-intent.json");
-      const intent = await f.readEvidence(intentPath);
-      assert.equal(readJsonObject(intent, "original apply intent").name, name);
-      const manifestPath = join(directory, "preflight-migration-job.json");
-      const manifest = await f.readEvidence(manifestPath);
+        const directory = "migration-deploy-apply";
+        const obstacle = join(directory, ".preflight-migration-identity.json.tmp");
+        assert.equal(await f.readEvidence(obstacle), uid + "\n");
+        assert.equal(await f.readEvidence(join(directory, "preflight-migration-create.err")), "");
+        assert.equal(
+          existsSync(join(f.evidence, directory, "preflight-migration-identity.json")),
+          false,
+        );
+        const journalPath = `${f.evidence}.migration-state.json`;
+        const journal = await readFile(journalPath, "utf8");
+        const stages = await readMigrationStages(f);
+        assert.deepEqual(Object.keys(stages), ["apply"]);
+        assert.equal(field(stages.apply, "name"), name);
+        assert.equal(field(stages.apply, "state"), "creating");
+        assert.equal(field(stages.apply, "job"), null);
+        const intentPath = join(directory, "migration-intent.json");
+        const intent = await f.readEvidence(intentPath);
+        assert.equal(readJsonObject(intent, "original apply intent").name, name);
+        const manifestPath = join(directory, "preflight-migration-job.json");
+        const manifest = await f.readEvidence(manifestPath);
 
-      await assert.rejects(attempt(), /apply Job create outcome is unknown/);
-      const retained = await assertHeld(1);
-      assert.deepEqual(retained.jobs, jobs);
-      assert.deepEqual(retained.pods, pods);
-      assert.equal(await readFile(journalPath, "utf8"), journal);
-      assert.equal(await f.readEvidence(intentPath), intent);
-      assert.equal(await f.readEvidence(manifestPath), manifest);
-      assert.equal(await f.readEvidence(obstacle), uid + "\n");
-      assert.match(failure.stderr, /Both OCC writers \(API and worker\) are stopped/);
-      assert.match(
-        failure.stderr,
-        /preserve the original evidence directory .*sibling migration journal/i,
-      );
-      assert.match(failure.stderr, /keep writers stopped/i);
-      assert.doesNotMatch(failure.stderr, /no OCC writer was stopped/i);
-    });
+        await assert.rejects(attempt(), /apply Job create outcome is unknown/);
+        const retained = await assertHeld(1);
+        assert.deepEqual(retained.jobs, jobs);
+        assert.deepEqual(retained.pods, pods);
+        assert.equal(await readFile(journalPath, "utf8"), journal);
+        assert.equal(await f.readEvidence(intentPath), intent);
+        assert.equal(await f.readEvidence(manifestPath), manifest);
+        assert.equal(await f.readEvidence(obstacle), uid + "\n");
+        assert.match(failure.stderr, /Both OCC writers \(API and worker\) are stopped/);
+        assert.match(
+          failure.stderr,
+          /preserve the original evidence directory .*sibling migration journal/i,
+        );
+        assert.match(failure.stderr, /keep writers stopped/i);
+        assert.doesNotMatch(failure.stderr, /no OCC writer was stopped/i);
+      },
+    );
 
     await t.test("recovers unreadable successful Jobs by their original UID", async (t) => {
       const { f, statePath, stopped, attempt, assertHeld } = await prepare(t);
@@ -1001,10 +1012,7 @@ exec ${parser} "$@"
           await f.readEvidence(`${attemptPath}/preflight-migration-logs.err`),
           /log stream interrupted/,
         );
-        assert.equal(
-          existsSync(join(f.evidence, attemptPath, "preflight-migration.log")),
-          false,
-        );
+        assert.equal(existsSync(join(f.evidence, attemptPath, "preflight-migration.log")), false);
         await assert.rejects(
           f.run("--resume", "--migration-history-checked"),
           /Job outcomes or cleanup are unresolved/,
@@ -1035,112 +1043,115 @@ exec ${parser} "$@"
       assert.equal(field(stages.verify, "history"), "completed");
     });
 
-    await t.test("verification rejects pending history, retries only verification, and resumes", async (t) => {
-      const {
-        f,
-        statePath,
-        stopped,
-        databaseSecretName,
-        databaseSecret,
-        migrationSecrets,
-        attempt,
-        assertHeld,
-      } = await prepare(t);
+    await t.test(
+      "verification rejects pending history, retries only verification, and resumes",
+      async (t) => {
+        const {
+          f,
+          statePath,
+          stopped,
+          databaseSecretName,
+          databaseSecret,
+          migrationSecrets,
+          attempt,
+          assertHeld,
+        } = await prepare(t);
 
-      // The first Job's classification describes pre-apply history. Only
-      // the verification Job may authorize the later Helm phase.
-      const applyResult = {
-        phase: "Succeeded",
-        log: '{"event":"migration.completed","history":"preAuthenticationStates"}\n',
-      };
-      await writeFile(
-        statePath,
-        JSON.stringify({
-          ...stopped,
-          preflightResults: {
-            "--apply-for-installation": applyResult,
-            "--require-current-for-installation": {
-              phase: "Failed",
-              log: '{"event":"migration.failed","code":"MIGRATION_HISTORY_PENDING"}\n',
-            },
-          },
-        }),
-      );
-      await assert.rejects(attempt(), /verification Job did not report completed history/);
-      const apply = await readEvidenceObject(
-        f,
-        "migration-deploy-apply/preflight-migration-job.json",
-      );
-      const verify = await readEvidenceObject(
-        f,
-        "migration-deploy-verify/preflight-migration-job.json",
-      );
-      assert.deepEqual(
-        podContainers(jobTemplate(evidenceObject(apply.spec, "apply Job")).spec)[0]?.args,
-        [...selectedImageMigrationEntry, "--apply-for-installation", "ins_test"],
-      );
-      assert.deepEqual(
-        podContainers(jobTemplate(evidenceObject(verify.spec, "verify Job")).spec)[0]?.args,
-        [...selectedImageMigrationEntry, "--require-current-for-installation", "ins_test"],
-      );
-      assert.deepEqual((await assertHeld(2)).jobs, {});
-      const stages = await readMigrationStages(f);
-      assert.equal(field(stages.apply, "history"), "preAuthenticationStates");
-      assert.equal(field(stages.verify, "history"), "verificationFailed");
-      await assert.rejects(
-        f.run("--resume", "--migration-history-checked"),
-        /Job outcomes or cleanup are unresolved/,
-      );
-      await assertHeld(2);
-      const failed = await f.state();
-      await writeFile(
-        statePath,
-        JSON.stringify({
-          ...failed,
-          preflightResults: {
-            "--require-current-for-installation": {
-              phase: "Succeeded",
-              log: '{"event":"migration.checked","history":"completed"}\n',
-            },
-          },
-        }),
-      );
-      await attempt();
-      assert.deepEqual((await assertHeld(3)).jobs, {});
-      const retried = await readEvidenceObject(
-        f,
-        "migration-deploy-verify-2/preflight-migration-job.json",
-      );
-      assert.notEqual(field(retried.metadata, "name"), field(verify.metadata, "name"));
-      assert.deepEqual(
-        podContainers(jobTemplate(evidenceObject(retried.spec, "retry Job")).spec)[0]?.args,
-        [...selectedImageMigrationEntry, "--require-current-for-installation", "ins_test"],
-      );
-
-      // Resume the same evidence after verification succeeds on the second attempt.
-      const resume = ["--resume", "--migration-history-checked"];
-      await runWithInjectedFault(f, "reject-helm-submission", ...resume);
-      const rejected = await f.state();
-      assert.equal(rejected.helmSubmissions, 1);
-      assert.equal(existsSync(join(f.evidence, "helm-started")), true);
-      await writeFile(
-        statePath,
-        JSON.stringify({
-          ...rejected,
-          preflight: {
-            ...requireRecoveryPreflight(rejected),
-            secrets: {
-              ...migrationSecrets,
-              [databaseSecretName]: {
-                metadata: { ...databaseSecret.metadata, resourceVersion: "2" },
+        // The first Job's classification describes pre-apply history. Only
+        // the verification Job may authorize the later Helm phase.
+        const applyResult = {
+          phase: "Succeeded",
+          log: '{"event":"migration.completed","history":"preAuthenticationStates"}\n',
+        };
+        await writeFile(
+          statePath,
+          JSON.stringify({
+            ...stopped,
+            preflightResults: {
+              "--apply-for-installation": applyResult,
+              "--require-current-for-installation": {
+                phase: "Failed",
+                log: '{"event":"migration.failed","code":"MIGRATION_HISTORY_PENDING"}\n',
               },
             },
-          },
-        }),
-      );
-      await assert.rejects(f.run(...resume), /migrator or database CA Secret changed/);
-      assert.equal((await f.state()).helmSubmissions, 1);
-    });
+          }),
+        );
+        await assert.rejects(attempt(), /verification Job did not report completed history/);
+        const apply = await readEvidenceObject(
+          f,
+          "migration-deploy-apply/preflight-migration-job.json",
+        );
+        const verify = await readEvidenceObject(
+          f,
+          "migration-deploy-verify/preflight-migration-job.json",
+        );
+        assert.deepEqual(
+          podContainers(jobTemplate(evidenceObject(apply.spec, "apply Job")).spec)[0]?.args,
+          [...selectedImageMigrationEntry, "--apply-for-installation", "ins_test"],
+        );
+        assert.deepEqual(
+          podContainers(jobTemplate(evidenceObject(verify.spec, "verify Job")).spec)[0]?.args,
+          [...selectedImageMigrationEntry, "--require-current-for-installation", "ins_test"],
+        );
+        assert.deepEqual((await assertHeld(2)).jobs, {});
+        const stages = await readMigrationStages(f);
+        assert.equal(field(stages.apply, "history"), "preAuthenticationStates");
+        assert.equal(field(stages.verify, "history"), "verificationFailed");
+        await assert.rejects(
+          f.run("--resume", "--migration-history-checked"),
+          /Job outcomes or cleanup are unresolved/,
+        );
+        await assertHeld(2);
+        const failed = await f.state();
+        await writeFile(
+          statePath,
+          JSON.stringify({
+            ...failed,
+            preflightResults: {
+              "--require-current-for-installation": {
+                phase: "Succeeded",
+                log: '{"event":"migration.checked","history":"completed"}\n',
+              },
+            },
+          }),
+        );
+        await attempt();
+        assert.deepEqual((await assertHeld(3)).jobs, {});
+        const retried = await readEvidenceObject(
+          f,
+          "migration-deploy-verify-2/preflight-migration-job.json",
+        );
+        assert.notEqual(field(retried.metadata, "name"), field(verify.metadata, "name"));
+        assert.deepEqual(
+          podContainers(jobTemplate(evidenceObject(retried.spec, "retry Job")).spec)[0]?.args,
+          [...selectedImageMigrationEntry, "--require-current-for-installation", "ins_test"],
+        );
+
+        // Resume the same evidence after verification succeeds on the second attempt.
+        const resume = ["--resume", "--migration-history-checked"];
+        await runWithInjectedFault(f, "reject-helm-submission", ...resume);
+        const rejected = await f.state();
+        assert.equal(rejected.helmSubmissions, 1);
+        assert.equal(existsSync(join(f.evidence, "helm-started")), true);
+        await writeFile(
+          statePath,
+          JSON.stringify({
+            ...rejected,
+            preflight: {
+              ...requireRecoveryPreflight(rejected),
+              secrets: {
+                ...migrationSecrets,
+                [databaseSecretName]: {
+                  metadata: { ...databaseSecret.metadata, resourceVersion: "2" },
+                },
+              },
+            },
+          }),
+        );
+        await assert.rejects(f.run(...resume), /migrator or database CA Secret changed/);
+        assert.equal((await f.state()).helmSubmissions, 1);
+      },
+    );
 
     await t.test("an older candidate rejecting guarded apply never advances", async (t) => {
       const { f, statePath, stopped, attempt, assertHeld } = await prepare(t);
@@ -1157,10 +1168,7 @@ exec ${parser} "$@"
           },
         }),
       );
-      await assert.rejects(
-        attempt(),
-        /apply Job did not succeed with a valid migration result/,
-      );
+      await assert.rejects(attempt(), /apply Job did not succeed with a valid migration result/);
       const retained = await assertHeld(1);
       assert.equal(Object.keys(evidenceObject(retained.jobs, "retained apply Job")).length, 1);
       const apply = await readEvidenceObject(
@@ -1175,87 +1183,101 @@ exec ${parser} "$@"
       assert.deepEqual(Object.keys(stages), ["apply"]);
       assert.equal(field(stages.apply, "state"), "creating");
       assert.equal(field(stages.apply, "history"), null);
-      await assert.rejects(
-        attempt(),
-        /apply Job did not succeed with a valid migration result/,
-      );
+      await assert.rejects(attempt(), /apply Job did not succeed with a valid migration result/);
       await assertHeld(1);
     });
 
-    await t.test("credential rotation refuses verification after apply cleanup starts", async (t) => {
-      const prepared = await prepare(t);
-      const { statePath, databaseSecretName, databaseSecret, migrationSecrets, attempt, assertHeld } =
-        prepared;
-      const { known, preflight } = await stopAtApplyCleanup(prepared);
-      // Independently settle the original Job and Pod, then rotate the credential.
-      await writeFile(
-        statePath,
-        JSON.stringify({
-          ...known,
-          preflightFault: null,
-          preflight: {
-            ...preflight,
-            jobs: {},
-            pods: {},
-            secrets: {
-              ...migrationSecrets,
-              [databaseSecretName]: {
-                metadata: { ...databaseSecret.metadata, resourceVersion: "2" },
+    await t.test(
+      "credential rotation refuses verification after apply cleanup starts",
+      async (t) => {
+        const prepared = await prepare(t);
+        const {
+          statePath,
+          databaseSecretName,
+          databaseSecret,
+          migrationSecrets,
+          attempt,
+          assertHeld,
+        } = prepared;
+        const { known, preflight } = await stopAtApplyCleanup(prepared);
+        // Independently settle the original Job and Pod, then rotate the credential.
+        await writeFile(
+          statePath,
+          JSON.stringify({
+            ...known,
+            preflightFault: null,
+            preflight: {
+              ...preflight,
+              jobs: {},
+              pods: {},
+              secrets: {
+                ...migrationSecrets,
+                [databaseSecretName]: {
+                  metadata: { ...databaseSecret.metadata, resourceVersion: "2" },
+                },
               },
             },
+          }),
+        );
+        await assert.rejects(attempt(), /migrator or database CA Secret changed/);
+        await assertHeld(1);
+      },
+    );
+
+    await t.test(
+      "cleaning-state recovery observes the original Job and Pod without deleting them again",
+      async (t) => {
+        const prepared = await prepare(t);
+        const { f, statePath, migrationSecrets, attempt, assertHeld } = prepared;
+        const { known, preflight, job, pod } = await stopAtApplyCleanup(prepared);
+        const originalResource = `job.batch/${job.name}`;
+        const beforeCleanup = await readDeleteRequests(f);
+        const originalDelete = {
+          resource: originalResource,
+          uid: job.uid,
+          propagationPolicy: "Foreground",
+        };
+        assert.deepEqual(
+          beforeCleanup.filter(({ resource }) => resource === originalResource),
+          [originalDelete],
+        );
+        const credentials = await f.readEvidence("migration-secret-identities.json");
+        assert.deepEqual(preflight.secrets, migrationSecrets);
+        // An independent actor settled the original objects after the prior process exited.
+        // Recovery may now verify the database, but must not replay DELETE for either object.
+        await writeFile(
+          statePath,
+          JSON.stringify({
+            ...known,
+            preflightFault: null,
+            preflight: { ...preflight, jobs: {}, pods: {} },
+          }),
+        );
+        await attempt();
+        const cleaned = await assertHeld(2);
+        assert.deepEqual(cleaned.jobs, {});
+        assert.deepEqual(cleaned.pods, {});
+        assert.deepEqual(cleaned.secrets, migrationSecrets);
+        assert.equal(await f.readEvidence("migration-secret-identities.json"), credentials);
+
+        const stages = await readMigrationStages(f);
+        assert.deepEqual(Object.keys(stages).sort(), ["apply", "verify"]);
+        assert.equal(field(stages.apply, "state"), "cleaned");
+        assert.deepEqual(field(stages.apply, "job"), job);
+        assert.deepEqual(field(stages.apply, "pod"), pod);
+        assert.equal(field(stages.verify, "state"), "cleaned");
+        assert.equal(field(stages.verify, "history"), "completed");
+        const verify = evidenceObject(field(stages.verify, "job"), "verification Job receipt");
+        assert.notEqual(verify.uid, job.uid);
+        assert.deepEqual((await readDeleteRequests(f)).slice(beforeCleanup.length), [
+          {
+            resource: `job.batch/${verify.name}`,
+            uid: verify.uid,
+            propagationPolicy: "Foreground",
           },
-        }),
-      );
-      await assert.rejects(attempt(), /migrator or database CA Secret changed/);
-      await assertHeld(1);
-    });
-
-    await t.test("cleaning-state recovery observes the original Job and Pod without deleting them again", async (t) => {
-      const prepared = await prepare(t);
-      const { f, statePath, migrationSecrets, attempt, assertHeld } = prepared;
-      const { known, preflight, job, pod } = await stopAtApplyCleanup(prepared);
-      const originalResource = `job.batch/${job.name}`;
-      const beforeCleanup = await readDeleteRequests(f);
-      const originalDelete = {
-        resource: originalResource,
-        uid: job.uid,
-        propagationPolicy: "Foreground",
-      };
-      assert.deepEqual(beforeCleanup.filter(({ resource }) => resource === originalResource), [
-        originalDelete,
-      ]);
-      const credentials = await f.readEvidence("migration-secret-identities.json");
-      assert.deepEqual(preflight.secrets, migrationSecrets);
-      // An independent actor settled the original objects after the prior process exited.
-      // Recovery may now verify the database, but must not replay DELETE for either object.
-      await writeFile(
-        statePath,
-        JSON.stringify({
-          ...known,
-          preflightFault: null,
-          preflight: { ...preflight, jobs: {}, pods: {} },
-        }),
-      );
-      await attempt();
-      const cleaned = await assertHeld(2);
-      assert.deepEqual(cleaned.jobs, {});
-      assert.deepEqual(cleaned.pods, {});
-      assert.deepEqual(cleaned.secrets, migrationSecrets);
-      assert.equal(await f.readEvidence("migration-secret-identities.json"), credentials);
-
-      const stages = await readMigrationStages(f);
-      assert.deepEqual(Object.keys(stages).sort(), ["apply", "verify"]);
-      assert.equal(field(stages.apply, "state"), "cleaned");
-      assert.deepEqual(field(stages.apply, "job"), job);
-      assert.deepEqual(field(stages.apply, "pod"), pod);
-      assert.equal(field(stages.verify, "state"), "cleaned");
-      assert.equal(field(stages.verify, "history"), "completed");
-      const verify = evidenceObject(field(stages.verify, "job"), "verification Job receipt");
-      assert.notEqual(verify.uid, job.uid);
-      assert.deepEqual((await readDeleteRequests(f)).slice(beforeCleanup.length), [
-        { resource: `job.batch/${verify.name}`, uid: verify.uid, propagationPolicy: "Foreground" },
-      ]);
-    });
+        ]);
+      },
+    );
   });
 
   test(
