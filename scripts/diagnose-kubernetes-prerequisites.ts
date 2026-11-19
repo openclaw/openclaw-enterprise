@@ -483,15 +483,25 @@ async function commandOutput(
   args: string[],
   deadline: number,
   stderrMode: "classify" | "discard" = "classify",
+  input?: string,
 ): Promise<string> {
   const timeout = Math.min(20_000, deadline - performance.now());
   if (timeout <= 0) {
     throw new DiagnosticError("The collection deadline expired.");
   }
   const grouped = process.platform !== "win32";
-  const child = spawn(command, args, {
+  // kubectl reopens /dev/stdin by path. Give it an anonymous FIFO because
+  // the socket Node uses for its own stdin stream cannot be reopened.
+  const executable = input === undefined ? command : "/bin/sh";
+  const executableArgs =
+    input === undefined ? args : ["-c", '/bin/cat | exec "$@"', "sh", command, ...args];
+  const child = spawn(executable, executableArgs, {
     detached: grouped,
-    stdio: ["ignore", "pipe", stderrMode === "discard" ? "ignore" : "pipe"],
+    stdio: [
+      input === undefined ? "ignore" : "pipe",
+      "pipe",
+      stderrMode === "discard" ? "ignore" : "pipe",
+    ],
     env: { ...process.env, KUBECTL_KUBERC: "false", AWS_PAGER: "", AWS_CLI_AUTO_PROMPT: "off" },
   });
   const stdout: Buffer[] = [];
@@ -510,6 +520,7 @@ async function commandOutput(
       } else {
         child.kill("SIGKILL");
       }
+      child.stdin?.destroy();
       child.stdout?.destroy();
       child.stderr?.destroy();
       reject(new DiagnosticError(reason));
@@ -542,6 +553,8 @@ async function commandOutput(
       clearTimeout(timer);
       resolve(code);
     });
+    child.stdin?.once("error", () => stop("The selected command could not read its input."));
+    child.stdin?.end(input);
   });
   if (result !== 0) {
     if (stderrMode === "discard") {
@@ -1197,7 +1210,7 @@ async function diagnose(
   let transport: string[] = [];
   const checks: CheckReport[] = [];
   let kubeUnavailable: string | undefined;
-  const kubectl = (args: string[], stderrMode?: "discard") => {
+  const kubectl = (args: string[], stderrMode?: "discard", input?: string) => {
     if (kubeUnavailable) {
       throw new DiagnosticError(kubeUnavailable);
     }
@@ -1214,6 +1227,7 @@ async function diagnose(
       ],
       deadline,
       stderrMode,
+      input,
     );
   };
   const kubeOutput = (...args: string[]) => kubectl(args);
@@ -1225,7 +1239,7 @@ async function diagnose(
     kind: string,
     { namespace, name }: DeploymentSelection,
     projection: string,
-    format: "go-template" | "go-template-file" = "go-template",
+    source: "argument" | "stdin" = "argument",
   ) =>
     kubectl(
       [
@@ -1237,9 +1251,10 @@ async function diagnose(
         "--ignore-not-found",
         "--v=0",
         "-o",
-        `${format}=${projection}`,
+        source === "stdin" ? "go-template-file=/dev/stdin" : `go-template=${projection}`,
       ],
       "discard",
+      source === "stdin" ? projection : undefined,
     );
   const readCertificate = async (
     selection: DeploymentSelection,
@@ -1247,21 +1262,13 @@ async function diagnose(
     requiredKeys: string[] = [],
   ) => {
     const template = `${tlsSecretFields}${requiredSecretKeysProjection(requiredKeys)}}`;
-    if (requiredKeys.length === 0) {
-      const output = await projectNamed("secret", selection, template);
-      return inspectCertificate(selection, output, serverName);
-    }
-    // Large required mappings can exceed the OS argument limit. Keep their key
-    // names in a private file for the lifetime of the named read.
-    const templateDirectory = await mkdtemp(join(tmpdir(), "occ-secret-check-"));
-    try {
-      const templatePath = join(templateDirectory, "secret.gotmpl");
-      await writeFile(templatePath, template, { flag: "wx", mode: 0o600 });
-      const output = await projectNamed("secret", selection, templatePath, "go-template-file");
-      return inspectCertificate(selection, output, serverName, requiredKeys);
-    } finally {
-      await rm(templateDirectory, { recursive: true, force: true });
-    }
+    const output = await projectNamed(
+      "secret",
+      selection,
+      template,
+      requiredKeys.length ? "stdin" : "argument",
+    );
+    return inspectCertificate(selection, output, serverName, requiredKeys);
   };
   async function check(
     id: string,

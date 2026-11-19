@@ -716,8 +716,11 @@ test(
 const { spawnSync } = require("node:child_process");
 const { appendFileSync, fstatSync, statSync } = require("node:fs");
 const args = process.argv.slice(2);
+const stdinProjection = args.includes("go-template-file=/dev/stdin");
 const result = spawnSync(${JSON.stringify(kubectlPath)}, args, {
-  encoding: "utf8", env: { ...process.env, PATH: process.env.OCC_FIXTURE_ORIGINAL_PATH },
+  encoding: "utf8",
+  stdio: [stdinProjection ? 0 : "ignore", "pipe", "pipe"],
+  env: { ...process.env, PATH: process.env.OCC_FIXTURE_ORIGINAL_PATH },
 });
 let observation = {};
 if (args.includes("get") && args.includes("deployments.apps") && args.includes(${JSON.stringify(clientName)})) {
@@ -736,20 +739,17 @@ if (args.includes("get") && args.includes("deployments.apps") && args.includes($
   };
 }
 if (args.includes("get") && args.includes("secret") && args.includes(${JSON.stringify(clientSecret)})) {
-  const templatePath = args.find((arg) => arg.startsWith("go-template-file="))
-    ?.slice("go-template-file=".length);
   observation = {
     secret: true,
     unrelatedSecretData: [${JSON.stringify(unrelatedSecretKey)}, ${JSON.stringify(unrelatedSecretValue)}]
       .some((value) => result.stdout?.includes(value)),
-    templatePath,
-    templateMode: templatePath === undefined ? undefined : statSync(templatePath).mode & 0o777,
+    stdinProjection: stdinProjection && fstatSync(0).isFIFO(),
   };
 }
 appendFileSync(${JSON.stringify(commandLog)}, JSON.stringify(observation) + "\n");
 process.stdout.write(result.stdout ?? "");
 process.stderr.write(result.stderr ?? "");
-process.exit(result.status ?? 1);
+process.exitCode = result.status ?? 1;
 `,
       { mode: 0o700 },
     );
@@ -805,8 +805,7 @@ process.exit(result.status ?? 1);
     assert.equal(secretOutput.length, 1);
     const [secretProjection] = secretOutput;
     assert.equal(secretProjection.unrelatedSecretData, false);
-    assert.equal(secretProjection.templateMode, 0o600);
-    await assert.rejects(stat(secretProjection.templatePath), { code: "ENOENT" });
+    assert.equal(secretProjection.stdinProjection, true);
     const workloadOutput = observations.filter(({ workload }) => workload);
     assert.deepEqual(workloadOutput, [
       {
