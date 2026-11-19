@@ -5,6 +5,7 @@ import {
 import { repositoryRemovalWorkKey } from "../repository-withdrawal.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
+  admitRepositoryNetworkPolicy,
   assertExecutionAdmission,
   validateConnectionTemplateDestinations,
   MAX_AGENT_CREDENTIAL_SOURCES,
@@ -201,6 +202,7 @@ export interface WorkspaceSetupRepository extends WorkspaceSetupReadRepository {
 }
 
 export interface SandboxPolicyReadRepository {
+  readonly supportsRepositoryNetworkPolicy?: true;
   find(namespaceId: string, agentId: string): Promise<Readonly<SandboxPolicy> | undefined>;
 }
 export interface SandboxPolicyRepository extends SandboxPolicyReadRepository {
@@ -3373,6 +3375,7 @@ function repositories(
   };
 
   const sandboxPolicies: SandboxPolicyRepository = {
+    supportsRepositoryNetworkPolicy: true,
     find: async (namespaceId, agentId) => {
       const value = snapshot.sandboxPolicies.get(agentKey(namespaceId, agentId));
       return value === undefined ? undefined : immutableCopy(value);
@@ -3395,6 +3398,18 @@ function repositories(
       ) {
         throw new ScopeViolationError("Invalid SandboxPolicy ownership or version.");
       }
+      const grants = policy.repositoryNetworkPolicy;
+      const canonical = admitRepositoryNetworkPolicy(grants, grants);
+      if (!isDeepStrictEqual(grants, canonical?.grants)) {
+        throw new ScopeViolationError("Repository network policy grants must be canonical.");
+      }
+      if (
+        (existing.repositoryNetworkPolicy !== undefined && grants === undefined) ||
+        (policy.version === existing.version &&
+          !isDeepStrictEqual(grants, existing.repositoryNetworkPolicy))
+      ) {
+        throw new ScopeViolationError("Invalid repository network policy transition.");
+      }
       const application = policy.application;
       const previousApplication = existing.application;
       if (
@@ -3410,6 +3425,13 @@ function repositories(
         const revision = (snapshot.revisions.get(key) ?? []).find(
           ({ id }) => id === application.revisionId,
         );
+        if (
+          grants !== undefined ||
+          revision?.sandboxPolicy?.repositoryNetworkPolicy !== undefined ||
+          application.snapshot.repositoryNetworkPolicy !== undefined
+        ) {
+          throw new ScopeViolationError("Repository network policy requires a new deployment.");
+        }
         if (
           revision === undefined ||
           application.policyVersion !== policy.version ||
@@ -4015,6 +4037,17 @@ function repositories(
       const plugins = revision.plugins === undefined ? undefined : immutableCopy(revision.plugins);
       await assertSecretBindingsAvailable(secrets, revision.namespaceId, secretBindings);
       const key = agentKey(revision.namespaceId, revision.agentId);
+      const policy = snapshot.sandboxPolicies.get(key);
+      const grants = policy?.repositoryNetworkPolicy;
+      const admittedPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
+      if (
+        !isDeepStrictEqual(admittedPolicy, admitRepositoryNetworkPolicy(grants, grants)) ||
+        (grants !== undefined && revision.sandboxPolicy?.version !== policy?.version)
+      ) {
+        throw new ScopeViolationError(
+          "Revision repository network policy must match the saved policy.",
+        );
+      }
       const previous = snapshot.revisions.get(key) ?? [];
       if (previous.some((existing) => existing.id === revision.id)) {
         throw new ResourceConflictError("The server generated an existing AgentRevision identity.");

@@ -13,6 +13,10 @@ import { verifyPostgresStateConformance } from "./postgres-state-conformance-cas
 import { persistGuardedDeployment } from "./postgres-state-guarded-deployment-case.ts";
 import { persistPluginState } from "./postgres-state-plugin-case.ts";
 import {
+  persistRepositoryNetworkPolicy,
+  verifyMemoryRepositoryPolicyLiveApplication,
+} from "./postgres-state-repository-network-policy-case.ts";
+import {
   checkpointProvisioning,
   completeProvisioning,
   replayProvisioning,
@@ -54,6 +58,15 @@ test(
   "PostgreSQL persists Agent plugin desired state and immutable revision snapshots atomically",
   requiresPostgres,
   persistPluginState,
+);
+test(
+  "memory SandboxPolicy rejects repository network policy in a live application snapshot",
+  verifyMemoryRepositoryPolicyLiveApplication,
+);
+test(
+  "PostgreSQL fences repository network policy saves and freezes admitted revisions",
+  requiresPostgres,
+  persistRepositoryNetworkPolicy,
 );
 test(
   "PostgreSQL browsing isolates unreadable saved Agent and revision configuration",

@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-19"
-last_updated_session: "authoring-run/2cbf1f13-9f6c-407a-be4f-453fd3ed04f6"
+last_updated_session: "authoring-run/36174b4a-9481-45e4-b5e7-f332cc293107"
 ---
 
 # Agent sandbox policy flow
@@ -32,7 +32,7 @@ graph TD
   U2 --> A["OCC save admission<br/>IAM, schema and ceiling"]
   A --> P["PostgreSQL<br/>desired policy version"]
   P --> D["Explicit deployment<br/>immutable snapshot"]
-  P --> W["Live application work<br/>exact running revision"]
+  P -->|No explicit repository policy| W["Live application work<br/>exact running revision"]
   W --> C["Persist provider CAS<br/>before mutation"]
   C --> S["Sandbox Driver<br/>apply canonical policy"]
   S --> V["Confirm matching<br/>loaded version"]
@@ -45,43 +45,38 @@ The solid arrows trace source paths, not a claim that all providers are verified
 
 ### 1. Admit and persist desired additions
 
-`internal/occcli/agent_policy.go:agentPolicyCommand` declares JSON and YAML
-output for each policy subcommand. `internal/occcli/cli.go:validateOptions` selects JSON only when `--output` is
-omitted and refuses unsupported explicit formats before any request. It then
-prints the acknowledged result through
-`internal/occcli/output.go:printStructured`. A successful mutation therefore
-returns its result without a later table-format error.
+The CLI policy commands print JSON or YAML through
+`internal/occcli/output.go:printStructured`. `validateOptions` defaults to JSON
+and rejects unsupported output formats before sending a request.
 
-`OpenClawController.discoverConfigurations` filters registry contributions by the
-server-selected Driver, scope, and resource-owner read authority. Installation
-inspection exposes [Driver-projected startup values](driver-plugin-loading.md#4-load-current-policy-and-hand-off-lifecycle-ownership).
-Agent discovery and policy GET
-use the same descriptor with owner-generated facet action URLs and current
-availability. The registry never selects a Driver from submitted additions.
+`OpenClawController.discoverConfigurations` filters contributions by Driver,
+scope, and owner read permission. Discovery and GET return the same descriptor
+with URLs for the available facet actions. See
+[Installation inspection](driver-plugin-loading.md#4-load-current-policy-and-hand-off-lifecycle-ownership).
 
-`validateAgentSandboxPolicy` authorizes the exact Agent and policy, checks the
-current editing flag, expected version, and pending application, then runs shared
-schema/semantic validation, the Driver contribution (which can only narrow it), and
-current ceiling/provider admission. An empty or reversed port range is never inside
-the ceiling. It returns a configuration result without entering a mutation
-transaction. Schema and semantic refusals carry safe `error.details`; stale or
-unauthorized requests retain their resource errors. Every later mutation repeats
-these checks. Ceiling refusal keeps its Installation-delegation cause; unsupported
-wildcard/range refusal names the Driver capability limit. Both retain field details.
-`internal/occclient/transport.go:APIError.Error` prints up to 32 public detail
-records as escaped JSON and omits records with Unicode control characters, so
-CLI callers retain the same field and cause without terminal controls.
+Startup validates the YAML [repository ceiling](../reference/configuration.md).
+GET requires Agent and SandboxPolicy read. It returns the saved grants, storage
+support, and the Namespace ceiling. The bound repository policy owner limits
+which Installation grants appear and can reduce write to read. PUT uses the
+same ceiling. An unsupported adapter returns `409 RESOURCE_CONFLICT` for
+explicit lists. An empty list saves deny-all. Omission keeps the saved list
+and excludes it from the PUT response.
 
-`packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
-Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
-and checks editing, expected version, pending work, complete ceiling coverage,
-and registry-resolved Driver admission. The saved additions come from the
-admitted snapshot. While the active or next revision runs under protected
-execution (the Installation selects the Credential Proxy), additions are refused
-with `409 SANDBOX_POLICY_PROTECTED_EXECUTION`, as are live application to a
-protected revision and a protected deploy carrying them; protected
-revisions admit no ordinary Agent policy snapshot. Protected, dedicated Codex
-repository admission can carry the Sandbox Driver's explicitly acknowledged
+`validateAgentSandboxPolicy` checks authorization, editing, version, pending
+application, the shared schema, ceiling and Driver admission without writing.
+Empty or reversed port ranges fail admission. Mutations repeat these checks.
+Refusals identify the field and cause, including a ceiling or Driver
+capability limit. `internal/occclient/transport.go:APIError.Error` prints up to 32 safe
+details as escaped JSON and excludes records with Unicode control characters.
+
+`packages/occ/src/index.ts:updateAgentSandboxPolicy` authorizes Agent
+`manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent, and
+checks editing, expected version, pending work, delegation, and Driver admission.
+Protected execution returns `409 SANDBOX_POLICY_PROTECTED_EXECUTION` for ordinary
+additions and explicit repository lists, including deny-all. An empty additions
+list with the repository field omitted clears ordinary additions. Protected
+execution also refuses live application and deployments with ordinary additions.
+Protected, dedicated Codex repository admission can carry the Sandbox Driver's explicitly acknowledged
 [artifact subset](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
 `checkedProtectedCodexArtifactPolicy` verifies its purpose, declared keys, Driver
 identity, version and empty additions before runtime credential provisioning.
@@ -130,10 +125,13 @@ ordinary Driver admission before freezing defaults and additions into
 `AgentRevision.sandboxPolicy`. OpenShell provisions from that snapshot.
 
 `applyAgentSandboxPolicy` authorizes Agent `manage_policy` and SandboxPolicy
-`update` and `read` before naming saved additions. It requires the exact active
-revision and supporting Driver. With reviewed additions, one transaction saves
-the new policy version, records its pending application and queues Agent-target
-work. Omission retains the saved version. Enforcement requires worker confirmation.
+`update` and `read` before inspecting the saved grants. An explicit repository
+policy, including deny-all, requires deployment. Both live apply request shapes
+return `409 RESOURCE_CONFLICT` before saving or queuing work. Live application
+requires the exact active revision and a supporting Driver. With reviewed
+additions, one transaction saves the new policy version, records its pending
+application and queues Agent-target work. Omission retains the saved version.
+Enforcement requires worker confirmation.
 
 ### 3. Reconcile provider effects
 
@@ -268,6 +266,10 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 04:47: Limit repository grants to Namespace authority and refuse explicit repository policy saves under protected execution. (authoring-run/36174b4a-9481-45e4-b5e7-f332cc293107 - 6a8b92278837a776fe6479dbf0418790d44bb3ff)
+
+- 2026-11-19 04:07: Trace repository grant readback, ceiling admission, and versioned saves through the Agent API. (authoring-run/16714b20-9501-44e3-8b3a-41b43ee3949f - ef779de40b885811dcc40e6eadaa8f185d4bb34d)
 
 - 2026-11-19 02:49: Refuse Driver-supplied repository access lists on ordinary deployment. (authoring-run/2cbf1f13-9f6c-407a-be4f-453fd3ed04f6 - 8b711ab7bef82b4db58547655aef785c8e74092b)
 

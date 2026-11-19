@@ -1,6 +1,10 @@
 import { DriverConfigurationDescriptorSchema } from "./driver-configurations.ts";
 import { Type } from "typebox";
 import { AgentId, NamespaceId, RevisionId, Meta } from "./common.ts";
+import {
+  maxRepositoryNetworkGrants,
+  repositoryNetworkGrantPattern,
+} from "../repository-network-policy.ts";
 import { SandboxNetworkGrantSchema, SandboxNetworkGrantsSchema } from "../sandbox-policy.ts";
 
 export const SandboxPolicyParams = Type.Object(
@@ -17,6 +21,18 @@ export const SandboxPolicyParams = Type.Object(
 );
 export const SandboxPolicyRevisionParams = Type.Object(
   { ...SandboxPolicyParams.properties, revisionId: RevisionId },
+  { additionalProperties: false },
+);
+
+const RepositoryNetworkGrantSchema = Type.Object(
+  {
+    repository: Type.String({
+      pattern: repositoryNetworkGrantPattern.source,
+      description: "Canonical lowercase GitHub owner/name without a .git suffix.",
+      not: { type: "string", pattern: "\\.git$|\\s" },
+    }),
+    access: Type.Union([Type.Literal("read"), Type.Literal("write")]),
+  },
   { additionalProperties: false },
 );
 
@@ -41,6 +57,12 @@ export const SandboxPolicySchema = Type.Object(
     agentId: AgentId,
     version: SandboxPolicyVersion,
     additions: SandboxNetworkGrantsSchema,
+    repositoryNetworkPolicy: Type.Optional(
+      Type.Array(RepositoryNetworkGrantSchema, {
+        description: "Saved repository grants. An empty array denies all repositories.",
+        maxItems: maxRepositoryNetworkGrants,
+      }),
+    ),
     application: Type.Optional(SandboxPolicyApplicationSchema),
     applied: Type.Optional(
       Type.Object(
@@ -69,9 +91,17 @@ export const SandboxPolicyViewResponse = Type.Object(
         editingEnabled: Type.Boolean(),
         protectedExecution: Type.Boolean({
           description:
-            "True while the active revision or the next deploy runs under protected execution. Saving network policy additions is then refused with SANDBOX_POLICY_PROTECTED_EXECUTION; saving an empty policy stays allowed.",
+            "True while the active revision or the next deploy runs under protected execution. Saving additions or an explicit repository policy then returns SANDBOX_POLICY_PROTECTED_EXECUTION. A save can still clear additions by omitting the repository policy field.",
         }),
         ceiling: SandboxNetworkGrantsSchema,
+        repositoryNetworkPolicyCeiling: Type.Array(RepositoryNetworkGrantSchema, {
+          description:
+            "Installation repository grants that the current repository policy owner allows for this Agent's Namespace.",
+          maxItems: maxRepositoryNetworkGrants,
+        }),
+        repositoryNetworkPolicySaveSupported: Type.Boolean({
+          description: "Whether the state adapter can store an explicit Agent repository policy.",
+        }),
         defaults: Type.Union([Type.Null(), Type.Record(Type.String(), Type.Unknown())]),
         defaultsRevisionId: Type.Optional(RevisionId),
         deployedPolicyVersion: Type.Optional(
@@ -105,7 +135,17 @@ export const SandboxPolicyViewResponse = Type.Object(
 export type SandboxPolicyViewWire = Type.Static<typeof SandboxPolicyViewResponse>["data"];
 
 export const SandboxPolicyUpdateBody = Type.Object(
-  { expectedVersion: SandboxPolicyVersion, additions: SandboxNetworkGrantsSchema },
+  {
+    expectedVersion: SandboxPolicyVersion,
+    additions: SandboxNetworkGrantsSchema,
+    repositoryNetworkPolicy: Type.Optional(
+      Type.Array(RepositoryNetworkGrantSchema, {
+        description:
+          "Desired repository grants. Omit to preserve the saved grants. An empty array requests deny-all. Saving an explicit list requires repository policy persistence.",
+        maxItems: maxRepositoryNetworkGrants,
+      }),
+    ),
+  },
   { additionalProperties: false },
 );
 export const SandboxPolicyValidateBody = Type.Object(
@@ -121,7 +161,7 @@ export const SandboxPolicyApplyBody = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction.",
+      "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction. An explicit saved repository policy requires deployment and makes this operation return HTTP 409.",
   },
 );
 export const SandboxPolicyEditingBody = Type.Object(

@@ -12,6 +12,7 @@ import type {
   githubInstallationProfile as installationProfile,
   RepositoryApprovalScope,
   RepositoryBindingRequest,
+  RepositoryNetworkGrant,
 } from "@openclaw-enterprise/contracts";
 import { isGitHubProfile, type GitHubProfile } from "./types.ts";
 import {
@@ -335,6 +336,38 @@ function repositoryTransportPermissions(
   return permissionsForProfile(profile);
 }
 
+function resolveRepositoryNamespacePolicy(
+  repository: GitHubRepositoryRegistration | undefined,
+  namespaceId: string,
+) {
+  const policy = repository?.namespaces.find((entry) => entry.namespaceId === namespaceId);
+  return repository && policy ? { repository, policy } : undefined;
+}
+
+/** Check native Git network access against an exact registered repository's Namespace grant. */
+export function allowsGitHubRepositoryNetworkGrant(
+  registry: GitHubRepositoryRegistry,
+  input: { readonly namespaceId: string; readonly grant: RepositoryNetworkGrant },
+): boolean {
+  const { namespaceId, grant } = input;
+  const resolved = resolveRepositoryNamespacePolicy(
+    registry.repositories.find((entry) => entry.repository === grant.repository),
+    namespaceId,
+  );
+  if (resolved === undefined) {
+    return false;
+  }
+  const { policy } = resolved;
+  return policy.profiles.some((profile) => {
+    const contents = repositoryTransportPermissions(policy, profile)?.contents;
+    // The network policy cannot preserve an existing push-ref restriction.
+    return (
+      (grant.access === "read" && (contents === "read" || contents === "write")) ||
+      (grant.access === "write" && contents === "write" && policy.pushRefAllowlist === undefined)
+    );
+  });
+}
+
 /** Changing how the sender may use an installation credential changes the grant and its approval. */
 const installationGrantPolicy = Object.freeze({
   repositorySelection: "installation",
@@ -390,16 +423,22 @@ export function resolveGitHubRepositoryBinding(
       grant: Object.freeze({ providerInstanceId, repositoryId, grantId }),
     });
   }
-  const repository = registry.repositories.find((entry) => entry.repositoryRef === repositoryRef);
-  const policy = repository?.namespaces.find((entry) => entry.namespaceId === namespaceId);
+  const resolved = resolveRepositoryNamespacePolicy(
+    registry.repositories.find((entry) => entry.repositoryRef === repositoryRef),
+    namespaceId,
+  );
+  if (resolved === undefined) {
+    throw new Error("repository-binding-not-authorized");
+  }
+  const { repository, policy } = resolved;
   const selectedProfile = profile(
     request.profile === undefined
-      ? policy?.profiles.length === 1 && policy.profiles[0] === "github-repository"
+      ? policy.profiles.length === 1 && policy.profiles[0] === "github-repository"
         ? "github-repository"
         : "git-write"
       : request.profile,
   );
-  if (!repository || !policy || !policy.profiles.includes(selectedProfile)) {
+  if (!policy.profiles.includes(selectedProfile)) {
     throw new Error("repository-binding-not-authorized");
   }
   // Policy changes cannot preserve an earlier grant merely by retaining an operator label.
