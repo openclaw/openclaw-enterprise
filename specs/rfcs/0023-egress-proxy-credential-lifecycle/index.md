@@ -11,7 +11,7 @@ status: Proposed
 This proposal requires human review and merge.
 
 The proposed [Installation credential ownership amendment](installation-credential-ownership.md) revises the v1 custody, delivery and deployment decisions below.
-The proposed [held-start amendment](strands-box-held-launch.md) defines scoped observation and release for an unready protected startup, and requires authenticated binding of the exact launcher and receiver before privileged descriptor transfer.
+The proposed [held-start amendment](strands-box-held-launch.md) defines exact startup observation and release, including an unqualified direct-parent Box experiment. If a privileged descriptor is transferred to an independently launched receiver, both exact endpoints must authenticate before transfer.
 
 ## Decision
 

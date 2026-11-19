@@ -28,7 +28,7 @@ preparation checks `providerHarnessReady` before reading provider Harness status
 requires exactly one matching live Pod with `Ready=True`. Compute can already report a
 validated held failure from a provider-owned Harness after that gate, and protected
 enrollment can run before it. Neither behavior lets Compute read a terminal diagnostic
-from an unready provider Pod. Main contains no Strands/Box Sandbox implementation.
+from an unready provider Pod. The baseline contained no Strands/Box Sandbox implementation.
 
 Add a generic, authenticated observation of the held startup through the selected Sandbox.
 Compute may read that observation before conventional Pod readiness, after establishing
@@ -38,15 +38,21 @@ checks. Preserve the existing OpenShell readiness and exposure-withdrawal requir
 [RFC-0024](../0024-sandbox-harness-mode-support.md) concerns OpenClaw mode reporting; it
 does not approve Box or Codex support.
 
+For Box, the selected Sandbox experiment uses one trusted native parent in the Agent
+Pod container. That parent directly starts its trampoline and contained child in the
+same container. This removes the second Kubernetes workload-container boundary; native
+containment and the installed path remain unqualified.
+
 ## Ownership and release
 
-| Owner           | Required responsibility                                                                                                                                                                                                                                                     |
-| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Compute         | Own the Agent revision Pod, storage, placement, lifecycle, generic readiness or refusal, and the decision to sign release. Do not interpret Box internals.                                                                                                                  |
-| Sandbox         | Enforce process and network isolation, mandatory egress, private control transport, startup hold, and authenticated observation and release for the exact target incarnation, process instance, and fresh challenge. Its trusted companion implements these duties for Box. |
-| TokenService    | Commit the authoritative source value and version, retain issuer keys and refresh grants, and issue or renew usable credentials under the Installation's selected owner.                                                                                                    |
-| CredentialProxy | Commit effective policy, deliver the expected version to trusted copies, observe the target copy, and acknowledge a push only after every serving copy can use that version.                                                                                                |
-| Harness         | Own the Agent process and its conversation or session after release.                                                                                                                                                                                                        |
+| Owner           | Required responsibility                                                                                                                                                                                                                                                         |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OCC/IAM         | OpenClaw Control Plane owns metadata and Agent bindings; IAM admits credential use.                                                                                                                                                                                             |
+| Compute         | Own the Agent revision Pod, storage, placement, lifecycle, generic readiness or refusal, and the decision to sign release. Do not interpret Box internals.                                                                                                                      |
+| Sandbox         | Enforce process and network isolation, mandatory egress, private control transport, startup hold, and authenticated observation and release for the exact target incarnation, process instance, and fresh challenge. Its trusted native parent implements these duties for Box. |
+| TokenService    | Commit the authoritative source value and version, retain issuer keys and refresh grants, and issue or renew usable credentials under the Installation's selected owner.                                                                                                        |
+| CredentialProxy | Commit effective credential policy, deliver the expected version and withdrawal to the trusted target, observe serving copies, and acknowledge a push only after every serving copy can use that version.                                                                       |
+| Harness         | Own the Agent process and its conversation or session after release.                                                                                                                                                                                                            |
 
 The Worker uses the regular Compute preparation path. The selected Sandbox stages a
 contained target with credential-using execution held and returns an authenticated
@@ -71,38 +77,50 @@ the previous process's challenge, projections, acknowledgement, and release.
 
 ## Trust boundary
 
-Before any privileged launch descriptor is transferred, the trusted installer or runtime
-must provide one of two mechanisms:
+Box Policy is the sole authorizer for Box network, shell, and filesystem operations.
+The Sandbox authors supported Policy from admitted declarations; declarations do not
+grant operations, missing Policy denies, and floor restrictions can only deny. OpenClaw
+Enterprise (OCE) IAM
+and repository policy independently authorize credential use. Binding or injecting a
+credential requires both a Box Policy permit and current OCE authorization, and cannot
+grant a Box operation. Refuse policy that cannot be represented without widening access.
 
-- An independently trusted binding at each endpoint that lets the launcher authenticate
-  the exact authorized receiver incarnation and lets the receiver authenticate the exact
-  authorized launcher incarnation on the live connection.
-- An independently provisioned, authenticated preconnected channel bound to that exact
-  launcher and receiver pair.
+Every process in one Box can use its routes, and the current callback cannot identify
+the originating executable. When CredentialProxy cannot distinguish an admitted
+executable or port, Sandbox must enforce that restriction or refuse the policy, as the
+[credential ownership amendment](installation-credential-ownership.md) requires. That
+enforcement remains pending.
 
-Both endpoints must complete this check before descriptor transfer. A matching UID, a
-mode-0700 rendezvous directory, a peer-supplied image digest, or a nonce exchanged over the
-same unauthenticated socket is insufficient. An observed PID or pidfd is insufficient
-without an independently authenticated expected incarnation. Refuse substitute listeners,
-foreign first connectors, stale peers, and cross-run connections before sending any
-descriptor. The existing Box candidate checks the peer UID and transfers descriptors
-before validating anchors; it does not satisfy this requirement. No Kubernetes bootstrap
-channel is selected or implemented by this amendment.
+For the native experiment, the trusted parent creates the trampoline and child directly.
+Prove that launch provenance, inherited state, exact process incarnation, and fresh
+challenge bind only the intended child. Qualify native user, mount, PID, and network
+namespaces, the restricted filesystem, and seccomp as protection for the trusted side.
 
-The handoff must preserve the supervisor's live authored-configuration and policy file
-identities and protections against writable aliases. The workload receives the public CA
-only as a read-only grant to the same pinned object; a byte copy does not establish that
-identity. Private state, authored files, vault contents, and the CA signing key remain on
-the trusted side.
+If a privileged launch descriptor is transferred to an independently launched receiver,
+the trusted installer or runtime must first supply either independently trusted bindings
+that authenticate both exact endpoint incarnations on the live connection, or an
+independently provisioned authenticated preconnected channel for that pair. Both endpoints
+must authenticate before transfer. A matching UID, mode-0700 directory, peer-supplied
+image digest, in-band nonce, or observed PID or pidfd without independently authenticated
+expected identity is insufficient. Refuse substitute listeners, foreign first connectors,
+stale peers, and cross-run connections before sending a descriptor. The separate Box
+handoff candidate does not satisfy this rule, and its Kubernetes bootstrap remains
+unresolved. It is not needed for direct child creation.
 
-The untrusted workload may receive opaque placeholders with no retrieval or release
-authority. It must not receive user secrets, issuer keys, provider tokens, proxy control
-credentials, a reusable ingress bearer, or another privileged reusable identity through any
-workload-visible surface. Containers in one Pod share loopback, and NetworkPolicy selects
-Pods rather than containers. Sandbox must independently isolate trusted control interfaces
-and block direct egress, including
-loopback and raw-socket bypass. The trusted companion retains the vault and injector. A
-separate trusted proxy Pod is a possible later deployment, not a v1 prerequisite.
+Preserve the parent's live authored-configuration and Policy file identities and
+protections against writable aliases. The child receives the public CA only as a
+read-only grant to the same pinned object; a byte copy does not establish that identity.
+Private state, authored files, vault contents, and the CA signing key remain trusted.
+
+The child may receive reviewed filesystem grants, public trust material, and opaque
+placeholders with no retrieval or release authority. It must not obtain user secrets,
+issuer keys, provider tokens, proxy control credentials, a reusable ingress bearer, or
+another privileged reusable identity through inherited descriptors, process inspection,
+filesystem aliases, environment, arguments, mounts, logs, control endpoints, or any other
+workload-visible surface. Kubernetes NetworkPolicy selects Pods, not processes. Sandbox
+must isolate trusted control interfaces and block loopback, direct DNS or upstream routes,
+and raw-socket bypass. The trusted parent retains the vault and injector. A separate
+trusted proxy Pod is a possible later deployment, not a v1 prerequisite.
 
 ## Acceptance Criteria
 
@@ -116,16 +134,21 @@ separate trusted proxy Pod is a possible later deployment, not a v1 prerequisite
   status before activation. A missing or stale target copy, one stale serving peer, expired
   or revoked authority, companion loss, or a previous startup's release keeps work held or
   refused. Verify failed push and lost-reply recovery without blind replay.
-- **AC-3 — Launch authority:** Through the real launcher and receiver, authenticate both
-  exact incarnations before descriptor transfer. Prove that a substitute listener, foreign
-  first connector, stale or cross-run peer, and unbound same-UID process receive
-  no privileged descriptor. Verify live source identity, writable-alias refusal, the
-  read-only same-object CA grant, and cleanup. A nonce exchange alone must not authorize
-  transfer.
+- **AC-3 — Launch authority:** Through the real native Box caller and contained child,
+  prove direct-parent provenance and exact child binding; refuse substitution, replacement,
+  stale release, and unintended descriptor inheritance. Verify live source identity,
+  writable-alias refusal, the read-only same-object CA grant, and cleanup. If an
+  independently launched receiver is later selected, authenticate both exact endpoints
+  before transfer and prove that substitute listeners, foreign first connectors, stale or
+  cross-run peers, and unbound same-UID processes receive no privileged descriptor. A nonce
+  exchange alone must not authorize transfer.
 - **AC-4 — Containment and compatibility:** Extend maintained integration coverage through
   the real Agent workflow. Use invented sentinels to prove workload surfaces and same-Pod
-  loopback cannot expose credentials or control authority. Preserve OpenShell's existing
-  positive and refusal cases and its conventional readiness gate.
+  loopback cannot expose credentials or control authority. Verify an authored Box Policy
+  permit, deny, and absent-Policy refusal independently of OCE credential admission.
+  Verify Sandbox executable/port enforcement or policy refusal when the callback cannot
+  distinguish the caller. Preserve OpenShell's existing positive and refusal cases and its
+  conventional readiness gate.
 - **AC-5 — Installed qualification:** On clean ARM64 Helm installation, use the exact
   reviewed images and source to complete a real HTTP provider model turn, Git push, and
   draft pull request with independent provider readback. Withdraw Git access, refuse a
@@ -136,11 +159,16 @@ separate trusted proxy Pod is a possible later deployment, not a v1 prerequisite
 
 Submit this Driver-contract amendment for human review before changing required behavior,
 configuration, or interfaces. RFC merge requires a human. Coordinate the exact status and
-release contract with v1 push-admission work; select public field names only after the
-owners agree on the contract. The installer/runtime owner must define and deliver the
-independent launcher bootstrap before Box can implement the descriptor handoff. The Box
-candidate, generic observation and delivery work, provider behavior, and installed
-qualification remain dependencies or unproved outcomes. Main's
+release contract with v1 push-admission work; the incumbent owners retain the public
+startup/status and release fields. Select names only after they agree on the contract.
+The native parent/child experiment does not depend on an installer-provisioned receiver
+bootstrap. If a separate receiver is selected later, its installer/runtime owner must
+supply that bootstrap before descriptor transfer. The paired Box Sandbox/CredentialProxy
+registration, trusted target-bound serving recipient and real callback, generic observation
+and release contract, credential delivery, independent review, provider behavior, and
+installed qualification remain dependencies or unproved outcomes. Generic Driver capability admission
+for the proposed paired registration is also pending: current registration rejects a
+deployment-only CredentialProxy. The baseline
 [#6098](https://github.com/openclaw/openclaw-enterprise/pull/6098) changes Sandbox
 maintenance cadence, not the Box topology.
 
@@ -152,3 +180,4 @@ proxy can strengthen the network boundary later and requires its own deployment 
 ## Changelog
 
 - 2026-11-18 — Propose a generic held-start observation and release boundary for TASK-0053.
+- 2026-11-19 — Select the unqualified native Box parent experiment and make descriptor-transfer requirements conditional.
