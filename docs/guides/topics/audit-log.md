@@ -97,13 +97,24 @@ on a Helm installation with managed Gateway routing. Deploy a revision
 with a bundled runtime image. The worker configures audit reporting during
 deployment. Use the usual steps to deploy an Agent or send a message.
 
-OCC stores session, turn, and model-call records in the audit ledger. A turn
-can contain more than one model call. Each attempt has its own call ID.
-Read the runtime result in `details.outcome`. If a runtime stops before it
-records a result, the result remains unknown.
-The records contain IDs, times, and results of observed activity. They exclude
-prompts and model responses. The runtime reports its own activity. OCC
-checks the revision identity for each write.
+OCC saves these events in PostgreSQL. The Agent audit API returns them with
+`event` set to `runtime_activity`.
+
+| Action                                  | When the runtime reports it                                                                  |
+| --------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `openclaw.runtime.session.started`      | OpenClaw creates a saved session, or Codex creates a thread for a session.                   |
+| `openclaw.runtime.session.ended`        | The Gateway deletes the session.                                                             |
+| `openclaw.runtime.turn.admitted`        | The runtime accepts a turn for execution. It must save this event before it starts the work. |
+| `openclaw.runtime.turn.started`         | The runtime starts work on the turn.                                                         |
+| `openclaw.runtime.turn.completed`       | The runtime observes the turn result. Read `details.outcome`.                                |
+| `openclaw.runtime.model_call.started`   | The runtime starts a call to the model.                                                      |
+| `openclaw.runtime.model_call.completed` | The runtime observes the result of that call. Read `details.outcome`.                        |
+
+Use `sessionId` to find the turns in one conversation. Use `turnId` to find
+the model calls for one turn. Each new attempt has its own `modelCallId`.
+If you find a start without a completion, the result is unknown. These
+events omit prompts and model responses. OCC checks the revision identity
+for each write.
 
 The private listener serves Gateways in the control cluster. A dedicated
 OpenClaw worker reports its model calls through its Gateway.
