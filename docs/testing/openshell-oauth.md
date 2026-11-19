@@ -12,20 +12,22 @@ environment; this procedure does not establish production support.
 
 ## Prepare images and trust
 
-Select official OpenShell `v0.1.8`, source commit
-`f3d976590d3eb1379690a2abaf0f0e26c21d487d`, for the gateway, supervisor, and
-static sandbox launcher. Use the immutable digests of the stable `0.1.8` image
-tags and gateway/Workspace Helm charts from that version. The stable release
+Select official [OpenShell `v0.1.9`](https://github.com/NVIDIA/OpenShell/releases/tag/v0.1.9), source commit
+`ce58cf8e9b953281352d98a637e41616295b1318`, for the gateway, supervisor, and
+static sandbox launcher. Use the immutable digests of the stable `0.1.9` image
+tags and the published gateway and Workspace OCI Helm charts from that version. The stable release
 rebuilds its images, so the source-commit image tags select different digests. This release includes emSign public-key distrust from
 [OpenShell #4794](https://github.com/NVIDIA/OpenShell/pull/4794), as well as operator `GetProviderCredentials`
 from [OpenShell #4357](https://github.com/NVIDIA/OpenShell/pull/4357) and the alias
 resolver correction in [#4390](https://github.com/NVIDIA/OpenShell/pull/4390).
 
-| Component               | Immutable image                                                                                               |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------- |
-| Gateway                 | `ghcr.io/nvidia/openshell/gateway@sha256:d66352a54c680b652e5ddd7d19b9c1189568d18016f360b9b8c64014f13d89c4`    |
-| Supervisor              | `ghcr.io/nvidia/openshell/supervisor@sha256:deadeacfdba6d12ca27e538d0002696369d4de5a4fcad075ab503495503af9d1` |
-| Static sandbox launcher | `ghcr.io/nvidia/openshell/sandbox@sha256:f0fe7dbf18d833acb5da99c405231124718f23b524aa8e3c0108e6f37530033b`    |
+| Component                                                                                                             | Immutable image                                                                                               |
+| --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| [Gateway](https://github.com/orgs/NVIDIA/packages/container/openshell%2Fgateway/1584006691?tag=0.1.9)                 | `ghcr.io/nvidia/openshell/gateway@sha256:1fd9e1e807990e66c9486a28d3ce9d649fd7528df48d0e830d2de2148b52dfe5`    |
+| [Supervisor](https://github.com/orgs/NVIDIA/packages/container/openshell%2Fsupervisor/1584012318?tag=0.1.9)           | `ghcr.io/nvidia/openshell/supervisor@sha256:f1ec231b5dbe5b6a40c33acb2ac847995aabb959a56134ef6d7d7aa4f43199d3` |
+| [Static sandbox launcher](https://github.com/orgs/NVIDIA/packages/container/openshell%2Fsandbox/1584009632?tag=0.1.9) | `ghcr.io/nvidia/openshell/sandbox@sha256:e57d07cd6cc1fc314b80368d6b51ec6fbf825fb62cd8f081312941180846866f`    |
+
+CI mirrors must preserve these multiarchitecture OCI indexes. The AMD64 production quickstart pins the corresponding platform manifests. The published charts are [`helm-chart:0.1.9`](https://github.com/orgs/NVIDIA/packages/container/openshell%2Fhelm-chart/1584015542?tag=0.1.9) and [`openshell-workspace:0.1.9`](https://github.com/orgs/NVIDIA/packages/container/openshell%2Fopenshell-workspace/1584015913?tag=0.1.9); they are separate OCI packages, not release assets.
 
 OCE keeps its JWT wrapper: Codex needs the local account claims, while the
 supervisor replaces the whole alias with the live credential. Stable-handle
@@ -38,7 +40,7 @@ imports these same pins. When installing separately, select all three immutable
 references through `gateway.image`, `supervisor.image`, and `sandboxRuntime.image`.
 Selecting local charts alone does not select those binaries. Record actual launched
 versions. Earlier `dev.8` and `dev.47` evidence remains bound to its tested pins;
-neither qualifies `v0.1.8`. The release update does not establish a fix for the
+neither qualifies `v0.1.9`. The release update does not establish a fix for the
 known provider-environment disconnect or a successful restart/withdrawal proof.
 
 The opt-in observed-hook repository credential preview admits 0.1.5 and 0.1.6.
@@ -106,14 +108,11 @@ records an immutable reference. For real-runtime tests, follow the
 and set `OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and
 `OCC_TEST_KUBERNETES_AGENT_IMAGE` to the imported digest reference.
 
-When OpenShell's ordinary OIDC issuer uses a private CA, retain the chart
-adjustment that preserves the gateway image's public roots; the selected upstream
-chart still needs it. `server.oidc.caConfigMapName` selects
-the issuer bundle through `SSL_CERT_FILE`, alongside
-`SSL_CERT_DIR=/etc/ssl/certs`. An issuer-only file without the public roots can
-allow OIDC login while breaking refresh at a public OAuth token endpoint.
-This is separate from the Agent Gateway's trust above; retain TLS verification
-on both paths.
+For an ordinary OIDC issuer signed by a private CA, use
+`server.oidc.caConfigMapName` in the OpenShell 0.1.9 chart. This bundle applies
+to issuer discovery and JWKS requests. OAuth token requests use platform trust.
+If a separate token endpoint uses a private CA, include that CA in its client's
+trust store. The Agent Gateway trust above serves a separate connection.
 
 ## Run the synthetic refresh proof
 
