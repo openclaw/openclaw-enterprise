@@ -752,12 +752,19 @@ test(
 const { spawnSync } = require("node:child_process");
 const { appendFileSync, fstatSync, statSync } = require("node:fs");
 const args = process.argv.slice(2);
-const stdinProjection = args.includes("go-template-file=/dev/stdin");
-const result = spawnSync(${JSON.stringify(kubectlPath)}, args, {
+const options = {
   encoding: "utf8",
-  stdio: [stdinProjection ? 0 : "ignore", "pipe", "pipe"],
   env: { ...process.env, PATH: process.env.OCC_FIXTURE_ORIGINAL_PATH },
-});
+};
+const readsSecret = args.includes("get") && args.includes(${JSON.stringify(`secrets/${clientSecret}`)});
+let changedWorkload = false;
+if (readsSecret && process.env.OCC_FIXTURE_CHANGE_WORKLOAD === "1") {
+  const scope = args.slice(0, args.indexOf("get"));
+  const update = spawnSync(${JSON.stringify(kubectlPath)}, [...scope, "annotate",
+    "deployments.apps", ${JSON.stringify(clientName)}, "example.test/observed-change=1"], options);
+  changedWorkload = update.status === 0;
+}
+const result = spawnSync(${JSON.stringify(kubectlPath)}, args, options);
 let observation = {};
 if (args.includes("get") && args.includes("deployments.apps") && args.includes(${JSON.stringify(clientName)})) {
   const stderr = fstatSync(2);
@@ -774,12 +781,15 @@ if (args.includes("get") && args.includes("deployments.apps") && args.includes($
     stderrDiscarded: stderr.isCharacterDevice() && stderr.rdev === statSync("/dev/null").rdev,
   };
 }
-if (args.includes("get") && args.includes("secret") && args.includes(${JSON.stringify(clientSecret)})) {
+if (readsSecret) {
   observation = {
     secret: true,
+    changedWorkload,
     unrelatedSecretData: [${JSON.stringify(unrelatedSecretKey)}, ${JSON.stringify(unrelatedSecretValue)}]
       .some((value) => result.stdout?.includes(value)),
-    stdinProjection: stdinProjection && fstatSync(0).isFIFO(),
+    namedWorkload: args.includes(${JSON.stringify(`deployments.apps/${clientName}`)}),
+    projectionSize: Buffer.byteLength(args.find((argument) => argument.startsWith("go-template=")) ?? ""),
+    rawTemplateError: result.stdout?.includes("raw data was:"),
   };
 }
 appendFileSync(${JSON.stringify(commandLog)}, JSON.stringify(observation) + "\n");
@@ -805,6 +815,24 @@ process.exitCode = result.status ?? 1;
     assert.equal(misspelledClient.stdout, "");
     assert.match(misspelledClient.stderr, /only supported top-level fields/u);
     assert.equal(await readFile(commandLog, "utf8"), "");
+
+    // Change the real Deployment after its first observation. The joined read
+    // must reject the stale resource version even though the TLS Secret exists.
+    const changed = await invokeDiagnostic(clientPlan, protectedValues, {
+      ...projectionEnv,
+      OCC_FIXTURE_CHANGE_WORKLOAD: "1",
+    });
+    const changedCheck = (JSON.parse(changed.stdout).checks as Check[]).find(
+      ({ id }) => id === "client-certificate",
+    );
+    assert.equal(changedCheck?.status, "unknown");
+    assert.match(changedCheck?.summary ?? "", /could not bind the selected Secret/u);
+    const changedOutput = (await readFile(commandLog, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.ok(changedOutput.some(({ changedWorkload }) => changedWorkload === true));
+    await writeFile(commandLog, "");
 
     const clientCheck = async (plan: Plan = clientPlan) =>
       (await diagnose(plan, protectedValues)).checks.get("client-certificate");
@@ -841,7 +869,9 @@ process.exitCode = result.status ?? 1;
     assert.equal(secretOutput.length, 1);
     const [secretProjection] = secretOutput;
     assert.equal(secretProjection.unrelatedSecretData, false);
-    assert.equal(secretProjection.stdinProjection, true);
+    assert.equal(secretProjection.namedWorkload, true);
+    assert.equal(secretProjection.rawTemplateError, false);
+    assert.ok(secretProjection.projectionSize > 0 && secretProjection.projectionSize < 12_000);
     const workloadOutput = observations.filter(({ workload }) => workload);
     assert.deepEqual(workloadOutput, [
       {

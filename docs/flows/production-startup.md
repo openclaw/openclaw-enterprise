@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-18"
-last_updated_session: "authoring-run/fcffdcd5-85ba-4fd1-ad35-bfbbcd6953b6"
+updated: "2026-11-19"
+last_updated_session: "authoring-run/7f466ed0-ec17-457f-846d-eb2049aa2be5"
 ---
 
 # Production Startup Flow
@@ -80,8 +80,9 @@ Queries reconnect.
 
 ### 1. Prepare native production inputs
 
-`scripts/diagnose-kubernetes-prerequisites.ts:diagnose` checks controllers, CRDs, addresses,
-quotas, Service grants and serving TLS. It verifies mounted public certificates and required Secret keys. EKS verifies identity.
+`scripts/diagnose-kubernetes-prerequisites.ts:diagnose` checks prerequisites.
+Required keys need matching workload UID and `resourceVersion`.
+Incomplete or changed reads yield `unknown`.
 [Resolve failed/unknown checks](../guides/deploy/prerequisite-diagnosis.md) before Helm.
 
 `deploy/helm/openclaw-enterprise/values.yaml:1`
@@ -380,6 +381,8 @@ The shell initializes the missing annotation, patches with UID and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 07:23: Bind certificates. (authoring-run/7f466ed0-ec17-457f-846d-eb2049aa2be5 - b2bb9012f21bbbd83e0b2718192f01ac31038b55)
 
 - 2026-11-18 14:20: Reconcile credential inputs (PST). (authoring-run/fcffdcd5-85ba-4fd1-ad35-bfbbcd6953b6 - 10aa89ec05593393b17607d5b91ed06205f4ae2f)
 

@@ -163,12 +163,13 @@ type DeploymentReadiness = {
 
 type ClientMount = {
   directoryPrefix: string;
+  volumeName: string;
   subPath: boolean | null;
   claim: boolean | null;
   volumes: ({
     secretName: string;
     optional: boolean | null;
-    items: { key: string; path: string }[] | null;
+    items: { certificateKey: boolean | null; path: string }[] | null;
   } | null)[];
 };
 
@@ -181,7 +182,7 @@ type ClientWorkload = {
 
 type MountedCertificateSecret = {
   name: string;
-  requiredKeys: string[];
+  requiredVolume?: string;
 };
 
 type ObservedTlsSecret = {
@@ -189,6 +190,8 @@ type ObservedTlsSecret = {
   certificate: string;
   requiredKeysPresent?: boolean | null;
 };
+
+type BoundTlsSecret = { bound: false } | { bound: true; secret: ObservedTlsSecret | null };
 
 type QuotaResource = "count/jobs.batch" | "count/replicasets.apps";
 type QuotaQuantities = Partial<Record<QuotaResource, string>>;
@@ -483,25 +486,15 @@ async function commandOutput(
   args: string[],
   deadline: number,
   stderrMode: "classify" | "discard" = "classify",
-  input?: string,
 ): Promise<string> {
   const timeout = Math.min(20_000, deadline - performance.now());
   if (timeout <= 0) {
     throw new DiagnosticError("The collection deadline expired.");
   }
   const grouped = process.platform !== "win32";
-  // kubectl reopens /dev/stdin by path. Give it an anonymous FIFO because
-  // the socket Node uses for its own stdin stream cannot be reopened.
-  const executable = input === undefined ? command : "/bin/sh";
-  const executableArgs =
-    input === undefined ? args : ["-c", '/bin/cat | exec "$@"', "sh", command, ...args];
-  const child = spawn(executable, executableArgs, {
+  const child = spawn(command, args, {
     detached: grouped,
-    stdio: [
-      input === undefined ? "ignore" : "pipe",
-      "pipe",
-      stderrMode === "discard" ? "ignore" : "pipe",
-    ],
+    stdio: ["ignore", "pipe", stderrMode === "discard" ? "ignore" : "pipe"],
     env: { ...process.env, KUBECTL_KUBERC: "false", AWS_PAGER: "", AWS_CLI_AUTO_PROMPT: "off" },
   });
   const stdout: Buffer[] = [];
@@ -520,7 +513,6 @@ async function commandOutput(
       } else {
         child.kill("SIGKILL");
       }
-      child.stdin?.destroy();
       child.stdout?.destroy();
       child.stderr?.destroy();
       reject(new DiagnosticError(reason));
@@ -553,8 +545,6 @@ async function commandOutput(
       clearTimeout(timer);
       resolve(code);
     });
-    child.stdin?.once("error", () => stop("The selected command could not read its input."));
-    child.stdin?.end(input);
   });
   if (result !== 0) {
     if (stderrMode === "discard") {
@@ -797,11 +787,25 @@ function clientWorkloadProjection({
   workload: { kind, namespace, name },
 }: ClientCertificate): string {
   return `${observationTemplates}
+{{define "certificateKey"}}
+  {{- $valid := and (eq (printf "%T" .) "string") . (le (len .) 253) -}}
+  {{- if $valid -}}
+    {{- range $i := len . -}}
+      {{- $byte := index $ $i -}}
+      {{- if not (or (and (ge $byte 'a') (le $byte 'z')) (and (ge $byte 'A') (le $byte 'Z'))
+                     (and (ge $byte '0') (le $byte '9')) (eq $byte '_') (eq $byte '-') (eq $byte '.')) -}}
+        {{- $valid = false -}}
+        {{- break -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if $valid -}}{{eq . "tls.crt"}}{{- else -}}null{{- end -}}
+{{end}}
 {{define "items"}}
   {{if eq (printf "%T" .) "[]interface {}"}}
     [{{range $i, $item := .}}{{if $i}},{{end}}
       {{if eq (printf "%T" $item) "map[string]interface {}"}}
-        {"key":{{template "text" $item.key}},"path":{{template "text" $item.path}}}
+        {"certificateKey":{{template "certificateKey" $item.key}},"path":{{template "text" $item.path}}}
       {{else}}null{{end}}
     {{end}}]
   {{else if eq (printf "%T" .) "<nil>"}}[]{{else}}null{{end}}
@@ -892,7 +896,7 @@ function clientWorkloadProjection({
     {{- if not $validPaths -}}[null]
     {{- else if or (not $foundMount) $overlap -}}[]
     {{- else -}}
-        [{"directoryPrefix":{{template "text" $directoryPrefix}},
+        [{"directoryPrefix":{{template "text" $directoryPrefix}},"volumeName":{{template "text" $mount.name}},
          "subPath":{{- $subPath := "false" -}}
            {{- range $field, $value := $mount -}}
              {{- if or (eq $field "subPath") (eq $field "subPathExpr") -}}
@@ -990,28 +994,134 @@ const deploymentReadinessProjection = `${observationTemplates}
  {{end}}{{end}}}
 `;
 
-const tlsSecretFields = `${observationTemplates}
-{"metadata":{{template "identity" .metadata}},
- "certificate":{{if exists . "data" "tls.crt"}}{{template "text" (index .data "tls.crt")}}{{else}}""{{end}}`;
+const tlsProjectionTemplates = `${observationTemplates}
+{{define "certificate"}}{{if eq (printf "%T" .data) "map[string]interface {}"}}
+  {{template "text" (index .data "tls.crt")}}
+{{else}}""{{end}}{{end}}
+`;
 
-function requiredSecretKeysProjection(requiredKeys: string[]): string {
-  if (!requiredKeys.length) {
-    return "";
+const tlsSecretProjection = `${tlsProjectionTemplates}
+{"metadata":{{template "identity" .metadata}},"certificate":{{template "certificate" .}}}
+`;
+
+function boundTlsSecretProjection(
+  workload: ResourceObservation,
+  secretName: string,
+  volumeName: string,
+): string {
+  if ([workload.uid, workload.resourceVersion].some((value) => value.length > 256)) {
+    throw new DiagnosticError("The selected workload identity exceeds the observation limit.");
   }
-  const presence = requiredKeys.map((key) => `(exists .data ${JSON.stringify(key)})`).join(" ");
-  return `,
- "requiredKeysPresent":{{if eq (printf "%T" .data) "map[string]interface {}"}}
-   {{and ${presence}}}
- {{else if eq (printf "%T" .data) "<nil>"}}false{{else}}null{{end}}`;
+
+  // Kubectl can print the entire input on an execution error. Check types
+  // before every traversal, and print only the selected Secret's scalar fields.
+  return `${tlsProjectionTemplates}
+{{- $valid := and (eq (printf "%T" .kind) "string") (eq .kind "List")
+                   (eq (printf "%T" .items) "[]interface {}") -}}
+{{- $hasWorkload := false -}}
+{{- $hasSecret := false -}}
+{{- $workload := . -}}
+{{- $secret := . -}}
+{{- if $valid -}}
+  {{- range $item := .items -}}
+    {{- if not (and (eq (printf "%T" $item) "map[string]interface {}")
+                    (eq (printf "%T" $item.kind) "string")
+                    (eq (printf "%T" $item.apiVersion) "string")
+                    (eq (printf "%T" $item.metadata) "map[string]interface {}")
+                    (eq (printf "%T" $item.metadata.namespace) "string")
+                    (eq $item.metadata.namespace ${JSON.stringify(workload.namespace)})
+                    (eq (printf "%T" $item.metadata.name) "string")
+                    (eq (printf "%T" $item.metadata.uid) "string") $item.metadata.uid
+                    (eq (printf "%T" $item.metadata.resourceVersion) "string") $item.metadata.resourceVersion
+                    (or (eq (printf "%T" $item.metadata.deletionTimestamp) "<nil>")
+                        (eq (printf "%T" $item.metadata.deletionTimestamp) "string"))) -}}
+      {{- $valid = false -}}
+    {{- else if and (not $hasWorkload) (eq $item.apiVersion "apps/v1")
+                    (eq $item.kind ${JSON.stringify(workload.kind)})
+                    (eq $item.metadata.name ${JSON.stringify(workload.name)})
+                    (eq $item.metadata.uid ${JSON.stringify(workload.uid)})
+                    (eq $item.metadata.resourceVersion ${JSON.stringify(workload.resourceVersion)})
+                    (not $item.metadata.deletionTimestamp) -}}
+      {{- $workload = $item -}}
+      {{- $hasWorkload = true -}}
+    {{- else if and (not $hasSecret) (eq $item.apiVersion "v1")
+                    (eq $item.kind "Secret") (eq $item.metadata.name ${JSON.stringify(secretName)}) -}}
+      {{- $secret = $item -}}
+      {{- $hasSecret = true -}}
+    {{- else -}}
+      {{- $valid = false -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+
+{{- $mapping := . -}}
+{{- $hasMapping := false -}}
+{{- if and $valid $hasWorkload
+           (eq (printf "%T" $workload.spec) "map[string]interface {}")
+           (eq (printf "%T" $workload.spec.template) "map[string]interface {}")
+           (eq (printf "%T" $workload.spec.template.spec) "map[string]interface {}")
+           (eq (printf "%T" $workload.spec.template.spec.volumes) "[]interface {}") -}}
+  {{- range $volume := $workload.spec.template.spec.volumes -}}
+    {{- if not (and (eq (printf "%T" $volume) "map[string]interface {}")
+                    (eq (printf "%T" $volume.name) "string")) -}}
+      {{- $valid = false -}}
+    {{- else if eq $volume.name ${JSON.stringify(volumeName)} -}}
+      {{- if and (not $hasMapping) (eq (printf "%T" $volume.secret) "map[string]interface {}")
+                 (eq (printf "%T" $volume.secret.secretName) "string")
+                 (eq $volume.secret.secretName ${JSON.stringify(secretName)})
+                 (or (eq (printf "%T" $volume.secret.optional) "<nil>")
+                     (and (eq (printf "%T" $volume.secret.optional) "bool") (not $volume.secret.optional)))
+                 (eq (printf "%T" $volume.secret.items) "[]interface {}") $volume.secret.items -}}
+        {{- $mapping = $volume.secret -}}
+        {{- $hasMapping = true -}}
+      {{- else -}}
+        {{- $valid = false -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+
+{{- $valid = and $valid $hasMapping -}}
+{{- $requiredKeysPresent := true -}}
+{{- if $valid -}}
+  {{- $data := $secret.data -}}
+  {{- $dataIsMap := eq (printf "%T" $data) "map[string]interface {}" -}}
+  {{- if and $hasSecret (not (or $dataIsMap (eq (printf "%T" $data) "<nil>"))) -}}
+    {{- $valid = false -}}
+  {{- end -}}
+  {{- range $item := $mapping.items -}}
+    {{- if not (and (eq (printf "%T" $item) "map[string]interface {}")
+                    (eq (printf "%T" $item.key) "string") $item.key) -}}
+      {{- $valid = false -}}
+    {{- else if $dataIsMap -}}
+      {{- $valueType := printf "%T" (index $data $item.key) -}}
+      {{- if eq $valueType "<nil>" -}}
+        {{- $requiredKeysPresent = false -}}
+      {{- else if ne $valueType "string" -}}
+        {{- $valid = false -}}
+      {{- end -}}
+    {{- else -}}
+      {{- $requiredKeysPresent = false -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- if not $valid -}}
+  {"bound":false}
+{{- else if not $hasSecret -}}
+  {"bound":true,"secret":null}
+{{- else -}}
+  {"bound":true,"secret":{"metadata":{{template "identity" $secret.metadata}},
+   "certificate":{{template "certificate" $secret}},"requiredKeysPresent":{{$requiredKeysPresent}}}}
+{{- end -}}
+`;
 }
 
 function inspectCertificate(
   selection: DeploymentSelection,
-  output: string,
+  secret: ObservedTlsSecret | null,
   serverName?: string,
-  requiredKeys: string[] = [],
+  verifyRequiredKeys = false,
 ): CheckResult {
-  const secret = parseJson<ObservedTlsSecret | null>(output);
   if (!secret) {
     return { status: "failed", summary: "The selected TLS Secret does not exist." };
   }
@@ -1021,7 +1131,7 @@ function inspectCertificate(
     return failure("The selected TLS Secret is terminating.");
   }
   const { certificate, requiredKeysPresent } = secret;
-  if (requiredKeys.length) {
+  if (verifyRequiredKeys) {
     if (typeof requiredKeysPresent !== "boolean") {
       return {
         status: "unknown",
@@ -1135,9 +1245,9 @@ function mountedClientSecret(
   }
   const file = path.slice(prefix.length);
   if (secret.items.length) {
-    const keys: string[] = [];
-    for (const { key, path: target } of secret.items) {
-      if (typeof key !== "string" || !/^[A-Za-z0-9_.-]{1,253}(?![\s\S])/u.test(key)) {
+    const matchingKeys: boolean[] = [];
+    for (const { certificateKey, path: target } of secret.items) {
+      if (typeof certificateKey !== "boolean") {
         throw new DiagnosticError("The selected Secret volume has an invalid item key.");
       }
       // Match what the volume writer resolves, including "./" and repeated slashes.
@@ -1159,18 +1269,21 @@ function mountedClientSecret(
         return undefined;
       }
       if (resolved === file) {
-        keys.push(key);
+        matchingKeys.push(certificateKey);
       }
     }
-    if (keys.length !== 1 || keys[0] !== "tls.crt") {
+    if (matchingKeys.length !== 1 || !matchingKeys[0]) {
       return undefined;
+    }
+    if (!dnsLabel.test(mount.volumeName)) {
+      throw new DiagnosticError("The selected workload response lacks the mounted volume name.");
     }
     return {
       name: secret.secretName,
-      requiredKeys: secret.optional ? [] : secret.items.map(({ key }) => key),
+      ...(secret.optional ? {} : { requiredVolume: mount.volumeName }),
     };
   }
-  return file === "tls.crt" ? { name: secret.secretName, requiredKeys: [] } : undefined;
+  return file === "tls.crt" ? { name: secret.secretName } : undefined;
 }
 
 function quantity(value: unknown) {
@@ -1227,7 +1340,7 @@ async function diagnose(
   let transport: string[] = [];
   const checks: CheckReport[] = [];
   let kubeUnavailable: string | undefined;
-  const kubectl = (args: string[], stderrMode?: "discard", input?: string) => {
+  const kubectl = (args: string[], stderrMode?: "discard") => {
     if (kubeUnavailable) {
       throw new DiagnosticError(kubeUnavailable);
     }
@@ -1244,7 +1357,6 @@ async function diagnose(
       ],
       deadline,
       stderrMode,
-      input,
     );
   };
   const kubeOutput = (...args: string[]) => kubectl(args);
@@ -1252,41 +1364,34 @@ async function diagnose(
   const getNamed = <T>(kind: string, { namespace, name }: DeploymentSelection) =>
     kube<T | null>("-n", namespace, "get", kind, name, "--ignore-not-found", "-o", "json");
   // Refusals and diagnostics from sensitive GETs can contain API-supplied text.
-  const projectNamed = (
-    kind: string,
-    { namespace, name }: DeploymentSelection,
-    projection: string,
-    source: "argument" | "stdin" = "argument",
-  ) =>
+  const projectNamedResources = (namespace: string, resources: string[], projection: string) =>
     kubectl(
       [
         "-n",
         namespace,
         "get",
-        kind,
-        name,
+        ...resources,
         "--ignore-not-found",
+        "--allow-missing-template-keys=true",
         "--v=0",
         "-o",
-        source === "stdin" ? "go-template-file=/dev/stdin" : `go-template=${projection}`,
+        `go-template=${projection}`,
       ],
       "discard",
-      source === "stdin" ? projection : undefined,
     );
-  const readCertificate = async (
-    selection: DeploymentSelection,
-    serverName?: string,
-    requiredKeys: string[] = [],
-  ) => {
-    const template = `${tlsSecretFields}${requiredSecretKeysProjection(requiredKeys)}}`;
-    const output = await projectNamed(
-      "secret",
+  const projectNamed = (
+    kind: string,
+    { namespace, name }: DeploymentSelection,
+    projection: string,
+  ) => projectNamedResources(namespace, [kind, name], projection);
+  const readCertificate = async (selection: DeploymentSelection, serverName?: string) =>
+    inspectCertificate(
       selection,
-      template,
-      requiredKeys.length ? "stdin" : "argument",
+      parseJson<ObservedTlsSecret | null>(
+        await projectNamed("secret", selection, tlsSecretProjection),
+      ),
+      serverName,
     );
-    return inspectCertificate(selection, output, serverName, requiredKeys);
-  };
   async function check(
     id: string,
     action: string,
@@ -1731,6 +1836,7 @@ async function diagnose(
       "Verify the selected container's certificate path and renew its mounted Secret through the certificate owner.",
       async () => {
         const { kind, namespace } = client.workload;
+        const workloadResource = kind === "Deployment" ? "deployments.apps" : "statefulsets.apps";
         if (kubeUnavailable) {
           throw new DiagnosticError(kubeUnavailable);
         }
@@ -1755,11 +1861,7 @@ async function diagnose(
           );
         }
         const workload = parseJson<ClientWorkload | null>(
-          await projectNamed(
-            kind === "Deployment" ? "deployments.apps" : "statefulsets.apps",
-            client.workload,
-            clientWorkloadProjection(client),
-          ),
+          await projectNamed(workloadResource, client.workload, clientWorkloadProjection(client)),
         );
         if (!workload) {
           return { status: "failed", summary: "The selected client workload does not exist." };
@@ -1788,11 +1890,25 @@ async function diagnose(
               resources,
             };
           }
-          const certificate = await readCertificate(
-            { namespace, name: mount.name },
-            undefined,
-            mount.requiredKeys,
-          );
+          const secretSelection = { namespace, name: mount.name };
+          let certificate: CheckResult;
+          if (mount.requiredVolume) {
+            const bound = parseJson<BoundTlsSecret | null>(
+              await projectNamedResources(
+                namespace,
+                [`${workloadResource}/${identity.name}`, `secrets/${mount.name}`],
+                boundTlsSecretProjection(identity, mount.name, mount.requiredVolume),
+              ),
+            );
+            if (bound?.bound !== true || bound.secret === undefined) {
+              throw new DiagnosticError(
+                "The response could not bind the selected Secret to the observed workload volume. Run the check again.",
+              );
+            }
+            certificate = inspectCertificate(secretSelection, bound.secret, undefined, true);
+          } else {
+            certificate = await readCertificate(secretSelection);
+          }
           return { ...certificate, resources: [...resources, ...(certificate.resources ?? [])] };
         } catch (error) {
           return { ...unreadable(error), resources };

@@ -113,10 +113,13 @@ Use named `get` access to the selected workload and its mounted Secret.
 This permission grants access to the whole object. The command collects only
 the workload identity and relevant mount fields, plus rollout fields if you
 also select the Deployment as a controller. For the Secret, the command reads
-its identity and public `tls.crt`. It checks that each required mapping key
-exists. The report records the resource UIDs and resource versions. A missing
-workload or Secret fails the check. If a read fails, the check reports `unknown`.
-Verify that the resource exists and the selected identity has named `get` access.
+its identity and public `tls.crt`. For required mappings, the command checks
+that each key exists and the workload resource version has not changed.
+The report records the resource UIDs and resource versions. A missing workload
+on the first read or a missing Secret for a matching workload fails the check.
+If the workload changes during the check or a read fails, the check reports
+`unknown`. Verify that the resource exists and the selected identity has named
+`get` access.
 The check validates the public leaf's dates and reads its extended key usage
 for TLS client authentication. An absent or unreadable extension yields
 `unknown` because the check cannot establish client suitability. Confirm
