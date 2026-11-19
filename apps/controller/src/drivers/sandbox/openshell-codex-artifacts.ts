@@ -12,6 +12,9 @@ const CODEX_BINARIES = new Set([
   "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
 ]);
 
+const NPM_REGISTRY = "registry.npmjs.org";
+const ENDPOINT_KEYS = ["host", "ports", "protocol", "enforcement", "access"];
+
 function refuse(): never {
   throw new ConfigurationValidationError([
     {
@@ -51,7 +54,7 @@ function ruleName(name: string): boolean {
   );
 }
 
-function literalArtifactHost(value: unknown): boolean {
+function literalArtifactHost(value: unknown): value is string {
   if (
     typeof value !== "string" ||
     value.length > 253 ||
@@ -78,11 +81,15 @@ function literalArtifactHost(value: unknown): boolean {
 }
 
 /** Validate the complete closed wire form, including data rehydrated from persistence. */
-function qualifiedMap(value: unknown): Readonly<OpenClawConfigurationDocument> {
+function qualifiedMap(
+  value: unknown,
+  source: "installation" | "snapshot",
+): Readonly<OpenClawConfigurationDocument> {
   const map = asRecord(value);
   if (!map) {
     refuse();
   }
+  const qualified = { ...map };
   for (const [name, value] of Object.entries(map)) {
     if (!ruleName(name)) {
       refuse();
@@ -110,26 +117,45 @@ function qualifiedMap(value: unknown): Readonly<OpenClawConfigurationDocument> {
       paths.add(binary.path);
     }
     const hosts = new Set<string>();
+    const endpoints: Record<string, unknown>[] = [];
     for (const value of rule.endpoints) {
       // Stock 0.1.6 REST uses verified auto TLS inspection when tls is omitted;
       // explicit terminate is unsupported, and skip would remove inspection.
-      const endpoint = exactKeys(value, ["host", "ports", "protocol", "enforcement", "access"]);
+      const record = asRecord(value) ?? refuse();
+      const hasEncodedSlash = Object.hasOwn(record, "allow_encoded_slash");
+      const endpoint = exactKeys(
+        record,
+        hasEncodedSlash ? [...ENDPOINT_KEYS, "allow_encoded_slash"] : ENDPOINT_KEYS,
+      );
       if (
         !literalArtifactHost(endpoint.host) ||
-        hosts.has(endpoint.host as string) ||
+        hosts.has(endpoint.host) ||
         !Array.isArray(endpoint.ports) ||
         endpoint.ports.length !== 1 ||
         endpoint.ports[0] !== 443 ||
         endpoint.protocol !== "rest" ||
         endpoint.enforcement !== "NETWORK_ENFORCEMENT_MODE_ENFORCE" ||
-        endpoint.access !== "NETWORK_ACCESS_PRESET_READ_ONLY"
+        endpoint.access !== "NETWORK_ACCESS_PRESET_READ_ONLY" ||
+        (hasEncodedSlash &&
+          (source !== "snapshot" ||
+            endpoint.host !== NPM_REGISTRY ||
+            endpoint.allow_encoded_slash !== true))
       ) {
         refuse();
       }
-      hosts.add(endpoint.host as string);
+      hosts.add(endpoint.host);
+      // pnpm requests scoped metadata with an encoded slash in one path segment.
+      endpoints.push(
+        source === "installation" && endpoint.host === NPM_REGISTRY
+          ? { ...endpoint, allow_encoded_slash: true }
+          : endpoint,
+      );
+    }
+    if (source === "installation") {
+      qualified[name] = { ...rule, endpoints };
     }
   }
-  return immutableCopy(map as OpenClawConfigurationDocument);
+  return immutableCopy(qualified as OpenClawConfigurationDocument);
 }
 
 /** Sandbox selects only explicitly declared Installation rules; ambient defaults stay outside. */
@@ -146,7 +172,10 @@ export function qualifyOpenShellCodexArtifactRules(
   ) {
     refuse();
   }
-  return qualifiedMap(Object.fromEntries(names.map((name) => [name, defaults[name]!])));
+  return qualifiedMap(
+    Object.fromEntries(names.map((name) => [name, defaults[name]!])),
+    "installation",
+  );
 }
 
 /** Both paired compilers consume immutable admission, never current Installation defaults. */
@@ -178,5 +207,5 @@ export function openShellProtectedCodexArtifacts(
   ) {
     refuse();
   }
-  return qualifiedMap(snapshot.defaults);
+  return qualifiedMap(snapshot.defaults, "snapshot");
 }

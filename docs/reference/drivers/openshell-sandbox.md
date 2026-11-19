@@ -117,28 +117,24 @@ An explicit policy replaces these defaults. The Driver still adds required
 mounts, the runtime root, and `/tmp`. Add `/opt/devtools` to
 `policy.filesystem.readOnly` for packaged native tools.
 
-An existing Sandbox keeps its launch policy. Deploy a new Agent revision to
-apply a different policy.
+Deploy a new Agent revision to change a Sandbox launch policy.
 
-Startup rejects unknown Kubernetes, policy, and Gateway readiness keys. Set
-`kubernetes.agentResources` using quoted, non-negative Kubernetes quantities.
-The Driver submits `256Mi` and `1Gi` for ephemeral-storage request and limit.
-Provider template resource keys take precedence. Verify CPU, memory, and
-ephemeral storage on the rendered Agent container.
+Startup rejects unknown Kubernetes, policy, or Gateway readiness keys.
+`kubernetes.agentResources` uses quoted non-negative Kubernetes quantities.
+Ephemeral-storage defaults are `256Mi` request and `1Gi` limit; provider templates
+override them. Verify rendered CPU, memory, and ephemeral storage.
 
 `kubernetes.agentResourceOverrides` binds exact `namespaceId` and `agentId`
 pairs. Set `cpu` or `memory` in `requests` and `limits`. Omitted keys inherit
 `agentResources`. Startup rejects malformed IDs, duplicates, and requests above
-limits. Before replacement, check scheduling. Redeploy after changes. Adoption
-checks the exact Sandbox spec. OCE does not accept installation-wide or per-Agent
+limits. Check scheduling before replacement; redeploy. Adoption checks the exact Sandbox spec. OCE does not accept installation-wide or per-Agent
 RuntimeClass settings; runtime selection belongs to Kubernetes and the independently
 managed OpenShell deployment.
 
 Set `policy.process.runAsUser` and `runAsGroup`. The pinned OpenShell runs
 Sandbox processes as the workload identity, normally `10001:10001`.
 
-The credential provider already configures TLS inspection for `api.openai.com`.
-An uninspected rule for that host conflicts.
+The credential provider inspects TLS for `api.openai.com`; uninspected rules conflict.
 
 Use unique network policy names and nonempty executable paths. `workspace-node-enrollment` is reserved. Options include `enforcement: enforce|audit`
 and `access: read_only|read_write|full`. Omit `tls` for automatic TLS inspection;
@@ -153,21 +149,24 @@ not satisfy the per-Agent production requirement below.
 
 ### Protected Codex artifact rules
 
-For protected, dedicated Codex repository execution, select
-[approved artifact rules](../../snippets/openshell-quickstart/plugin-network-policy.yaml)
-with `policy.codexArtifactRuleNames`, for example
-`codexArtifactRuleNames: [codex-plugin-artifacts]`. Each name must identify exactly
-one existing `policy.networkPolicies` rule. Omission grants no artifact access.
+Select [artifact rules](../../snippets/openshell-quickstart/plugin-network-policy.yaml)
+for protected dedicated Codex repositories with `policy.codexArtifactRuleNames`;
+each name selects exactly one rule. Omission denies access.
+Rules require bundled Codex executables, literal DNS hosts, port 443,
+`protocol: rest`, `enforcement: enforce`, `access: read_only`, and omitted `tls`
+for verified inspection. Admission rejects wildcards, IP addresses, GitHub
+repository hosts, reserved names, credentials, and unknown fields.
 
-Selected rules require the bundled Codex executable paths, exact DNS hosts,
-port 443, `protocol: rest`, `enforcement: enforce` and `access: read_only`.
-Omit `tls` for verified REST TLS inspection. Admission refuses explicit skip and
-deprecated termination modes. Wildcards, numeric
-addresses, GitHub repository hosts, reserved names and credential/provider fields are refused.
+Admission gives the exact selected `registry.npmjs.org:443` endpoint native
+`allow_encoded_slash: true`. It permits encoded slashes for the whole host,
+including all packages and paths. Other endpoints, including rule
+siblings, and unselected defaults stay unchanged. It is not configurable.
+Earlier snapshots, including npm, stay unchanged. Admission freezes the qualified
+map with empty Agent additions; preparation and replay use it despite changed
+Installation defaults.
 
-Admission freezes only that qualified map with empty Agent additions. Preparation
-and replay use the revision, even if Installation defaults change. Select a new
-revision to change artifact authority. Live Agent policy apply remains unavailable.
+Deploy a new Agent revision. Older readers reject flagged snapshots; returning
+requires an unflagged revision. Live Agent policy apply remains unavailable.
 
 ### Gateway readiness and workspace
 

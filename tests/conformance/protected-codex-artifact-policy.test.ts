@@ -126,7 +126,16 @@ test("qualified-looking ambient defaults grant no protected artifact access with
 test("artifact qualification refuses routes that widen destination, process, write or TLS authority", async (t) => {
   const original = artifact();
   const endpoint = original.endpoints[0]!;
+  const npm = { ...endpoint, host: "registry.npmjs.org" };
+  const nativeFlag = { ...npm, allow_encoded_slash: true };
+  const camelCaseFlag = { ...npm, allowEncodedSlash: true };
+  const namedBinary = { path: native, name: "unexpected" };
+  const extraRuleField = { ...original, provider: "unexpected" };
   const cases: Array<[string, OpenShellNetworkPolicyRule]> = [
+    ["supplied native flag", { ...original, endpoints: [nativeFlag] }],
+    ["supplied camel-case flag", { ...original, endpoints: [camelCaseFlag] }],
+    ["extra binary field", { ...original, binaries: [namedBinary] }],
+    ["extra rule field", extraRuleField],
     ["wildcard", { ...original, endpoints: [{ ...endpoint, host: "*.oaiusercontent.com" }] }],
     ["IP", { ...original, endpoints: [{ ...endpoint, host: "198.18.0.5" }] }],
     ["numeric address alias", { ...original, endpoints: [{ ...endpoint, host: "0x7f.0.0.1" }] }],
@@ -219,10 +228,38 @@ function protectedRevision(snapshot: SandboxPolicySnapshot): AgentRevision {
   };
 }
 
-test("protected Git compilation carries the complete frozen artifact map without ambient defaults", (t) => {
-  const snapshot = sandbox(t, [artifact()], [artifact().name]).admitProtectedCodexArtifactPolicy(
-    1,
-  ).snapshot;
+test("protected request-hook Git compilation uses the admitted npm flag without changing defaults", (t) => {
+  const original = artifact();
+  const sibling = original.endpoints[0]!;
+  const npm = { ...sibling, host: "registry.npmjs.org" };
+  const selected = { ...original, endpoints: [npm, sibling] };
+  const unselected = { ...original, name: "unselected-npm", endpoints: [npm] };
+  const driver = sandbox(t, [selected, unselected], [selected.name]);
+  const ordinary = driver.admitNetworkPolicy([], 1).defaults;
+  const endpoint = {
+    host: npm.host,
+    ports: [443],
+    protocol: "rest",
+    enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+    access: "NETWORK_ACCESS_PRESET_READ_ONLY",
+  };
+  const wireSibling = { ...endpoint, host: sibling.host };
+  const legacy = {
+    name: selected.name,
+    binaries: selected.binaries.map(({ path }) => ({ path })),
+    endpoints: [endpoint, wireSibling],
+  };
+  assert.deepEqual(ordinary, {
+    [selected.name]: legacy,
+    [unselected.name]: { ...legacy, name: unselected.name, endpoints: [endpoint] },
+  });
+
+  const snapshot = driver.admitProtectedCodexArtifactPolicy(1).snapshot;
+  assert.deepEqual(driver.admitNetworkPolicy([], 1).defaults, ordinary);
+  const flagged = { ...endpoint, allow_encoded_slash: true };
+  assert.deepEqual(snapshot.defaults, {
+    [selected.name]: { ...legacy, endpoints: [flagged, wireSibling] },
+  });
   const revision = protectedRevision(snapshot);
   const compiled = openShellEgressConfiguration(
     revision.egressPlan!,
@@ -235,6 +272,28 @@ test("protected Git compilation carries the complete frozen artifact map without
   );
   assert.deepEqual(compiled.network_policies, snapshot.defaults);
   assert.equal(Object.hasOwn(compiled, "providers"), false);
+
+  const legacySnapshot = { ...snapshot, defaults: { [selected.name]: legacy } };
+  assert.equal(
+    JSON.stringify(openShellProtectedCodexArtifacts(protectedRevision(legacySnapshot))),
+    JSON.stringify(legacySnapshot.defaults),
+  );
+  for (const endpoint of [
+    { ...flagged, host: "registry.npmjs.org.example.test" },
+    { ...flagged, allow_encoded_slash: false },
+    { ...flagged, allow_encoded_slash: "true" },
+  ]) {
+    assert.throws(
+      () =>
+        openShellProtectedCodexArtifacts(
+          protectedRevision({
+            ...snapshot,
+            defaults: { [selected.name]: { ...legacy, endpoints: [endpoint] } },
+          }),
+        ),
+      ConfigurationValidationError,
+    );
+  }
   const absent = { ...revision };
   delete absent.sandboxPolicy;
   assert.deepEqual(openShellProtectedCodexArtifacts(absent), {});

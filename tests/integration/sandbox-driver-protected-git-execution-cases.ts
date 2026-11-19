@@ -176,6 +176,7 @@ export async function verifyProtectedOpenShellGitExecution(
     harnessAuth: auth,
     egressPlan: plan,
     executionAdmission: { version: 5, mode: "protected" },
+    sandboxPolicy: sandbox.admitProtectedCodexArtifactPolicy(1).snapshot,
     configuration,
     harness: {
       ...revision.harness,
@@ -277,7 +278,49 @@ export async function verifyProtectedOpenShellGitExecution(
   );
   assert.ok(providerNames.includes(inferenceProvider));
   assert.equal(providerNames.filter((name) => name.startsWith("oce-git-")).length, 1);
-  assert.deepEqual(Object.keys(networkPolicies), ["workspace-node-enrollment"]);
+  assert.deepEqual(Object.keys(networkPolicies).sort(), [
+    "codex-artifacts",
+    "workspace-node-enrollment",
+  ]);
+  const policy = asRecord(gateway.sandboxes.get(created.name)?.spec?.policy);
+  const rules = asRecord(policy?.network_policies);
+  const artifacts = asRecord(rules?.["codex-artifacts"]);
+  assert.ok(policy && rules && Array.isArray(artifacts?.endpoints));
+  assert.deepEqual(rules["codex-artifacts"], networkPolicies["codex-artifacts"]);
+  const decodedEndpoints: readonly unknown[] = artifacts.endpoints;
+  const [npm, sibling] = decodedEndpoints.map(asRecord);
+  assert.ok(npm && sibling);
+  assert.deepEqual([npm.host, sibling.host], ["registry.npmjs.org", "artifacts.example.test"]);
+  const { allow_encoded_slash: allowEncodedSlash, ...legacyNpm } = npm;
+  assert.equal(allowEncodedSlash, true);
+  assert.equal(Object.hasOwn(sibling, "allow_encoded_slash"), false);
+
+  // A loaded revision can match the policy version while changing the endpoint permission.
+  assert.ok(result.proxyWiring);
+  let endpoints = [npm, sibling];
+  gateway.getSandboxPolicyStatus = async () => ({
+    active_version: plan.generation,
+    revision: {
+      version: plan.generation,
+      status: "POLICY_STATUS_LOADED",
+      policy: {
+        ...policy,
+        network_policies: { ...rules, "codex-artifacts": { ...artifacts, endpoints } },
+      },
+    },
+  });
+  assert.equal(await proxy.wiringStatus(ctx, result.proxyWiring), undefined);
+  for (const drift of [
+    [legacyNpm, sibling],
+    [npm, { ...sibling, allow_encoded_slash: true }],
+  ]) {
+    endpoints = drift;
+    await assert.rejects(
+      proxy.wiringStatus(ctx, result.proxyWiring),
+      /installed egress source policy differs from its admitted policy/,
+    );
+  }
+  delete gateway.getSandboxPolicyStatus;
   assert.equal(environment.OPENAI_API_KEY, undefined);
   assert.equal(environment.GITHUB_TOKEN, undefined);
   const trust = spawnSync("git", ["config", "--get-all", "safe.directory"], {
