@@ -19,6 +19,7 @@ import {
   OpenShellGateway,
   openShellProviderName,
 } from "../../apps/controller/src/backends/openshell.ts";
+import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import {
   OpenShellGitRouteBlockedError,
@@ -59,6 +60,7 @@ import { workspaceGatewayClient } from "../integration/sandbox-workspace-gateway
 import { selectOpenShellGitWithdrawalDenials } from "../../scripts/ci/openshell-git-retention.mjs";
 import { routeStore } from "../fixtures/openshell-git-route-store.ts";
 import { deferred } from "../helpers/deferred.ts";
+import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { signal, token, wire } from "./openshell-prepared-git-wire.ts";
 import {
@@ -94,6 +96,8 @@ function resolverPort(runtime: Runtime): {
   return runtime as unknown as { resolveDelivery: Runtime["resolveDelivery"] };
 }
 const runtimeFilesProvider = "oce-runtime-" + "a".repeat(16);
+const managedModelBinary = "/usr/local/bin/codex";
+const credentialGatewayId = "openshell-credentials";
 const modelEndpoint = { host: "api.openai.com", port: 443, protocol: "rest" };
 const managedModelEndpoint = {
   ...modelEndpoint,
@@ -102,7 +106,8 @@ const managedModelEndpoint = {
   access: "NETWORK_ACCESS_PRESET_READ_WRITE",
 };
 
-async function selectedV5(t: TestContext, acl = false, modelProvider = "openai") {
+async function selectedV5(t: TestContext, acl = false, modelSourceId?: string) {
+  const modelProvider = modelSourceId ? openShellProviderName(modelSourceId) : "openai";
   const repository = registry.repositories[0]!;
   const repositories = [
     repository,
@@ -140,47 +145,79 @@ async function selectedV5(t: TestContext, acl = false, modelProvider = "openai")
     }),
   };
   const f = bootstrappingOpenShellGitRuntimeFixture(options);
+  let modelProviderId = "model-id";
   if (acl) {
     const client = fixtureClient(f);
-    const getProvider = client.getProvider.bind(client);
-    client.getProvider = async (workspace, name, signal) => {
-      const provider = await getProvider(workspace, name, signal);
-      return name === modelProvider && provider && modelProvider !== "openai"
-        ? { ...provider, type: modelProvider, profileWorkspace: workspace }
-        : provider;
-    };
     const getProfile = client.getProviderProfile.bind(client);
-    client.getProviderProfile = async (workspace, id, signal) => {
-      const profile = await getProfile(workspace, id, signal);
-      if (id !== modelProvider || !profile?.definition) {
-        return profile;
-      }
-      if (modelProvider === "openai") {
-        return { ...profile, definition: { ...profile.definition, endpoints: [modelEndpoint] } };
-      }
-      // The Credential Gateway registers OpenAI API keys in the selected Workspace.
-      assert.equal(workspace, f.sandbox.workspace);
-      return {
-        id,
-        resourceVersion: "1",
-        annotations: {},
-        definition: {
-          category: "PROVIDER_PROFILE_CATEGORY_INFERENCE",
-          inference_capable: true,
-          binaries: [],
-          credentials: [
-            {
-              name: "api_key",
-              env_vars: ["OPENAI_API_KEY"],
-              required: true,
-              auth_style: "bearer",
-              header_name: "authorization",
+    if (modelSourceId) {
+      const workspace = f.sandbox.workspace;
+      const { client: registrationClient } = await gitExpiryGateway(t, {
+        model: "operator-model",
+        workspace,
+        sandbox: f.sandbox.name,
+        revisionId: f.revision.id,
+        deadline: new Date(f.revision.repositoryCredentials!.deadlineWallMs).toISOString(),
+        platformProfile: false,
+      });
+      const credentialGateway = new OpenShellCredentialGatewayDriver(
+        { binaries: [managedModelBinary] },
+        { id: credentialGatewayId, backend: backendFor(registrationClient) },
+      );
+      const createdAt = new Date().toISOString();
+      const namespace = {
+        id: f.revision.namespaceId,
+        name: workspace,
+        status: "ready",
+        createdAt,
+      } as const;
+      const type = "openai";
+      const config = {};
+      const result = await credentialGateway.registerSource(
+        {
+          namespace,
+          source: {
+            id: modelSourceId,
+            name: "Model credential",
+            namespaceId: namespace.id,
+            ownerCapability: "credential_gateway",
+            driverId: credentialGatewayId,
+            type,
+            config,
+            secrets: {
+              api_key: { kind: "secret", id: "fixture-secret", namespaceId: namespace.id },
             },
-          ],
-          endpoints: [managedModelEndpoint],
+            state: "registering",
+            createdAt,
+          },
+          signal: t.signal,
         },
+        { type, config, secrets: { api_key: "synthetic-model-key" } },
+      );
+      assert.equal(result.state, "ready");
+      const provider = await registrationClient.getProvider(workspace, modelProvider, t.signal);
+      assert.ok(provider?.id);
+      assert.equal(provider.profileWorkspace, workspace);
+      modelProviderId = provider.id;
+      const getProvider = client.getProvider.bind(client);
+      client.getProvider = async (workspace, name, signal) =>
+        name === modelProvider
+          ? registrationClient.getProvider(workspace, name, signal)
+          : getProvider(workspace, name, signal);
+      client.getProviderProfile = async (workspace, id, signal) => {
+        if (id === modelProvider) {
+          assert.equal(workspace, f.sandbox.workspace);
+          return registrationClient.getProviderProfile(workspace, id, signal);
+        }
+        return getProfile(workspace, id, signal);
       };
-    };
+    } else {
+      client.getProviderProfile = async (workspace, id, signal) => {
+        const profile = await getProfile(workspace, id, signal);
+        return id === modelProvider && profile?.definition
+          ? { ...profile, definition: { ...profile.definition, endpoints: [modelEndpoint] } }
+          : profile;
+      };
+    }
   }
   f.owner.material = {
     ...f.owner.material,
@@ -319,6 +356,8 @@ async function selectedV5(t: TestContext, acl = false, modelProvider = "openai")
     store,
     revision,
     executionId,
+    modelProvider,
+    modelProviderId,
     prepare,
     replacement,
     noCredentials,
@@ -327,9 +366,9 @@ async function selectedV5(t: TestContext, acl = false, modelProvider = "openai")
 const updateReceipt = (version: string) => `git-update-${version}`;
 const updateMutation = (version: string) => `git-mutation-${version}`;
 
-async function heldGit(t: TestContext, acl = false, modelProvider = "openai") {
-  const selected = await selectedV5(t, acl, modelProvider);
-  const { f, store, revision, executionId, prepare } = selected;
+async function heldGit(t: TestContext, acl = false, modelSourceId?: string) {
+  const selected = await selectedV5(t, acl, modelSourceId);
+  const { f, store, revision, executionId, modelProvider, modelProviderId, prepare } = selected;
   const activity = { updates: 0, releases: 0, probes: 0 };
   const createProvider = f.client.createProvider;
   f.client.createProvider = async (...args) => {
@@ -374,7 +413,7 @@ async function heldGit(t: TestContext, acl = false, modelProvider = "openai") {
       : { ...managedModelEndpoint, provider_credentialed: true };
   const modelRule = {
     name: "_provider_" + modelProvider.replaceAll("-", "_"),
-    binaries: [],
+    binaries: modelSourceId ? [{ path: managedModelBinary }] : [],
     endpoints: [acl ? aclModelEndpoint : { host: "api.openai.com", port: 443 }],
   };
   // The Gateway fixture stamps token-grant owners. The independent wire test
@@ -393,7 +432,7 @@ async function heldGit(t: TestContext, acl = false, modelProvider = "openai") {
       })),
     };
   };
-  const effectiveModelRule = acl ? stampOwners(modelRule, "model-id") : modelRule;
+  const effectiveModelRule = acl ? stampOwners(modelRule, modelProviderId) : modelRule;
   const effectivePolicy = {
     network_policies: {
       [gitRule.name]: acl
@@ -554,7 +593,7 @@ async function heldGit(t: TestContext, acl = false, modelProvider = "openai") {
           ...g,
           sandboxId: f.sandbox.id,
           sandbox,
-          providerId: model ? "model-id" : originalBinding.providerId,
+          providerId: model ? modelProviderId : originalBinding.providerId,
           providerResourceVersion: model ? "1" : String(provider.resourceVersion),
         },
       },
@@ -1519,7 +1558,7 @@ test("Compute retries an unsent release after the final recipient observation ex
     method: "credential_source",
     sourceId: "cs_test",
     sourceType: "openai",
-    credentialGatewayId: driverId,
+    credentialGatewayId,
     loginMode: "api_key",
   } as const;
   const modelProvider = openShellProviderName(auth.sourceId);
@@ -1531,7 +1570,7 @@ test("Compute retries an unsent release after the final recipient observation ex
     startupId,
     setObservationAge,
     onWorkloadRead,
-  } = await heldGit(t, true, modelProvider);
+  } = await heldGit(t, true, auth.sourceId);
   await reconcile();
   assert.equal(f.runtime.route(selected.id).state, "installed");
 
