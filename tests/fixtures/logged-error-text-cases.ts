@@ -32,6 +32,11 @@ export const CREDENTIAL_SHAPE_TEXTS: readonly { readonly shape: string; readonly
       text: `Request failed: {'Authorization': 'Token ${FAKE_CREDENTIAL}'}`,
     },
     { shape: "bare token pair", text: `Retry with token=${FAKE_CREDENTIAL}, then redeploy.` },
+    // A newline or format character after `=` collapses to one space before the check.
+    {
+      shape: "value after a collapsed format character",
+      text: `Fetch https://service.invalid/v1?token=\u200B${FAKE_CREDENTIAL} failed.`,
+    },
     { shape: "bare secret pair", text: `Connect secret=${FAKE_CREDENTIAL} refused.` },
     { shape: "bare API key pair", text: `Call api_key=${FAKE_CREDENTIAL} refused.` },
     {

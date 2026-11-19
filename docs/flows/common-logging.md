@@ -105,9 +105,9 @@ Missing or malformed evidence leaves the field unset and health unproven.
 Pending outcomes and scheduling are unchanged.
 
 Compute preparation failures may carry a Driver-reviewed stage, classification,
-status, and message (up to 256 characters). The worker excludes raw exceptions.
-These and Compute preflight warnings keep their message as one line of at most
-512 characters. The sanitizer drops secret-shaped messages before output.
+status, and message; the worker caps that message at 256 characters and excludes
+raw exceptions. The logger keeps it, and a Compute preflight warning's message,
+as one line cut at 512 characters, and drops secret-shaped messages before output.
 
 ### 3. Admission freezes runtime logging
 

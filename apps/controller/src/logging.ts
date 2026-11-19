@@ -175,15 +175,16 @@ const CREDENTIAL_NAME =
 // A credential behind a name: a URL with user information (`postgres://user:pa/ss@host`; a
 // password may hold an unescaped `/`; the scheme is not matched, `://` anchors the search); a
 // query parameter that carries a credential only in a URL; a named credential with a value, as
-// `name=value` (query, form body, connection string) or as a JSON or dictionary pair
-// (`"name": "value"`, quotes possibly escaped); or an HTTP header: Authorization with any scheme
-// and a value with a digit or `=`, a cookie pair, or an API key or session token.
+// `name=value` (query, form body, connection string; one space may follow `=`, where a newline or
+// format character collapsed) or as a JSON or dictionary pair (`"name": "value"`, quotes possibly
+// escaped); or an HTTP header: Authorization with any scheme and a value with a digit or `=`, a
+// cookie pair (a cookie name has no `:`), or an API key or session token.
 const NAMED_CREDENTIAL = new RegExp(
   [
     String.raw`:\/\/[^\s/?#@:]*(?::[^\s?#@]*)?@`,
     String.raw`[?&](?:code|key|x-amz-credential)=`,
-    String.raw`${CREDENTIAL_NAME}(?:=[^\s&;]|\\?["']\s*:\s*\\?["'][^"'\\])`,
-    String.raw`\b(?:authorization:\s*[\w-]+\s+[\w.~+/-]*[0-9=]|cookie:\s*[^\s=;]+=[^\s;]|(?:api-key|x-amz-security-token):\s*[\w.~+/-]*[0-9])`,
+    String.raw`${CREDENTIAL_NAME}(?:=\s?[^\s&;]|\\?["']\s*:\s*\\?["'][^"'\\])`,
+    String.raw`\b(?:authorization:\s*[\w-]+\s+[\w.~+/-]*[0-9=]|cookie:\s*[^\s=;:]+=[^\s;]|(?:api-key|x-amz-security-token):\s*[\w.~+/-]*[0-9])`,
   ].join("|"),
   "i",
 );
