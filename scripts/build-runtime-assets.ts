@@ -40,7 +40,7 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "stock-codex-0.164.0-dependency-pin.patch",
-    sha256: "ddce55b7cd701ae7f5db3c2932d7ddd760077592a8c96376ac7363609227c3be",
+    sha256: "cb1ff6b003dbe385fc2938b6cc46ba7fc0f91d4954eaad5b591ff29384df0197",
   },
   {
     file: "openclaw-required-worker-authority-regression.patch",

@@ -229,6 +229,79 @@ export function registerEventCases(): void {
       assert.equal(Object.hasOwn(line, "message"), false, "unsafe URI diagnostic is absent");
       assert.equal(JSON.stringify(output.lines).includes(message), false);
     }
+
+    // A Driver writes the recovery step for the operator as prose. Its punctuation must not
+    // drop the message, or the line names only the code and step on every attempt.
+    const fields = {
+      event: "worker.compute-prepare-failed",
+      workId: "agent_revision:rev_test:reconcile",
+      revisionId: "rev_test",
+      code: "KUBERNETES_DEPENDENCY_UNAVAILABLE",
+      step: "prepare_revision",
+      errorClass: "DependencyUnavailableError",
+    };
+    const logged = (message: string) => {
+      const index = output.lines.length;
+      emit({ ...fields, message });
+      const { time, message: kept, ...line } = logAt(output.lines, index);
+      assert.ok(time);
+      assert.deepEqual(line, { severity: "ERROR", service: "occ-worker", ...fields });
+      return kept;
+    };
+    const prose =
+      "Node credential unconfirmed. Stop Agent; wait for shutdown. Delete only node Secret " +
+      "ns-a/node-a, then redeploy. Preserve the node's identity and workspace storage.";
+    assert.equal(logged(prose), prose);
+    // The message stays one bounded line: whitespace and control characters collapse to one
+    // space, and at most 512 characters are kept.
+    assert.equal(
+      logged("Stop Agent;\n\twait for shutdown,\r\nthen redeploy."),
+      "Stop Agent; wait for shutdown, then redeploy.",
+    );
+    assert.equal(logged("Retry later, ".repeat(60)), "Retry later, ".repeat(60).slice(0, 512));
+    // Format characters collapse too, so a message cannot reorder or hide text in a terminal.
+    assert.equal(
+      logged("Refusing \u202Edecoded \u200BSecret, then redeploy."),
+      "Refusing decoded Secret, then redeploy.",
+    );
+    assert.equal(/[\u202E\u200B]/u.test(JSON.stringify(output.lines)), false);
+    // Punctuation admits no credential: a message that resembles one is still left out, and
+    // the line keeps its other fields.
+    for (const message of [
+      `Stop Agent; the gateway sent ${["Bearer", "invented-fixture-token"].join(" ")}, then failed.`,
+      `Fetch failed, see https://service.invalid/v1?${"token"}=invented-fixture; redeploy.`,
+      `Database ${preparationCredentialUrl({
+        username: "fixture-user",
+        password: "invented-fixture",
+        host: "database.invalid",
+        port: undefined,
+      })} refused, then closed.`,
+      // The check runs before the 512-character cut: a token that straddles it is left out
+      // although the kept part alone would not match.
+      `${"Retry later, ".repeat(39)}x ${["Bearer", "invented-fixture-token"].join(" ")}`,
+    ]) {
+      assert.equal(logged(message), undefined);
+      assert.equal(JSON.stringify(output.lines).includes("invented-fixture"), false);
+    }
+
+    // Only the preparation diagnostic changed: a preflight warning with punctuation still
+    // loses its message and keeps its other fields.
+    const index = output.lines.length;
+    emit({
+      event: "compute.preflight-warning",
+      computeDriverId: "compute-kubernetes",
+      code: "KUBERNETES_STATUS_PROXY_SOURCE_BROAD",
+      message: "Proxy CIDR 0.0.0.0/0 covers more than one address; every Pod can reach the port.",
+    });
+    const { time: warnedAt, ...warning } = logAt(output.lines, index);
+    assert.ok(warnedAt);
+    assert.deepEqual(warning, {
+      severity: "WARN",
+      service: "occ-worker",
+      event: "compute.preflight-warning",
+      computeDriverId: "compute-kubernetes",
+      code: "KUBERNETES_STATUS_PROXY_SOURCE_BROAD",
+    });
   });
 
   test("activation warning caps skipped account IDs and reports the total and truncation", () => {

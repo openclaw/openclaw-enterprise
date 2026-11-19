@@ -198,9 +198,10 @@ function resemblesToken(text: string): boolean {
  * still keep provider and request text out of what they log.
  */
 export function loggedErrorText(value: string): string | undefined {
-  // Collapsed first (a linear pass), so padding cannot push a credential past the bound.
+  // Collapsed first (a linear pass), so padding cannot push a credential past the bound. Format
+  // characters (bidi overrides, zero-width spaces) go too: they could change how a line reads.
   const line = value
-    .replace(/[\s\p{Cc}]+/gu, " ")
+    .replace(/[\s\p{Cc}\p{Cf}]+/gu, " ")
     .trim()
     .slice(0, CHECKED_ERROR_TEXT_UNITS);
   if (line === "") {
@@ -470,11 +471,19 @@ function sanitizedEvent(
       }
       continue;
     }
-    if (
-      key === "message" &&
-      eventName !== "compute.preflight-warning" &&
-      eventName !== "worker.compute-prepare-failed"
-    ) {
+    if (key === "message") {
+      // Only these events keep a message. A Compute preparation diagnostic keeps a Driver's
+      // operator prose ("Stop Agent; wait") as one line unless it resembles a credential.
+      let text: string | undefined;
+      if (typeof value === "string" && eventName === "worker.compute-prepare-failed") {
+        text = loggedErrorText(value);
+        text = text === WITHHELD_ERROR_TEXT ? undefined : text;
+      } else if (typeof value === "string" && eventName === "compute.preflight-warning") {
+        text = safeString(value);
+      }
+      if (text !== undefined) {
+        result.message = text;
+      }
       continue;
     }
     if (
