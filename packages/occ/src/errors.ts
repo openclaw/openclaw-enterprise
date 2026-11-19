@@ -690,6 +690,8 @@ export class SandboxNetworkPolicyConflictError extends ResourceStateConflictErro
 
 const PROTECTED_EXECUTION_NETWORK_POLICY_MESSAGES = {
   save: "Protected execution applies to this Agent: the Credential Proxy routes alone govern its egress, so network policy additions are refused; only an empty policy can be saved.",
+  saveRepository:
+    "Protected execution applies to this Agent. The Credential Proxy governs its egress, so an explicit repository network policy cannot be saved.",
   apply:
     "This Agent's active revision runs under protected execution: the Credential Proxy routes alone govern its egress, so live network policy application is refused.",
   deploy:

@@ -11600,6 +11600,34 @@ export class OpenClawController {
     return !(await this.ordinaryModelBinding(state, agent));
   }
 
+  private namespaceRepositoryNetworkPolicyCeiling(
+    namespaceId: string,
+  ): RepositoryNetworkPolicyCeiling {
+    const admission = this.selectedStandingRepositoryAdmission();
+    if (admission === undefined) {
+      return [];
+    }
+    const owner = this.repositoryPermissionOwner(admission);
+    const { policy } = admission;
+    const allowsGrant = policy.repositoryNetworkPolicyAllows?.bind(policy);
+    if (!owner?.unchanged() || allowsGrant === undefined) {
+      return [];
+    }
+    const grants = this.repositoryNetworkPolicyCeiling.flatMap<RepositoryNetworkGrant>((grant) => {
+      if (allowsGrant({ namespaceId, grant })) {
+        return [grant];
+      }
+      if (grant.access === "write") {
+        const read = { repository: grant.repository, access: "read" } as const;
+        if (allowsGrant({ namespaceId, grant: read })) {
+          return [read];
+        }
+      }
+      return [];
+    });
+    return owner.unchanged() ? grants : [];
+  }
+
   async getAgentSandboxPolicy(
     principalId: string,
     namespaceId: string,
@@ -11644,6 +11672,9 @@ export class OpenClawController {
         capability: this.sandboxDriver()?.networkPolicy ?? null,
         ...(unavailableReason === undefined ? {} : { unavailableReason }),
         ceiling: this.sandboxNetworkPolicyCeiling,
+        repositoryNetworkPolicyCeiling: this.namespaceRepositoryNetworkPolicyCeiling(namespaceId),
+        repositoryNetworkPolicySaveSupported:
+          state.sandboxPolicies.supportsRepositoryNetworkPolicy === true,
         defaults,
         // A fresh deploy carries the saved version into its Sandbox; no application is
         // requested for it (D773).
@@ -11901,6 +11932,7 @@ export class OpenClawController {
     facet: SandboxFacet,
     expectedVersion: number,
     additions: readonly SandboxNetworkGrant[],
+    repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[],
   ): Promise<Readonly<SandboxPolicy>> {
     this.requireNetworkPolicyFacet(facet);
     await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
@@ -11909,9 +11941,18 @@ export class OpenClawController {
       id: `sbp_${agentId.slice(4)}`,
       namespaceId,
     });
-    // The cause comes before the editing setting and version checks it would otherwise hide (D774).
-    this.requireNetworkPolicyAvailable();
     return this.mutate(async (state) => {
+      if (
+        repositoryNetworkPolicy !== undefined &&
+        state.sandboxPolicies.supportsRepositoryNetworkPolicy !== true
+      ) {
+        throw new ResourceStateConflictError(
+          "Saving a repository network policy requires an Installation version that supports storing Agent repository grants.",
+          [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
+        );
+      }
+      // The cause comes before the editing setting and version checks it would otherwise hide (D774).
+      this.requireNetworkPolicyAvailable();
       await this.lockNamespace(state, namespaceId);
       const agent = await state.agents.lockAgent(namespaceId, agentId);
       const previous = await state.sandboxPolicies.find(namespaceId, agentId);
@@ -11927,13 +11968,41 @@ export class OpenClawController {
           "The policy changed or an application is still pending. Reload before editing.",
         );
       }
-      if (additions.length > 0) {
+      if (additions.length > 0 || repositoryNetworkPolicy !== undefined) {
         const active =
           agent.activeRevisionId === undefined
             ? undefined
             : await state.revisions.findRevision(namespaceId, agentId, agent.activeRevisionId);
         if (await this.protectedExecutionApplies(state, agent, active)) {
-          throw new ProtectedExecutionNetworkPolicyError("save");
+          throw new ProtectedExecutionNetworkPolicyError(
+            repositoryNetworkPolicy === undefined ? "save" : "saveRepository",
+          );
+        }
+      }
+      let repositoryGrants = previous.repositoryNetworkPolicy;
+      if (repositoryNetworkPolicy !== undefined) {
+        try {
+          repositoryGrants = admitRepositoryNetworkPolicy(
+            repositoryNetworkPolicy,
+            repositoryNetworkPolicy.length === 0
+              ? []
+              : this.namespaceRepositoryNetworkPolicyCeiling(namespaceId),
+          )!.grants;
+        } catch (error) {
+          if (!(error instanceof RepositoryNetworkPolicyAdmissionError)) {
+            throw error;
+          }
+          const message =
+            error.code === "OUTSIDE_CEILING"
+              ? "The grant exceeds the repository network policy delegation limit for this Namespace."
+              : error.message;
+          throw new ResourceStateConflictError(message, [
+            {
+              path: error.path,
+              code: error.code === "UNSUPPORTED_POLICY" ? "INVALID_VALUE" : error.code,
+              message,
+            },
+          ]);
         }
       }
       const admitted = this.admitAgentNetworkPolicy(additions, expectedVersion + 1, undefined, {
@@ -11946,6 +12015,7 @@ export class OpenClawController {
           agentId,
           version: expectedVersion + 1,
           additions: admitted.additions,
+          ...(repositoryGrants === undefined ? {} : { repositoryNetworkPolicy: repositoryGrants }),
           ...(previous.applied === undefined ? {} : { applied: previous.applied }),
         },
         expectedVersion,

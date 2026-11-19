@@ -729,6 +729,8 @@ export const responseExamples = {
     editingEnabled: true,
     protectedExecution: false,
     ceiling: [],
+    repositoryNetworkPolicyCeiling: [],
+    repositoryNetworkPolicySaveSupported: true,
     defaults: null,
     capability: null,
   },

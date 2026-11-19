@@ -2356,6 +2356,32 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   // the Namespace named in the registry may reach Sandbox Driver admission.
   const unapprovedNamespace = await fixture.createNamespace("No repository grant", { ready: true });
   const unapprovedAgent = await createAgent(unapprovedNamespace.id);
+
+  // A Namespace reader can see their Agent's policy but cannot enumerate the
+  // Installation's repository delegation or learn a stronger access level.
+  const reader = await fixture.createNamespaceMember(
+    "repository-policy-reader",
+    unapprovedNamespace.id,
+    [
+      ["read", "agent"],
+      ["read", "sandbox_policy"],
+    ],
+  );
+  const session = await fixture.signIn(reader.credentials);
+  const unapprovedPolicy = await fixture.request(
+    "GET",
+    `/namespaces/${unapprovedNamespace.id}/agents/${unapprovedAgent.id}/sandbox-policy/networking`,
+    { session },
+  );
+  assert.equal(unapprovedPolicy.status, 200);
+  assert.deepEqual(unapprovedPolicy.data.repositoryNetworkPolicyCeiling, []);
+
+  const approvedPolicy = await fixture.request("GET", policyPath);
+  assert.equal(approvedPolicy.status, 200);
+  assert.deepEqual(approvedPolicy.data.repositoryNetworkPolicyCeiling, requested);
+
+  // A formerly valid saved policy can survive a change in Namespace approval.
+  // Recheck it during deployment before persisting a revision or invoking the Driver.
   await setDesiredRepositoryPolicy(
     controller,
     unapprovedNamespace.id,
