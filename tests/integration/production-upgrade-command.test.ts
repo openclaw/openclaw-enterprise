@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   chmod,
   copyFile,
@@ -10,12 +10,15 @@ import {
   readdir,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
+
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const command = join(repository, "scripts/upgrade-production");
@@ -34,7 +37,13 @@ async function fixture(t: TestContext) {
     images: { controller: "registry.example/controller@sha256:" + "a".repeat(64) },
   };
   await writeFile(profile, JSON.stringify(input), { mode: 0o600 });
-  return { directory, profile, input, evidence: join(directory, "evidence") };
+  await writeFile(join(directory, input.kubeconfig), "apiVersion: v1\n", { mode: 0o600 });
+  const rendered = join(directory, input.installationDirectory);
+  await mkdir(rendered, { mode: 0o700 });
+  for (const filename of ["values.yaml", "installation.yaml"]) {
+    await writeFile(join(rendered, filename), "{}\n", { mode: 0o600 });
+  }
+  return { directory, profile, input, rendered, evidence: join(directory, "evidence") };
 }
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
@@ -63,8 +72,7 @@ function run(
     [
       options.command ?? command,
       action,
-      "--profile",
-      f.profile,
+      ...(action === "status" ? [] : ["--profile", f.profile]),
       ...(options.automaticEvidence || action === "plan" ? [] : ["--evidence-dir", f.evidence]),
       ...extra,
     ],
@@ -78,8 +86,9 @@ function run(
 
 test("operations hand off the selected profile and mode without changing the canonical options", async (t) => {
   const f = await fixture(t);
-  const scripts = join(f.directory, "scripts");
-  await mkdir(scripts);
+  const checkout = join(f.directory, "checkout");
+  const scripts = join(checkout, "scripts");
+  await mkdir(scripts, { recursive: true });
   const adapter = join(scripts, "upgrade-production");
   const capture = join(f.directory, "argv.json");
   await copyFile(command, adapter);
@@ -90,7 +99,7 @@ test("operations hand off the selected profile and mode without changing the can
     "#!/usr/bin/env python3\nimport json,os,sys\nopen(os.environ['CAPTURE_PATH'],'w').write(json.dumps(sys.argv[1:]))\n",
     { mode: 0o755 },
   );
-  const options = { command: adapter, cwd: f.directory, env: { CAPTURE_PATH: capture } };
+  const options = { command: adapter, cwd: checkout, env: { CAPTURE_PATH: capture } };
   const target = [
     "--kubeconfig",
     join(f.directory, "kubeconfig"),
@@ -179,7 +188,11 @@ test("upgrade commands reach the canonical source, mode, and recovery checks", a
     assert.match(upgrade.stderr, /occ installation upgrade resume RUN/);
     assert.equal(upgrade.stdout, "");
   }
-  assert.deepEqual(await readdir(f.directory), ["operator.json"]);
+  assert.deepEqual((await readdir(f.directory)).sort(), [
+    "kubeconfig",
+    "operator.json",
+    "rendered",
+  ]);
 
   // Approval does not waive the native owner's recovery attestations.
   await mkdir(f.evidence, { mode: 0o700 });
@@ -292,7 +305,11 @@ test("apply requires approval of the current target before reserving private evi
   assert.equal(refused.status, 2);
   assert.match(refused.stderr, /--auto-approve/);
   assert.equal(run("upgrade", f).status, 2);
-  assert.deepEqual(await readdir(f.directory), ["operator.json"]);
+  assert.deepEqual((await readdir(f.directory)).sort(), [
+    "kubeconfig",
+    "operator.json",
+    "rendered",
+  ]);
 
   // The real owner refuses the invalid timeout before contacting the cluster.
   // Even an early refusal must leave an unambiguous locator, never reuse a prior attempt.
@@ -319,7 +336,11 @@ test("apply requires approval of the current target before reserving private evi
     );
   const decline = terminal("no");
   assert.match(decline.stdout, /Apply cancelled/);
-  assert.deepEqual(await readdir(f.directory), ["operator.json"]);
+  assert.deepEqual((await readdir(f.directory)).sort(), [
+    "kubeconfig",
+    "operator.json",
+    "rendered",
+  ]);
 
   const flags = ["--auto-approve", ...guard];
   const locators = new Set<string>();
@@ -332,6 +353,14 @@ test("apply requires approval of the current target before reserving private evi
     const parent = dirname(evidence);
     assert.equal(dirname(parent), f.directory);
     assert.equal((await stat(parent)).mode & 0o777, 0o700);
+    assert.deepEqual(await readdir(parent), []);
+    assert.doesNotMatch(result.stdout, /occ installation upgrade resume/);
+    const observed = run("status", { ...f, evidence });
+    assert.equal(observed.status, 0);
+    assert.match(observed.stdout, /no native evidence.*outcome is unknown/);
+    const resume = run("resume", { ...f, evidence }, ["--auto-approve", ...guard]);
+    assert.equal(resume.status, 2);
+    assert.match(resume.stderr, /original native evidence directory/);
     assert.deepEqual(await readdir(parent), []);
   }
   assert.equal(locators.size, 2);
@@ -356,4 +385,89 @@ test("apply requires approval of the current target before reserving private evi
       await chmod(f.directory, 0o700);
     }
   }
+});
+
+test("the same local candidate is explained by plan and apply without printing its contents", async (t) => {
+  const f = await fixture(t);
+  await selectCheckout(f);
+  const values = join(f.rendered, "candidate-values.yaml");
+  const installation = join(f.rendered, "candidate-installation.yaml");
+  const password = randomBytes(24).toString("hex");
+  const proxy = syntheticCredentialUrl({ username: "test", password, host: "proxy.example" });
+  const candidate = JSON.stringify({
+    database: { upgradeMigration: "separate" },
+    api: { channelDirectoryProxyUrl: proxy },
+    installation: { secretName: "occ-staged" },
+    deployment: { internalField: "private-value" },
+  });
+  await writeFile(values, candidate, { mode: 0o600 });
+  await writeFile(
+    installation,
+    JSON.stringify({ drivers: { plugin: [{ id: "codex-plugin" }] }, auth: { extra: true } }),
+    { mode: 0o600 },
+  );
+  const options = [
+    "--",
+    "--candidate-values",
+    values,
+    "--candidate-installation",
+    installation,
+    "--timeout-seconds",
+    "0",
+  ];
+  const plan = run("plan", f, options);
+  const apply = run("apply", f, options, { automaticEvidence: true });
+  assert.equal(plan.status, 0, plan.stderr);
+  assert.equal(apply.status, 2);
+  assert.match(apply.stderr, /--auto-approve/);
+  assert.equal(apply.stdout, plan.stdout);
+  assert.match(plan.stdout, /Database migration mode: separate.*\n.*pause.*exit 3/);
+  assert.match(plan.stdout, /Helm values change: Slack directory proxy/);
+  assert.match(plan.stdout, /Candidate Installation Secret: occ-staged/);
+  assert.match(plan.stdout, /Installation change: Plugin Driver registration/);
+  assert.match(plan.stdout, /Helm values change: other settings/);
+  assert.match(plan.stdout, /Installation change: other settings/);
+  assert.ok(plan.stdout.includes(createHash("sha256").update(candidate).digest("hex")));
+  const kubeconfig = await readFile(join(f.directory, f.input.kubeconfig));
+  assert.ok(!plan.stdout.includes(createHash("sha256").update(kubeconfig).digest("hex")));
+  for (const withheld of [password, proxy, "private-value"]) {
+    assert.ok(!plan.stdout.includes(withheld));
+  }
+  assert.deepEqual((await readdir(f.directory)).sort(), [
+    "kubeconfig",
+    "operator.json",
+    "rendered",
+  ]);
+
+  await writeFile(values, '["a sequence"]\n');
+  const invalid = run("plan", f, options);
+  assert.equal(invalid.status, 2);
+  assert.match(invalid.stderr, /candidate Helm values must contain one readable YAML mapping/);
+  assert.equal(invalid.stdout, "");
+});
+
+test("explicit evidence placement refuses unsafe parents before preview or dispatch", async (t) => {
+  const f = await fixture(t);
+  await selectCheckout(f);
+  const safe = join(f.directory, "safe");
+  const shared = join(f.directory, "shared");
+  const linked = join(f.directory, "linked");
+  await mkdir(safe, { mode: 0o700 });
+  await mkdir(shared);
+  await chmod(shared, 0o770);
+  await symlink(safe, linked);
+  for (const parent of [shared, linked, join(f.directory, "missing")]) {
+    const evidence = join(parent, "evidence");
+    const result = run("apply", { ...f, evidence }, [
+      "--auto-approve",
+      "--",
+      "--timeout-seconds",
+      "0",
+    ]);
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /safe --evidence-dir/);
+    assert.equal(result.stdout, "");
+  }
+  assert.deepEqual(await readdir(safe), []);
+  assert.deepEqual(await readdir(shared), []);
 });

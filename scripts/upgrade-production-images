@@ -846,6 +846,8 @@ trap 'interrupted_upgrade 143' TERM
 # Bind resume to the original physical directory, inputs and chart. The
 # separate dispatch journal protects against restoring stale evidence in place.
 # Kubeconfig bytes bind the context to the same cluster if the file is replaced.
+approved_upgrade_inputs=${OCC_UPGRADE_APPROVED_INPUTS:-}
+unset OCC_UPGRADE_APPROVED_INPUTS
 parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$occ_url" "$occ" "$occ_ca" "$requested_values" "$requested_installation" "$broker_image" "$evidence_dir" "$chart_sha256" "$verify_agent_namespace" "$verify_agent" "$controller_compatibility_results" <<'PYTHON'
 import hashlib, json, os, sys
 def digest(path):
@@ -855,6 +857,11 @@ evidence = os.stat(sys.argv[16])
 print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.ts"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.ts"), "selectedImageMigrationSha256": digest("scripts/lib/selected-image-migration.ts"), "selectedImageMigrationProgramSha256": digest("deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs"), "preflightStateSha256": digest("scripts/upgrade-preflight-state.py"), "preflightCleanupSha256": digest("scripts/lib/upgrade-preflight-cleanup.sh"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.ts"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "helmStateSha256": digest("scripts/upgrade-helm-state.py"), "resourceQuantitiesSha256": digest("apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
 PYTHON
 )
+if [[ -n "$approved_upgrade_inputs" ]]; then
+  jq -e --argjson approved "$approved_upgrade_inputs" \
+    '.kubeconfigSha256 == $approved.kubeconfig' <<<"$parameters" >/dev/null ||
+    die "The kubeconfig changed after approval. Review a fresh plan."
+fi
 if ((resume)); then
   require_private_file "$evidence_dir/parameters.json"
   original_parameters=$(python3 - "$evidence_dir/parameters.json" <<'PYTHON'
@@ -1538,6 +1545,27 @@ check_migration() {
     "$history" "$evidence_dir"
 }
 
+# The profiled apply approves the input bytes. Check the native copies that
+# the candidate builder will consume, before they can influence cluster writes.
+verify_approved_upgrade_inputs() {
+  [[ -n "$approved_upgrade_inputs" ]] || return 0
+  python3 - "$approved_upgrade_inputs" "$@" <<'PYTHON'
+import hashlib
+import json
+import sys
+
+try:
+    digests = json.loads(sys.argv[1])
+    for role, path in zip(sys.argv[2::2], sys.argv[3::2]):
+        with open(path, "rb") as source:
+            actual = hashlib.sha256(source.read()).hexdigest()
+        if actual != digests[role]:
+            sys.exit("An upgrade input changed after approval. Review a fresh plan.")
+except (KeyError, OSError, TypeError, ValueError):
+    sys.exit("Cannot verify the approved upgrade inputs. Review a fresh plan.")
+PYTHON
+}
+
 prepare_upgrade() {
 mkdir -m 700 "$evidence_dir/inventory"
 if [[ -n "$runtime_image" ]]; then
@@ -1551,6 +1579,13 @@ cp "$values" "$evidence_dir/before-values.yaml"
 cp "$installation" "$evidence_dir/before-installation.yaml"
 [[ -z "$requested_values" ]] || cp "$requested_values" "$evidence_dir/requested-values.yaml"
 [[ -z "$requested_installation" ]] || cp "$requested_installation" "$evidence_dir/requested-installation.yaml"
+approved_copies=("baseline Helm values" "$evidence_dir/before-values.yaml"
+  "baseline Installation" "$evidence_dir/before-installation.yaml")
+[[ -z "$requested_values" ]] ||
+  approved_copies+=("candidate Helm values" "$evidence_dir/requested-values.yaml")
+[[ -z "$requested_installation" ]] ||
+  approved_copies+=("candidate Installation" "$evidence_dir/requested-installation.yaml")
+verify_approved_upgrade_inputs "${approved_copies[@]}"
 
 if ! preprovisioned_namespace=$(yq -r '(.preprovisionedNamespace // {} | length) > 0' \
   "$evidence_dir/before-values.yaml" 2>"$evidence_dir/preprovisioned-namespace.err") ||
@@ -1744,6 +1779,7 @@ selected_controller=${controller_image:-$current_controller}
 if [[ -n "$controller_compatibility_results" ]]; then
   require_regular_file "$controller_compatibility_results"
   cp "$controller_compatibility_results" "$evidence_dir/controller-compatibility-results.json"
+  verify_approved_upgrade_inputs "controller compatibility receipt" "$evidence_dir/controller-compatibility-results.json"
   validate_controller_compatibility
 fi
 

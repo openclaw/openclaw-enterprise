@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { connect } from "node:net";
 import { createServer } from "node:tls";
@@ -9,6 +9,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { Check } from "typebox/value";
 import { NamespaceId } from "../../packages/contracts/src/index.ts";
+import { run as runCommand } from "../fixtures/repository-credentials/process.ts";
 import { createRealKubernetesFixture, kubectlArguments } from "../helpers/kubernetes-real.ts";
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { listen } from "../helpers/listen.ts";
@@ -62,7 +63,9 @@ test(
   "separate migration Helm upgrades keep writers stopped until the database passes verification",
   observabilitySelection,
   async (t) => {
-    const f = await installObservabilityControlPlane(t);
+    // Use the same approved manifest in both runtime slots. The explicit incumbent
+    // tag makes the dedicated slot a distinct reference for the image upgrade.
+    const f = await installObservabilityControlPlane(t, { initialAgentImageTag: "incumbent" });
     const installation = record(await f.api("GET", "/installation"));
     const installationId = string(installation.id);
     const { kubeconfigPath, kubernetesContext } = f.selection;
@@ -117,8 +120,7 @@ test(
 
     // Exercise the ordinary helper against this installed API and database. A
     // runtime-only plan selects the incumbent controller for compatibility checks;
-    // no Agent is admitted until these checks finish. The imported Node image
-    // is only an unlaunched candidate input; this proves no runtime usability.
+    // no Agent is admitted until these checks finish.
     const occ = join(f.directory, "occ");
     await f.run("go", ["build", "-trimpath", "-o", occ, "./cmd/occ"]);
     const source = (await f.run("git", ["rev-parse", "HEAD"])).trim();
@@ -243,7 +245,7 @@ test(
           "--installation",
           installationPath,
           "--runtime-image",
-          f.images.node,
+          f.images.runtime,
           "--source-revision",
           source,
           "--evidence-dir",
@@ -503,7 +505,7 @@ test(
     const applyProfile = join(profileDirectory, "apply.json");
     await writeFile(
       applyProfile,
-      JSON.stringify({ ...targetProfile, occ, images: { runtime: f.images.node } }),
+      JSON.stringify({ ...targetProfile, occ, images: { runtime: f.images.runtime } }),
       { mode: 0o600 },
     );
     const applyUpgrade = (name: string) =>
@@ -548,108 +550,182 @@ test(
     );
     await assertDatabase(repairedSnapshot, "compatible-after");
     await assertIncumbent();
-    await connection.stop();
-
-    // The operator's maintenance window stops both writers before either database phase.
-    await f.kubectl(
-      "-n",
-      f.system,
-      "scale",
-      "deployment/openclaw-enterprise-api",
-      "deployment/openclaw-enterprise-worker",
-      "--replicas=0",
-    );
-    await f.waitFor(
-      "both writers stopped",
-      async () => (await f.pods("api")).length === 0 && (await f.pods("worker")).length === 0,
-    );
-    const stopped: Record<string, ReturnType<typeof deployment>> = {};
-    for (const component of ["api", "worker"]) {
-      stopped[component] = deployment(
-        await f.get("deployment", `openclaw-enterprise-${component}`),
-      );
-    }
-
-    // A real privilege drift must fail the chart's migration init container before
-    // Helm restores either Deployment. Rendering the right argument alone cannot prove this.
-    await sql("REVOKE SELECT ON occ.iam_identities FROM occ_app");
-    await assert.rejects(
-      f.upgrade({
+    const candidateValues = join(profileDirectory, "separate-migration.json");
+    await writeFile(
+      candidateValues,
+      JSON.stringify({
+        ...f.values,
         database: { ...record(f.values.database), upgradeMigration: "separate" },
       }),
-      /failed pre-upgrade|BackoffLimitExceeded/,
+      { mode: 0o600 },
     );
-    const hook = record(await f.get("job", `${f.release}-initialization`));
-    const hookName = string(record(hook.metadata).name);
-    const logs = await f.kubectl("-n", f.system, "logs", `job/${hookName}`, "-c", "migration");
-    assert.match(logs, /MIGRATION_HISTORY_UNSUPPORTED/);
-    assert.equal(await receipts(), before);
-    for (const component of ["api", "worker"]) {
-      const currentDeployment = deployment(
-        await f.get("deployment", `openclaw-enterprise-${component}`),
+    const upgradeRun = join(f.directory, "separate-migration-upgrade");
+    const upgradeExpertOptions = [...upgradeTimeout, "--candidate-values", candidateValues];
+    const profileApproval = ["--profile", applyProfile, "--auto-approve"];
+    const runUpgrade = (operation: string[], attestations: string[] = []) =>
+      runCommand(
+        occ,
+        [
+          "installation",
+          "upgrade",
+          ...operation,
+          ...profileApproval,
+          "--",
+          ...upgradeExpertOptions,
+          ...attestations,
+        ],
+        { ...upgradeExecution, timeout: 360_000, allowFailure: true },
       );
-      const previous = stopped[component];
-      assert.ok(previous);
-      assert.equal(currentDeployment.metadata.uid, previous.metadata.uid);
-      assert.equal(currentDeployment.metadata.generation, previous.metadata.generation);
-      assert.equal(currentDeployment.spec.replicas, 0);
-      assert.equal((await f.pods(component)).length, 0);
-    }
+    const assertMigrationPause = (result: Awaited<ReturnType<typeof runUpgrade>>) => {
+      assert.equal(result.code, 3, "the installed CLI must preserve the migration handoff status");
+      assert.ok(
+        result.stderr.includes("API and worker stopped for the separate database deployment"),
+        "the native process must identify the stopped-writer handoff",
+      );
+    };
+    // The real CLI stops the writers and records their identity before submitting Helm.
+    const paused = await runUpgrade(["apply", "--evidence-dir", upgradeRun]);
+    assertMigrationPause(paused);
+    const evidenceIdentity = await stat(upgradeRun);
+    const handoffFile = join(upgradeRun, "database-migration-handoff.json");
+    const handoffBytes = await readFile(handoffFile, "utf8");
+    const handoff = record(JSON.parse(handoffBytes));
+    const assertWriterFence = async () => {
+      assert.equal(await helmRevision(), revision);
+      assert.equal(await receipts(), before);
+      assert.equal(await readFile(handoffFile, "utf8"), handoffBytes);
+      const currentEvidence = await stat(upgradeRun);
+      assert.equal(currentEvidence.dev, evidenceIdentity.dev);
+      assert.equal(currentEvidence.ino, evidenceIdentity.ino);
+      const markers = await readdir(upgradeRun);
+      assert.ok(markers.includes("prepared"));
+      assert.ok(!markers.includes("helm-started"));
+      assert.ok(!markers.includes("completed"));
+      for (const component of ["api", "worker"]) {
+        const current = deployment(await f.get("deployment", `openclaw-enterprise-${component}`));
+        const previous = incumbent[component];
+        assert.ok(previous);
+        assert.equal(current.metadata.uid, previous.metadata.uid);
+        assert.ok(current.metadata.generation > previous.metadata.generation);
+        assert.deepEqual(current.metadata, handoff[component]);
+        assert.equal(current.spec.replicas, 0);
+        assert.equal((await f.pods(component)).length, 0);
+      }
+      await assertPreflightClean();
+    };
+    await assertWriterFence();
 
-    // Reconcile the known fault, then use the documented independent migration Job
-    // with the same candidate image, migrator Secret, and initialization network policy.
-    await sql("GRANT SELECT ON occ.iam_identities TO occ_app");
+    const attempt = record(
+      JSON.parse(await readFile(join(upgradeRun, "prepared-helm-attempt.json"), "utf8")),
+    );
+    const hookName = `${f.release}-initialization`;
+    const hook = record(
+      JSON.parse(
+        await f.run("yq", [
+          "-o=json",
+          `select(.kind == "Job" and .metadata.name == "${hookName}")`,
+          join(upgradeRun, "helm-attempts", string(attempt.nonce), "rendered.yaml"),
+        ]),
+      ),
+    );
     const template = record(record(record(hook.spec).template).spec);
     const migration = array(template.initContainers).find(
       (container) => named(container) && container.name === "migration",
     );
     assert.ok(named(migration));
+    assert.equal(migration.image, f.images.controller);
+    const migrationArgs = array(migration.args).map(string);
+    assert.equal(migrationArgs.at(-1), "--require-current");
     const mounts = new Set(
       array(migration.volumeMounts ?? []).map((mount) => string(record(mount).name)),
     );
-    const jobName = "separate-database-migration";
-    await f.apply({
-      apiVersion: "batch/v1",
-      kind: "Job",
-      metadata: f.metadata(jobName),
-      spec: {
-        backoffLimit: 0,
-        template: {
-          metadata: {
-            labels: {
-              "app.kubernetes.io/name": "openclaw-enterprise",
-              "app.kubernetes.io/instance": f.release,
-              "app.kubernetes.io/component": "initialization",
+    const runMigration = async (name: string, args: string[], condition: "Failed" | "Complete") => {
+      await f.apply({
+        apiVersion: "batch/v1",
+        kind: "Job",
+        metadata: f.metadata(name),
+        spec: {
+          backoffLimit: 0,
+          template: {
+            metadata: {
+              labels: {
+                "app.kubernetes.io/name": "openclaw-enterprise",
+                "app.kubernetes.io/instance": f.release,
+                "app.kubernetes.io/component": "initialization",
+              },
+            },
+            spec: {
+              serviceAccountName: string(template.serviceAccountName),
+              automountServiceAccountToken: false,
+              restartPolicy: "Never",
+              securityContext: record(template.securityContext),
+              nodeSelector: template.nodeSelector,
+              containers: [{ ...migration, args }],
+              volumes: array(template.volumes).filter((volume) =>
+                mounts.has(string(record(volume).name)),
+              ),
             },
           },
-          spec: {
-            serviceAccountName: string(template.serviceAccountName),
-            automountServiceAccountToken: false,
-            restartPolicy: "Never",
-            securityContext: record(template.securityContext),
-            containers: [{ ...migration, args: array(migration.args).slice(0, -1) }],
-            volumes: array(template.volumes).filter((volume) =>
-              mounts.has(string(record(volume).name)),
-            ),
-          },
         },
-      },
-    });
-    await f.kubectl(
-      "-n",
-      f.system,
-      "wait",
-      "--for=condition=Complete",
-      `job/${jobName}`,
-      "--timeout=180s",
-    );
-    const migrated = await f.kubectl("-n", f.system, "logs", `job/${jobName}`);
-    assert.match(migrated, /"event":"migration.completed","history":"completed"/);
-    await f.kubectl("-n", f.system, "delete", "job", jobName, "--wait=true", "--timeout=120s");
+      });
+      await f.kubectl(
+        "-n",
+        f.system,
+        "wait",
+        `--for=condition=${condition}`,
+        `job/${name}`,
+        "--timeout=180s",
+      );
+      const logs = await f.kubectl("-n", f.system, "logs", `job/${name}`);
+      await f.kubectl(
+        "-n",
+        f.system,
+        "delete",
+        "job",
+        name,
+        "--cascade=foreground",
+        "--wait=true",
+        "--timeout=120s",
+      );
+      return logs;
+    };
+    // Run the prepared chart's exact verification command with privilege drift.
+    // A separate Job exercises the real migrator without replacing the Helm revision.
+    await sql("REVOKE SELECT ON occ.iam_identities FROM occ_app");
+    const refused = await runMigration(
+      "separate-migration-refusal",
+      migrationArgs,
+      "Failed",
+    ).finally(() => sql("GRANT SELECT ON occ.iam_identities TO occ_app"));
+    assert.match(refused, /MIGRATION_HISTORY_UNSUPPORTED/);
+    await assertWriterFence();
 
-    await f.upgrade({});
+    const migrated = await runMigration(
+      "separate-database-migration",
+      migrationArgs.slice(0, -1),
+      "Complete",
+    );
+    assert.match(migrated, /"event":"migration.completed","history":"completed"/);
+    const verified = await runMigration("separate-migration-verify", migrationArgs, "Complete");
+    assert.match(verified, /"event":"migration.checked","history":"completed"/);
+
+    // A successful independent check cannot authorize the paused operation by itself.
+    const resume = ["resume", upgradeRun];
+    assertMigrationPause(await runUpgrade(resume));
+    await assertWriterFence();
+
+    const resumed = await runUpgrade(resume, ["--migration-history-checked"]);
+    assert.equal(resumed.code, 0, "verified history must allow the original CLI run to finish");
+    assert.equal(await helmRevision(), revision + 1);
+    const submittedHook = record(await f.get("job", hookName));
+    assert.equal(
+      record(record(submittedHook.metadata).annotations)["openclaw.dev/upgrade-attempt"],
+      attempt.nonce,
+    );
+    assert.ok((await readdir(upgradeRun)).includes("completed"));
     const checked = await f.kubectl("-n", f.system, "logs", `job/${hookName}`, "-c", "migration");
     assert.match(checked, /"event":"migration.checked","history":"completed"/);
+    await connection.stop();
     for (const component of ["api", "worker"]) {
       await f.currentPod(component);
       assert.equal(

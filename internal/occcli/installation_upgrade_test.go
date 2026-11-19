@@ -38,6 +38,18 @@ func TestInstallationUpgradeCLIIntegratesProfileAndCanonicalOwner(t *testing.T) 
 		"kubeconfig": "kubeconfig", "context": "reviewed-context", "namespace": "openclaw-system",
 		"release": "oce", "installationDirectory": "rendered", "sourceRevision": revision, "images": images,
 	}
+	if err := os.WriteFile(filepath.Join(directory, "kubeconfig"), []byte("apiVersion: v1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rendered := filepath.Join(directory, "rendered")
+	if err := os.Mkdir(rendered, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"values.yaml", "installation.yaml"} {
+		if err := os.WriteFile(filepath.Join(rendered, name), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	writeProfile := func() {
 		t.Helper()
 		document, err := json.Marshal(input)
@@ -102,6 +114,15 @@ func TestInstallationUpgradeCLIIntegratesProfileAndCanonicalOwner(t *testing.T) 
 	_, diagnostic, err = executeUpgrade(append(append(apply, "--auto-approve"), options...)...)
 	if !errors.As(err, &status) || status.Code != 1 || !strings.Contains(diagnostic, "--timeout-seconds must be positive") {
 		t.Fatalf("approved apply canonical diagnostic = %q, error = %v", diagnostic, err)
+	}
+
+	absent, _, err := executeUpgrade("status", target)
+	if err != nil || !strings.Contains(absent, "run outcome is unknown") {
+		t.Fatalf("status after early refusal = %q, error = %v", absent, err)
+	}
+	preview, diagnostic, err := executeUpgrade("plan", "--profile", profile, "--", "--timeout-seconds", "5")
+	if err != nil || !strings.Contains(preview, "Wait timeout (seconds): 5") {
+		t.Fatalf("expert plan = %q, diagnostic = %q, error = %v", preview, diagnostic, err)
 	}
 
 	input["sourceRevision"] = strings.Repeat("0", 40)

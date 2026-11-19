@@ -10,7 +10,8 @@ Create an owner-only JSON profile outside the checkout. Set
 `installationDirectory` to the protected directory that contains `values.yaml`
 and `installation.yaml` from the
 [installation profile renderer](installation-profiles.md#render-files).
-Relative file paths resolve from the profile's directory.
+Relative paths inside the profile resolve from the profile's directory.
+Relative expert paths resolve from the release checkout.
 
 ```bash
 umask 077
@@ -44,9 +45,12 @@ Review the selected kubeconfig, context, release, and image digests:
 occ installation upgrade plan --profile /secure/occ/upgrade.json
 ```
 
-The offline preview checks the profile, digest format, and checkout commit.
-It writes no files and makes no cluster calls. Apply checks rendered files,
-credentials, and cluster access when it runs.
+The offline preview checks the profile, local inputs, image digests, and
+checkout commit. It reads the kubeconfig without showing its contents or digest.
+When you select candidate files or other expert options, pass the same options
+after `--` to `plan` and `apply`. Review the candidate settings and file digests
+before you approve. The preview reads local inputs. Current cluster state and
+migration history remain unknown until the upgrade checks the cluster.
 
 Before the first `apply` or `preflight`,
 [bind the Installation Secret](production-upgrade.md#bind-the-installation-once).
@@ -68,20 +72,32 @@ occ installation upgrade apply --profile /secure/occ/upgrade.json
 
 `apply` reads the current profile and displays its plan again. When input and
 output are attached to a terminal, type `yes` to approve the upgrade. For
-automation or redirected output, pass `--auto-approve`. Review any expert
-options after `--`, including overrides of the rendered baseline. The upgrade
-checks startup and migration compatibility and confirms preflight cleanup
-before it stops writers.
+automation or redirected output, pass `--auto-approve`. The upgrade checks
+startup and migration compatibility and confirms preflight cleanup before it
+stops writers.
 
 For each fresh `apply`, `preflight`, or `migration check`, the CLI prints
 `Evidence: PATH` and an `Inspect:` command before starting the operation.
-`apply` also prints a command to resume an interrupted upgrade.
-It reserves a new private directory beside the profile by default. The
-profile directory must be outside the checkout, belong to the current user,
-and allow writes only by that user. Set a fresh `--evidence-dir` to choose
-another location for a new run. Keep the evidence and any sibling dispatch
-journal at their original paths. After completion,
-[verify the release](production-upgrade.md#verify-the-release).
+By default the CLI reserves a private directory beside the profile.
+The profile directory must be outside the checkout, belong to the current
+user, and allow writes only by that user. To choose a location, pass a fresh
+`--evidence-dir` under an existing writable directory you own outside the
+checkout. Keep the evidence and any sibling dispatch journal at their original
+paths. After completion, [verify the release](production-upgrade.md#verify-the-release).
+
+### Continue after a separate database migration
+
+If `apply` reports a separate database migration pause and exits with status
+**3**, the API and worker are stopped. Helm submission waits for verified
+migration history. Keep the maintenance window active, other writers and
+autoscalers fenced, and the original evidence in place.
+
+[Deploy and verify the database](separate-database-upgrade.md#deploy-the-database)
+with the selected controller image and the dedicated migrator credential.
+Require a successful `--require-current` check that reports `migration.checked`
+with history `completed`. After the Jobs and their Pods are gone, use
+[the original run to resume](#recover-an-interrupted-run). Repeat the original
+expert options after `--` and add `--migration-history-checked`.
 
 ## Check database migration compatibility
 
@@ -117,18 +133,19 @@ to inspect the recorded state without contacting the cluster:
 occ installation upgrade status /path/to/original/evidence
 ```
 
-A Helm intent marker can record an attempt with an unknown outcome. A lock
-marker alone does not establish whether a process is running. Reconcile the
-original operation and any submitted requests before using the printed resume
-command. Use the same checkout, profile, and evidence path:
+Treat the outcome as unknown if `status` reports missing evidence or an
+unresolved Helm intent. A lock marker can outlive its process. Check the
+original process and reconcile its submitted requests before another write.
+Resume requires the original upgrade evidence. Use the same checkout, profile,
+and evidence path:
 
 ```bash
 occ installation upgrade resume /path/to/original/evidence --profile /secure/occ/upgrade.json
 ```
 
 Resume asks for `yes` at a terminal. In automation, pass `--auto-approve`.
-Both approvals require the original evidence and any applicable attestations.
-Append the original expert options and required attestations after `--`. If the native diagnostic suggests `--resume`, use the `resume` subcommand.
+Append the original expert options and required attestations after `--`.
+If the native diagnostic suggests `--resume`, use the `resume` subcommand.
 Complete the required checks before passing `--recover-helm`,
 `--recovery-reviewed`, or `--migration-history-checked` after `--`.
 `apply` refuses those options before prompting or creating evidence.

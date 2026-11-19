@@ -2,6 +2,7 @@
 """Translate a private operator profile into the coordinated upgrade command."""
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -110,9 +111,16 @@ def profile_input(parser, filename):
     return value
 
 
-def report_status(parser, directory):
+def report_status(parser, directory, *, allow_missing=False):
     try:
-        fd = os.open(Path(directory), os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_DIRECTORY)
+        try:
+            fd = os.open(Path(directory), os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_DIRECTORY)
+        except FileNotFoundError:
+            if not allow_missing:
+                parser.error("resume requires the original native evidence directory; inspect RUN and reconcile the outcome")
+            print("Status: no native evidence exists at this path. The run outcome is unknown.")
+            print("Verify the original path and reconcile any prior request before another write.")
+            return
         try:
             info = os.fstat(fd)
             if info.st_uid != os.geteuid() or info.st_mode & 0o077:
@@ -181,7 +189,175 @@ def check_revision(parser, checkout, revision):
         parser.error("checkout commit does not match the profile source revision")
 
 
-def show_plan(parser, profile, profile_relative_path, extra, resume_run):
+# These are the native image upgrade options the preview can explain.
+EXPERT_VALUES = {
+    "--candidate-values",
+    "--candidate-installation",
+    "--controller-compatibility-results",
+    "--timeout-seconds",
+    "--doctor-heap-mib",
+    "--verify-agent",
+    "--verify-agent-namespace",
+}
+EXPERT_SWITCHES = {"--collector-config-reviewed", "--verbose"}
+RECOVERY_SWITCHES = {"--recover-helm", "--recovery-reviewed", "--migration-history-checked"}
+
+
+def expert_options(parser, operation, arguments):
+    options = {}
+    items = iter(arguments)
+    for flag in items:
+        if flag in EXPERT_VALUES:
+            value = next(items, None)
+            if not value or not value.isprintable():
+                parser.error(f"{flag} requires a nonempty printable value")
+            options[flag] = value
+        elif flag in EXPERT_SWITCHES or (operation == "resume" and flag in RECOVERY_SWITCHES):
+            options[flag] = True
+        else:
+            parser.error("unrecognized expert upgrade option; see scripts/upgrade-production-images --help")
+    return options
+
+
+def preview_file(parser, name, filename, *, private=True):
+    try:
+        fd = os.open(filename, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or (private and info.st_mode & 0o077):
+                parser.error(f"{name} must be a private readable regular file" if private else
+                             f"{name} must be a readable regular file")
+            return stream.read()
+    except OSError:
+        parser.error(f"cannot read {name}; use a regular file without a symbolic link")
+
+
+def preview_mapping(parser, name, content):
+    try:
+        try:
+            value = json.loads(content, object_pairs_hook=unique_object)
+        except ValueError:
+            converted = subprocess.check_output(
+                ["yq", "-p=yaml", "-o=json", ".", "-"],
+                input=content, stderr=subprocess.DEVNULL,
+            )
+            value = json.loads(converted, object_pairs_hook=unique_object)
+        if isinstance(value, dict):
+            return value
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        pass
+    parser.error(f"{name} must contain one readable YAML mapping; check that yq is installed")
+
+
+def setting(mapping, *path):
+    for key in path:
+        if not isinstance(mapping, dict):
+            return None
+        mapping = mapping.get(key)
+    return mapping
+
+
+MISSING = object()
+
+
+def changed_categories(before, after, categories, prefix=()):
+    if prefix not in categories:
+        if before is MISSING and isinstance(after, dict) and after:
+            before = {}
+        if after is MISSING and isinstance(before, dict) and before:
+            after = {}
+        if isinstance(before, dict) and isinstance(after, dict):
+            changed = set()
+            for key in before.keys() | after.keys():
+                changed.update(changed_categories(
+                    before.get(key, MISSING), after.get(key, MISSING), categories, (*prefix, key)
+                ))
+            return changed
+    if before is not MISSING and after is not MISSING and (
+        json.dumps(before, sort_keys=True) == json.dumps(after, sort_keys=True)
+    ):
+        return set()
+    return {categories.get(prefix, "other settings")}
+
+
+def preview_inputs(parser, kubeconfig, directory, options):
+    paths = {
+        "kubeconfig": kubeconfig,
+        "baseline Helm values": str(directory / "values.yaml"),
+        "baseline Installation": str(directory / "installation.yaml"),
+    }
+    for flag, role in (
+        ("--candidate-values", "candidate Helm values"),
+        ("--candidate-installation", "candidate Installation"),
+        ("--controller-compatibility-results", "controller compatibility receipt"),
+    ):
+        if flag in options:
+            paths[role] = options[flag]
+    digests = {}
+    mappings = {}
+    for role, filename in paths.items():
+        receipt = role == "controller compatibility receipt"
+        content = preview_file(parser, role, filename, private=not receipt)
+        digests[role] = hashlib.sha256(content).hexdigest()
+        if role not in ("kubeconfig", "controller compatibility receipt"):
+            mappings[role] = preview_mapping(parser, role, content)
+    before_values = mappings["baseline Helm values"]
+    values = mappings.get("candidate Helm values", before_values)
+    before_installation = mappings["baseline Installation"]
+    installation = mappings.get("candidate Installation", before_installation)
+
+    migration = setting(values, "database", "upgradeMigration")
+    if migration is None:
+        migration = "hook"
+    if migration not in ("hook", "separate"):
+        parser.error("candidate Helm values must select hook or separate database.upgradeMigration")
+    effects = [f"Database migration mode: {migration}"]
+    if migration == "separate":
+        effects.append("The upgrade can stop OCC writers and pause for separate database migration (exit 3).")
+    values_changes = changed_categories(before_values, values, {
+        ("database", "upgradeMigration"): "migration mode",
+        ("api", "channelDirectoryProxyUrl"): "Slack directory proxy",
+        ("installation", "secretName"): "Installation Secret reference",
+        ("agentNativeAdmin", "sharedCookieDomain"): "retired native admin cookie domain",
+    })
+    effects.extend(f"Helm values change: {name}" for name in sorted(values_changes))
+    if "Installation Secret reference" in values_changes:
+        secret = setting(values, "installation", "secretName")
+        if secret is None:
+            secret = "occ-installation-startup"
+        if isinstance(secret, str) and re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?", secret):
+            effects.append(f"Candidate Installation Secret: {secret}")
+    installation_changes = changed_categories(before_installation, installation, {
+        ("drivers", "plugin"): "Plugin Driver registration",
+    })
+    effects.extend(f"Installation change: {name}" for name in sorted(installation_changes))
+    if values_changes or installation_changes:
+        effects.append("Apply checks candidate changes against the live release and protected settings.")
+    if "--collector-config-reviewed" in options:
+        effects.append("Collector configuration review attestation supplied.")
+    if "--recover-helm" in options:
+        effects.append("Reviewed Helm recovery can roll back the interrupted attempt before continuing.")
+    if "--migration-history-checked" in options:
+        effects.append("Database migration history verification attested.")
+    if "--verify-agent" in options or "--verify-agent-namespace" in options:
+        effects.append("Agent continuity verification requested.")
+    if "--verbose" in options:
+        effects.append("Native command output enabled.")
+    for flag, role in (("--timeout-seconds", "Wait timeout (seconds)"), ("--doctor-heap-mib", "Doctor heap (MiB)")):
+        if flag in options:
+            value = options[flag]
+            effects.append(f"{role}: " + (value if re.fullmatch(r"[0-9]{1,10}", value) else "review supplied value"))
+    return paths, digests, effects
+
+
+def check_preview_inputs(parser, paths, digests):
+    for role, path in paths.items():
+        content = preview_file(parser, role, path, private=role != "controller compatibility receipt")
+        if hashlib.sha256(content).hexdigest() != digests[role]:
+            parser.error(f"{role} changed after the preview; review a fresh plan")
+
+
+def show_plan(parser, profile, profile_relative_path, digests, effects, resume_run):
     images = profile.get("images", {})
     if not images:
         parser.error("select a controller, broker, or runtime image before planning")
@@ -214,8 +390,11 @@ def show_plan(parser, profile, profile_relative_path, extra, resume_run):
         print("  Agents: redeploy those running at the start of the upgrade")
     else:
         print("  Agents: keep current revisions")
-    if extra:
-        print("  Review any expert options and candidate overrides after --.")
+    for name, digest in digests.items():
+        if name != "kubeconfig":
+            print(f"  {name}: sha256:{digest}")
+    for effect in effects:
+        print(f"  {effect}")
     print("No cluster contact or writes occurred during this preview. Current images and migration requirements are unknown.")
     if resume_run:
         print(f"Resume run: {Path(resume_run).absolute()}")
@@ -240,31 +419,52 @@ def confirm(parser, operation):
         parser.exit(1, f"{operation.capitalize()} cancelled; no command dispatched.\n")
 
 
-def new_evidence(parser, checkout, base, operation):
+def evidence_parent(parser, checkout, base):
     try:
-        directory = base.resolve(strict=True)
+        directory = base.absolute()
         info = directory.stat()
+        required = stat.S_IWUSR | stat.S_IXUSR
         if (
-            directory.is_relative_to(checkout)
+            directory != directory.resolve(strict=True)
+            or directory.is_relative_to(checkout)
+            or not stat.S_ISDIR(info.st_mode)
             or info.st_uid != os.geteuid()
             or info.st_mode & 0o022
-            or not info.st_mode & stat.S_IWUSR
+            or info.st_mode & required != required
             or not str(directory).isprintable()
         ):
             parser.error(
-                "automatic evidence needs a writable profile directory outside the checkout, "
-                "owned by you and protected from other writers; specify a fresh --evidence-dir"
+                "evidence needs a writable directory outside the checkout, owned by you, "
+                "with no symlinks or other writers; choose a safe --evidence-dir"
             )
-        # Another writer must not be able to replace the path above the private run.
+        # Ancestors must prevent another writer from replacing the private run path.
         owners = {os.geteuid(), Path("/").stat().st_uid}
         for ancestor in directory.parents:
             info = ancestor.stat()
             if info.st_uid not in owners or (info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX):
-                parser.error("profile directory has an unsafe ancestor; specify a fresh --evidence-dir")
-        # Reserve a private parent. The upgrade needs an absent leaf and may keep a sibling dispatch journal.
+                parser.error("evidence directory has an unsafe ancestor; choose a safe --evidence-dir")
+        return directory
+    except OSError:
+        parser.error("evidence parent must exist and be writable; choose a safe --evidence-dir")
+
+
+def fresh_evidence(parser, checkout, value):
+    locator = Path(value).absolute()
+    if locator.name in ("", ".", ".."):
+        parser.error("choose a new name for --evidence-dir")
+    evidence_parent(parser, checkout, locator.parent)
+    if os.path.lexists(locator) or os.path.lexists(str(locator) + ".dispatch-state"):
+        parser.error("evidence or its dispatch journal already exists; choose a fresh --evidence-dir")
+    return str(locator)
+
+
+def new_evidence(parser, checkout, base, operation):
+    directory = evidence_parent(parser, checkout, base)
+    try:
+        # The native owner requires an absent leaf and may create a sibling journal.
         parent = tempfile.mkdtemp(prefix=f"occ-{operation}-", dir=directory)
     except OSError:
-        parser.error("cannot reserve evidence beside the profile; specify a fresh --evidence-dir")
+        parser.error("cannot reserve evidence beside the profile; choose a safe --evidence-dir")
     return str(Path(parent) / "evidence")
 
 
@@ -299,8 +499,8 @@ def main():
         not args.evidence_dir.strip() or not str(Path(args.evidence_dir).absolute()).isprintable()
     ):
         parser.error("evidence path must be nonempty and printable")
-    if args.operation in ("plan", "status") and extra:
-        parser.error("plan and status do not accept expert upgrade options")
+    if args.operation == "status" and extra:
+        parser.error("status does not accept expert upgrade options")
     if args.operation == "status":
         if args.profile is not None or not args.evidence_dir:
             parser.error("status requires --evidence-dir and does not use --profile")
@@ -325,9 +525,7 @@ def main():
             "original expert option after --: occ installation upgrade preflight "
             "--profile PROFILE -- ORIGINAL_EXPERT_OPTIONS"
         )
-    if args.operation in NEW_RUNS and extra_flags & {
-        "--recover-helm", "--recovery-reviewed", "--migration-history-checked"
-    }:
+    if args.operation in ("plan", *NEW_RUNS) and extra_flags & RECOVERY_SWITCHES:
         parser.error(
             "recovery attestations require the original run. After reconciling its outcome, "
             "use occ installation upgrade resume RUN --profile PROFILE -- ORIGINAL_OPTIONS_AND_ATTESTATIONS"
@@ -339,7 +537,7 @@ def main():
     if checkout != Path.cwd().resolve():
         parser.error("run this command from its reviewed release checkout root")
     if args.operation == "status":
-        report_status(parser, args.evidence_dir)
+        report_status(parser, args.evidence_dir, allow_missing=True)
         return
 
     profile = profile_input(parser, args.profile)
@@ -353,18 +551,22 @@ def main():
     if not str(profile_path).isprintable():
         parser.error("profile path must be printable")
     if args.operation in NEW_RUNS and args.evidence_dir is not None:
-        locator = Path(args.evidence_dir)
-        # Never direct the operator to an existing attempt as if it belonged to this run.
-        if os.path.lexists(locator) or os.path.lexists(str(locator) + ".dispatch-state"):
-            parser.error("evidence or its dispatch journal already exists; choose a fresh --evidence-dir")
+        args.evidence_dir = fresh_evidence(parser, checkout, args.evidence_dir)
+    digests = None
     if args.operation in ("plan", "apply", "resume"):
         check_revision(parser, checkout, profile["sourceRevision"])
+        options = expert_options(parser, args.operation, extra)
         resume_run = args.evidence_dir if args.operation == "resume" else None
-        show_plan(parser, profile, path, extra, resume_run)
+        directory = Path(path(profile["installationDirectory"]))
+        paths, digests, effects = preview_inputs(
+            parser, path(profile["kubeconfig"]), directory, options
+        )
+        show_plan(parser, profile, path, digests, effects, resume_run)
         if args.operation == "plan":
             return
         if not args.auto_approve:
             confirm(parser, args.operation)
+        check_preview_inputs(parser, paths, digests)
     elif args.operation == "cleanup-preflight":
         print("Cleanup removes only the original run's recorded temporary resources. It cannot resume deployment.")
     else:
@@ -375,14 +577,13 @@ def main():
     if args.operation in NEW_RUNS:
         if args.evidence_dir is None:
             args.evidence_dir = new_evidence(parser, checkout, base, args.operation)
-        locator = str(Path(args.evidence_dir).absolute())
+        else:
+            args.evidence_dir = fresh_evidence(parser, checkout, args.evidence_dir)
+        locator = args.evidence_dir
         print(f"Evidence: {locator}")
-        run = shlex.quote(locator)
-        print(f"Inspect: occ installation upgrade status {run}")
+        print(f"Inspect: occ installation upgrade status {shlex.quote(locator)}")
         if args.operation == "apply":
-            # Never echo arbitrary expert option values into the operator's run log.
-            note = "; append the original options after --" if extra else ""
-            print(f"Resume (only after reconciliation{note}): occ installation upgrade resume {run} --profile {shlex.quote(str(profile_path))}")
+            print("Use the original evidence and arguments if the upgrade reports a recovery step.")
     sys.stdout.flush()
 
     target = [
@@ -428,7 +629,11 @@ def main():
 
     canonical = checkout / "scripts" / "upgrade-production-images"
     try:
-        os.execv(canonical, [str(canonical), *command, *extra])
+        environment = os.environ.copy()
+        environment.pop("OCC_UPGRADE_APPROVED_INPUTS", None)
+        if args.operation == "apply":
+            environment["OCC_UPGRADE_APPROVED_INPUTS"] = json.dumps(digests)
+        os.execve(canonical, [str(canonical), *command, *extra], environment)
     except OSError:
         parser.error(
             "cannot start scripts/upgrade-production-images from this release checkout"

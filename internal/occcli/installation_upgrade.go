@@ -31,7 +31,7 @@ func installationUpgradeCommand() *cobra.Command {
 	operation := func(name, action, description string) *cobra.Command {
 		var profile, evidence string
 		var autoApprove bool
-		expert := action != "plan" && action != "status"
+		expert := action != "status"
 		originalEvidence := action == "status" || action == "resume" || action == "cleanup-preflight"
 		use := name
 		if originalEvidence {

@@ -85,8 +85,8 @@ graph TD
 ### 1. Prepare the candidate
 
 `internal/occcli/installation_upgrade.go:installationUpgradeCommand` calls
-`scripts/upgrade-production:main`. Plan validates digests and commit offline.
-Approval precedes apply or resume. New runs print paths for status before dispatch.
+`scripts/upgrade-production:main`. Plan previews local candidates and digests.
+Apply binds approval to native copies. New runs print status paths before dispatch.
 
 `scripts/upgrade-production-images:prepare_upgrade`
 
