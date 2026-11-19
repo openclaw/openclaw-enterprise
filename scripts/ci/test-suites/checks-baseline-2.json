@@ -907,6 +907,10 @@
       "path": "tests/integration/openshell-full-integration.test.ts"
     },
     {
+      "path": "tests/integration/openshell-stock-destination-ca.test.ts",
+      "expectedTests": ["OpenShell stock destination CA fixture trusts only its certificate input"]
+    },
+    {
       "path": "tests/integration/oidc-provider.test.ts"
     },
     {
