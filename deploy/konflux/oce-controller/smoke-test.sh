@@ -51,13 +51,13 @@ assert_contains "API stops on missing configuration" \
 assert_contains "worker stops on missing database configuration" \
     "$(run_controller apps/controller/src/worker.mjs)" '"code":"DATABASE_CONFIGURATION_INVALID"'
 assert_contains "migration job stops on missing database" \
-    "$(run_controller scripts/migrate-production.mjs)" '"event":"migration.failed"'
+    "$(run_controller scripts/migrate-production.ts)" '"event":"migration.failed"'
 assert_contains "bootstrap job stops on missing auth secret" \
     "$(run_controller scripts/bootstrap-installation.mjs)" '"code":"AUTH_SECRET_INVALID"'
 assert_contains "auth-maintain prints usage" \
-    "$(run_controller scripts/auth-maintain.mjs)" 'OCC_MIGRATION_DATABASE_URL'
+    "$(run_controller scripts/auth-maintain.ts)" 'OCC_MIGRATION_DATABASE_URL'
 assert_contains "worker healthcheck requires a readiness marker" \
-    "$(run_controller scripts/production-healthcheck.mjs worker)" 'readiness marker must be an explicit absolute path'
+    "$(run_controller scripts/production-healthcheck.ts worker)" 'readiness marker must be an explicit absolute path'
 
 # Start the proxy and connect to it inside one container, so the check needs
 # neither container logs nor host networking.

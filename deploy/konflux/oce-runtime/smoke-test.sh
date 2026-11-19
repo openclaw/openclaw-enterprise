@@ -34,6 +34,7 @@ assert_ok "/usr/bin/tini runs" run_in "$IMAGE" /usr/bin/tini --version
 assert_ok "/usr/bin/git runs" run_in "$IMAGE" /usr/bin/git --version
 assert_ok "/usr/local/bin/gh runs" run_in "$IMAGE" /usr/local/bin/gh --version
 assert_ok "/usr/bin/flock runs" run_in "$IMAGE" /usr/bin/flock --version
+assert_ok "/usr/bin/prlimit runs" run_in "$IMAGE" /usr/bin/prlimit --version
 assert_ok "/usr/bin/tar -czf round-trips" run_in "$IMAGE" \
     bash -c '/usr/bin/tar -czf - -C /etc hostname | /usr/bin/tar -tzf - | grep -qx hostname'
 assert_ok "python3 runs" run_in "$IMAGE" python3 --version
@@ -71,6 +72,8 @@ assert_ok "/app/skills is a real directory" podman run --rm "$IMAGE" \
 assert_ok "/app/plugin-skills/slack exists" podman run --rm "$IMAGE" test -d /app/plugin-skills/slack
 assert_ok "provenance matches the OpenClaw label" podman run --rm "$IMAGE" node -e \
     'const p = require("/opt/oce/runtime/provenance.json"); process.exit(p.commit === process.argv[1] ? 0 : 1)' "$OPENCLAW_COMMIT"
+assert_ok "download clients are curl and node, without apt" podman run --rm "$IMAGE" node -e \
+    'const c = require("/opt/oce/runtime/provenance.json").downloadClients; process.exit(Object.keys(c).sort().join() === "/usr/bin/curl,/usr/local/bin/node" ? 0 : 1)'
 assert_ok "build.json records OCE_COMMIT" podman run --rm "$IMAGE" node -e \
     'const b = require("/opt/oce/runtime/build.json"); process.exit(b.commit === process.argv[1] ? 0 : 1)' "$OCE_COMMIT"
 REVISION=$(podman image inspect --format '{{index .Labels "org.opencontainers.image.revision"}}' "$IMAGE")

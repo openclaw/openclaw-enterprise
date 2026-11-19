@@ -106,9 +106,18 @@ class RecipeDriftTests(unittest.TestCase):
         pins.CONTAINERFILE.parent.mkdir(parents=True)
         pins.CONTAINERFILE.write_text("RUN git apply /tmp/oce/one.patch\n")
 
-    def drift(self, reviewed_dockerfile, new_dockerfile):
+    def drift(self, reviewed_dockerfile, new_dockerfile, clients=("[]\n", "[]\n")):
         content = CONF.format(reviewed="2" * 40)
-        with mock.patch.object(pins, "repo_file", return_value=reviewed_dockerfile):
+
+        def repo_file(ref, path):
+            if path == pins.DOWNLOAD_CLIENTS:
+                return clients[0] if ref else clients[1]
+            return reviewed_dockerfile
+
+        with (
+            mock.patch.object(pins, "repo_file", side_effect=repo_file),
+            mock.patch.object(pins, "repo_file_or_empty", side_effect=repo_file),
+        ):
             return pins.recipe_drift(content, new_dockerfile)
 
     def test_pin_only_bump_has_no_drift(self):
@@ -247,6 +256,38 @@ class RecipeDriftTests(unittest.TestCase):
         before = dockerfile(extra="RUN node scripts/test-projects.mts a.test.ts")
         after = dockerfile(extra="RUN node scripts/test-projects.mts b.test.ts")
         self.assertEqual(len(self.drift(before, after)), 1)
+
+    def test_bridge_test_selection_change_before_a_chained_call_has_no_drift(self):
+        chained = "&& node scripts/test-projects.mts c.test.ts -t name"
+        before = self.bridge_tests(files=f"a.test.ts {chained}")
+        after = self.bridge_tests(files=f"a.test.ts b.test.ts {chained}")
+        self.assertEqual(self.drift(before, after), [])
+
+    def test_chained_bridge_test_call_change_is_drift(self):
+        before = self.bridge_tests(files="a.test.ts && node scripts/test-projects.mts c.test.ts -t name")
+        after = self.bridge_tests(files="a.test.ts && node scripts/test-projects.mts d.test.ts -t name")
+        self.assertEqual(len(self.drift(before, after)), 1)
+
+    def test_bridge_test_call_after_a_semicolon_is_drift(self):
+        before = self.bridge_tests(files="a.test.ts ; node scripts/test-projects.mts c.test.ts -t name")
+        after = self.bridge_tests(files="a.test.ts ; node scripts/test-projects.mts d.test.ts -t name")
+        self.assertEqual(len(self.drift(before, after)), 1)
+
+    def test_download_client_selection_change_is_drift(self):
+        problems = self.drift(dockerfile(), dockerfile(), clients=("[]\n", '["/opt/devtools/bin/cargo"]\n'))
+        self.assertEqual(len(problems), 1)
+        self.assertIn(pins.DOWNLOAD_CLIENTS, problems[0])
+
+    def test_node_compile_stage_change_has_no_drift(self):
+        stages = "FROM base AS node-source\nRUN sh fetch.sh\nFROM node-source AS node-compiled\nARG NODE_BUILD_JOBS={jobs}\n"
+        before = dockerfile(extra=stages.format(jobs=4) + "FROM base AS node-repaired-build-base")
+        after = dockerfile(extra=stages.format(jobs="auto") + "FROM base AS node-repaired-build-base")
+        self.assertEqual(self.drift(before, after), [])
+
+    def test_change_after_the_node_compile_stages_is_drift(self):
+        stages = "FROM node-source AS node-compiled\nRUN sh build.sh\nFROM base AS node-repaired-build-base\n"
+        after = dockerfile(extra=stages + "RUN apt-get install -y extra")
+        self.assertEqual(len(self.drift(dockerfile(extra=stages), after)), 1)
 
     def test_new_bridge_patch_is_drift(self):
         problems = self.drift(dockerfile(), dockerfile(patches=("one.patch", "two.patch")))
@@ -420,6 +461,20 @@ class GitBaselineTests(unittest.TestCase):
         subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "other"], check=True)
         pins.ported("runtime")
         self.assertEqual(pins.get_value(pins.CONF.read_text(), "OCE_REVIEWED_COMMIT"), latest)
+
+    def test_ported_runtime_records_a_toolchain_selection_change(self):
+        self.commit(dockerfile())
+        Path(pins.DOWNLOAD_CLIENTS).write_text('["/opt/devtools/bin/cargo"]\n')
+        latest = self.commit(dockerfile())
+        pins.ported("runtime")
+        self.assertEqual(pins.get_value(pins.CONF.read_text(), "OCE_REVIEWED_COMMIT"), latest)
+
+    def test_a_file_the_baseline_predates_reads_as_empty(self):
+        reviewed = self.commit(dockerfile())
+        Path(pins.DOWNLOAD_CLIENTS).write_text("[]\n")
+        self.commit(dockerfile())
+        self.assertEqual(pins.repo_file_or_empty(reviewed, pins.DOWNLOAD_CLIENTS), "")
+        self.assertEqual(pins.repo_file_or_empty(None, pins.DOWNLOAD_CLIENTS), "[]\n")
 
     def test_unknown_baseline_is_a_recipe_error(self):
         self.commit(dockerfile())

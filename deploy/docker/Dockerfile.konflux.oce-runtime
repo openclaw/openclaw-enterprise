@@ -23,9 +23,10 @@ ARG PNPM_OPENCLAW_VERSION
 ARG PNPM_OPENCLAW_SHA512
 ARG PNPM_OPENCLAW_EXE_SHA256_AMD64
 ARG PNPM_OPENCLAW_EXE_SHA256_ARM64
-# The bridge tests call the openssl CLI, which the upstream Debian base ships.
+# The bridge tests call the openssl CLI and run agent commands under prlimit
+# (util-linux), both of which the upstream Debian base ships.
 RUN dnf install -y --setopt=install_weak_deps=False --setopt=tsflags=nodocs \
-        git-core gcc-c++ make cmake python3 tar gzip findutils diffutils openssl \
+        git-core gcc-c++ make cmake python3 tar gzip findutils diffutils openssl util-linux \
     && dnf clean all
 # Hummingbird ships neither corepack nor pnpm. Install the exact releases that
 # the OCE and OpenClaw packageManager fields select, verified with the same
@@ -126,6 +127,35 @@ cp apps/controller/plugins/oce-google-workspace/ai.openclaw.oce/release.json "$p
 node deploy/runtime/google/install-gog.mts "$plugin" "linux-${TARGETARCH}" "$plugin/bin" scripts/ci/download-pinned.sh
 EOF
 
+# Developer toolchains (Rust, Go, Bun) that the fork's
+# deploy/runtime/additional-download-clients.json selects for the runtime. The
+# fork's fetch.ts pins every archive's SHA-256 per architecture, and its
+# install.sh lays the tools out under /opt/devtools; an empty selection leaves
+# /out empty. xz unpacks the Rust components.
+FROM oce-source AS native-tools
+RUN dnf install -y --setopt=install_weak_deps=False --setopt=tsflags=nodocs xz \
+    && dnf clean all
+RUN node deploy/runtime/native-tools/fetch.ts
+RUN --network=none sh deploy/runtime/native-tools/install.sh
+
+# The fork's final inventory records the image's network download clients and
+# requires Debian's apt HTTP methods among them. Hummingbird has no apt, so drop
+# exactly those two entries and inventory every other client; fail when the
+# list no longer carries them, so a change there gets reviewed.
+FROM oce-source AS runtime-download-clients
+RUN /bin/bash -euo pipefail <<'EOF'
+file=scripts/lib/runtime-download-clients.ts
+for method in http https; do
+    grep -qxF "  [\"/usr/lib/apt/methods/${method}\", \"/usr/lib/apt/methods/http\"]," "$file"
+done
+sed -i '\#^  \["/usr/lib/apt/methods/https\{0,1\}", "/usr/lib/apt/methods/http"\],$#d' "$file"
+if grep -q 'apt/methods' "$file"; then
+    echo "${file} still names apt download clients" >&2
+    exit 1
+fi
+install -D -m 0644 "$file" /out/runtime-download-clients.ts
+EOF
+
 # Repository-credentials client, built from the same OCE checkout. Lifecycle
 # scripts stay disabled, as upstream does. Upstream compiles only the client
 # closure and assembles it as one tree with fixed modes and timestamps, copied
@@ -136,7 +166,7 @@ RUN /bin/bash -euo pipefail <<'EOF'
 pnpm install --frozen-lockfile --ignore-scripts --store-dir=/tmp/pnpm-store
 rm -rf /tmp/pnpm-store
 node_modules/.bin/tsc -p deploy/runtime/repository-credentials/tsconfig.client.json --pretty false
-node scripts/build-repository-credentials.mjs --client-only
+node scripts/build-repository-credentials.ts --client-only
 client=.build/runtime-client/opt/oce/repository-credentials
 mkdir -p "$client"
 cp -R deploy/runtime/bin "$client/bin"
@@ -162,13 +192,13 @@ ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
 # Upstream's Dockerfile passes these pins through deploy/runtime/openclaw-source.json;
 # the conf plays that role here, so verify it against the checked-out manifest
-# the same way scripts/lib/openclaw-source.mjs verify does upstream.
-COPY --from=oce-source /oce/deploy/runtime/*.patch /oce/scripts/build-runtime-assets.mjs /oce/deploy/runtime/openclaw-source.json /tmp/oce/
-COPY --from=oce-source /oce/scripts/lib/openclaw-source.mjs /oce/scripts/lib/openclaw-source.ts /tmp/oce/lib/
+# the same way scripts/lib/openclaw-source.ts verify does upstream.
+COPY --from=oce-source /oce/deploy/runtime/*.patch /oce/scripts/build-runtime-assets.ts /oce/deploy/runtime/openclaw-source.json /tmp/oce/
+COPY --from=oce-source /oce/scripts/lib/openclaw-source.ts /tmp/oce/lib/
 RUN /bin/bash -euo pipefail <<'EOF'
 OPENCLAW_COMMIT="${OPENCLAW_COMMIT}" OPENCLAW_SOURCE_SHA256="${OPENCLAW_SOURCE_SHA256}" \
     OPENCLAW_BUILD_TIMESTAMP="${OPENCLAW_BUILD_TIMESTAMP}" \
-    node /tmp/oce/lib/openclaw-source.mjs verify /tmp/oce/openclaw-source.json
+    node /tmp/oce/lib/openclaw-source.ts verify /tmp/oce/openclaw-source.json
 curl -fsSL "https://codeload.github.com/openclaw/openclaw/tar.gz/${GIT_COMMIT}" -o /tmp/openclaw-source.tar.gz
 echo "${OPENCLAW_SOURCE_SHA256}  /tmp/openclaw-source.tar.gz" | sha256sum --check --strict
 tar -xzf /tmp/openclaw-source.tar.gz --strip-components=1
@@ -177,7 +207,8 @@ rm /tmp/openclaw-source.tar.gz
 # order of deploy/runtime/Dockerfile.
 git apply /tmp/oce/openclaw-codex-read-only-paths.patch
 git apply /tmp/oce/openclaw-codex-full-access-profile.patch
-node /tmp/oce/build-runtime-assets.mjs inputs /source /inputs
+git apply /tmp/oce/stock-codex-0.164.0-dependency-pin.patch
+node /tmp/oce/build-runtime-assets.ts inputs /source /inputs
 EOF
 
 # @matrix-org/matrix-sdk-crypto-nodejs downloads its native library from GitHub
@@ -219,7 +250,7 @@ FROM openclaw-dependency-inputs AS openclaw-patched-source
 RUN --mount=type=bind,from=matrix-sdk-crypto,source=/out,target=/tmp/matrix-sdk-crypto \
     --mount=type=bind,from=oce-source,source=/oce/deploy/runtime,target=/tmp/oce-runtime \
     sh /tmp/oce-runtime/install-attempts.sh \
-        node /tmp/oce-runtime/with-pinned-matrix-sdk-crypto.mjs /tmp/matrix-sdk-crypto \
+        node /tmp/oce-runtime/with-pinned-matrix-sdk-crypto.mts /tmp/matrix-sdk-crypto \
         pnpm install --frozen-lockfile --store-dir=/tmp/pnpm-store \
         --config.supportedArchitectures.os=linux \
         --config.supportedArchitectures.cpu="$(node -p 'process.arch')" \
@@ -243,6 +274,12 @@ RUN --mount=type=bind,from=oce-source,source=/oce/deploy/runtime,target=/tmp/oce
 # Remove this bridge after selecting native setup renewal with bounded saved-device fallback.
 RUN --mount=type=bind,from=oce-source,source=/oce/deploy/runtime,target=/tmp/oce-runtime \
     git apply /tmp/oce-runtime/openclaw-node-setup-renewal.patch
+# Remove after the pinned core includes upstream #196972 and its final-write handoff prerequisite.
+RUN --mount=type=bind,from=oce-source,source=/oce/deploy/runtime,target=/tmp/oce-runtime \
+    git apply /tmp/oce-runtime/openclaw-planned-completion.patch
+# Remove when the pinned OpenClaw retries safe restart admission and passive Codex recovery.
+RUN --mount=type=bind,from=oce-source,source=/oce/deploy/runtime,target=/tmp/oce-runtime \
+    git apply /tmp/oce-runtime/openclaw-restart-harness-readiness.patch
 
 # Run the bridge tests alongside the build using the same patched source.
 # Packaging mounts this stage so a failed test still blocks the runtime image.
@@ -261,10 +298,35 @@ RUN --mount=type=bind,source=deploy/runtime/Dockerfile,target=/tmp/oce/Dockerfil
 # is committed. One main runner invocation for the Node test files: the runner
 # compiles the whole source tree for its workers first (about a minute), and a
 # second invocation on an empty .artifacts would compile it again.
-RUN --network=none rm -rf .artifacts && mkdir .artifacts \
+# OpenClaw refuses temp roots under a group/world-writable ancestor without the
+# sticky bit, and /tmp loses that bit on the CI runners' build storage, so the
+# test steps restore the usual 1777 mode first.
+# The gateway test helpers, as the regression bridge patch leaves them, allow
+# each RPC the 10 second default of onceMessage; slow x86_64 runners take longer
+# to answer agents.list while the gateway warms up. Allow 30 seconds in this
+# test-only stage, which the image never copies from. The worker provider identity transport cases also
+# fail intermittently in CI with a missing identity-turn.identity.json, so each
+# of them gets two retries. The two chained runs follow the fork's Dockerfile:
+# the first runs only the named run-loop case, the second the restart-resume
+# files, and both reuse the compiled tree.
+RUN --network=none chmod 1777 /tmp && test -k /tmp && rm -rf .artifacts && mkdir .artifacts \
+    && grep -q '^  timeout: number | AbortSignal = 10_000,$' test/helpers/gateway-websocket.ts \
+    && sed -i 's/^  timeout: number | AbortSignal = 10_000,$/  timeout: number | AbortSignal = 30_000,/' \
+        test/helpers/gateway-websocket.ts \
+    && grep -qx 'describe("dedicated worker provider identity transport", () => {' \
+        src/node-host/runtime.worker-supervisor.test.ts \
+    && sed -i 's/^describe("dedicated worker provider identity transport", () => {$/describe("dedicated worker provider identity transport", { retry: 2 }, () => {/' \
+        src/node-host/runtime.worker-supervisor.test.ts \
     && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts \
     $(grep -vx 'src/infra/private-store-file.test.ts' /opt/oce-bridge-tests/files) \
+    && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
+    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/cli/gateway-cli/run-loop.test.ts \
+    -t "keeps the fenced process alive until the supervisor sends SIGTERM" \
+    && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
+    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/session-restart-resume.scope.test.ts \
+    src/gateway/session-restart-resume.test.ts src/gateway/session-restart-resume-custody.test.ts \
+    src/config/sessions/session-entry-json.test.ts \
     && rm -rf .artifacts
 # The private-store setgid test needs directories to inherit the setgid bit, which a
 # runner's build storage does not always do, so it gets a tmpfs /tmp. Its own
@@ -276,7 +338,7 @@ RUN --network=none --mount=type=tmpfs,target=/tmp rm -rf .artifacts && mkdir .ar
     && rm -rf .artifacts
 # These CUA lifecycle cases use the supported SDK adapter boundary. The two
 # native SDK import cases need desktop libraries absent from this build image.
-RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
+RUN --network=none chmod 1777 /tmp && test -k /tmp && rm -rf .artifacts && mkdir .artifacts && \
     OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts extensions/cua-computer/src/driver-client.test.ts \
     -t '^(?!.*(?:matches the installed CUA Driver desktop input enum contract|preserves typed SDK click refusals in the shared driver result))' \
@@ -286,19 +348,19 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
 RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     node scripts/run-tsgo-core-test-shards.mjs --ci-graphs-json "$(cat /opt/oce-bridge-tests/graphs.json)" \
     && rm -rf .artifacts
-# Check the changed CUA extension with the upstream strict compiler settings.
-# Limit extension roots to CUA while checking all of its transitive imports.
+# Check changed CUA and Codex extensions with upstream strict compiler settings.
 RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
-    node -e 'const fs=require("node:fs");fs.writeFileSync(".artifacts/tsconfig.cua-production.json",JSON.stringify({"extends": "../tsconfig.extensions.json", "include": ["../src/**/*.d.ts", "../ui/src/**/*.d.ts", "../extensions/cua-computer/**/*"], "compilerOptions": {"rootDir": ".."}}));fs.writeFileSync(".artifacts/tsconfig.cua-test.json",JSON.stringify({"extends": "../test/tsconfig/tsconfig.extensions.test.json", "include": ["../test/types/vitest-codex-attempt-runtime.d.ts", "../src/**/*.d.ts", "../ui/**/*.d.ts", "../extensions/**/*.d.ts", "../extensions/cua-computer/**/*.test.ts", "../extensions/cua-computer/**/*.test.tsx", "../packages/**/*.d.ts"]}));' && \
-    node scripts/run-tsgo.mjs -p .artifacts/tsconfig.cua-production.json --incremental --tsBuildInfoFile .artifacts/cua-production.tsbuildinfo && \
-    node scripts/run-tsgo.mjs -p .artifacts/tsconfig.cua-test.json --incremental --tsBuildInfoFile .artifacts/cua-test.tsbuildinfo \
+    node -e 'const fs=require("node:fs");fs.writeFileSync(".artifacts/tsconfig.changed-extensions-production.json",JSON.stringify({"extends": "../tsconfig.extensions.json", "include": ["../src/**/*.d.ts", "../ui/src/**/*.d.ts", "../extensions/cua-computer/**/*", "../extensions/codex/**/*"], "compilerOptions": {"rootDir": ".."}}));fs.writeFileSync(".artifacts/tsconfig.changed-extensions-test.json",JSON.stringify({"extends": "../test/tsconfig/tsconfig.extensions.test.json", "include": ["../test/types/vitest-codex-attempt-runtime.d.ts", "../src/**/*.d.ts", "../ui/**/*.d.ts", "../extensions/**/*.d.ts", "../extensions/cua-computer/**/*.test.ts", "../extensions/cua-computer/**/*.test.tsx", "../extensions/codex/**/*.test.ts", "../packages/**/*.d.ts"]}));' && \
+    node scripts/run-tsgo.mjs -p .artifacts/tsconfig.changed-extensions-production.json --incremental --tsBuildInfoFile .artifacts/changed-extensions-production.tsbuildinfo && \
+    node scripts/run-tsgo.mjs -p .artifacts/tsconfig.changed-extensions-test.json --incremental --tsBuildInfoFile .artifacts/changed-extensions-test.tsbuildinfo \
     && rm -rf .artifacts
 # Select only the Node projects that own these files: the browser project starts a
 # Vite server on localhost, which Buildah's network-less RUN cannot resolve.
-RUN --network=none cd ui && node ../scripts/run-node-package-bin.mts vitest run --config vitest.config.ts \
+RUN --network=none chmod 1777 /tmp && test -k /tmp && cd ui && node ../scripts/run-node-package-bin.mts vitest run --config vitest.config.ts \
     --project unit --project unit-node \
     src/api/gateway-reachability.node.test.ts src/app/gateway-store.observers.test.ts src/app/app-shell-view.test.ts \
-    src/app/gateway-page-activation.test.ts
+    src/app/gateway-page-activation.test.ts src/lib/session-method-access.test.ts \
+    src/pages/chat/chat-history-subscription-errors.test.ts
 
 FROM openclaw-patched-source AS openclaw-build
 # Rootless Podman and Buildah-in-container builds hide the cgroup memory limit,
@@ -325,7 +387,7 @@ RUN --mount=type=bind,from=matrix-sdk-crypto,source=/out,target=/tmp/matrix-sdk-
       set -- "$@" --filter "./extensions/$plugin"; \
     done < openclaw-workspace-plugin-dirs; \
     sh /tmp/oce-runtime/install-attempts.sh \
-        node /tmp/oce-runtime/with-pinned-matrix-sdk-crypto.mjs /tmp/matrix-sdk-crypto \
+        node /tmp/oce-runtime/with-pinned-matrix-sdk-crypto.mts /tmp/matrix-sdk-crypto \
         pnpm install --frozen-lockfile --prod "$@" --store-dir=/tmp/pnpm-store \
         --config.supportedArchitectures.os=linux \
         --config.supportedArchitectures.cpu="$(node -p 'process.arch')" \
@@ -340,10 +402,9 @@ RUN rm -rf node_modules ui/node_modules \
 FROM openclaw-production-deps AS openclaw-runtime-assets
 COPY --from=openclaw-build-output /source/ ./
 # Keep lib/ a separate COPY: a multi-source COPY flattens every file to its
-# basename, and build-runtime-assets.mjs imports ./lib/openclaw-source.mjs,
-# which re-exports ./openclaw-source.ts.
-COPY --from=openclaw-source /tmp/oce/build-runtime-assets.mjs /tmp/oce/openclaw-source.json /tmp/oce/
-COPY --from=openclaw-source /tmp/oce/lib/openclaw-source.mjs /tmp/oce/lib/openclaw-source.ts /tmp/oce/lib/
+# basename, and build-runtime-assets.ts imports ./lib/openclaw-source.ts.
+COPY --from=openclaw-source /tmp/oce/build-runtime-assets.ts /tmp/oce/openclaw-source.json /tmp/oce/
+COPY --from=openclaw-source /tmp/oce/lib/openclaw-source.ts /tmp/oce/lib/
 RUN /bin/bash -euo pipefail <<'EOF'
 node scripts/postinstall-bundled-plugins.mjs
 OPENCLAW_EXTENSIONS=codex,slack node scripts/prune-docker-plugin-dist.mjs
@@ -402,7 +463,7 @@ RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verifi
     node scripts/docker/copy-bootstrap-scripts.mjs /tmp/openclaw-runtime-bootstrap \
     && rm -rf scripts \
     && mv /tmp/openclaw-runtime-bootstrap/scripts scripts \
-    && node /tmp/oce/build-runtime-assets.mjs package /source /out /tmp/oce/openclaw-source.json \
+    && node /tmp/oce/build-runtime-assets.ts package /source /out /tmp/oce/openclaw-source.json \
     && node /verification/scripts/check-package-dist-imports.mjs /source
 
 FROM ${BASE_IMAGE}
@@ -443,15 +504,20 @@ WORKDIR /app
 
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 
+# The developer toolchains the fork selects, if any, under /opt/devtools.
+COPY --from=native-tools /out/ /
+
 # Runtime tools OCE expects (Debian upstream: git, ca-certificates, curl,
 # openssh-client, libstdc++6, libgomp1, python3, procps). The Hummingbird base
 # already carries libstdc++ and ca-certificates-bundle. Debian's base image also
-# provides flock, tar and gzip: OCE's workspace setup runs /usr/bin/flock, and
-# OpenClaw's directory fetch (skill installs into node-backed workspaces) runs
-# /usr/bin/tar -czf. util-linux-core, installed for flock, also ships setuid-root
-# mount and umount; nothing here mounts, so clear every setuid and setgid bit the
-# install adds. Non-hermetic: resolved from the builder's Hummingbird repositories
-# without a lockfile; dnf is not retained.
+# provides flock, prlimit, tar and gzip: OCE's workspace setup runs
+# /usr/bin/flock, OpenClaw runs every Linux agent command under prlimit, and its
+# directory fetch (skill installs into node-backed workspaces) runs
+# /usr/bin/tar -czf. util-linux, installed for flock and prlimit, also ships
+# setuid-root and setgid binaries such as mount, umount and su; nothing here
+# needs them, so clear every setuid and setgid bit the install adds. Non-hermetic: resolved from the builder's Hummingbird repositories
+# without a lockfile; dnf is not retained. As upstream does, a selected cargo
+# also gets a C compiler and libc headers, which it links through.
 RUN --mount=type=bind,from=builder,target=/builder /bin/bash -euo pipefail <<'EOF'
 builder_tool() {
     local tool=$1
@@ -468,13 +534,17 @@ node_evr="$(builder_tool rpm --root=/ -q --qf '%{EVR}' nodejs24)" ||
         echo "nodejs24 is not installed in the base image" >&2
         exit 1
     }
+devtools=()
+if [[ -x /opt/devtools/bin/cargo ]]; then
+    devtools=(gcc glibc-devel)
+fi
 builder_tool dnf install -y \
     --installroot=/ \
     --setopt=reposdir=/builder/etc/yum.repos.d \
     --setopt=install_weak_deps=False \
     --setopt=tsflags=nodocs \
-    git-core curl openssh-clients libgomp python3 procps-ng tar gzip util-linux-core \
-    "nodejs24-full-i18n-${node_evr}"
+    git-core curl openssh-clients libgomp python3 procps-ng tar gzip util-linux \
+    "nodejs24-full-i18n-${node_evr}" "${devtools[@]}"
 installed_evr="$(builder_tool rpm --root=/ -q --qf '%{EVR}' nodejs24)"
 [[ ${installed_evr} == "${node_evr}" ]] ||
     {
@@ -513,6 +583,7 @@ EOF
 
 COPY --from=google-cli /out/ /
 COPY apps/controller/plugins/ /usr/local/lib/oce/plugin-catalog/
+COPY deploy/runtime/managed-mcp-policy/ /usr/local/lib/oce/platform-plugins/oce-managed-mcp-policy/
 
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
 COPY --from=openclaw-runtime-assets /source/ /app/node_modules/openclaw/
@@ -522,9 +593,11 @@ RUN mkdir -p node_modules/.bin \
     && ln -s ../openclaw/openclaw.mjs node_modules/.bin/openclaw \
     && ln -s ../openclaw/node_modules/@openai/codex/bin/codex.js node_modules/.bin/codex
 
-COPY --from=openclaw-runtime-assets /tmp/oce/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
-COPY --from=openclaw-runtime-assets /tmp/oce/lib/openclaw-source.mjs /tmp/oce/lib/openclaw-source.ts /tmp/lib/
-RUN /bin/bash -euo pipefail <<'EOF'
+COPY --from=openclaw-runtime-assets /tmp/oce/build-runtime-assets.ts /tmp/build-runtime-assets.ts
+COPY --from=openclaw-runtime-assets /tmp/oce/lib/openclaw-source.ts /tmp/lib/
+RUN --mount=type=bind,from=runtime-download-clients,source=/out/runtime-download-clients.ts,target=/tmp/lib/runtime-download-clients.ts \
+    --mount=type=bind,from=oce-source,source=/oce/deploy/runtime/additional-download-clients.json,target=/tmp/additional-download-clients.json \
+    /bin/bash -euo pipefail <<'EOF'
 mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills /etc/openclaw /home/node/.codex/generated_images
 chown node:node /home/node/.codex /home/node/.codex/generated_images
 chmod 700 /home/node/.codex /home/node/.codex/generated_images
@@ -574,8 +647,8 @@ fs.writeFileSync("/usr/local/share/oce-node/provenance.json", JSON.stringify({
   sha256: createHash("sha256").update(fs.readFileSync(executable)).digest("hex"),
 }, null, 2) + "\n");
 ' "${BASE_IMAGE}"
-node /tmp/build-runtime-assets.mjs inventory /app/node_modules/openclaw /opt/oce/runtime /usr/local/share/oce-node/provenance.json
-rm /tmp/build-runtime-assets.mjs /tmp/lib/openclaw-source.mjs /tmp/lib/openclaw-source.ts
+node /tmp/build-runtime-assets.ts inventory /app/node_modules/openclaw /opt/oce/runtime /usr/local/share/oce-node/provenance.json /tmp/additional-download-clients.json
+rm /tmp/build-runtime-assets.ts /tmp/lib/openclaw-source.ts
 EOF
 
 RUN /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig
