@@ -303,6 +303,9 @@ export const PolicyDenialsNoCredential = story("policyDenialsNoCredential");
 export const PolicyDenialsProtected = story("policyDenialsProtected");
 export const PolicyDenialsWithheldOne = story("policyDenialsWithheldOne");
 export const PolicyDenialsWithheldMany = story("policyDenialsWithheldMany");
+export const PolicyRepositoryAccess = story("policyRepositoryAccess");
+export const PolicyRepositoryDenyAll = story("policyRepositoryDenyAll");
+export const PolicyRepositoryReadOnly = story("policyRepositoryReadOnly");
 
 export const ConfigurationInvalid = story("policyConfigurationInvalid");
 export const ConfigurationConflict = story("policyConfigurationConflict");

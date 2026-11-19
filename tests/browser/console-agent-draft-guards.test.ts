@@ -843,7 +843,12 @@ test("Agent policy proposals save separately or atomically request application t
 });
 
 test("Console saves only explicitly proposed repository grants for a later deployment", async (t) => {
-  const { fixture, namespace: rawNamespace, agent: rawAgent, base } = await createPolicyConsole(t);
+  const {
+    fixture,
+    namespace: rawNamespace,
+    agent: rawAgent,
+    base,
+  } = await createPolicyConsole(t, [delegatedPolicyGrant]);
   const namespace = resource(rawNamespace);
   const agent = agentFields(rawAgent);
   const { revision: rawRevision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
@@ -851,8 +856,13 @@ test("Console saves only explicitly proposed repository grants for a later deplo
   const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "policy");
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
-  const manage = page.getByRole("button", { name: "Manage rules", exact: true });
-  const region = page.getByRole("region", { name: "Repository network policy" });
+  const manage = page.getByRole("button", {
+    name: "Manage rules",
+    exact: true,
+  });
+  const region = page.getByRole("region", {
+    name: "Repository network policy",
+  });
   const edit = region.getByRole("button", { name: "Edit repository access" });
   // Supply the future repository policy fields at the HTTP boundary. The controller at this
   // revision does not provide ACL persistence. These responses exercise the production Console.
@@ -867,8 +877,8 @@ test("Console saves only explicitly proposed repository grants for a later deplo
   const policy = record(data.policy);
   let advertiseCeiling = false;
   let saveSupported = false;
-  let acknowledged:
-    { version: number; repositoryNetworkPolicy: RepositoryNetworkGrant[] } | undefined;
+  let acknowledged = policy;
+  let refuseRepositorySave = true;
   await page.route(fixture.origin + base, async (route) => {
     const request = route.request();
     const method = request.method();
@@ -878,12 +888,39 @@ test("Console saves only explicitly proposed repository grants for a later deplo
     }
     if (method === "PUT") {
       const posted = record(request.postDataJSON());
-      if (posted.expectedVersion === policy.version) {
-        acknowledged = { version: 2, repositoryNetworkPolicy: ceiling };
-      } else {
-        acknowledged = { version: 3, repositoryNetworkPolicy: [] };
+      if (posted.repositoryNetworkPolicy === undefined && posted.expectedVersion === 1) {
+        // Save ordinary network rules through the real policy API while the ACL is still a draft.
+        const response = await route.fetch();
+        assert.equal(response.status(), 200);
+        const savedBody = record(await response.json());
+        acknowledged = record(savedBody.data);
+        await route.fulfill({ response, json: savedBody });
+        return;
       }
-      await route.fulfill({ status: 200, json: { ...body, data: { ...policy, ...acknowledged } } });
+      if (refuseRepositorySave) {
+        refuseRepositorySave = false;
+        acknowledged = { ...acknowledged, version: 3 };
+        await route.fulfill({
+          status: 409,
+          json: {
+            error: {
+              code: "CONFLICT",
+              message: "Repository policy version changed.",
+            },
+          },
+        });
+        return;
+      }
+      if (posted.expectedVersion === 3) {
+        acknowledged = { ...acknowledged, version: 4, repositoryNetworkPolicy: ceiling };
+      } else {
+        assert.equal(posted.expectedVersion, 4);
+        acknowledged = { ...acknowledged, version: 5, repositoryNetworkPolicy: [] };
+      }
+      await route.fulfill({
+        status: 200,
+        json: { ...body, data: acknowledged },
+      });
       return;
     }
     await route.fulfill({
@@ -892,7 +929,7 @@ test("Console saves only explicitly proposed repository grants for a later deplo
         ...body,
         data: {
           ...data,
-          policy: { ...policy, ...acknowledged },
+          policy: acknowledged,
           repositoryNetworkPolicyCeiling: advertiseCeiling ? ceiling : undefined,
           repositoryNetworkPolicySaveSupported: advertiseCeiling ? saveSupported : undefined,
         },
@@ -910,7 +947,9 @@ test("Console saves only explicitly proposed repository grants for a later deplo
   await page.getByRole("button", { name: "Refresh policy", exact: true }).click();
   await region.getByText("Saved policy: Legacy repository access").waitFor();
   await edit.click();
-  const application = region.getByRole("combobox", { name: "example/application" });
+  const application = region.getByRole("combobox", {
+    name: "example/application",
+  });
   const tooling = region.getByRole("combobox", { name: "example/tooling" });
   assert.equal(await application.locator('option[value="write"]').isDisabled(), true);
   assert.equal(await tooling.locator('option[value="write"]').isEnabled(), true);
@@ -918,14 +957,53 @@ test("Console saves only explicitly proposed repository grants for a later deplo
   await region.getByRole("button", { name: "Discard repository changes" }).click();
   assert.equal(await edit.evaluate((node) => node.ownerDocument.activeElement === node), true);
   assert.equal(pathRequests(requests, "PUT", base).length, 0);
+  // A repository proposal blocks live apply even though the saved ACL is still legacy.
   await edit.click();
+  await page.getByRole("button", { name: "Add rule", exact: true }).click();
+  await page
+    .getByRole("textbox", { name: "Executable path", exact: true })
+    .fill(delegatedPolicyGrant.binary);
+  await page
+    .getByRole("textbox", { name: "Destination hostname", exact: true })
+    .fill(delegatedPolicyGrant.host);
+  await page.getByRole("textbox", { name: "Rule ID", exact: true }).fill(delegatedPolicyGrant.id);
+  await page.getByRole("button", { name: "Add Port ranges", exact: true }).click();
+  await page.getByRole("spinbutton", { name: "Start port", exact: true }).fill("443");
+  await page.getByRole("spinbutton", { name: "End port", exact: true }).fill("443");
+  await page.getByRole("button", { name: "Review changes", exact: true }).click();
+  const review = page.getByRole("dialog", { name: "Review policy changes" });
+  await review.getByText(/^Proposed repository policy: Deny all repositories/).waitFor();
+  assert.equal(
+    await review.getByRole("button", { name: "Save and apply to current revision" }).count(),
+    0,
+  );
+  await review.getByRole("button", { name: "Save for later", exact: true }).click();
+  await page.getByText(/^Unsaved repository policy changes ·/).waitFor();
+  assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 0);
+
+  await manage.click();
+  await region.getByText("Saved policy: Legacy repository access").waitFor();
+  await region.getByText("Proposed policy: Deny all repositories").waitFor();
+  assert.equal(
+    await page.getByRole("button", { name: "Apply saved rules", exact: true }).count(),
+    0,
+  );
   await application.selectOption("read");
   await tooling.selectOption("write");
+  const refusedSave = responseTo(page, "PUT", fixture.origin + base);
+  await region.getByRole("button", { name: "Save repository policy" }).click();
+  assert.equal((await refusedSave).status(), 409);
+  await page.getByText("Repository policy version changed.").waitFor();
+  await page.getByRole("button", { name: "Refresh policy", exact: true }).click();
+  await page.getByText(/Review your repository draft against the saved policy/).waitFor();
+  assert.equal(await application.inputValue(), "read");
+  assert.equal(await tooling.inputValue(), "write");
+
   const firstSave = responseTo(page, "PUT", fixture.origin + base);
   await region.getByRole("button", { name: "Save repository policy" }).click();
   assert.equal((await firstSave).status(), 200);
   await page.getByText("Saved repository policy: Restrict repository access").waitFor();
-  await page.getByText("Repository policy v2 saved. Deploy a new version to use it.").waitFor();
+  await page.getByText("Repository policy v4 saved. Deploy a new version to use it.").waitFor();
 
   await manage.click();
   await edit.click();
@@ -940,11 +1018,14 @@ test("Console saves only explicitly proposed repository grants for a later deplo
   await page.getByRole("button", { name: "Refresh policy", exact: true }).click();
   assert.equal((await refreshed).status(), 200);
   await region.getByText("Saved policy: Deny all repositories").waitFor();
+
   assert.deepEqual(
     pathRequests(requests, "PUT", base).map(({ body }) => body),
     [
-      { expectedVersion: 1, additions: [], repositoryNetworkPolicy: ceiling },
-      { expectedVersion: 2, additions: [], repositoryNetworkPolicy: [] },
+      { expectedVersion: 1, additions: [delegatedPolicyGrant] },
+      { expectedVersion: 2, additions: [delegatedPolicyGrant], repositoryNetworkPolicy: ceiling },
+      { expectedVersion: 3, additions: [delegatedPolicyGrant], repositoryNetworkPolicy: ceiling },
+      { expectedVersion: 4, additions: [delegatedPolicyGrant], repositoryNetworkPolicy: [] },
     ],
   );
   assert.equal(
