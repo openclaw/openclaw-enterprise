@@ -34,9 +34,9 @@
       ]
     },
     {
-      "path": "tests/integration/channel-egress-helm-real.test.ts",
+      "path": "tests/integration/channel-egress-upgrade-helm-real.test.ts",
       "expectedTests": [
-        "Helm-installed OCC and PostgreSQL deploy isolated Slack routing through real model cutover"
+        "one-off channel upgrade deploys current drafts and verifies real model and Slack recovery"
       ]
     }
   ]

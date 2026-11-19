@@ -80,7 +80,9 @@ tests cover their behavior. Use the [PostgreSQL setup](postgresql.md).
 
 ## One-off channel upgrade proof
 
-Use the explicit `channel-egress-upgrade` QA scenario with Kubernetes and Codex. Supply the Slack lane inputs plus `OCC_TEST_CHANNEL_EGRESS_SOURCE_CONTROLLER_IMAGE` and `OCC_TEST_CHANNEL_EGRESS_SOURCE_CHART` for the matching pre-PR-6529 source. Supply
+Use the explicit `channel-egress-upgrade` QA scenario with Kubernetes and Codex.
+Its [upgrade case](../../tests/integration/channel-egress-upgrade-helm-real.test.ts)
+shares the real workflow with the fresh-install case. Supply the Slack lane inputs plus `OCC_TEST_CHANNEL_EGRESS_SOURCE_CONTROLLER_IMAGE` and `OCC_TEST_CHANNEL_EGRESS_SOURCE_CHART` for the matching pre-PR-6529 source. Supply
 `OCC_TEST_CHANNEL_EGRESS_NEXT_CONTROLLER_IMAGE` for the subsequent ordinary image
 upgrade; that image must be built from the target source commit with a different
 image digest. This operator-selected scenario runs the actual script and regular Agent workflow; it is outside the default advisory matrix.

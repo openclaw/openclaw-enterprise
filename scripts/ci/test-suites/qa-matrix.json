@@ -72,7 +72,8 @@
     "sourceBuildFiles": [
       "tests/integration/qa-matrix-real.test.mjs",
       "tests/integration/openshell-git-retention-real.test.ts",
-      "tests/integration/channel-egress-disabled-helm-real.test.ts"
+      "tests/integration/channel-egress-disabled-helm-real.test.ts",
+      "tests/integration/channel-egress-upgrade-helm-real.test.ts"
     ]
   },
   "files": [

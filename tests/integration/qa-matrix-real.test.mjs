@@ -149,7 +149,7 @@ test(
               "--test",
               "--test-concurrency=1",
               "tests/integration/channel-egress-disabled-helm-real.test.ts",
-              "tests/integration/channel-egress-helm-real.test.ts",
+              "tests/integration/channel-egress-upgrade-helm-real.test.ts",
             ],
             {
               env: {
