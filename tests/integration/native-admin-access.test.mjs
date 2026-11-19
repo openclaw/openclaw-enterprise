@@ -772,6 +772,76 @@ test("redeploy after explicit Stop keeps the old native endpoint closed", async 
   assert.deepEqual((await nativeStatus(context)).data, { status: "unavailable" });
 });
 
+// While it reconnects, the Agent UI probes GET /healthz and treats 401 or 403 as a sign-in or
+// access problem (deploy/runtime/openclaw-control-ui-browser-reconnect.patch).
+test("a deployment replacing the version answers an authorized probe 503 and outsiders as before", async (t) => {
+  const context = await createNativeAdminFixture(t, {
+    exclusiveReplacement: (revision) => revision.revision === 2,
+  });
+  trustLocalUpstreamCertificate(t, context.upstream.cert);
+  const host = nativeAuthority((await nativeStatus(context)).data);
+  const readOnly = await createReadOnlySession(context, "native-transition-reader");
+  const probe = (cookie) =>
+    injectJson(context.fixture, "GET", "/healthz", { headers: { host, cookie } });
+  // Signed out, and signed in without Agent operate: each whole answer, request ID and date aside.
+  const outsiders = async () => {
+    const answers = [];
+    for (const cookie of [undefined, readOnly.cookie]) {
+      const response = await probe(cookie);
+      const { "x-request-id": requestId, date, ...headers } = response.headers;
+      assert.equal(response.json().meta.requestId, requestId);
+      answers.push({
+        status: response.statusCode,
+        headers,
+        body: response.body.replaceAll(String(requestId), "<request>"),
+      });
+    }
+    return answers;
+  };
+
+  assert.equal((await probe(context.session.cookie)).statusCode, 200);
+  const available = await outsiders();
+  assert.deepEqual(
+    available.map(({ status }) => status),
+    [403, 403],
+  );
+  assert.deepEqual(JSON.parse(available[1].body).error, {
+    code: "FORBIDDEN",
+    message: NATIVE_ADMIN_DENIED,
+  });
+
+  const replacement = await context.fixture.deployAgent(context.namespace.id, context.agent.id);
+  await context.fixture.controller.transact((state) =>
+    state.agents.recordPredecessorReplacement(context.namespace.id, context.agent.id, {
+      predecessorRevisionId: context.revision.id,
+      candidateRevisionId: replacement.id,
+      phase: "stopping",
+    }),
+  );
+  assert.deepEqual((await nativeStatus(context)).data, { status: "unavailable" });
+  const replacing = await probe(context.session.cookie);
+  assert.equal(replacing.statusCode, 503, replacing.body);
+  assert.deepEqual(replacing.json().error, {
+    code: "DEPENDENCY_UNAVAILABLE",
+    message: "A required platform dependency is unavailable.",
+  });
+  assert.deepEqual(await outsiders(), available, "a deployment is invisible to outsiders");
+
+  const stop = await context.fixture.request(
+    "POST",
+    `/namespaces/${context.namespace.id}/agents/${context.agent.id}/stop`,
+  );
+  assert.equal(stop.status, 202);
+  assert.equal((await nativeStatus(context)).data.status, "stopped");
+  // A stopped Agent stays refused; the Agent UI still offers its sign-in panel, whose link then
+  // gets this generic refusal.
+  const stopped = await probe(context.session.cookie);
+  assert.equal(stopped.statusCode, 403, stopped.body);
+  assert.deepEqual(stopped.json().error, { code: "FORBIDDEN", message: GENERIC_DENIAL });
+  assert.deepEqual(await outsiders(), available, "a stop is invisible to outsiders");
+  assert.equal(context.upstream.requests.length, 1, "only the available probe reached the Agent");
+});
+
 test("native browser disabled status still requires exact Agent authority", async (t) => {
   const context = await createNativeAdminFixture(t, { nativeAdminEnabled: false });
 
