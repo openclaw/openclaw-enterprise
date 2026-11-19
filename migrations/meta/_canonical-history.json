@@ -665,6 +665,14 @@
       "tag": "0083_native_restart_recovery",
       "breakpoints": true,
       "sha256": "27e861992ec56c20840335d6fc65d52050a17eb38cf6beb91ba2ad5bc0955ca5"
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1787000000084,
+      "tag": "0084_agent_lifecycle_audit",
+      "breakpoints": true,
+      "sha256": "d0406264a8c11732a8a0b06f57cab33b850dc610f296b1b3c49458148b2df1ab"
     }
   ],
   "initialSchemaStates": {
@@ -801,10 +809,17 @@
       "b7dace82f94388d971c68242498f63c813e298803454017640092f4a53f94322",
       "73eebe79dd0709ff9ebc47fda7cac056617280d0f86c263f77a2c20096f2ccd5",
       "bbe335cac5b6b741e58fba656bc12c666a939eff7d97b53f58fe203f5c59b7cb"
+    ],
+    "11143eceddcd2ff17274053f1728997aa8cdce392861a1bf5ccbec966bafd325": [
+      "6fef77db5e0db9df3548ed1ce5f9605666f5e7c6c75682a30a72372e6abfc229",
+      "8a28453e20aad3af8008213b2ef5614385df8e555b831b47f4ecc863f29e9762",
+      "9208072ba6ff34356edf55c8c28495f1a446ace8ed1d6b8ed9c6ad6cd497b4eb",
+      "cc7f4b0526b87ad262e46e2050dcd626e36772e5363f99de85feb50a855e5173",
+      "dbbbf7a46e2c3adbcbe7ac25a2928e61a4a19bd73404719c3ad5eb215bc5528b"
     ]
   },
   "catalogs": {
-    "completed": "558b69b0eb318fc085e48f0763c0da4cc6504670bbb8a697c736191a8dc41bb0",
+    "completed": "11143eceddcd2ff17274053f1728997aa8cdce392861a1bf5ccbec966bafd325",
     "empty": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "prePresetsMain": "7fe2e7ccc13ce974d03137b5117752ff03e7c001d2916d50c300ddbdf826207a",
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
@@ -862,7 +877,8 @@
     "preRevisionRuntimeInputs": "a78f05679e8ef8432c94d3bdffeb21681297793829c78efef7278f1b29337128",
     "preRestartContinuation": "c8639ab415c7d833c777d79a526357de1021552a731b873b32ba79a9b4e81f1b",
     "preAuthenticationStates": "58b727523d2262fa6285e129c4517dcb50e02fbf1449e1afa81a336e1024cacc",
-    "preNativeRestartRecovery": "6962482f409df2fcc7b09ce8b355d3c50ef6e2525056c9dcee1c055514f21cb3"
+    "preNativeRestartRecovery": "6962482f409df2fcc7b09ce8b355d3c50ef6e2525056c9dcee1c055514f21cb3",
+    "preAgentLifecycleAudit": "558b69b0eb318fc085e48f0763c0da4cc6504670bbb8a697c736191a8dc41bb0"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

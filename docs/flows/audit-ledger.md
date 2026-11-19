@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-12"
-last_updated_session: "authoring-run/09158870-8481-4ef1-9ff0-f1e2d5ae4df9"
+updated: "2026-11-18"
+last_updated_session: "authoring-run/d9552e4e-b5ce-4d02-aa1f-b9e2666a360d"
 ---
 
 # Audit ledger flow
@@ -34,6 +34,7 @@ graph TD
   Admission -->|Saved| Request
   Admission -->|Write failed| Refused["Prepare HTTP 503"]
   HTTP -->|Rejected before handler| RefusedEarly["Prepare refusal"]
+  HTTP -->|Route records result only| Request
   Request --> HTTPResult["Prepare response"]
   Refused --> ResultEvent["Try to save request result"]
   RefusedEarly --> ResultEvent
@@ -82,7 +83,7 @@ graph TD
 
 ### 1. The API records admission and the result
 
-`apps/controller/src/index.ts:appendRequestAudit` and
+`apps/controller/src/index.ts:requestAuditHooks` and
 `apps/controller/src/http/agents.ts:getAgent`
 
 When Control Plane audit is enabled and the Installation exists, the API saves
@@ -93,6 +94,13 @@ The event action is
 `openclaw.api.request.result` before sending the selected HTTP response.
 This includes rejections from request validation and authentication before the
 handler starts.
+
+The result hook also covers the registered account, service-key, sign-in,
+recovery, and native administration routes. Routes can record only a result
+when they use a separate check or recorder for the operation. A resource API
+request that returns `405` records a `methodNotAllowed` result. Google
+and OIDC sign-in callbacks use their own authentication recorder. Runtime
+log views and downloads use their own disclosure recorder.
 
 Both records carry the API-generated request ID, registered operation,
 HTTP method, and Installation ID. The result adds the HTTP status. The hook
@@ -144,11 +152,20 @@ different event with that ID fails.
 The caller can append alongside resource changes in one unit of work. The
 standalone PostgreSQL audit sink opens its own transaction. With Control Plane
 audit enabled, PostgreSQL limits each statement and lock wait in the API's
-standalone audit write to two seconds. Separately, the work queue commits queue
+standalone audit write to two seconds.
+
+For service API keys, `apps/controller/src/auth/service-keys.ts` commits the
+key change and audit record together. Issuance uses the Better Auth adapter on
+State's PostgreSQL connection. Revocation deletes the current key in State.
+
+Separately, the work queue commits queue
 and claim events with the corresponding change. The queue event records the API
 request ID when a request started the work. The claim event carries a distinct
 attempt ID. That ID also identifies later evidence for the same claim. A claim
 insert failure leaves the job available.
+Repository cleanup and maintenance recovery save a queue record when they create
+or reopen follow-up work. The queue change and its audit record belong to the
+same SQL statement.
 
 The worker uses `transactWithQueue` for some transitions. It also calls pool-backed
 stale-work recovery, which issues two separate SQL statements. Each statement is
@@ -220,7 +237,9 @@ grant again under these locks. The query selects approved event types for that
 Agent and limits the time window and page size.
 
 State builds the page from named fields. It derives a public work ID from the
-stored key and omits revision IDs. The same transaction appends
+stored key. Agent lifecycle records show the saved action. State includes a
+revision ID only when the revision belongs to the requested Agent. The same
+transaction appends
 `openclaw.audit.agent.read` with the actor, Agent, request ID, time window,
 projection version, and number of returned records. The API releases the
 page after it confirms commit. The next-page cursor is encrypted and bound
@@ -259,6 +278,7 @@ to the same session, Agent, and window.
 
 ## Changelog
 
+- 2026-11-18 17:35: Trace Agent lifecycle reads and additional control-plane audit sources. (authoring-run/d9552e4e-b5ce-4d02-aa1f-b9e2666a360d - 86265b4ed8e8b22ae3882889d4febccdef1b5f65)
 - 2026-11-12 16:19: Explain how Native IAM counts Agent audit grants for account and key management. (authoring-run/09158870-8481-4ef1-9ff0-f1e2d5ae4df9 - 9912bddae4ac3d94e9f4d22c6283d957a4cf1e9a)
 - 2026-11-12 16:19: Trace how composition supplies the Agent audit reader and verifies its IAM Driver. (authoring-run/0262148b-40f3-48c2-a3e1-546feb2e265b - 9912bddae4ac3d94e9f4d22c6283d957a4cf1e9a)
 - 2026-11-12 15:31: Trace how a successful Agent read saves the verified Agent and Namespace IDs. (authoring-run/bb7f16b1-d73b-4957-b5bb-212692e7ada9 - 8658496ea654b960bebabca40d18c7d71994db50)

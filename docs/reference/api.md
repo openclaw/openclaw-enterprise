@@ -6285,7 +6285,7 @@ List audit metadata for one Agent
 
 **Operation ID:** `listAgentAuditEvents`
 
-**Permissions:** Requires a human session with a direct read_audit grant on the requested Agent. Returns selected audit metadata from the preceding 24 hours.
+**Permissions:** Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API request, and worker records from the preceding 24 hours.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -6318,19 +6318,9 @@ List audit metadata for one Agent
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
-| `data.events` | `array<object>` | Yes | max items: 100 |
-| `data.events[].actorId` | `string` | No | pattern: `^(prn\|spn)_[a-f0-9-]{36}$` |
-| `data.events[].attemptId` | `string` | No | pattern: `^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.events[].event` | `"api_request" or "work_queued" or "work_claimed" or "work_deferred" or "work_completed" or "work_result"` | Yes | — |
-| `data.events[].id` | `string` | Yes | pattern: `^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.events[].occurredAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$` |
-| `data.events[].operationId` | `"getAgent"` | No | — |
-| `data.events[].outcome` | `"success" or "denied" or "failure"` | Yes | — |
-| `data.events[].requestId` | `string` | No | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.events[].workId` | `string` | No | pattern: `^work_[0-9a-f]{64}$` |
-| `data.events[].workState` | `"queued" or "claimed" or "succeeded" or "failed_permanent" or "superseded"` | No | — |
+| `data.events` | `array<object or object>` | Yes | max items: 100 |
 | `data.nextCursor` | `string or null` | Yes | — |
-| `data.projectionVersion` | `1` | Yes | — |
+| `data.projectionVersion` | `2` | Yes | — |
 | `data.window` | `object` | Yes | — |
 | `data.window.end` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.window.start` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
@@ -6350,10 +6340,19 @@ Example response
         "operationId": "getAgent",
         "outcome": "success",
         "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+      },
+      {
+        "action": "openclaw.agents.deploy",
+        "actorId": "prn_123e4567-e89b-42d3-a456-426614174000",
+        "agentRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+        "event": "agent_lifecycle",
+        "id": "aud_123e4567-e89b-42d3-a456-426614174001",
+        "occurredAt": "2026-10-01T11:00:00.000000Z",
+        "outcome": "success"
       }
     ],
     "nextCursor": null,
-    "projectionVersion": 1,
+    "projectionVersion": 2,
     "window": {
       "end": "2026-10-01T12:00:00.000Z",
       "start": "2026-09-30T12:00:00.000Z"

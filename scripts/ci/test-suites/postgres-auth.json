@@ -103,7 +103,8 @@
       "expectedTests": [
         "fresh PostgreSQL development bootstrap registers the supplied administrator service key",
         "PostgreSQL auth account provisioning is visible to another controller without rebuilding IAM Driver",
-        "PostgreSQL auth account audit failure rolls back IAM and Better Auth account state"
+        "PostgreSQL auth account audit failure rolls back IAM and Better Auth account state",
+        "password-only login and logout commit with their audit events"
       ]
     },
     {

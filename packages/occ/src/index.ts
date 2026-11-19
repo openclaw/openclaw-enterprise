@@ -5450,7 +5450,7 @@ export class OpenClawController {
     sourceId: string,
     audit?: AuditEvent,
   ): Promise<void> {
-    await this.mutate(async (state) => {
+    const requestId = await this.mutate(async (state) => {
       await this.lockNamespace(state, namespaceId);
       const connection = await state.savedConnections.findSavedConnection(namespaceId, sourceId);
       if (connection?.ownerPrincipalId !== principalId) {
@@ -5479,12 +5479,18 @@ export class OpenClawController {
       await state.savedConnections.requestConnectionRevocation(namespaceId, sourceId, principalId);
       if (audit) {
         await state.audit.append(audit);
+        return audit.requestId;
       }
+      return undefined;
     });
-    await this.finishConnectionRevocation(namespaceId, sourceId);
+    await this.finishConnectionRevocation(namespaceId, sourceId, requestId);
   }
 
-  async finishConnectionRevocation(namespaceId: string, sourceId: string): Promise<void> {
+  async finishConnectionRevocation(
+    namespaceId: string,
+    sourceId: string,
+    requestId?: string,
+  ): Promise<void> {
     const pending = await this.read(async (state) => {
       const account = await state.savedConnections.findSavedConnection(namespaceId, sourceId);
       if (account?.revocationRequestedBy === undefined) {
@@ -5509,11 +5515,21 @@ export class OpenClawController {
         return;
       }
       if (!account.revokedAt) {
-        await state.savedConnections.confirmConnectionRevocation(
+        const occurredAt = this.timestamp();
+        await state.savedConnections.confirmConnectionRevocation(namespaceId, sourceId, occurredAt);
+        await state.audit.append({
+          id: `aud_${crypto.randomUUID()}`,
+          installationId: this.installation.id,
           namespaceId,
-          sourceId,
-          this.timestamp(),
-        );
+          occurredAt,
+          kind: "mutation",
+          actorId: account.revocationRequestedBy,
+          source: "occ",
+          ...(requestId === undefined ? {} : { requestId }),
+          action: "openclaw.namespaces.connections.disconnect.completed",
+          resource: { kind: "credential_source", id: sourceId, namespaceId },
+          outcome: "success",
+        });
       }
       if (await state.credentialSources.hasReferences(namespaceId, sourceId)) {
         return;
@@ -6070,6 +6086,7 @@ export class OpenClawController {
         if (!client) {
           return;
         }
+        let outcome: "success" | "failure" = "success";
         try {
           const { store, ref } = this.oauthClientSecret(client);
           await this.secretOperation(() => store.delete(ref));
@@ -6078,11 +6095,25 @@ export class OpenClawController {
             id,
             new Date(this.clock().getTime() + 60_000).toISOString(),
           );
-          return;
+          outcome = "failure";
         }
-        if (!(await state.connectionTemplates.deleteOAuthClient(id))) {
+        if (outcome === "success" && !(await state.connectionTemplates.deleteOAuthClient(id))) {
           throw new ResourceStateConflictError("The OAuth client is still referenced.");
         }
+        await state.audit.append({
+          id: `aud_${crypto.randomUUID()}`,
+          installationId: this.installation.id,
+          occurredAt: this.timestamp(),
+          kind: "mutation",
+          actorId: "unresolved",
+          actor: { unresolved: true },
+          source: "occ",
+          action: "openclaw.oauth_clients.cleanup",
+          resource: { kind: "installation", id: this.installation.id },
+          outcome,
+          ...(outcome === "failure" ? { reasonCode: "OAUTH_CLIENT_CLEANUP_RETRY" } : {}),
+          details: { oauthClientId: id },
+        });
       });
     }
   }

@@ -22499,7 +22499,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/audit-events": {
       "get": {
-        "description": "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected audit metadata from the preceding 24 hours.",
+        "description": "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API request, and worker records from the preceding 24 hours.",
         "operationId": "listAgentAuditEvents",
         "parameters": [
           {
@@ -22582,10 +22582,19 @@
                             "operationId": "getAgent",
                             "outcome": "success",
                             "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+                          },
+                          {
+                            "action": "openclaw.agents.deploy",
+                            "actorId": "prn_123e4567-e89b-42d3-a456-426614174000",
+                            "agentRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+                            "event": "agent_lifecycle",
+                            "id": "aud_123e4567-e89b-42d3-a456-426614174001",
+                            "occurredAt": "2026-10-01T11:00:00.000000Z",
+                            "outcome": "success"
                           }
                         ],
                         "nextCursor": null,
-                        "projectionVersion": 1,
+                        "projectionVersion": 2,
                         "window": {
                           "end": "2026-10-01T12:00:00.000Z",
                           "start": "2026-09-30T12:00:00.000Z"
@@ -22603,60 +22612,121 @@
                       "properties": {
                         "events": {
                           "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "actorId": {
-                                "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
-                                "type": "string"
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "actorId": {
+                                    "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                    "type": "string"
+                                  },
+                                  "attemptId": {
+                                    "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "event": {
+                                    "anyOf": [
+                                      { "const": "api_request", "type": "string" },
+                                      { "const": "work_queued", "type": "string" },
+                                      { "const": "work_claimed", "type": "string" },
+                                      { "const": "work_deferred", "type": "string" },
+                                      { "const": "work_completed", "type": "string" },
+                                      { "const": "work_result", "type": "string" }
+                                    ]
+                                  },
+                                  "id": {
+                                    "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "occurredAt": {
+                                    "format": "date-time",
+                                    "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                    "type": "string"
+                                  },
+                                  "operationId": { "const": "getAgent", "type": "string" },
+                                  "outcome": {
+                                    "anyOf": [
+                                      { "const": "success", "type": "string" },
+                                      { "const": "denied", "type": "string" },
+                                      { "const": "failure", "type": "string" }
+                                    ]
+                                  },
+                                  "requestId": {
+                                    "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "workId": { "pattern": "^work_[0-9a-f]{64}$", "type": "string" },
+                                  "workState": {
+                                    "anyOf": [
+                                      { "const": "queued", "type": "string" },
+                                      { "const": "claimed", "type": "string" },
+                                      { "const": "succeeded", "type": "string" },
+                                      { "const": "failed_permanent", "type": "string" },
+                                      { "const": "superseded", "type": "string" }
+                                    ]
+                                  }
+                                },
+                                "required": ["id", "occurredAt", "outcome", "event"],
+                                "type": "object"
                               },
-                              "attemptId": {
-                                "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                "type": "string"
-                              },
-                              "event": {
-                                "anyOf": [
-                                  { "const": "api_request", "type": "string" },
-                                  { "const": "work_queued", "type": "string" },
-                                  { "const": "work_claimed", "type": "string" },
-                                  { "const": "work_deferred", "type": "string" },
-                                  { "const": "work_completed", "type": "string" },
-                                  { "const": "work_result", "type": "string" }
-                                ]
-                              },
-                              "id": {
-                                "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                "type": "string"
-                              },
-                              "occurredAt": {
-                                "format": "date-time",
-                                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
-                                "type": "string"
-                              },
-                              "operationId": { "const": "getAgent", "type": "string" },
-                              "outcome": {
-                                "anyOf": [
-                                  { "const": "success", "type": "string" },
-                                  { "const": "denied", "type": "string" },
-                                  { "const": "failure", "type": "string" }
-                                ]
-                              },
-                              "requestId": {
-                                "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                "type": "string"
-                              },
-                              "workId": { "pattern": "^work_[0-9a-f]{64}$", "type": "string" },
-                              "workState": {
-                                "anyOf": [
-                                  { "const": "queued", "type": "string" },
-                                  { "const": "claimed", "type": "string" },
-                                  { "const": "succeeded", "type": "string" },
-                                  { "const": "failed_permanent", "type": "string" },
-                                  { "const": "superseded", "type": "string" }
-                                ]
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "action": {
+                                    "enum": [
+                                      "openclaw.agents.create",
+                                      "openclaw.agents.update",
+                                      "openclaw.agents.stop",
+                                      "openclaw.agents.lifecycle.stop",
+                                      "openclaw.agents.provision.checkpoint",
+                                      "openclaw.agents.deploy",
+                                      "openclaw.agents.lifecycle.activate",
+                                      "openclaw.agents.lifecycle.supersede",
+                                      "openclaw.agents.provision.failure"
+                                    ]
+                                  },
+                                  "actorId": {
+                                    "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                    "type": "string"
+                                  },
+                                  "agentRevisionId": {
+                                    "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "event": { "const": "agent_lifecycle", "type": "string" },
+                                  "id": {
+                                    "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "occurredAt": {
+                                    "format": "date-time",
+                                    "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                    "type": "string"
+                                  },
+                                  "outcome": {
+                                    "anyOf": [
+                                      { "const": "success", "type": "string" },
+                                      { "const": "denied", "type": "string" },
+                                      { "const": "failure", "type": "string" }
+                                    ]
+                                  },
+                                  "provisioningPhase": {
+                                    "anyOf": [
+                                      { "const": "admitted", "type": "string" },
+                                      { "const": "configuration", "type": "string" },
+                                      { "const": "transport", "type": "string" },
+                                      { "const": "handoff", "type": "string" }
+                                    ]
+                                  },
+                                  "requestId": {
+                                    "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["id", "occurredAt", "outcome", "event", "action"],
+                                "type": "object"
                               }
-                            },
-                            "required": ["id", "occurredAt", "event", "outcome"],
-                            "type": "object"
+                            ]
                           },
                           "maxItems": 100,
                           "type": "array"
@@ -22673,7 +22743,7 @@
                             { "type": "null" }
                           ]
                         },
-                        "projectionVersion": { "const": 1, "type": "number" },
+                        "projectionVersion": { "const": 2, "type": "number" },
                         "window": {
                           "additionalProperties": false,
                           "properties": {

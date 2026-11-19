@@ -1,3 +1,5 @@
+import { AGENT_AUDIT_PROJECTION_VERSION } from "../packages/contracts/src/api/agent-audit.ts";
+
 // Synthetic, source-backed examples for the HTTP contract. IDs are shared so
 // related request/response examples describe the same resources.
 const uuid = "123e4567-e89b-42d3-a456-426614174000";
@@ -578,7 +580,7 @@ export const responseExamples = {
   deployAgent: revision,
   getAgentRevision: revision,
   listAgentAuditEvents: {
-    projectionVersion: 1,
+    projectionVersion: AGENT_AUDIT_PROJECTION_VERSION,
     window: { start: "2026-09-30T12:00:00.000Z", end: time },
     events: [
       {
@@ -589,6 +591,15 @@ export const responseExamples = {
         actorId: id("prn"),
         requestId: id("req"),
         operationId: "getAgent",
+      },
+      {
+        id: "aud_123e4567-e89b-42d3-a456-426614174001",
+        occurredAt: "2026-10-01T11:00:00.000000Z",
+        event: "agent_lifecycle",
+        action: "openclaw.agents.deploy",
+        outcome: "success",
+        actorId: id("prn"),
+        agentRevisionId: revisionId,
       },
     ],
     nextCursor: null,

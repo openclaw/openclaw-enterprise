@@ -215,28 +215,19 @@ export function repositoryCleanupSql(alias: string): string {
 
 // Keep the creating source actor for audit attribution. Only lifecycle columns
 // are writable by occ_app; an owner collision must roll back the transfer.
+const CLEANUP_REUSABLE_OWNER_SQL = `(controller_work.namespace_id = EXCLUDED.namespace_id
+  AND controller_work.agent_id = EXCLUDED.agent_id
+  AND controller_work.revision_id = EXCLUDED.revision_id
+  AND controller_work.namespace_target IS NULL
+  AND controller_work.agent_target IS NULL
+  AND controller_work.state <> 'failed_permanent')`;
 const CLEANUP_CONFLICT_SQL = `
   ON CONFLICT (idempotency_key) DO UPDATE
-  SET attempt_count = CASE
-        WHEN controller_work.namespace_id = EXCLUDED.namespace_id
-          AND controller_work.agent_id = EXCLUDED.agent_id
-          AND controller_work.revision_id = EXCLUDED.revision_id
-          AND controller_work.namespace_target IS NULL
-          AND controller_work.agent_target IS NULL
-          AND controller_work.state <> 'failed_permanent'
-        THEN controller_work.attempt_count ELSE -1
-      END,
-      state = CASE WHEN controller_work.state = 'succeeded' THEN 'queued'
-        ELSE controller_work.state END,
-      completed_at = CASE WHEN controller_work.state = 'succeeded' THEN NULL
-        ELSE controller_work.completed_at END,
-      reason_code = CASE WHEN controller_work.state = 'succeeded' THEN NULL
-        ELSE controller_work.reason_code END,
-      result_data = CASE WHEN controller_work.state = 'succeeded' THEN NULL
-        ELSE controller_work.result_data END,
-      available_at = CASE WHEN controller_work.state = 'succeeded' THEN clock_timestamp()
-        ELSE controller_work.available_at END,
-      updated_at = clock_timestamp()`;
+  SET attempt_count = CASE WHEN ${CLEANUP_REUSABLE_OWNER_SQL}
+        THEN controller_work.attempt_count ELSE -1 END,
+      state = 'queued', completed_at = NULL, reason_code = NULL, result_data = NULL,
+      available_at = clock_timestamp(), updated_at = clock_timestamp()
+  WHERE controller_work.state = 'succeeded' OR ${CLEANUP_REUSABLE_OWNER_SQL} IS NOT TRUE`;
 
 const TERMINAL_REPOSITORY_CLEANUP_OWNERSHIP_SQL = `OR (source.agent_target = 'stopped' AND source.revision_id IS NULL
           AND source.agent_id = revision.agent_id AND revision.admitted_at <= source.created_at)
@@ -250,6 +241,7 @@ const TERMINAL_REPOSITORY_CLEANUP_OWNERSHIP_SQL = `OR (source.agent_target = 'st
 function transferRepositoryCleanupSql(
   continuingRevision = "false",
   mayHaveReachedRepositoryDeadline = "false",
+  recordAudit = false,
 ): string {
   return `
     cleanup_sources AS MATERIALIZED (
@@ -365,8 +357,8 @@ function transferRepositoryCleanupSql(
       ORDER BY revision.namespace_id, revision.agent_id, revision.revision_id,
         revision.cleanup_purpose, revision.source_key
       ${CLEANUP_CONFLICT_SQL}
-      RETURNING idempotency_key
-    ),`;
+      RETURNING *
+    ), ${recordAudit ? `${queueRegistrationEvidenceSql("cleanup_inserted", "REPOSITORY_CLEANUP_QUEUED")},` : ""}`;
 }
 
 // Recovery counterpart of fail(..., { continuingRevision: true }): an exhausted
@@ -425,7 +417,7 @@ function continuingMaintenanceSql(candidates: string): string {
 // Enqueue the next maintenance bucket for each continued item, deferred by the
 // maximum retry backoff (`delayParameter`, in milliseconds). The worker derives
 // later buckets from this key, so the chain stays strictly increasing.
-function continueMaintenanceSql(delayParameter: string): string {
+function continueMaintenanceSql(delayParameter: string, recordAudit: boolean): string {
   return `
     continued_maintenance AS (
       INSERT INTO occ.controller_work (
@@ -443,8 +435,8 @@ function continueMaintenanceSql(delayParameter: string): string {
         AND source.idempotency_key ~ ':maintenance:(0|[1-9][0-9]*)$'
         AND source.idempotency_key IN (SELECT idempotency_key FROM continuing_maintenance)
       ON CONFLICT (idempotency_key) DO NOTHING
-      RETURNING idempotency_key
-    ),`;
+      RETURNING *
+    ), ${recordAudit ? `${queueRegistrationEvidenceSql("continued_maintenance", "MAINTENANCE_RECOVERY_QUEUED")},` : ""}`;
 }
 
 const CONTINUING_MAINTENANCE_SOURCE_SQL =
@@ -671,8 +663,10 @@ const insertEvidenceCteSql = ({
   outcome = "$3::text",
   id = "'aud_' || gen_random_uuid()::text",
   correlatedAttempt = "transitioned.audit_attempt_id",
+  rows = "transitioned",
+  prefix = "",
 } = {}) => `
-  evidence_targets AS (
+  ${prefix}evidence_targets AS (
     SELECT transitioned.*,
       CASE WHEN ${repositoryCleanupSql("transitioned")} THEN
         substring(
@@ -681,14 +675,14 @@ const insertEvidenceCteSql = ({
         )
       END AS repository_cleanup_revision_id,
       COALESCE(transitioned.agent_id, provisioning.agent_id) AS audit_agent_id
-    FROM transitioned
+    FROM ${rows} AS transitioned
     LEFT JOIN occ.agent_provisioning_work AS provisioning
       ON transitioned.audit_attempt_id IS NOT NULL
       AND transitioned.work_kind = 'provisioning'
       AND provisioning.work_id = transitioned.idempotency_key
       AND provisioning.namespace_id = transitioned.namespace_id
       AND provisioning.actor_id = transitioned.actor_id
-  ), evidence AS (
+  ), ${prefix}evidence AS (
     INSERT INTO occ.audit_events (
       id, occurred_at, kind, actor_id, action, namespace_id,
       resource_kind, resource_id, outcome, details
@@ -722,7 +716,7 @@ const insertEvidenceCteSql = ({
         || CASE WHEN transitioned.state = 'failed_permanent'
              THEN jsonb_build_object('final', true) ELSE '{}'::jsonb END
         || ${details}
-    FROM evidence_targets AS transitioned
+    FROM ${prefix}evidence_targets AS transitioned
     WHERE true ${filter}
     RETURNING id
   )`;
@@ -735,15 +729,25 @@ const INSERT_CLAIM_EVIDENCE_CTE_SQL = insertEvidenceCteSql({
   reasonCode: "'WORK_CLAIMED'",
   id: "'aud_' || transitioned.audit_attempt_id::text",
 });
-export function enqueueWithAuditSql(insert: string, requestIdParameter: number): string {
-  const evidence = insertEvidenceCteSql({
+function queueRegistrationEvidenceSql(rows: string, reasonCode: string, requestId = "NULL::text") {
+  return insertEvidenceCteSql({
+    rows,
+    prefix: `${rows}_`,
     action: `'${CONTROLLER_WORK_AUDIT_ACTIONS.queued}'`,
     outcome: "'success'",
-    reasonCode: "'WORK_QUEUED'",
+    reasonCode: `'${reasonCode}'`,
+    correlatedAttempt: "NULL::uuid",
     details: `jsonb_strip_nulls(jsonb_build_object('agentId', transitioned.agent_id,
       '__occAuditMetadata', jsonb_build_object('schemaVersion', 1, 'source', 'occ',
-        'requestId', $${requestIdParameter}::text)))`,
+        'requestId', ${requestId})))`,
   });
+}
+export function enqueueWithAuditSql(insert: string, requestIdParameter: number): string {
+  const evidence = queueRegistrationEvidenceSql(
+    "transitioned",
+    "WORK_QUEUED",
+    `$${requestIdParameter}::text`,
+  );
   return `WITH transitioned AS (${insert}), ${evidence} SELECT transitioned.* FROM transitioned`;
 }
 /**
@@ -998,6 +1002,8 @@ export class PostgresWorkQueue {
       revisionId,
       withdrawStanding ? "expiry" : runtimeCleanup ? "terminal-runtime" : "sessions",
     );
+    const namespaceId = nonempty(owner.namespaceId, "Repository cleanup Namespace ID");
+    const agentId = nonempty(owner.agentId, "Repository cleanup Agent ID");
     const result = await this.client.query(
       `WITH source AS MATERIALIZED (
          SELECT * FROM occ.controller_work AS work
@@ -1047,30 +1053,34 @@ export class PostgresWorkQueue {
              -- admitted_at and created_at are both on this database's clock (finding 1195).
              ${TERMINAL_REPOSITORY_CLEANUP_OWNERSHIP_SQL}
            )
-       ), registered AS (
-         INSERT INTO occ.controller_work (
-           idempotency_key, namespace_id, agent_id, revision_id, actor_id,
-           namespace_target, agent_target, state, available_at, attempt_count, created_at, updated_at
-         )
-         SELECT $6, owner.namespace_id, owner.agent_id, owner.revision_id, source.actor_id,
-           NULL, NULL, 'queued', clock_timestamp(), 0, clock_timestamp(), clock_timestamp()
+       ), registration_target AS MATERIALIZED (
+         SELECT owner.*, source.actor_id
          FROM owner CROSS JOIN source
          WHERE source.lease_expires_at > clock_timestamp() AND ($7::boolean OR EXISTS (
            SELECT 1 FROM occ.repository_session_attempts AS attempt
            WHERE attempt.namespace_id = owner.namespace_id AND attempt.agent_id = owner.agent_id
              AND attempt.revision_id = owner.revision_id AND attempt.phase IN ('closing', 'invalidated')
          ))
+       ), registered AS (
+         INSERT INTO occ.controller_work (
+           idempotency_key, namespace_id, agent_id, revision_id, actor_id,
+           namespace_target, agent_target, state, available_at, attempt_count, created_at, updated_at
+         )
+         SELECT $6, target.namespace_id, target.agent_id, target.revision_id, target.actor_id,
+           NULL, NULL, 'queued', clock_timestamp(), 0, clock_timestamp(), clock_timestamp()
+         FROM registration_target AS target
          ${CLEANUP_CONFLICT_SQL}
          RETURNING *
-       )
+       )${this.controlPlaneAuditEnabled ? `, ${queueRegistrationEvidenceSql("registered", "REPOSITORY_CLEANUP_QUEUED")}` : ""}
        SELECT EXISTS (SELECT 1 FROM source) AS claim_current,
          EXISTS (SELECT 1 FROM owner) AS owner_allowed,
+         EXISTS (SELECT 1 FROM registration_target) AS registration_needed,
          (SELECT row_to_json(registered) FROM registered) AS work`,
       [
         claim.idempotencyKey,
         claim.claimToken,
-        nonempty(owner.namespaceId, "Repository cleanup Namespace ID"),
-        nonempty(owner.agentId, "Repository cleanup Agent ID"),
+        namespaceId,
+        agentId,
         revisionId,
         key,
         runtimeCleanup,
@@ -1081,14 +1091,39 @@ export class PostgresWorkQueue {
       ],
     );
     const row = result.rows[0] as
-      { claim_current: boolean; owner_allowed: boolean; work: unknown | null } | undefined;
+      | {
+          claim_current: boolean;
+          owner_allowed: boolean;
+          registration_needed: boolean;
+          work: unknown;
+        }
+      | undefined;
     if (row?.claim_current !== true) {
       throw new WorkClaimLostError();
     }
     if (!row.owner_allowed) {
       throw new ScopeViolationError("The current work does not own this repository cleanup.");
     }
-    return row.work === null ? undefined : asWork(row.work);
+    if (row.work !== null) {
+      return asWork(row.work);
+    }
+    if (!row.registration_needed) {
+      return undefined;
+    }
+    // An already queued or claimed cleanup needs no update. Read it in a new statement so
+    // a concurrent insert that committed during conflict resolution is visible too.
+    const existing = await this.client.query(
+      `SELECT * FROM occ.controller_work
+       WHERE idempotency_key = $1 AND namespace_id = $2 AND agent_id = $3 AND revision_id = $4
+         AND namespace_target IS NULL AND agent_target IS NULL`,
+      [key, namespaceId, agentId, revisionId],
+    );
+    if (existing.rows[0] === undefined) {
+      throw new ResourceConflictError(
+        "The existing repository cleanup work could not be verified.",
+      );
+    }
+    return asWork(existing.rows[0]);
   }
 
   async claim(input: ClaimRequest = {}): Promise<ClaimedWork | undefined> {
@@ -1522,7 +1557,7 @@ export class PostgresWorkQueue {
            AND claim_token = $2::uuid
            AND lease_expires_at > clock_timestamp()
          RETURNING *
-       ), ${transferRepositoryCleanupSql()} ${SETTLE_PROVISIONING_FAILURE_SQL}
+       ), ${transferRepositoryCleanupSql("false", "false", this.controlPlaneAuditEnabled)} ${SETTLE_PROVISIONING_FAILURE_SQL}
        ${INSERT_EVIDENCE_SQL}`,
       [
         claim.idempotencyKey,
@@ -1608,7 +1643,7 @@ export class PostgresWorkQueue {
          WHERE work.idempotency_key = eligible.idempotency_key
            AND work.lease_expires_at > clock_timestamp()
          RETURNING work.*
-       ), ${transferRepositoryCleanupSql("$7::boolean", "source.reason_code = 'REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED'")} ${SETTLE_PROVISIONING_FAILURE_SQL}
+       ), ${transferRepositoryCleanupSql("$7::boolean", "source.reason_code = 'REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED'", this.controlPlaneAuditEnabled)} ${SETTLE_PROVISIONING_FAILURE_SQL}
        ${INSERT_EVIDENCE_CTE_SQL}
        SELECT EXISTS (SELECT 1 FROM source) AS claim_current,
          EXISTS (SELECT 1 FROM transitioned) AS failed`,
@@ -1695,8 +1730,8 @@ export class PostgresWorkQueue {
          FROM candidates
          WHERE work.idempotency_key = candidates.idempotency_key
          RETURNING work.*
-       ), ${continueMaintenanceSql("$5")} ${FAIL_EXHAUSTED_NAMESPACES_SQL},
-       ${transferRepositoryCleanupSql(CONTINUING_MAINTENANCE_SOURCE_SQL, "true")}
+       ), ${continueMaintenanceSql("$5", this.controlPlaneAuditEnabled)} ${FAIL_EXHAUSTED_NAMESPACES_SQL},
+       ${transferRepositoryCleanupSql(CONTINUING_MAINTENANCE_SOURCE_SQL, "true", this.controlPlaneAuditEnabled)}
        ${SETTLE_PROVISIONING_FAILURE_SQL}
        ${insertEvidenceCteSql({
          reasonCode: `CASE WHEN transitioned.idempotency_key IN (SELECT idempotency_key FROM recovering_activations)
@@ -1748,8 +1783,8 @@ export class PostgresWorkQueue {
          FROM candidates
          WHERE work.idempotency_key = candidates.idempotency_key
          RETURNING work.*
-       ), ${continueMaintenanceSql("$5")} ${FAIL_EXHAUSTED_NAMESPACES_SQL},
-       ${transferRepositoryCleanupSql(CONTINUING_MAINTENANCE_SOURCE_SQL, "true")}
+       ), ${continueMaintenanceSql("$5", this.controlPlaneAuditEnabled)} ${FAIL_EXHAUSTED_NAMESPACES_SQL},
+       ${transferRepositoryCleanupSql(CONTINUING_MAINTENANCE_SOURCE_SQL, "true", this.controlPlaneAuditEnabled)}
        ${SETTLE_PROVISIONING_FAILURE_SQL}
        ${insertEvidenceCteSql({
          reasonCode: `CASE WHEN transitioned.state = 'queued' THEN '${PREDECESSOR_STOP_RECOVERY}' ELSE $4::text END`,

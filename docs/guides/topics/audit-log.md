@@ -32,6 +32,11 @@ permission for the operation. A request rejected before the handler can have a
 result record by itself, for example a `400` for an invalid request or a `401`
 for missing credentials.
 
+The result hook also covers the registered account, service-key, sign-in,
+recovery, and native administration routes. When a resource API request returns
+`405`, OCC records a `methodNotAllowed` result. A successful API
+bootstrap can record its result after it saves the Installation.
+
 The request ID connects the records. They name the registered operation and
 HTTP method. The result also has the HTTP status. For a successful read of one
 Namespace, Agent, Agent revision, deployment, Sandbox Policy, Configuration,
@@ -46,9 +51,10 @@ If it cannot save the result, it keeps the selected response and logs
 cannot save a separate permission-denial record. A device login scope denial
 returns `503` if OCC cannot save its required denial record. If OCC cannot
 confirm a commit, look for `http.commit_outcome_unknown` and check the current
-resource or job state before retrying. Bootstrap and runtime log reads use
-their own audit paths. Authentication callbacks, native proxy traffic, and
-unmatched routes are outside these request records.
+resource or job state before retrying. Bootstrap and runtime log reads have
+their own records for the state change or disclosure. Matched Google and OIDC
+sign-in callbacks have their own authentication records. Arbitrary unmatched
+paths and native proxy traffic are outside this request audit scope.
 
 Control Plane audit is on by default in PostgreSQL development. Production
 requires the [audit setting](../../reference/settings/production.md#control-plane-audit)
@@ -58,8 +64,8 @@ for both the API and worker.
 
 With Control Plane audit enabled, PostgreSQL saves jobs from covered API
 requests with an `openclaw.controller_work.queued` event. The event links the
-work ID to the HTTP request ID. Internal repair transfers and maintenance
-continuation can have claim and result records without a queued record.
+work ID to the HTTP request ID. Repository cleanup and maintenance recovery
+also save a queue record when they create or reopen follow-up work.
 PostgreSQL saves each claim with its `openclaw.controller_work.claimed` event.
 If that write fails, the job stays queued and the worker does not start it.
 
@@ -179,10 +185,11 @@ with the `read_audit` permission directly to your Principal and the Agent.
 OCC checks the grant each time you request a page.
 
 Send `GET /namespaces/{namespaceId}/agents/{agentId}/audit-events`.
-The response lists selected API reads and worker events from the preceding
-24 hours, newest first. A work ID in the response connects events for the
-same job. OCC gives it a separate format to keep internal work keys and
-Agent revision IDs private.
+The response lists selected Agent lifecycle records, API reads, and worker
+events from the preceding 24 hours, newest first. Lifecycle records show the
+saved action, such as Agent creation, deployment admission, or activation.
+They include an Agent revision ID when OCC verifies that revision belongs to
+the Agent. A work ID connects job records without exposing the internal work key.
 
 The default page contains up to 50 records. Set `limit` to a number from
 1 through 100 to change the size. If the response includes a `nextCursor`,

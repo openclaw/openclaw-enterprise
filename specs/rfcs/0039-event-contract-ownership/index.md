@@ -11,6 +11,7 @@ author: kevinlin-openai
 - **Last updated:** 2026-11-12
 - **RFC PR:** [#4974](https://github.com/openclaw/openclaw-enterprise/pull/4974)
 - **Related:** [Platform audit](../0013-platform-audit/index.md), [production observability](../0012-production-observability.md), [platform design](../../../docs/design.md#implementation-status).
+- **Plan:** [Control-plane audit coverage](../../plans/0039-event-contract-ownership.md)
 
 ## Summary
 

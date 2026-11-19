@@ -437,6 +437,18 @@ test(
     await keycloakRealmAdmin(issuer, secrets.admin, "DELETE", defaultPath);
     const disconnected = await owner("DELETE", connections + "/" + defaultsId);
     assert.equal(disconnected.statusCode, 204, disconnected.body);
+    const disconnectAudit = async (sourceId: string) =>
+      (
+        await pool.query(
+          `SELECT actor_id, outcome, details->'__occAuditMetadata'->>'requestId' AS request_id
+           FROM occ.audit_events WHERE action = 'openclaw.namespaces.connections.disconnect.completed'
+             AND namespace_id = $1 AND resource_kind = 'credential_source' AND resource_id = $2`,
+          [namespaceId, sourceId],
+        )
+      ).rows;
+    assert.deepEqual(await disconnectAudit(defaultsId), [
+      { actor_id: ownerId, outcome: "success", request_id: disconnected.headers["x-request-id"] },
+    ]);
     async function begin() {
       const response = await owner("POST", connections, input);
       assert.equal(response.statusCode, 201, response.body);
@@ -857,6 +869,7 @@ test(
     const interrupted = await owner("DELETE", `${connections}/${id}`);
     assert.equal(interrupted.statusCode, 503, interrupted.body);
     assert.ok(secretDriver.has(privateRef));
+    assert.deepEqual(await disconnectAudit(id), []);
     // Releasing a read after OCC committed revocation must withhold the already-read bearer.
     release.resolve();
     assert.equal(await resolving, undefined);
@@ -880,6 +893,10 @@ test(
       0,
     );
     assert.equal(secretDriver.has(privateRef), false);
+    // The worker retains the original requester but has no request ID to attach to recovery.
+    assert.deepEqual(await disconnectAudit(id), [
+      { actor_id: ownerId, outcome: "success", request_id: null },
+    ]);
     // A second issuer becomes eligible after the first browser obtained its code. Even after the
     // template changes, callbacks from both usable versions could still be in flight.
     const pending = await begin();

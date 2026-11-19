@@ -17,6 +17,8 @@ import type {
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { DatabaseError } from "pg";
+import { createPostgresAuthTransactionBinding } from "../auth-persistence/postgres-auth-binding.ts";
+import type { SchemaAuthBoundaryV1 } from "../auth-persistence/schema-auth-boundary-v1.ts";
 
 import { CREDENTIAL_WITHDRAWAL_TARGET } from "../controller-work.ts";
 import type { AgentAuditSelection } from "../ports/agent-audit.ts";
@@ -279,6 +281,7 @@ function checkoutFailure(error: unknown): Error {
 interface TransactionContext {
   readonly lifetime: RepositoryTransactionLifetime;
   readonly client: PostgresClient;
+  readonly bindAuthDatabase: () => Promise<SchemaAuthBoundaryV1>;
   installation: Readonly<Installation> | undefined;
   installationLoaded: boolean;
   /** A READ ONLY REPEATABLE READ unit: every statement sees one snapshot and nothing writes. */
@@ -1799,6 +1802,18 @@ export class PostgresPlatformState implements PlatformStateStore {
     return context.lifetime.run(() => context.client.query(statement, parameters));
   }
 
+  /** Reuse the original client for auth persistence within this unit's lifetime. */
+  withAuthDatabase<T>(
+    unit: PlatformUnitOfWork,
+    work: (binding: SchemaAuthBoundaryV1) => Promise<T>,
+  ): Promise<T> {
+    const context = this.contexts.get(unit);
+    if (context === undefined) {
+      throw new DependencyUnavailableError("The platform transaction is unavailable.");
+    }
+    return context.lifetime.run(async () => work(await context.bindAuthDatabase()));
+  }
+
   async boundAgentAuditTransaction(unit: PlatformUnitOfWork): Promise<void> {
     // A caller can configure a lower timeout. Keep it for this transaction too.
     await this.queryInTransaction(
@@ -2009,30 +2024,35 @@ export class PostgresPlatformState implements PlatformStateStore {
       if (transportError !== undefined) {
         throw transportError;
       }
+      const runStatement = async <T>(query: () => Promise<T>): Promise<T> => {
+        // Counted before anything can fail: a cached policy must not outlive a write
+        // that was issued, even one whose outcome is unknown.
+        context.statements += 1;
+        lifetime.assertActive();
+        if (transportError !== undefined) {
+          throw transportError;
+        }
+        let result: T;
+        try {
+          result = await query();
+        } catch (error) {
+          abandoned ||= queryAbandonedByClient(error);
+          throw error;
+        }
+        lifetime.assertActive();
+        if (transportError !== undefined) {
+          throw transportError;
+        }
+        return result;
+      };
       const context: TransactionContext = {
         lifetime,
+        bindAuthDatabase: () =>
+          createPostgresAuthTransactionBinding(client, (query) =>
+            lifetime.run(() => runStatement(query)),
+          ),
         client: {
-          query: async (statement, parameters) => {
-            // Counted before anything can fail: a cached policy must not outlive a write
-            // that was issued, even one whose outcome is unknown.
-            context.statements += 1;
-            lifetime.assertActive();
-            if (transportError !== undefined) {
-              throw transportError;
-            }
-            let result: Awaited<ReturnType<PostgresClient["query"]>>;
-            try {
-              result = await client.query(statement, parameters);
-            } catch (error) {
-              abandoned ||= queryAbandonedByClient(error);
-              throw error;
-            }
-            lifetime.assertActive();
-            if (transportError !== undefined) {
-              throw transportError;
-            }
-            return result;
-          },
+          query: (statement, parameters) => runStatement(() => client.query(statement, parameters)),
           release: () => {
             throw new ScopeViolationError("Only the transaction owner releases the client.");
           },

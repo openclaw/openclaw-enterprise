@@ -999,7 +999,10 @@ stateCase(
     const queued = audit.data.events.find(
       (entry) => entry.event === "work_queued" && entry.requestId === requestId,
     );
-    assert.ok(queued, "the audit page must include the queue record for the deploy request");
+    assert.ok(
+      queued?.event === "work_queued",
+      "the audit page must include the queue record for the deploy request",
+    );
     assert.ok(queued.workId);
     assert.match(queued.workId, /^work_[0-9a-f]{64}$/);
     const result = audit.data.events.find(
@@ -1008,7 +1011,7 @@ stateCase(
         entry.workId === queued.workId &&
         entry.workState === "succeeded",
     );
-    assert.ok(result);
+    assert.ok(result?.event === "work_result");
     assert.equal(result.outcome, "success");
     assert.ok(result.attemptId);
     assert.match(result.attemptId, /^aud_[0-9a-f-]{36}$/);
@@ -1018,7 +1021,7 @@ stateCase(
         entry.workId === queued.workId &&
         entry.attemptId === result.attemptId,
     );
-    assert.ok(claim);
+    assert.ok(claim?.event === "work_claimed");
     assert.equal(claim.id, result.attemptId);
     context.diagnostic(
       `Agent audit HTTP ${deniedAudit.status} before grant, ${audit.status} after grant. ${requestId} -> ${queued.workId} -> ${claim.id} -> ${result.id} succeeded`,

@@ -181,6 +181,7 @@ export function testActiveRevisionAuthority(setup: RevisionSetup) {
         leaseDurationMs: 30_000,
         maxAttempts: 1,
         random: () => 0,
+        controlPlaneAuditEnabled: true,
       });
       const crashed = required(await queue.claim(), "claimed work");
       assert.equal(crashed.idempotencyKey, crashedKey);
@@ -218,6 +219,27 @@ export function testActiveRevisionAuthority(setup: RevisionSetup) {
         attempt_count: 0,
         actor_id: crashed.actorId,
       });
+      // Rerunning recovery after the committed failure must not record a second
+      // registration for the already queued continuation.
+      await queue.recoverStale();
+      const auditedSuccessor = await fixture.observerPool.query(
+        `SELECT actor_id, namespace_id, resource_kind, resource_id, outcome,
+                details->>'agentId' AS agent_id, details->>'attemptId' AS attempt_id
+         FROM occ.audit_events WHERE action = 'openclaw.controller_work.queued'
+           AND details->>'workId' = $1 AND details->>'reasonCode' = 'MAINTENANCE_RECOVERY_QUEUED'`,
+        [nextRow.idempotency_key],
+      );
+      assert.deepEqual(auditedSuccessor.rows, [
+        {
+          actor_id: crashed.actorId,
+          namespace_id: candidate.namespaceId,
+          resource_kind: "agent_revision",
+          resource_id: candidate.id,
+          outcome: "success",
+          agent_id: candidate.agentId,
+          attempt_id: null,
+        },
+      ]);
       await fixture.start(compute);
       await fixture.work(
         { id: candidate.id, idempotencyKey: nextRow.idempotency_key },
