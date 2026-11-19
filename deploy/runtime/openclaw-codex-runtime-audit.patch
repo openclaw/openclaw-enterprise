@@ -1,5 +1,5 @@
 diff --git a/extensions/codex/src/app-server/run-attempt-notification-controller.ts b/extensions/codex/src/app-server/run-attempt-notification-controller.ts
-index 3369c94..df328d7 100644
+index 3369c94..e4591e7 100644
 --- a/extensions/codex/src/app-server/run-attempt-notification-controller.ts
 +++ b/extensions/codex/src/app-server/run-attempt-notification-controller.ts
 @@ -11,7 +11,7 @@ import {
@@ -29,7 +29,7 @@ index 3369c94..df328d7 100644
  export function createCodexAttemptNotificationController(
    resources: StartedCodexAttemptResources,
    turnRuntime: CodexAttemptTurnState,
-@@ -48,6 +59,65 @@ export function createCodexAttemptNotificationController(
+@@ -48,6 +59,66 @@ export function createCodexAttemptNotificationController(
      maybeAnnounceFastModeAutoOff,
    } = lifecycle;
    const pendingNativeCommandItems = new Set<string>();
@@ -91,11 +91,12 @@ index 3369c94..df328d7 100644
 +    ) {
 +      return auditTurn.receipt.completed(nativeStatus, receivedAtMs);
 +    }
++    return;
 +  };
    let nativeItemsCompletion: ReturnType<typeof createDeferred<void>> | undefined;
    const waitForNativeTerminalItems = async (signal: AbortSignal) => {
      // Exited commands disappear from native inventory before their final item arrives.
-@@ -61,7 +131,7 @@ export function createCodexAttemptNotificationController(
+@@ -61,7 +132,7 @@ export function createCodexAttemptNotificationController(
      }
    };
    const handleNotification = async (notification: CodexPreparedServerNotification) => {
@@ -104,7 +105,7 @@ index 3369c94..df328d7 100644
        return;
      }
      const projector = projectorRef.current;
-@@ -75,6 +145,10 @@ export function createCodexAttemptNotificationController(
+@@ -75,6 +146,10 @@ export function createCodexAttemptNotificationController(
      const isCurrentTurn =
        notification.threadId === resourceState.thread.threadId && notification.turnId === turnId;
      const completedTurn = isCurrentTurn ? notification.completedTurn : undefined;
@@ -115,7 +116,7 @@ index 3369c94..df328d7 100644
      if (
        (state.timeout || state.localCompletionRequested) &&
        completedTurn?.status === "interrupted"
-@@ -222,6 +296,10 @@ export function createCodexAttemptNotificationController(
+@@ -222,6 +297,10 @@ export function createCodexAttemptNotificationController(
      scope: CodexThreadRouteScope,
      receivedAtMs: number,
    ) => {
