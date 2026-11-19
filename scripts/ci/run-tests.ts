@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { sanitizeError } from "./failure-redaction.ts";
 import { startAgentNamespaceCapture } from "./k3d-diagnostics.ts";
 import { collectInstallationPhases } from "./openshell-installation-phase.ts";
-import { openShellRequiredEnv } from "./openshell-model-inputs.mjs";
+import { openShellRequiredEnv } from "./openshell-model-inputs.ts";
 import { aggregateGroup } from "./runner-aggregate.ts";
 import {
   case2PhaseEnv,
