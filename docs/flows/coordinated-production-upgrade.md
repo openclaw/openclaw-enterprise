@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-18"
-last_updated_session: "authoring-run/9b947cd8-0275-4e7f-ac7f-5dce4b0f8965"
+updated: "2026-11-19"
+last_updated_session: "authoring-run/def34421-d123-4fd1-bde1-e8d966d6bcad"
 ---
 
 # Production image upgrade flow
@@ -12,10 +12,10 @@ Upgrades OpenClaw Control Plane (OCC) and Agent runtimes.
 
 ## Entry Points
 
-- Run `scripts/upgrade-production-images` with reviewed inputs, or use `occ installation upgrade` with a private operator profile.
-- Stderr phases are advisory; `--verbose` shows native output.
-- Required: healthy Helm release with chart-owned initializer, matching OCC/Kubernetes Installation
-  IDs and complete authorized inventory without active deployments.
+- Use `occ installation upgrade apply` with a private profile or `scripts/upgrade-production-images` directly.
+- `--verbose` adds native output to advisory phases.
+- Requires healthy Helm release, chart-owned initializer, matching Installation IDs,
+  and complete authorized inventory without active deployments.
 - Source: `scripts/upgrade-production-images`,
   `packages/occ/src/index.ts:OpenClawController.getInstallationDeploymentInventory`,
   and `packages/occ/src/index.ts:OpenClawController.deployAgent`.
@@ -24,10 +24,10 @@ Upgrades OpenClaw Control Plane (OCC) and Agent runtimes.
 
 ```mermaid
 graph TD
-    OP["Private operator profile"] --> CLI["Installation upgrade CLI"]
-    CLI --> AD["Translate operation and options"]
-    AD --> A
-    AD -->|Migration check| MC["Match deployed migrator inputs"]
+    OP["Private profile"] --> CLI["Upgrade CLI"]
+    CLI -->|Plan| PL["Offline preview"]
+    CLI -->|Preflight or approval| A
+    CLI -->|Migration check| MC["Match deployed migrator inputs"]
     MC -->|Match| MJ["Check history and confirm cleanup"]
     MC -->|Refusal| X
     MJ -->|Incomplete| X
@@ -84,7 +84,9 @@ graph TD
 
 ### 1. Prepare the candidate
 
-`internal/occcli/installation_upgrade.go:installationUpgradeCommand` launches `scripts/upgrade-production:main`. Plan checks profile, image selection and source HEAD offline; status observes private markers without authority. Other operations exec `scripts/upgrade-production-images`.
+`internal/occcli/installation_upgrade.go:installationUpgradeCommand` calls
+`scripts/upgrade-production:main`. Plan validates digests and commit offline.
+Approval precedes apply or resume. New runs print paths for status before dispatch.
 
 `scripts/upgrade-production-images:prepare_upgrade`
 
@@ -99,7 +101,7 @@ prepared upgrade evidence.
 `preprovisionedNamespace` must yield one `false` before access
 (`preprovisioned-namespace.err`).
 
-Resume locks evidence paths/devices/inodes/aliases and dispatch journals.
+`resume RUN` locks evidence paths/devices/inodes/aliases and dispatch journals.
 
 `matches_yaml` validates candidates and compares [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)/live mappings.
 Invalid inputs or unwritable evidence yield `Cannot compare upgrade YAML`.
@@ -372,6 +374,8 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 05:13: Trace upgrade approval and evidence. (authoring-run/def34421-d123-4fd1-bde1-e8d966d6bcad - 8bc5fe2fc916765024493c981308179a04a0e716)
 
 - 2026-11-18 19:45: Tighten the upgrade trace. (authoring-run/9b947cd8-0275-4e7f-ac7f-5dce4b0f8965 - aed2f7edd530ab336bbd6cb8c7389b24cb83e397)
 

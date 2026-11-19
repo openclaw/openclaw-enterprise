@@ -222,7 +222,10 @@ test(
       ),
     );
     assert.equal(string(connected.id), installationId);
-    const preflight = (name: string, preflightOnly: boolean) =>
+    const valuesPath = join(f.directory, "values.json");
+    const upgradeTimeout = ["--timeout-seconds", "120"];
+    const upgradeExecution = { timeout: 240_000, env: cliEnvironment };
+    const preflight = (name: string) =>
       f.run(
         "bash",
         [
@@ -236,7 +239,7 @@ test(
           "--release",
           f.release,
           "--values",
-          join(f.directory, "values.json"),
+          valuesPath,
           "--installation",
           installationPath,
           "--runtime-image",
@@ -247,14 +250,10 @@ test(
           join(f.directory, name),
           "--occ",
           occ,
-          "--timeout-seconds",
-          "120",
-          ...(preflightOnly ? ["--preflight-only"] : []),
+          ...upgradeTimeout,
+          "--preflight-only",
         ],
-        {
-          timeout: 240_000,
-          env: cliEnvironment,
-        },
+        upgradeExecution,
       );
     // Keep full dumps private. Authenticating the real CLI updates exactly this
     // key's last_request and updated_at. Ignore COPY row order, but retain every
@@ -393,21 +392,21 @@ test(
     // serve. The reviewed configuration change never becomes the Helm release.
     const profileDirectory = join(f.directory, "migration-profile");
     await mkdir(profileDirectory, { mode: 0o700 });
-    await writeFile(join(profileDirectory, "values.yaml"), JSON.stringify(f.values), {
+    await writeFile(join(profileDirectory, "values.yaml"), await readFile(valuesPath), {
       mode: 0o600,
     });
+    const targetProfile = {
+      kubeconfig: kubeconfigPath,
+      context: kubernetesContext,
+      namespace: f.system,
+      release: f.release,
+      installationDirectory: profileDirectory,
+      sourceRevision: source,
+    };
     const profile = join(profileDirectory, "upgrade.json");
     await writeFile(
       profile,
-      JSON.stringify({
-        kubeconfig: kubeconfigPath,
-        context: kubernetesContext,
-        namespace: f.system,
-        release: f.release,
-        installationDirectory: profileDirectory,
-        sourceRevision: source,
-        images: { controller: f.images.controller },
-      }),
+      JSON.stringify({ ...targetProfile, images: { controller: f.images.controller } }),
       { mode: 0o600 },
     );
     const helmRevision = async () =>
@@ -496,15 +495,43 @@ test(
     assert.ok(Number.isSafeInteger(interiorId));
     await sql(`UPDATE drizzle.__drizzle_migrations SET hash=repeat('0',64) WHERE id=${interiorId}`);
     const corruptSnapshot = await databaseSnapshot("corrupt-before");
-    for (const preflightOnly of [true, false]) {
-      const name = preflightOnly ? "incompatible-preflight" : "incompatible-upgrade";
-      await assert.rejects(
-        preflight(name, preflightOnly),
-        /migration.*preflight|migration history/i,
+    // The earlier migration check runs without installation.yaml. Stage
+    // the same Installation bytes and runtime image as standalone preflight for apply.
+    await writeFile(join(profileDirectory, "installation.yaml"), await readFile(installationPath), {
+      mode: 0o600,
+    });
+    const applyProfile = join(profileDirectory, "apply.json");
+    await writeFile(
+      applyProfile,
+      JSON.stringify({ ...targetProfile, occ, images: { runtime: f.images.node } }),
+      { mode: 0o600 },
+    );
+    const applyUpgrade = (name: string) =>
+      f.run(
+        occ,
+        [
+          "installation",
+          "upgrade",
+          "apply",
+          "--profile",
+          applyProfile,
+          "--auto-approve",
+          "--evidence-dir",
+          join(f.directory, name),
+          "--",
+          ...upgradeTimeout,
+        ],
+        upgradeExecution,
       );
+    for (const [name, run] of [
+      ["incompatible-preflight", preflight],
+      ["incompatible-upgrade", applyUpgrade],
+    ] as const) {
+      await assert.rejects(run(name), /migration.*preflight|migration history/i);
       const log = await readFile(join(f.directory, name, "preflight-migration.log"), "utf8");
       assert.match(log, /MIGRATION_HISTORY_UNSUPPORTED/);
       await assertDatabase(corruptSnapshot, `${name}-after`);
+      assert.equal(await helmRevision(), revision);
       await assertIncumbent();
       await assertPreflightClean();
     }
@@ -514,7 +541,7 @@ test(
       `UPDATE drizzle.__drizzle_migrations SET hash='${interiorHash}' WHERE id=${interiorId}`,
     );
     const repairedSnapshot = await databaseSnapshot("repaired-before");
-    await preflight("compatible-preflight", true);
+    await preflight("compatible-preflight");
     assert.match(
       await readFile(join(f.directory, "compatible-preflight", "preflight-migration.log"), "utf8"),
       /"event":"migration.checked","history":"completed"/,

@@ -1960,7 +1960,7 @@ if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]]; then
   verify_installation_switch
 fi
 if ((preflight_only)); then
-  printf 'Preflight passed; no OCC writer was stopped. To deploy, omit --preflight-only and use the same reviewed inputs with a fresh evidence directory.\n'
+  printf 'Preflight passed; no OCC writer was stopped. Deploy during the maintenance window with the same reviewed inputs and fresh evidence.\n'
   exit 0
 fi
 printf '%s\n' "$installation_id" >"$evidence_dir/installation-id"

@@ -4,13 +4,17 @@
 import argparse
 import json
 import os
+import re
+import shlex
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
-OPERATIONS = ("plan", "preflight", "migration-check", "upgrade", "status", "resume", "cleanup-preflight")
+NEW_RUNS = ("apply", "preflight", "migration-check")
+OPERATIONS = ("plan", *NEW_RUNS, "status", "resume", "cleanup-preflight")
 REQUIRED = (
     "kubeconfig",
     "context",
@@ -26,6 +30,7 @@ IMAGE_FLAGS = {
     "runtime": "--runtime-image",
 }
 PROTECTED = {
+    "--profile",
     "--kubeconfig",
     "--context",
     "--namespace",
@@ -36,6 +41,7 @@ PROTECTED = {
     "--evidence-dir",
     "--occ",
     *IMAGE_FLAGS.values(),
+    "--auto-approve",
     "--preflight-only",
     "--migration-check-only",
     "--resume",
@@ -86,7 +92,7 @@ def profile_input(parser, filename):
         if (
             not isinstance(item, str)
             or not item.strip()
-            or any(ord(char) < 32 for char in item)
+            or not item.isprintable()
         ):
             parser.error(
                 "profile requires nonempty target, installation directory, and source fields"
@@ -97,7 +103,7 @@ def profile_input(parser, filename):
     if any(
         not isinstance(image, str)
         or not image.strip()
-        or any(ord(char) < 32 for char in image)
+        or not image.isprintable()
         for image in images.values()
     ):
         parser.error("profile images must be nonempty strings")
@@ -135,25 +141,136 @@ def report_status(parser, directory):
     except OSError:
         parser.error("cannot inspect private local evidence directory")
 
-    print("Local evidence observations (not current cluster health or resume authority):")
-    for name, present in observed.items():
-        print(f"  {name}: {'present' if present else 'absent'}")
     if observed["completed"]:
-        print("Completion was recorded; verify the current release and workloads separately.")
+        print("Status: completion was recorded; verify the current release and workloads separately.")
     elif observed["helm-started"]:
-        print("Helm intent was recorded; its outcome remains uncertain without completion evidence.")
+        print("Status: Helm intent was recorded; its outcome remains uncertain without completion evidence.")
     elif observed["database-migration-handoff.json"]:
-        print("A migration pause was recorded; confirm migration history before an authorized resume.")
+        print("Status: a migration pause was recorded; confirm migration history before an authorized resume.")
     elif observed["migration-check-passed"]:
-        print("The migration compatibility check and Job cleanup were recorded. This evidence cannot resume an upgrade.")
+        print("Status: the migration compatibility check and Job cleanup were recorded. This evidence cannot resume an upgrade.")
     else:
-        print("No completion was recorded; inspect the original attempt before any further write.")
+        print("Status: no completion was recorded; inspect the original attempt before any further write.")
+    print("Recorded markers: " + (", ".join(name for name, present in observed.items() if present) or "none"))
+    print("These are local observations, not current cluster health or resume authority.")
     if observed[".upgrade-lock"]:
         print("A lock marker exists; it does not prove whether the previous process is still running.")
 
 
+def check_revision(parser, checkout, revision):
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        parser.error("source revision must be a full lowercase Git commit SHA")
+    environment = os.environ.copy()
+    environment.pop("GIT_DIR", None)
+    environment.pop("GIT_COMMON_DIR", None)
+    environment.update(GIT_NO_LAZY_FETCH="1", GIT_ALLOW_PROTOCOL="")
+    git = ["git", "--no-optional-locks", "--no-replace-objects", "--git-dir=.git"]
+    try:
+        root = subprocess.check_output(
+            [*git, "rev-parse", "--show-toplevel"], cwd=checkout, env=environment,
+            stderr=subprocess.DEVNULL, text=True,
+        ).strip()
+        head = subprocess.check_output(
+            [*git, "rev-parse", "--verify", "HEAD^{commit}"], cwd=checkout, env=environment,
+            stderr=subprocess.DEVNULL, text=True,
+        ).strip()
+        matches = Path(root).samefile(checkout) and head == revision
+    except (OSError, subprocess.CalledProcessError):
+        parser.error("cannot read the reviewed release checkout revision")
+    if not matches:
+        parser.error("checkout commit does not match the profile source revision")
+
+
+def show_plan(parser, profile, profile_relative_path, extra, resume_run):
+    images = profile.get("images", {})
+    if not images:
+        parser.error("select a controller, broker, or runtime image before planning")
+    for name, image in images.items():
+        if not re.fullmatch(r"[^@\s]+@sha256:[a-f0-9]{64}", image):
+            parser.error(f"{name} must be an immutable SHA-256 image reference")
+        # Use the same Kubernetes reference parser as the upgrade, without inherited Node hooks.
+        try:
+            problem = subprocess.check_output(
+                ["node", "scripts/lib/image-reference-problem.ts", image],
+                env={"PATH": os.environ.get("PATH", os.defpath)},
+                stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.CalledProcessError):
+            parser.error("cannot run the image reference check; check your Node.js installation")
+        if problem:
+            parser.error(f"{name} must be a valid immutable SHA-256 image reference")
+
+    print("Resume preview (offline)" if resume_run else "Image upgrade plan (offline)")
+    print(f"  Kubeconfig: {profile_relative_path(profile['kubeconfig'])}")
+    print(f"  Context: {profile['context']}")
+    print(f"  Namespace: {profile['namespace']}")
+    print(f"  Helm release: {profile['release']}")
+    print(f"  Checkout: {profile['sourceRevision']}")
+    print(f"  Rendered baseline: {profile_relative_path(profile['installationDirectory'])}")
+    for name in IMAGE_FLAGS:
+        if name in images:
+            print(f"  {name}: {images[name]}")
+    if "runtime" in images:
+        print("  Agents: redeploy those running at the start of the upgrade")
+    else:
+        print("  Agents: keep current revisions")
+    if extra:
+        print("  Review any expert options and candidate overrides after --.")
+    print("No cluster contact or writes occurred during this preview. Current images and migration requirements are unknown.")
+    if resume_run:
+        print(f"Resume run: {Path(resume_run).absolute()}")
+        report_status(parser, resume_run)
+        print("Resume can continue deployment. Reconcile previous effects before approving.")
+    else:
+        print("Apply runs preflight and can stop OCC writers. Use the maintenance window.")
+
+
+def confirm(parser, operation):
+    sys.stdout.flush()
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        parser.exit(2, f"Approval required. Run {operation} in a terminal or pass --auto-approve.\n")
+    print(f"{operation.capitalize()} this image upgrade? Type yes to continue: ", end="", flush=True)
+    try:
+        answer = sys.stdin.readline(5)
+    except (KeyboardInterrupt, OSError, UnicodeError):
+        answer = ""
+    if answer != "yes\n":
+        if not answer:
+            print()
+        parser.exit(1, f"{operation.capitalize()} cancelled; no command dispatched.\n")
+
+
+def new_evidence(parser, checkout, base, operation):
+    try:
+        directory = base.resolve(strict=True)
+        info = directory.stat()
+        if (
+            directory.is_relative_to(checkout)
+            or info.st_uid != os.geteuid()
+            or info.st_mode & 0o022
+            or not info.st_mode & stat.S_IWUSR
+            or not str(directory).isprintable()
+        ):
+            parser.error(
+                "automatic evidence needs a writable profile directory outside the checkout, "
+                "owned by you and protected from other writers; specify a fresh --evidence-dir"
+            )
+        # Another writer must not be able to replace the path above the private run.
+        owners = {os.geteuid(), Path("/").stat().st_uid}
+        for ancestor in directory.parents:
+            info = ancestor.stat()
+            if info.st_uid not in owners or (info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX):
+                parser.error("profile directory has an unsafe ancestor; specify a fresh --evidence-dir")
+        # Reserve a private parent. The upgrade needs an absent leaf and may keep a sibling dispatch journal.
+        parent = tempfile.mkdtemp(prefix=f"occ-{operation}-", dir=directory)
+    except OSError:
+        parser.error("cannot reserve evidence beside the profile; specify a fresh --evidence-dir")
+    return str(Path(parent) / "evidence")
+
+
 def main():
     parser = argparse.ArgumentParser(
+        allow_abbrev=False,
         description="Run a coordinated production image upgrade from a private operator profile.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -167,14 +284,21 @@ def main():
     )
     parser.add_argument("operation", choices=OPERATIONS)
     parser.add_argument("--profile", help="Owner-only operator JSON file")
+    parser.add_argument("--auto-approve", action="store_true", help="Apply or resume without an interactive confirmation")
     parser.add_argument(
         "--evidence-dir",
-        help="Fresh evidence directory, or the original directory for resume/cleanup",
+        help="New evidence path (default: private run beside the profile), or the original path for recovery",
     )
     argv = sys.argv[1:]
     split = argv.index("--") if "--" in argv else len(argv)
     args = parser.parse_args(argv[:split])
     extra = argv[split + 1 :] if split < len(argv) else []
+    if args.auto_approve and args.operation not in ("apply", "resume"):
+        parser.error("--auto-approve is only valid with apply or resume")
+    if args.evidence_dir is not None and (
+        not args.evidence_dir.strip() or not str(Path(args.evidence_dir).absolute()).isprintable()
+    ):
+        parser.error("evidence path must be nonempty and printable")
     if args.operation in ("plan", "status") and extra:
         parser.error("plan and status do not accept expert upgrade options")
     if args.operation == "status":
@@ -183,21 +307,30 @@ def main():
     elif args.operation == "plan":
         if not args.profile or args.evidence_dir is not None:
             parser.error("plan requires --profile and does not use --evidence-dir")
-    elif not args.profile or not args.evidence_dir:
-        parser.error("this operation requires --profile and --evidence-dir")
+    elif not args.profile:
+        parser.error("this operation requires --profile")
+    elif args.operation not in NEW_RUNS and not args.evidence_dir:
+        parser.error("recovery requires the original --evidence-dir")
     extra_flags = {item.split("=", 1)[0] for item in extra}
     if "--resume" in extra_flags:
         parser.error(
             "use the resume operation and remove only --resume; retain every other original "
             "expert option and applicable recovery attestation after --, including "
-            "--migration-history-checked when required: scripts/upgrade-production resume "
-            "--profile PROFILE --evidence-dir ORIGINAL -- ORIGINAL_EXPERT_OPTIONS"
+            "--migration-history-checked when required: occ installation upgrade resume RUN "
+            "--profile PROFILE -- ORIGINAL_EXPERT_OPTIONS"
         )
     if "--preflight-only" in extra_flags:
         parser.error(
             "use the preflight operation and remove only --preflight-only; retain every other "
-            "original expert option after --: scripts/upgrade-production preflight "
-            "--profile PROFILE --evidence-dir FRESH -- ORIGINAL_EXPERT_OPTIONS"
+            "original expert option after --: occ installation upgrade preflight "
+            "--profile PROFILE -- ORIGINAL_EXPERT_OPTIONS"
+        )
+    if args.operation in NEW_RUNS and extra_flags & {
+        "--recover-helm", "--recovery-reviewed", "--migration-history-checked"
+    }:
+        parser.error(
+            "recovery attestations require the original run. After reconciling its outcome, "
+            "use occ installation upgrade resume RUN --profile PROFILE -- ORIGINAL_OPTIONS_AND_ATTESTATIONS"
         )
     if extra_flags & PROTECTED:
         parser.error("cannot override profile or operation arguments after --")
@@ -210,44 +343,47 @@ def main():
         return
 
     profile = profile_input(parser, args.profile)
-    base = Path(args.profile).absolute().parent
+    profile_path = Path(args.profile).absolute()
+    base = profile_path.parent
 
     def path(value):
         candidate = Path(value)
         return str(candidate if candidate.is_absolute() else base / candidate)
 
-    if args.operation == "plan":
-        revision = profile["sourceRevision"]
-        if len(revision) != 40 or any(c not in "0123456789abcdef" for c in revision):
-            parser.error("source revision must be a full lowercase Git commit SHA")
-        if not profile.get("images"):
-            parser.error("select a controller, broker, or runtime image before planning")
-        environment = os.environ.copy()
-        environment.pop("GIT_DIR", None)
-        environment.pop("GIT_COMMON_DIR", None)
-        environment.update(GIT_NO_LAZY_FETCH="1", GIT_ALLOW_PROTOCOL="")
-        git = ["git", "--no-optional-locks", "--no-replace-objects", "--git-dir=.git"]
-        try:
-            root = subprocess.check_output(
-                [*git, "rev-parse", "--show-toplevel"], cwd=checkout, env=environment,
-                stderr=subprocess.DEVNULL, text=True,
-            ).strip()
-            head = subprocess.check_output(
-                [*git, "rev-parse", "--verify", "HEAD^{commit}"], cwd=checkout, env=environment,
-                stderr=subprocess.DEVNULL, text=True,
-            ).strip()
-            matches = Path(root).samefile(checkout) and head == revision
-        except (OSError, subprocess.CalledProcessError):
-            parser.error("cannot read the reviewed release checkout revision")
-        if not matches:
-            parser.error("checkout commit does not match the profile source revision")
-        print(f"Target: context {profile['context']}, namespace {profile['namespace']}, release {profile['release']}")
-        print(f"Selected source revision: {revision} (matches checkout)")
-        print(f"Rendered installation directory: {path(profile['installationDirectory'])}")
-        print("Selected image components: " + ", ".join(profile["images"]))
-        print("No cluster contact or writes occurred. Review production prerequisites before Secret binding or preflight; image references, rendered files, credentials, and cluster access remain unverified.")
-        print("Protected configuration changes use the chart-owned operation; authentication changes use stopped authentication maintenance.")
-        return
+    if not str(profile_path).isprintable():
+        parser.error("profile path must be printable")
+    if args.operation in NEW_RUNS and args.evidence_dir is not None:
+        locator = Path(args.evidence_dir)
+        # Never direct the operator to an existing attempt as if it belonged to this run.
+        if os.path.lexists(locator) or os.path.lexists(str(locator) + ".dispatch-state"):
+            parser.error("evidence or its dispatch journal already exists; choose a fresh --evidence-dir")
+    if args.operation in ("plan", "apply", "resume"):
+        check_revision(parser, checkout, profile["sourceRevision"])
+        resume_run = args.evidence_dir if args.operation == "resume" else None
+        show_plan(parser, profile, path, extra, resume_run)
+        if args.operation == "plan":
+            return
+        if not args.auto_approve:
+            confirm(parser, args.operation)
+    elif args.operation == "cleanup-preflight":
+        print("Cleanup removes only the original run's recorded temporary resources. It cannot resume deployment.")
+    else:
+        if args.evidence_dir is None:
+            check_revision(parser, checkout, profile["sourceRevision"])
+        print("This check creates temporary cluster resources and confirms cleanup before reporting success.")
+
+    if args.operation in NEW_RUNS:
+        if args.evidence_dir is None:
+            args.evidence_dir = new_evidence(parser, checkout, base, args.operation)
+        locator = str(Path(args.evidence_dir).absolute())
+        print(f"Evidence: {locator}")
+        run = shlex.quote(locator)
+        print(f"Inspect: occ installation upgrade status {run}")
+        if args.operation == "apply":
+            # Never echo arbitrary expert option values into the operator's run log.
+            note = "; append the original options after --" if extra else ""
+            print(f"Resume (only after reconciliation{note}): occ installation upgrade resume {run} --profile {shlex.quote(str(profile_path))}")
+    sys.stdout.flush()
 
     target = [
         "--kubeconfig",
