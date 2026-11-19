@@ -416,7 +416,15 @@ export async function prepareProductionHelmControlPlane({
   const adminEmail = `admin-${suffix}@example.invalid`;
   const values = {
     images: { controller: images.controller },
-    ...(channelEgress ? { channelEgress: { ...channelEgress, enabled: true } } : {}),
+    ...(channelEgress
+      ? {
+          channelEgress: {
+            ...channelEgress,
+            enabled: true,
+            gatewayClassName: gatewayRouting?.gatewayClassName ?? "eg",
+          },
+        }
+      : {}),
     installation: { name: installationName },
     auth: { baseUrl: authBaseURL },
     agentNativeAdmin: { domain: agentNativeAdminDomain },

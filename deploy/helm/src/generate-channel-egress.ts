@@ -80,6 +80,13 @@ const document = {
                     },
                     route: { cluster: "channel-egress-inspection" },
                   },
+                  {
+                    match: {
+                      path: "/stats",
+                      headers: [{ name: ":method", string_match: { exact: "GET" } }],
+                    },
+                    route: { cluster: "channel-egress-inspection" },
+                  },
                   { match: { prefix: "/" }, direct_response: { status: 404 } },
                 ],
               },

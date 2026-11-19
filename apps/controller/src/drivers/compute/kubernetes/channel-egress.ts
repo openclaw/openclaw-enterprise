@@ -353,21 +353,58 @@ export class KubernetesChannelEgress {
     }
   }
 
-  private async inspect(pod: Resource): Promise<Record<string, unknown>[]> {
+  private async inspection(
+    pod: Resource,
+    path: string,
+    limit: number,
+  ): Promise<Record<string, unknown>> {
     const address = String(pod.status!.podIP);
     const host = isIP(address) === 6 ? `[${address}]` : address;
-    const response = await fetch(`http://${host}:${this.options.inspectionPort}/config_dump`, {
+    const response = await fetch(`http://${host}:${this.options.inspectionPort}${path}`, {
       redirect: "error",
       signal: AbortSignal.timeout(5_000),
     });
     if (!response.ok) {
       throw new Error("Channel egress configuration inspection failed.");
     }
-    const bytes = await readCappedBody(response.body, 16 * 1024 * 1024);
+    const bytes = await readCappedBody(response.body, limit);
     if (!bytes) {
       throw new Error("Channel egress configuration inspection exceeded its response limit.");
     }
-    const body = asRecord(JSON.parse(bytes.toString("utf8")));
+    try {
+      const body = asRecord(JSON.parse(bytes.toString("utf8")));
+      if (body) {
+        return body;
+      }
+    } catch {
+      // Inspection failures must not echo response bytes into deployment errors.
+    }
+    throw new Error("Channel egress returned invalid inspection data.");
+  }
+
+  private async drained(pod: Resource): Promise<boolean> {
+    const name = "listener_manager.total_filter_chains_draining";
+    const query = new URLSearchParams({
+      format: "json",
+      filter: "^listener_manager\\.total_filter_chains_draining$",
+    });
+    const body = await this.inspection(pod, `/stats?${query}`, 64 * 1024);
+    const values = Array.isArray(body.stats)
+      ? body.stats.map(asRecord).filter((stat) => stat?.name === name)
+      : [];
+    if (
+      values.length !== 1 ||
+      typeof values[0]?.value !== "number" ||
+      !Number.isSafeInteger(values[0].value) ||
+      values[0].value < 0
+    ) {
+      throw new Error("Channel egress did not report its filter-chain drain counter.");
+    }
+    return values[0].value === 0;
+  }
+
+  private async inspect(pod: Resource): Promise<Record<string, unknown>[]> {
+    const body = await this.inspection(pod, "/config_dump", 16 * 1024 * 1024);
     const clusters = Array.isArray(body?.configs)
       ? body.configs
           .map(asRecord)
@@ -536,8 +573,9 @@ export class KubernetesChannelEgress {
     const policyHash = sha256Hex(
       JSON.stringify({
         drivers: requirements.drivers,
-        destinations: requirements.destinations,
-        excludedCidrs: [...this.options.excludedCidrs].sort(),
+        // Include the complete effective policy so an implementation or mandatory
+        // restriction change also gets a separate generation and serving binding.
+        filterChain: channelEgressFilterChain("policy", requirements.destinations, this.options),
       }),
       32,
     );
@@ -643,7 +681,7 @@ export class KubernetesChannelEgress {
         throw new Error("The channel egress Gateway was replaced during reconciliation.");
       }
       const dumps = await Promise.all(before.pods.map((pod) => this.inspect(pod)));
-      const installed = dumps.every((listeners) => {
+      let installed = dumps.every((listeners) => {
         const listener = listeners.find((entry) => entry.name === this.listenerName(binding.port));
         const active = asRecord(asRecord(listener?.active_state)?.listener);
         const socket = asRecord(asRecord(active?.address)?.socket_address);
@@ -678,6 +716,17 @@ export class KubernetesChannelEgress {
           !listener?.error_state
         );
       });
+      if (installed) {
+        // Envoy omits in-place filter-chain drains from config_dump. This gauge
+        // reaches zero only after every worker has removed the draining chains
+        // and their connections. A concurrent fleet drain delays safe reuse.
+        const drained = await Promise.all(before.pods.map((pod) => this.drained(pod)));
+        // Activation also requires a readable counter, so an unobservable fleet
+        // cannot start channels whose later revocation it cannot prove.
+        if (binding.state === "revoking") {
+          installed = drained.every(Boolean);
+        }
+      }
       const after = await this.fleet();
       if (
         installed &&
@@ -985,6 +1034,36 @@ export class KubernetesChannelEgress {
     routing.proxyUrl = `http://${this.options.serviceName}.${this.options.envoyNamespace}.svc:${binding.port}`;
   }
 
+  private async requireStoppedSource(binding: ChannelEgressBinding): Promise<void> {
+    if (!(await this.read(this.header("Namespace", binding.namespace, "", "v1")))) {
+      return;
+    }
+    // Policy readback is not CNI acknowledgement. Do not reuse a port while an
+    // old source Pod exists or its controllers can still recreate one.
+    for (const kind of ["Deployment", "ReplicaSet", "Pod"]) {
+      const listed = await this.request((api) =>
+        api.list<Resource>(kind === "Pod" ? "v1" : "apps/v1", kind, binding.namespace),
+      );
+      if (listed.metadata?._continue) {
+        throw new Error("Channel source workload inventory is incomplete.");
+      }
+      for (const resource of listed.items) {
+        const labels =
+          kind === "Pod"
+            ? resource.metadata.labels
+            : asRecord(asRecord(asRecord(resource.spec?.template)?.metadata)?.labels);
+        if (labels?.[CHANNEL_EGRESS_BINDING_LABEL] !== binding.id) {
+          continue;
+        }
+        if (kind === "Pod" || resource.spec?.replicas !== 0) {
+          throw new Error(
+            "Channel source workloads must terminate before their listener port is released.",
+          );
+        }
+      }
+    }
+  }
+
   async retire(revision: AgentRevision, exceptBinding?: string): Promise<void> {
     // An attempt that failed before allocation has no tunnel to drain. A complete
     // empty binding inventory permits its cleanup even while the fleet is absent.
@@ -1008,6 +1087,7 @@ export class KubernetesChannelEgress {
       // Retain stable empty policies as fencing records. Deleting them would allow a
       // delayed create from an old worker to reopen a port after it was reassigned.
       await this.reconcileGrants(denied, true);
+      await this.requireStoppedSource(binding);
       const current = await this.read(
         this.header("EnvoyPatchPolicy", this.slotName(binding.port), this.options.gatewayNamespace),
       );

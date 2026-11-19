@@ -8787,7 +8787,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
           "Restore the managed channel egress configuration before retiring channel bindings.",
         );
       }
-      await this.channelEgress.retire(revision);
     }
     const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
     const gatewayNamespace = this.gatewayNamespace(revision, namespace);
@@ -8801,6 +8800,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (existingNamespace === undefined) {
       await this.lifecycle.beforeWorkloadStop(revision);
       await this.removeStoppedGateway(revision, namespace);
+      if (enabledChannelEntries(revision.configuration).length > 0) {
+        await this.channelEgress?.retire(revision);
+      }
       return;
     }
     this.verifyNamespaceOwnership(
@@ -8832,6 +8834,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       await this.removeStoppedGateway(revision, namespace);
       await this.shutdownRevisionRuntime(revision, namespace);
     }
+    if (enabledChannelEntries(revision.configuration).length > 0) {
+      await this.channelEgress?.retire(revision);
+    }
     // Its Pods are gone, so drop the revision's credential copies and snapshots.
     // Preparing the revision again re-projects them from the canonical sources.
     await this.deleteRetiredRevisionArtifacts(revision, namespace);
@@ -8857,7 +8862,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
           "Restore the managed channel egress configuration before retiring channel bindings.",
         );
       }
-      await this.channelEgress.retire(revision);
     }
     const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
     const gatewayNamespace = this.gatewayNamespace(revision, namespace);
@@ -8871,6 +8875,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (existingNamespace === undefined) {
       await this.lifecycle.beforeWorkloadStop(revision);
       await this.removeRetiredGateway(revision, namespace);
+      if (enabledChannelEntries(revision.configuration).length > 0) {
+        await this.channelEgress?.retire(revision);
+      }
       return;
     }
     this.verifyNamespaceOwnership(
@@ -8888,6 +8895,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     await this.shutdownRevisionRuntime(revision, namespace);
     await this.retireLegacyWorkspaceNode(revision, namespace);
     await this.removeRetiredGateway(revision, namespace);
+    if (enabledChannelEntries(revision.configuration).length > 0) {
+      await this.channelEgress?.retire(revision);
+    }
     if (this.projectsRepositoryMaterial(revision)) {
       await this.waitForRevisionPodsToTerminate(
         revision,

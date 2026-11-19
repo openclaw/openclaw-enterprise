@@ -6,8 +6,7 @@ import {
   assertSlackChannelDestination,
   verifySingleSlackDelivery,
 } from "../helpers/slack-delivery.ts";
-import { parseGatewayObservation } from "../helpers/normal-agent-observation-receipts.ts";
-import { sessionEvidenceScript } from "../helpers/normal-agent-gateway-evidence.ts";
+import { gatewaySlackEvidence } from "../helpers/slack-native-evidence.ts";
 import {
   arrangeProductionTopology,
   assertActualModelTurn,
@@ -256,63 +255,24 @@ test(
       senderIdentity,
       replyMode: "root",
       nativeEvidence: async (nonce) => {
-        const execGateway = (...args) =>
-          kubectl(
-            "exec",
-            topology.gatewayPod.metadata.name,
-            "--namespace",
-            topology.gatewayPlacement,
-            "--",
-            ...args,
-          );
-        const probe =
-          "const{DatabaseSync}=require('node:sqlite');const d=new DatabaseSync('/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite',{readOnly:true});console.log(JSON.stringify(d.prepare('SELECT session_key FROM session_nodes').all().map(x=>x.session_key)));d.close()";
-        const keys = JSON.parse(await execGateway("node", "-e", probe));
-        const matches = [];
-        for (const key of keys.filter((key) => key.includes("slack"))) {
-          const proof = parseGatewayObservation(
-            await execGateway(
-              "node",
-              "-e",
-              sessionEvidenceScript,
-              key,
-              nonce,
-              "",
-              nonce,
-              JSON.stringify({ toolNames: [] }),
+        const proof = await gatewaySlackEvidence(
+          (...args) =>
+            kubectl(
+              "exec",
+              topology.gatewayPod.metadata.name,
+              "--namespace",
+              topology.gatewayPlacement,
+              "--",
+              ...args,
             ),
-          );
-          if (!proof.userMarkerSeen || !proof.terminalAssistantMarkerSeen) {
-            continue;
-          }
-          const turns = (proof.codexTurns ?? []).filter(
-            (turn) => turn.promptSeen && turn.terminalAssistantSeen,
-          );
-          if (turns.length === 0) {
-            continue;
-          }
-          assert.equal(
-            turns.length,
-            1,
-            "one ingress must correlate with one completed native Codex turn",
-          );
-          matches.push({
-            sessionKey: key,
-            sessionId: proof.sessionId,
-            nativeTurnPrefix: turns[0].turnPrefix,
-          });
-        }
-        assert.equal(
-          matches.length,
-          1,
-          "the exact gateway must persist the Slack prompt and one completed native Codex response",
+          nonce,
         );
         assert.equal(
           (await resource("pod", topology.gatewayPod.metadata.name, topology.gatewayPlacement))
             .metadata.uid,
           topology.gatewayPod.metadata.uid,
         );
-        return matches[0];
+        return proof;
       },
     });
     if (process.env.OCC_TEST_SLACK_EVIDENCE_PATH) {
@@ -384,20 +344,32 @@ test(
         );
       });
     }
-    const recovered = await topology.adminRequest(
-      "POST",
-      `/namespaces/${topology.agent.namespaceId}/channel-directory/lookup`,
-      {
-        agentId: topology.agent.id,
-        secretId: topology.secretApi.slackBot.id,
-        kind: "users",
-        ids: [senderIdentity.user_id],
+    // Pod readiness does not acknowledge the restored provider listener. Require
+    // a real authorized lookup to succeed; transient 503s must remain fail-closed.
+    await waitFor(
+      "OCC provider access through its restored listener",
+      async () => {
+        const recovered = await topology.adminRequest(
+          "POST",
+          `/namespaces/${topology.agent.namespaceId}/channel-directory/lookup`,
+          {
+            agentId: topology.agent.id,
+            secretId: topology.secretApi.slackBot.id,
+            kind: "users",
+            ids: [senderIdentity.user_id],
+          },
+        );
+        if (recovered.status === 503) {
+          return false;
+        }
+        assert.equal(recovered.status, 200);
+        assert.equal(recovered.data.workspaceId, gatewayIdentity.team_id);
+        assert.ok(
+          recovered.data.candidates.some((candidate) => candidate.id === senderIdentity.user_id),
+        );
+        return true;
       },
-    );
-    assert.equal(
-      recovered.status,
-      200,
-      "OCC provider access must recover through its restored listener",
+      120_000,
     );
     context.diagnostic(
       "Channel credential isolation, assigned Envoy listener, and single-message native Codex Slack delivery verified.",

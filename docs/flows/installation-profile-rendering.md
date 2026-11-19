@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-11-16
-last_updated_session: authoring-run/a92d5e93-e5c6-44c1-acf1-b4d08ee54a70
+updated: 2026-11-19
+last_updated_session: authoring-run/64d7828e-4701-4e9c-8c92-0b3617945c7a
 ---
 
 # Installation Profile Rendering Flow
@@ -324,6 +324,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 05:13: Replace the shared channel proxy setting with managed channel egress inputs. (authoring-run/64d7828e-4701-4e9c-8c92-0b3617945c7a - fc683cdfe9b73215d0503cdfaf7917f54be7f17e)
 
 - 2026-11-18: Render `presets.includeDefaults` from site input, defaulting to `true`. (accompanying change)
 

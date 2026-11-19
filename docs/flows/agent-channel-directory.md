@@ -160,7 +160,7 @@ view.
 
 ## Changelog
 
-- 2026-11-19 00:02: Routed provider requests through managed OCC channel egress (authoring-run/64d7828e-4701-4e9c-8c92-0b3617945c7a - e05a54b4b3daf86249c89aaeb2a8491dd52c80cc).
+- 2026-11-19 00:02: Routed provider requests through managed OCC channel egress (authoring-run/64d7828e-4701-4e9c-8c92-0b3617945c7a - e05a54b4b3daf86249c89aaeb2a8491dd52c80cc)
 
 - 2026-11-14 00:08: Clarify pending client writes and fresh drain budgets in the accompanying Slack proxy correction. (authoring-run/7504b1da-810c-4ead-a42b-831ed5e9c3e8 - 3309c7be21ce3c3c0256eb470f294c75c2c771f1)
 

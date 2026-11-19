@@ -48,6 +48,12 @@
       "expectedTests": [
         "channel egress isolates current Driver generations and retires real Agent bindings"
       ]
+    },
+    {
+      "path": "tests/integration/channel-egress-helm-real.test.ts",
+      "expectedTests": [
+        "Helm-installed OCC and PostgreSQL deploy isolated Slack routing through real model cutover"
+      ]
     }
   ],
   "fileConcurrency": 1

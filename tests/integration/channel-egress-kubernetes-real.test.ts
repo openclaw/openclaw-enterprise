@@ -122,6 +122,65 @@ test(
       );
     const before = (await bindings()).find((binding) => binding.agentId === agentAId);
     assert.ok(before);
+    const connectionCount = async (generation: string): Promise<number | undefined> => {
+      const workers = rows(
+        record(
+          JSON.parse(
+            await kubectl(
+              "get",
+              "pods",
+              "--namespace",
+              platformNamespace,
+              "--selector",
+              "app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/component=worker",
+              "-o",
+              "json",
+            ),
+          ),
+        ).items,
+      );
+      const envoy = rows(
+        record(
+          JSON.parse(
+            await kubectl(
+              "get",
+              "pods",
+              "--namespace",
+              fleetNamespace,
+              "--selector",
+              `gateway.envoyproxy.io/owning-gateway-name=${fleetName}`,
+              "-o",
+              "json",
+            ),
+          ),
+        ).items,
+      );
+      assert.ok(workers[0] && envoy.length === 1);
+      // Internal worker inspection is distinct from provider CONNECT traffic.
+      const script =
+        "const u=new URL(process.argv[1]);u.search=new URLSearchParams({format:'json',filter:process.argv[2]});const r=await fetch(u);if(!r.ok)throw Error('inspection unavailable');const b=await r.json();console.log(JSON.stringify(b.stats))";
+      const name = `http.${generation}.downstream_cx_active`;
+      const statistics = rows(
+        JSON.parse(
+          await kubectl(
+            "exec",
+            podName(workers[0]),
+            "--namespace",
+            platformNamespace,
+            "--",
+            "node",
+            "--input-type=module",
+            "-e",
+            script,
+            `http://${text(record(envoy[0]!.status).podIP)}:${Number(egress.inspectionPort)}/stats`,
+            `^${name.replaceAll(".", "\\.")}$`,
+          ),
+        ),
+      );
+      const value = statistics.find((stat) => stat.name === name)?.value;
+      assert.ok(value === undefined || typeof value === "number");
+      return value as number | undefined;
+    };
     await assertActualModelTurn({ ...topology, harnessId: "codex" });
     t.diagnostic("A real model turn completed while channel proxy routing was enabled.");
 
@@ -638,6 +697,10 @@ test(
       Number(before.port),
     );
 
+    await waitFor(
+      "a serving Slack tunnel on A's original generation",
+      async () => ((await connectionCount(text(before.id))) ?? 0) > 0,
+    );
     // Free A's slot through normal deployment, and restart with another Driver
     // generation before the SAME queued candidate retries. B's installed policy stays intact.
     await pauseWorker();
@@ -685,6 +748,11 @@ test(
     assert.ok(reused);
     assert.equal(reused.port, before.port);
     assert.notEqual(reused.id, before.id);
+    assert.equal(
+      (await connectionCount(text(before.id))) ?? 0,
+      0,
+      "a reused port must not leave a connection in the revoked generation",
+    );
     assert.notEqual(reused.policyHash, before.policyHash);
     assert.notEqual(
       reused.policyHash,

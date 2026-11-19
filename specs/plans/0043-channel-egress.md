@@ -5,7 +5,7 @@ rfc: ../rfcs/0044-channel-egress.md
 # Implementation plan: Per-Agent channel egress
 
 - **ID:** RFC-0044
-- **Delivery status:** In progress
+- **Delivery status:** In progress (implementation and local verification complete; final review pending)
 - **Owner:** kevinlin-openai
 - **Source baseline:** `b401e36cb8754af762120e28cbf150e379482fef`
 - **Authority:** [RFC-0044](../rfcs/0044-channel-egress.md), submitted in [PR #6507](https://github.com/openclaw/openclaw-enterprise/pull/6507).
@@ -108,9 +108,13 @@ workflow tests.
   serving egress Pod through a worker-only read-only inspection listener, and
   checks exact NetworkPolicies. Translation status alone is insufficient.
 - Cleanup installs a new deny filter chain, waits until each serving Pod shows
-  that generation with no old draining chain, and removes exact source grants.
-  Only then can it delete resources and release the reservation using
-  compare-and-swap. Unknown or unavailable Pods make cleanup retry.
+  that generation with no old draining listener and a zero filter-chain drain
+  gauge, and removes exact source grants. In-place filter-chain drains are not
+  present in Envoy's `config_dump`; the separate gauge is required.
+  Before release, source Pods must be absent and their Deployments and ReplicaSets
+  must have no desired replicas. This fences port reuse while CNI updates propagate.
+  Only then can it release the reservation using compare-and-swap. Unknown or
+  unavailable Pods make cleanup retry.
 - IPv4 uses upstream RBAC, a complete special-use exclusion list and installation
   network exclusions. IPv6 rules remain unsupported until qualified and fail
   explicitly; IPv6 upstream connections remain denied.
@@ -150,14 +154,14 @@ workflow tests.
 
 ## Verification
 
-| Criterion | Supported proof                                                                                                                               | Status                                                 |
-| --------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| AC-1      | Helm-installed API and worker, PostgreSQL, real Slack credential validation, directory lookup, and model-backed message/reply                 | Pending                                                |
-| AC-2      | Distinct Agent policies and no-channel Agent; allowed public destinations; denied cross-listener, Harness, unlisted target, and direct access | Pending                                                |
-| AC-3      | Envoy absent, rejected policy, and exhausted capacity; OCC stays usable                                                                       | Pending                                                |
-| AC-4      | Replacement, disable, delete, worker restart, concurrent allocation, changed Driver rules on retry, tunnel termination, and port reuse        | Pending                                                |
-| AC-5      | Real malformed targets, boundary lookalikes, explicit IPs, DNS changes, alternate addresses, and IPv4/IPv6 restrictions                       | Native probe partially passed; remaining proof pending |
-| AC-6      | Packaged Slack proxy removal, private routing, dedicated Harness model turns before and after cutover                                         | Pending                                                |
+| Criterion | Supported proof | Status |
+| --- | --- | --- |
+| AC-1 | Helm-installed API, worker and PostgreSQL; Slack validation, users/channels directory, genuine message/reply and native Codex correlation | Passed |
+| AC-2 | Distinct Agent policies and no-channel Agent; allowed public destinations; denied cross-listener, Harness, unlisted target and direct access | Passed |
+| AC-3 | Envoy absent, rejected policy and exhausted capacity; OCC stays usable | Passed, including final outage/model/recovery repeat |
+| AC-4 | Replacement, disable, delete, worker restart, concurrent allocation, changed Driver retry, tunnel termination and port reuse | Passed with final drain and source-workload checks |
+| AC-5 | Malformed targets, boundary lookalikes, explicit IP/CIDR, public/private/mixed DNS answers and IPv4/IPv6 restrictions | Passed |
+| AC-6 | Packaged Slack proxy removal, private routing and dedicated model turns before and after cutover | Passed on native amd64; native multi-architecture check pending |
 
 Use the existing Kubernetes integration workflow with a disposable cluster and
 enforcing NetworkPolicies. Private Pod addresses are negative cases. Test model
@@ -166,52 +170,74 @@ private test evidence in the repository.
 
 ## Remaining delivery
 
-The qualified implementation uses the separate Envoy 1.39.4 fleet and scoped
-patch policies described above. Finish the lifecycle and DNS-change cases,
-repeat affected checks at the final revision, and resolve independent review.
-The RFC remains Proposed; implementation does not change its human-review status.
+Implementation and local AC-1 through AC-6 proof are complete on the selected
+amd64 environment. Before merge, resolve final independent review, native image
+checks and the RFC's extension/image decision. The RFC remains Proposed;
+implementation does not change its human-review status. No merge or release is
+authorized by this delivery.
 
 ## Delivery record
 
 The RFC branch was merged normally into the implementation branch. The contract,
 trusted resolver, Compute lifecycle, dedicated Envoy packaging, OCC listener and
 proxy removal are implemented. [Implementation PR #6529](https://github.com/openclaw/openclaw-enterprise/pull/6529)
-is separate from the RFC PR and remains a draft during verification.
+is separate from the RFC PR. Current behavior belongs to the
+[managed channel egress reference](../../docs/reference/drivers/kubernetes-compute/channel-egress.md).
 
-The following real checks passed on the implementation candidate:
+Real checks on the implementation candidate:
 
-- The three required Kubernetes fixture files passed four cases with zero skips.
-  They prove API, RBAC, storage, reconciliation and NetworkPolicy behavior.
-- The prepared `images-runtime-startup` lane passed 32 tests in seven files,
-  with zero skips, on native amd64. This is not ARM64 qualification.
-- The Slack runtime test passed a genuine message/reply, one correlated native
-  Codex turn, credential placement, OCC credential validation, both directory
-  operations and Harness listener denial. A subsequent run also stopped the
-  actual egress fleet: OCC stayed usable, deployment failed before creating a
-  revision, and direct Slack access remained denied.
-- The production Helm test installed OCC and disposable PostgreSQL through Helm.
-  CLI bootstrap, tenant RoleBindings, four model replies across two revisions,
-  API and Gateway network denials, and credential-output boundaries passed.
-  This is a separate installation from the Slack runtime fixture. Optional
-  OTLP and independent image-upgrade scenarios were not selected.
-- Documentation, workspace, formatting and TypeScript checks passed before the
-  final proof additions. Affected API, Compute, profile and upgrade regressions
-  passed after removal of obsolete external-proxy assumptions.
+- `channel-egress-helm-real.test.ts`: one case passed with zero skips in the final 286.4-second run.
+  The actual Helm-installed OCC and PostgreSQL completed dedicated model turns
+  across two revisions, credential validation, users and channels lookup, one
+  Slack message/reply, and normal Agent deletion with listener retirement. The
+  reply correlated with exactly one completed native Codex turn, with a
+  60-second observation for duplicates. Gateway and Harness network denials passed.
+- `channel-egress-kubernetes-real.test.ts`: one fresh case passed with zero skips
+  in 356.6 seconds. It covered rejected writes, concurrent allocation, capacity,
+  current Driver rules on retry, distinct policies, public/private/mixed DNS,
+  IP/CIDR and IPv6 target denial, disablement, deletion, tunnel retirement and
+  port reuse. It also completed model turns before and after replacement.
+- `harness-topology-k3d-slack-real.test.mjs`: one case passed with zero skips in
+  264.6 seconds. It verified a genuine Slack exchange, one native Codex turn and
+  credential placement. With the actual Envoy Pods absent, OCC stayed usable,
+  a real model turn completed, channel activation failed before revision admission,
+  and direct Slack access stayed denied. Authorized directory lookup succeeded
+  after fleet recovery; Pod readiness alone was not treated as provider readiness.
+- The lifecycle fixture initially omitted the new read-only ReplicaSet permission.
+  Production Helm already included it. A diagnostic run confirmed fail-closed
+  reservation retention and recovered after repair. The reported final run used
+  the corrected fixture from setup and required no manual intervention.
+- The three required Kubernetes fixture files passed four cases with zero skips
+  in the final 229.3-second run. They prove API, RBAC, storage,
+  reconciliation and NetworkPolicy behavior, not model execution.
+- The prepared native amd64 image lane passed 32 runtime tests in seven files.
+  The runtime rebuilt after the main merge passed its 32 tests; six controller
+  startup cases passed on the final controller image with zero skips in 21.0 seconds.
+  These results do not qualify ARM64.
+- A separate production Helm/TUI case passed four model replies across two
+  revisions, tenant RoleBindings and API/Gateway network denials. Optional OTLP
+  and independent image-upgrade scenarios were not selected.
+- The final affected API checks passed 129 cases, Compute/network/Slack checks
+  passed 458, contract/Slack configuration checks passed 51, chart/profile checks
+  passed 135, and the updated Console fixture passed two headless browser cases.
+  Each reported set had zero skips. Another 20 upgrade/preflight cases passed.
+  Lint, TypeScript, workspace, OpenAPI, documentation links/length and CI test
+  registration checks passed.
 
-The lifecycle case passed on the stricter actual-port build with zero skips. It
-covered rejected writes, concurrent allocation, exhausted capacity, saved-revision
-retry with changed Driver rules, distinct policies, public/private/mixed DNS,
-IP/CIDR and IPv6 target denial, channel disablement, deletion, safe port reuse,
-and model turns before and after replacement. Final source checks and the final
-Slack/fleet-failure repeat remain in progress.
+An audit of Envoy source found that `config_dump` omits in-place filter-chain
+drains. Cleanup now also checks the drain gauge on every serving Pod. It requires
+old source Pods to be absent and their Deployments and ReplicaSets to have no
+desired replicas before reuse, because policy readback does not acknowledge CNI
+revocation. The final lifecycle run exercised this implementation.
 
 The isolated autoreview CLI failed authentication before producing an assessment.
 ClawSweeper independently reviewed checkpoint `c1b11f202` and reported no definite
-P0–P2 findings. Its low-value absence-only test was removed; real transport cases
-own that proof. Its review does not cover later changes. Before merge, the human
-RFC decision and the review's compatibility/upgrade evidence request remain open.
-No previous-release upgrade or compatibility shim is claimed; the RFC intentionally
-rejects retired proxy settings and introduces no database format.
+P0–P2 findings. Its absence-only test was removed; real transport cases own that
+proof. Its review does not cover later changes. Before merge, the human RFC
+extension/image decision, final independent review and native image checks remain.
+No previous-release upgrade or compatibility shim is claimed. The RFC intentionally
+rejects retired proxy settings and introduces no database format. Saved revisions
+with current Driver rules were exercised through real worker restarts and retries.
 
 Private credentials and raw runtime evidence stay outside the repository.
 

@@ -23,6 +23,13 @@ Harness denial, OCC credential and directory requests, and failure with the
 actual Envoy Pods stopped. This proves rendered resources and real API/worker Pods, not
 an entire Helm release installation or upgrade lifecycle.
 
+`channel-egress-helm-real.test.ts` supplies that separate installation proof. It
+installs the actual OCC chart and a disposable PostgreSQL Helm fixture, binds the
+chart's tenant roles, uses a permitted HTTPS operator peer, and exercises dedicated
+model turns across revision cutover plus Slack delivery. PostgreSQL uses the
+repository's pinned fixture image unless `OCC_TEST_PRODUCTION_POSTGRES_IMAGE`
+selects another qualified immutable reference.
+
 Before provisioning the Slack-enabled topology or posting, the focused test checks each bot’s existing `conversations.info` response. Each response must identify the exact configured public or private channel and explicitly report boolean `false` for both `is_im` and `is_mpim`. This rule also applies to legacy private channels. The test rejects malformed or contradictory type flags. The separate membership check reports which bot needs a channel invitation.
 
 Put these settings in the private environment file:

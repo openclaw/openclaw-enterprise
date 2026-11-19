@@ -89,13 +89,18 @@ binding, so it cannot widen a serving Gateway's access.
 
 Before starting the Gateway, Compute checks the active generation on every ready
 egress Pod and verifies the network grants. A worker-only inspection listener
-exposes read-only configuration inspection. Gateway `Programmed` status alone
+exposes read-only configuration and drain-counter inspection. Gateway `Programmed` status alone
 does not establish that the requested policy is installed.
 
 Stopping or retiring a channel revision installs a new deny filter chain. Compute
-waits for the new generation and for old draining chains to disappear from every
-serving Pod. The fleet uses a five-second filter-chain drain. It then removes
-the grants and releases the slot. Empty per-port policies remain as concurrency
+waits for the new generation, no old draining listener, and a zero
+`listener_manager.total_filter_chains_draining` gauge on every serving Pod.
+Envoy does not include in-place filter-chain drains in `config_dump`. The gauge
+confirms removal on all Envoy workers; another Agent's concurrent drain can delay
+cleanup. The fleet uses a five-second filter-chain drain. Compute then removes
+the grants. It releases the slot only after the old Gateway Pods are gone and
+no Deployment or ReplicaSet can recreate them. NetworkPolicy readback does not
+confirm that the CNI has revoked access. Empty per-port policies remain as concurrency
 records: a delayed worker cannot recreate an old allow rule after port reuse.
 Unavailable inspection or uncertain ownership retains the reservation and fails
 cleanup for retry. Cleanup for one revision cannot release another binding.

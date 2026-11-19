@@ -37,7 +37,8 @@ graph TD
   D --> E["Install the binding's Envoy policy"]
   E --> F["Check active generation and exact network grants"]
   F --> G["Start Gateway with assigned HTTPS_PROXY"]
-  R["Stop or retire the revision"] --> S["Replace its filter chain with deny"]
+  R["Stop or retire the revision"] --> V["Remove old Gateway workloads"]
+  V --> S["Replace its filter chain with deny"]
   S --> T["Wait for old chains and tunnels to close"]
   T --> U["Fence network grants and release the slot"]
 ```
@@ -90,9 +91,14 @@ transport remains direct and its model credential placement is unchanged.
 `apps/controller/src/drivers/compute/kubernetes/channel-egress.ts:KubernetesChannelEgress.retire`
 
 Cleanup selects only the revision's bindings. It marks each record revoking,
-replaces its filter chain with deny, and waits until old chains have drained on
-every serving Pod. It then replaces grants with empty policies and marks the
-slot idle. Stable resource versions fence late writes by old workers. Missing
+replaces its filter chain with deny, and checks the active generation plus the
+fleet-wide `listener_manager.total_filter_chains_draining` gauge on every serving
+Pod. Envoy omits in-place filter-chain drains from `config_dump`; a zero gauge
+confirms that all workers removed those chains and their connections. It replaces
+grants with empty policies. Before marking the slot idle, it requires the old
+Gateway Pods to be absent and their Deployments and ReplicaSets to have no
+desired replicas. The stop and retirement callers remove the Gateway first;
+NetworkPolicy readback alone does not confirm CNI revocation. Stable resource versions fence late writes by old workers. Missing
 inspection or uncertain ownership leaves the reservation for retry.
 
 ### 5. Keep OCC requests separate
@@ -126,5 +132,7 @@ and remaining acceptance evidence.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 05:02: Require Envoy drain acknowledgement and stopped source workloads before port reuse. (authoring-run/64d7828e-4701-4e9c-8c92-0b3617945c7a - fc683cdfe9b73215d0503cdfaf7917f54be7f17e)
 
 - 2026-11-19 00:02: Documented channel declaration, listener ownership and revocation in the accompanying implementation (authoring-run/64d7828e-4701-4e9c-8c92-0b3617945c7a - e05a54b4b3daf86249c89aaeb2a8491dd52c80cc).

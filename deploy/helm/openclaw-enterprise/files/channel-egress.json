@@ -721,6 +721,22 @@
                   },
                   {
                     "match": {
+                      "path": "/stats",
+                      "headers": [
+                        {
+                          "name": ":method",
+                          "string_match": {
+                            "exact": "GET"
+                          }
+                        }
+                      ]
+                    },
+                    "route": {
+                      "cluster": "channel-egress-inspection"
+                    }
+                  },
+                  {
+                    "match": {
                       "prefix": "/"
                     },
                     "direct_response": {

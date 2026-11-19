@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Partially implemented
+implementation_status: Implemented
 author: kevinlin-openai
 ---
 
@@ -22,9 +22,10 @@ Replace the bundled Slack proxy with this path. Implement Slack first while
 supporting different destination sets immediately, so Microsoft Teams can follow
 without changing the isolation model.
 
-This is a proposal, not implemented behavior. It proposes an alternative to
-PR #4952's installation-wide destination policy; it does not change that PR's
-status or authorize its implementation.
+This proposal remains under human review. The [implementation plan](../plans/0043-channel-egress.md)
+records delivery and verification; the [current reference](../../docs/reference/drivers/kubernetes-compute/channel-egress.md)
+defines supported behavior. This alternative to PR #4952's installation-wide policy
+does not change that PR's status or authorize its implementation.
 
 ## Motivation
 

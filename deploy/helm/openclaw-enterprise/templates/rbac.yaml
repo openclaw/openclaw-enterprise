@@ -67,6 +67,12 @@ rules:
     resources: [replicasets]
     verbs: [get]
   {{- end }}
+  {{- if .Values.channelEgress.enabled }}
+  # Fence old Gateway controllers before reusing a channel listener port.
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get, list]
+  {{- end }}
   # Read canonical control-plane sources and manage revision-owned runtime material.
   - apiGroups: [""]
     resources: [secrets]
