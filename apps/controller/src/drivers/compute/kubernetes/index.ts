@@ -17172,6 +17172,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           ...(role === "gateway" && { id: install.id }),
           ...(selection.enabled && { releaseSha256: install.releaseSha256 }),
           ...(binding?.toolNames.length && { toolNames: binding.toolNames }),
+          ...(role === "gateway" &&
+            binding?.approvalToolNames.length && { approvalToolNames: binding.approvalToolNames }),
         });
       }
       if (packages.length > 0) {
