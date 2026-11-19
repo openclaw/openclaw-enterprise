@@ -334,15 +334,15 @@ Service requires a Harness route. Dedicated replacements stop prior runtimes.
 Without `harnessEndpoint`, Codex uses Kubernetes transport and `/home/node/workspace`;
 Native OpenClaw enrolls outbound into admitted workspace.
 
-Preparing, `reconcileHarnessTrust` snapshots the resolved provider endpoint's
-public CA plus configured execution-cluster CA in an immutable candidate revision
-ConfigMap despite predecessor-owned shared Gateway; absent without private CA.
+`reconcileHarnessTrust` saves endpoint and configured execution-cluster CAs in an immutable
+revision ConfigMap despite predecessor-owned Gateway; none without private CA. Preparation
+rejects changed/omitted CA against records; recreates lost records from current endpoint
+CA without historical verification.
 `apps/controller/src/worker.ts:finalizeRevision` publishes selection before activation.
 Read-only `verifyPreparedHarnessTrust` precedes authenticated Harness status/Gateway replacement:
-require revision ownership, immutability, sole exact CA file/bundle, no binary data;
-without private CA, absence. Missing, foreign, changed
-or unexpected trust refuses activation without creation/repair. CA drift requires another
-revision. Permanent refusal fails deployment; selection, Gateway and predecessor remain.
+revision ownership, immutability, sole exact CA file/bundle, no binary data. Activation refuses
+missing trust for declared private CA or foreign, changed or unexpected trust without creation/repair.
+Deployment fails permanently; selection/Gateway/predecessor remain.
 
 Activation requires Harness Pod and enrolled Secret node; retries reread setup, retaining
 valid provider values during projection outages. Codex restarts workspace-node 1s after
