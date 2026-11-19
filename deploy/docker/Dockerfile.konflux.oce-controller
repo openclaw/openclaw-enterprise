@@ -91,17 +91,17 @@ cp --parents -R \
     migrations/[0-9]*.sql \
     migrations/meta/_journal.json \
     migrations/meta/_canonical-history.json \
-    scripts/migrate-production.mjs \
+    scripts/migrate-production.ts \
     scripts/migration-history.mjs \
-    scripts/migration-catalog.mjs \
+    scripts/migration-catalog.ts \
+    scripts/migration-history-preflight.ts \
     scripts/bootstrap-installation.mjs \
-    scripts/lib/bootstrap-configuration.mjs \
-    scripts/auth-maintain.mjs \
+    scripts/lib/bootstrap-configuration.ts \
+    scripts/lib/bootstrap-credentials.ts \
     scripts/auth-maintain.ts \
-    scripts/lib/auth-maintain-arguments.mjs \
     scripts/lib/auth-maintain-arguments.ts \
     deploy/presets \
-    scripts/production-healthcheck.mjs \
+    scripts/production-healthcheck.ts \
     /app/
 cp /tmp/index.html /app/apps/controller/src/console/index.html
 # The fork's default console theme, staged for the /etc copy in the final stage.
@@ -152,7 +152,7 @@ COPY --from=controller-tree --chown=1000:1000 /app/ /app/
 RUN node --input-type=module -e 'await import("/app/apps/controller/src/composition/production.ts");'
 # Upstream precompiles the route validators and serializers with this image's
 # Node and dependencies, so the server does not compile every schema at start.
-RUN node apps/controller/src/precompile-route-schemas.mjs
+RUN node apps/controller/src/precompile-route-schemas.ts
 
 # Fork branding: the default console theme, root-owned and read-only like the
 # upstream stages. The API startup loader reads OCC_CONSOLE_THEME_DIR and

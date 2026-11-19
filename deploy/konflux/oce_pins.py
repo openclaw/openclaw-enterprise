@@ -14,7 +14,11 @@ whose Dockerfile it was last ported from. A change that goes beyond the pins
 and --check fails with the diff until someone ports the change and runs
 --ported runtime. deploy/docker/Dockerfile.konflux.oce-controller ports the
 root Dockerfile the same way, with its own OCE_REVIEWED_COMMIT in
-deploy/konflux/oce-controller/build-args.conf.
+deploy/konflux/oce-controller/build-args.conf. Stages the ports do not carry
+(the Node.js compile, the controller's development stage) are left out of
+that comparison. The runtime review also covers
+deploy/runtime/additional-download-clients.json, which selects the developer
+toolchains the runtime image installs.
 
 OCE_PORT_SHA256 records the port itself when --ported last ran, so a port
 cannot be acknowledged without an edit, and --check fails when the port
@@ -45,12 +49,15 @@ CONTAINERFILE = Path("deploy/docker/Dockerfile.konflux.oce-runtime")
 OPENCLAW_REPOSITORY = "openclaw/openclaw"
 RUNTIME_DOCKERFILE = "deploy/runtime/Dockerfile"
 SOURCE_MANIFEST = "deploy/runtime/openclaw-source.json"
+# The selection of developer toolchains for the runtime image. The port builds
+# whatever it selects, so a change needs the same review as the Dockerfile.
+DOWNLOAD_CLIENTS = "deploy/runtime/additional-download-clients.json"
 CONTROLLER_CONF = Path("deploy/konflux/oce-controller/build-args.conf")
 CONTROLLER_CONTAINERFILE = Path("deploy/docker/Dockerfile.konflux.oce-controller")
 CONTROLLER_DOCKERFILE = "Dockerfile"
 # Each image's conf and port, and the upstream recipe it ports.
 IMAGES = {"runtime": (CONF, CONTAINERFILE), "controller": (CONTROLLER_CONF, CONTROLLER_CONTAINERFILE)}
-UPSTREAM_DOCKERFILES = {"runtime": RUNTIME_DOCKERFILE, "controller": CONTROLLER_DOCKERFILE}
+UPSTREAM_RECIPES = {"runtime": (RUNTIME_DOCKERFILE, DOWNLOAD_CLIENTS), "controller": (CONTROLLER_DOCKERFILE,)}
 # Pins the controller shares with the runtime.
 SHARED_PINS = ("PNPM_OCE_VERSION", "PNPM_OCE_SHA512")
 # The controller port uses Hummingbird instead of the Debian base that upstream
@@ -59,7 +66,10 @@ SHARED_PINS = ("PNPM_OCE_VERSION", "PNPM_OCE_SHA512")
 CONTROLLER_BASE_PIN = re.compile(
     r"^(ARG NODE_RUNTIME_BASE_IMAGE=\S+:\d+)\.\d+\.\d+(\S*)@sha256:[0-9a-f]{64}$", re.MULTILINE
 )
-# Root Dockerfile stages the controller port does not carry.
+# Upstream stages the ports do not carry, so changes inside them need no port.
+# The runtime keeps Hummingbird's Node.js instead of compiling the patched one,
+# and the controller port has no development stage.
+RUNTIME_SKIPPED_STAGES = {"node-source", "node-compiled"}
 CONTROLLER_SKIPPED_STAGES = {"development"}
 STAGE = re.compile(r"^FROM\s+(?:--\S+\s+)*\S+(?:\s+AS\s+(\S+))?\s*$", re.IGNORECASE)
 # The Hummingbird base references both ports pin, and the digests masked when
@@ -78,7 +88,7 @@ DOCKERFILE_PINS = [
     ("GH_CHECKSUMS_SHA256", r"'([0-9a-f]{64})  gh_[0-9.]+_checksums\.txt'"),
 ]
 # The OpenClaw source pins the manifest carries: (conf key, manifest field, shape).
-# scripts/lib/openclaw-source.mjs validates the same shape at build time.
+# scripts/lib/openclaw-source.ts validates the same shape at build time.
 MANIFEST_PINS = [
     ("OPENCLAW_COMMIT", "commit", r"[0-9a-f]{40}"),
     ("OPENCLAW_SOURCE_SHA256", "sourceArchiveSha256", r"[0-9a-f]{64}"),
@@ -99,8 +109,9 @@ DIRECTIVE = re.compile(r"^#[ \t]*(check|escape|syntax)[ \t]*=", re.IGNORECASE)
 HEREDOC = re.compile(r"(?<![^\s\d])<<-?\s*(['\"]?)([^<\s'\"]+)\1(?![\"'])")
 # The runtime image reads the bridge test selection from deploy/runtime/Dockerfile
 # at build time (deploy/konflux/oce-bridge-tests.mjs): the test files of the first
-# scripts/test-projects.mts RUN in the openclaw-bridge-tests stage, and its
-# --ci-graphs-json list. Changing either needs no port, so both are masked.
+# scripts/test-projects.mts call in the first RUN that makes one in the
+# openclaw-bridge-tests stage, and its --ci-graphs-json list. Changing either
+# needs no port, so both are masked.
 BRIDGE_TESTS_STAGE = re.compile(r"FROM\s.*\sAS\s+openclaw-bridge-tests", re.IGNORECASE)
 TEST_FILE = re.compile(r"[\w./-]+\.test\.tsx?")
 CI_GRAPHS = re.compile(r"--ci-graphs-json '\[[^']*\]'")
@@ -146,11 +157,18 @@ def repo_file(ref, path):
     return Path(path).read_text() if ref is None else git("show", f"{ref}:{path}")
 
 
-def last_change(path):
-    """Return the latest commit that changed path, the baseline a port records."""
-    commit = git("log", "-1", "--format=%H", "--", path).strip()
+def repo_file_or_empty(ref, path):
+    """Return a file like repo_file, or "" when ref predates it."""
+    if ref is not None and not git("ls-tree", "--name-only", ref, "--", path).strip():
+        return ""
+    return repo_file(ref, path)
+
+
+def last_change(*paths):
+    """Return the latest commit that changed any of paths, the baseline a port records."""
+    commit = git("log", "-1", "--format=%H", "--", *paths).strip()
     if not commit:
-        raise RecipeError(f"no commit changes {path}")
+        raise RecipeError(f"no commit changes {', '.join(paths)}")
     return commit
 
 
@@ -283,6 +301,25 @@ def build_lines(dockerfile):
     return "".join(kept)
 
 
+def carried_stages(lines, skipped_stages):
+    """Drop the named stages from build_lines output."""
+    kept = []
+    skipped = False
+    for line in lines.splitlines(keepends=True):
+        stage = STAGE.match(line)
+        if stage:
+            skipped = (stage.group(1) or "").lower() in skipped_stages
+        if not skipped:
+            kept.append(line)
+    return "".join(kept)
+
+
+def ends_call(word):
+    """Whether a word ends the first test-projects call: a shell control
+    token, or another call. deploy/konflux/oce-bridge-tests.mjs uses the same rule."""
+    return word in ("&&", "||", ";", "|", "scripts/test-projects.mts") or word.endswith(";")
+
+
 def mask_bridge_tests(lines):
     """Mask the bridge test selection in build_lines output, read the way
     deploy/konflux/oce-bridge-tests.mjs reads it."""
@@ -303,9 +340,11 @@ def mask_bridge_tests(lines):
             text = CI_GRAPHS.sub("--ci-graphs-json '<CI_GRAPHS>'", text)
             if not tests_masked and words and words[0].upper() == "RUN" and "scripts/test-projects.mts" in words:
                 tests_masked = True
-                words = [word for word in words if not TEST_FILE.fullmatch(word)]
-                index = words.index("scripts/test-projects.mts") + 1
-                text = " ".join([*words[:index], "<BRIDGE_TESTS>", *words[index:]]) + "\n"
+                # Only the first call's files: later calls chained in the same RUN are ported.
+                start = words.index("scripts/test-projects.mts") + 1
+                end = next((n for n in range(start, len(words)) if ends_call(words[n])), len(words))
+                call = [word for word in words[start:end] if not TEST_FILE.fullmatch(word)]
+                text = " ".join([*words[:start], "<BRIDGE_TESTS>", *call, *words[end:]]) + "\n"
         kept.append(text)
     return "".join(kept) + "".join(instruction)
 
@@ -320,7 +359,7 @@ def masked(dockerfile):
     )
     for key, value in pins.items():
         dockerfile = dockerfile.replace(value, f"<{key}>")
-    return mask_bridge_tests(build_lines(dockerfile))
+    return mask_bridge_tests(carried_stages(build_lines(dockerfile), RUNTIME_SKIPPED_STAGES))
 
 
 def package_manager(package_json):
@@ -380,6 +419,13 @@ def recipe_drift(content, dockerfile):
             f"{CONTAINERFILE} and run --ported runtime\n"
             f"{dockerfile_diff(before, after, RUNTIME_DOCKERFILE, reviewed)}"
         )
+    before, after = (repo_file_or_empty(ref, DOWNLOAD_CLIENTS) for ref in (reviewed, None))
+    if before != after:
+        problems.append(
+            f"{DOWNLOAD_CLIENTS} changed since OCE_REVIEWED_COMMIT; review the developer toolchains "
+            f"{CONTAINERFILE} now installs and run --ported runtime\n"
+            f"{dockerfile_diff(before, after, DOWNLOAD_CLIENTS, reviewed)}"
+        )
     return problems
 
 
@@ -393,22 +439,9 @@ def dockerfile_diff(before, after, path, reviewed):
     return "".join(diff)
 
 
-def carried_stages(lines):
-    """Drop the root Dockerfile stages the controller port does not carry."""
-    kept = []
-    skipped = False
-    for line in lines.splitlines(keepends=True):
-        stage = STAGE.match(line)
-        if stage:
-            skipped = (stage.group(1) or "").lower() in CONTROLLER_SKIPPED_STAGES
-        if not skipped:
-            kept.append(line)
-    return "".join(kept)
-
-
 def controller_recipe(ref):
     dockerfile = CONTROLLER_BASE_PIN.sub(r"\1.<MINOR>.<PATCH>\2@<DIGEST>", repo_file(ref, CONTROLLER_DOCKERFILE))
-    return carried_stages(build_lines(dockerfile))
+    return carried_stages(build_lines(dockerfile), CONTROLLER_SKIPPED_STAGES)
 
 
 def controller_drift(content):
@@ -466,7 +499,7 @@ def update():
             print(f"  {key} {get_value(content, key)} -> {value}")
             content = set_value(content, key, value)
     if not recipe_drift(content, dockerfile):
-        content = set_value(content, "OCE_REVIEWED_COMMIT", last_change(RUNTIME_DOCKERFILE))
+        content = set_value(content, "OCE_REVIEWED_COMMIT", last_change(*UPSTREAM_RECIPES["runtime"]))
     else:
         print(f"  {RUNTIME_DOCKERFILE} needs a manual port; run with --check for details")
     CONF.write_text(content)
@@ -474,8 +507,8 @@ def update():
 
 
 def ported(image):
-    """Record that a port is done: move OCE_REVIEWED_COMMIT to the Dockerfile's
-    latest change, and OCE_PORT_SHA256 to the port as it is now."""
+    """Record that a port is done: move OCE_REVIEWED_COMMIT to the latest change
+    of its upstream recipe, and OCE_PORT_SHA256 to the port as it is now."""
     conf, port = IMAGES[image]
     content = conf.read_text()
     digest = port_digest(port)
@@ -484,7 +517,7 @@ def ported(image):
             f"{port} is unchanged since the last --ported; port the upstream change first. If it needs "
             f"no port, set OCE_REVIEWED_COMMIT in {conf} by hand and say why in the pull request"
         )
-    commit = last_change(UPSTREAM_DOCKERFILES[image])
+    commit = last_change(*UPSTREAM_RECIPES[image])
     content = set_value(content, "OCE_REVIEWED_COMMIT", commit)
     conf.write_text(set_value(content, "OCE_PORT_SHA256", digest))
     print(f"{conf}: OCE_REVIEWED_COMMIT={commit} OCE_PORT_SHA256={digest}")

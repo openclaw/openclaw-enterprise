@@ -4,10 +4,11 @@
 //   node oce-bridge-tests.mjs <Dockerfile> <source dir> <output dir>
 //
 // Writes <output dir>/files, one test file per line: the *.test.ts(x)
-// arguments of the first scripts/test-projects.mts RUN in the
-// openclaw-bridge-tests stage. Writes <output dir>/graphs.json: the
-// --ci-graphs-json list in that stage. deploy/konflux/oce_pins.py masks the
-// same two lists when it diffs the Dockerfile, so keep the two rules in step.
+// arguments of the first scripts/test-projects.mts call in the first RUN that
+// makes one in the openclaw-bridge-tests stage. Later calls chained in that
+// RUN (name-filtered runs) are ported by hand. Writes <output dir>/graphs.json:
+// the --ci-graphs-json list in that stage. deploy/konflux/oce_pins.py masks
+// the same two lists when it diffs the Dockerfile, so keep the two rules in step.
 import fs from "node:fs";
 import path from "node:path";
 
@@ -39,7 +40,19 @@ const stage = instructions.slice(start + 1, end < 0 ? undefined : end);
 
 const run = stage.find((i) => /^RUN\s/i.test(i) && i.includes("scripts/test-projects.mts"));
 if (!run) fail("no scripts/test-projects.mts RUN in openclaw-bridge-tests");
-const files = run.split(/\s+/).filter((word) => /^[\w./-]+\.test\.tsx?$/.test(word));
+const words = run.split(/\s+/);
+const first = words.indexOf("scripts/test-projects.mts") + 1;
+if (first === 0) fail("scripts/test-projects.mts is not a separate word in its RUN");
+// A shell control token or another call ends the first call, as in
+// deploy/konflux/oce_pins.py ends_call.
+const next = words.findIndex(
+  (word, n) =>
+    n >= first &&
+    (["&&", "||", ";", "|", "scripts/test-projects.mts"].includes(word) || word.endsWith(";")),
+);
+const files = words
+  .slice(first, next < 0 ? undefined : next)
+  .filter((word) => /^[\w./-]+\.test\.tsx?$/.test(word));
 if (files.length === 0) fail("no test files in the scripts/test-projects.mts RUN");
 const missing = files.filter((file) => !fs.existsSync(path.join(source, file)));
 if (missing.length > 0) fail(`test files missing from ${source}: ${missing.join(", ")}`);

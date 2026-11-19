@@ -18,7 +18,11 @@ compiles Node.js from source with `deploy/runtime/node/worker-esm-termination.pa
 which keeps a worker terminated during `require(esm)` from aborting the Gateway.
 The Konflux runtime lacks that fix until a Node.js release carries it, and
 records its own Node.js executable in `/usr/local/share/oce-node/provenance.json`
-for the runtime inventory.
+for the runtime inventory. The runtime provenance (`/opt/oce/runtime/provenance.json`)
+also records the image's network download clients. The Debian image lists apt's
+HTTP methods there; Hummingbird has no apt, so the Konflux runtime records
+`/usr/bin/curl`, `/usr/local/bin/node` and any developer tools that
+`deploy/runtime/additional-download-clients.json` selects, without the apt entries.
 
 ## Layout
 
@@ -64,8 +68,11 @@ then diffs each upstream recipe against the commit recorded in that image's
 `OCE_REVIEWED_COMMIT`. It also masks the bridge test selection: the runtime
 build reads the test files and type-check graphs of the `openclaw-bridge-tests`
 stage from `deploy/runtime/Dockerfile` with `oce-bridge-tests.mjs`, so a change
-to those lists needs no port. For the controller it skips the `development` stage,
-which the port does not carry. Port what the diff shows, then record the port:
+to those lists needs no port. It also skips the stages the ports do not carry:
+the runtime's Node.js compile stages (`node-source` and `node-compiled`) and the
+controller's `development` stage. The runtime review also covers
+`deploy/runtime/additional-download-clients.json`, which selects the developer
+toolchains the runtime image installs. Port what the diff shows, then record the port:
 
 ```sh
 python3 deploy/konflux/oce_pins.py --ported runtime
