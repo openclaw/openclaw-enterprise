@@ -52,11 +52,11 @@ export function hostCovered(host: string, ceiling: string): boolean {
   return host.endsWith(suffix) && label.length > 0 && !label.includes(".");
 }
 
-export function portsCovered(ports: PortRanges, allowed: readonly Destination[]): boolean {
+export function portsCovered(ports: PortRanges, allowed: PortRanges): boolean {
   if (!ports.length || ports.some(({ from, to }) => from > to)) {
     return false;
   }
-  const ranges = allowed.flatMap((entry) => entry.ports).sort((a, b) => a.from - b.from);
+  const ranges = [...allowed].sort((a, b) => a.from - b.from);
   return ports.every(({ from, to }) => {
     let next = from;
     for (const range of ranges) {
@@ -135,13 +135,15 @@ export function requestCovered(
   match: DeploymentRequestMatch,
   allowed: readonly DeploymentRequestMatch[],
 ): boolean {
-  const candidates = allowed.filter(
-    (limit) =>
-      match.binary === limit.binary &&
-      hostCovered(match.host, limit.host) &&
-      requestPolicyCovered(match.requestPolicy, limit.requestPolicy),
-  );
-  return portsCovered(match.ports, candidates);
+  const allowedPorts = allowed
+    .filter(
+      (limit) =>
+        match.binary === limit.binary &&
+        hostCovered(match.host, limit.host) &&
+        requestPolicyCovered(match.requestPolicy, limit.requestPolicy),
+    )
+    .flatMap((limit) => limit.ports);
+  return portsCovered(match.ports, allowedPorts);
 }
 
 function destinationsOverlap(a: Destination, b: Destination): boolean {

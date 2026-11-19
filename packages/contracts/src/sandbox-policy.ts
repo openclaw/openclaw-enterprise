@@ -1,7 +1,6 @@
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { ConfigurationValidationError, requireConfiguration } from "./configuration-definition.ts";
-import type { DeploymentRequestMatch } from "./credential-deployment.ts";
 import type { ErrorDetail } from "./api/common.ts";
 import type { OpenClawConfigurationDocument } from "./index.ts";
 
@@ -170,7 +169,7 @@ export function validDnsHost(host: string): boolean {
 }
 
 export function networkMatchDetails(
-  grant: Pick<DeploymentRequestMatch, "binary" | "host" | "ports">,
+  grant: Pick<SandboxNetworkGrant, "binary" | "host" | "ports">,
   path: string,
 ): ErrorDetail[] {
   const details: ErrorDetail[] = [];

@@ -197,7 +197,7 @@ function sourceCoversRequest(
   }
   const policy = rule.requestPolicy;
   const path = policy?.path ?? "/**";
-  const routes = destinations
+  const approvedPorts = destinations
     .filter(
       (endpoint) =>
         endpoint?.host === rule.host &&
@@ -206,8 +206,8 @@ function sourceCoversRequest(
           (policy?.type === "http" && endpoint.method === policy.method)) &&
         pathCovered(path, endpoint.path),
     )
-    .map(({ host, port }) => ({ host, ports: [{ from: port, to: port }] }));
-  return portsCovered(rule.ports, routes);
+    .map(({ port }) => ({ from: port, to: port }));
+  return portsCovered(rule.ports, approvedPorts);
 }
 
 const reviewedPresentations = {
@@ -257,7 +257,7 @@ export function validateDeploymentPolicy(
 ): ErrorDetail[] {
   const { networkAccessPolicy } = policy;
   const { proxy } = context;
-  const bindings = new Map<
+  const unmatchedBindings = new Map<
     string,
     { binding: DeploymentCredentialBinding; authority: CredentialBindingAuthority }
   >();
@@ -267,7 +267,7 @@ export function validateDeploymentPolicy(
     if (
       typeof binding?.bindingRef !== "string" ||
       !binding.bindingRef.length ||
-      bindings.has(binding.bindingRef)
+      unmatchedBindings.has(binding.bindingRef)
     ) {
       return [invalid(path, "Each deployment binding needs a distinct identity.")];
     }
@@ -319,7 +319,7 @@ export function validateDeploymentPolicy(
         ),
       ];
     }
-    bindings.set(bindingRef, { binding, authority });
+    unmatchedBindings.set(bindingRef, { binding, authority });
     environments.add(projection.environment);
   }
   const details = deploymentNetworkAccessDetails(
@@ -344,7 +344,7 @@ export function validateDeploymentPolicy(
   }
   for (const [index, injectionPolicy] of policy.injectionPolicies.entries()) {
     const path = `/injectionPolicies/${index}`;
-    const resolved = bindings.get(injectionPolicy?.bindingRef);
+    const resolved = unmatchedBindings.get(injectionPolicy?.bindingRef);
     if (
       !resolved ||
       !Array.isArray(injectionPolicy.allowedRequests) ||
@@ -354,7 +354,7 @@ export function validateDeploymentPolicy(
       return [invalid(path, "Supply one nonempty injection policy for each admitted binding.")];
     }
     const { binding, authority } = resolved;
-    bindings.delete(binding.bindingRef);
+    unmatchedBindings.delete(binding.bindingRef);
     if (proxy?.rejectsStaleAndMisplacedPlaceholders !== true || !proxy.supportsBindingRequest) {
       return [
         invalid(
@@ -402,7 +402,7 @@ export function validateDeploymentPolicy(
       }
     }
   }
-  if (bindings.size) {
+  if (unmatchedBindings.size) {
     return [invalid("/injectionPolicies", "An admitted binding is missing its injection policy.")];
   }
   return [];
@@ -456,12 +456,10 @@ export function credentialProxyRoutingDetails(
   // A misplaced placeholder can be sent on a credentialless connection. Route all
   // allowed destinations through the guard, even after a single binding is withdrawn.
   for (const grant of network.allowed) {
-    if (
-      !portsCovered(
-        grant.ports,
-        routing.destinations.filter((route) => hostCovered(grant.host, route.host)),
-      )
-    ) {
+    const routedPorts = routing.destinations
+      .filter((route) => hostCovered(grant.host, route.host))
+      .flatMap((route) => route.ports);
+    if (!portsCovered(grant.ports, routedPorts)) {
       return [
         invalid(
           pointer + "/destinations",
