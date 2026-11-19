@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { test } from "node:test";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { nodeLogExcerpt } from "../../scripts/ci/k3d-diagnostics.ts";
+import { captureK3dDiagnostics } from "../../scripts/ci/k3d-preparation-diagnostics.ts";
+import { execFile } from "../../scripts/ci/prepare-command.ts";
+import { assertAbsent, cutCredentials, cutOffsets } from "../fixtures/cut-credentials.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 export function registerBoundedNodeLogCases() {
   test("k3d node log excerpts stay bounded and keep the start, later errors and the end", () => {
@@ -194,5 +201,104 @@ export function registerNodeLogChronologyCases() {
       assert.match(result.retries, /against 127\.0\.0\.1:2001 /u, locale);
       assert.match(result.retries, /omitted 1 earlier kinds of kubectl retry lines/u, locale);
     }
+  });
+}
+
+export function registerCutOutputCases() {
+  test("k3d diagnostics drop the line that a command's output cap cut", async (t) => {
+    const directory = await temporaryDirectory(t, "k3d-cut-output-");
+    const marker = "[redacted credential-bearing line]";
+    const lineEnd = "fixture-cut-line-end";
+    // As many lines of `width` characters as fit in `length`, the last one padded to it.
+    const lines = (width: number, line: (index: number) => string, length: number) =>
+      Array.from({ length: Math.floor((length + 1) / (width + 1)) }, (_, index) =>
+        line(index).padEnd(width, "z"),
+      )
+        .join("\n")
+        .padEnd(length, "z");
+    // execFile keeps the last 2 MiB of `docker top` and 8 MiB of `docker logs`; each window
+    // starts inside a credential. About 200 long process lines that name a credential become
+    // markers, so the cut line is inside the 8,000 characters safeText keeps. The private
+    // key block is left out: this projection has no private key rule, cut or not.
+    const topCap = 2 * 1024 * 1024;
+    const cases: { node: string; label: string; secret: string; processLines: number }[] = [];
+    for (const { name, text, secret } of cutCredentials.filter(
+      ({ text }) => !text.includes("\n"),
+    )) {
+      for (const offset of cutOffsets(text)) {
+        const node = `k3d-cut-server-${cases.length}`;
+        const cutLine = `${text.slice(offset)} ${lineEnd}\n`;
+        const credentialLines = lines(
+          10_000,
+          (index) => `root ${index} /bin/fixture --token-file=/run/fixture `,
+          topCap - cutLine.length,
+        );
+        await writeFile(
+          join(directory, `${node}.top`),
+          `UID PID CMD\nroot 1 /bin/fixture ${text.slice(0, offset)}${cutLine}${credentialLines}`,
+        );
+        cases.push({
+          node,
+          label: `${name} cut ${offset} in`,
+          secret: secret.slice(Math.max(0, offset - text.indexOf(secret))),
+          processLines: credentialLines.split("\n").length,
+        });
+      }
+    }
+    // A cut line that starts with a Docker-timestamp-shaped word passes for a stamped line.
+    const phrase = "FixturePhrase-0042-value";
+    const stamped = `2026-11-18T23:59:59Z ${phrase} ${lineEnd}\n`;
+    const logNode = cases[0]!.node;
+    await writeFile(
+      join(directory, `${logNode}.logs`),
+      `2026-11-18T23:59:58Z level=info msg="password: ${stamped}${lines(
+        61,
+        (index) => `2026-11-19T00:00:00Z level=info msg="fixture progress ${index}"`,
+        8 * 1024 * 1024 - stamped.length,
+      )}`,
+    );
+    // A stand-in for the container engine behind the real execFile and its output cap.
+    const standIn = join(directory, "engine.mjs");
+    await writeFile(
+      standIn,
+      'import { readFileSync } from "node:fs";\nprocess.stdout.write(readFileSync(process.argv[2]));\n',
+    );
+    const statePath = join(directory, "state.json");
+    await captureK3dDiagnostics({
+      execFile: (command, args, options) => {
+        const payload = join(directory, `${args.at(-1)}.${args[0]}`);
+        return existsSync(payload)
+          ? execFile(process.execPath, [standIn, payload], options)
+          : Promise.reject(new Error(`${command} ${args[0]} unavailable`));
+      },
+      cluster: {
+        name: "k3d-cut",
+        owner: "fixture-owner",
+        directory,
+        kubeconfig: join(directory, "kubeconfig"),
+        context: "k3d-cut",
+        nodes: cases.map(({ node }) => node),
+      },
+      lane: "fixture-lane",
+      statePath,
+    });
+    const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
+    const containers = asRecord(JSON.parse(text))?.containers;
+    assert.ok(Array.isArray(containers), "expected the node containers");
+    assert.doesNotMatch(text, new RegExp(lineEnd), "a cut line is published");
+    for (const { node, label, secret, processLines } of cases) {
+      const container = containers.map(asRecord).find((entry) => entry?.name === node);
+      // Only the whole lines after the cut remain, each one a credential-bearing line.
+      assert.deepEqual(
+        container?.processes,
+        { status: "ok", value: Array.from({ length: processLines }, () => marker).join("\n") },
+        label,
+      );
+      assertAbsent(text, secret, label);
+    }
+    const logs = asRecord(containers.map(asRecord).find((entry) => entry?.name === logNode)?.logs);
+    assert.equal(logs?.status, "ok");
+    assert.match(String(logs?.value), /fixture progress \d+"/);
+    assertAbsent(text, phrase, "a stamped cut line");
   });
 }

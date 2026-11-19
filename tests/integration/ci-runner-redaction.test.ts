@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
+import { readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { test } from "node:test";
+
+import {
+  assertAbsent,
+  cutCredentials,
+  cutOffsets,
+  registeredCutSecret,
+} from "../fixtures/cut-credentials.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { setEnvironment } from "../helpers/environment.ts";
+import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 test("the redactor removes URL userinfo of any shape and multi-line private keys", async () => {
   const { failureSecrets, redactFailure, redactLogLine, redactOutputLine, redactOutputLines } =
@@ -438,13 +450,6 @@ test("a value the input limit cuts and a key with a suffix stay out of every sur
       redactOutputLines([`diagnostic: ${text}`.slice(0, failureInputLimit)], using, "/repo", 1_000),
       redactLogLine(text, using, failureInputLimit),
     ]);
-  // Synthetic values only. A value is shown when any 8 characters of it are.
-  const assertAbsent = (shown: string, value: string, label: string) => {
-    for (let index = 0; index + 8 <= value.length; index += 1) {
-      const piece = value.slice(index, index + 8);
-      assert(!shown.includes(piece), `${label} shows ${piece}`);
-    }
-  };
   const words = (length: number) =>
     "log line ok fine\n".repeat(Math.ceil(length / 17)).slice(0, length);
   const header = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9";
@@ -564,4 +569,83 @@ test("a value the input limit cuts and a key with a suffix stay out of every sur
   const spacedSecrets = failureSecrets([{ FIXTURE_SPACED_SECRET: spaced }]);
   const split = `${words(failureInputLimit - 300)} ${spaced}`.slice(0, failureInputLimit);
   assertAbsent(surfaces(split, spacedSecrets), spaced, "a split spaced secret");
+});
+
+test("a credential cut at the start of a captured container log stays out of its record", async (t) => {
+  const { failureSecrets } = await import("../../scripts/ci/failure-redaction.ts");
+  const { projectContainerLog } = await import("../../scripts/ci/k3d-diagnostics.ts");
+  const { followContainerLog } = await import("../helpers/container-log-capture.ts");
+  const bin = await temporaryDirectory(t, "cut-capture-bin-");
+  const streams = await temporaryDirectory(t, "cut-capture-streams-");
+  const records = await temporaryDirectory(t, "cut-capture-records-");
+  setEnvironment(t, { OPENCLAW_CI_CONTAINER_LOG_DIR: records });
+  // The kubectl stand-in prints the files its two arguments name to stderr and stdout.
+  await writeCommand(
+    bin,
+    "kubectl",
+    'import { readFileSync } from "node:fs";\n' +
+      "process.stderr.write(readFileSync(process.argv[2]));\n" +
+      "process.stdout.write(readFileSync(process.argv[3]));",
+    { interpreter: process.execPath },
+  );
+  const secrets = failureSecrets([{ OCC_TEST_CUT_SECRET: registeredCutSecret }]);
+  // What the runner publishes for one failed wait: its projection of the written record.
+  const capture = async (stderr: string, stdout: string) => {
+    await writeFile(join(streams, "stderr"), stderr);
+    await writeFile(join(streams, "stdout"), stdout);
+    const log = followContainerLog({
+      args: [join(streams, "stderr"), join(streams, "stdout")],
+      env: { ...process.env, PATH: commandPath(bin) },
+      target: { namespace: "occ-agent-a", pod: "gateway-0", container: "gateway" },
+      snapshot: async () => ({}),
+    });
+    await assert.rejects(
+      log.attachOnFailure(t, "cut wait", async () => {
+        throw new Error("cut wait failed");
+      }),
+      /cut wait failed/,
+    );
+    const [name, ...others] = await readdir(records);
+    assert.ok(name !== undefined && others.length === 0, "one record per failed wait");
+    const path = join(records, name);
+    const record: unknown = JSON.parse(await readFile(path, "utf8"));
+    await rm(path);
+    const projected = projectContainerLog(record, secrets);
+    assert.ok(projected, "projected container log record");
+    return projected;
+  };
+  const before = "2026-11-19T00:00:00.000Z before";
+  const lineEnd = "fixture-cut-line-end";
+  for (const { name, text, secret } of cutCredentials) {
+    const singleLine = !text.includes("\n");
+    for (const offset of cutOffsets(text)) {
+      // The capture keeps the last 2,048 characters of kubectl's stderr, and the last
+      // 2 MiB of a line that has not ended. Both windows start `offset` into the credential.
+      const cutLine = `${text.slice(offset)} ${lineEnd}\n`;
+      const notes = `kubectl: fixture notes ${"n".repeat(2_048 - cutLine.length - 24)}\n`;
+      const stderr = `kubectl: fixture note\nkubectl: ${text.slice(0, offset)}${cutLine}${notes}`;
+      const longLine = `${text.slice(offset)} ${lineEnd} `.padEnd(2 * 1024 * 1024, "z");
+      const stdout = `${before}\n${singleLine ? `${before} ${text.slice(0, offset)}${longLine}` : ""}`;
+      const projected = await capture(stderr, stdout);
+      const shown = JSON.stringify(projected);
+      const label = `${name} cut ${offset} in`;
+      // The cut line is dropped whole, so even one remaining character is not published.
+      assert(!shown.includes(lineEnd), `${label}: the cut line is published`);
+      assertAbsent(shown, secret.slice(Math.max(0, offset - text.indexOf(secret))), label);
+      assert.deepEqual(projected.lines, [before], label);
+      // The unterminated line over 2 MiB counts as an omitted line.
+      assert.equal(projected.omittedLines, singleLine ? 1 : 0, label);
+      if (singleLine) {
+        // The whole lines after the cut stay, bounded to 2,000 characters.
+        assert.equal(
+          projected.stream.error,
+          notes.length > 2_000 ? `${notes.slice(0, 2_000)}... [truncated]` : notes,
+          label,
+        );
+      }
+    }
+  }
+  // Under the limit nothing is cut, so nothing is dropped.
+  const short = await capture(`kubectl: ${cutCredentials[2]!.text}\nkubectl: fixture note\n`, "");
+  assert.equal(short.stream.error, "kubectl: password=[redacted]\nkubectl: fixture note\n");
 });

@@ -4,7 +4,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { failureSecrets } from "../../scripts/ci/failure-redaction.ts";
+import { failureSecrets, withoutCutLine } from "../../scripts/ci/failure-redaction.ts";
 import { projectContainerLog } from "../../scripts/ci/k3d-diagnostics.ts";
 
 // The CI runner sets this for k3d lanes (scripts/ci/k3d-diagnostics.ts) and
@@ -139,7 +139,7 @@ export function followContainerLog({ args, env, target, snapshot, recoverLogs }:
   const lines: string[] = [];
   const markers: Marker[] = [];
   let partial = "";
-  let structuredPartial = false;
+  let droppedPartial = false;
   let bufferedChars = 0;
   let omittedLines = 0;
   const stream: Stream = { startedAt: new Date().toISOString() };
@@ -165,14 +165,18 @@ export function followContainerLog({ args, env, target, snapshot, recoverLogs }:
     const parts = (partial + chunk).split("\n");
     const tail = parts.pop() ?? "";
     for (const line of parts) {
-      if (!structuredPartial && !line.includes("OCSF-JSON")) {
+      if (!droppedPartial && !line.includes("OCSF-JSON")) {
         lines.push(line);
         bufferedChars += line.length;
       }
-      structuredPartial = false;
+      droppedPartial = false;
     }
-    structuredPartial ||= tail.includes("OCSF-JSON");
-    partial = structuredPartial ? "" : tail.slice(-maxBufferedChars);
+    // A line longer than the buffer would keep only its end, which can start inside a
+    // credential: drop it whole, as a structured line is.
+    const oversize = !droppedPartial && tail.length > maxBufferedChars;
+    omittedLines += Number(oversize);
+    droppedPartial ||= oversize || tail.includes("OCSF-JSON");
+    partial = droppedPartial ? "" : tail;
     while (
       (bufferedChars > maxBufferedChars || lines.length > maxBufferedLines) &&
       lines.length > 0
@@ -226,12 +230,13 @@ export function followContainerLog({ args, env, target, snapshot, recoverLogs }:
         .catch(() => {});
     }
     snapshots.push(await takeSnapshot("after-log"));
+    const shownError = withoutCutLine(error, maxErrorChars);
     const record: ContainerLogRecord = {
       test: t.fullName ?? t.name,
       reason,
       ...target,
       markers,
-      stream: { ...stream, ...(error.length > 0 ? { error } : {}) },
+      stream: { ...stream, ...(shownError.length > 0 ? { error: shownError } : {}) },
       snapshots,
       omittedLines,
       lines: partial.length > 0 ? [...lines, partial] : lines,

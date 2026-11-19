@@ -1,6 +1,7 @@
 import { readFile, statfs, writeFile } from "node:fs/promises";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
 import { asRecord } from "../../packages/utils/src/index.ts";
+import { withoutCutLine } from "./failure-redaction.ts";
 import { nodeLogExcerpt, redactCredentialLine } from "./k3d-node-log.ts";
 import { preparationIdentity, readRuntimeProvenance } from "./runtime-provenance.ts";
 
@@ -184,20 +185,23 @@ export async function captureK3dDiagnostics({
       partial,
     }: { maxOutputChars?: number; partial?: (output: CommandOutput) => Value } = {},
   ): Promise<Observation<Value>> {
+    // execFile keeps the last maxOutputChars characters of each stream.
+    const whole = (text: unknown) =>
+      typeof text === "string" ? withoutCutLine(text, maxOutputChars) : "";
     try {
-      const output = await execFile(command, args, {
+      const { stdout, stderr } = await execFile(command, args, {
         timeoutMs: diagnosticCommandTimeoutMs,
         maxOutputChars,
       });
-      return { status: "ok", value: project(output) };
+      return { status: "ok", value: project({ stdout: whole(stdout), stderr: whole(stderr) }) };
     } catch (error) {
       // A broken command or response must never replace the bootstrap failure.
       const result = asRecord(error);
       if (result?.timedOut !== true) {
         return { status: "unavailable" };
       }
-      const stdout = typeof result.stdout === "string" ? result.stdout : "";
-      const stderr = typeof result.stderr === "string" ? result.stderr : "";
+      const stdout = whole(result.stdout);
+      const stderr = whole(result.stderr);
       if (partial && (stdout || stderr)) {
         try {
           return { status: "timed-out", value: partial({ stdout, stderr }) };

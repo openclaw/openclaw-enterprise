@@ -236,6 +236,17 @@ function withoutStructuredLogLines(text: string) {
     .join("\n");
 }
 
+// A producer that keeps only the last `limit` characters can cut a line, and a credential's
+// key or prefix with it, so that no rule matches the rest: they all work within a line. Such
+// text starts after its first line break, and is dropped without one.
+export function withoutCutLine(text: string, limit: number) {
+  if (text.length < limit) {
+    return text;
+  }
+  const lineEnd = text.indexOf("\n");
+  return lineEnd < 0 ? "" : text.slice(lineEnd + 1);
+}
+
 const truncation = "... [truncated]";
 
 // `cut` says the reporter cut the text at failureInputLimit (a caller may have
