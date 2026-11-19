@@ -32,6 +32,29 @@ test("OpenShell stock destination CA fixture trusts only its certificate input",
   assert.deepEqual(Object.keys(fixture.configMap.data), ["ca.crt"]);
   assert.equal(fixture.network.additionalCaConfigMapName, fixture.configMap.metadata.name);
 
+  const certificateDer = Buffer.from(
+    tls.ca.toString().replace(/-----[^-]+-----|\s/gu, ""),
+    "base64",
+  );
+  const asPem = (der: Buffer, width: number) => {
+    const body = der
+      .toString("base64")
+      .match(new RegExp(`.{1,${width}}`, "gu"))
+      ?.join("\r\n");
+    return `-----BEGIN CERTIFICATE-----\r\n${body}\r\n-----END CERTIFICATE-----\r\n`;
+  };
+  const normalized = asPem(certificateDer, 48);
+  assert.equal(
+    stockDestinationCa("fixture-platform", "git-fixture-ca", normalized).configMap.data["ca.crt"],
+    normalized,
+  );
+  // An empty OpenSSL auxiliary trust record follows the certificate DER inside one PEM block.
+  const withAuxiliaryTrust = asPem(Buffer.concat([certificateDer, Buffer.from([0x30, 0x00])]), 64);
+  assert.throws(
+    () => stockDestinationCa("fixture-platform", "git-fixture-ca", withAuxiliaryTrust),
+    { message: "destination trust must contain exactly one certificate and no private material" },
+  );
+
   // A real TLS connection distinguishes a usable trust input from an arbitrary PEM string.
   const server = createServer({ key: tls.key, cert: tls.cert }, (_request, response) =>
     response.end(),

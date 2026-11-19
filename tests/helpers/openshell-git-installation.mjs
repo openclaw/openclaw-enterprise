@@ -28,7 +28,6 @@ import { stopProcess } from "./stop-process.mjs";
 import {
   assertStockDestinationCaProjection,
   assertStockDestinationCaReadback,
-  destinationCaCertificate,
   stockDestinationCa,
 } from "./openshell-stock-destination-ca.ts";
 import {
@@ -922,11 +921,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
       await kube(["get", "configmap", volume.configMap.name, "-n", sandboxNamespace, "-o", "json"]),
     );
     assert.equal(managed.immutable, true);
-    assertStockDestinationCaReadback(managed);
-    assert.equal(
-      destinationCaCertificate(managed.data["ca.crt"]).fingerprint256,
-      destinationCaCertificate(tls.ca).fingerprint256,
-    );
+    assertStockDestinationCaReadback(managed, tls.ca);
     return {
       sandboxId,
       workloadPodUid: workload.metadata.uid,

@@ -4,11 +4,12 @@ import { X509Certificate } from "node:crypto";
 /** Reject the complete bundle without retaining rejected bytes in diagnostics. */
 export function destinationCaCertificate(pem: string): X509Certificate {
   const certificate = pem.trim();
-  if (
-    !/^-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+\r?\n-----END CERTIFICATE-----$/u.test(
+  const match =
+    /^-----BEGIN CERTIFICATE-----\r?\n([A-Za-z0-9+/=\r\n]+)\r?\n-----END CERTIFICATE-----$/u.exec(
       certificate,
-    )
-  ) {
+    );
+  const body = match?.[1];
+  if (!body) {
     throw new Error(
       "destination trust must contain exactly one certificate and no private material",
     );
@@ -18,6 +19,12 @@ export function destinationCaCertificate(pem: string): X509Certificate {
     parsed = new X509Certificate(certificate);
   } catch {
     throw new Error("destination trust must contain a valid certificate");
+  }
+  const payload = Buffer.from(body.replace(/[\r\n]/gu, ""), "base64");
+  if (!payload.equals(parsed.raw)) {
+    throw new Error(
+      "destination trust must contain exactly one certificate and no private material",
+    );
   }
   assert.equal(parsed.ca, true, "destination certificate must be a CA");
   return parsed;
