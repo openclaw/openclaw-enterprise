@@ -116,10 +116,62 @@ function transientPullEvidence(error: ReturnType<typeof pullFailureEvidence>): b
   return !permanentPullFailure.test(output) && transientPullFailure.test(output);
 }
 
+// The same content as a digest-pinned Docker Hub reference, from the public Docker Hub
+// cache mirror.gcr.io, by digest and without the tag. Any other reference has none.
+function seedReference(image: string): string | undefined {
+  const match =
+    /^docker\.io\/([a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:\/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*)(?::\w[\w.-]{0,127})?(@sha256:[a-f0-9]{64})$/.exec(
+      image,
+    );
+  if (!match?.[1] || !match[2]) {
+    return undefined;
+  }
+  const path = match[1].includes("/") ? match[1] : `library/${match[1]}`;
+  return `mirror.gcr.io/${path}${match[2]}`;
+}
+
+// Best effort: every failure, a failing log included, is swallowed here, so the
+// caller's error, retry decision and budget stay its own.
+async function seedLayers<Result extends ImageCommandResult>(
+  seed: string,
+  timeoutMs: number,
+  {
+    execFile,
+    docker,
+    log,
+  }: { execFile: ImageCommand<Result>; docker: string; log: (message: string) => void },
+) {
+  const seedStarted = Date.now();
+  try {
+    log(`Seeding layers from ${seed} (same digest, ${timeoutMs} ms limit)`);
+    await execFile(docker, ["pull", seed], { timeoutMs });
+    log(`Seeded layers from ${seed} in ${Date.now() - seedStarted} ms`);
+  } catch (error) {
+    try {
+      const evidence = pullFailureEvidence(error);
+      const reason = evidence.timedOut ? "timeout" : evidence.stderr.trim().split("\n").at(-1);
+      log(
+        `Seeding layers from ${seed} failed after ${Date.now() - seedStarted} ms (${reason}); ${pullProgress(evidence)}`,
+      );
+    } catch {
+      // The seed never decides the pull's outcome.
+    }
+  }
+}
+
 // Worst case: four attempts of attemptTimeoutMs plus 35 s of backoff, about 9
-// minutes; no retry starts after budgetMs. The slowest healthy CI pulls (Grafana,
+// minutes, and up to one attemptTimeoutMs more for a seed (below) that stalls too;
+// no retry starts after budgetMs. The slowest healthy CI pulls (Grafana,
 // Keycloak) finish within about 45 s, so a stalled attempt is retried after 2
 // minutes instead of 5.
+//
+// A stalled layer download from Docker Hub (or the runner's registry mirror for it)
+// can stay stalled through every retry. So after the first timed-out attempt of a
+// digest-pinned docker.io reference, one pull of the same digest from mirror.gcr.io
+// seeds the engine's layers, inside the same budget. The engine verifies the content
+// by digest and stores layers by content, so the retry of `image` that follows gets
+// its manifest from its own registry and downloads no layer the seed completed.
+// Callers still get `image` itself; a failed seed is logged and changes nothing.
 export async function pullImage<Result extends ImageCommandResult = ImageCommandResult>(
   image: string,
   {
@@ -138,6 +190,7 @@ export async function pullImage<Result extends ImageCommandResult = ImageCommand
   }
   const started = Date.now();
   let delayMs = firstDelayMs;
+  let seed = seedReference(image);
   for (let attempt = 1; ; attempt += 1) {
     const attemptStarted = Date.now();
     try {
@@ -164,6 +217,15 @@ export async function pullImage<Result extends ImageCommandResult = ImageCommand
       log(
         `Transient image pull failure (${reason}); retrying in ${delayMs} ms (attempt ${attempt + 1}/${attempts}): ${image}`,
       );
+      // The retry is decided. The seed may use the time left before the retry must start.
+      const seedTimeoutMs = Math.min(
+        attemptTimeoutMs,
+        budgetMs - (Date.now() - started) - delayMs,
+      );
+      if (seed !== undefined && evidence.timedOut && seedTimeoutMs > 0) {
+        await seedLayers(seed, seedTimeoutMs, { execFile, docker, log });
+        seed = undefined;
+      }
       await sleep(delayMs);
       delayMs *= 2;
     }

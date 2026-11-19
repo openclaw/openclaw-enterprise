@@ -714,6 +714,33 @@ export function registerClusterCreateCases() {
     await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
   });
 
+  test("k3d preparation pulls a missing K3s node image with pullImage before the create", async (t) => {
+    // k3d pulls a missing node image itself, once and inside the create's timeout. A
+    // stalled pull then timed out the create, and its partial network blocked the retry.
+    const commands = await fixtureImageCommands(t, "node-image-absent");
+    const result = await commands.prepare();
+    assert.equal(result.status, 0, result.stderr);
+    const calls = (await commands.commands()).map(({ command, args }) =>
+      [command, ...args].join(" "),
+    );
+    const inspect = calls.indexOf(
+      `docker image inspect --format {{json .RepoDigests}} ${defaultK3sImage}`,
+    );
+    const pull = calls.indexOf(`docker pull ${defaultK3sImage}`);
+    const create = calls.findIndex((call) => call.startsWith("k3d cluster create "));
+    assert.ok(
+      inspect >= 0 && pull > inspect && create > pull,
+      `the node image must be pulled before the create: ${JSON.stringify({ inspect, pull, create })}`,
+    );
+    const stages = fixturePreparationMetrics(result.stderr)
+      .filter(
+        ({ stage, status }) => ["k3d-node-image", "k3d-create"].includes(stage) && status !== "started",
+      )
+      .map(({ stage, status }) => `${stage}:${status}`);
+    assert.deepEqual(stages, ["k3d-node-image:passed", "k3d-create:passed"]);
+    await commands.cleanupSuccessfully();
+  });
+
   test("k3d preparation stops waiting for create output held outside its process group", async (t) => {
     const commands = await fixtureImageCommands(t, "cluster-create-hangs-escaped", undefined, {
       OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS: "4000",

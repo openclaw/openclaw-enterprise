@@ -9,15 +9,34 @@ import pg from "pg";
 // Resolve Drizzle from the workspace package that owns the dependency.
 import { drizzle } from "../../packages/occ/node_modules/drizzle-orm/node-postgres/index.js";
 import { migrate } from "../../packages/occ/node_modules/drizzle-orm/node-postgres/migrator.js";
+import { ensureImage } from "../../scripts/ci/image-pull.ts";
 import { migrationCatalog } from "../../scripts/migration-catalog.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 const exec = promisify(execFile);
+const postgres16 =
+  "docker.io/library/postgres:16.15@sha256:f9a7b9ebf6f56201f949db745e47bc423c0f0f8294bafe991cc10bf74b029657";
 
 test(
   "Migration refuses PostgreSQL 16 before first installation or upgrade without exposing credentials",
-  { skip: process.env.OCC_TEST_MIGRATION_SERVER !== "1", timeout: 180_000 },
+  // pullImage bounds a stalled pull to about 11 minutes; the test itself takes under 3.
+  { skip: process.env.OCC_TEST_MIGRATION_SERVER !== "1", timeout: 900_000 },
   async (context) => {
+    // Pull with retries unless the engine holds the pinned digest; `docker run` would
+    // pull once, without them.
+    await ensureImage(postgres16, {
+      execFile: async (command, args, { timeoutMs }) => {
+        try {
+          return await exec(command, args, { timeout: timeoutMs });
+        } catch (error) {
+          // Node kills a child that outlives its timeout; pullImage retries a timeout.
+          if (error instanceof Error && "killed" in error) {
+            Object.assign(error, { timedOut: error.killed === true });
+          }
+          throw error;
+        }
+      },
+    });
     const owner = randomUUID();
     const container = `oce-migration-version-${owner}`;
     const ownershipLabel = `com.openclaw.enterprise.migration-test=${owner}`;
@@ -58,7 +77,7 @@ test(
         "POSTGRES_DB=openclaw_enterprise",
         "--publish",
         "127.0.0.1::5432",
-        "docker.io/library/postgres:16.15",
+        postgres16,
       ],
       { env: { ...process.env, POSTGRES_PASSWORD: randomUUID() }, timeout: 120_000 },
     );

@@ -58,6 +58,16 @@ are best effort; Docker's non-terminal output can omit progress. The summary
 reports missing matches. Diagnostics do not change retries, timeouts or digest
 checks, or establish registry health or stall causes.
 
+After the first timed-out attempt of a `docker.io/<path>[:tag]@sha256:<digest>`
+reference, `pullImage` pulls `mirror.gcr.io/<path>@sha256:<digest>` once, inside the
+same budget, then retries the original reference. The engine verifies the seed by
+digest and keeps its layers, so the retry downloads only the manifest. The log shows
+`Seeding layers from mirror.gcr.io/...`. A failed seed is logged and changes no
+retry. Tag-only and other registry references get no seed.
+`scripts/ci/k3d-preparation.ts:ensureK3dCluster` pulls the K3s node image with
+`ensureImage` before `k3d cluster create`, so the create timeout covers no registry
+pull.
+
 The PR advisory OpenShell job uses Ubuntu 24.04 for Landlock and selects packaged Google Chrome through `OCC_TEST_BROWSER_EXECUTABLE`. The OpenShell manifest lists this optional input so test children receive it. Before image builds, `scripts/ci/setup-tools.sh:install_browser_dependencies` checks a headless sandboxed renderer and logs its version; errors fail setup. The browser inherits only `PATH`, with private `HOME` and `TMPDIR`. Ubuntu’s existing AppArmor profile permits its user namespaces. Without an override, Playwright uses its default headless shell.
 
 `scripts/ci/prepare-inputs.ts` rejects malformed manifest preparation objects
