@@ -10,7 +10,7 @@ import {
   type OpenShellSandboxObserver,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import type { CleanupRegistrar } from "./cleanup-registrar.ts";
-import { grpc, loader, type Grpc } from "./openshell-grpc-sdk.ts";
+import { grpc, loader, openShellService, type Grpc } from "./openshell-grpc-sdk.ts";
 
 // Allow the 90-second through-FIN client to finish. The outer deadline also
 // covers opening the supervisor relay and collecting the terminal stream.
@@ -59,11 +59,6 @@ type ExecRequest = {
   execution_timeout: { seconds: number };
   request_id: string;
 };
-type ExecSandbox = (
-  request: ExecRequest,
-  metadata: Grpc.Metadata,
-  options: Grpc.CallOptions,
-) => Grpc.ClientReadableStream<unknown>;
 type ExecResult = { stdout: Buffer; stderr: Buffer; exitCode: number };
 
 /**
@@ -82,18 +77,12 @@ export function createManagedWorkloadExec(
     new URL("../fixtures/openshell-workload-exec.proto", import.meta.url),
   );
   const definition = loader.loadSync(proto, { keepCase: true, longs: String, oneofs: true });
-  const packages = grpc.loadPackageDefinition(definition);
-  const openshell = packages.openshell;
-  assert.ok(openshell && typeof openshell === "object" && !("format" in openshell));
-  const v1 = openshell.v1;
-  assert.ok(v1 && typeof v1 === "object" && !("format" in v1));
-  const OpenShell = v1.OpenShell;
-  assert.ok(typeof OpenShell === "function");
+  const execSandbox: Grpc.ClientMethodDefinition<ExecRequest, unknown> | undefined =
+    openShellService(grpc.loadPackageDefinition(definition)).ExecSandbox;
+  assert.ok(execSandbox && !execSandbox.requestStream && execSandbox.responseStream);
   const { target, credentials } = openShellGatewayGrpcChannel(grpc, backend);
-  const client = new OpenShell(target, credentials, { "grpc.enable_retries": 0 });
+  const client = new grpc.Client(target, credentials, { "grpc.enable_retries": 0 });
   t.after(() => client.close());
-  assert.ok(typeof client.ExecSandbox === "function");
-  const execSandbox = client.ExecSandbox as ExecSandbox;
 
   return async ({ sandboxName, sandboxId }, command) => {
     const { signal } = t;
@@ -124,8 +113,10 @@ export function createManagedWorkloadExec(
     };
     await checkpoint("managed-workload-exec-dispatch-unknown", launch);
     signal.throwIfAborted();
-    const stream = execSandbox.call(
-      client,
+    const stream = client.makeServerStreamRequest<ExecRequest, unknown>(
+      execSandbox.path,
+      execSandbox.requestSerialize,
+      execSandbox.responseDeserialize,
       {
         workspace_scope: { workspace },
         sandbox: sandboxName,
@@ -199,7 +190,9 @@ async function readExecResult(stream: AsyncIterable<unknown>): Promise<ExecResul
     } else {
       assert.ok(payload === "stdout" || payload === "stderr");
       const data = asRecord(frame[payload])?.data;
-      assert.ok(data instanceof Uint8Array);
+      if (!(data instanceof Uint8Array)) {
+        throw new TypeError("Invalid managed workload output bytes");
+      }
       bytes += data.length;
       assert.ok(bytes <= maxOutputBytes, "bounded managed client output");
       outputs[payload].push(data);
