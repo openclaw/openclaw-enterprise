@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-04
-last_updated_session: authoring-run/390095eb-01a9-4e24-b609-791b49f19f81
+updated: 2026-11-17
+last_updated_session: authoring-run/a1a47d55-3248-4349-81a2-ca786027b634
 ---
 
 # Harness Authentication Binding Flow
@@ -64,14 +64,14 @@ graph TD
 `pollAgentDeviceAuthorization`, `cancelAgentDeviceAuthorization`
 
 Device login creates a credential source and asks its Credential Refresh Driver
-to start and poll authorization. The Secret-backed session records actor, exact Namespace
-and optional Agent scope, source identity, and an opaque Refresh Driver handle.
+to start and poll authorization. OCC binds the login to the actor, Namespace,
+optional Agent, and source.
 The Refresh Driver hands the provider grant to the external service. Ready responses return a credential-source
 reference; Console saves a `credential_source` binding and grants the Agent
 principal exact source `operate`.
 
-Secret compare-and-swap permits one in-flight poll and fences cancellation. An
-uncertain exchange requires reconnect. Closing or expiring a session removes its
+OCC [claims the session in PostgreSQL](credential-source-refresh.md#device-authorization-and-configuration)
+before sending a poll. An uncertain exchange requires reconnecting. Closing or expiring a session removes its
 handle without revoking the source. Plugin discovery uses the Gateway's
 `withSourceToken` callback with current source authorization; the service may
 refresh before returning a usable access token. It continues through
@@ -265,7 +265,7 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
 
 ## Debugging and Verification
 
-- `node --test tests/conformance/plugin-compute.test.mjs` checks the filtered
+- `node --test tests/conformance/plugin-compute.test.ts` checks the filtered
   Codex child environments, startup-derived listener hash, and retained wrapper
   token. The runtime-image startup test checks the native Codex shell without a
   provider turn.
@@ -302,6 +302,8 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-17 19:24: Correct device-login state ownership and polling. (authoring-run/a1a47d55-3248-4349-81a2-ca786027b634 - c5ddcd80cb4cfcd0b969a52ef5c4cafff552a8e8)
 
 - 2026-10-30 07:41: Check the recorded Credential Gateway before catalog lookup in the accompanying Compute fix. (authoring-run/ea326acd-648d-4ca4-a2c6-afdd4cb4771e - 429951edfc002c1c6ef98970696e655e03ba3ec7)
 

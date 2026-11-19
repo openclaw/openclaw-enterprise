@@ -18,6 +18,7 @@ import type {
   HarnessAuthSnapshot,
   HarnessExecutionMode,
   Namespace,
+  ModelProvider,
   OpenClawConfigurationDocument,
   ResolvedHarnessAuth,
   RevisionHarnessDescriptor,
@@ -40,7 +41,20 @@ import type {
 import type { SandboxNamespaceContext, SandboxHarnessObservation } from "../sandbox/index.ts";
 import type { WorkspaceSetup } from "../../workspace-setup.ts";
 
+export interface AgentChatCompletionsEndpoint {
+  readonly url: string;
+  readonly model: string;
+}
+
+export type AgentChatCompletionsResolution =
+  | ({ readonly status: "available" } & AgentChatCompletionsEndpoint)
+  | { readonly status: "disabled" }
+  | { readonly status: "unavailable" }
+  | { readonly status: "unsupported" };
+
 export interface ComputeRevisionContext {
+  /** An active provider's maintenance pass may update its existing Harness only. */
+  readonly existingHarnessOnly?: true;
   /** Worker persists only an authenticated receipt for this admitted plan. */
   readonly recordEgressInstallation?: (installation: EgressInstallation) => Promise<void>;
   /** A fresh read of the still-authorized revision and its exact committed installation. */
@@ -246,6 +260,8 @@ export interface ComputeDriver extends Driver {
   readonly maintenanceIntervalMs?: number;
   /** Side-effect-free, bounded Driver-owned facts frozen into a new revision. */
   admitRevision?(revision: Readonly<AgentRevision>): string | undefined;
+  /** Optional immutable launch inputs, separate from execution authority. No side effects. */
+  snapshotRuntimeInputs?(revision: Readonly<AgentRevision>): string | undefined;
   /**
    * Opt into exclusive replacement: the worker stops all earlier revisions before
    * preparation and supersedes their reconciliation once a newer exclusive
@@ -308,6 +324,15 @@ export interface ComputeDriver extends Driver {
   normalizeHarnessOverrides?(
     overrides: Readonly<Record<string, unknown>>,
   ): Readonly<Record<string, unknown>>;
+  /** Translate a saved provider and its selected catalog rows into immutable deployment values. */
+  resolveModelProvider?(
+    provider: Readonly<ModelProvider>,
+    harness: RevisionHarnessDescriptor,
+    configuration: OpenClawConfigurationDocument,
+  ): {
+    readonly values: OpenClawConfigurationDocument;
+    readonly settings: Readonly<Record<string, unknown>>;
+  };
   /** Resolve immutable Harness settings before credential and egress admission. */
   resolveHarnessConfiguration?(
     harness: RevisionHarnessDescriptor,
@@ -380,6 +405,8 @@ export interface ComputeDriver extends Driver {
    * grants. Undefined means unsupported; callers must not use the admin endpoint instead.
    */
   getGatewayChatEndpoint?(revision: AgentRevision): string | undefined;
+  /** Resolve only the private HTTP completion route for this exact revision. */
+  getChatCompletionsEndpoint?(revision: AgentRevision): AgentChatCompletionsResolution;
   ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;
   deleteNamespace(namespace: Namespace): Promise<NamespaceDeleteResult>;
   checkNamespaceDeletion?(

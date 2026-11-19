@@ -69,6 +69,17 @@ const displayNamePattern = /^[^\p{C}\p{Zl}\p{Zp}]{1,40}$/u;
 // An `https:` URL on the default port with a DNS host and no userinfo, query or fragment.
 // Returns the parsed URL, or undefined.
 function endpointURL(value: string): URL | undefined {
+  // WHATWG URL parsing repairs tabs, escapes, empty userinfo, and backslashes in an
+  // authority. Refuse those spellings before selecting a confidential destination.
+  const authority = /^https:\/\/([^/?#]+)(?:\/|$)/i.exec(value)?.[1];
+  const hostname = authority?.replace(/:443$/i, "");
+  if (
+    hostname === undefined ||
+    !/^[A-Za-z0-9.-]+$/.test(hostname) ||
+    !dnsName.test(hostname.toLowerCase())
+  ) {
+    return undefined;
+  }
   let url: URL;
   try {
     url = new URL(value);
@@ -123,9 +134,9 @@ export function oidcLoginConfiguration(
     ["jwks", "OCC_AUTH_OIDC_JWKS_URL"],
   ] as const) {
     const url = endpointURL(values[variable]);
-    if (url === undefined || url.hostname !== issuer.hostname) {
+    if (url === undefined) {
       throw new Error(
-        `${variable} must be an https URL on port 443 on the issuer's host, with no query or fragment.`,
+        `${variable} must be an https URL on port 443 with a DNS host name and no query or fragment.`,
       );
     }
     endpoints[name] = url.href;
@@ -147,7 +158,7 @@ export function oidcLoginConfiguration(
     // The configured string itself: `iss` must match it exactly, trailing slash included.
     issuer: values.OCC_AUTH_OIDC_ISSUER,
     authorizationUrl: endpoints.authorization,
-    // Checked above: HTTPS on 443 on the issuer's DNS host. This is the only place a
+    // Checked above: each selected endpoint is HTTPS on 443 with a DNS host. This is the only place a
     // PinnedEndpoint is constructed.
     tokenUrl: endpoints.token as PinnedEndpoint,
     jwksUrl: endpoints.jwks as PinnedEndpoint,
@@ -241,7 +252,8 @@ export async function exchangeOidcSubject(
     }
     const policy = config.enrollment;
     if (policy !== undefined) {
-      const groups = claims[policy.admission.groupsClaim];
+      const claim = claims[policy.admission.groupsClaim];
+      const groups = typeof claim === "string" ? [claim] : claim;
       if (
         !Array.isArray(groups) ||
         groups.some((group) => typeof group !== "string") ||
@@ -255,7 +267,7 @@ export async function exchangeOidcSubject(
           groupIds: policy.groupIds,
           createAccount: policy.createAccount,
           policyId: policy.policyId,
-          profile: oidcEnrollmentProfile(claims),
+          profile: oidcEnrollmentProfile(claims, policy.createAccount.requireVerifiedEmail),
         },
       };
     }
@@ -271,8 +283,13 @@ export async function exchangeOidcSubject(
 
 function oidcEnrollmentProfile(
   claims: Record<string, unknown>,
-): { email: string; name: string } | undefined {
-  if (claims.email_verified !== true || typeof claims.email !== "string") {
+  requireVerifiedEmail: boolean,
+): { email: string; name: string; emailVerified: boolean } | undefined {
+  if (
+    (Object.hasOwn(claims, "email_verified") && typeof claims.email_verified !== "boolean") ||
+    (requireVerifiedEmail && claims.email_verified !== true) ||
+    typeof claims.email !== "string"
+  ) {
     return undefined;
   }
   const email = claims.email.trim().toLowerCase();
@@ -291,5 +308,5 @@ function oidcEnrollmentProfile(
   ) {
     return undefined;
   }
-  return { email, name };
+  return { email, name, emailVerified: claims.email_verified === true };
 }

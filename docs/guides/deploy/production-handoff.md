@@ -19,9 +19,13 @@ binary checksum in a separate private handoff record. The receipt's `version` is
 its file-format version, not the OCE release; an unversioned local CLI build can
 print `dev`. Keep this source identity with the receipt without editing its files.
 
-The CLI syncs `intent.json` (target, attempt ID, time and input hashes), writes
-the receipt notice to stdout, then syncs `dispatch.json` before starting Helm
-once. If the notice write returns an error, the command exits unsuccessfully
+The CLI syncs `intent.json` (target, attempt ID, time and input hashes) and prints
+the receipt notice before preparing generated credentials. `bootstrap-secret.json`
+records their private directory and Secret selection, never values. Separate
+Secret dispatch/result records distinguish an unknown create from confirmed UID
+and data. Missing confirmation requires reconciliation, not regenerated inputs
+or another create. Credential files remain separate from the shareable receipt.
+The CLI syncs `dispatch.json` before starting Helm once. If the notice write returns an error, the command exits unsuccessfully
 and names the preserved receipt directory in its error. That error confirms
 that this attempt created no `dispatch.json` and started no Helm install.
 Keep the receipt, repair the stdout destination, and confirm the target is still
@@ -37,6 +41,19 @@ values on normal exit. After a forced kill, confirm its Helm process has exited
 before removing that installation's `occ-install-*` temporary directory. A forced kill during handoff can also leave an `occ-handoff-*`
 directory with the reader's private kubeconfig.
 Share only the receipt and this source identity record with the authorized reader.
+
+If install reports a template validation failure, run offline `helm template`
+with the same local chart, values, release, namespace and recorded
+`installation.attemptId`. Use the same Helm version. Keep rendered manifests and
+stderr in owner-only local outputs outside the receipt; they may contain secrets.
+For the shared DNS suffix refusal, the host in `auth.baseUrl` and
+`agentNativeAdmin.domain` must share a non-public DNS suffix. Correct a copy of
+the inputs and render again. Neither a render result nor a missing Job establishes
+cluster effects or authorizes retry; preserve the receipt and reconcile the
+original attempt below.
+
+Handoff reports unconfirmed Secret preparation even without a Job. Read-only `doctor`/`plan` neither open recovery files nor recreate Secrets or authenticate keys. See the
+[installer flow](../../flows/installation-preparation.md).
 
 ## Resume an installation in progress
 

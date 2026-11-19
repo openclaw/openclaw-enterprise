@@ -17,8 +17,15 @@ custody and retirement. Provider adapters own provider-specific scope, injection
 and response rules. The proxy enforces requests and obtains eligible material;
 it does not run a credential renewal loop.
 
-Credential Proxy does not replace every Credential Gateway. Existing static
-Gateway-owned attachments retain their own delivery path.
+Ordinary sources remain Gateway-owned. When static protection is required, neither
+the Gateway nor the Proxy may declare refresh, device authorization or managed
+login tokens. Capabilities omit incompatible types. If OCC detects a mismatch
+before the Secret read, creation and adoption return 409 without reading material.
+OCC checks again after the read and refuses injection if either declaration
+changed. Refused adoption preserves the prior Gateway copy.
+Protected sources and
+repository bindings require Proxy admission; an Agent with neither needs no Proxy
+plan. An unavailable Proxy never permits Gateway fallback for a protected source.
 
 ## Interface
 
@@ -93,6 +100,14 @@ Material stays in the trusted resolver, sender or verified recipient. Workload
 configuration receives safe references or markers, not issuer inputs or provider
 tokens. Keep material out of logs, receipts and public status. A material read
 permits receipt or installation only; it does not authorize an upstream send.
+Static deployment and exchange require one provider registration whose ID and
+generation match the admitted reference, whose type matches the source, and whose
+lifecycle supports static credentials. Deployment checks again before invoking
+runtime credential provisioning and before calling the revision store. A later
+refusal cannot undo provisioning already started. Exchange pins the Proxy owner and source
+control before Secret metadata lookup, then rechecks them, the Backend, sender,
+resolver and provider before reading material. Another registration of the same
+source type cannot replace the admitted registration.
 
 ## Lifecycle
 
@@ -141,6 +156,15 @@ live transport custody, not just stored IDs.
 version and request and returns a deadline-bound decision. Match request and
 injection digests and enforce `sendStartBy` at the last controlled send boundary.
 Do not treat resolution as send permission.
+
+A provider's `classify` may synchronously report one stable rule ID (1–255) through
+its optional refusal callback. IDs must not encode request data or be reassigned.
+OCC records `classificationRule` only when no operation matches and exactly one
+refused route reports a valid ID. Accepted operations, missing or repeated reports,
+and ambiguous diagnostics provide no rule. The audit binds the authenticated
+execution, source and exact request ID without inventing an operation or accessing
+credentials. Interpretation belongs to the selected provider; the wire refusal
+remains generic. See the [diagnostic flow](../../flows/credential-source-egress.md#debugging-and-verification).
 
 Response acceptance and lease renewal remain bound to that exchange.
 `protectResponse` processes the complete response, including trailers; an

@@ -3,6 +3,11 @@ import { isComputePreparationFailureEvidence } from "@openclaw-enterprise/contra
 import type { RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
 
 import {
+  CREDENTIAL_WITHDRAWAL_TARGET,
+  type ControllerWork,
+  type ControllerWorkKind,
+} from "../controller-work.ts";
+import {
   repositoryExecutionRedeployMessage,
   type DeploymentRepositoryAccessStatus,
 } from "../deployment-repository-access.ts";
@@ -10,12 +15,18 @@ import { SandboxRepositoryRecipientUnverifiedError, ScopeViolationError } from "
 import { recognizedRuntimeFailureValues, runtimeFailureCause } from "../runtime-failure-cause.ts";
 
 export { runtimeFailureCause };
+export { CREDENTIAL_WITHDRAWAL_TARGET } from "../controller-work.ts";
+export type {
+  ClaimedWork,
+  ControllerWork,
+  ControllerWorkKind,
+  ControllerWorkState,
+} from "../controller-work.ts";
+export { WorkClaimLostError } from "../errors.ts";
 
 export type { RuntimeFailureCause, RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
 
-export type ControllerWorkState = "queued" | "claimed" | "succeeded" | "failed_permanent";
-
-export type ControllerWorkKind = "lifecycle" | "provisioning";
+export type ControllerWorkLookup = Pick<ReadonlyMap<string, Readonly<ControllerWork>>, "get">;
 
 export type DeploymentStatus = "queued" | "running" | "succeeded" | "failed";
 
@@ -228,13 +239,6 @@ export interface PluginDeploymentWarning {
   readonly pluginId: string;
 }
 
-/**
- * Revision-scoped work that revokes credential sources from a running revision. It names the
- * revision but is not a deployment: it never prepares, activates, or supersedes it, and it owns
- * no repository-credential cleanup. The value is persisted in `controller_work.agent_target`.
- */
-export const CREDENTIAL_WITHDRAWAL_TARGET = "credentials_withdrawn";
-
 const CREDENTIAL_WITHDRAWAL_ACTION = "reconcile";
 
 /** One key per request, so a withdrawal never replaces the revision's deployment key. */
@@ -257,43 +261,6 @@ export function isCredentialWithdrawalWork(
   work: Pick<ControllerWork, "revisionId" | "agentTarget">,
 ): boolean {
   return work.revisionId !== undefined && work.agentTarget === CREDENTIAL_WITHDRAWAL_TARGET;
-}
-
-export interface ControllerWork {
-  readonly kind: ControllerWorkKind;
-  readonly idempotencyKey: string;
-  readonly namespaceId: string;
-  readonly agentId?: string;
-  readonly revisionId?: string;
-  readonly actorId: string;
-  readonly namespaceTarget?: "ready" | "deleted";
-  /** See `CREDENTIAL_WITHDRAWAL_TARGET` for the revision-scoped target. */
-  readonly agentTarget?:
-    "stopped" | "deleted" | "provisioned" | "sandbox_policy" | typeof CREDENTIAL_WITHDRAWAL_TARGET;
-  readonly state: ControllerWorkState;
-  readonly availableAt: Date;
-  readonly attemptCount: number;
-  readonly claimToken?: string;
-  readonly leaseExpiresAt?: Date;
-  /** Claim liveness judged by the State store's clock when it read this work. */
-  readonly leaseActive?: boolean;
-  readonly completedAt?: Date;
-  readonly reasonCode?: string;
-  readonly resultData?: Readonly<Record<string, unknown>>;
-  readonly createdAt: Date;
-  readonly updatedAt: Date;
-}
-
-export interface ClaimedWork extends ControllerWork {
-  readonly state: "claimed";
-  readonly claimToken: string;
-  readonly leaseExpiresAt: Date;
-  /**
-   * Milliseconds since `createdAt` when the claim was granted or renewed, by the State store's
-   * clock. `createdAt` is on that clock too, so subtracting it from the controller's clock would
-   * shift the age by their skew.
-   */
-  readonly ageMs: number;
 }
 
 /**
@@ -445,7 +412,7 @@ export function validateRuntimeFailureEvidence(value: unknown): RuntimeFailureEv
 
 /**
  * Validates failure data before it is recorded, and again when it is read back. A runtime
- * failure value outside the vocabulary in packages/contracts/src/runtime-failure.mjs is recorded,
+ * failure value outside the vocabulary in packages/contracts/src/runtime-failure.ts is recorded,
  * and read back, as UNRECOGNIZED rather than as served (findings 1660, 1674).
  */
 export function validateFailureData(
@@ -590,7 +557,7 @@ export function validateSuccessResultData(data: unknown): SuccessResultData | un
 }
 
 export function deploymentErrorForWork(
-  work: Readonly<Pick<ControllerWork, "state" | "reasonCode" | "resultData">>,
+  work: Readonly<Pick<ControllerWork, "state" | "reasonCode" | "resultData" | "agentId">>,
 ): DeploymentStatusError | null {
   if (work.state !== "failed_permanent" && !completedWithoutActivation(work)) {
     return null;
@@ -602,7 +569,7 @@ export function deploymentErrorForWork(
       : validateFailureData(code, immutableCopy(work.resultData));
   return Object.freeze({
     code,
-    message: deploymentErrorMessage(code),
+    message: deploymentErrorMessage(code, work.agentId ?? "AGENT_ID"),
     ...(data === undefined ? {} : { data }),
   });
 }
@@ -709,7 +676,7 @@ function completedWithoutActivation(
 // that holds the setting (finding 1393). `deployment-failure-steps.ts` records which kind of
 // step each code leads to, so clients choose their actions without parsing this text: keep the
 // two in step.
-function deploymentErrorMessage(code: string): string {
+function deploymentErrorMessage(code: string, agentId: string): string {
   switch (code) {
     case "CONVERGENCE_DEADLINE_EXCEEDED":
       return "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime diagnostics, correct the cause if there is one, then deploy a new version.";
@@ -737,6 +704,10 @@ function deploymentErrorMessage(code: string): string {
       return "This Codex runtime’s managed permission policy does not allow the sandbox mode, named profile or human reviewer required by OpenShell. Ask the policy owner to verify compatibility, then deploy a new version.";
     case "RUNTIME_STARTUP_FAILED":
       return "Deployment runtime failed a startup check. Check this version's logs for the failed check and correct its cause, then deploy a new version.";
+    // The runtime holds unready on check `gateway-state-lock`; its log names the holder. The
+    // record does not say which workload holds, so the text names both log sources.
+    case "RUNTIME_STATE_LOCK_UNVERIFIED":
+      return `Startup check gateway-state-lock failed: the runtime cannot verify that its state lock holder stopped. See it with 'occ agent logs ${agentId} --source gateway' (Harness: --source agent), then follow the troubleshooting guide.`;
     case "EXECUTION_ADMISSION_WITHDRAWN":
       return "This version can no longer run with its admitted access. The controller closed that access and observed the workload stopped. Deploy a new version to use the current installation.";
     case "REVISION_SUPERSEDED":

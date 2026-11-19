@@ -31,7 +31,7 @@ session cookie before forwarding to the native gateway.
 | `OCC_PORT`                                 | Decimal integer from `1` through `65535`.                                                                          | Selects the internal listener port exposed by the operator's Service.                                                        |
 | `OCC_DATABASE_URL`                         | Explicit PostgreSQL application-role URL.                                                                          | Must connect to the already migrated controller database. With TLS verification, an IP host must match an IP subjectAltName. |
 | `OCC_CONFIG_PATH`                          | Absolute path to trusted Installation startup YAML.                                                                | Selects Configuration, IAM, Compute, and optional account Drivers.                                                           |
-| `OCC_AUTH_SECRET`                          | Mounted high-entropy Better Auth secret.                                                                           | Signs and verifies session material without logging it.                                                                      |
+| `OCC_AUTH_SECRET`                          | Mounted high-entropy Better Auth secret, 32 characters minimum.                                                    | Signs sessions and derives the [device-login encryption key](../drivers/kubernetes-compute/codex-oauth-storage.md).          |
 | `OCC_AUTH_BASE_URL`                        | HTTPS DNS origin without path, query, fragment or user info; must share a non-public suffix with the Agent domain. | Defines the Better Auth base URL and cookie origin.                                                                          |
 | `OCC_GATEWAY_API_KEY_PATH`                 | Optional absolute path to the private gateway service-key file.                                                    | API only; validates at startup and reads each operation for rotation. Requires Compute endpoint resolution.                  |
 | `OCC_PREPROVISIONED_NAMESPACE`             | Optional JSON `{"namespaceId","uid"}` binding one operator-created namespace; set by Helm.                         | API and worker. See [preprovisioned namespace](../drivers/kubernetes-compute/preprovisioned-namespace.md).                   |
@@ -116,10 +116,20 @@ Sessions and service keys grant no rights without IAM; see
 scope, and revocation, and the [deployment guide](../../guides/deploy/service-keys.md#service-api-keys-for-automation)
 for the procedure. Normal issuance and verification require no additional
 settings; initial-key delivery uses the bootstrap settings below.
+The API refuses a shorter auth secret with `AUTH_SECRET_INVALID` before it
+constructs Drivers, opens PostgreSQL, or changes configured IAM policy.
 Auth-secret rotation takes effect after
 replacing the mounted Secret and restarting; it also invalidates every
 [known-device cookie](../authentication.md#known-devices) until each browser's next sign-in.
 Revoking one account's cookies needs no rotation: reset its password.
+
+### Control Plane audit
+
+Control Plane audit is off by default. Restrict API access to approved clients and
+[check ledger capacity](../../guides/topics/audit-log.md) before enabling it.
+Rejected requests can fill the ledger and block audited actions.
+Set Helm `controlPlaneAudit.enabled: true` or set
+`OCC_CONTROL_PLANE_AUDIT_ENABLED=true` on the API and worker.
 
 ### External sign-in and trusted proxies
 
@@ -215,29 +225,40 @@ settings, and the following bootstrap settings. The Job sets `backoffLimit: 0`;
 failed initialization requires [manual repair](../../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap)
 before another attempt.
 
-| Variable                          | Required value or format                                                                                |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `OCC_AUTH_SECRET`                 | Same mounted Better Auth secret used by the API.                                                        |
-| `OCC_AUTH_BASE_URL`               | Same HTTPS DNS origin as the API.                                                                       |
-| `OCC_AGENT_NATIVE_ADMIN_DOMAIN`   | Same Agent DNS suffix as the API; required for derived shared session cookies.                          |
-| `OCC_BOOTSTRAP_ADMIN_EMAIL`       | Email address for the first administrator account.                                                      |
-| `OCC_BOOTSTRAP_PASSWORD_FILE`     | New file path on protected operator-owned storage for the generated password.                           |
-| `OCC_BOOTSTRAP_INSTALLATION_NAME` | Installation display name; it must follow the API Name rule (`INSTALLATION_NAME_INVALID`).              |
-| `OCC_BOOTSTRAP_SERVICE_KEY_FILE`  | New private absolute JSON path; on fresh production bootstrap, a distinct sibling of the password file. |
+| Variable                                  | Required value or format                                                                   |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `OCC_AUTH_SECRET`                         | Same mounted Better Auth secret used by the API.                                           |
+| `OCC_AUTH_BASE_URL`                       | Same HTTPS DNS origin as the API.                                                          |
+| `OCC_AGENT_NATIVE_ADMIN_DOMAIN`           | Same Agent DNS suffix as the API; required for derived shared session cookies.             |
+| `OCC_BOOTSTRAP_ADMIN_EMAIL`               | Email address for the first administrator account.                                         |
+| `OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE` | Absolute UTF-8 file path for the supplied initial password.                                |
+| `OCC_BOOTSTRAP_INSTALLATION_NAME`         | Installation display name; it must follow the API Name rule (`INSTALLATION_NAME_INVALID`). |
+| `OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE`    | Absolute UTF-8 file path for the supplied initial API key.                                 |
 
 Repeated bootstrap preserves the existing Installation only when the exact
 administrator account and IAM identity still match; a mismatch fails closed.
 Existing Namespaces and their configuration remain unchanged; no initial
 Namespace is backfilled or recreated.
-On fresh bootstrap, both files are created exclusively with mode `0600`; their
-parent directory must be private and neither destination may already exist.
-Helm sets the key path from `bootstrap.password.mountPath` and
-`bootstrap.serviceKey.fileName` (default `initial-admin-service-key.json`). The
-key filename must be a simple basename distinct from `bootstrap.password.fileName`.
-`bootstrap.password.claimName` must follow Kubernetes' DNS-subdomain name rule:
-253 characters total, the same rule `prepare-bootstrap-volume` applies to
-`--claim`. Both use that existing PVC. Reruns do not inspect,
-replace, or regenerate output; see [recovery](../../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap).
+For a read-only check of a populated candidate database, set the usual production
+database, authentication and administrator settings, then run
+`node scripts/bootstrap-installation.mjs --verify-existing "$incumbent_installation_id"`.
+Obtain the ID independently from the authenticated incumbent Installation before
+selecting the candidate database. The command checks the singleton ID and the
+ordinary bootstrap administrator account, Principal and direct role binding in
+one read-only PostgreSQL snapshot. On success it prints
+`installation.bootstrap-verified` and the matched ID. An empty database, a different
+ID or a failed administrator check returns a nonzero exit. This mode requires no
+bootstrap credential inputs and creates no credentials. Check migration history
+with the [selected-image migration command](../../guides/deploy/separate-database-upgrade.md#run-a-selected-image-migration)
+and `--require-current`.
+
+For fresh Helm installation, precreate `bootstrap.credentials.secretName` in the
+release namespace. Its keys default to `admin-password` and `admin-service-key`;
+set `passwordKey` and `serviceKeyKey` to select other distinct keys. Only bootstrap
+projects the inputs, read-only at `/run/openclaw-bootstrap`. Upgrade Jobs do not
+project or require them. No bootstrap PVC is required. Direct initialization uses
+protected local files with the same [input contract](../authentication.md#installation-and-account-ownership).
+Reruns do not read inputs or rotate credentials; see [recovery](../../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap).
 
 ## Production operational logging collection
 

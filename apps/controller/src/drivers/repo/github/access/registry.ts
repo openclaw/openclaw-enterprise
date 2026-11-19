@@ -1,4 +1,9 @@
-import { isGitHubRepositoryPermissions, type GitHubRepositoryGrant } from "./repository-grant.ts";
+import {
+  createRepositorySlugPattern,
+  isGitHubRepositoryPermissions,
+  parseGitHubNumericId,
+  type GitHubRepositoryGrant,
+} from "./repository-grant.ts";
 import type { RepositoryGitDeliveryResolver } from "../../access/delivery.ts";
 import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
@@ -8,7 +13,7 @@ import type {
   RepositoryApprovalScope,
   RepositoryBindingRequest,
 } from "@openclaw-enterprise/contracts";
-import type { GitHubProfile } from "./types.ts";
+import { isGitHubProfile, type GitHubProfile } from "./types.ts";
 import {
   githubCapabilityPolicy,
   draftPullCapabilityPolicy,
@@ -67,7 +72,7 @@ export interface GitHubRepositoryRegistry {
 
 const selectorPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const backendPattern = /^(?!\s)(?!.*\s$).{1,200}$/;
-const repositoryPattern = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+const repositoryPattern = createRepositorySlugPattern();
 
 function invalid(): never {
   throw new Error("invalid-repository-registry");
@@ -91,20 +96,14 @@ function text(value: unknown, pattern = selectorPattern): string {
 }
 
 function numericId(value: unknown): string {
-  const id = text(value, /^[1-9][0-9]{0,15}$/);
-  if (!Number.isSafeInteger(Number(id))) {
+  if (typeof value !== "string" || parseGitHubNumericId(value) === undefined) {
     return invalid();
   }
-  return id;
+  return value;
 }
 
 function profile(value: unknown): GitHubProfile | "github-repository" {
-  if (
-    value !== "git-read" &&
-    value !== "git-write" &&
-    value !== "git-full" &&
-    value !== "github-repository"
-  ) {
+  if (!isGitHubProfile(value) && value !== "github-repository") {
     return invalid();
   }
   return value;
@@ -321,13 +320,16 @@ export function validateGitHubRepositoryRegistry(
 }
 
 function repositoryTransportPermissions(
-  transport: GitHubRepositoryRegistration["namespaces"][number]["transport"],
-  profile: GitHubProfile,
-): Readonly<Record<string, string>> {
-  if (transport === "git-only") {
+  policy: GitHubRepositoryRegistration["namespaces"][number],
+  profile: GitHubProfile | "github-repository",
+): Readonly<Record<string, string>> | undefined {
+  if (profile === "github-repository") {
+    return policy.permissions;
+  }
+  if (policy.transport === "git-only") {
     return permissionsForProfile("git-ref-write");
   }
-  if (transport === "git-and-draft-pr") {
+  if (policy.transport === "git-and-draft-pr") {
     return permissionsForProfile("git-ref-draft-pr");
   }
   return permissionsForProfile(profile);
@@ -339,6 +341,25 @@ const installationGrantPolicy = Object.freeze({
   apiPermissions: "inherited-from-github-app-installation",
   deliveryPolicy: "github-installation-git-basic-api-bearer-online-authorization-v1",
 } as const);
+
+function registryGrantId(
+  registry: GitHubRepositoryRegistry,
+  fields: Readonly<Record<string, unknown>>,
+): string {
+  return `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        version: registry.version,
+        backendId: registry.backendId,
+        providerInstanceId: registry.providerInstanceId,
+        appId: registry.appId,
+        githubInstallationId: registry.githubInstallationId,
+        maximumDurationSeconds: registry.maximumDurationSeconds,
+        ...fields,
+      }),
+    )
+    .digest("hex")}`;
+}
 
 export function resolveGitHubRepositoryBinding(
   registry: GitHubRepositoryRegistry,
@@ -353,37 +374,20 @@ export function resolveGitHubRepositoryBinding(
     if (request.profile !== githubInstallationProfile || policy?.accessMode !== "installation") {
       throw new Error("repository-binding-not-authorized");
     }
-    const {
-      version,
-      backendId,
-      providerInstanceId,
-      appId,
-      githubInstallationId,
-      maximumDurationSeconds,
-    } = registry;
-    const fingerprint = createHash("sha256")
-      .update(
-        JSON.stringify({
-          version,
-          backendId,
-          providerInstanceId,
-          appId,
-          githubInstallationId,
-          maximumDurationSeconds,
-          namespaceId,
-          repositoryRef,
-          profile: githubInstallationProfile,
-          ...installationGrantPolicy,
-        }),
-      )
-      .digest("hex");
+    const { backendId, providerInstanceId, githubInstallationId } = registry;
+    const grantId = registryGrantId(registry, {
+      namespaceId,
+      repositoryRef,
+      profile: githubInstallationProfile,
+      ...installationGrantPolicy,
+    });
     // The shared grant identity is opaque. This selector is not a GitHub repository ID.
     const repositoryId = `github-installation:${githubInstallationId}`;
     return Object.freeze({
       repositoryRef,
       backendId,
       profile: githubInstallationProfile,
-      grant: Object.freeze({ providerInstanceId, repositoryId, grantId: `sha256:${fingerprint}` }),
+      grant: Object.freeze({ providerInstanceId, repositoryId, grantId }),
     });
   }
   const repository = registry.repositories.find((entry) => entry.repositoryRef === repositoryRef);
@@ -399,41 +403,24 @@ export function resolveGitHubRepositoryBinding(
     throw new Error("repository-binding-not-authorized");
   }
   // Policy changes cannot preserve an earlier grant merely by retaining an operator label.
-  const fingerprint = createHash("sha256")
-    .update(
-      JSON.stringify({
-        version: registry.version,
-        backendId: registry.backendId,
-        providerInstanceId: registry.providerInstanceId,
-        appId: registry.appId,
-        githubInstallationId: registry.githubInstallationId,
-        maximumDurationSeconds: registry.maximumDurationSeconds,
-        repositoryRef,
-        repositoryId: repository.repositoryId,
-        repository: repository.repository,
-        namespaceId,
-        allowedProfiles: policy.profiles,
-        ...(policy.pushRefAllowlist === undefined
-          ? {}
-          : { pushRefAllowlist: policy.pushRefAllowlist }),
-        profile: selectedProfile,
-        ...(policy.pullRequestBase === undefined
-          ? {}
-          : { pullRequestBase: policy.pullRequestBase }),
-        ...(policy.draftPullLimit === undefined ? {} : { draftPullLimit: policy.draftPullLimit }),
-        permissions:
-          selectedProfile === "github-repository"
-            ? policy.permissions
-            : repositoryTransportPermissions(policy.transport, selectedProfile),
-        capabilityPolicy:
-          policy.transport === "git-only"
-            ? gitOnlyCapabilityPolicy
-            : policy.transport === "git-and-draft-pr"
-              ? draftPullCapabilityPolicy
-              : githubCapabilityPolicy,
-      }),
-    )
-    .digest("hex");
+  const grantId = registryGrantId(registry, {
+    repositoryRef,
+    repositoryId: repository.repositoryId,
+    repository: repository.repository,
+    namespaceId,
+    allowedProfiles: policy.profiles,
+    ...(policy.pushRefAllowlist === undefined ? {} : { pushRefAllowlist: policy.pushRefAllowlist }),
+    profile: selectedProfile,
+    ...(policy.pullRequestBase === undefined ? {} : { pullRequestBase: policy.pullRequestBase }),
+    ...(policy.draftPullLimit === undefined ? {} : { draftPullLimit: policy.draftPullLimit }),
+    permissions: repositoryTransportPermissions(policy, selectedProfile),
+    capabilityPolicy:
+      policy.transport === "git-only"
+        ? gitOnlyCapabilityPolicy
+        : policy.transport === "git-and-draft-pr"
+          ? draftPullCapabilityPolicy
+          : githubCapabilityPolicy,
+  });
   return Object.freeze({
     repositoryRef,
     profile: selectedProfile,
@@ -441,9 +428,23 @@ export function resolveGitHubRepositoryBinding(
     grant: Object.freeze({
       providerInstanceId: registry.providerInstanceId,
       repositoryId: repository.repositoryId,
-      grantId: `sha256:${fingerprint}`,
+      grantId,
     }),
   });
+}
+
+/** Re-resolve saved authority and require the entire admitted binding to remain current. */
+export function resolveCurrentGitHubRepositoryBinding(
+  registry: GitHubRepositoryRegistry,
+  namespaceId: string,
+  binding: AdmittedRepositoryBinding,
+): AdmittedRepositoryBinding | undefined {
+  const current = resolveGitHubRepositoryBinding(registry, {
+    namespaceId,
+    repositoryRef: binding.repositoryRef,
+    profile: binding.profile,
+  });
+  return isDeepStrictEqual(current, binding) ? current : undefined;
 }
 
 /** Resolve the policy ceiling independently of provider token material. */
@@ -458,12 +459,7 @@ export function resolveGitHubStandingApprovalScope(
   if (!scope) {
     return;
   }
-  const current = resolveGitHubRepositoryBinding(registry, {
-    namespaceId: input.namespaceId,
-    repositoryRef: input.binding.repositoryRef,
-    profile: input.binding.profile,
-  });
-  if (!isDeepStrictEqual(current, input.binding)) {
+  if (!resolveCurrentGitHubRepositoryBinding(registry, input.namespaceId, input.binding)) {
     return;
   }
   return scope;
@@ -516,10 +512,10 @@ function standingApprovalScope(
     pullRequestBase: policy.pullRequestBase ?? null,
     draftPullLimit:
       policy.transport === "git-and-draft-pr" ? (policy.draftPullLimit ?? "one-per-grant") : null,
-    apiPermissions:
-      input.binding.profile === "github-repository"
-        ? policy.permissions!
-        : repositoryTransportPermissions(policy.transport, input.binding.profile as GitHubProfile),
+    apiPermissions: repositoryTransportPermissions(
+      policy,
+      input.binding.profile as GitHubProfile | "github-repository",
+    )!,
     maximumSessionDurationSeconds: registry.maximumDurationSeconds,
     installationPolicyAllowsStanding: true,
     namespacePolicyAllowsStanding: true,
@@ -559,12 +555,8 @@ export function createGitHubRepositoryDeliveryResolver(
     if (!state || state.bindings.length !== 1 || !binding) {
       throw new Error("Repository Git delivery requires one admitted binding.");
     }
-    const resolved = resolveGitHubRepositoryBinding(registry, {
-      namespaceId: revision.namespaceId,
-      repositoryRef: binding.repositoryRef,
-      profile: binding.profile,
-    });
-    if (!isDeepStrictEqual(binding, resolved)) {
+    const resolved = resolveCurrentGitHubRepositoryBinding(registry, revision.namespaceId, binding);
+    if (!resolved) {
       throw new Error("Repository Git delivery requires the current exact registry grant.");
     }
     if (binding.profile === githubInstallationProfile) {
@@ -633,14 +625,7 @@ export function resolveSelectedRepositoryScope(
     .map((binding) => {
       if (
         binding.profile !== "github-repository" ||
-        !isDeepStrictEqual(
-          binding,
-          resolveGitHubRepositoryBinding(registry, {
-            namespaceId,
-            repositoryRef: binding.repositoryRef,
-            profile: binding.profile,
-          }),
-        )
+        !resolveCurrentGitHubRepositoryBinding(registry, namespaceId, binding)
       ) {
         throw new Error("selected-repository-grant-changed");
       }

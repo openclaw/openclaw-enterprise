@@ -2,6 +2,14 @@ import { types } from "node:util";
 import { installationPhase } from "./openshell-installation-phase.ts";
 
 export const openShellProgressPrefix = "openclaw-ci-progress ";
+export const upstreamOutageCase = Object.freeze({
+  entry: "tests/integration/openshell-upstream-real.test.ts",
+  declaration: "tests/helpers/openshell-sandbox-workflows.mjs",
+  name: "OpenShell model and tool upstream outages fail closed",
+});
+export const openShellReplacementCheckpoints = Object.freeze(
+  /** @type {const} */ (["redeploy-request", "activation", "reconciliation"]),
+);
 
 const failureCategories = new Set([
   "AssertionError",
@@ -29,6 +37,8 @@ const failureLocation = "tests/helpers/openshell-sandbox-workflows.mjs";
 const openShellStages = new Set([
   "exposure-auth",
   "installation",
+  "scratch-sibling-isolation",
+  "scratch-queued-actor-revocation",
   "initial-model",
   "filesystem-network",
   "network-policy",
@@ -46,11 +56,17 @@ const openShellStages = new Set([
   "native-policy",
 ]);
 
-// A live log carries only fixed categories. Reject extra fields rather than
-// accidentally turning this channel into an arbitrary diagnostic transport.
+// Progress records carry only fixed categories. Reject extra fields to keep
+// arbitrary diagnostic data out of this channel.
 export function openShellProgress(value) {
   if (value?.kind === "openshell-installation") {
     return installationPhase(value);
+  }
+  if (value?.kind === "openshell-replacement-checkpoint") {
+    return Object.keys(value).length === 2 &&
+      openShellReplacementCheckpoints.includes(value.checkpoint)
+      ? { kind: value.kind, checkpoint: value.checkpoint }
+      : undefined;
   }
   if (value?.kind === "openshell-stage-failure") {
     if (
@@ -91,6 +107,13 @@ export function emitOpenShellProgress(stage, outcome) {
   }
 }
 
+export function emitOpenShellReplacementCheckpoint(checkpoint) {
+  const value = openShellProgress({ kind: "openshell-replacement-checkpoint", checkpoint });
+  if (value) {
+    process.stdout.write(`\n${openShellProgressPrefix}${JSON.stringify(value)}\n`);
+  }
+}
+
 // The location identifies the workflow owner, not a frame from an error's text.
 export function emitOpenShellStageFailure(stage, error) {
   let category = "unknown";
@@ -119,9 +142,11 @@ export function emitOpenShellStageFailure(stage, error) {
 
 // Keep at most one small partial record, even when a child never sends a newline.
 // Oversized lines are ignored through their terminator; a following record can resume.
+/** @param {(line: string) => void} onLine */
 export function boundedProgressLines(onLine) {
   let partial = "";
   let dropping = false;
+  /** @param {string} text */
   return (text) => {
     let start = 0;
     while (start < text.length) {

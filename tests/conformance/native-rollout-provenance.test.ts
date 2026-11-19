@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
-import { parseNativeRolloutProvenance } from "../helpers/native-rollout-provenance.mjs";
+import { parseNativeRolloutProvenance } from "../helpers/native-rollout-provenance.ts";
 
 const expected = {
   expectedThreadId: "019a0000-0000-7000-8000-000000000001",

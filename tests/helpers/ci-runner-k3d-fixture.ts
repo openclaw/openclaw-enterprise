@@ -20,6 +20,7 @@ export async function prepareK3dDiagnosticsRun(
   await mkdir(clusterDirectory);
   await writeJson(statePath, {
     lane,
+    prefix: "openclaw-ci-k3d-lane-123456789abc",
     resources: [
       {
         kind: "k3d-cluster",

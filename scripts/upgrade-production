@@ -1,0 +1,331 @@
+#!/usr/bin/env python3
+"""Translate a private operator profile into the coordinated upgrade command."""
+
+import argparse
+import json
+import os
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+
+OPERATIONS = ("plan", "preflight", "upgrade", "status", "resume", "cleanup-preflight")
+REQUIRED = (
+    "kubeconfig",
+    "context",
+    "namespace",
+    "release",
+    "installationDirectory",
+    "sourceRevision",
+)
+OPTIONAL = ("occ", "images")
+IMAGE_FLAGS = {
+    "controller": "--controller-image",
+    "broker": "--broker-image",
+    "runtime": "--runtime-image",
+}
+PROTECTED = {
+    "--kubeconfig",
+    "--context",
+    "--namespace",
+    "--release",
+    "--values",
+    "--installation",
+    "--source-revision",
+    "--evidence-dir",
+    "--occ",
+    *IMAGE_FLAGS.values(),
+    "--preflight-only",
+    "--resume",
+    "--cleanup-preflight",
+    "--help",
+    "-h",
+}
+
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate field")
+        result[key] = value
+    return result
+
+
+def profile_input(parser, filename):
+    try:
+        fd = os.open(
+            filename, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+        )
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_mode & 0o077
+            ):
+                parser.error(
+                    "profile must be an owner-only regular file, not a symbolic link"
+                )
+            if info.st_size > 65536:
+                parser.error("profile must be at most 64 KiB")
+            value = json.loads(stream.read(65537), object_pairs_hook=unique_object)
+    except (OSError, UnicodeError, ValueError):
+        parser.error("cannot read private profile JSON; use an owner-only regular file")
+
+    if not isinstance(value, dict) or set(value) - set(REQUIRED) - set(OPTIONAL):
+        parser.error(
+            "unsupported profile fields; store credential file references outside the profile"
+        )
+    for key in REQUIRED + ("occ",):
+        if key == "occ" and key not in value:
+            continue
+        item = value.get(key)
+        if (
+            not isinstance(item, str)
+            or not item.strip()
+            or any(ord(char) < 32 for char in item)
+        ):
+            parser.error(
+                "profile requires nonempty target, installation directory, and source fields"
+            )
+    images = value.get("images", {})
+    if not isinstance(images, dict) or set(images) - set(IMAGE_FLAGS):
+        parser.error("unsupported profile image fields")
+    if any(
+        not isinstance(image, str)
+        or not image.strip()
+        or any(ord(char) < 32 for char in image)
+        for image in images.values()
+    ):
+        parser.error("profile images must be nonempty strings")
+    return value
+
+
+def report_status(parser, directory):
+    blocker = "preflight-blocked-original-worker"
+    startup = "startup-preflight-passed"
+    markers = (
+        # Writers take the lock before publishing markers.
+        (".upgrade-lock", True),
+        ("prepared", False),
+        ("database-migration-handoff.json", False),
+        ("helm-started", False),
+        ("completed", False),
+        ("native-command-failures.tsv", False),
+        # Read the blocker before its prerequisite while preflight may still be running.
+        (blocker, False),
+        (startup, False),
+    )
+
+    def check_directory(fd):
+        info = os.fstat(fd)
+        if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            parser.error("evidence must be an owner-only directory, not a symbolic link")
+
+    def observe_markers(fd):
+        observed = {}
+        for name, is_directory in markers:
+            try:
+                item = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            except FileNotFoundError:
+                observed[name] = None
+                continue
+            expected = stat.S_ISDIR(item.st_mode) if is_directory else stat.S_ISREG(item.st_mode)
+            if not expected or item.st_uid != os.geteuid() or item.st_mode & 0o077:
+                parser.error("evidence contains an invalid or nonprivate status marker")
+            if name in (blocker, startup) and (item.st_size != 0 or not item.st_mode & stat.S_IRUSR):
+                parser.error("evidence contains an invalid or nonprivate status marker")
+            observed[name] = (item.st_dev, item.st_ino, item.st_mode, item.st_size)
+        return observed
+
+    try:
+        fd = os.open(Path(directory), os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_DIRECTORY)
+        try:
+            check_directory(fd)
+            observed = observe_markers(fd)
+            repeated = observe_markers(fd)
+            check_directory(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        parser.error("cannot inspect private local evidence directory")
+
+    if observed != repeated:
+        print("Local evidence changed during this read. Run status again to inspect the attempt.")
+        return
+    if observed[blocker] and not observed[startup]:
+        parser.error("evidence contains inconsistent preflight status markers")
+
+    print("Historical local evidence observations (not current cluster health or resume authority):")
+    for name, item in observed.items():
+        print(f"  {name}: {'observed' if item else 'not observed'}")
+    if observed["completed"]:
+        print("Completion was recorded; verify the current release and workloads separately.")
+    elif observed["helm-started"]:
+        print("Helm intent was recorded; its outcome remains uncertain without completion evidence.")
+    elif observed["database-migration-handoff.json"]:
+        print("A migration pause was recorded; confirm migration history before an authorized resume.")
+    elif observed[startup] and not (
+        observed["prepared"] or observed[".upgrade-lock"] or observed["native-command-failures.tsv"]
+    ):
+        if observed[blocker]:
+            print("Candidate startup and migration checks passed and temporary resources were removed in this attempt.")
+            print("The upgrade was blocked because retained Agent revisions require their original worker.")
+            print("No deployment was prepared in the recorded preflight. Resolve the blocker through an authorized interruption or revision replacement, then recheck inventory with fresh upgrade evidence.")
+        else:
+            print("Candidate startup checks passed and temporary resources were removed in this attempt.")
+            print("The final preflight outcome is unknown from this marker alone.")
+            print(
+                "Preserve the original attempt's top-level evidence. "
+                "Reconcile the command result and current inventory before any further write."
+            )
+    else:
+        print("No completion was recorded; inspect the original attempt before any further write.")
+    if observed[".upgrade-lock"]:
+        print("A lock marker was observed. Verify separately whether the previous process is still running.")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Run a coordinated production image upgrade from a private operator profile.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Pass additional canonical upgrade options after --. To translate a canonical mode,\n"
+            "change the operation and remove only that mode flag; retain all other original\n"
+            "expert options and applicable attestations after --:\n"
+            "  --resume: scripts/upgrade-production resume --profile PROFILE --evidence-dir ORIGINAL -- ORIGINAL_EXPERT_OPTIONS\n"
+            "  --preflight-only: scripts/upgrade-production preflight --profile PROFILE --evidence-dir FRESH -- ORIGINAL_EXPERT_OPTIONS\n"
+            "For full control, run scripts/upgrade-production-images --help."
+        ),
+    )
+    parser.add_argument("operation", choices=OPERATIONS)
+    parser.add_argument("--profile", help="Owner-only operator JSON file")
+    parser.add_argument(
+        "--evidence-dir",
+        help="Fresh evidence directory, or the original directory for resume/cleanup",
+    )
+    argv = sys.argv[1:]
+    split = argv.index("--") if "--" in argv else len(argv)
+    args = parser.parse_args(argv[:split])
+    extra = argv[split + 1 :] if split < len(argv) else []
+    if args.operation in ("plan", "status") and extra:
+        parser.error("plan and status do not accept expert upgrade options")
+    if args.operation == "status":
+        if args.profile is not None or not args.evidence_dir:
+            parser.error("status requires --evidence-dir and does not use --profile")
+    elif args.operation == "plan":
+        if not args.profile or args.evidence_dir is not None:
+            parser.error("plan requires --profile and does not use --evidence-dir")
+    elif not args.profile or not args.evidence_dir:
+        parser.error("this operation requires --profile and --evidence-dir")
+    extra_flags = {item.split("=", 1)[0] for item in extra}
+    if "--resume" in extra_flags:
+        parser.error(
+            "use the resume operation and remove only --resume; retain every other original "
+            "expert option and applicable recovery attestation after --, including "
+            "--migration-history-checked when required: scripts/upgrade-production resume "
+            "--profile PROFILE --evidence-dir ORIGINAL -- ORIGINAL_EXPERT_OPTIONS"
+        )
+    if "--preflight-only" in extra_flags:
+        parser.error(
+            "use the preflight operation and remove only --preflight-only; retain every other "
+            "original expert option after --: scripts/upgrade-production preflight "
+            "--profile PROFILE --evidence-dir FRESH -- ORIGINAL_EXPERT_OPTIONS"
+        )
+    if extra_flags & PROTECTED:
+        parser.error("cannot override profile or operation arguments after --")
+
+    checkout = Path(__file__).resolve().parent.parent
+    if checkout != Path.cwd().resolve():
+        parser.error("run this command from its reviewed release checkout root")
+    if args.operation == "status":
+        report_status(parser, args.evidence_dir)
+        return
+
+    profile = profile_input(parser, args.profile)
+    base = Path(args.profile).absolute().parent
+
+    def path(value):
+        candidate = Path(value)
+        return str(candidate if candidate.is_absolute() else base / candidate)
+
+    if args.operation == "plan":
+        revision = profile["sourceRevision"]
+        if len(revision) != 40 or any(c not in "0123456789abcdef" for c in revision):
+            parser.error("source revision must be a full lowercase Git commit SHA")
+        if not profile.get("images"):
+            parser.error("select a controller, broker, or runtime image before planning")
+        environment = os.environ.copy()
+        environment.pop("GIT_DIR", None)
+        environment.pop("GIT_COMMON_DIR", None)
+        environment.update(GIT_NO_LAZY_FETCH="1", GIT_ALLOW_PROTOCOL="")
+        git = ["git", "--no-optional-locks", "--no-replace-objects", "--git-dir=.git"]
+        try:
+            root = subprocess.check_output(
+                [*git, "rev-parse", "--show-toplevel"], cwd=checkout, env=environment,
+                stderr=subprocess.DEVNULL, text=True,
+            ).strip()
+            head = subprocess.check_output(
+                [*git, "rev-parse", "--verify", "HEAD^{commit}"], cwd=checkout, env=environment,
+                stderr=subprocess.DEVNULL, text=True,
+            ).strip()
+            matches = Path(root).samefile(checkout) and head == revision
+        except (OSError, subprocess.CalledProcessError):
+            parser.error("cannot read the reviewed release checkout revision")
+        if not matches:
+            parser.error("checkout commit does not match the profile source revision")
+        print(f"Target: context {profile['context']}, namespace {profile['namespace']}, release {profile['release']}")
+        print(f"Selected source revision: {revision} (matches checkout)")
+        print(f"Rendered installation directory: {path(profile['installationDirectory'])}")
+        print("Selected image components: " + ", ".join(profile["images"]))
+        print("No cluster contact or writes occurred. Review production prerequisites before Secret binding or preflight; image references, rendered files, credentials, and cluster access remain unverified.")
+        print("Protected configuration changes use the chart-owned operation; authentication changes use stopped authentication maintenance.")
+        return
+
+    target = [
+        "--kubeconfig",
+        path(profile["kubeconfig"]),
+        "--context",
+        profile["context"],
+        "--namespace",
+        profile["namespace"],
+        "--release",
+        profile["release"],
+    ]
+    if args.operation == "cleanup-preflight":
+        command = ["--cleanup-preflight", *target, "--evidence-dir", args.evidence_dir]
+    else:
+        directory = Path(path(profile["installationDirectory"]))
+        command = [
+            *target,
+            "--values",
+            str(directory / "values.yaml"),
+            "--installation",
+            str(directory / "installation.yaml"),
+            "--source-revision",
+            profile["sourceRevision"],
+            "--evidence-dir",
+            args.evidence_dir,
+        ]
+        if "occ" in profile:
+            command.extend(("--occ", path(profile["occ"])))
+        for name, image in profile.get("images", {}).items():
+            command.extend((IMAGE_FLAGS[name], image))
+        if args.operation == "preflight":
+            command.append("--preflight-only")
+        elif args.operation == "resume":
+            command.append("--resume")
+
+    canonical = checkout / "scripts" / "upgrade-production-images"
+    try:
+        os.execv(canonical, [str(canonical), *command, *extra])
+    except OSError:
+        parser.error(
+            "cannot start scripts/upgrade-production-images from this release checkout"
+        )
+
+
+if __name__ == "__main__":
+    main()

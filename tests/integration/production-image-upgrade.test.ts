@@ -7,7 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
+import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.ts";
 import { writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { withoutShellStartup } from "../helpers/environment.ts";
@@ -141,7 +141,7 @@ test("quickstart Installation updates preserve the bound Secret and stop on unsa
         "values.json": JSON.stringify(values),
         "installation.yaml": document,
         "key.json": JSON.stringify({ data: { key: "fixture-key" } }),
-        "request.mjs": "// Transport is substituted; the real shell constructs its request.\n",
+        "request.mts": "// Transport is substituted; the real shell constructs its request.\n",
       })) {
         await writeFile(join(directory, name), content, { mode: 0o600 });
       }
@@ -329,7 +329,7 @@ test("production image upgrades preserve controller/runtime ownership and wait f
   const bin = join(directory, "bin");
   await mkdir(bin);
   // Use real JSON operations for the run's dispatch journal and receipts.
-  const dispatchJson = `if [[ "\${!#}" == */before-helm-status.json || "$*" == *'repositoryWorkerRestart'* || "$*" == *'def identifier:'* || "$*" == '-e .spec.replicas == 1 '* || "$*" == '-e .spec.replicas == 0 '* || "$*" == *'.revisionId'* || "$*" == *'.harness.overrides'* || "$*" == *'revisionId: .activeRevisionId'* || "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$1" == '-ser' || "$1" == '-cser' || "$1" == '-Rse' ]]; then
+  const dispatchJson = `if [[ "\${!#}" == */before-helm-status.json || "\${!#}" == */after-helm-status.json || "$*" == *'repositoryWorkerRestart'* || "$*" == *'def identifier:'* || "$*" == '-e .spec.replicas == 1 '* || "$*" == '-e .spec.replicas == 0 '* || "$*" == *'.revisionId'* || "$*" == *'.harness.overrides'* || "$*" == *'revisionId: .activeRevisionId'* || "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$*" == *'.metadata.ownerReferences'* || "$*" == *'.status.initContainerStatuses'* || "\${!#}" == */preflight-cleanup-dependency.json || "$1" == '-cs' || "$1" == '-ser' || "$1" == '-cser' || "$1" == '-Rse' ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
 `;
@@ -409,6 +409,7 @@ esac
     bin,
     "python3",
     `if [[ "$1" == scripts/upgrade-dispatch-state.py || "$1" == scripts/upgrade-helm-state.py ||
+      "$1" == scripts/upgrade-preflight-state.py ||
       ( "$1" == - && "$4" == */oce-upgrade-preflight-* ) ||
       ( "$1" == - && ( "$2" == deploy/helm/openclaw-enterprise ||
         "$2" == "$UPGRADE_TEST_KUBECONFIG" || "$2" == */parameters.json ) ) ]]; then
@@ -571,6 +572,8 @@ fi
     (error: unknown) => {
       const failure = processFailure(error);
       assert.equal(failure.code, 47, failure.stderr);
+      assert.match(failure.stderr, /Upgrade: Preparing the upgrade\./u);
+      assert.match(failure.stderr, /Upgrade: Checking the candidate release and startup\./u);
       assert.doesNotMatch(failure.stderr, /must not grant group or other permissions/);
       assert.doesNotMatch(failure.stderr, /contains no running Agents/);
       return true;
@@ -645,8 +648,8 @@ fi
   const readinessCounter = join(directory, "readiness-counter");
   const runtimeCountCounter = join(directory, "runtime-count-counter");
   const commandLog = join(directory, "commands.log");
-  // Preflight reads controller images, Installation mounts and the initializer's
-  // migration identity from the chart. Render those inputs for this protocol fixture.
+  // Render the chart inputs preflight uses: controller entrypoints and images,
+  // Installation mounts, and the initializer's migration identity.
   // Accepted upgrades retain their submitted values and advance the revision;
   // server dry-runs must leave both unchanged.
   await writeCommand(
@@ -665,14 +668,19 @@ if [[ "$1" == status ]]; then
 elif [[ "$*" == *'get values'* ]]; then
   cat "$LIVE_VALUES_FILE"
 elif [[ "$1" == upgrade && "$*" != *--dry-run=* ]]; then
+  if [[ "\${HELM_UPGRADE_FAILURE:-}" == 1 ]]; then
+    printf 'native Helm failure output\\n'
+    exit 9
+  fi
   while (($#)); do
     if [[ "$1" == --values ]]; then cp "$2" "$LIVE_VALUES_FILE"; break; fi
     shift
   done
   printf '%s\\n' "$((revision + 1))" >"$revision_file"
+  printf 'native Helm output\\n'
 elif [[ "$1" == template ]]; then
-  printf -- '---\\n%s\\n' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-api"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"api","image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-worker"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"worker","image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}'
-  printf -- '---\\n%s\\n' '{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"oce-initialization","labels":{"app.kubernetes.io/instance":"oce","app.kubernetes.io/component":"initialization"}},"spec":{"template":{"metadata":{"labels":{"app.kubernetes.io/instance":"oce","app.kubernetes.io/component":"initialization"}},"spec":{"serviceAccountName":"openclaw-enterprise-initialization","initContainers":[{"name":"migration","image":"'"$OBSERVED_CONTROLLER_IMAGE"'"}]}}}}'
+  printf -- '---\\n%s\\n' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-api"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"api","args":["apps/controller/src/server.mjs"],"image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-worker"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"worker","args":["apps/controller/src/worker.mjs"],"image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}'
+  printf -- '---\\n%s\\n' '{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"oce-initialization","labels":{"app.kubernetes.io/instance":"oce","app.kubernetes.io/component":"initialization"}},"spec":{"template":{"metadata":{"labels":{"app.kubernetes.io/instance":"oce","app.kubernetes.io/component":"initialization"}},"spec":{"serviceAccountName":"openclaw-enterprise-initialization","initContainers":[{"name":"migration","args":["scripts/migrate-production.ts"],"image":"'"$OBSERVED_CONTROLLER_IMAGE"'"}]}}}}'
 fi
 `,
     { interpreter: "bash" },
@@ -680,7 +688,10 @@ fi
   await writeCommand(
     bin,
     "jq",
-    `${dispatchJson}if [[ "$*" == '-S '* || "$*" == '-eS '* ]]; then
+    `${dispatchJson}if [[ "$*" == *'resourceAttributes'* ]]; then
+  PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
+fi
+if [[ "$*" == '-S '* || "$*" == '-eS '* ]]; then
   cat
   exit 0
 fi
@@ -778,11 +789,12 @@ if (args.includes("create")) {
     ? JSON.stringify({ event: "migration.checked", history: "completed" }) + "\\n"
     : "agent-drafts-accepted\\ninstallation-startup-ready\\n";
 } else if (args.includes("pods")) {
-  const uid = value("--selector").slice("batch.kubernetes.io/controller-uid=".length);
+  const uid = args.includes("--selector")
+    ? value("--selector").slice("batch.kubernetes.io/controller-uid=".length) : undefined;
   result = { items: Object.values(state).filter((object) =>
-    object.kind === "Job" && object.metadata.uid === uid).map(child) };
+    object.kind === "Job" && (uid === undefined || object.metadata.uid === uid)).map(child) };
 } else {
-  const resource = args.find((arg) => /^(job[.]batch|pod)\\//.test(arg));
+  const resource = args.find((arg) => /^(job[.]batch|pod|secret|networkpolicy[.]networking[.]k8s[.]io)\\//.test(arg));
   const [kind, name] = resource.split("/");
   result = kind === "pod" ? child(state[name.slice(0, -6)]) : state[name];
 }
@@ -798,6 +810,8 @@ if (result !== undefined) {
     "kubectl",
     `printf 'kubectl %s\\n' "$*" >>"$COMMAND_LOG"
 case "$*" in
+  *' patch deployment/'*) printf 'native patch output\\n' ;;
+  *' rollout status deployment/'*) printf 'native rollout output\\n' ;;
   *'exec gateway-test --container gateway -- env NODE_OPTIONS=--max-old-space-size=384 node /app/openclaw.mjs doctor --lint --json --severity-min error'*)
     if [[ "$DOCTOR_FAILURE" == "1" ]]; then
       printf 'doctor found an error\\n' >&2
@@ -805,7 +819,12 @@ case "$*" in
     fi
     printf '%s\\n' '{"status":"ok"}'
     ;;
-  *' create --filename'*|*' get job.batch/'*|*'batch.kubernetes.io/controller-uid='*|*' get pod/oce-upgrade-preflight-'*|*' logs pod/oce-upgrade-preflight-'*|*'delete --raw='*)
+  *' create --raw /apis/authorization.k8s.io/v1/selfsubjectaccessreviews --filename -')
+    PATH="$ORIGINAL_TOOL_PATH" exec jq '.status = {allowed: (.spec.resourceAttributes == {
+      namespace: "openclaw-system", verb: "patch", group: "apps", version: "v1",
+      resource: "deployments", name: "openclaw-enterprise-worker"
+    })}' ;;
+  *' create --filename'*|*' get job.batch/'*|*'batch.kubernetes.io/controller-uid='*|*' get pods -o json'*|*' get secret/oce-upgrade-preflight-'*|*' get networkpolicy.networking.k8s.io/oce-upgrade-preflight-'*|*' get pod/oce-upgrade-preflight-'*|*' logs pod/oce-upgrade-preflight-'*|*'delete --raw='*)
     exec "$(dirname "$0")/preflight-kubectl" "$@" ;;
 
   *'jsonpath='*) printf '%s\\n' "$OBSERVED_CONTROLLER_IMAGE" ;;
@@ -829,7 +848,7 @@ esac
 case "$*" in
   *'deployment-inventory'*) printf '%s\\n' '{"installationId":"ins_upgrade_test","namespaces":[{"id":"ns_test","status":"ready","agents":[{"id":"agt_test","status":"active","desiredRuntimeState":"running","executionMode":"dedicated","activeRevisionId":"rev_test","deploymentInProgress":false,"repositoryWorkerRestart":"reverification-supported"}]}]}' ;;
   *'agent revision '*) printf '%s\\n' '{"id":"rev_test","namespaceId":"ns_test","agentId":"agt_test","harness":{"overrides":{},"configuration":{}}}' ;;
-  *'agent deploy'*) printf '%s\\n' "$AGENT_DEPLOY_RESPONSE" ;;
+  *'agent deploy '*) printf '%s\\n' "$AGENT_DEPLOY_RESPONSE" ;;
   *'deployment-status'*) printf '%s\\n' '{"status":"succeeded"}' ;;
   *'agent get'*) printf '%s\\n' '{"activeRevisionId":"rev_candidate","configurationId":"cfg_test"}' ;;
   *'configuration get'*) printf '%s\\n' '{"id":"cfg_test","values":{}}' ;;
@@ -884,6 +903,49 @@ esac
     });
   }
 
+  // Helm may produce useful stdout before failing; verbose output must expose
+  // that saved evidence without changing the native status or failure receipt.
+  const helmFailureEvidence = join(directory, "helm-failure-evidence");
+  await assert.rejects(
+    execute(
+      upgradeScript,
+      [...upgradeArguments(helmFailureEvidence, ["controller"]), "--verbose"],
+      {
+        cwd: repository,
+        env: {
+          ...environment,
+          COMMAND_LOG: commandLog,
+          HELM_UPGRADE_FAILURE: "1",
+          OBSERVED_CONTROLLER_IMAGE: controllerImage,
+        },
+      },
+    ),
+    (error: unknown) => {
+      const failure = processFailure(error);
+      assert.equal(failure.code, 9, failure.stderr);
+      assert.equal(
+        failure.stdout.split("native patch output\n").at(-1),
+        "native Helm failure output\n",
+      );
+      return true;
+    },
+  );
+  const [helmAttempt] = await readdir(join(helmFailureEvidence, "helm-attempts"));
+  assert.ok(helmAttempt !== undefined);
+  assert.equal(
+    await readFile(
+      join(helmFailureEvidence, "helm-attempts", helmAttempt, "helm-upgrade.txt"),
+      "utf8",
+    ),
+    "native Helm failure output\n",
+  );
+  assert.equal(
+    await readFile(join(helmFailureEvidence, "native-command-failures.tsv"), "utf8"),
+    "helm-upgrade\trelease\t9\n",
+  );
+  await writeFile(protectedFiles.values, valuesDocument, { mode: 0o600 });
+  await rm(commandLog);
+
   // A controller release changes only the Helm-owned image. It must not replace
   // the Installation Secret or create Agent revisions; it checks active snapshots.
   const controllerEvidence = join(directory, "controller-evidence");
@@ -901,8 +963,43 @@ esac
     controllerOptions,
   );
   assert.match(controllerOnly.stdout, /no Agent deployments were requested/u);
+  assert.doesNotMatch(controllerOnly.stdout, /native (patch|rollout|Helm) output/u);
+  assert.deepEqual(
+    controllerOnly.stderr.split("\n").filter((line) => line.startsWith("Upgrade: ")),
+    [
+      "Upgrade: Preparing the upgrade.",
+      "Upgrade: Checking the candidate release and startup.",
+      "Upgrade: Reconciling prepared upgrade state.",
+      "Upgrade: Checking and stopping OCC writers.",
+      "Upgrade: Applying reviewed settings and the Helm release.",
+      "Upgrade: Waiting for OCC recovery.",
+      "Upgrade: Verifying upgrade completion.",
+    ],
+  );
+  assert.equal(
+    await readFile(join(controllerEvidence, "quiescence-api.txt"), "utf8"),
+    "native patch output\n",
+  );
+  assert.equal(
+    await readFile(join(controllerEvidence, "rollout-api.txt"), "utf8"),
+    "native rollout output\n",
+  );
   const controllerCommands = await readFile(commandLog, "utf8");
   assert.doesNotMatch(controllerCommands, /agent deploy|apply --filename/u);
+  const commands = controllerCommands.trimEnd().split("\n");
+  const submission = commands.findIndex(
+    (line) => line.startsWith("helm upgrade ") && !line.includes("--dry-run"),
+  );
+  assert.ok(submission >= 0);
+  const finalStatusReads = commands
+    .slice(submission + 1)
+    .filter((line) => line.startsWith("helm status "));
+  assert.equal(finalStatusReads.length, 1);
+  assert.match(finalStatusReads[0] ?? "", / --output json$/u);
+  assert.equal(
+    await readFile(join(controllerEvidence, "after-helm-status.txt"), "utf8"),
+    "Summary from after-helm-status.json\nNAME: oce\nNAMESPACE: openclaw-system\nSTATUS: deployed\nREVISION: 2\n",
+  );
   assert.equal(await readFile(protectedFiles.installation, "utf8"), installationDocument);
   await assertCompletedRunCannotResume(controllerEvidence, ["controller"], controllerOptions);
   await rm(commandLog);
@@ -997,13 +1094,18 @@ esac
   };
   const completed = await execute(
     upgradeScript,
-    upgradeArguments(readyEvidence, ["runtime"]),
+    [...upgradeArguments(readyEvidence, ["runtime"]), "--verbose"],
     runtimeOptions,
   );
   assert.match(
     completed.stdout,
     /runtime image; controller image remained unchanged and 1 running Agents selected new revisions/u,
   );
+  assert.match(completed.stdout, /native patch output/u);
+  assert.match(completed.stdout, /native rollout output/u);
+  assert.match(completed.stdout, /native Helm output/u);
+  assert.match(completed.stderr, /Upgrade: Reconciling and deploying Agent revisions\./u);
+  assert.match(completed.stderr, /Upgrade: Checking Agent readiness and OpenClaw Doctor\./u);
   assert.deepEqual(lastDispatchEntry(await readFile(readyEvidence + ".dispatch-state")), [
     "accept",
     "ns_test",

@@ -1,19 +1,21 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { open } from "node:fs/promises";
+import { open, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   AdoptError,
   JOURNAL_ANNOTATION,
-  applyAdoption as applyAdoptionScript,
+  applyAdoption,
   createKubectl,
   finalizeAdoption,
-  planAll as planAllScript,
-  revertAdoption as revertAdoptionScript,
+  planAll,
+  revertAdoption,
   storageNamespaceName,
-} from "../../scripts/split-layout-adopt.mjs";
+} from "../../scripts/split-layout-adopt.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // The script drives a cluster only through kubectl. This fake answers the kubectl commands it
@@ -52,29 +54,6 @@ type FixtureObject = {
   [key: string]: unknown;
 };
 type Failure = (args: string[], input: string | undefined) => boolean;
-type AdoptionOptions = {
-  archive: string;
-  namespaceIds?: string[];
-  dropResources?: string[];
-  acceptOauthReconnect?: boolean;
-  sleep?: (milliseconds: number) => Promise<void>;
-  timeoutMs?: number;
-};
-type Kubectl = ReturnType<typeof createKubectl>;
-// The JavaScript command infers empty default option arrays as never[].
-const applyAdoption = applyAdoptionScript as (
-  kubectl: Kubectl,
-  options: AdoptionOptions,
-) => ReturnType<typeof applyAdoptionScript>;
-const revertAdoption = revertAdoptionScript as (
-  kubectl: Kubectl,
-  options: Pick<AdoptionOptions, "archive" | "namespaceIds" | "sleep" | "timeoutMs">,
-) => ReturnType<typeof revertAdoptionScript>;
-const planAll = planAllScript as (
-  kubectl: Kubectl,
-  options?: Pick<AdoptionOptions, "namespaceIds" | "dropResources" | "acceptOauthReconnect">,
-) => ReturnType<typeof planAllScript>;
-
 function required<T>(value: T | undefined): T {
   assert.ok(value !== undefined);
   return value;
@@ -253,6 +232,8 @@ function fakeCluster() {
   };
   const get = (resource: string, namespace: string | undefined, name: string | undefined) =>
     store.get(key(resource, namespace, name));
+  const deleteFixture = (resource: string, namespace: string | undefined, name: string) =>
+    store.delete(key(resource, namespace, name));
   const items = (resource: string, namespace: string | undefined) =>
     [...store.entries()]
       .filter(
@@ -469,7 +450,7 @@ function fakeCluster() {
     }
   };
   return {
-    store,
+    deleteFixture,
     put,
     get,
     items,
@@ -726,6 +707,21 @@ function journalOf(namespace: FixtureObject): Record<string, unknown> {
   return record(JSON.parse(required(required(namespace.metadata.annotations)[JOURNAL_ANNOTATION])));
 }
 
+function assertOccReplicas(
+  get: ReturnType<typeof fakeCluster>["get"],
+  expected: { api: number; worker: number },
+): void {
+  for (const [name, replicas] of [
+    ["openclaw-enterprise-api", expected.api],
+    ["openclaw-enterprise-worker", expected.worker],
+  ] as const) {
+    assert.equal(
+      required(required(get("deployments.apps", "openclaw-system", name)).spec).replicas,
+      replicas,
+    );
+  }
+}
+
 function snapshot({ get }: ReturnType<typeof fakeCluster>) {
   const volume = (name: string) => get("persistentvolumes", undefined, name);
   return {
@@ -744,6 +740,28 @@ function snapshot({ get }: ReturnType<typeof fakeCluster>) {
     canonicalSecretUid: get("secrets", storage, "occ-model-key")?.metadata.uid,
   };
 }
+
+test("the adoption CLI refuses unconfirmed apply and unknown flags before calling kubectl", async (t) => {
+  const directory = await withArchive(t);
+  const archive = join(directory, "archive");
+  const script = fileURLToPath(new URL("../../scripts/split-layout-adopt.ts", import.meta.url));
+  // Use Node's native TypeScript entry point and leave kubectl unavailable to this process.
+  const invoke = (...args: string[]) =>
+    spawnSync(process.execPath, [script, ...args], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: directory },
+      timeout: 10_000,
+    });
+
+  const unconfirmed = invoke("apply", "--archive", archive);
+  assert.equal(unconfirmed.status, 1, unconfirmed.stderr);
+  assert.match(unconfirmed.stderr, /^Usage:\n.*scripts\/split-layout-adopt\.ts plan/u);
+  assert.deepEqual(await readdir(directory), []);
+
+  const unknown = invoke("plan", "--unknown");
+  assert.equal(unknown.status, 1, unknown.stderr);
+  assert.match(unknown.stderr, /^unknown argument --unknown\nUsage:\n/u);
+});
 
 test("plan sorts the Harness namespace into moved, copied, archived and dropped objects", () => {
   const { kubectl, calls } = releasedInstallation();
@@ -781,18 +799,7 @@ test("apply adopts the storage namespace, moves claims by rebind and finalize re
   await applyAdoption(kubectl, { archive, ...fast });
 
   // The old API serves again for the upgrade helper; the worker stays stopped.
-  for (const [component, replicas] of [
-    ["api", 1],
-    ["worker", 0],
-  ]) {
-    assert.equal(
-      required(
-        required(get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`))
-          .spec,
-      ).replicas,
-      replicas,
-    );
-  }
+  assertOccReplicas(get, { api: 1, worker: 0 });
   assert.equal(
     required(required(get("namespaces", undefined, storage)).metadata.labels)[
       "openclaw.dev/namespace"
@@ -889,7 +896,7 @@ test("apply adopts the storage namespace, moves claims by rebind and finalize re
     data: {},
   });
   await assert.rejects(finalizeAdoption(kubectl, fast), /secrets\/late-secret/);
-  cluster.store.delete(`secrets/${tenantNamespace}/late-secret`);
+  cluster.deleteFixture("secrets", tenantNamespace, "late-secret");
   await finalizeAdoption(kubectl, fast);
   assert.equal(get("namespaces", undefined, tenantNamespace), undefined);
   assert.equal(
@@ -969,15 +976,7 @@ test("revert before the upgrade restores the released layout exactly", async (t)
       1,
     );
   }
-  for (const component of ["api", "worker"]) {
-    assert.equal(
-      required(
-        required(get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`))
-          .spec,
-      ).replicas,
-      1,
-    );
-  }
+  assertOccReplicas(get, { api: 1, worker: 1 });
 });
 
 test("an interrupted rebind resumes without releasing the volume", async (t) => {
@@ -1083,7 +1082,7 @@ test("apply waits out the grace period of a Pod that is slow to stop", async (t)
     await new Promise((done) => setTimeout(done, 30));
     // Gone after about 150 ms: past the 50 ms timeout, inside the 1 s grace period.
     if (++sleeps === 5) {
-      cluster.store.delete(`pods/${tenantNamespace}/gateway-slow`);
+      cluster.deleteFixture("pods", tenantNamespace, "gateway-slow");
     }
   };
   await applyAdoption(kubectl, { archive, sleep, timeoutMs: 50 });
@@ -1095,36 +1094,26 @@ test("apply returns only once the old API serves again", async (t) => {
   const cluster = releasedInstallation();
   let restarted = false;
   let unavailableReads = 0;
-  const kubectl = {
-    ...cluster.kubectl,
-    patch: (
-      resource: string,
-      name: string,
-      namespace: string | undefined,
-      type: string,
-      body: unknown,
-    ) => {
-      if (
-        name === "openclaw-enterprise-api" &&
-        isRecord(body) &&
-        isRecord(body.spec) &&
-        Number(body.spec.replicas) > 0
-      ) {
-        restarted = true;
-      }
-      return cluster.kubectl.patch(resource, name, namespace, type, body);
-    },
+  const kubectl = createKubectl((args, input) => {
+    const result = cluster.run(args, input);
+    if (args[2] !== "openclaw-enterprise-api" || result.status !== 0) {
+      return result;
+    }
+    if (
+      args[0] === "patch" &&
+      required(cluster.get("deployments.apps", "openclaw-system", args[2])).spec?.replicas
+    ) {
+      restarted = true;
+    }
     // The Deployment reports no available replica for its first reads after the restart.
-    get: (resource: string, name: string, namespace: string | undefined) => {
-      const object: unknown = cluster.kubectl.get(resource, name, namespace);
-      if (restarted && name === "openclaw-enterprise-api" && unavailableReads < 3) {
-        unavailableReads += 1;
-        const deployment = fixtureObject(object);
-        return { ...deployment, status: { ...deployment.status, availableReplicas: 0 } };
-      }
-      return object;
-    },
-  };
+    if (args[0] === "get" && restarted && unavailableReads < 3) {
+      unavailableReads += 1;
+      const deployment = fixtureObject(JSON.parse(result.stdout));
+      deployment.status = { ...deployment.status, availableReplicas: 0 };
+      return { ...result, stdout: JSON.stringify(deployment) };
+    }
+    return result;
+  });
   await applyAdoption(kubectl, { archive, ...fast, timeoutMs: 5_000 });
   assert.equal(unavailableReads, 3);
 });
@@ -1183,12 +1172,13 @@ test("plan refuses tenants adoption cannot carry, and apply then changes nothing
     ],
     [
       "a missing storage grant",
-      ({ store }) => store.delete(`rolebindings.rbac.authorization.k8s.io/${storage}/grant-api`),
+      ({ deleteFixture }) =>
+        deleteFixture("rolebindings.rbac.authorization.k8s.io", storage, "grant-api"),
       /lacks a RoleBinding of ClusterRole \*-openclaw-tenant-api/,
     ],
     [
       "no tenant namespace in this cluster",
-      ({ store }) => store.delete(`namespaces//${tenantNamespace}`),
+      ({ deleteFixture }) => deleteFixture("namespaces", undefined, tenantNamespace),
       /two-cluster control target/,
     ],
     [
@@ -1297,7 +1287,7 @@ test("an operator can accept OAuth reconnects and drop a confirmed resource kind
   // The confirmed kind does not stop finalize either; an object added after apply does.
   put("configmaps", { metadata: { name: "added-later", namespace: tenantNamespace } });
   await assert.rejects(finalizeAdoption(kubectl, fast), /configmaps\/added-later/);
-  cluster.store.delete(`configmaps/${tenantNamespace}/added-later`);
+  cluster.deleteFixture("configmaps", tenantNamespace, "added-later");
   await finalizeAdoption(kubectl, fast);
   assert.equal(get("namespaces", undefined, tenantNamespace), undefined);
 });
@@ -1426,15 +1416,7 @@ test("apply refuses to adopt more tenants once the controller runs other images"
     /openclaw-enterprise-api runs other images than apply recorded; roll the controller back/,
   );
   // The new release keeps serving and the second tenant is untouched.
-  for (const component of ["api", "worker"]) {
-    assert.equal(
-      required(
-        required(get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`))
-          .spec,
-      ).replicas,
-      1,
-    );
-  }
+  assertOccReplicas(get, { api: 1, worker: 1 });
   assert.equal(
     required(get("namespaces", undefined, otherStorage)).metadata.annotations?.[JOURNAL_ANNOTATION],
     undefined,
@@ -1483,18 +1465,7 @@ test("a crash between copying a Secret and recording it still lets revert remove
   await assert.rejects(applyAdoption(kubectl, { archive, ...fast }), /injected failure/);
   assert.notEqual(get("secrets", storage, `transport-${embedded}`), undefined);
   await applyAdoption(kubectl, { archive, ...fast });
-  for (const [component, replicas] of [
-    ["api", 1],
-    ["worker", 0],
-  ]) {
-    assert.equal(
-      required(
-        required(get("deployments.apps", "openclaw-system", `openclaw-enterprise-${component}`))
-          .spec,
-      ).replicas,
-      replicas,
-    );
-  }
+  assertOccReplicas(get, { api: 1, worker: 0 });
   await revertAdoption(kubectl, { archive, ...fast });
   assert.equal(get("secrets", storage, `transport-${embedded}`), undefined);
 });

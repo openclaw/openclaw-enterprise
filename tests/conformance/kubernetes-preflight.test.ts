@@ -21,9 +21,9 @@ import {
   conformanceKubernetesOptions,
   createTestKubernetesComputeDriver,
 } from "../helpers/kubernetes-compute.mjs";
-import { refusingPort } from "../helpers/available-port.mjs";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
-import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { refusingPort } from "../helpers/available-port.ts";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
+import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { jsonChunkDestination } from "../helpers/json-lines.mjs";
 
 type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
@@ -134,7 +134,10 @@ test("single-cluster preflight refuses legacy split storage on a later namespace
     assert.equal(cursor, "next-page");
     return { items: [legacy] };
   };
-  await assert.rejects(fixture.driver.preflight(), /Existing split-layout Gateway storage/);
+  await assert.rejects(
+    fixture.driver.preflight(),
+    /Existing split-layout Gateway storage.*scripts\/split-layout-adopt\.ts/u,
+  );
   assert.equal(pages, 2, "upgrade detection must inspect every namespace page");
   assert.deepEqual(legacy, original, "preflight must not alter legacy storage ownership");
 });
@@ -537,7 +540,7 @@ test("Kubernetes preflight warns about status proxy sources wider than one addre
   assert.deepEqual(result, {
     warnings: [warning("2001:db8::/64"), warning("10.42.0.0/16")],
   });
-  // The worker logs each warning; the log keeps only plain text, so the message must survive.
+  // The worker logs each warning, and the log keeps each message verbatim.
   const lines: unknown[] = [];
   const logger = createOccLogger({
     component: "occ-worker",

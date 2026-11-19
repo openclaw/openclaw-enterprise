@@ -44,6 +44,10 @@ func Down(ctx context.Context, opts Options) error {
 		for key, value := range browserEnvironment {
 			r.env[key] = value
 		}
+		// Compose interpolates secret paths even for down, which neither reads nor
+		// mounts credentials. Cleanup must work without retained bootstrap inputs.
+		r.env["OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE"] = "/dev/null"
+		r.env["OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE"] = "/dev/null"
 		args := append([]string{"compose"}, opts.ComposeArgs...)
 		if r.engine == "podman" {
 			data, err := r.output(ctx, "podman", "info", "--format", "{{.Host.RemoteSocket.Path}}")
@@ -122,16 +126,17 @@ func Down(ctx context.Context, opts Options) error {
 		}
 		r.env["KUBECONFIG"] = filepath.Join(directory, "kubeconfig")
 		r.engine = state.ContainerEngine
+		r.useEndpoint(state.DockerHost)
 		if r.engine == "podman" && state.DeploymentMode == "" {
 			// The same provider preference as startup, so every host that can
 			// start the Compose control plane can also stop it.
 			provider, err := composeProvider()
 			if err != nil {
-				return err
+				// Host image custody does not depend on the Compose executable.
+				return errors.Join(err, r.reconcileOpenShellImageTag(ctx, state))
 			}
 			r.env["PODMAN_COMPOSE_PROVIDER"] = provider
 		}
-		r.useEndpoint(state.DockerHost)
 		if err := r.cleanup(ctx, state, true); err != nil {
 			return fmt.Errorf("cleanup incomplete; preserving %s for recovery: %w", directory, err)
 		}
@@ -180,10 +185,13 @@ func sameCheckout(recorded, current string) bool {
 
 func (r *runner) cleanup(ctx context.Context, s *developmentState, clusterAttempted bool) error {
 	var failures []error
+	if err := r.reconcileOpenShellImageTag(ctx, s); err != nil {
+		failures = append(failures, err)
+	}
 	// A recorded import attachment must not keep either profile's owned network alive.
 	if clusterAttempted {
 		if err := r.detachRecordedDevelopmentImageRegistry(ctx, s); err != nil {
-			return err
+			return errors.Join(append(failures, err)...)
 		}
 	}
 	if s.DeploymentMode == "k3d" {

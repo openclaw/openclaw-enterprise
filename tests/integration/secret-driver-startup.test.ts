@@ -3,8 +3,8 @@ import test from "node:test";
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
-import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
-import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.ts";
+import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { testPool } from "../helpers/postgres-database.mjs";
 
 test("secret-driver-startup constructs the bundled KubernetesSecretDriver from Installation YAML", async (t) => {

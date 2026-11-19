@@ -308,6 +308,8 @@ func TestMalformedIDsAreRefusedBeforeAnyRequest(t *testing.T) {
 		{[]string{"agent", "get", "AGT_22222222-2222-4222-8222-222222222222"}, malformedIDRefusal("AGT_22222222-2222-4222-8222-222222222222", "Agent", "agt_")},
 		{[]string{"agent", "get", "agt_"}, malformedIDRefusal("agt_", "Agent", "agt_")},
 		{[]string{"agent", "get", "agt_22222222-2222-4222-8222-22222222222Z"}, malformedIDRefusal("agt_22222222-2222-4222-8222-22222222222Z", "Agent", "agt_")},
+		{[]string{"agent", "get", "agt_22222222-2222-5222-8222-222222222222"}, malformedIDRefusal("agt_22222222-2222-5222-8222-222222222222", "Agent", "agt_")},
+		{[]string{"agent", "get", "agt_22222222-2222-4222-7222-222222222222"}, malformedIDRefusal("agt_22222222-2222-4222-7222-222222222222", "Agent", "agt_")},
 		{[]string{"secret", "get", "sec_x\x00"}, malformedIDRefusal("sec_x\x00", "Secret", "sec_")},
 		{[]string{"agent", "deployment-status", testAgentID, "rev_../1"}, malformedIDRefusal("rev_../1", "deployment", "rev_")},
 		{[]string{"agent", "logs", testAgentID, "--source", "gateway", "--revision", "rev_1/"}, malformedIDRefusal("rev_1/", "deployment", "rev_")},
@@ -1511,7 +1513,7 @@ func TestDefaultRevisionLookupStopsAtARepeatedCursor(t *testing.T) {
 	if err == nil || !strings.HasPrefix(err.Error(), "agent "+testAgentID+" has no revision you can read") {
 		t.Fatalf("error = %v, want the no readable revision refusal", err)
 	}
-	if want := []string{"limit=100", "cursor=v1.2&limit=100"}; !slices.Equal(lists, want) {
+	if want := []string{"limit=1", "cursor=v1.2&limit=100"}; !slices.Equal(lists, want) {
 		t.Fatalf("revision list queries = %q, want %q", lists, want)
 	}
 }
@@ -1747,6 +1749,8 @@ func TestFirstDeploymentRejectsUnusableReceipts(t *testing.T) {
 		}{
 			{"empty", "", nil},
 			{"revision ID", "revisionId", "unusable-private-receipt"},
+			{"revision UUID version", "revisionId", "rev_00000000-0000-5000-8000-000000000001"},
+			{"revision UUID variant", "revisionId", "rev_00000000-0000-4000-7000-000000000001"},
 			{"timestamp", "createdAt", "2026-10-30T00:00:00Z"},
 			{"Namespace", "namespaceId", "ns_66666666-6666-4666-8666-666666666666"},
 			{"Agent", "agentId", "agt_66666666-6666-4666-8666-666666666666"},
@@ -1931,6 +1935,8 @@ func TestFirstDeploymentIntentValidationBeforeClientConstruction(t *testing.T) {
 			{"review-1", "cfg_55555555-5555-4555-8555-555555555555", "9007199254740992", "--generation"},
 			{"..", "cfg_55555555-5555-4555-8555-555555555555", "1", "--key"},
 			{"review-1", "wrong", "1", "--configuration"},
+			{"review-1", "cfg_55555555-5555-5555-8555-555555555555", "1", "--configuration"},
+			{"review-1", "cfg_55555555-5555-4555-7555-555555555555", "1", "--configuration"},
 		} {
 			_, _, requests, err := runOCCWithNotices(t, map[string]string{}, "--url", ":invalid-url", "--namespace", testNamespaceID, "agent", command, testAgentID, "--key", invalid.key, "--configuration", invalid.configuration, "--generation", invalid.generation)
 			if err == nil || !strings.Contains(err.Error(), invalid.field) || len(requests) != 0 {

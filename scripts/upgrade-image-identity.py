@@ -29,7 +29,7 @@ def inspect(image, platform=None):
     return value[0]
 
 
-def read_platform(image, platform, selected):
+def read_platform(image, platform, selected, expected_revision=None):
     process = subprocess.Popen(
         ["docker", "image", "save", "--platform", platform, image],
         stdout=subprocess.PIPE,
@@ -85,6 +85,11 @@ def read_platform(image, platform, selected):
     config = json.loads(blobs[config_digest])
     if f'{config.get("os")}/{config.get("architecture")}' != platform:
         raise ValueError("image configuration platform mismatch")
+    if expected_revision is not None:
+        settings = config.get("config")
+        labels = settings.get("Labels") if isinstance(settings, dict) else None
+        if not isinstance(labels, dict) or labels.get("org.opencontainers.image.revision") != expected_revision:
+            raise ValueError("verified image configuration revision mismatch")
     return config_digest
 
 
@@ -99,9 +104,12 @@ def validate_descriptor_platform(descriptor, platform):
 
 
 def main():
-    if len(sys.argv) != 3:
-        raise ValueError("expected image and platform")
-    image, platform = sys.argv[1:]
+    if len(sys.argv) not in (3, 4):
+        raise ValueError("expected image, platform and optional source revision")
+    image, platform = sys.argv[1:3]
+    expected_revision = sys.argv[3] if len(sys.argv) == 4 else None
+    if expected_revision is not None and not re.fullmatch(r"[a-f0-9]{40}", expected_revision):
+        raise ValueError("expected a full lowercase source revision")
     if "@" not in image or not DIGEST.fullmatch(image.rsplit("@", 1)[1]):
         raise ValueError("image reference must use a lowercase immutable SHA-256 digest")
     if platform not in ("linux/amd64", "linux/arm64"):
@@ -118,7 +126,7 @@ def main():
     if f'{selected.get("Os")}/{selected.get("Architecture")}' != platform:
         raise ValueError("staged image platform mismatch")
     validate_descriptor_platform(descriptor, platform)
-    config_digest = read_platform(image, platform, manifest_digest)
+    config_digest = read_platform(image, platform, manifest_digest, expected_revision)
     print(json.dumps({"image": image, "platform": platform, "rootDigest": root_digest,
                       "manifestDigest": manifest_digest, "configDigest": config_digest}, sort_keys=True))
 

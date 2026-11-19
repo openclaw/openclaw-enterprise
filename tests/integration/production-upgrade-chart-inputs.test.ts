@@ -36,13 +36,17 @@ test("production upgrades check the stock chart before recording evidence or con
   // are read by the command before the first cluster call.
   for (const path of [
     upgradeScript,
-    "scripts/lib/image-reference-problem.mjs",
+    "scripts/lib/image-reference-problem.ts",
     "packages/occ/src/image-reference.ts",
-    "scripts/upgrade-repository-image-probe.mjs",
+    "scripts/upgrade-repository-image-probe.ts",
     "scripts/upgrade-image-identity.py",
     "scripts/upgrade-node-platform.py",
     "scripts/upgrade-deployment-identity.py",
-    "scripts/upgrade-startup-preflight.mjs",
+    "scripts/upgrade-startup-preflight.ts",
+    "scripts/lib/selected-image-migration.ts",
+    "deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs",
+    "scripts/upgrade-preflight-state.py",
+    "scripts/lib/upgrade-preflight-cleanup.sh",
     "scripts/upgrade-evidence.py",
     "scripts/upgrade-helm-state.py",
     "apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts",
@@ -222,7 +226,7 @@ test("production upgrades check the stock chart before recording evidence or con
         code: 1,
         stdout: "",
         stderr:
-          "upgrade-production-images: cannot inspect preprovisioned Namespace values; see preprovisioned-namespace.err in the evidence directory.\n",
+          /(?:^|\n)upgrade-production-images: cannot inspect preprovisioned Namespace values; see preprovisioned-namespace\.err in the evidence directory\.\n$/u,
       });
       assert.deepEqual(await commandCalls(callLog), []);
       const errors = await readFile(join(evidence, "preprovisioned-namespace.err"), "utf8");

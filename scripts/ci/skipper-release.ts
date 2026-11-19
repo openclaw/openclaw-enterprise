@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { basename, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { teamReviewProof } from "../../tests/fixtures/skipper-team-review-journey.mjs";
+import { record } from "./records.ts";
 
 export const skipperImageScope = "checkout-images-with-synthetic-model-trust-layer";
 const installedTestPath = "tests/integration/skipper-prepared-git-installed.test.mjs";
@@ -24,9 +25,28 @@ export function skipperInstalledProof(teamReview: boolean): string[] {
   ];
 }
 
-function record(value: unknown): Record<string, unknown> {
-  assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
-  return value as Record<string, unknown>;
+export function skipperTestCheckpoints(teamReview: boolean): string[] {
+  return [
+    ...skipperInstalledProof(teamReview).slice(0, -1), // Retirement can follow a failure before proof.
+    "create-synthetic-model-secret",
+    "deploy-request-started",
+    "observe-installed-agent-readonly-skill-directories",
+    "gateway-chat-refused",
+    "native-command-started",
+    "repository-binding-withdrawn-discovery-released",
+    "native-command-completion-mismatch",
+    "native-command-and-model-observed",
+  ];
+}
+
+export function skipperSelectedFailure(resultText: string) {
+  const files = record(JSON.parse(resultText)).files;
+  assert.ok(Array.isArray(files));
+  const file = files.map(record).find((entry) => entry.path === installedTestPath);
+  assert.ok(file && Array.isArray(file.tests));
+  const failed = file.tests.map(record).find((entry) => entry.status === "failed");
+  const fileFailure = failed?.error == null ? record(file.fileFailure) : undefined;
+  return { error: record(failed?.error ?? fileFailure?.error), fileFailure };
 }
 
 /** Publish the passed runner result without copying diagnostics or inventing coverage. */
@@ -95,7 +115,7 @@ export function projectSkipperRunnerReceipt(value: unknown) {
   };
 }
 
-const skipperOperations = [
+export const skipperOperations = [
   "command-input",
   "gateway-chat",
   "gateway-exec",
@@ -104,6 +124,11 @@ const skipperOperations = [
   "command-cleanup",
 ] as const;
 type SkipperOperation = (typeof skipperOperations)[number];
+export const skipperGatewayChatPhases = [
+  "before-private-git",
+  "native-git",
+  "after-withdrawal",
+] as const;
 
 /** Only this closed projection may leave the installed test's private result. */
 export function skipperOperationDiagnostic(value: unknown) {
@@ -117,10 +142,66 @@ export function skipperOperationDiagnostic(value: unknown) {
   ) {
     return undefined;
   }
-  const { operation, exitCode, signal, code, gatewayCategory, httpStatus } = diagnostic;
+  const { operation, exitCode, signal, code, gatewayCategory, httpStatus, gatewayFetchElapsedMs } =
+    diagnostic;
+  const gatewayChatPhase = skipperGatewayChatPhases.find(
+    (phase) => phase === diagnostic.gatewayChatPhase,
+  );
+  const { runtimeSignal, modelRequestObservation, gatewayTransportCause, helperEntered } =
+    diagnostic;
+  const attributed = operation === "gateway-chat" && gatewayChatPhase !== undefined;
+  const timedTransport =
+    gatewayCategory === "transport" &&
+    (gatewayTransportCause === "socket-closed" ||
+      gatewayTransportCause === "connection-reset" ||
+      gatewayTransportCause === "headers-timeout");
   return {
+    ...(attributed &&
+    gatewayChatPhase === "native-git" &&
+    httpStatus === 0 &&
+    gatewayCategory === "transport" &&
+    modelRequestObservation === "observed" &&
+    diagnostic.modelFixtureSelectedTerminalSuccess === true
+      ? { modelFixtureSelectedTerminalSuccess: true as const }
+      : {}),
+    ...(attributed &&
+    typeof runtimeSignal === "string" &&
+    [
+      "thread-filesystem-sandbox-denied",
+      "thread-start",
+      "model-transport",
+      "no-known-signal",
+      "logs-unavailable",
+    ].includes(runtimeSignal)
+      ? { runtimeSignal }
+      : {}),
+    ...(operation === "gateway-exec" && modelRequestObservation === "observed"
+      ? { modelRequestObservation }
+      : {}),
+    ...(operation === "gateway-exec" && helperEntered === true ? { helperEntered } : {}),
+    ...(operation === "gateway-chat" &&
+    gatewayChatPhase === "native-git" &&
+    httpStatus === 0 &&
+    (timedTransport || gatewayCategory === "client-deadline") &&
+    typeof gatewayFetchElapsedMs === "number" &&
+    Number.isInteger(gatewayFetchElapsedMs) &&
+    gatewayFetchElapsedMs >= 0 &&
+    gatewayFetchElapsedMs <= 240_000
+      ? { gatewayFetchElapsedMs }
+      : {}),
+    ...(attributed &&
+    httpStatus === 0 &&
+    (timedTransport || (gatewayCategory === "transport" && gatewayTransportCause === "other"))
+      ? { gatewayTransportCause }
+      : {}),
+    ...(attributed &&
+    typeof modelRequestObservation === "string" &&
+    ["observed", "none-in-window", "unavailable"].includes(modelRequestObservation)
+      ? { modelRequestObservation }
+      : {}),
     kind: "skipper-operation",
     operation: operation as SkipperOperation,
+    ...(operation === "gateway-chat" && gatewayChatPhase ? { gatewayChatPhase } : {}),
     ...(typeof gatewayCategory === "string" &&
     [
       "gateway-credential-unavailable",
@@ -132,6 +213,7 @@ export function skipperOperationDiagnostic(value: unknown) {
       "unavailable",
       "unclassified",
       "transport",
+      "client-deadline",
       "response-body",
       "response-json",
     ].includes(gatewayCategory)
@@ -208,14 +290,8 @@ export function skipperFailureSummary(resultText: string, root: string, fallback
   let category;
   let operationDetail;
   try {
-    const files = record(JSON.parse(resultText)).files;
-    assert.ok(Array.isArray(files));
+    const { error, fileFailure } = skipperSelectedFailure(resultText);
     const path = installedTestPath;
-    const file = files.map(record).find((entry) => entry.path === path);
-    assert.ok(file && Array.isArray(file.tests));
-    const failed = file.tests.map(record).find((entry) => entry.status === "failed");
-    const fileFailure = failed?.error == null ? record(file.fileFailure) : undefined;
-    const error = record(failed?.error ?? fileFailure?.error);
     const cause = record(error.cause ?? {});
     const location = record(error.location ?? {});
     const diagnostic = skipperOperationDiagnostic(error.diagnostic);

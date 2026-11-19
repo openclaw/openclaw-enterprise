@@ -124,3 +124,9 @@ replayed, even if a later revision looks healthy. Preserve the evidence and
 reconcile with the release owner. Do not remove the recovery directory to retry.
 Complete the [remaining verification](production-upgrade.md) separately when the
 command cannot safely resume.
+
+Before a new same-candidate rollback, the helper validates the original recovery
+attempt and rechecks both candidate application database identities. A mismatch
+or incomplete check prevents rollback; reconcile the application connections
+without changing the original evidence. Already accepted or uncertain recovery
+remains readback-only and does not rerun these checks or dispatch rollback.

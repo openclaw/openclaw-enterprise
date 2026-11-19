@@ -22,13 +22,10 @@ export async function retirePreparedGitHubToken(
       assertAdmitted,
       observeDispatch: assertAdmitted,
     };
-    const response = await createProviderTransport(
-      ca,
-      clock,
-      prepareProviderScope(apiOrigin, a.grant),
-    ).revoke(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(), attempt);
-    response.body.fill(0);
-    return response.status === 204;
+    return createProviderTransport(ca, clock, prepareProviderScope(apiOrigin, a.grant)).revoke(
+      Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(),
+      attempt,
+    );
   });
   if (result === "unknown") {
     throw new Error("Prepared GitHub token revocation is unconfirmed.");

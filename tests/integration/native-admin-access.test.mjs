@@ -14,10 +14,11 @@ import {
   NATIVE_ADMIN_DENIED,
   nativeAdminOffDenied,
 } from "../helpers/refusal-text.mjs";
-import { grantRole, restrict } from "../helpers/iam-grants.mjs";
-import { createControllerAuth } from "../helpers/password-hasher.mjs";
+import { grantRole, restrict } from "../helpers/iam-grants.ts";
+import { createControllerAuth } from "../helpers/password-hasher.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import { AgentResponse } from "../../packages/contracts/src/api/resources.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import {
@@ -33,9 +34,16 @@ import {
   createHarnessConfiguration,
   withNativeAdminGateway,
 } from "../helpers/harness-configuration.mjs";
-import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.ts";
+import { selfSigned } from "../helpers/certificates.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { registerNativeAdminHttpIntegrityCases } from "./native-admin-http-integrity-cases.ts";
+import {
+  issueServiceKeyForNativeAgent,
+  registerNativeAdminSessionOriginCases,
+  registerNativeAdminSessionRecoveryCase,
+  registerNativeAdminSharedCookieCases,
+} from "./native-admin-shared-session-cases.ts";
 
 const cookieDomain = "oce.example.test";
 const nativeDomain = `agents.${cookieDomain}`;
@@ -71,7 +79,12 @@ function nativeAdminHarnessConfiguration(nativeOrigin) {
 function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}) {
   return createReadyComputeDriver("native-admin-compute", {
     // Kubernetes dedicated revisions stop their predecessors before they start.
-    ...(exclusiveReplacement ? { requiresStoppedPredecessors: () => true } : {}),
+    ...(exclusiveReplacement
+      ? {
+          requiresStoppedPredecessors:
+            typeof exclusiveReplacement === "function" ? exclusiveReplacement : () => true,
+        }
+      : {}),
     implementation: "native-admin-test-upstream",
     // The HTTPS upstream is no OC Gateway, so this Compute applies no managed mode.
     supportsGatewayManagedMode: undefined,
@@ -85,17 +98,100 @@ function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}
   });
 }
 
-async function startNativeHttpsUpstream(t) {
+/** @typedef {import("./native-admin-http-integrity-cases.ts").NativeAdminHttpObservations} NativeAdminHttpObservations */
+/** @typedef {import("./native-admin-http-integrity-cases.ts").NativeAdminStream} NativeAdminStream */
+
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {{ captureWire?: boolean }} [options]
+ */
+async function startNativeHttpsUpstream(t, { captureWire = false } = {}) {
   const directory = await temporaryDirectory(t, "openclaw-native-admin-upstream-");
   const { key, cert } = await selfSigned(directory, {
     keyPem: sharedRsaPrivateKeyPem("native-admin-upstream"),
     days: 2,
   });
 
+  /** @type {NativeAdminHttpObservations["requests"]} */
   const requests = [];
+  /** @type {NativeAdminHttpObservations["parsedRequests"]} */
+  const parsedRequests = [];
+  /** @type {NativeAdminHttpObservations["wire"]} */
+  const wire = [];
+  /** @type {NativeAdminHttpObservations["streams"]} */
+  const streams = new Map();
+  /** @type {NativeAdminHttpObservations["parserErrors"]} */
+  const parserErrors = [];
+  /** @type {Set<import("node:tls").TLSSocket>} */
+  const sockets = new Set();
+  // While set, every request gets this short 503 text/plain answer, like the route proxy's own
+  // reply for a Gateway that refuses connections (a held or restarting container).
+  /** @type {{ text: string | undefined }} */
+  const routeProxy = { text: undefined };
+  /**
+   * @param {import("node:http").ServerResponse} response
+   * @param {string} name
+   * @param {number} statusCode
+   * @param {{ contentLength?: number, continuous?: boolean }} [options]
+   */
+  const startStream = (response, name, statusCode, { contentLength, continuous = false } = {}) => {
+    /** @type {(result: Awaited<NativeAdminStream["close"]>) => void} */
+    let resolveClosed;
+    /** @type {NativeAdminStream} */
+    const control = {
+      closed: false,
+      finished: false,
+      watchdogExpired: false,
+      writes: 0,
+      close: new Promise((resolve) => {
+        resolveClosed = resolve;
+      }),
+      reset: () => response.destroy(),
+    };
+    streams.set(name, control);
+    const prefix = `native-${name}-prefix\n`;
+    /** @type {NodeJS.Timeout | undefined} */
+    let interval;
+    const deadline = setTimeout(() => {
+      control.watchdogExpired = true;
+      response.destroy();
+    }, 4_000);
+    response.once("close", () => {
+      clearTimeout(deadline);
+      clearInterval(interval);
+      control.closed = true;
+      control.finished = response.writableFinished;
+      resolveClosed({ finished: control.finished, writes: control.writes });
+    });
+    response.writeHead(statusCode, {
+      "content-type": "text/plain; charset=utf-8",
+      ...(contentLength === undefined ? {} : { "content-length": String(contentLength) }),
+    });
+    response.write(prefix);
+    control.writes++;
+    if (continuous) {
+      interval = setInterval(() => {
+        if (control.writes >= 100) {
+          response.end();
+          return;
+        }
+        response.write(`native-${name}-tick\n`);
+        control.writes++;
+      }, 20);
+    }
+  };
   const server = createServer({ key, cert }, async (request, response) => {
+    parsedRequests.push({
+      method: request.method,
+      url: request.url,
+      headers: { ...request.headers },
+    });
+    /** @type {Uint8Array[]} */
     const chunks = [];
-    for await (const chunk of request) {
+    /** @type {AsyncIterable<unknown>} */
+    const body = request;
+    for await (const chunk of body) {
+      assert.ok(chunk instanceof Uint8Array, "the HTTPS request must deliver bytes");
       chunks.push(chunk);
     }
     requests.push({
@@ -104,6 +200,48 @@ async function startNativeHttpsUpstream(t) {
       headers: { ...request.headers },
       body: Buffer.concat(chunks).toString("utf8"),
     });
+    if (routeProxy.text !== undefined) {
+      const text = routeProxy.text;
+      response.writeHead(503, { "content-type": "text/plain", "content-length": text.length });
+      response.end(text);
+      return;
+    }
+    if (request.url?.endsWith("/integrity-response-reset")) {
+      startStream(response, "response-reset", 200);
+      return;
+    }
+    if (request.url?.endsWith("/integrity-response-short")) {
+      startStream(response, "response-short", 200, { contentLength: 512 });
+      return;
+    }
+    if (request.url?.endsWith("/integrity-response-pre-header")) {
+      request.socket.destroy();
+      return;
+    }
+    if (request.url?.endsWith("/integrity-response-complete")) {
+      response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+      response.end("native-complete-body\n");
+      return;
+    }
+    if (request.url?.endsWith("/integrity-response-headers")) {
+      response.writeHead(200, {
+        "clear-site-data": '"cookies"',
+        "set-cookie": "invented_native_integrity=never-publish; Path=/",
+        "content-security-policy": "default-src 'self'",
+        "content-type": "text/plain; charset=utf-8",
+        "x-native-upstream": "integrity-headers",
+      });
+      response.end("native-header-body\n");
+      return;
+    }
+    if (request.url?.endsWith("/api/users/integrity-avatar-stream/avatar")) {
+      startStream(response, "avatar-stream", 502, { continuous: true });
+      return;
+    }
+    if (request.url?.endsWith("/integrity-client-stream")) {
+      startStream(response, "client-stream", 200, { continuous: true });
+      return;
+    }
     if (request.url?.includes("/upstream-unavailable")) {
       // OpenClaw's answer when a Gravatar fallback cannot be fetched.
       response.writeHead(502, { "content-type": "application/json" });
@@ -140,28 +278,87 @@ async function startNativeHttpsUpstream(t) {
     });
     response.end("native admin upstream\n");
   });
+  // Register after HTTPS installs its parser: Node's data-listener wrapper then
+  // leaves optimized socket consumption and exposes the same decrypted bytes.
+  server.on("secureConnection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+    if (!captureWire) {
+      return;
+    }
+    /** @type {NativeAdminHttpObservations["wire"][number]} */
+    const observation = { chunks: [], bytes: 0, overflow: false };
+    wire.push(observation);
+    socket.prependListener("data", (/** @type {Buffer} */ chunk) => {
+      if (observation.bytes + chunk.length > 65_536) {
+        observation.overflow = true;
+        return;
+      }
+      observation.chunks.push(Buffer.from(chunk));
+      observation.bytes += chunk.length;
+    });
+  });
+  if (captureWire) {
+    server.on("clientError", (error, socket) => {
+      parserErrors.push({ code: error.code });
+      socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    });
+  }
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   t.after(
     () =>
-      new Promise((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      ),
+      new Promise((resolve, reject) => {
+        for (const control of streams.values()) {
+          control.reset();
+        }
+        for (const socket of sockets) {
+          socket.destroy();
+        }
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
   );
   const address = server.address();
   assert.equal(typeof address, "object");
   assert.notEqual(address, null);
-  return { port: address.port, requests, cert };
+  return {
+    port: address.port,
+    requests,
+    parsedRequests,
+    wire,
+    streams,
+    parserErrors,
+    cert,
+    routeProxy,
+  };
 }
 
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {{
+ *   state?: import("../../packages/occ/src/index.ts").PlatformStateStore,
+ *   upstream?: {captureWire?: boolean},
+ *   publicOrigin?: string,
+ *   authBaseURL?: string,
+ *   development?: import("../../apps/controller/src/index.ts").ControllerAppOptions["development"],
+ *   auditSink?: InMemoryAuditSink,
+ *   logger?: import("../../apps/controller/src/logging.ts").OccLogger,
+ *   recordOperations?: boolean,
+ *   nativeAdminEnabled?: boolean,
+ *   nativeDomain?: string,
+ *   configure?: (origin: string) => object,
+ *   exclusiveReplacement?: boolean | ((revision: import("../../packages/contracts/src/index.ts").AgentRevision) => boolean),
+ * }} [options]
+ */
 async function createNativeAdminFixture(t, options = {}) {
-  const upstream = await startNativeHttpsUpstream(t);
+  const upstream = await startNativeHttpsUpstream(t, options.upstream);
   const fixture = await createConsoleAppFixture(t, {
     ...(options.state === undefined ? {} : { state: options.state }),
     publicOrigin: options.publicOrigin ?? publicOrigin,
     authBaseURL: options.authBaseURL ?? authBaseURL,
     development: options.development ?? { enabled: false },
     auditSink: options.auditSink,
+    ...(options.logger === undefined ? {} : { logger: options.logger }),
     ...(options.recordOperations === undefined
       ? {}
       : { recordOperations: options.recordOperations }),
@@ -198,6 +395,12 @@ async function createNativeAdminFixture(t, options = {}) {
 }
 
 // An Agent in `namespace` whose active revision serves the native admin UI at its own origin.
+/**
+ * @param {ConsoleFixture} fixture
+ * @param {Pick<import("../../packages/contracts/src/index.ts").Namespace, "id">} namespace
+ * @param {string} name
+ * @param {{nativeDomain?: string, publicOrigin?: string, configure?: (origin: string) => object}} [options]
+ */
 async function createLiveNativeAgent(fixture, namespace, name, options = {}) {
   const agent = await fixture.createAgent(
     namespace.id,
@@ -223,8 +426,9 @@ async function createLiveNativeAgent(fixture, namespace, name, options = {}) {
   );
   await fixture.activateRevision(namespace.id, agent.id, revision.id, undefined);
   const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
-  assert.equal(current.data.desiredRuntimeState, "running");
-  return { agent: current.data, revision };
+  const { data } = fixture.fixtureResponse(current, 200, AgentResponse, "read live Agent");
+  assert.equal(data.desiredRuntimeState, "running");
+  return { agent: data, revision };
 }
 
 function adminPrincipal(fixture) {
@@ -233,6 +437,14 @@ function adminPrincipal(fixture) {
   return principal;
 }
 
+/**
+ * @typedef {Awaited<ReturnType<typeof createConsoleAppFixture>>} ConsoleFixture
+ * @typedef {NonNullable<Parameters<ConsoleFixture["request"]>[2]>} RequestOptions
+ */
+/**
+ * @param {{fixture: Pick<ConsoleFixture, "request">, namespace: {id: string}, agent: {id: string}}} context
+ * @param {RequestOptions} [options]
+ */
 async function nativeStatus({ fixture, namespace, agent }, options = {}) {
   return fixture.request(
     "GET",
@@ -241,6 +453,12 @@ async function nativeStatus({ fixture, namespace, agent }, options = {}) {
   );
 }
 
+/**
+ * @param {{app: Pick<ReturnType<typeof createFastifyApp>, "inject">}} fixture
+ * @param {"GET" | "POST"} method
+ * @param {string} url
+ * @param {{headers?: Record<string, string | undefined>, body?: unknown}} [options]
+ */
 async function injectJson(fixture, method, url, { headers = {}, body } = {}) {
   return fixture.app.inject({
     method,
@@ -253,6 +471,7 @@ async function injectJson(fixture, method, url, { headers = {}, body } = {}) {
   });
 }
 
+/** @param {{origin: string}} native */
 function nativeAuthority(native) {
   return new URL(native.origin).host;
 }
@@ -292,6 +511,7 @@ async function createExactAgentAdministerSession(context, label = "native-admin-
 }
 
 // A second Agent in the fixture's Namespace, beside the one its exact bindings name.
+/** @param {{fixture: Pick<ConsoleFixture, "createAgent">, namespace: {id: string}}} context */
 function createSiblingAgent(context) {
   return context.fixture.createAgent(
     context.namespace.id,
@@ -312,6 +532,7 @@ async function assertSiblingStatusDenied(context, session, deniedText) {
   assert.deepEqual(denials, [{ action: "operate", kind: "agent", id: sibling.id }]);
 }
 
+/** @param {import("node:test").TestContext} t @param {string} cert */
 function trustLocalUpstreamCertificate(t, cert) {
   const previous = getCACertificates("default");
   setDefaultCACertificates([...previous, cert]);
@@ -446,7 +667,7 @@ test("native browser status selects exact Agent authority and reports lifecycle 
   assert.deepEqual(fullyStopped.data, { status: "stopped" });
   const stillDenied = await nativeStatus(context, { session: limitedSession });
   assertApiError(stillDenied, 403, "FORBIDDEN");
-  const serviceKey = await issueServiceKeyForNativeAgent(context);
+  const { key: serviceKey } = await issueServiceKeyForNativeAgent(context);
   const serviceDenied = await injectJson(
     context.fixture,
     "GET",
@@ -510,7 +731,7 @@ test("native browser status names why a Configuration is unsupported", async (t)
   }
 });
 
-test("native admin status is unavailable while a newer revision replaces the active workload", async (t) => {
+test("native admin stays available before the shared stop boundary, then becomes unavailable", async (t) => {
   // Without exclusive replacement the active revision keeps serving during a redeploy.
   const shared = await createNativeAdminFixture(t);
   await shared.fixture.deployAgent(shared.namespace.id, shared.agent.id);
@@ -519,12 +740,23 @@ test("native admin status is unavailable while a newer revision replaces the act
   assert.equal(stillServing.data.status, "available");
   assert.equal(stillServing.data.activeRevisionId, shared.revision.id);
 
-  const context = await createNativeAdminFixture(t, { exclusiveReplacement: true });
+  const context = await createNativeAdminFixture(t, {
+    exclusiveReplacement: (revision) => revision.revision === 2,
+  });
   const available = await nativeStatus(context);
   assert.equal(available.data.status, "available");
-  // The worker stops the active revision before the newer one starts; if that one fails,
-  // the old revision stays recorded as active with nothing serving.
   const replacement = await context.fixture.deployAgent(context.namespace.id, context.agent.id);
+  const waiting = await nativeStatus(context);
+  assert.equal(waiting.data.status, "available");
+  assert.equal(waiting.data.activeRevisionId, context.revision.id);
+  await context.fixture.controller.transact((state) =>
+    state.agents.recordPredecessorReplacement(context.namespace.id, context.agent.id, {
+      predecessorRevisionId: context.revision.id,
+      candidateRevisionId: replacement.id,
+      phase: "stopping",
+    }),
+  );
+  // A stopped predecessor stays unavailable even if a newer candidate fails.
   const replacing = await nativeStatus(context);
   assert.equal(replacing.status, 200);
   assert.deepEqual(replacing.data, { status: "unavailable" });
@@ -534,15 +766,171 @@ test("native admin status is unavailable while a newer revision replaces the act
   );
   assert.equal(agent.data.activeRevisionId, context.revision.id);
 
+  const nextReplacement = await context.fixture.deployAgent(context.namespace.id, context.agent.id);
+  assert.deepEqual((await nativeStatus(context)).data, { status: "unavailable" });
+
   await context.fixture.activateRevision(
     context.namespace.id,
     context.agent.id,
-    replacement.id,
+    nextReplacement.id,
     context.revision.id,
   );
   const restored = await nativeStatus(context);
   assert.equal(restored.data.status, "available");
-  assert.equal(restored.data.activeRevisionId, replacement.id);
+  assert.equal(restored.data.activeRevisionId, nextReplacement.id);
+});
+
+test("redeploy after explicit Stop keeps the old native endpoint closed", async (t) => {
+  const context = await createNativeAdminFixture(t, { exclusiveReplacement: true });
+  const stop = await context.fixture.request(
+    "POST",
+    `/namespaces/${context.namespace.id}/agents/${context.agent.id}/stop`,
+  );
+  assert.equal(stop.status, 202);
+  await context.fixture.deployAgent(context.namespace.id, context.agent.id);
+  assert.deepEqual((await nativeStatus(context)).data, { status: "unavailable" });
+});
+
+// While it reconnects, the Agent UI probes GET /healthz and treats 401 or 403 as a sign-in or
+// access problem; when its configuration request is refused too, it opens its sign-in dialog.
+test("an unreachable Gateway or a deployment answers an authorized probe 503, a stop shows a page, and outsiders see neither", async (t) => {
+  const context = await createNativeAdminFixture(t, {
+    exclusiveReplacement: (revision) => revision.revision === 2,
+  });
+  trustLocalUpstreamCertificate(t, context.upstream.cert);
+  const host = nativeAuthority((await nativeStatus(context)).data);
+  const readOnly = await createReadOnlySession(context, "native-transition-reader");
+  // The sign-in dialog's "Sign in" button opens / in a new tab: a user-activated page load.
+  const navigation = {
+    accept: "text/html,application/xhtml+xml",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-dest": "document",
+    "sec-fetch-user": "?1",
+  };
+  const probe = (cookie, path = "/healthz", headers = {}) =>
+    injectJson(context.fixture, "GET", path, { headers: { ...headers, host, cookie } });
+  // Signed out, and signed in without Agent operate, for the probe and the page load: each whole
+  // answer, request ID and date aside.
+  const outsiders = async () => {
+    const answers = [];
+    for (const cookie of [undefined, readOnly.cookie]) {
+      for (const [path, headers] of [
+        ["/healthz", {}],
+        ["/", navigation],
+      ]) {
+        const response = await probe(cookie, path, headers);
+        const { "x-request-id": requestId, date, ...rest } = response.headers;
+        assert.ok(requestId);
+        // The 302 has no body, though it is labelled JSON.
+        if (
+          response.body !== "" &&
+          String(response.headers["content-type"]).startsWith("application/json")
+        ) {
+          assert.equal(response.json().meta.requestId, requestId);
+        }
+        answers.push({
+          path,
+          status: response.statusCode,
+          headers: rest,
+          body: response.body.replaceAll(String(requestId), "<request>"),
+        });
+      }
+    }
+    return answers;
+  };
+
+  assert.equal((await probe(context.session.cookie)).statusCode, 200);
+  const available = await outsiders();
+  assert.deepEqual(
+    available.map(({ status }) => status),
+    [403, 302, 403, 403],
+  );
+  assert.match(available[3].body, /You do not have access to this gateway\./);
+  assert.deepEqual(JSON.parse(available[2].body).error, {
+    code: "FORBIDDEN",
+    message: NATIVE_ADMIN_DENIED,
+  });
+  const key = host.match(/^agent-([a-f0-9]{32})\./)[1];
+  const link = `<a href="${publicOrigin}/console/#native-agent=${key}">Return to console</a>`;
+
+  // The Gateway refuses connections, so the route's proxy answers instead of it: OCE's own answer
+  // replaces that text, a page for a page load.
+  context.upstream.routeProxy.text =
+    "upstream connect error or disconnect/reset before headers. reset reason: remote connection failure, transport failure reason: delayed connect error: Connection refused";
+  for (const headers of [{}, { accept: "application/json" }]) {
+    const unreachable = await probe(context.session.cookie, "/healthz", headers);
+    assert.equal(unreachable.statusCode, 503, unreachable.body);
+    assert.equal(unreachable.json().meta.requestId, unreachable.headers["x-request-id"]);
+    assert.deepEqual(unreachable.json().error, {
+      code: "DEPENDENCY_UNAVAILABLE",
+      message: "A required platform dependency is unavailable.",
+    });
+  }
+  const notResponding = await probe(context.session.cookie, "/", navigation);
+  assert.equal(notResponding.statusCode, 503, notResponding.body);
+  assert.match(notResponding.headers["content-type"], /^text\/html/);
+  assert.equal(notResponding.headers["cache-control"], "no-store");
+  assert.match(notResponding.body, /<title>Agent not responding<\/title>/);
+  assert.match(notResponding.body, /This Agent is not responding right now\./);
+  assert.ok(notResponding.body.includes(link), notResponding.body);
+  assert.deepEqual(await outsiders(), available, "an unreachable Gateway is invisible to them");
+  assert.equal(context.upstream.requests.length, 4, "only authorized requests reached the route");
+  // Any other short 503 text/plain answer is the Gateway's own and passes through as it is.
+  context.upstream.routeProxy.text = "other";
+  const other = await probe(context.session.cookie, "/healthz");
+  assert.equal(other.statusCode, 503);
+  assert.equal(other.body, "other");
+  assert.equal(other.headers["content-type"], "text/plain");
+  assert.equal(other.headers["content-length"], "5");
+  context.upstream.routeProxy.text = undefined;
+
+  const replacement = await context.fixture.deployAgent(context.namespace.id, context.agent.id);
+  await context.fixture.controller.transact((state) =>
+    state.agents.recordPredecessorReplacement(context.namespace.id, context.agent.id, {
+      predecessorRevisionId: context.revision.id,
+      candidateRevisionId: replacement.id,
+      phase: "stopping",
+    }),
+  );
+  assert.deepEqual((await nativeStatus(context)).data, { status: "unavailable" });
+  const replacing = await probe(context.session.cookie);
+  assert.equal(replacing.statusCode, 503, replacing.body);
+  assert.deepEqual(replacing.json().error, {
+    code: "DEPENDENCY_UNAVAILABLE",
+    message: "A required platform dependency is unavailable.",
+  });
+  assert.deepEqual(await outsiders(), available, "a deployment is invisible to outsiders");
+
+  const stop = await context.fixture.request(
+    "POST",
+    `/namespaces/${context.namespace.id}/agents/${context.agent.id}/stop`,
+  );
+  assert.equal(stop.status, 202);
+  assert.equal((await nativeStatus(context)).data.status, "stopped");
+  // A stopped Agent stays refused, so the Agent UI still offers its sign-in panel. Its link, a page
+  // load, gets a page that says the Agent is unavailable; probes and API reads keep the JSON 403.
+  for (const headers of [{}, navigation]) {
+    const stopped = await probe(context.session.cookie, "/healthz", headers);
+    assert.equal(stopped.statusCode, 403, stopped.body);
+    assert.deepEqual(stopped.json().error, { code: "FORBIDDEN", message: GENERIC_DENIAL });
+  }
+  const apiRead = await probe(context.session.cookie, "/", { accept: "application/json" });
+  assert.equal(apiRead.statusCode, 403, apiRead.body);
+  assert.deepEqual(apiRead.json().error, { code: "FORBIDDEN", message: GENERIC_DENIAL });
+  const page = await probe(context.session.cookie, "/", navigation);
+  assert.equal(page.statusCode, 403, page.body);
+  assert.match(page.headers["content-type"], /^text\/html/);
+  assert.equal(page.headers["cache-control"], "no-store");
+  assert.equal(page.headers["referrer-policy"], "no-referrer");
+  assert.match(page.body, /<title>Agent unavailable<\/title>/);
+  assert.match(
+    page.body,
+    /<p>This Agent is not available right now\. Open it from the console\.<\/p>/,
+  );
+  assert.ok(page.body.includes(link), page.body);
+  assert.equal(page.body.includes(context.agent.id), false);
+  assert.deepEqual(await outsiders(), available, "a stop is invisible to outsiders");
+  assert.equal(context.upstream.requests.length, 5, "only authorized running probes reached it");
 });
 
 test("native browser disabled status still requires exact Agent authority", async (t) => {
@@ -575,58 +963,17 @@ test("native browser disabled status still requires exact Agent authority", asyn
   assert.equal(missingStatus.body.error.code, "NOT_FOUND");
 });
 
-async function issueServiceKeyForNativeAgent(context) {
-  const principal = {
-    id: `native-admin-service-${randomUUID()}`,
-    kind: "service_principal",
-    namespaceId: context.namespace.id,
-  };
-  context.fixture.policy.identities.push(principal);
-  grantRole(context.fixture.policy, principal.id, {
-    id: `native-admin-service-role-${randomUUID()}`,
-    bindingId: `native-admin-service-binding-${randomUUID()}`,
-    namespaceId: context.namespace.id,
-    permissions: { agent: ["administer"] },
-    resource: { kind: "agent", id: context.agent.id },
-  });
-  const issued = await context.fixture.request("POST", "/api/auth/service-keys", {
-    body: {
-      servicePrincipalId: principal.id,
-      namespaceId: context.namespace.id,
-      name: "native-admin-service-key",
-    },
-  });
-  assert.equal(issued.status, 201);
-  assert.match(issued.data.key, /^occ_/);
-  return issued.data.key;
-}
-
-test("native admin shared session configuration validates cookie scope and rejects keys", async (t) => {
-  const context = await createNativeAdminFixture(t);
-  const status = await nativeStatus(context);
-  const cookie = context.session.setCookie.join("\n");
-  assert.match(cookie, /(?:__Secure-)?openclaw_occ_shared\.session_token=/);
-  assert.match(cookie, /Domain=oce\.example\.test/i);
-  assert.match(cookie, /HttpOnly/i);
-  assert.match(cookie, /SameSite=Lax/i);
-  assert.doesNotMatch(cookie, /__Host-occ_native_admin=/);
-
-  const serviceKey = await issueServiceKeyForNativeAgent(context);
-  for (const deniedHeaders of [
-    { "x-api-key": serviceKey },
-    { cookie: context.session.cookie, "x-api-key": serviceKey },
-  ]) {
-    const denied = await injectJson(context.fixture, "GET", "/", {
-      headers: {
-        host: nativeAuthority(status.data),
-        origin: status.data.origin,
-        ...deniedHeaders,
-      },
-    });
-    assert.equal(denied.statusCode, 403, denied.body);
-    assert.equal(denied.headers["set-cookie"], undefined);
-  }
-});
+export const sharedSessionDependencies = {
+  publicOrigin,
+  authBaseURL,
+  createNativeAdminFixture,
+  nativeStatus,
+  injectJson,
+  nativeAuthority,
+  createSiblingAgent,
+  trustLocalUpstreamCertificate,
+};
+registerNativeAdminSharedCookieCases(test, sharedSessionDependencies);
 
 test("a copied Agent chat link redirects an activated browser navigation to the configured console without granting access", async (t) => {
   const auditSink = new InMemoryAuditSink();
@@ -877,6 +1224,8 @@ test("a copied Agent chat link redirects an activated browser navigation to the 
   assert.deepEqual(resumed.json().data, found.json().data);
 });
 
+registerNativeAdminSessionRecoveryCase(test, sharedSessionDependencies);
+
 test("native admin proxy strips browser credentials and preserves the Agent gateway base path", async (t) => {
   const context = await createNativeAdminFixture(t);
   const status = await nativeStatus(context);
@@ -1096,16 +1445,59 @@ test("native admin proxy resolves a host only to the live Agent it names", async
   const installationId = fixture.controller.installation.id;
   // The installation administrator's session administers every Agent, so each refusal below
   // comes from host resolution, not from IAM.
-  const proxied = (namespaceId, agentId) => {
+  const proxied = (namespaceId, agentId, cookie = context.session.cookie) => {
     const origin = nativeOriginForAgent(installationId, namespaceId, agentId);
     return injectJson(fixture, "GET", "/settings/profile", {
-      headers: { host: new URL(origin).host, origin, cookie: context.session.cookie },
+      headers: { host: new URL(origin).host, origin, cookie },
     });
   };
 
-  const own = await proxied(namespace.id, agent.id);
-  assert.equal(own.statusCode, 200, own.body);
-  assert.equal(upstream.requests.length, 1);
+  const resolveReference = fixture.controller.resolveAgentReference.bind(fixture.controller);
+  const shapeLookups = t.mock.method(fixture.controller, "resolveAgentReference", (...args) =>
+    resolveReference(...args),
+  );
+  try {
+    const own = await proxied(namespace.id, agent.id);
+    assert.equal(own.statusCode, 200, own.body);
+    assert.equal(upstream.requests.length, 1);
+    assert.equal(shapeLookups.mock.callCount(), 1, "a valid host uses the real reference lookup");
+
+    const account = await fixture.createAccountWithPolicy("native-host-no-access", () => {});
+    const limited = await fixture.signIn(account.credentials);
+    const unknown = await proxied(namespace.id, `agt_${randomUUID()}`, limited.cookie);
+    const inaccessible = await proxied(namespace.id, agent.id, limited.cookie);
+    assert.equal(unknown.statusCode, 403, unknown.body);
+    assert.equal(inaccessible.statusCode, 403, inaccessible.body);
+    assert.deepEqual(unknown.json().error, inaccessible.json().error);
+    assert.equal(shapeLookups.mock.callCount(), 3, "well-formed hosts retain the real lookup");
+
+    const key = deriveNativeAdminHost(installationId, agent, nativeDomain)
+      .split(".", 1)[0]
+      .slice(6);
+    for (const malformedHost of [
+      `agent-.${nativeDomain}`,
+      `agent-${key.slice(1)}.${nativeDomain}`,
+      `agent-${key}0.${nativeDomain}`,
+      `agent-${"g".repeat(32)}.${nativeDomain}`,
+      `agent-${key}.other.${nativeDomain}`,
+    ]) {
+      const before = shapeLookups.mock.callCount();
+      const denied = await injectJson(fixture, "GET", "/console/", {
+        headers: { host: malformedHost, cookie: limited.cookie },
+      });
+      assert.equal(denied.statusCode, 403, denied.body);
+      assert.equal(denied.json().error.code, "FORBIDDEN");
+      assert.equal(denied.headers.location, undefined);
+      assert.equal(
+        shapeLookups.mock.callCount() - before,
+        0,
+        `malformed native hosts must not enumerate Agent references: ${malformedHost}`,
+      );
+      assert.equal(upstream.requests.length, 1, "a malformed host must not reach a native gateway");
+    }
+  } finally {
+    shapeLookups.mock.restore();
+  }
 
   const other = await fixture.createNamespace("Native admin other", { ready: true });
   const otherAgent = await fixture.createAgent(
@@ -1128,13 +1520,43 @@ test("native admin proxy resolves a host only to the live Agent it names", async
   assert.notEqual(otherHost.statusCode, 200, otherHost.body);
   assert.equal(upstream.requests.length, 1, "no refused host may reach a native gateway");
 
-  // A deleted Agent's host names nothing.
+  const chat = await createAgentPermissionSession(context, "deleting-agent-chat", {
+    agent: ["operate"],
+  });
+  const beforeDeletion = await proxied(namespace.id, agent.id, chat.cookie);
+  assert.equal(beforeDeletion.statusCode, 200, beforeDeletion.body);
   const deleted = await fixture.request("DELETE", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(deleted.status, 202);
-  assert.equal(await state.completeAgentDeletion(namespace.id, agent.id), true);
+  const { response: deleting, denials: deletingDenials } = await denialsDuring(
+    fixture.auditSink,
+    () => proxied(namespace.id, agent.id, chat.cookie),
+  );
+
+  // Commit real deletion after the real host lookup, before admission's exact Agent read.
+  // The wrapper changes only ordering: no lookup result or failure is invented.
+  const resolve = fixture.controller.resolveAgentReference.bind(fixture.controller);
+  const lookup = t.mock.method(fixture.controller, "resolveAgentReference", async (...args) => {
+    const selected = await resolve(...args);
+    assert.equal(selected?.id, agent.id);
+    assert.equal(await state.completeAgentDeletion(namespace.id, agent.id), true);
+    return selected;
+  });
+  let racing;
+  try {
+    racing = await denialsDuring(fixture.auditSink, () => proxied(namespace.id, agent.id));
+  } finally {
+    lookup.mock.restore();
+  }
   const afterDeletion = await proxied(namespace.id, agent.id);
-  assert.equal(afterDeletion.statusCode, 403, afterDeletion.body);
-  assert.equal(upstream.requests.length, 1);
+  assert.deepEqual(
+    [deleting.statusCode, racing.response.statusCode, afterDeletion.statusCode],
+    [403, 403, 403],
+    "deleting and deleted Agents are refusals, not temporary dependency outages",
+  );
+  assert.deepEqual(racing.response.json().error, afterDeletion.json().error);
+  assert.deepEqual(deletingDenials, []);
+  assert.deepEqual(racing.denials, [], "deletion does not invent an attributable IAM denial");
+  assert.equal(upstream.requests.length, 2);
 });
 
 test("native admin status decodes only the revisions it uses", async (t) => {
@@ -1170,147 +1592,7 @@ test("native admin status decodes only the revisions it uses", async (t) => {
   assert.ok(fastest < 1_000, `native admin status took ${Math.round(fastest)} ms`);
 });
 
-test("native Agent requests retain their own origin boundary", async (t) => {
-  const context = await createNativeAdminFixture(t);
-  const status = await nativeStatus(context);
-  trustLocalUpstreamCertificate(t, context.upstream.cert);
-  const response = await injectJson(context.fixture, "POST", "/settings", {
-    headers: {
-      host: nativeAuthority(status.data),
-      origin: status.data.origin,
-      cookie: context.session.cookie,
-      "sec-fetch-site": "same-origin",
-    },
-  });
-  assert.equal(response.statusCode, 200, response.body);
-  assert.equal(context.upstream.requests.length, 1);
-});
-
-test("session mutations reject sibling origins before changing Agent or audit state", async (t) => {
-  const auditSink = new InMemoryAuditSink();
-  const context = await createNativeAdminFixture(t, { auditSink });
-  const native = (await nativeStatus(context)).data;
-  const agentPath = `/namespaces/${context.namespace.id}/agents/${context.agent.id}`;
-  const cookie = context.session.cookie;
-  const before = auditSink.events.length;
-
-  // A sibling can submit a bodyless request with the shared cookie without reading it.
-  const noCookie = await injectJson(context.fixture, "POST", `${agentPath}/stop`, {
-    headers: { origin: native.origin, "sec-fetch-site": "same-site" },
-  });
-  assert.equal(noCookie.statusCode, 401);
-  const badOrigins = [
-    { origin: native.origin, "sec-fetch-site": "same-site", "sec-fetch-mode": "no-cors" },
-    { origin: "https://other.oce.example.test", "sec-fetch-site": "same-site" },
-    {},
-    { origin: "null" },
-    { origin: `${publicOrigin}/path` },
-    { origin: publicOrigin, "sec-fetch-site": "cross-site" },
-    { origin: publicOrigin, "sec-fetch-site": "same-site" },
-    { origin: publicOrigin, "sec-fetch-site": "invalid" },
-  ];
-  for (const headers of badOrigins) {
-    const response = await injectJson(context.fixture, "POST", `${agentPath}/stop`, {
-      headers: { cookie, ...headers },
-    });
-    assert.equal(response.statusCode, 403, `${JSON.stringify(headers)}: ${response.body}`);
-    // The refusal says what is missing instead of a generic admission boundary.
-    assert.match(response.json().error.message, /^A trusted browser origin is required: /);
-  }
-  // Reads need no Origin to be admitted; the account route then names the same requirement.
-  const accountRead = await injectJson(context.fixture, "GET", "/api/auth/accounts/any-account", {
-    headers: { cookie },
-  });
-  assert.equal(accountRead.statusCode, 403, accountRead.body);
-  assert.equal(
-    accountRead.json().error.message,
-    "A current human session and trusted browser origin are required.",
-  );
-  for (const path of [
-    `${agentPath}/deploy`,
-    "/api/auth/accounts",
-    "/api/auth/service-keys",
-    `/namespaces/${context.namespace.id}/iam/roles`,
-  ]) {
-    const response = await injectJson(context.fixture, "POST", path, {
-      headers: { cookie, origin: native.origin, "sec-fetch-site": "same-site" },
-    });
-    assert.equal(response.statusCode, 403, `${path}: ${response.body}`);
-  }
-  assert.equal(auditSink.events.length, before);
-  const unchanged = await context.fixture.request("GET", agentPath);
-  assert.equal(unchanged.data.desiredRuntimeState, "running");
-  const safeRead = await injectJson(context.fixture, "GET", agentPath, { headers: { cookie } });
-  assert.equal(safeRead.statusCode, 200);
-
-  const key = await issueServiceKeyForNativeAgent(context);
-  const role = context.fixture.policy.roles.find((item) =>
-    item.id.startsWith("native-admin-service-role-"),
-  );
-  role.permissions.push({ action: "operate", resourceKind: "agent" });
-  const badKey = await injectJson(context.fixture, "POST", `${agentPath}/stop`, {
-    headers: { cookie, "x-api-key": "invalid", origin: publicOrigin },
-  });
-  assert.equal(badKey.statusCode, 401);
-  const keyStop = await injectJson(context.fixture, "POST", `${agentPath}/stop`, {
-    headers: { "x-api-key": key },
-  });
-  assert.equal(keyStop.statusCode, 202, keyStop.body);
-  // The key's binding names this Agent alone: a second Agent of the Namespace is refused.
-  const sibling = await createSiblingAgent(context);
-  const { response: siblingStop, denials } = await denialsDuring(auditSink, () =>
-    injectJson(
-      context.fixture,
-      "POST",
-      `/namespaces/${context.namespace.id}/agents/${sibling.id}/stop`,
-      { headers: { "x-api-key": key } },
-    ),
-  );
-  assert.equal(siblingStop.statusCode, 403, siblingStop.body);
-  assert.equal(
-    siblingStop.json().error.message,
-    callerDenied("Agent operate", `Agent ${sibling.id}`),
-  );
-  assert.deepEqual(denials, [{ action: "operate", kind: "agent", id: sibling.id }]);
-  const deployed = await injectJson(context.fixture, "POST", `${agentPath}/deploy`, {
-    headers: { cookie, origin: publicOrigin, "sec-fetch-site": "same-origin" },
-  });
-  assert.equal(deployed.statusCode, 202, deployed.body);
-  const keyFromSibling = await injectJson(context.fixture, "POST", `${agentPath}/stop`, {
-    headers: { cookie, "x-api-key": key, origin: native.origin, "sec-fetch-site": "same-site" },
-  });
-  assert.equal(keyFromSibling.statusCode, 202, keyFromSibling.body);
-  const stopped = await injectJson(context.fixture, "POST", `${agentPath}/stop`, {
-    headers: { cookie, origin: publicOrigin },
-  });
-  assert.equal(stopped.statusCode, 202, stopped.body);
-});
-
-test("sign-out requires the console origin for session requests", async (t) => {
-  const context = await createNativeAdminFixture(t);
-  for (const headers of [
-    {},
-    { origin: "https://other.oce.example.test" },
-    { origin: publicOrigin, "sec-fetch-site": "cross-site" },
-  ]) {
-    const denied = await injectJson(context.fixture, "POST", "/api/auth/sign-out", {
-      headers: { cookie: context.session.cookie, ...headers },
-    });
-    assert.equal(denied.statusCode, 403, denied.body);
-    const session = await injectJson(context.fixture, "GET", "/api/auth/session", {
-      headers: { cookie: context.session.cookie },
-    });
-    assert.equal(session.json().data.authenticated, true);
-  }
-  const allowed = await injectJson(context.fixture, "POST", "/api/auth/sign-out", {
-    headers: {
-      cookie: context.session.cookie,
-      origin: publicOrigin,
-      "sec-fetch-site": "same-origin",
-    },
-  });
-  assert.equal(allowed.statusCode, 200, allowed.body);
-});
+registerNativeAdminSessionOriginCases(test, sharedSessionDependencies);
 
 for (const changedField of [undefined, "id", "implementation"]) {
   test(`native admin retains the revision Compute owner after restart: ${changedField ?? "matching"}`, async (t) => {
@@ -1388,9 +1670,36 @@ for (const changedField of [undefined, "id", "implementation"]) {
     );
     const host = new URL(nativeOriginForAgent(controller.installation.id, namespace.id, agent.id))
       .host;
+    const proxyLogStart = logLines.length;
     const proxy = await injectJson({ app }, "GET", "/", {
       headers: { ...headers, host, origin: `https://${host}` },
     });
+    if (changedField === undefined) {
+      const proxyCompletions = logLines
+        .slice(proxyLogStart)
+        .map((line) => JSON.parse(line))
+        .filter((line) => line.event === "http.completed");
+      assert.equal(proxyCompletions.length, 1);
+      assert.equal(proxyCompletions[0].status, 200);
+      assert.ok(proxyCompletions[0].requestId);
+      assert.equal(proxyCompletions[0].nativeAdmissionReason, undefined);
+      const refused = await app.inject({
+        method: "GET",
+        url: "/?private=discard-query-marker",
+        headers: { host, cookie: "discard-cookie-marker=private" },
+      });
+      assert.equal(refused.statusCode, 403);
+      const completions = logLines
+        .map((line) => JSON.parse(line))
+        .filter((line) => line.event === "http.completed");
+      const completed = completions.find(
+        (line) => line.requestId === refused.headers["x-request-id"],
+      );
+      assert.ok(completed, "the refusal must correlate to its existing HTTP request ID");
+      assert.equal(completed.nativeAdmissionReason, "session_invalid");
+      assert.equal(completed.status, 403);
+      assert.ok(!JSON.stringify(completed).includes("discard-"));
+    }
     // A console poll repeats the status read; the mismatch is still warned only once.
     const repeated = await injectJson(
       { app },
@@ -1486,3 +1795,39 @@ test("a browser Back to a denied Agent gateway stays 403 and links to the consol
   // The JSON refusal names the grant but not the Agent, which the host named, not the caller.
   assert.deepEqual(api.json().error, { code: "FORBIDDEN", message: NATIVE_ADMIN_DENIED });
 });
+
+/** @type {import("./native-admin-http-integrity-cases.ts").CreateNativeAdminHttpFixture} */
+async function liveNativeAdminFixture(t, options = {}) {
+  const context = await createNativeAdminFixture(t, options);
+  // The console fixture returns untyped JSON. Check only the fields the wire cases consume.
+  /** @type {unknown} */
+  const native = (await nativeStatus(context)).data;
+  assert.ok(
+    native && typeof native === "object" && "origin" in native && typeof native.origin === "string",
+    "the native status must expose an origin",
+  );
+  /** @type {unknown} */
+  const agentId = context.agent.id;
+  assert.ok(typeof agentId === "string", "the live Agent must expose an ID");
+  const session = await createExactAgentAdministerSession(context, "native-http-integrity");
+  trustLocalUpstreamCertificate(t, context.upstream.cert);
+  const address = context.fixture.app.server.address();
+  assert.equal(typeof address, "object");
+  assert.notEqual(address, null);
+  return {
+    upstream: context.upstream,
+    namespaceId: context.namespace.id,
+    agentId,
+    nativeOrigin: native.origin,
+    nativeGatewayApiKey,
+    createReadOnlySession: (label) => createReadOnlySession(context, label),
+    port: address.port,
+    nativeHeaders: {
+      host: nativeAuthority(native),
+      origin: native.origin,
+      cookie: session.cookie,
+    },
+  };
+}
+
+registerNativeAdminHttpIntegrityCases(test, liveNativeAdminFixture);

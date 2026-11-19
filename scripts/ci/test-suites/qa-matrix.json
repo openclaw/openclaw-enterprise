@@ -57,10 +57,17 @@
     "OCC_TEST_KEYCLOAK_STATE",
     "OCC_TEST_KEYCLOAK_CONSOLE_PORT",
     "OCC_TEST_KEYCLOAK_CONSOLE_CERT",
-    "OCC_TEST_KEYCLOAK_CONSOLE_KEY"
+    "OCC_TEST_KEYCLOAK_CONSOLE_KEY",
+    "OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE",
+    "OCC_TEST_DATABASE_URL",
+    "OPENCLAW_ENTERPRISE_CI_STATE",
+    "OPENCLAW_ENTERPRISE_CI_PREFIX"
   ],
   "prepare": {
-    "sourceBuildFiles": ["tests/integration/qa-matrix-real.test.mjs"]
+    "sourceBuildFiles": [
+      "tests/integration/qa-matrix-real.test.mjs",
+      "tests/integration/openshell-git-retention-real.test.ts"
+    ]
   },
   "files": [
     {
