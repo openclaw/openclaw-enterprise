@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -352,4 +356,135 @@ test("manual approval API failures stop before protected environment access", as
     );
     assert.equal(fetched.includes("/environments/integration-main"), false);
   }
+});
+
+test("scheduled preflight CLI annotates only classified Actions history holds", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "full-integration-preflight-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const preload = join(directory, "fetch-fixture.mjs");
+  const output = join(directory, "github-output");
+  const sha = "a".repeat(40);
+  const mainRef = (sha: string) => ({ ref: "refs/heads/main", object: { type: "commit", sha } });
+  const admissionMarkers = "/actions/artifacts?name=full-integration-admitted-v1&per_page=100";
+  const responses = {
+    "/git/ref/heads/main": mainRef(sha),
+    [admissionMarkers]: { artifacts: [], total_count: 0 },
+    "/actions/workflows/351990468/runs?branch=main&event=push&per_page=100&page=1": {
+      workflow_runs: [],
+      total_count: 0,
+    },
+    "/actions/workflows/351990468/runs?branch=main&event=workflow_dispatch&per_page=100&page=1": {
+      workflow_runs: [],
+      total_count: 0,
+    },
+    [`/actions/artifacts?name=full-integration-exercised-v1-${sha}&per_page=100`]: {
+      artifacts: [],
+      total_count: 0,
+    },
+    "/environments/integration-main": integrationEnvironment(),
+    "/environments/integration-main/deployment-branch-policies": mainOnlyPolicies,
+  };
+  const malformedMarkers = {
+    [admissionMarkers]: { artifacts: "synthetic-history-response", total_count: 1 },
+  };
+  const holdMessage =
+    "Full Integration schedule could not verify admission metadata (admission-markers: invalid-metadata).";
+
+  async function run(overrides: Record<string, unknown> = {}, env: NodeJS.ProcessEnv = {}) {
+    await writeFile(output, "");
+    await writeFile(
+      preload,
+      `const responses = ${JSON.stringify({ ...responses, ...overrides })};
+const prefix = "https://api.github.com/repos/openclaw/openclaw-enterprise";
+globalThis.fetch = async (input) => {
+  const url = new URL(input);
+  const path = url.href.slice(prefix.length);
+  if (!url.href.startsWith(prefix + "/") || !Object.hasOwn(responses, path)) {
+    throw new Error("Unexpected GitHub fixture request");
+  }
+  return Response.json(responses[path]);
+};
+`,
+    );
+    const result = spawnSync(
+      process.execPath,
+      ["--import", preload, "scripts/ci/full-integration-preflight.ts"],
+      {
+        env: {
+          ...mainRun,
+          GITHUB_EVENT_NAME: "schedule",
+          GITHUB_SHA: sha,
+          GITHUB_ACTIONS: "true",
+          GITHUB_OUTPUT: output,
+          ...env,
+        },
+        encoding: "utf8",
+        timeout: 10_000,
+      },
+    );
+    assert.equal(result.error, undefined);
+    return { ...result, output: await readFile(output, "utf8") };
+  }
+
+  await t.test("classified Actions history hold", async () => {
+    const result = await run(malformedMarkers);
+    assert.equal(result.status, 1);
+    assert.equal(result.output, "");
+    assert.equal(result.stderr, holdMessage + "\n");
+    assert.equal(
+      result.stdout,
+      "::error title=Full Integration schedule::admission-markers: invalid-metadata\n",
+    );
+  });
+
+  await t.test("classified hold outside Actions", async () => {
+    const result = await run(malformedMarkers, { GITHUB_ACTIONS: "false" });
+    assert.equal(result.status, 1);
+    assert.equal(result.output, "");
+    assert.equal(result.stderr, holdMessage + "\n");
+    assert.equal(result.stdout, "");
+  });
+
+  await t.test("scheduled rerun refused before history", async () => {
+    const result = await run(malformedMarkers, { GITHUB_RUN_ATTEMPT: "2" });
+    assert.equal(result.status, 1);
+    assert.equal(result.output, "");
+    assert.equal(
+      result.stderr,
+      "Scheduled integration reruns are refused; start a new approved dispatch.\n",
+    );
+    assert.equal(result.stdout, "");
+  });
+
+  await t.test("unrelated protected environment failure", async () => {
+    const result = await run({
+      "/environments/integration-main": integrationEnvironment({ can_admins_bypass: true }),
+    });
+    assert.equal(result.status, 1);
+    assert.equal(result.output, "");
+    assert.equal(
+      result.stderr,
+      "Protected environment integration-main must disable administrator bypass.\n",
+    );
+    assert.equal(result.stdout, "");
+  });
+
+  await t.test("scheduled admission succeeds", async () => {
+    const result = await run();
+    assert.equal(result.status, 0);
+    assert.equal(result.stderr, "");
+    assert.equal(result.stdout, "Full Integration authorized by scheduled admission.\n");
+    assert.equal(result.output, "selected_lane=all\nrun_all=true\n");
+  });
+
+  await t.test("stale event is skipped with a notice", async () => {
+    const result = await run({ "/git/ref/heads/main": mainRef("b".repeat(40)) });
+    assert.equal(result.status, 0);
+    assert.equal(result.stderr, "");
+    assert.equal(
+      result.stdout,
+      "::notice title=Full Integration schedule::Full Integration schedule skipped: stale-event.\n",
+    );
+    assert.equal(result.output, "selected_lane=skip\nrun_all=false\n");
+  });
 });

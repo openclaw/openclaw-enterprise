@@ -297,6 +297,11 @@ export async function validateFullIntegrationPreflight({
     const decision = decideAdmission({ ...history, now, eventSha });
     if (decision.result === "hold") {
       const failure = "failure" in history ? history.failure : undefined;
+      if (failure && env.GITHUB_ACTIONS === "true") {
+        console.log(
+          `::error title=Full Integration schedule::${failure.operation}: ${failure.kind}`,
+        );
+      }
       const detail = failure ? ` (${failure.operation}: ${failure.kind})` : "";
       throw new Error(`Full Integration schedule could not verify admission metadata${detail}.`);
     }
