@@ -31,6 +31,8 @@ export type ProtectedRepositoryNetworkPolicyContext = Readonly<
     | "egressPlan"
     | "repositoryCredentials"
     | "harness"
+    | "sandboxDriverId"
+    | "sandboxPolicy"
     | "harnessAuth"
     | "credentialSources"
   >

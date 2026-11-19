@@ -132,9 +132,10 @@ A nonempty list also requires approval for each grant from the Installation's
 repository policy owner for this Namespace.
 `packages/contracts/src/sandbox-policy.ts:admitSandboxRepositoryNetworkPolicy`
 requires the selected Driver to return an effective policy from the checked base
-snapshot, including for an empty list. The selected Compute Driver must validate
-the execution topology and pass its revision admission checks before OCC
-checks or provisions runtime credentials. OCC stores the effective policy and
+snapshot, including for an empty list. OCC passes the selected Sandbox Driver
+ID, its policy snapshot, and the Harness to the Compute Driver. OCC waits for
+Compute to validate the pairing and admit the revision before checking or
+provisioning runtime credentials. OCC stores the effective policy and
 the canonical list identity in `AgentRevision.sandboxPolicy`. A refusal leaves
 no revision or queued deployment. Omission uses the ordinary Driver snapshot.
 

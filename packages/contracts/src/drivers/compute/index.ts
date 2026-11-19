@@ -244,9 +244,11 @@ export interface ComputeDriver extends Driver {
   ): void;
   /**
    * Side-effect-free check that Compute preserves the explicit repository policy boundary
-   * on the selected execution topology. Throw for an unsupported topology.
+   * on the selected execution topology. Throw or reject for an unsupported topology.
    */
-  validateProtectedRepositoryNetworkPolicy?(context: ProtectedRepositoryNetworkPolicyContext): void;
+  validateProtectedRepositoryNetworkPolicy?(
+    context: ProtectedRepositoryNetworkPolicyContext,
+  ): void | Promise<void>;
   /**
    * After release is refused, select a withdrawal only for a grant this Compute previously
    * admitted. Selection is side-effect free. The worker runs the withdrawal under the active

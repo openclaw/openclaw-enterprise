@@ -35,6 +35,7 @@ import { Check } from "typebox/value";
 import { Type, type TSchema } from "typebox";
 import {
   SandboxNetworkPolicyConfiguration,
+  type ProtectedRepositoryNetworkPolicyContext,
   type RepositoryNetworkGrant,
   type SandboxDriver,
   type Permission,
@@ -2256,6 +2257,10 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
       assert.fail("live repository policy application must not change provider state");
     },
   };
+  const alternateSandbox: SandboxDriver = {
+    ...sandbox,
+    id: "alternate-repository-policy-test-sandbox",
+  };
   const installationLimit = [{ repository: "example/approved", access: "write" }] as const;
   const requested = [{ repository: "example/approved", access: "read" }] as const;
   const approvedNamespaceId = `ns_${randomUUID()}`;
@@ -2313,25 +2318,38 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
     backends: [...backendFixtures, github],
     repositoryAdmission: { policyMode: "built-in", backendId: github.id, policy: namespacePolicy },
     repositoryNetworkPolicyCeiling: installationLimit,
-    driverConfigurations: [
-      {
-        capability: "sandbox",
-        driverId: sandbox.id,
-        implementation: sandbox.implementation,
-        definition: {
-          configurationSchema: { type: "object" },
-          configurationContributions: [SandboxNetworkPolicyConfiguration],
-          validateConfiguration: () => [],
-        },
+    driverConfigurations: [sandbox, alternateSandbox].map((driver) => ({
+      capability: "sandbox",
+      driverId: driver.id,
+      implementation: driver.implementation,
+      definition: {
+        configurationSchema: { type: "object" },
+        configurationContributions: [SandboxNetworkPolicyConfiguration],
+        validateConfiguration: () => [],
       },
-    ],
+    })),
   });
   await fixture.bootstrap();
   const controller: OpenClawController | undefined = fixture.controller;
   assert.ok(controller);
+  controller.registerDriver(alternateSandbox);
   const compute = controller.selectedDriver("compute");
+  const computeContexts: ProtectedRepositoryNetworkPolicyContext[] = [];
+  const validateProtectedRepositoryNetworkPolicy = async (
+    context: ProtectedRepositoryNetworkPolicyContext,
+  ) => {
+    await Promise.resolve();
+    computeContexts.push(context);
+    if (
+      context.sandboxDriverId !== sandbox.id ||
+      context.sandboxPolicy?.driverId !== sandbox.id ||
+      context.sandboxPolicy.repositoryNetworkPolicy === undefined
+    ) {
+      throw new Error("Unsupported Sandbox and policy pairing.");
+    }
+  };
   Object.assign(compute, {
-    validateProtectedRepositoryNetworkPolicy() {},
+    validateProtectedRepositoryNetworkPolicy,
     requiresAgentRuntimeCredentials: true,
     async getAgentRuntimeCredentialStatus() {
       runtimeCredentialChecks++;
@@ -2568,8 +2586,29 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   assert.equal(repositoryAdmissions, 3);
   await assertNoFreshEffects();
 
+  // The same Harness and grants now use another registered Sandbox. Its policy
+  // admission succeeds, but Compute rejects the pairing asynchronously.
+  Object.assign(compute, { validateProtectedRepositoryNetworkPolicy });
+  controller.selectDriver("sandbox", alternateSandbox.id);
+  const incompatibleSandbox = await deployFresh(true);
+  assertApiError(incompatibleSandbox, 409, "RESOURCE_CONFLICT");
+  assert.match(JSON.stringify(incompatibleSandbox.body), /Compute Driver cannot enforce/);
+  const [denyAllContext, acceptedContext, refusedContext] = computeContexts;
+  assert.deepEqual(denyAllContext?.sandboxPolicy, revision?.sandboxPolicy);
+  assert.deepEqual(acceptedContext?.sandboxPolicy, repositoryRevision?.sandboxPolicy);
+  assert.equal(acceptedContext?.sandboxDriverId, sandbox.id);
+  assert.equal(refusedContext?.sandboxDriverId, alternateSandbox.id);
+  assert.equal(refusedContext?.sandboxPolicy?.driverId, alternateSandbox.id);
+  assert.deepEqual(refusedContext?.harness, acceptedContext?.harness);
+  assert.deepEqual(
+    refusedContext?.sandboxPolicy?.repositoryNetworkPolicy,
+    acceptedContext?.sandboxPolicy?.repositoryNetworkPolicy,
+  );
+  assert.equal(repositoryAdmissions, 4);
+  await assertNoFreshEffects();
+
+  controller.selectDriver("sandbox", sandbox.id);
   Object.assign(compute, {
-    validateProtectedRepositoryNetworkPolicy() {},
     admitRevision() {
       throw new ResourceStateConflictError("Compute refused the candidate revision.");
     },
@@ -2577,7 +2616,7 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   const incompatibleRevision = await deployFresh(true);
   assertApiError(incompatibleRevision, 409, "RESOURCE_CONFLICT");
   assert.match(JSON.stringify(incompatibleRevision.body), /Compute refused the candidate revision/);
-  assert.equal(repositoryAdmissions, 4);
+  assert.equal(repositoryAdmissions, 5);
   await assertNoFreshEffects();
 });
 

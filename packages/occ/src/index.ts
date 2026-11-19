@@ -14048,7 +14048,9 @@ export class OpenClawController {
           throw unsupportedCompute();
         }
         try {
-          compute.validateProtectedRepositoryNetworkPolicy(freezeAgentRevision(revisionDraft));
+          await compute.validateProtectedRepositoryNetworkPolicy(
+            freezeAgentRevision(revisionDraft),
+          );
         } catch {
           throw unsupportedCompute();
         }
