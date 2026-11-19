@@ -2281,27 +2281,39 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
     configuration: { registryPath: "/unused/test/registry.json" },
     drivers: { repo: "test-repository-policy" },
   };
+  const registry = validateGitHubRepositoryRegistry(
+    {
+      version: 1,
+      backendId: github.id,
+      providerInstanceId: "test-provider",
+      appId: "123",
+      githubInstallationId: "456",
+      maximumDurationSeconds: 3600,
+      repositories: [
+        {
+          repositoryRef: "approved",
+          repositoryId: "789",
+          repository: "example/approved",
+          namespaces: [{ namespaceId: approvedNamespaceId, profiles: ["git-read"] }],
+        },
+      ],
+    },
+    github.id,
+  );
   const namespacePolicy = new GitHubRepositoryPolicy(
     { driverId: github.drivers.repo, backendId: github.id },
-    validateGitHubRepositoryRegistry(
-      {
-        version: 1,
-        backendId: github.id,
-        providerInstanceId: "test-provider",
-        appId: "123",
-        githubInstallationId: "456",
-        maximumDurationSeconds: 3600,
-        repositories: [
-          {
-            repositoryRef: "approved",
-            repositoryId: "789",
-            repository: "example/approved",
-            namespaces: [{ namespaceId: approvedNamespaceId, profiles: ["git-read"] }],
-          },
-        ],
-      },
-      github.id,
-    ),
+    registry,
+    { sessionDurationSeconds: 600 },
+  );
+  const replacementPolicy = new GitHubRepositoryPolicy(
+    { driverId: "replacement-repository-policy", backendId: github.id },
+    {
+      ...registry,
+      repositories: registry.repositories.map((repository) => ({
+        ...repository,
+        namespaces: [{ namespaceId: unapprovedNamespaceId, profiles: ["git-read"] }],
+      })),
+    },
     { sessionDurationSeconds: 600 },
   );
   const fixture = await createConsoleAppFixture(t, {
@@ -2316,7 +2328,7 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
       return `${prefix}_${randomUUID()}`;
     },
     backends: [...backendFixtures, github],
-    repositoryAdmission: { policyMode: "built-in", backendId: github.id, policy: namespacePolicy },
+    repositoryAdmission: { backendId: github.id, policy: namespacePolicy },
     repositoryNetworkPolicyCeiling: installationLimit,
     driverConfigurations: [sandbox, alternateSandbox].map((driver) => ({
       capability: "sandbox",
@@ -2333,12 +2345,17 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   const controller: OpenClawController | undefined = fixture.controller;
   assert.ok(controller);
   controller.registerDriver(alternateSandbox);
+  controller.registerDriver(namespacePolicy);
+  controller.registerDriver(replacementPolicy);
+  controller.selectDriver("repo", namespacePolicy.id);
   const compute = controller.selectedDriver("compute");
+  const originalAdmitRevision = compute.admitRevision;
+  let beforeComputeAdmission: (() => Promise<void>) | undefined;
   const computeContexts: ProtectedRepositoryNetworkPolicyContext[] = [];
   const validateProtectedRepositoryNetworkPolicy = async (
     context: ProtectedRepositoryNetworkPolicyContext,
   ) => {
-    await Promise.resolve();
+    await beforeComputeAdmission?.();
     computeContexts.push(context);
     if (
       context.sandboxDriverId !== sandbox.id ||
@@ -2618,6 +2635,48 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   assert.match(JSON.stringify(incompatibleRevision.body), /Compute refused the candidate revision/);
   assert.equal(repositoryAdmissions, 5);
   await assertNoFreshEffects();
+
+  Object.assign(compute, { admitRevision: originalAdmitRevision });
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  beforeComputeAdmission = async () => {
+    entered.resolve();
+    await release.promise;
+  };
+  // Replace the approving Repo Driver while Compute is validating that exact policy.
+  // The request must refuse before touching the fresh Agent's runtime credentials.
+  const deploying = deployFresh();
+  try {
+    await Promise.race([
+      entered.promise,
+      deploying.then(({ status }) => assert.fail(`Deployment returned ${status} before admission`)),
+    ]);
+    controller.selectDriver("repo", replacementPolicy.id);
+  } finally {
+    release.resolve();
+  }
+  const changedOwner = await deploying;
+  assertApiError(changedOwner, 409, "RESOURCE_CONFLICT");
+  assert.match(
+    JSON.stringify(changedOwner.body),
+    /Drivers changed during repository network policy admission/,
+  );
+  await assertNoFreshEffects();
+
+  // With the original selection and the same permissions, the first deploy can write.
+  beforeComputeAdmission = undefined;
+  controller.selectDriver("repo", namespacePolicy.id);
+  const confirmed = await fixture.deployAgent(namespace.id, freshAgent.id);
+  assert.equal(runtimeCredentialChecks, 4);
+  assert.equal(runtimeCredentialProvisions, 1);
+  const freshRevisions = await controller.transact((unit) =>
+    unit.revisions.listRevisions(namespace.id, freshAgent.id),
+  );
+  assert.deepEqual(
+    freshRevisions.map(({ id }) => id),
+    [confirmed.id],
+  );
+  assert.deepEqual(freshRevisions[0]?.sandboxPolicy?.repositoryNetworkPolicy?.grants, requested);
 });
 
 test("deploy refuses an explicit repository policy without a supported Sandbox Driver or delegation", async (t) => {

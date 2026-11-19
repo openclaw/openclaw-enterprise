@@ -35,9 +35,12 @@ apply an explicit list. Deployment rechecks edit authority and each grant
 against the current Installation ceiling and Namespace approval. Protected
 execution refuses explicit lists. For ordinary execution, both the selected
 Sandbox and Compute Drivers must admit the policy and execution topology before
-runtime credential preparation. A successful deployment saves the list, its
-identity, and the effective policy in the Agent revision. Live application refuses an explicit list in the desired
-policy or active revision, including deny-all.
+runtime credential preparation. Deployment returns `409 RESOURCE_CONFLICT`
+if an admitting Driver or the repository policy owner that approved the list
+changes before runtime credential provisioning or revision creation. A successful
+deployment saves the list, its identity, and the effective policy in the Agent
+revision. Live application refuses an explicit list in the desired policy or
+active revision, including deny-all.
 
 The selected Driver's `admitRepositoryNetworkPolicy` method receives the
 validated list and an immutable base snapshot. This side-effect-free method

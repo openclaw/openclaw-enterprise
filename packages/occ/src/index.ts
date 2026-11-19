@@ -13545,6 +13545,8 @@ export class OpenClawController {
         throw new DependencyUnavailableError("The selected Harness descriptor is unavailable.");
       }
 
+      const computeSelection = this.selections.get("compute");
+      const sandboxSelection = this.selections.get("sandbox");
       let compute: ComputeDriver;
       try {
         compute = this.selectedDriver("compute");
@@ -13933,6 +13935,7 @@ export class OpenClawController {
           "The selected Sandbox Driver cannot enforce this Agent's network policy.",
         );
       }
+      let repositoryPolicyOwnerUnchanged: (() => boolean) | undefined;
       if (policy?.repositoryNetworkPolicy !== undefined) {
         try {
           const requested = admitRepositoryNetworkPolicy(
@@ -13956,6 +13959,7 @@ export class OpenClawController {
                 "Cannot verify Namespace repository network grants. Review the Installation repository policy before deploying.",
               );
             }
+            repositoryPolicyOwnerUnchanged = owner.unchanged;
           }
           if (sandboxPolicy === undefined) {
             throw new RepositoryNetworkPolicyAdmissionError(
@@ -14038,7 +14042,24 @@ export class OpenClawController {
         });
       };
       let admittedRevision: Readonly<AgentRevision> | undefined;
+      let assertRepositoryNetworkPolicyDrivers: (() => void) | undefined;
       if (sandboxPolicy?.repositoryNetworkPolicy !== undefined) {
+        // State locks do not freeze the process-local Driver registrations.
+        assertRepositoryNetworkPolicyDrivers = () => {
+          if (
+            computeSelection === undefined ||
+            this.selections.get("compute") !== computeSelection ||
+            !this.unchangedDriver(computeSelection) ||
+            sandboxSelection === undefined ||
+            this.selections.get("sandbox") !== sandboxSelection ||
+            !this.unchangedDriver(sandboxSelection) ||
+            repositoryPolicyOwnerUnchanged?.() === false
+          ) {
+            throw new ResourceStateConflictError(
+              "The selected Drivers changed during repository network policy admission. Review the Installation's Driver selections before deploying.",
+            );
+          }
+        };
         const unsupportedCompute = () =>
           new ResourceStateConflictError(
             "The selected Compute Driver cannot enforce this Agent's repository network policy with the selected Sandbox Driver and Harness.",
@@ -14054,6 +14075,7 @@ export class OpenClawController {
         } catch {
           throw unsupportedCompute();
         }
+        assertRepositoryNetworkPolicyDrivers();
         admittedRevision = admitComputeRevision();
       }
       if (compute.requiresAgentRuntimeCredentials === true) {
@@ -14084,6 +14106,7 @@ export class OpenClawController {
               namespaceId: namespace.id,
             });
           }
+          assertRepositoryNetworkPolicyDrivers?.();
           // The Driver creates only missing owned Secrets; a failed admission can reuse them.
           const provisioned = this.runtimeCredentialStatus(
             await this.runtimeCredentialOperation(() =>
@@ -14102,6 +14125,7 @@ export class OpenClawController {
       if (prepared !== undefined) {
         this.assertPreparedDeploymentDrivers(prepared);
       }
+      assertRepositoryNetworkPolicyDrivers?.();
       const revision = await state.revisions.createRevision(admittedRevision, first?.digest);
       if (
         lockedAgent.activeRevisionId &&

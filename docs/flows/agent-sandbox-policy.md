@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-19"
-last_updated_session: "authoring-run/38c216a8-92d9-43c3-8a5b-78b59abce9b4"
+last_updated_session: "authoring-run/e9ff0fe7-18b6-41e2-a275-47d9cd003a54"
 ---
 
 # Agent sandbox policy flow
@@ -134,10 +134,13 @@ repository policy owner for this Namespace.
 requires the selected Driver to return an effective policy from the checked base
 snapshot, including for an empty list. OCC passes the selected Sandbox Driver
 ID, its policy snapshot, and the Harness to the Compute Driver. OCC waits for
-Compute to validate the pairing and admit the revision before checking or
-provisioning runtime credentials. OCC stores the effective policy and
-the canonical list identity in `AgentRevision.sandboxPolicy`. A refusal leaves
-no revision or queued deployment. Omission uses the ordinary Driver snapshot.
+Compute to validate the pairing. After that wait, OCC checks that the admitting
+Compute and Sandbox Drivers and any approving repository policy owner are still
+current. OCC checks the same identities before provisioning runtime credentials
+and before creating the revision. A change returns `409 RESOURCE_CONFLICT`.
+OCC stores the effective policy and the canonical list identity in
+`AgentRevision.sandboxPolicy`. A refusal leaves no revision or queued
+deployment. Omission uses the ordinary Driver snapshot.
 
 `applyAgentSandboxPolicy` authorizes Agent `manage_policy` and SandboxPolicy
 `update` and `read` before inspecting the saved policy. Both live apply request
@@ -254,6 +257,8 @@ hides denial counts and controls.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 11:44: Check the approving Driver identities before deployment writes. (authoring-run/e9ff0fe7-18b6-41e2-a275-47d9cd003a54 - aa54b497c52d2c338e22142dfc06bed9f2870af4)
 
 - 2026-11-19 05:16: Recheck edit authority and Compute compatibility before preparing runtime credentials for deployment. (authoring-run/38c216a8-92d9-43c3-8a5b-78b59abce9b4 - ca5be28e834019f067505fc23788560604633211)
 
