@@ -152,7 +152,7 @@ type Phase =
   | "admit-codex"
   | "admit-reader-control"
   | "codex-chat"
-  | "openclaw-audit"
+  | "embedded-audit"
   | "public-read"
   | "reader-retirement"
   | "agent-logs"
@@ -185,7 +185,7 @@ export function createStepRecorder(now = () => performance.now()) {
     ["admit-codex", "dedicated Codex Agent via the API"],
     ["admit-reader-control", "selected reader control via the API"],
     ["codex-chat", "dedicated Codex chat turn"],
-    ["openclaw-audit", "embedded and dedicated OpenClaw audit"],
+    ["embedded-audit", "embedded OpenClaw audit"],
     ["public-read", "selected Agent managed-skill public read"],
     ["reader-retirement", "reader retirement and unselected successor"],
     ["agent-logs", "occ agent logs"],

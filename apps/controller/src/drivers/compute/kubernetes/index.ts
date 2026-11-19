@@ -678,7 +678,6 @@ interface GatewayConfigurationSnapshot {
   readonly revisionId: string;
   readonly gatewayManagedMode: boolean;
   readonly auditCodexModelAttempts?: boolean;
-  readonly auditOpenClawWorkerModelAttempts?: boolean;
   readonly usesGatewayPasswordEnv: boolean;
   readonly usesWritableNativeAdminConfig: boolean;
   readonly annotations: Readonly<Record<string, string>>;
@@ -10370,7 +10369,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ...this.manifest("networking.k8s.io/v1", "NetworkPolicy", policy, ownership, namespace),
         spec: {
           podSelector: ordinaryNetworkPolicySelector({
-            "openclaw.dev/runtime-audit-sender": "true",
+            "openclaw.dev/workload-role": "gateway",
             "openclaw.dev/namespace": revision.namespaceId,
             "openclaw.dev/agent": revision.agentId,
             "openclaw.dev/revision": revision.id,
@@ -13899,23 +13898,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       asRecord(nativeConfiguration.secrets),
       (setting, requirement) => new GatewaySettingFailure(setting, requirement),
     );
-    const dedicatedOpenClaw =
-      revision.harness.id === "openclaw" && revision.harness.mode === "dedicated";
-    const auditNativeWorker =
-      dedicatedOpenClaw &&
-      this.gatewayRuntimeAuditTarget !== undefined &&
-      this.options.executionCluster === undefined &&
-      revision.egressPlan === undefined;
-    const sandbox = auditNativeWorker ? this.sandboxDriverForRevision(revision) : undefined;
     return {
       name: `gateway-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
       revision: revision.revision,
       revisionId: revision.id,
       gatewayManagedMode: revision.gatewayManagedMode,
       ...(this.usesAuditedCodexServer(revision) && { auditCodexModelAttempts: true }),
-      ...(auditNativeWorker &&
-        sandbox?.provisionHarness === undefined &&
-        sandbox?.harnessEndpoint === undefined && { auditOpenClawWorkerModelAttempts: true }),
       ...(harnessNamespace === undefined ? {} : { harnessNamespace }),
       usesGatewayPasswordEnv,
       usesWritableNativeAdminConfig: this.usesWritableNativeAdminConfig(nativeConfiguration),
@@ -17335,11 +17323,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         ? this.options.servicePrincipalCredentials
         : undefined;
     const runtime = this.options.runtime;
-    const auditRevisionId = configuration?.revisionId ?? ownership.revisionId;
+    const auditRevisionId = configuration?.revisionId;
     const auditTarget =
-      runtime !== undefined &&
-      auditRevisionId !== undefined &&
-      (role === "gateway" || (nativeRuntime !== undefined && !providerOwnsHarness))
+      runtime !== undefined && role === "gateway" && auditRevisionId !== undefined
         ? this.runtimeAuditTargetInNamespace(namespace)
         : undefined;
     const dedicated = !embedded;
@@ -17821,9 +17807,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             value: configuration?.auditCodexModelAttempts && providerUrl === undefined ? "1" : "0",
           });
         }
-        if (configuration?.auditOpenClawWorkerModelAttempts) {
-          variables.push({ name: "OPENCLAW_NATIVE_WORKER_RUNTIME_AUDIT", value: "1" });
-        }
         const { config } = this.gatewayRuntimeAuditTransportNames(agentId, auditRevisionId);
         volumes.push({
           name: RUNTIME_AUDIT_CA_VOLUME,
@@ -18116,7 +18099,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               ...workloadMetadata.labels,
               ...revisionLabels,
               ...selector,
-              ...(auditTarget === undefined ? {} : { "openclaw.dev/runtime-audit-sender": "true" }),
               "openclaw.dev/workload-role": role,
               [NETWORK_PROFILE_LABEL]: ORDINARY_NETWORK_PROFILE,
             },

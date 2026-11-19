@@ -40,13 +40,13 @@ which require successful CI for their source.
 The [smoke script](../../../scripts/ci/first-agent-smoke.ts) owns these checks;
 it does not use a suite manifest.
 
-| Setup and action                                                                              | Expected outcome                                                                                                                                                                          | Source                                                                              |
-| --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| Build the checkout images and run Kubernetes-only Local Setup.                                | Installation becomes available with the selected images.                                                                                                                                  | Smoke script: `buildImages` and `startLocalSetup`.                                  |
-| Create embedded OpenClaw, dedicated OpenClaw, and dedicated Codex Agents. Send chat requests. | Each runtime returns the expected response. An authorized reader finds the session, turn, and model-call records before and after revision change.                                        | [First-Agent helper](../../../scripts/first-agent.ts) and smoke script: `chatTurn`. |
-| Read gateway logs and dedicated Agent logs through the CLI.                                   | `occ agent logs` returns nonempty logs for the selected sources.                                                                                                                          | Smoke script: `readLogs`.                                                           |
-| Withdraw public Git reader access and deploy a revision without that access.                  | The old workload and policy are removed and open connections close. The retired revision and the successor without reader access make no further reads; the control Agent retains access. | Smoke script: `proveRetirement`.                                                    |
-| Stop and start both Agents, then chat again.                                                  | Stopped Pods terminate, starting the Agents creates new revisions, and both chat turns succeed.                                                                                           | Smoke script: `stopAgent`, `deployAgent`, and `chatTurn`.                           |
+| Setup and action                                                             | Expected outcome                                                                                                                                                                          | Source                                                                              |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Build the checkout images and run Kubernetes-only Local Setup.               | Installation becomes available with the selected images.                                                                                                                                  | Smoke script: `buildImages` and `startLocalSetup`.                                  |
+| Create embedded OpenClaw and dedicated Codex Agents. Send chat requests.     | Each runtime returns the expected response. An authorized reader finds the session, turn, and model-call records before and after revision change.                                        | [First-Agent helper](../../../scripts/first-agent.ts) and smoke script: `chatTurn`. |
+| Read gateway logs and dedicated Agent logs through the CLI.                  | `occ agent logs` returns nonempty logs for the selected sources.                                                                                                                          | Smoke script: `readLogs`.                                                           |
+| Withdraw public Git reader access and deploy a revision without that access. | The old workload and policy are removed and open connections close. The retired revision and the successor without reader access make no further reads; the control Agent retains access. | Smoke script: `proveRetirement`.                                                    |
+| Stop and start both Agents, then chat again.                                 | Stopped Pods terminate, starting the Agents creates new revisions, and both chat turns succeed.                                                                                           | Smoke script: `stopAgent`, `deployAgent`, and `chatTurn`.                           |
 
 <a id="run-it"></a>
 
@@ -91,6 +91,12 @@ completes, including cleanup, before reporting success.
 
 For tests with real model providers and browser interaction, use [QA Matrix Advisory](qa-advisory.md).
 A skipped job does not verify the installed Agent workflow.
+
+Use the `qa-openshell-k3d` pull request label to select the Kubernetes
+[OpenShell test](../openshell.md#guided-native-openclaw-redeployment).
+It starts a disposable installation with a Sandbox Driver, enables the same
+audit setting, and reads the turn and model-call records from two dedicated
+OpenClaw revisions.
 
 ## Files
 

@@ -30,17 +30,16 @@ runtime starts a turn or sends a model request. Link each request to the
 turn that caused it. Use a new call ID for each attempt.
 
 - Embedded OpenClaw runs the turn and sends model requests inside the Gateway.
-- Dedicated OpenClaw can make model requests in the worker. A worker that
-  Compute starts uses its revision credential to report those requests to OCC.
-  It uses the turn ID that the Gateway supplies on the authenticated connection.
+- Dedicated OpenClaw runs in a Sandbox. The worker reports each model call on
+  its authenticated connection to the Gateway. The Gateway uses its admitted
+  turn assignment to attach the session and turn IDs.
 - Dedicated Codex sends model requests from the App Server. It reports each
   observed attempt to the Gateway over the App Server connection.
 
-Compute gives the credential to the Gateway and to a dedicated OpenClaw worker
-that reports model calls. The credential identifies one revision. OCC trusts
-that revision to report its own activity. Code with the same operating system
-identity as a reporter can affect its records. This includes tools that run
-under that identity. A compromised revision can
+Compute gives the credential to the Gateway. The credential identifies one
+revision. OCC trusts that revision to report its own activity. Code with the
+same operating system identity as a reporter can affect its records. This
+includes tools that run under that identity. A compromised revision can
 omit or falsify its own observations. OCC must prevent it from writing for
 another revision or using the credential to read records.
 

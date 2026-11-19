@@ -375,6 +375,7 @@ export async function signInConsole(
 export function setLocalSetupAudit(
   stack: Pick<LocalSetup, "directory" | "context" | "kubeconfig" | "state">,
   enabled: boolean,
+  options?: RunOptions,
 ) {
   return run(
     "helm",
@@ -396,7 +397,7 @@ export function setLocalSetupAudit(
       "--timeout",
       "5m",
     ],
-    { timeout: 6 * minute },
+    { timeout: 6 * minute, ...options },
   );
 }
 

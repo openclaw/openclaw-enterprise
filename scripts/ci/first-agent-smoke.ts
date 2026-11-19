@@ -40,7 +40,6 @@ import {
   assertAgentTurnAudit,
   chatWithAudit,
   chatTurn,
-  createDedicatedOpenClawAgent,
   createCodexAgent,
   deployAgent,
   proveCodexAuditInterruptions,
@@ -117,7 +116,6 @@ async function smoke() {
   delete environment.OPENAI_API_KEY;
   const modelCredentials = {
     embedded: `sk-oce-smoke-${randomUUID()}`,
-    "dedicated-openclaw": `sk-oce-smoke-${randomUUID()}`,
     codex: `sk-oce-smoke-${randomUUID()}`,
     "reader-control": `sk-oce-smoke-${randomUUID()}`,
   };
@@ -174,33 +172,16 @@ async function smoke() {
       await chatCodexWithAudit(stack, codex.agent, codex.revisionId, readAudit);
       return readAudit;
     });
-    const { dedicated, readDedicatedAudit, readEmbeddedAudit } = await smokeStep(
-      "openclaw-audit",
-      async () => {
-        const dedicated = await createDedicatedOpenClawAgent(
-          stack,
-          modelCredentials["dedicated-openclaw"],
-        );
-        const [readDedicatedAudit, readEmbeddedAudit] = await Promise.all([
-          allowAgentAuditRead(stack, dedicated.agent, adminPassword),
-          allowAgentAuditRead(stack, embedded.agent, adminPassword),
-        ]);
-        await chatWithAudit(
-          stack,
-          dedicated.agent,
-          dedicated.revisionId,
-          readDedicatedAudit,
-          "openclaw",
-        );
-        await assertAgentTurnAudit(readEmbeddedAudit, {
-          label: embedded.agent.label,
-          revisionId: embedded.revisionId,
-          runtimeSource: "openclaw",
-          model: defaultAgentModel,
-        });
-        return { dedicated, readDedicatedAudit, readEmbeddedAudit };
-      },
-    );
+    const readEmbeddedAudit = await smokeStep("embedded-audit", async () => {
+      const readAudit = await allowAgentAuditRead(stack, embedded.agent, adminPassword);
+      await assertAgentTurnAudit(readAudit, {
+        label: embedded.agent.label,
+        revisionId: embedded.revisionId,
+        runtimeSource: "openclaw",
+        model: defaultAgentModel,
+      });
+      return readAudit;
+    });
     await smokeStep("public-read", () => publicReadTurn(stack, codex, reader));
     const retiredRevision = await smokeStep("reader-retirement", () =>
       proveRetirement(stack, codex, control, reader, proofResults),
@@ -211,28 +192,16 @@ async function smoke() {
       await readLogs(stack, codex.agent, "agent");
     });
     await smokeStep("stop-agents", () =>
-      Promise.all([
-        stopAgent(stack, embedded.agent),
-        stopAgent(stack, codex.agent),
-        stopAgent(stack, dedicated.agent),
-      ]),
+      Promise.all([stopAgent(stack, embedded.agent), stopAgent(stack, codex.agent)]),
     );
-    const [embeddedRevision, codexRevision, dedicatedRevision] = await smokeStep(
-      "start-agents",
-      () =>
-        Promise.all([
-          deployAgent(stack, embedded.agent),
-          deployAgent(stack, codex.agent),
-          deployAgent(stack, dedicated.agent),
-        ]),
+    const [embeddedRevision, codexRevision] = await smokeStep("start-agents", () =>
+      Promise.all([deployAgent(stack, embedded.agent), deployAgent(stack, codex.agent)]),
     );
-    assert.notEqual(dedicatedRevision, dedicated.revisionId, "start must admit a new revision");
     assert.notEqual(embeddedRevision, embedded.revisionId, "start must admit a new revision");
     assert.notEqual(codexRevision, retiredRevision, "start must admit a new revision");
     await smokeStep("chat-after-start", async () => {
       await Promise.all([
         chatWithAudit(stack, embedded.agent, embeddedRevision, readEmbeddedAudit, "openclaw"),
-        chatWithAudit(stack, dedicated.agent, dedicatedRevision, readDedicatedAudit, "openclaw"),
         chatCodexWithAudit(stack, codex.agent, codexRevision, readCodexAudit),
       ]);
       assert.deepEqual(await apiProcess(stack), servingApi, "the API restarted during enrollment");

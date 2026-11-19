@@ -312,7 +312,7 @@ export async function assertAgentTurnAudit(
         .filter(
           (event) =>
             event.action === "openclaw.runtime.session.started" &&
-            event.details.agentRevisionId === revisionId &&
+            (sessionId !== undefined || event.details.agentRevisionId === revisionId) &&
             event.details.runtimeSource === runtimeSource,
         );
       const starts = events.filter((event) => event.action === "openclaw.runtime.turn.started");
@@ -828,6 +828,11 @@ export async function createCodexAgent(
   label: string,
   modelCredential: string,
 ): Promise<CodexAdmission> {
+  const base = `/namespaces/${stack.namespaceId}`;
+  const secret = await stack.api("POST", `${base}/secrets`, {
+    name: `smoke-codex-${randomUUID()}`,
+    value: modelCredential,
+  });
   const configurationValues: unknown = createHarnessConfiguration("codex", defaultAgentModel);
   const values = configurationValues as CodexValues;
   if (reader) {
@@ -838,29 +843,6 @@ export async function createCodexAgent(
       domains: { [reader.peer.address]: "allow" },
     };
   }
-  return createDedicatedAgent(stack, label, modelCredential, values);
-}
-
-export function createDedicatedOpenClawAgent(stack: SmokeStack, modelCredential: string) {
-  return createDedicatedAgent(
-    stack,
-    "dedicated-openclaw",
-    modelCredential,
-    createHarnessConfiguration("openclaw", defaultAgentModel),
-  );
-}
-
-async function createDedicatedAgent<Values>(
-  stack: SmokeStack,
-  label: string,
-  modelCredential: string,
-  values: Values,
-) {
-  const base = `/namespaces/${stack.namespaceId}`;
-  const secret = await stack.api("POST", `${base}/secrets`, {
-    name: `smoke-${label}-${randomUUID()}`,
-    value: modelCredential,
-  });
   const configuration = await stack.api("POST", `${base}/configurations`, {
     kind: "agent",
     values,

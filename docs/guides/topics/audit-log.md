@@ -105,8 +105,8 @@ The records contain IDs, times, and results of observed activity. They exclude
 prompts and model responses. The runtime reports its own activity. OCC
 checks the revision identity for each write.
 
-The private listener serves the control cluster. For requests that a worker sends
-to a model, the worker must run in that cluster and Compute must start it.
+The private listener serves Gateways in the control cluster. A dedicated
+OpenClaw worker reports its model calls through its Gateway.
 OpenClaw records each dispatch to a model and each retry that the runtime
 starts. Retries inside a provider SDK are part of the same dispatch.
 Dedicated Codex records foreground Responses attempts from the bundled App

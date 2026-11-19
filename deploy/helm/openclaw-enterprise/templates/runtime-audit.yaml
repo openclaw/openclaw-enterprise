@@ -85,7 +85,7 @@ spec:
           podSelector:
             matchLabels:
               app.kubernetes.io/managed-by: openclaw-enterprise
-              openclaw.dev/runtime-audit-sender: "true"
+              openclaw.dev/workload-role: gateway
       ports:
         - protocol: TCP
           port: {{ $port }}
