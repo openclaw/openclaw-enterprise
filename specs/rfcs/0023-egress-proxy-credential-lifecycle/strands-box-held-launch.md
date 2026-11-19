@@ -43,6 +43,23 @@ Pod container. That parent directly starts its trampoline and contained child in
 same container. This removes the second Kubernetes workload-container boundary; native
 containment and the installed path remain unqualified.
 
+## CredentialProxy contract selection
+
+Select the deployment contract explicitly in Installation configuration with
+`drivers.credential_proxy.contract: 'deployment'`. Omitting `contract` retains the
+unchanged legacy CredentialProxy contract and its existing Git binding authority.
+Selection is generic: it does not depend on a Driver name, Sandbox name, or detected
+methods. Do not infer a contract or fall back to legacy behavior when deployment is
+selected.
+
+The selected CredentialProxy registration must expose a typed deployment view for the
+required deployment operations. Installation composition, Compute preparation, and the
+normal Worker must use that view from the same selected CredentialProxy owner. They must
+not create a second owner or obtain deployment operations through an unchecked cast.
+Refuse an invalid selection, an unsupported contract, or an incompatible Driver pairing
+before invoking a Driver package factory or starting provisioning. The deployment view does not
+transfer TokenService issuance or legacy Git binding authority to another component.
+
 ## Ownership and release
 
 | Owner           | Required responsibility                                                                                                                                                                                                                                                         |
@@ -127,6 +144,12 @@ trusted proxy Pod is a possible later deployment, not a v1 prerequisite.
 
 ## Acceptance Criteria
 
+- **AC-0 — Contract selection (P0):** Through normal Installation composition and the
+  Worker/Compute caller, select the deployment contract and prove that the same selected
+  CredentialProxy owner supplies the typed deployment view. With `contract` omitted,
+  preserve the legacy Git success and refusal cases. Refuse invalid or unsupported
+  selections and incompatible pairings before any Driver factory or provisioning effect;
+  prove that none can fall back to legacy or select a contract by Driver identity.
 - **AC-1 — Held observation:** Through the normal Worker and selected Compute/Sandbox path,
   stage one contained startup whose Pod is not conventionally ready. An authorized,
   authenticated scoped read reports pending or a validated terminal failure for that
@@ -171,8 +194,8 @@ bootstrap. If a separate receiver is selected later, its installer/runtime owner
 supply that bootstrap before descriptor transfer. The paired Box Sandbox/CredentialProxy
 registration, trusted target-bound serving recipient and real callback, generic observation
 and release contract, credential delivery, independent review, provider behavior, and
-installed qualification remain dependencies or unproved outcomes. Generic Driver capability admission
-for the proposed paired registration is also pending: current registration rejects a
+installed qualification remain dependencies or unproved outcomes. The explicit deployment
+contract and its typed admission remain proposed; current registration rejects a
 deployment-only CredentialProxy. The baseline
 [#6098](https://github.com/openclaw/openclaw-enterprise/pull/6098) changes Sandbox
 maintenance cadence, not the Box topology.
