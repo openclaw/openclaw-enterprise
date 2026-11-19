@@ -103,15 +103,15 @@ export async function probePackagedCodex(
         }
       : {
           "stock-codex-0.164.0-dependency-pin.patch":
-            "1ca10c576c65748498ede421a230740f2ab3d87bbfb4fa4ab92d89f809c1402f",
+            "ddce55b7cd701ae7f5db3c2932d7ddd760077592a8c96376ac7363609227c3be",
           "openclaw-control-ui-browser-reconnect.patch":
-            "e29e35beb8e0bef78e6acab7786ce52491e03c2a3af5a49898f63fdecb9aa0b0",
+            "292609ff7adffb4962c5ff29f46f9179530f052d7a4fd303f5c18e5faafa77c6",
           "openclaw-terminated-gateway-namespace.patch":
             "09a448c28e306410dbb3d1ae002620ec4c46f11487893c107e7bebce38e55cb5",
           "openclaw-planned-completion.patch":
             "402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15",
           "openclaw-node-setup-renewal.patch":
-            "de6b57665698e7c0d60aebac49f5532623f507ac4a8e2eb21804ace95aab78c8",
+            "ceec0520a5831960a521d06ef93ac34179b5db4e65f7995e972b6ef177f1e1a2",
           "openclaw-restart-harness-readiness.patch":
             "fb6541b16a0318d43c521f58902447be1436f1d973d676d3bc8baf70bd9d417f",
         }),

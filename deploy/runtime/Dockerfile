@@ -168,7 +168,7 @@ RUN echo 'a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7  /tmp
 # Keep the reviewed Codex 0.164.0 (seccomp profile and artifact rules) until OCE moves to the
 # Codex the pinned OpenClaw bundles. Remove this pin with that upgrade.
 COPY deploy/runtime/stock-codex-0.164.0-dependency-pin.patch /tmp/stock-codex-0.164.0-dependency-pin.patch
-RUN echo '1ca10c576c65748498ede421a230740f2ab3d87bbfb4fa4ab92d89f809c1402f  /tmp/stock-codex-0.164.0-dependency-pin.patch' | sha256sum --check --strict \
+RUN echo 'ddce55b7cd701ae7f5db3c2932d7ddd760077592a8c96376ac7363609227c3be  /tmp/stock-codex-0.164.0-dependency-pin.patch' | sha256sum --check --strict \
     && git apply /tmp/stock-codex-0.164.0-dependency-pin.patch
 COPY scripts/build-runtime-assets.ts /tmp/build-runtime-assets.ts
 RUN node /tmp/build-runtime-assets.ts inputs /source /inputs \
@@ -233,7 +233,7 @@ RUN echo 'b6261ce5be40e7d3c8f2d263aba7320301cbdd66381540edbb4362e95794139a  /tmp
     && git apply /tmp/openclaw-required-worker-authority-regression.patch
 # Remove this bridge when the pinned Control UI offers a browser navigation after access refusal.
 COPY deploy/runtime/openclaw-control-ui-browser-reconnect.patch /tmp/openclaw-control-ui-browser-reconnect.patch
-RUN echo 'e29e35beb8e0bef78e6acab7786ce52491e03c2a3af5a49898f63fdecb9aa0b0  /tmp/openclaw-control-ui-browser-reconnect.patch' | sha256sum --check --strict \
+RUN echo '292609ff7adffb4962c5ff29f46f9179530f052d7a4fd303f5c18e5faafa77c6  /tmp/openclaw-control-ui-browser-reconnect.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-control-ui-browser-reconnect.patch
 # The runtime needs supervised recovery across private PID namespaces. Native
 # lock reinspection and custody still guard every destructive operation.
@@ -248,7 +248,7 @@ RUN echo '55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31  /tmp
 
 # TODO: Remove this bridge after selecting native setup renewal with bounded saved-device fallback.
 COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-renewal.patch
-RUN echo 'de6b57665698e7c0d60aebac49f5532623f507ac4a8e2eb21804ace95aab78c8  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
+RUN echo 'ceec0520a5831960a521d06ef93ac34179b5db4e65f7995e972b6ef177f1e1a2  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
 # Remove after the pinned core includes upstream #196972 and its final-write handoff prerequisite.
