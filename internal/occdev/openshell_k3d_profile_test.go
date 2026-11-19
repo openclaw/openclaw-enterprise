@@ -598,6 +598,17 @@ func TestDevelopmentNodeSubnet(t *testing.T) {
 	}
 }
 
+func openShellDockerImportCases(source, staging, marker, listing string) string {
+	return `"image inspect ` + source + `") echo '[{"Id":"` + profileTestDigest + `"}]' ;;
+"pull ` + source + `") ;;
+"image inspect ` + staging + `") if [ -f ` + shellQuote(marker) + ` ]; then echo '[{"Id":"` + profileTestDigest + `"}]'; else for image do :; done; printf 'Error response from daemon: No such image: %s\n' "$image" >&2; exit 1; fi ;;
+"tag ` + source + ` ` + staging + `") : > ` + shellQuote(marker) + ` ;;
+"image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + staging + `"]' ;;
+"image inspect --format {{.Os}}/{{.Architecture}} ` + source + `") echo linux/amd64 ;;
+"buildx imagetools inspect --format {{json .}} ` + source + `") printf '%s\n' '` + listing + `' ;;
+`
+}
+
 // Docker's containerd image store cannot save a manifest-list reference as one
 // complete image, so the staging tag must move to the platform child the
 // registry's list names for the host platform.
@@ -612,14 +623,7 @@ func TestOpenShellImageImportTagsThePlatformChildOfAManifestList(t *testing.T) {
 	server := "k3d-" + state.Cluster + "-server-0"
 	listing := `{"manifest":{"manifests":[{"digest":"` + child + `","platform":{"os":"linux","architecture":"amd64"}},{"digest":"sha256:` + strings.Repeat("d", 64) + `","platform":{"os":"linux","architecture":"arm64"}}]}}`
 	commands := fakeProfileCommands(t, map[string]string{
-		"docker": `"image inspect ` + source + `") echo '[{"Id":"` + profileTestDigest + `"}]' ;;
-"pull ` + source + `") ;;
-"image inspect ` + staging + `") if [ -f ` + shellQuote(marker) + ` ]; then echo '[{"Id":"` + profileTestDigest + `"}]'; else for image do :; done; printf 'Error response from daemon: No such image: %s\n' "$image" >&2; exit 1; fi ;;
-"tag ` + source + ` ` + staging + `") : > ` + shellQuote(marker) + ` ;;
-"image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + staging + `"]' ;;
-"image inspect --format {{.Os}}/{{.Architecture}} ` + source + `") echo linux/amd64 ;;
-"buildx imagetools inspect --format {{json .}} ` + source + `") printf '%s\n' '` + listing + `' ;;
-"image inspect ` + resolved + `") echo '[{"Id":"` + profileTestDigest + `"}]' ;;
+		"docker": openShellDockerImportCases(source, staging, marker, listing) + `"image inspect ` + resolved + `") echo '[{"Id":"` + profileTestDigest + `"}]' ;;
 "pull ` + resolved + `") ;;
 "tag ` + resolved + ` ` + staging + `") : > ` + shellQuote(marker) + ` ;;
 "image save --output "*" ` + staging + `") printf archive > "$4" ;;
@@ -661,14 +665,7 @@ func TestOpenShellImageImportKeepsAPlainManifestSource(t *testing.T) {
 	// buildx reports a single manifest without a manifests list.
 	listing := `{"manifest":{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}}`
 	commands := fakeProfileCommands(t, map[string]string{
-		"docker": `"image inspect ` + source + `") echo '[{"Id":"` + profileTestDigest + `"}]' ;;
-"pull ` + source + `") ;;
-"image inspect ` + staging + `") if [ -f ` + shellQuote(marker) + ` ]; then echo '[{"Id":"` + profileTestDigest + `"}]'; else for image do :; done; printf 'Error response from daemon: No such image: %s\n' "$image" >&2; exit 1; fi ;;
-"tag ` + source + ` ` + staging + `") : > ` + shellQuote(marker) + ` ;;
-"image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + staging + `"]' ;;
-"image inspect --format {{.Os}}/{{.Architecture}} ` + source + `") echo linux/amd64 ;;
-"buildx imagetools inspect --format {{json .}} ` + source + `") printf '%s\n' '` + listing + `' ;;
-"image save --platform linux/amd64 --output "*" ` + staging + `") printf archive > "$6" ;;
+		"docker": openShellDockerImportCases(source, staging, marker, listing) + `"image save --platform linux/amd64 --output "*" ` + staging + `") printf archive > "$6" ;;
 "exec ` + server + ` ctr -n k8s.io images list") echo "` + staging + ` application/vnd.oci.image.manifest.v1+json ` + profileTestDigest + `" ;;
 "exec ` + server + ` ctr -n k8s.io images tag ` + staging + ` openclaw-development/openshell-gateway@` + profileTestDigest + `") ;;
 "image rm ` + staging + `") /bin/rm ` + shellQuote(marker) + ` ;;`,
@@ -710,14 +707,7 @@ func TestOpenShellImageImportKeepsTheSourceWhenTheChildPullFails(t *testing.T) {
 	server := "k3d-" + state.Cluster + "-server-0"
 	listing := `{"manifest":{"manifests":[{"digest":"` + child + `","platform":{"os":"linux","architecture":"amd64"}}]}}`
 	commands := fakeProfileCommands(t, map[string]string{
-		"docker": `"image inspect ` + source + `") echo '[{"Id":"` + profileTestDigest + `"}]' ;;
-"pull ` + source + `") ;;
-"image inspect ` + staging + `") if [ -f ` + shellQuote(marker) + ` ]; then echo '[{"Id":"` + profileTestDigest + `"}]'; else for image do :; done; printf 'Error response from daemon: No such image: %s\n' "$image" >&2; exit 1; fi ;;
-"tag ` + source + ` ` + staging + `") : > ` + shellQuote(marker) + ` ;;
-"image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + staging + `"]' ;;
-"image inspect --format {{.Os}}/{{.Architecture}} ` + source + `") echo linux/amd64 ;;
-"buildx imagetools inspect --format {{json .}} ` + source + `") printf '%s\n' '` + listing + `' ;;
-"image inspect ` + resolved + `") exit 1 ;;
+		"docker": openShellDockerImportCases(source, staging, marker, listing) + `"image inspect ` + resolved + `") exit 1 ;;
 "pull ` + resolved + `") echo 'registry unavailable' >&2; exit 1 ;;
 "image save --platform linux/amd64 --output "*" ` + staging + `") printf archive > "$6" ;;
 "exec ` + server + ` ctr -n k8s.io images list") echo "` + staging + ` application/vnd.oci.image.manifest.v1+json ` + profileTestDigest + `" ;;
