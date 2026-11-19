@@ -188,9 +188,10 @@ setInterval(() => {}, 1000);
       diagnostic,
       new RegExp(`attempt ${index + 1}/2 failed after \\d+ ms \\(timeout\\)`),
     );
-    assert.match(diagnostic, /000000000008: Downloading/);
-    assert.match(diagnostic, /000000000009: Download complete/);
-    assert.match(diagnostic, /bbbbbbbbbbbb: Extracting/);
+    // Nine layers still download; the eight unchanged longest are named.
+    assert.match(diagnostic, /; 9 of 11 layers still downloading; 000000000000: Downloading;/);
+    assert.match(diagnostic, /000000000007: Downloading$/);
+    assert.doesNotMatch(diagnostic, /000000000008|000000000009|bbbbbbbbbbbb/);
     assert.equal([...diagnostic.matchAll(/[a-f0-9]{12}: /g)].length, 8);
     assert.doesNotMatch(diagnostic, /aaaaaaaaaaaa|private-marker|https:|12345678901234567890/);
     assert.equal(diagnostic.includes(String.fromCharCode(27)), false);
@@ -223,11 +224,39 @@ test("pullImage never reports a truncated line as layer progress", async () => {
         );
         assert.equal(logs.length, 1);
         assert.ok(logs[0] !== undefined);
-        const progress = logs[0].split("; ").slice(1);
+        const progress = logs[0].split("; ").slice(2);
         assert.deepEqual(progress, [...(retained ? [first] : []), "bbbbbbbbbbbb: Pull complete"]);
       }
     }
   }
+});
+
+test("pullImage names the layer a timed-out pull still waits on after later layers finish", async () => {
+  // The shape of a stalled CI pull: one layer never leaves "Pulling fs layer"
+  // while ten others download and unpack after it.
+  const finished = Array.from({ length: 10 }, (_, index) => {
+    const layer = (index + 1).toString(16).padStart(12, "0");
+    return `${layer}: Download complete\n${layer}: Pull complete\n`;
+  });
+  const stdout = `aaaaaaaaaaaa: Pulling fs layer\n${finished.join("")}`;
+  const logs: string[] = [];
+  const failure = pullFailure("", { timedOut: true, stdout });
+  await assert.rejects(
+    pullImage(image, {
+      ...scriptedPull([failure]),
+      attempts: 1,
+      log: (message) => logs.push(message),
+    }),
+    (error) => error === failure,
+  );
+  assert.equal(logs.length, 1);
+  const progress = logs[0]!.split("; ").slice(1);
+  assert.deepEqual(progress.slice(0, 3), [
+    "1 of 11 layers still downloading",
+    "aaaaaaaaaaaa: Pulling fs layer",
+    "00000000000a: Pull complete",
+  ]);
+  assert.equal(progress.length, 9);
 });
 
 test("pullImage preserves its terminal failure when the diagnostic sink throws", async () => {

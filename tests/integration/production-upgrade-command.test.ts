@@ -659,6 +659,51 @@ test("resume warns about Installation writes before approval even if the local f
   assert.equal(await readFile(join(f.rendered, "installation.yaml"), "utf8"), installation);
 });
 
+test("migration apply requires approval of the original run before native dispatch", async (t) => {
+  const f = await fixture(t);
+  await selectCheckout(f);
+  await mkdir(f.evidence, { mode: 0o700 });
+  const handoff = join(f.evidence, "database-migration-handoff.json");
+  const handoffBytes = JSON.stringify({ api: { uid: "api" }, worker: { uid: "worker" } });
+  await writeFile(handoff, handoffBytes, { mode: 0o600 });
+  const nativeExit = { OCC_URL: "http://127.0.0.1:9" };
+  const original = await stat(f.evidence);
+  const files = await readdir(f.directory);
+
+  const unapproved = run("migration-apply", f, [], { env: nativeExit });
+  assert.equal(unapproved.status, 2, unapproved.stdout + unapproved.stderr);
+  assert.match(unapproved.stderr, /--auto-approve/);
+
+  // A PTY exercises the real approval gate. A dispatched invocation reaches
+  // the native URL guard before any Kubernetes request.
+  const declined = run("migration-apply", f, [], { confirmation: "no\n", env: nativeExit });
+  assert.equal(declined.status, 1, declined.stdout + declined.stderr);
+  const prompt = declined.stdout.indexOf("Type yes to continue:");
+  assert.ok(prompt > 0, declined.stdout);
+  assert.match(declined.stdout.slice(0, prompt), /can commit irreversible SQL/);
+  assert.ok(declined.stdout.includes(f.evidence));
+  assert.match(declined.stdout, /cancelled; no command dispatched/);
+  assert.doesNotMatch(declined.stdout + declined.stderr, /OCC_URL must use HTTPS/);
+
+  for (const approved of [
+    run("migration-apply", f, [], { confirmation: "yes\n", env: nativeExit }),
+    run("migration-apply", f, ["--auto-approve"], { env: nativeExit }),
+  ]) {
+    assert.equal(approved.status, 1, approved.stdout + approved.stderr);
+    assert.match(approved.stderr + approved.stdout, /OCC_URL must use HTTPS/);
+    assert.doesNotMatch(
+      approved.stdout,
+      /This check creates temporary cluster resources|Evidence:/,
+    );
+  }
+  const retained = await stat(f.evidence);
+  assert.equal(retained.ino, original.ino);
+  assert.equal(retained.mtimeMs, original.mtimeMs);
+  assert.deepEqual(await readdir(f.directory), files);
+  assert.deepEqual(await readdir(f.evidence), ["database-migration-handoff.json"]);
+  assert.equal(await readFile(handoff, "utf8"), handoffBytes);
+});
+
 test("the same local candidate is explained by plan and apply without printing its contents", async (t) => {
   const f = await fixture(t);
   await selectCheckout(f);
@@ -879,6 +924,7 @@ test("profile operations bind Kubernetes transport and Helm release storage befo
     { action: "preflight", automaticEvidence: true },
     { action: "migration-check", automaticEvidence: true },
     { action: "resume", evidence: resumeEvidence, confirmation: "yes\n" },
+    { action: "migration-apply", evidence: resumeEvidence, confirmation: "yes\n" },
     {
       action: "cleanup-preflight",
       evidence: cleanupEvidence,

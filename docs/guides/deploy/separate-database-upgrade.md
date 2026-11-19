@@ -4,12 +4,69 @@ Follow the [production upgrade preparation](production-upgrade.md#prepare-the-re
 
 By default Helm migrates, bootstraps and restores Deployments. To deploy the
 database separately, set `database.upgradeMigration: separate` in the reviewed
-candidate values. Use a candidate controller image that supports `--require-current`.
-The helper exits **3** after both writers stop and before submitting Helm.
+candidate values. Use a controller image that supports `--check-for-installation`,
+`--apply-for-installation`, `--require-current-for-installation`, and
+`--require-current`. Grant the upgrade operator `get` on the exact migrator
+Secret and any database CA Secret referenced by the chart. Before
+`--check-for-installation`, the helper records those Secrets' UIDs and resource
+versions. It rechecks them after cleanup and before stopping writers. Keep the
+database endpoint and these Secrets unchanged from preflight through resume.
+The Jobs reference Secrets by name. Each identity check observes a point in
+time, so exclude concurrent Secret edits while any Job is running.
 
+The helper exits **3** after stopping both writers and before submitting Helm.
 Before maintenance, use the
 [migration compatibility check](production-upgrade-command.md#check-database-migration-compatibility)
 to check the selected image against the deployed release's migration history.
+
+## Apply and verify the prepared migration
+
+After exit **3**, keep the maintenance window active. Use the same profile,
+checkout, evidence directory, and candidate options as the original upgrade.
+
+```sh
+occ installation upgrade migration apply /secure/occ/upgrade-1 \
+  --profile /secure/occ/upgrade.json \
+  -- --candidate-values /secure/occ/candidate-values.yaml
+```
+
+Review the original run before approving. This command can commit irreversible
+SQL. Type `yes` at a terminal or pass `--auto-approve` before `--`.
+
+Keep other writers, autoscalers and Helm changes under exclusive maintenance
+control until resume finishes. The helper checks the recorded Secret identities
+before creating each Job and after verification. If a check finds a change,
+preserve both evidence locations, keep writers stopped and reconcile the database
+target before continuing.
+
+The apply Job checks that the database has recognized history and belongs to
+the recorded Installation before running SQL. A separate verification Job
+checks the same Installation and requires completed history. Use a candidate
+image that supports both guarded commands.
+
+Wait for **Database migration verified and its Jobs and Pods are gone**. Then
+resume the original upgrade with the same options and `--migration-history-checked`.
+
+```sh
+occ installation upgrade resume /secure/occ/upgrade-1 \
+  --profile /secure/occ/upgrade.json \
+  -- --candidate-values /secure/occ/candidate-values.yaml --migration-history-checked
+```
+
+The command rechecks the recorded migrator and CA Secret identities before
+Helm writes, including recovery.
+
+Keep `<evidence-directory>.migration-state.json` beside the original evidence
+in a directory that protects it from removal by other users. Keep the journal
+outside backups that you restore over the evidence. After interruption, settle the
+original local processes using [upgrade recovery](production-upgrade-recovery.md).
+Repeat `migration apply` with the same inputs to read the original Job and Pod
+after a log-read failure or to confirm cleanup. If a create is unknown, the apply
+Job fails, or cleanup is unresolved, keep writers stopped and reconcile the
+original Job, Pod, and database history. Preserve both evidence locations,
+including the lock and any retained kubeconfig snapshot.
+After a failed verification Job has ended and its cleanup is confirmed, address
+the failure and run the same command to retry verification.
 
 ## Run a selected-image migration
 
@@ -92,6 +149,8 @@ match the chart invocation, including for apply. For a check mode, a missing or
 extra separator fails before migration.
 
 ## Deploy the database
+
+Use this procedure for a handoff with no tool-managed migration Job journal.
 
 1. Keep the maintenance window active and both writers stopped. Assign `MIGRATION_ARGS`
    for apply, then create the maintenance Job with the selected immutable candidate image,
