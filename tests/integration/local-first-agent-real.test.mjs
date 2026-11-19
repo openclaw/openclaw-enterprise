@@ -18,7 +18,11 @@ import {
   expectPersistedRuntimeAudit,
   setLocalSetupAudit,
 } from "../../scripts/ci/first-agent-smoke/setup.ts";
-import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
+import {
+  RUNTIME_AUDIT_ACTIONS,
+  WORKSPACE_DEFAULTS,
+  WORKSPACE_DEFAULTS_ID,
+} from "../../packages/contracts/src/index.ts";
 import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
 import { sha256Hex } from "../../packages/utils/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -969,6 +973,43 @@ test(
         agentId: nativeAgent.id,
         workspaceFile,
       };
+      async function proveNativeTurn(revisionId, options) {
+        try {
+          return await assertNativeWorkerProofInController(nativeContext, {
+            ...proofOptions,
+            ...options,
+          });
+        } catch (error) {
+          if (readAudit && error instanceof Error) {
+            // Keep the original failure and its CI fields. Expose only event counts
+            // so a failed real turn can be traced without disclosing messages.
+            const page = await readAudit().catch(() => undefined);
+            if (page) {
+              const events = page.events.filter(
+                (event) =>
+                  event.event === "runtime_activity" &&
+                  event.details.agentRevisionId === revisionId,
+              );
+              const counts = new Map();
+              for (const { action, details } of events) {
+                if (RUNTIME_AUDIT_ACTIONS.includes(action)) {
+                  const knownOutcome = [
+                    "succeeded",
+                    "failed",
+                    "cancelled",
+                    "blocked",
+                    "unknown",
+                  ].includes(details.outcome);
+                  const key = knownOutcome ? `${action} (${details.outcome})` : action;
+                  counts.set(key, (counts.get(key) ?? 0) + 1);
+                }
+              }
+              error.message += ` (audit event counts: ${JSON.stringify(Object.fromEntries(counts))})`;
+            }
+          }
+          throw error;
+        }
+      }
       const readProviderRevision = async (revisionId, stage, requestedAt) => {
         const pods = await readKubernetesJson(
           kube,
@@ -1125,8 +1166,7 @@ test(
       // durable Agent-owned Secret and device remain authoritative afterward.
       const completionRetainedUntil = completion.completion.ts + 20 * 60_000;
       const firstNativeProof = await measureFirstAgentStage(nativeContext, "native-model", () =>
-        assertNativeWorkerProofInController(nativeContext, {
-          ...proofOptions,
+        proveNativeTurn(initialRevisionId, {
           expectedNodeId: initialProvider.expectedNodeId,
         }),
       );
@@ -1218,8 +1258,7 @@ test(
         nativeContext,
         "native-resumed-model",
         () =>
-          assertNativeWorkerProofInController(nativeContext, {
-            ...proofOptions,
+          proveNativeTurn(replacement.id, {
             expectedNodeId: replacementProvider.expectedNodeId,
             session: firstNativeProof.session,
             sessionFile: firstNativeProof.sessionFile,
