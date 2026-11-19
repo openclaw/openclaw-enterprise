@@ -294,6 +294,9 @@ export function openShellGitRuntimeFixture({
     },
   };
   const provider = {
+    // The seeded Provider can only model legacy observations. Repository network
+    // policy cases use the real Provider, which establishes its own lease.
+    repositoryPolicyIsFresh: () => entry.authorization.repositoryNetworkPolicy === undefined,
     observe: async (
       binding: Entry["binding"],
       sandboxId: string,
