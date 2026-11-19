@@ -1,12 +1,12 @@
 ---
-status: In progress
+status: Completed
 rfc: ../rfcs/20261118-channel-egress.md
 ---
 
 # Implementation plan: Install channel egress and provide a one-off upgrade
 
 - **ID:** TASK-0054
-- **Delivery status:** In progress; approved for implementation on 2026-11-19.
+- **Delivery status:** Completed for review; approved and verified on 2026-11-19.
 - **Owner:** kevinlin-openai
 - **Authority:** [RFC-20261118-channel-egress](../rfcs/20261118-channel-egress.md) and the user's decision to use a documented one-off script and existing Stop → Deploy operations.
 - **Source baseline:** Merged implementation `32662b9d22aed39f782a7058ace80d0f82df44a6` ([PR #6529](https://github.com/openclaw/openclaw-enterprise/pull/6529)); implementation baseline `ebcbd2f60535c36b3a9b63847a2d052363cd29a6`.
@@ -52,49 +52,49 @@ fresh-install proof is not evidence for this new transition.
 
 ### 1. Reuse configuration generation and dependency setup
 
-- [ ] Default managed channel egress on in supported fresh-install profiles and
+- [x] Default managed channel egress on in supported fresh-install profiles and
       Helm defaults, preserving an explicit false. The runtime configuration and
       chart must agree; a raw Helm toggle alone does not rewrite an external
       Installation Secret.
-- [ ] Reuse the renderer's existing shared object for names, namespaces, ports,
+- [x] Reuse the renderer's existing shared object for names, namespaces, ports,
       and exclusions. Keep ports 10001–10062 for Agents, 10000 for OCC, and 19004 for
       inspection unless explicitly overridden and validated. Drop the proposed extra
       configuration fragment and startup loader.
-- [ ] Reuse pinned Envoy dependency setup across local installation, production
+- [x] Reuse pinned Envoy dependency setup across local installation, production
       setup, and the one-off script. Install/verify required CRDs, Envoy Gateway with
       patch policies enabled, and the GatewayClass before OCE resources depend on them.
       An existing externally managed controller is verified, not silently adopted.
-- [ ] Keep dependency changes ordered: CRDs, controller, readiness, then channel
+- [x] Keep dependency changes ordered: CRDs, controller, readiness, then channel
       resources. Helm alone does not upgrade its `crds/` directory; follow the
       [upstream dependency procedure](https://gateway.envoyproxy.io/v1.6/install/install-helm/#upgrading-from-the-previous-version).
       Avoid duplicate local manifest and Helm ownership.
-- [ ] Keep built-in address exclusions. Discover installation Pod, Service, and
+- [x] Keep built-in address exclusions. Discover installation Pod, Service, and
       node ranges where complete information is available; otherwise require explicit
       ranges. Include public node addresses. Discovery belongs to setup tooling,
       not new cluster-wide permissions for runtime workers.
 
 ### 2. Add the one-off entrypoint and operator instructions
 
-- [ ] Implement the proposed `scripts/upgrade-channel-egress` entrypoint. It is
+- [x] Implement the proposed `scripts/upgrade-channel-egress` entrypoint. It is
       explicitly invoked for the old Slack-proxy transition, not dispatched by every
       image upgrade. Reuse existing upgrade functions and evidence handling where
       possible; do not build a general migration registry or framework.
-- [ ] Complete the Envoy section of **One Off Upgrades** with exact supported
+- [x] Complete the Envoy section of **One Off Upgrades** with exact supported
       source/target versions, target selection, required permissions, reviewed image
       pins, configuration files, commands, expected results, recovery, and a link to
-      the implemented script. The current page marks this procedure as planned.
-- [ ] Accept explicit cluster, release, Installation, and protected-file inputs.
+      the implemented script. The procedure links from the production upgrade guide.
+- [x] Accept explicit cluster, release, Installation, and protected-file inputs.
       Inspect the old configuration and reject unknown or mixed states. A check-only
       phase shows the intended changes without mutations. A separate execution phase
       performs them. Do not print credentials or replace unrelated Secret data.
-- [ ] Start from the actual current Helm values and Installation files. Patch only
+- [x] Start from the actual current Helm values and Installation files. Patch only
       named channel fields and assert that their normalized remainder is unchanged.
       Reuse normal renderer defaults if useful, without adding legacy parsing to
       the renderer or core. Keep Installation identity, Secret ownership protections,
       unrelated settings, and protected originals for recovery.
-- [ ] When legacy channels are disabled, preserve explicit false. Remove obsolete
+- [x] When legacy channels are disabled, preserve explicit false. Remove obsolete
       keys only as configuration cleanup; skip Envoy provisioning and Agent transitions.
-- [ ] Resolve the protected-input restriction explicitly. The normal image-upgrade
+- [x] Resolve the protected-input restriction explicitly. The normal image-upgrade
       command continues to reject arbitrary configuration changes. The one-off path
       validates the exact channel transformation and reuses the existing shutdown,
       migration, Helm, and verification machinery. Extract shared internals if needed;
@@ -147,21 +147,22 @@ and use normal image upgrades.
 
 ### 4. Keep documentation aligned
 
-- [ ] Link **One Off Upgrades** from production upgrade guidance and register it
+- [x] Link **One Off Upgrades** from production upgrade guidance and register it
       under Deploy & Operate. Keep one entry per release-specific transition; split
       long procedures into child pages when needed.
-- [ ] Update installation profiles, local/production setup, the channel reference,
+- [x] Update installation profiles, local/production setup, the channel reference,
       and the channel flow with actual defaults and dependency ownership. Explain
       that ordinary image upgrades do not rerun historical scripts.
-- [ ] Check affected configuration cheat sheets and navigation. Submit any newly
+- [x] Check affected configuration cheat sheets and navigation. Submit any newly
       required Driver configuration-contract change through the existing RFC process
       before coding it. Existing Stop/Deploy semantics require no new lifecycle contract.
 
 ## Required verification
 
-The configuration/journal checks and real Envoy prerequisite probe have passed.
-Complete upgrade/model/Slack proof remains in progress. Use real enforcing Kubernetes,
-Helm-installed OCC, PostgreSQL with separate migrator/application roles, and
+Configuration and journal checks, the real Envoy prerequisite probe, disabled
+upgrades, and complete hook/separate upgrade scenarios have passed. The upgrade
+scenarios use enforcing Kubernetes, Helm-installed OCC, PostgreSQL with separate
+migrator/application roles, and
 [authorized Slack test credentials](../../docs/testing/slack.md).
 
 | Outcome                        | Required proof                                                                                                                                                                                                                 |
@@ -180,14 +181,38 @@ scope. Record actual results and remaining gaps here when implementation runs.
 
 ## Delivery record
 
-Implementation is checkpointed at `88dbc7560`. Four focused configuration/journal
-cases and 496 shared-upgrader recovery cases passed without skips. The real pinned
-Envoy installation, patch-delivery probe, incomplete-CIDR refusal, dependency
-configuration preservation, and probe cleanup passed in a disposable cluster.
-Required complete upgrade, model, Slack and hosted-CI proof remains pending.
-The approved TASK-0054 identity and original implementation history remain in place
-under the current specification naming rules. This page keeps one complete
-transition and its recovery together.
+Implementation is delivered for review in [PR #6638](https://github.com/openclaw/openclaw-enterprise/pull/6638).
+Current behavior is owned by [One Off Upgrades](../../docs/guides/deploy/one-off-upgrades.md),
+[channel setup](../../docs/guides/deploy/channel-egress.md), the
+[channel reference](../../docs/reference/drivers/kubernetes-compute/channel-egress.md),
+and the [upgrade flow](../../docs/flows/coordinated-production-upgrade.md).
+
+At `86a6c1dc866947995572305487b379085873cedb`, the actual hook and separate-database
+upgrade scenarios passed with real model and Slack exchanges before and after.
+Both retained Agent identities and workspace content, deployed current saved
+drafts, refused automatic resubmission after an accepted response was lost, and
+completed a following ordinary image upgrade without replay. Separate mode
+executed guarded apply/verification and resumed with both OCC writers offline.
+The disabled-installation scenario passed without Envoy or Agent transitions.
+The PR retains exact image digests, sanitized operation journals, equal normalized
+configuration hashes, and guarded migration events. Browser visual confirmation
+is unavailable; provider API receipts and native runtime evidence verify delivery.
+
+Six focused cases, 90 channel/profile cases, all three required Kubernetes fixture
+files, affected packaging/handoff checks, lint, typecheck, formatting, documentation,
+workspace checks, hosted CI and CodeQL passed. The shared upgrade recovery suite
+also passed 496 cases at the earlier implementation checkpoint. Independent
+canonical review covered the implementation and the quiesced-resume fix.
+Fresh Helm installation passed real model turns across two revisions, a Slack
+exchange, network denials, and listener retirement. The broader real-cluster
+case passed Driver-generation changes, DNS changes and mixed public/private
+answers, private-address denial, rejected allocation writes, and binding retirement.
+These proofs use a disposable loopback cluster without public node addresses.
+No production deployment or shared-cluster admission qualification is claimed. The PR records final review
+and CI status before handoff.
+
+The approved TASK-0054 identity and original implementation history remain in place.
+This page keeps one complete transition and its recovery together.
 
 ## Manual Notes
 
@@ -198,3 +223,5 @@ transition and its recovery together.
 - 2026-11-19: Revised to a documented one-off script, shared profile generation, and existing Stop → Deploy using current drafts; removed historical-revision restoration.
 
 - 2026-11-19: Approved execution; require field-only configuration patches, durable pre-Stop inventory, disabled-channel preservation, and manual recovery for uncertain deployment responses.
+
+- 2026-11-19: Completed implementation and real hook/separate, disabled, fresh-install, and isolation proof in PR #6638; retained the original plan identity and linked current behavior owners.
