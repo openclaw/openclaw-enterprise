@@ -151,12 +151,12 @@ names and do not cover `ghcr.io` or `githubusercontent.com`.
 Keep HTTPS, hostname verification, and authenticated Gateway JWTs. Leave
 `allow_insecure_transport` disabled. Qualification also requires runtime evidence.
 
-Before prepared repository access, OCE checks the loaded Sandbox policy against
-the selected Provider rules. OCE derives each endpoint's token-grant owner from
-the selected Provider record ID, rule, and endpoint position. For profiles with
-endpoints, an unavailable ID, unsupported rule, or owner mismatch withholds release.
-The protected Git request hook also checks the bound Git Provider's endpoint
-owners before release, including when repository network policy is disabled.
+Before release, the protected Git request hook checks the bound Git Provider's
+endpoint owners. OCE derives each owner from the Provider record ID, rule, and
+endpoint position. When the runtime supplies a repository network policy, OCE
+also checks the loaded Sandbox policy against all selected Provider rules and
+their endpoint owners. For profiles with endpoints, an unavailable ID,
+unsupported rule, or owner mismatch withholds release.
 
 ## Grant access to a GitHub App installation
 
