@@ -30,6 +30,7 @@ type CredentialScenario = Pick<
   auth?: "oauth" | "runtime" | "service" | null;
   configurationChangedElsewhere?: boolean | { afterReads: number; values: Configuration["values"] };
   deployed?: boolean;
+  deployGrantsSources?: boolean;
   harnessGrantMissing?: boolean;
   oauthPending?: boolean;
   observabilityDenied?: boolean;
@@ -184,6 +185,7 @@ export function credentialsScenarios({
         configurationSecretsOperate: true,
         configurationSecretsOperateDeniedBindings: [],
         agentSourcesOperate: false,
+        deployGrantsSources: true,
         sandboxPolicyRead: false,
       },
       description:
@@ -206,6 +208,7 @@ export function credentialsScenarios({
         configurationSecretsOperate: true,
         configurationSecretsOperateDeniedBindings: [],
         agentSourcesOperate: false,
+        deployGrantsSources: true,
         sandboxPolicyRead: false,
       },
       description:
@@ -272,6 +275,7 @@ export function credentialsScenarios({
         configurationSecretsOperate: false,
         configurationSecretsOperateDeniedBindings: [],
         agentSourcesOperate: false,
+        deployGrantsSources: true,
         sandboxPolicyRead: false,
       },
       description:
@@ -297,6 +301,7 @@ export function credentialsScenarios({
         configurationSecretsOperate: false,
         configurationSecretsOperateDeniedBindings: ["SLACK_BOT_TOKEN"],
         agentSourcesOperate: false,
+        deployGrantsSources: true,
         sandboxPolicyRead: true,
       },
       description:
@@ -584,6 +589,49 @@ export function credentialsScenarios({
         "The Slack app token reads Bound · Agent access not confirmed; the warning says deploying grants this Agent access, and Deploy new version is available.",
         "Select Retry Secret access. Both tokens read Bound and Deploy new version stays available; do not deploy.",
       ],
+    },
+    credentialsSlackGrantMissingNoDeployGrant: {
+      group: "Components/Credentials",
+      name: "Slack Secret without an Agent grant, deploy writes no grant",
+      path: `${draft}&tab=credentials`,
+      slack: true,
+      slackGrantMissing: "SLACK_APP_TOKEN",
+      deployGrantsSources: false,
+      description:
+        "The same missing grant on an Installation whose IAM Driver writes no grant at deploy: the Agent permission answer says deployGrantsSources: false. The warning offers only Retry Secret access and does not say that deploying grants access.",
+      steps: [
+        "Read the warning: This Agent has no access to a bound Slack Secret yet. Select Retry Secret access to grant it now.",
+        "Select Retry Secret access. Both tokens read Bound; do not deploy.",
+      ],
+      gap: "The permission answer is simulated. tests/integration/console-api.test.ts proves the API answers false, and refuses the deploy, when OCC cannot write the grant.",
+    },
+    credentialsSlackGrantMissingNoStep: {
+      group: "Components/Credentials",
+      name: "Slack Secret without an Agent grant, reader may neither retry nor deploy",
+      path: `${draft}&tab=credentials`,
+      slack: true,
+      slackGrantMissing: "SLACK_APP_TOKEN",
+      agentPermissionSummary: {
+        update: false,
+        deploy: false,
+        operate: true,
+        delete: true,
+        administer: true,
+        configurationUpdate: false,
+        configurationRead: true,
+        configurationSecretsOperate: false,
+        configurationSecretsOperateDeniedBindings: [],
+        agentSourcesOperate: false,
+        deployGrantsSources: true,
+        sandboxPolicyRead: false,
+      },
+      description:
+        "An administrator's Namespace IAM read found the missing grant, and her access then ended: the permission answer denies Configuration update and Agent deploy. The warning offers neither Retry nor the deploy, and names who can grant access.",
+      steps: [
+        "Read the warning: This Agent has no access to a bound Slack Secret yet. Ask an Installation administrator, or someone who may deploy this Agent and operate the Secret, to grant this Agent access.",
+        "Retry Secret access is not offered, and Deploy new version is unavailable.",
+      ],
+      gap: "The permission answer is simulated. The browser test revokes the account's administration between the IAM read and the permission reread.",
     },
   } satisfies Record<string, CredentialScenario>;
 }
@@ -910,6 +958,28 @@ export function credentialsRecoveryScenarios({ draft }: Pick<CredentialDependenc
         "Deploy new version stays available. The request log shows the Agent PATCH and no /iam/ request.",
       ],
       gap: "The member browser test uses a member account and the real Installation permission check. The PostgreSQL Default users test proves that the member's deploy writes and audits the grant.",
+    },
+    authSecretGrantMemberNoDeployGrant: {
+      group: "Components/Credentials",
+      name: "Member authentication saved, deploy writes no grant",
+      path: `${draft}&tab=credentials`,
+      observabilityDenied: true,
+      extraSecrets: [{ id: "sec_demo_replacement", name: "Replacement model token" }],
+      deployGrantsSources: false,
+      actions: [
+        { selector: "#harness-auth-method", value: "codex_pat" },
+        { selector: "#harness-auth-secret", value: "sec_demo_replacement" },
+        // The picker stages its choice after reading the Secret answer; Save waits for it.
+        { text: "Secret binding staged. Save changes to apply it." },
+        click("Save authentication source"),
+      ],
+      description:
+        "A member saves a new model Secret on an Installation whose IAM Driver writes no grant at deploy (deployGrantsSources: false). The form sends no IAM request, and the saved status says that the deploy checks the Agent's access and names the administrator who can grant it.",
+      steps: [
+        "Read the status: Authentication source saved. Deploying checks that this Agent can use the selected Secret. If it cannot, ask an Installation administrator to give the Agent Secret operate on it.",
+        "The request log shows the Agent PATCH and no /iam/ request.",
+      ],
+      gap: "The permission answer is simulated. The member browser test reads the console fixture's real answer, which is false.",
     },
     authSaveRefused: {
       group: "Components/Credentials",

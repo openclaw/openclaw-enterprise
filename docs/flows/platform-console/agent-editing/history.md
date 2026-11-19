@@ -8,6 +8,8 @@ This record preserves the dated changes to the Console Agent editing flow. See t
 
 ## Changelog
 
+- 2026-11-18 22:40: Grant warnings name who can grant access when the reader may neither retry nor deploy. (authoring-run/f86b341d-b08f-47f4-80ff-a375893c8e05 - cfbec6564415e928e74062b91ab00f19656b6a86)
+- 2026-11-17 05:44: Deploys write credential grants; no grant outcome holds Deploy. (authoring-run/08b481d4-4a5e-4aed-b768-352a6716323c - 28afb11d68da12a17148895883235d074b9bb46f)
 - 2026-11-06 23:58: Render repository guidance. (authoring-run/d680b93c-3891-475b-b5f6-0b4f5ccf1ecf - d55839d701)
 - 2026-11-05 19:05: Preserve conflict focus and selection. (authoring-run/17947441-42c1-43df-93a6-339dac4803dc - 0ecbe50bfe0df315fda06a90274b9e218b48d96c)
 - 2026-11-05 18:37: Explain the Configuration number range refusal on Save. (authoring-run/d006a89e-c176-48cc-8710-16d38835bbb9 - 5fd3fde4911e1640c354d69bb09f6f3d72445a05)

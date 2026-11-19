@@ -15,6 +15,7 @@ import type {
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
+  answerDeployGrantsSources,
   accessBindingPostRequests,
   accessibleDescription,
   AGENT_READ,
@@ -111,6 +112,17 @@ const MEMBER_DRAWER_SAVED =
   "Channels saved. Deploying gives this Agent operate on the selected Slack Secrets.";
 const MEMBER_CREDENTIALS_SAVED =
   "Channel Secret bindings saved. Deploying the new version delivers them and gives this Agent operate on them.";
+// Where the deploy writes no grant (deployGrantsSources: false), no warning or save promises one:
+// an administrator is offered Retry, a reader without it is told to ask an administrator, and a
+// member's save names the administrator who can grant it.
+const GRANT_MISSING_RETRY_ONLY =
+  "This Agent has no access to a bound Slack Secret yet. Select Retry Secret access to grant it now.";
+const GRANT_MISSING_ASK_ADMINISTRATOR =
+  "This Agent has no access to a bound Slack Secret yet. Ask an Installation administrator to grant this Agent access.";
+const MEMBER_DRAWER_SAVED_NO_DEPLOY_GRANT =
+  "Channels saved. Deploying checks that this Agent can use the selected Slack Secrets. If it cannot, ask an Installation administrator to give the Agent Secret operate on them.";
+const MEMBER_CREDENTIALS_SAVED_NO_DEPLOY_GRANT =
+  "Channel Secret bindings saved. Deploy the new version to deliver them.";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -1359,6 +1371,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
       secretBindings: await slackTokenBindings(fixture, namespace, "Partial grant", ["bot"]),
     });
     const { page } = await newPage(t, fixture, { browser });
+    await answerDeployGrantsSources(page);
     const requests = apiRequests(page, fixture.origin);
     await failMethod(
       page,
@@ -1471,6 +1484,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
       );
       assertRecord(writer);
       const { page } = await newPage(t, fixture, { browser });
+      await answerDeployGrantsSources(page);
       const requests = apiRequests(page, fixture.origin);
       await login(
         page,
@@ -1546,6 +1560,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
       // grants for an administrator, so its policy read finds none for the member's Secret. The
       // answer updates the panel in place, so a reader already in a picker keeps focus.
       const { page: adminPage } = await newPage(t, fixture, { browser });
+      await answerDeployGrantsSources(adminPage);
       const bindingsRead = await holdRequests(
         t,
         adminPage,
@@ -1595,6 +1610,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     assertRecord(account);
     const revoke = grantInstallationAdministration(fixture, account.principal);
     const { page } = await newPage(t, fixture, { browser });
+    await answerDeployGrantsSources(page);
     await trackSettledFetches(page);
     const requests = apiRequests(page, fixture.origin);
     await login(
@@ -1621,6 +1637,114 @@ describe("Agent channels", { concurrency: 3 }, () => {
     assert.equal(await page.getByRole("button", { name: "Retry Secret access" }).count(), 0);
     assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   });
+
+  // This fixture's Native IAM reads its own policy store, so OCC writes no grant at deploy and the
+  // Agent permission answer says so (deployGrantsSources: false), as for any IAM Driver that
+  // cannot write Namespace access bindings in OCC State. An administrator's missing-grant warning
+  // then offers only Retry Secret access. Once her administration ends, it names only the
+  // administrator: no deployer can grant it either.
+  test("Where deploy writes no grant, a missing Slack Secret grant offers Retry, then names the administrator", async (t) => {
+    const { fixture, namespace, agent } = await ungrantedSlackAgent(
+      t,
+      "No Deploy Grant",
+      "no-deploy-grant",
+    );
+    const account: unknown = await fixture.createNamespaceMember(
+      "no-deploy-grant",
+      namespace.id,
+      AGENT_READ,
+    );
+    assertRecord(account);
+    const revoke = grantInstallationAdministration(fixture, account.principal);
+    const { page } = await newPage(t, fixture, { browser });
+    await trackSettledFetches(page);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
+      account.credentials,
+    );
+    await page.getByRole("heading", { name: "No Deploy Grant Agent" }).waitFor();
+    const panel = page.locator(".channel-secrets");
+    await panel.getByText(GRANT_MISSING_RETRY_ONLY, { exact: true }).waitFor();
+    await waitForEnabled(page.getByRole("button", { name: "Retry Secret access" }));
+    await expectNoText(page, /Deploying grants/);
+    await waitForIdleFetches(page);
+
+    revoke();
+    await page.getByRole("tab", { name: "Channels", exact: true }).click();
+    await page.getByText(GRANT_MISSING_ASK_ADMINISTRATOR, { exact: true }).waitFor();
+    await expectNoText(page, /Deploying grants|someone who may deploy/);
+    assert.equal(await page.getByRole("button", { name: "Retry Secret access" }).count(), 0);
+  });
+
+  // The same Installation, for a member: a Slack token saved from the drawer or from Credentials
+  // sends no grant, and the save says the deploy checks the Agent's access and names the
+  // administrator, instead of saying the deploy grants it.
+  for (const entry of ["drawer", "credentials"]) {
+    test(`Where deploy writes no grant, a member's Slack token saved from ${entry} names the administrator`, async (t) => {
+      const { fixture, namespace } = await readyNamespace(t, `No grant member ${entry}`);
+      const appSecret: unknown = await fixture.createSecret(
+        namespace.id,
+        "No grant app token",
+        "hidden-no-grant-app",
+      );
+      assertSecret(appSecret);
+      const botSecret: unknown = await fixture.createSecret(
+        namespace.id,
+        "No grant bot token",
+        "hidden-no-grant-bot",
+      );
+      assertSecret(botSecret);
+      const { agent } = await createSlackAgent(fixture, namespace, {
+        name: "No Grant Member Agent",
+        slug: "no-grant-member",
+        slack: { channels: { CNOGRANT1: { requireMention: true } } },
+        secretBindings: { SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } } },
+      });
+      const writer: unknown = await fixture.createNamespaceMember(
+        "no-grant-member",
+        namespace.id,
+        MEMBER_WRITE,
+      );
+      assertRecord(writer);
+      const { page } = await newPage(t, fixture, { browser });
+      const requests = apiRequests(page, fixture.origin);
+      await login(
+        page,
+        fixture,
+        detailUrl(
+          fixture,
+          namespace.id,
+          agent.id,
+          "draft",
+          entry === "drawer" ? "channels" : entry,
+        ),
+        writer.credentials,
+      );
+      await page.getByRole("heading", { name: "No Grant Member Agent" }).waitFor();
+      if (entry === "drawer") {
+        await page.getByRole("button", { name: "Edit Slack" }).click();
+        const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+        await selectSecret(dialog, "Slack app token", appSecret);
+        await dialog.getByRole("button", { name: "Save configuration", exact: true }).click();
+        await dialog.waitFor({ state: "hidden" });
+        await page.getByText(MEMBER_DRAWER_SAVED_NO_DEPLOY_GRANT, { exact: true }).waitFor();
+      } else {
+        await selectSecret(page, "Slack app token", appSecret);
+        await page.getByRole("button", { name: "Save channel Secrets" }).click();
+        await page
+          .locator(".channel-secrets")
+          .getByText(MEMBER_CREDENTIALS_SAVED_NO_DEPLOY_GRANT, { exact: true })
+          .waitFor();
+      }
+      await expectNoText(page, /gives this Agent operate|Deploying grants/);
+      assert.deepEqual(
+        requests.filter(({ path }) => path.includes("/iam/")),
+        [],
+      );
+    });
+  }
 
   // Finding 2949. An Installation administrator saves a Slack Secret whose grant request is rate
   // limited, so the grant stays unconfirmed and she is offered Retry Secret access. Her
@@ -1656,6 +1780,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     assertRecord(account);
     const revoke = grantInstallationAdministration(fixture, account.principal);
     const { page } = await newPage(t, fixture, { browser });
+    await answerDeployGrantsSources(page);
     await trackSettledFetches(page);
     // A rate limit in front of the IAM API leaves the grant's outcome unconfirmed.
     await failMethod(
@@ -1718,6 +1843,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
       assertRecord(account);
       const revoke = grantInstallationAdministration(fixture, account.principal);
       const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+      await answerDeployGrantsSources(page);
       await trackSettledFetches(page);
       const requests = apiRequests(page, fixture.origin);
       await login(
@@ -1869,6 +1995,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
       harnessAuth: { method: "api_key", source: modelSecret.ref },
     });
     const { page } = await newPage(t, fixture, { browser });
+    await answerDeployGrantsSources(page);
     const requests = apiRequests(page, fixture.origin);
     let denyGrant = true;
     let rejectNextConfigurationPatch = false;
@@ -2111,6 +2238,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
         secretBindings,
       });
       const { page } = await newPage(t, fixture, { browser });
+      await answerDeployGrantsSources(page);
       const requests = apiRequests(page, fixture.origin);
       await failMethod(
         page,

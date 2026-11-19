@@ -64,6 +64,8 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     };
     pluginDiscoveryCredential?: string;
     agentPermissionSummary?: unknown;
+    // False for an Installation whose deploy writes no Agent grant; the default summary says it.
+    deployGrantsSources?: boolean;
     nativeAdmin?: string;
     nativeAdminSessionMode?: "host-only-exchange";
     nativeAdminMode?: "admin" | "chat";
@@ -883,6 +885,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
               configurationSecretsOperate: allowed,
               configurationSecretsOperateDeniedBindings: [],
               agentSourcesOperate: allowed,
+              deployGrantsSources: scenario.deployGrantsSources ?? true,
               sandboxPolicyRead: allowed,
               readLogs: allowed,
             },

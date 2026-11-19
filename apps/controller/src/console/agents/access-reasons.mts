@@ -199,8 +199,12 @@ export const deployUnreadableSecretsReason = (count: number) =>
 // a member's console sends no grant. The member's deploy writes the Agent's operate grant on each
 // source it uses that the member may operate (RFC-0040), so a member's save says that instead of
 // naming an administrator (finding D748). Deploy names a bound Secret the member may not operate.
-export const credentialGrantedAtDeploy = (credential: string) =>
-  `Deploying gives this Agent operate on ${credential}.`;
+// When the IAM Driver cannot write that grant, the deploy only checks the Agent's access, so the
+// save names the administrator who can grant it.
+export const credentialGrantedAtDeploy = (credential: string, grant: string, grants: boolean) =>
+  grants
+    ? `Deploying gives this Agent operate on ${credential}.`
+    : `Deploying checks that this Agent can use ${credential}. If it cannot, ${ASK_INSTALLATION_ADMINISTRATOR} to give the Agent ${grant}.`;
 
 // The network policy and its suggestions authorize Agent read and SandboxPolicy read on the
 // Agent's own policy; previews and saves authorize Agent manage_policy and SandboxPolicy update.

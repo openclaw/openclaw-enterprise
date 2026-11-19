@@ -8,6 +8,7 @@ import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import {
+  answerDeployGrantsSources,
   apiRequests,
   detailUrl,
   hasFocus,
@@ -40,6 +41,7 @@ test("refreshing a Secret picker keeps staged choices and finds a Secret created
   );
   const member = await fixture.createNamespaceMember("picker-member", namespace.id, MEMBER_WRITE);
   const { page } = await newPage(t, fixture);
+  await answerDeployGrantsSources(page);
   const collection = `${fixture.origin}/namespaces/${namespace.id}/secrets`;
   const listRead = () => responseTo(page, "GET", collection);
   const initial = listRead();

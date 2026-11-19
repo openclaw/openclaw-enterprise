@@ -26,6 +26,7 @@ import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
+  answerDeployGrantsSources,
   persistedDeploymentError,
   accessBindingPostRequests,
   accessibleDescription,
@@ -885,6 +886,7 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
     { harnessAuth: { method: "api_key", source: originalSecret.ref }, executionMode: "dedicated" },
   );
   const { page } = await newPage(t, fixture);
+  await answerDeployGrantsSources(page);
   const requests = apiRequests(page, fixture.origin);
   await page.route(`**/namespaces/${namespace.id}/iam/access-bindings`, async (route, request) => {
     if (request.method() !== "POST") {
@@ -1002,6 +1004,52 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
   await page.getByText(/Agent identity changed. Reload authentication source/).waitFor();
 });
 
+// This fixture's Native IAM reads its own policy store, so OCC writes no grant at deploy and the
+// Agent permission answer says so (deployGrantsSources: false). A member's harness Secret save
+// then sends no grant either, and its saved notice says the deploy checks the Agent's access and
+// names the administrator, instead of saying the deploy grants it.
+test("Where deploy writes no grant, a member's harness Secret save names the administrator", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("No grant harness", { ready: true });
+  const replacementSecret = await fixture.createSecret(
+    namespace.id,
+    "No grant harness Secret",
+    "hidden-no-grant-harness",
+  );
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "No Grant Harness Agent",
+    nativeValues("no-grant-harness"),
+  );
+  const writer = await fixture.createNamespaceMember("no-grant-write", namespace.id, MEMBER_WRITE);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
+    writer.credentials,
+  );
+  await page.getByRole("heading", { name: agent.name }).waitFor();
+  await selectSecret(page, "API key Secret", replacementSecret);
+  const save = page.getByRole("button", { name: "Save authentication source" });
+  await save.click();
+  const expected = `Authentication source saved. ${credentialGrantedAtDeploy(
+    "the selected Secret",
+    "Secret operate on it",
+    false,
+  )}`;
+  const notice = page.getByRole("status").filter({ hasText: expected });
+  await notice.waitFor();
+  assert.equal(await notice.textContent(), expected);
+  assert.deepEqual(
+    requests.filter(({ path }) => path.includes("/iam/")),
+    [],
+  );
+  await waitForEnabled(save);
+});
+
 // Granting the Agent its authentication Secret writes IAM policy, which needs Installation
 // administration. A member's save sends no IAM request, whether or not an administrator already
 // granted it. The card settles to one saved state that says the member's deploy grants the Agent
@@ -1034,6 +1082,7 @@ test("Agent credentials settle a member's harness Secret save and say the deploy
   for (const agent of [ungranted, granted]) {
     const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
     const { page } = await newPage(t, fixture);
+    await answerDeployGrantsSources(page);
     const requests = apiRequests(page, fixture.origin);
     await login(page, fixture, url, writer.credentials);
     await page.getByRole("heading", { name: agent.name }).waitFor();
@@ -1089,6 +1138,7 @@ test("Agent credentials settle a member's harness Secret save and say the deploy
   // read finds the grant missing, so the tab names the administrator's step and Deploy waits
   // (finding 2260).
   const { page: adminPage } = await newPage(t, fixture);
+  await answerDeployGrantsSources(adminPage);
   await login(
     adminPage,
     fixture,
@@ -1151,6 +1201,7 @@ test("a harness grant found while Credentials is parked is shown on return", asy
     harnessAuth: { method: "api_key", source: secret.ref },
   });
   const { page } = await newPage(t, fixture);
+  await answerDeployGrantsSources(page);
   const held = await holdRequests(t, page, `**/namespaces/${namespace.id}/iam/**`);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   await page.getByRole("heading", { name: "Parked Grant Agent" }).waitFor();
@@ -1184,6 +1235,7 @@ test("a missing harness grant warning follows the selected Secret", async (t) =>
     harnessAuth: { method: "api_key", source: savedSecret.ref },
   });
   const { page } = await newPage(t, fixture);
+  await answerDeployGrantsSources(page);
   await trackSettledFetches(page);
   const held = await holdRequests(t, page, `**/namespaces/${namespace.id}/iam/**`);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
@@ -2571,6 +2623,7 @@ test("a version editor without Agent update can recover a failed deployment from
     configurationSecretsOperate: true,
     configurationSecretsOperateDeniedBindings: [],
     agentSourcesOperate: false,
+    deployGrantsSources: false,
     sandboxPolicyRead: false,
     readLogs: false,
   });
@@ -2709,6 +2762,7 @@ test("a reader without update views the version draft read-only", async (t) => {
       configurationSecretsOperate: false,
       configurationSecretsOperateDeniedBindings: [],
       agentSourcesOperate: false,
+      deployGrantsSources: false,
       sandboxPolicyRead: false,
       readLogs: false,
     },
@@ -2858,6 +2912,7 @@ test("an Agent editor without Configuration update sees the Configuration read-o
       configurationSecretsOperate: false,
       configurationSecretsOperateDeniedBindings: [],
       agentSourcesOperate: true,
+      deployGrantsSources: false,
       sandboxPolicyRead: false,
       readLogs: false,
     },
@@ -2930,6 +2985,7 @@ test("an editor without operate on a bound Secret views the version draft read-o
       configurationSecretsOperate: false,
       configurationSecretsOperateDeniedBindings: ["EXTERNAL_API_TOKEN"],
       agentSourcesOperate: false,
+      deployGrantsSources: false,
       sandboxPolicyRead: false,
       readLogs: false,
     },
@@ -4099,6 +4155,7 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
           configurationSecretsOperate: false,
           configurationSecretsOperateDeniedBindings: [],
           agentSourcesOperate: false,
+          deployGrantsSources: false,
           sandboxPolicyRead: false,
           readLogs: false,
         },

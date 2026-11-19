@@ -20,6 +20,7 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
+  answerDeployGrantsSources,
   accessBindingPostRequests,
   apiRequests,
   CHANNEL_SECRETS_SAVED,
@@ -1006,6 +1007,7 @@ async function retryConflictReload(
     ungranted: "SLACK_APP_TOKEN",
   });
   const { page } = await newPage(t, fixture, { context: { viewport } });
+  await answerDeployGrantsSources(page);
   // The focused control's name, a focused status line's text, or the element focus fell to.
   const focused = () =>
     page.evaluate(() => {

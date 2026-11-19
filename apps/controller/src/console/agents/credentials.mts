@@ -330,6 +330,28 @@ const SLACK_GRANT: GrantWarningSubject = {
 // warning says that the deploy grants it. The Slack Secret and harness authentication paths share
 // these words (findings 1920, 2259).
 const DEPLOY_GRANTS = "Deploying grants this Agent access";
+
+// What a deploy by this reader does about the Agent's missing grants: writes them ("grants"),
+// cannot run because the reader may not deploy ("denied"), or writes none because the IAM Driver
+// cannot write them ("none"). The Agent permission answer says both; without one, the deploy is
+// assumed to grant, as with the default IAM Driver.
+export type DeployGrant = "grants" | "denied" | "none";
+export const deployGrant = (
+  permissions: { deploy: boolean; deployGrantsSources: boolean } | null | undefined,
+): DeployGrant =>
+  permissions?.deployGrantsSources === false
+    ? "none"
+    : permissions?.deploy === false
+      ? "denied"
+      : "grants";
+const GRANT_ASK: Record<
+  Exclude<DeployGrant, "grants">,
+  (subject: GrantWarningSubject) => string
+> = {
+  denied: ({ credential }) =>
+    `Ask an Installation administrator, or someone who may deploy this Agent and operate the ${credential}, to grant this Agent access`,
+  none: () => "Ask an Installation administrator to grant this Agent access",
+};
 // A retry saved nothing, so its outcome names only the grant problem (finding 3023).
 const savedBut = (saved: string | null, problem: string) =>
   saved === null
@@ -352,23 +374,24 @@ const GRANT_RETRY_STEPS: Record<SecretGrantProblem, (subject: GrantWarningSubjec
 
 // Each warning offers only the steps this reader can take. A reader offered no Retry, such as an
 // administrator whose access ended after the policy read or after a grant request failed, is not
-// offered it (finding 2949). A reader who may not deploy this Agent is not told that deploying
-// grants access. A reader with neither step is told who can grant it.
+// offered it (finding 2949). A reader who may not deploy this Agent, or whose deploy writes no
+// grant, is not told that deploying grants access. A reader with neither step is told who can
+// grant it.
 export function grantWarning(
   problem: SecretGrantProblem,
   subject: GrantWarningSubject,
   canRetry = true,
-  canDeploy = true,
+  deploy: DeployGrant = "grants",
 ) {
   const stated = GRANT_PROBLEMS[problem](subject);
   const retry = canRetry ? GRANT_RETRY_STEPS[problem](subject) : "";
-  if (canDeploy) {
+  if (deploy === "grants") {
     return `${stated}. ${DEPLOY_GRANTS}${retry ? `, or ${retry}` : ""}.`;
   }
   if (retry) {
     return `${stated}. ${retry.charAt(0).toUpperCase()}${retry.slice(1)}.`;
   }
-  return `${stated}. Ask an Installation administrator, or someone who may deploy this Agent and operate the ${subject.credential}, to grant this Agent access.`;
+  return `${stated}. ${GRANT_ASK[deploy](subject)}.`;
 }
 
 // The harness authentication source's grant. A refusal reports the refused request, not the
@@ -573,7 +596,8 @@ function renderSlackBindings(state: ChannelState) {
 
 // The next step a channel Secret save names once the Agent's access to them is confirmed.
 const DELIVER_ON_DEPLOY = " Deploy the new version to deliver them.";
-// A member's deploy writes the Agent's grants on the Secrets this save bound (RFC-0040).
+// A member's deploy writes the Agent's grants on the Secrets this save bound (RFC-0040), when the
+// IAM Driver can write them.
 const MEMBER_DELIVER_ON_DEPLOY =
   " Deploying the new version delivers them and gives this Agent operate on them.";
 
@@ -687,7 +711,7 @@ export function createChannelSecretsPanel({
   checkGrants = false,
   canGrant = true,
   readOnly = () => false,
-  mayDeploy = () => true,
+  deploy = (): DeployGrant => "grants",
   readOnlyReason = () => CHANNEL_SECRETS_CONFIGURATION_READ_ONLY,
   bindingsToReplace = () => null,
   bindingRefusal = async () => undefined,
@@ -716,8 +740,9 @@ export function createChannelSecretsPanel({
   // True when the caller may not update this Configuration: the bindings are shown, not edited
   // (finding 2432). The page's permission answer can land after the panel is built.
   readOnly?(): boolean;
-  // False when the caller may not deploy this Agent, so a grant warning does not offer the deploy.
-  mayDeploy?(): boolean;
+  // What a deploy by this caller does about missing grants; a grant warning offers the deploy only
+  // when it writes them, and a member's save says so only then.
+  deploy?(): DeployGrant;
   // Why the bindings are read-only: Configuration update, or Secret operate on the Secrets it
   // binds, which every Configuration save also needs (finding 2437).
   readOnlyReason?(): string;
@@ -846,7 +871,7 @@ export function createChannelSecretsPanel({
   // (finding 3023).
   function slackGrantWarning() {
     const subject = state.grantRetried ? { ...SLACK_GRANT, saved: null } : SLACK_GRANT;
-    return grantWarning(state.grantProblem, subject, !readOnly(), mayDeploy());
+    return grantWarning(state.grantProblem, subject, !readOnly(), deploy());
   }
 
   function updateGrantWarning(secretBindings = state.configuration.secretBindings ?? {}) {
@@ -967,7 +992,7 @@ export function createChannelSecretsPanel({
     if (grantRecheck || state.checkingGrants || pendingSecretGrants().length) {
       return saved;
     }
-    return `${saved}${canGrant ? DELIVER_ON_DEPLOY : MEMBER_DELIVER_ON_DEPLOY}`;
+    return `${saved}${canGrant || deploy() === "none" ? DELIVER_ON_DEPLOY : MEMBER_DELIVER_ON_DEPLOY}`;
   }
 
   function renderChannelForm(error: HTMLElement) {

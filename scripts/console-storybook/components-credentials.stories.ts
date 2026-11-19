@@ -101,6 +101,14 @@ export const CredentialsSlackGrantMissing = {
   ...story("credentialsSlackGrantMissing"),
   name: "Slack Secret bound without an Agent grant",
 };
+export const CredentialsSlackGrantMissingNoDeployGrant = {
+  ...story("credentialsSlackGrantMissingNoDeployGrant"),
+  name: "Slack Secret without an Agent grant, deploy writes no grant",
+};
+export const CredentialsSlackGrantMissingNoStep = {
+  ...story("credentialsSlackGrantMissingNoStep"),
+  name: "Slack Secret without an Agent grant, reader may neither retry nor deploy",
+};
 export const CredentialsBindingReadDenied = story("credentialsBindingReadDenied");
 export const CredentialsSlackLeftoverGrantMissing = {
   ...story("credentialsSlackLeftoverGrantMissing"),
@@ -172,6 +180,10 @@ export const AuthSecretGrantParked = {
 export const AuthSecretGrantMemberAtDeploy = {
   ...story("authSecretGrantMemberAtDeploy"),
   name: "Member authentication saved, granted at deploy",
+};
+export const AuthSecretGrantMemberNoDeployGrant = {
+  ...story("authSecretGrantMemberNoDeployGrant"),
+  name: "Member authentication saved, deploy writes no grant",
 };
 export const AuthSecretGrantLoading = {
   ...story("authSecretGrantLoading"),

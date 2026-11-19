@@ -16,6 +16,7 @@ import {
   SLACK_SETUP_HINT,
 } from "../helpers/refusal-text.mjs";
 import {
+  answerDeployGrantsSources,
   AGENT_READ,
   accessibleDescription,
   detailUrl,
@@ -436,6 +437,7 @@ test("a missing harness grant names who can grant it once a revoke makes Save an
   const account = await fixture.createNamespaceMember("revoked-harness", namespace.id, AGENT_READ);
   const revoke = grantInstallationAdministration(fixture, account.principal);
   const { page } = await newPage(t, fixture);
+  await answerDeployGrantsSources(page);
   await login(
     page,
     fixture,

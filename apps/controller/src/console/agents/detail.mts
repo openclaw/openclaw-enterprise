@@ -117,6 +117,7 @@ import {
   type OutstandingSecretGrants,
   type SecretGrantProblem,
   grantProblemFor,
+  deployGrant,
   grantWarning,
   harnessGrantSubject,
   createChannelSecretsPanel,
@@ -174,6 +175,7 @@ const unconfirmedPermissions: Permissions = {
   configurationSecretsOperate: false,
   configurationSecretsOperateDeniedBindings: [],
   agentSourcesOperate: false,
+  deployGrantsSources: false,
   sandboxPolicyRead: false,
   readLogs: false,
 };
@@ -3374,7 +3376,7 @@ export async function renderAgentDetail(
           canGrant: context.installationAdmin !== false,
           // Binding Secrets saves the Configuration (finding 2432).
           readOnly: channelsReadOnly,
-          mayDeploy: () => callerPermissions?.deploy !== false,
+          deploy: () => deployGrant(callerPermissions),
           readOnlyReason: () =>
             callerPermissions?.configurationUpdate === false
               ? CHANNEL_SECRETS_CONFIGURATION_READ_ONLY
@@ -5311,7 +5313,11 @@ export async function renderAgentDetail(
             saved: channelGrantOutstanding
               ? "Configuration saved."
               : channelSecretsGrantedAtDeploy
-                ? `Channels saved. ${credentialGrantedAtDeploy("the selected Slack Secrets")}`
+                ? `Channels saved. ${credentialGrantedAtDeploy(
+                    "the selected Slack Secrets",
+                    "Secret operate on them",
+                    deployGrant(callerPermissions) !== "none",
+                  )}`
                 : "Channels saved.",
             focus,
           }),
@@ -5479,7 +5485,7 @@ export async function renderAgentDetail(
       let grantProblem = retained?.grantProblem ?? null;
       // The shared grant wording (finding 1920), for the saved source's credential kind. A
       // refused grant request keeps Retry: it works once the reader's access is restored. A
-      // reader who may not deploy this Agent is not offered the deploy.
+      // reader who may not deploy this Agent, or whose deploy writes no grant, is not offered it.
       const grantText = (problem: SecretGrantProblem) =>
         grantWarning(
           problem,
@@ -5489,7 +5495,7 @@ export async function renderAgentDetail(
               : "secret",
           ),
           true,
-          callerPermissions?.deploy !== false,
+          deployGrant(callerPermissions),
         );
       const originalFields = retained?.originalFields ?? auth.capture();
       const bindingFields = ({
@@ -5520,7 +5526,7 @@ export async function renderAgentDetail(
       let savedGrantMissing = false;
       // A reader whose Agent update is refused, such as an administrator whose administration
       // ended after the IAM read, is not offered a Save they cannot use (finding 2949), and one
-      // who may not deploy this Agent is not offered the deploy.
+      // whose deploy cannot grant it is not offered the deploy.
       const missingGrantWarning = (canSave = !updateDenied) =>
         grantWarning(
           "missing",
@@ -5528,7 +5534,7 @@ export async function renderAgentDetail(
             agent.harnessAuth?.method === "credential_source" ? "credential_source" : "secret",
           ),
           canSave,
-          callerPermissions?.deploy !== false,
+          deployGrant(callerPermissions),
         );
       const selectionMatchesSavedGrant = () => {
         const saved = baseline.harnessAuth;
@@ -5711,6 +5717,10 @@ export async function renderAgentDetail(
                   credential.kind === "credential_source"
                     ? "the selected credential source"
                     : "the selected Secret",
+                  credential.kind === "credential_source"
+                    ? "credential source operate on it"
+                    : "Secret operate on it",
+                  deployGrant(callerPermissions) !== "none",
                 )}`,
                 focus: "Save authentication source",
               });

@@ -2986,6 +2986,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           configurationSecretsOperate,
           configurationSecretsOperateDeniedBindings,
           agentSourcesOperate,
+          deployGrantsSources: controller.deployGrantsAgentSources(),
           sandboxPolicyRead,
           readLogs,
         },

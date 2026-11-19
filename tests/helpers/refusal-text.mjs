@@ -158,8 +158,12 @@ export const notIncluded = (task, grant) =>
   `Your access does not include ${task}. ${askForGrant(grant)}`;
 // A member's console sends no credential grant: the member's deploy writes it (RFC-0040), so a
 // saved source says that (finding D748). `credential` names it, such as "the selected Secret".
-export const credentialGrantedAtDeploy = (credential) =>
-  `Deploying gives this Agent operate on ${credential}.`;
+// Where the deploy writes no grant (deployGrantsSources: false), the save names the administrator
+// who can give the Agent `grant`, such as "Secret operate on it".
+export const credentialGrantedAtDeploy = (credential, grant = "", grants = true) =>
+  grants
+    ? `Deploying gives this Agent operate on ${credential}.`
+    : `Deploying checks that this Agent can use ${credential}. If it cannot, ask an Installation administrator to give the Agent ${grant}.`;
 export const AGENT_STOP_DENIED = notIncluded("stopping this Agent", "Agent operate on it");
 // The Secret dialog's disabled Replace value and Delete Secret, from the Secret read's answer
 // (finding D761).

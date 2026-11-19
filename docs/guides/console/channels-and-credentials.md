@@ -101,6 +101,11 @@ when that grant is missing. **Deploy new version** stays available, because the 
 When your access no longer includes updating this Agent, the warning offers only the deploy.
 When it includes neither updating nor deploying this Agent, the warning says to ask an
 Installation administrator, or someone who may deploy the Agent and `operate` the credential.
+Some IAM configurations write no grant at deploy, as
+[Default users](../../reference/authorization/default-users.md#grant-an-agent-its-credentials-at-deployment)
+describes. There, no warning offers the deploy: it offers the retry or says to ask an
+Installation administrator. A member's save says that the deploy checks the Agent's access, and
+to ask an Installation administrator for the grant if the Agent cannot use the source.
 If the grant was already in place, **Reload authentication source** clears the
 warning. If a grant request is refused or its outcome is lost, the console says
 so and offers **Retry credential access**.

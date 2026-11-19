@@ -86,6 +86,7 @@ export function channelsScenarios({
         configurationSecretsOperate: false,
         configurationSecretsOperateDeniedBindings: ["SLACK_BOT_TOKEN"],
         agentSourcesOperate: false,
+        deployGrantsSources: true,
         sandboxPolicyRead: true,
       },
       description:

@@ -246,7 +246,9 @@ behavior.
   source references. For each reference that the caller can `operate` and the
   Agent ServicePrincipal cannot, `ensureAgentOperateGrants` writes the exact
   binding, audited with `reason: "agent_deploy"`. A failed deploy rolls back
-  the grants.
+  the grants. It writes nothing when `occBindingDriver("createNamespaceAccessBinding")`
+  is undefined. `deployGrantsAgentSources` applies the same check, and the Agent
+  permission route returns it as `deployGrantsSources`.
 
 ## Debugging and Verification
 
@@ -298,6 +300,7 @@ behavior.
 
 ## Changelog
 
+- 2026-11-19 00:40: Report whether a deploy writes Agent grants as `deployGrantsSources`. (claude/session_01HzmRt1DGB79VEnEWHt7PRy - 6a10ce5dc6665051ae57eae8982c6a2f203659db)
 - 2026-11-13 06:59: Condense the Namespace IAM policy flow while retaining authorization and transaction boundaries. (authoring-run/91737212-2ec5-4aca-981d-501670320fd5 - 6192588c3a8fce971689a174fc34ae9deb1c8c80)
 - 2026-11-13 05:56: Authorize Agent creation before configured Backend lookup; preserve creator and catalog permissions, distinguish Namespace creation admission, and cover denial audit and unchanged State. (authoring-run/3e297b79-1580-4c10-ade8-4fa8031618a7 - 4ecf71da20e0606cb4f78fc90551462af11b4981)
 - 2026-11-12 13:00: Fence Namespace Role and AccessBinding writes against configured read withdrawal. (authoring-run/51e5643c-98f0-4498-9876-768fbfd19f63 - ea43cfdb21e17e6025b53e3d3585977b7df6dcde)

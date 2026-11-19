@@ -11,6 +11,7 @@ import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
+  answerDeployGrantsSources,
   consoleViewports,
   detailUrl,
   fileBrowser,
@@ -430,6 +431,8 @@ test("Authentication source save outcomes", async (t) => {
     );
     const secret = await fixture.createSecret(namespace.id, "Status key", "synthetic-status-key");
     const { page } = await newPage(t, fixture, { browser });
+    // These outcomes are worded for an Installation whose deploy writes the Agent's grants.
+    await answerDeployGrantsSources(page);
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
     if (!harnessId) {
       await page.getByLabel("Authentication source").selectOption("api_key");

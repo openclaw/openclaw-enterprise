@@ -28,6 +28,7 @@ import { createConsoleAppFixture, type fileConsoleApp } from "../helpers/console
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
+  answerDeployGrantsSources,
   AGENT_READ,
   apiRequests,
   authorizationDenials,
@@ -4076,6 +4077,7 @@ export function registerSharingCredentialsAndChannelsCases(
       },
     );
     const { page } = await newPage(t, fixture);
+    await answerDeployGrantsSources(page);
     const requests = apiRequests(page, fixture.origin);
     await login(
       page,
