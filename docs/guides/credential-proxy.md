@@ -19,11 +19,11 @@ the delivery contracts.
 
 ## Choose the path before changing an installation
 
-| Intended use               | Requirement and limit                                                                                                                                                                                                                                                                                                                                   |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Protected static inference | The bundled OpenShell Driver refuses new protected sources, live adoption and new revisions. Existing admitted revisions retain recovery and original-owner cleanup. Other Drivers require qualified whole-execution enforcement; see [protected static inference](../reference/credential-sources/protected-inference.md#bundled-openshell-admission). |
-| Prepared GitHub App access | Worker Token Service prepares credentials; OCC authorizes scope and lifetime; Credential Proxy installs and fences delivery. Protected delivery requires a qualified sender.                                                                                                                                                                            |
-| Native prepared Git        | A separate explicit Kubernetes/dedicated Codex path without Sandbox or Credential Proxy; it does not provide OpenShell isolation. See [native Git](../reference/repository-credentials/prepared-native-git.md).                                                                                                                                         |
+| Intended use               | Requirement and limit                                                                                                                                                                                                                                                                     |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Protected static inference | Bundled OpenShell refuses new strict OpenAI admission. Full request-time configuration can admit online model sources. Other Drivers require qualified enforcement; see [protected static inference](../reference/credential-sources/protected-inference.md#bundled-openshell-admission). |
+| Prepared GitHub App access | Worker Token Service prepares credentials; OCC authorizes scope and lifetime; Credential Proxy installs and fences delivery. Protected delivery requires a qualified sender.                                                                                                              |
+| Native prepared Git        | A separate explicit Kubernetes/dedicated Codex path without Sandbox or Credential Proxy; it does not provide OpenShell isolation. See [native Git](../reference/repository-credentials/prepared-native-git.md).                                                                           |
 
 For a packaged Driver, select its Sandbox and Credential Proxy capabilities
 from the same registration. The [Driver selection guide](../reference/drivers/selection.md#select-a-protected-sender)
@@ -33,6 +33,10 @@ sender actually enforces.
 
 Use the [upgrade procedure](deploy/credential-proxy-upgrade.md) for an existing
 installation, including when a Gateway source or its owner must remain.
+
+For request-time model protection, use
+[model request setup](credential-proxy/model-requests.md). It has separate
+identity prerequisites and withdrawal guarantees.
 
 ## Prepare enforcement, trust, and custody
 
@@ -45,10 +49,9 @@ New local protected static-inference launches are retired. The launcher rejects
 Kubernetes/OpenShell. Unset, empty or `0` protected-egress selections retain ordinary
 Gateway authentication. See the [retirement notice](deploy/local-openshell-images.md#select-the-protected-profile).
 
-The following bundled static authority configuration preserves existing admitted
-revisions and their authorization, withdrawal and cleanup. It does not re-enable
-new protected sources, live adoption or new revisions.
-For protected static inference, the Installation selects the same Driver ID in
+The bundled static authority preserves existing revisions but does not re-enable
+new strict admission. Full request-time model configuration can admit online sources.
+The Installation selects the same Driver ID in
 `backend[].drivers.credential_proxy` and `drivers.credential_proxy`. A bundled
 OpenShell authority selection has this shape:
 
@@ -165,44 +168,54 @@ by the running version.
 
 ## Register, authorize, and deploy an OpenAI static inference source
 
-The bundled OpenShell Driver rejects the source creation, live adoption and
-deployment operations below with `409 RESOURCE_CONFLICT`, including on existing
-installations. These steps require a [separately selected Driver](../reference/drivers/selection.md#select-a-protected-sender)
-that supports new protected static admission and has qualified static enforcement.
-For an existing bundled revision, keep its recorded owner and follow the
-[upgrade and withdrawal procedures](deploy/credential-proxy-upgrade.md).
+This procedure requires the strict `exact-dispatch` authorization profile and a
+[separately selected Driver](../reference/drivers/selection.md#select-a-protected-sender)
+with qualified static enforcement. The bundled OpenShell Driver refuses new strict
+admission with `409 RESOURCE_CONFLICT`. When full request-time model configuration
+is enabled, it can instead admit a new OpenAI source with request-time protection.
+That protection does not provide exact dispatch or response custody and cannot be
+changed by an adoption PATCH.
 
-Use the built CLI from the
-repository root with `jq`, a ready Namespace, `OCC_URL`, `OCC_NAMESPACE`, and a
-private `OCC_SERVICE_KEY_FILE` for an authorized operator.
-
-Obtain whole-execution consent **before creating the source**: protection covers
-sibling processes in that execution, not another execution of the same Agent.
-Follow only the `openai` API-key example in
+With `jq`, a ready Namespace and an authorized CLI session, obtain whole-execution
+consent before creating a strict live source. Register the `openai` example in
 [Register the key](deploy/openshell-credential-sources.md#register-the-key), then
-return here. Do not use that page's `codex-pat` variant for this profile, or follow
-its copied-key rotation and Agent-deleting cleanup as a live-adoption procedure.
-Retain `SOURCE_ID` and the Secret reference.
+retain `SOURCE_ID` and the Secret reference. Fresh protected live admission creates
+no Gateway copy; ordinary registration does, and adoption does not erase it.
 
-Registration creates a Gateway copy. Before binding the source to an Agent,
-explicitly adopt protected live reads with whole-execution consent:
+Read the source before deciding whether adoption is needed:
 
 ```bash
-cat > source-adoption.json <<'JSON'
-{"adoption":"live","authorityScope":"execution"}
-JSON
-./bin/occ credential-source update "$SOURCE_ID" --file source-adoption.json
-./bin/occ credential-source get "$SOURCE_ID" -o json
+SOURCE_JSON="$(./bin/occ credential-source get "$SOURCE_ID" -o json)"
+printf '%s\n' "$SOURCE_JSON" | jq '{ownerCapability, egress}'
 ```
 
-Require `ownerCapability: credential_gateway`, `egress.adoption: live` and
-`egress.retention: none`. Keep the Gateway selected: adoption does not transfer
-ownership. A ready source alone does not prove installed enforcement.
+- If `egress.protection` is `exact-dispatch`, the source is already admitted;
+  do not adopt it again.
+- If it is `request-time` or `unavailable`, stop. An adoption PATCH cannot
+  change an admitted profile, and this procedure cannot deploy it as strict.
+- If `egress` is absent, the source is an ordinary Gateway copy and has no
+  protected profile yet. With a selected, qualified strict-capable Driver,
+  whole-execution consent, an unbound source, exact source `update`, and `operate`
+  on each referenced Secret, explicitly adopt live reads:
 
-This update requires exact source `update` and `operate` on every referenced
-Secret, advances the source generation, and retains its Gateway owner. It does
-not remove an old Gateway copy: `retention: none` describes live reads, not past
-custody. A bound source cannot take this first cutover.
+  ```bash
+  printf '%s\n' '{"adoption":"live","authorityScope":"execution"}' > source-adoption.json
+  ./bin/occ credential-source update "$SOURCE_ID" --file source-adoption.json
+  ```
+
+Before deployment, require the effective recorded strict profile:
+
+```bash
+./bin/occ credential-source get "$SOURCE_ID" -o json | jq -e '
+  .ownerCapability == "credential_gateway" and
+  .egress.adoption == "live" and .egress.retention == "none" and
+  .egress.protection == "exact-dispatch"'
+```
+
+Stop if this check fails. Keep the Gateway selected: live adoption does not transfer
+ownership or delete an old Gateway copy. This metadata records admission; it does
+not prove that a running Sandbox enforces the profile. For existing bundled
+revisions, follow the [upgrade and withdrawal procedures](deploy/credential-proxy-upgrade.md).
 
 Follow [create the Agent and grant the source](deploy/openshell-credential-sources.md#create-the-agent-and-grant-the-source)
 for the dedicated Codex Configuration, Agent request, and exact IAM binding.

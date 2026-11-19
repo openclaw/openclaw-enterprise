@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-18"
-last_updated_session: "authoring-run/4bed3583-f449-4bab-a6c6-2e8af70a39e9"
+updated: "2026-11-19"
+last_updated_session: "authoring-run/3443474d-ea8c-4273-8c4f-3b3755f1eee1"
 ---
 
 # Production Startup Flow
@@ -44,7 +44,7 @@ graph TD
         E --> F["Initialization Job validates mounted Installation"]
         F -->|Startup checks pass| V{"PostgreSQL before 17?"}
         V -->|Yes| P["Refuse initialization before migration DDL"]
-        V -->|No| O{"Canonical migration history?"}
+        V -->|No| O{"Recognized receipts and catalog?"}
         O -->|No| P
         O -->|Yes| G["Apply migrations; bootstrap registers supplied credentials"]
         G --> H["Start private API Deployment"]
@@ -132,7 +132,7 @@ DNS peers UDP/TCP `53` and `5353`
 
 `deploy/helm/openclaw-enterprise/templates/jobs.yaml:8` refuses existing or unreadable
 Jobs during connected installs. Offline rendering cannot check this; lookup
-neither locks names nor verifies database/volume freshness.
+neither locks names nor validates database state or bootstrap credentials.
 
 `openclaw.validate` in `deploy/helm/openclaw-enterprise/templates/_helpers.tpl`
 checks routing, ports and peer labels. See [routing opt-out](../guides/deploy/workspace-routing.md#explicit-opt-out)
@@ -164,18 +164,21 @@ Doctor reports Helm separately; report write errors exit `1`.
 `scripts/migrate-production.ts:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
 After source verification, all modes reject PostgreSQL before 17 with
-fixed `MIGRATION_SERVER_UNSUPPORTED` recovery guidance, before locking or catalog access
+`MIGRATION_SERVER_UNSUPPORTED` before locking or reading the catalog
 ([compatibility](../reference/settings/operations.md#postgresql-server-compatibility)).
-On SIGINT or SIGTERM, the command uses a second migrator connection to terminate its
-uniquely named database session and waits for cleanup before exit. Listeners ignore repeated signals during cleanup. If the control
-connection fails, the command reports `migration.cancellation-failed` and waits for the
-migration to return.
-Under the advisory lock, the same connection verifies roles and receipts,
-then catalogs and grants against native or reviewed restore digests. Unsupported
-history fails before DDL/bootstrap. After option guards, completed apply
-skips Drizzle only when `SHOW transaction_read_only` returns `off`.
-Otherwise Drizzle retains pending migration and read-only refusal.
-`finally` releases the lock and client
+On SIGINT or SIGTERM, the command uses a second migrator connection to terminate
+its uniquely named database session and waits for cleanup. If that connection
+fails, it reports `migration.cancellation-failed` and waits for migration to return.
+Under the advisory lock, the migrator verifies roles, receipts, catalogs and
+grants against the native or reviewed restore history. Unsupported history fails
+before migration SQL or bootstrap.
+
+Canonical history through `0083` includes native restart recovery. Migration
+`0084` adds request credential approvals and candidate Work authorization.
+Supported upgrade histories exclude preview approval schemas.
+
+Completed apply skips Drizzle only for a writable session. Pending migrations
+and read-only sessions keep their normal checks. Cleanup releases the lock and client
 ([history](../reference/settings/operations.md#migration-history)).
 
 `scripts/lib/bootstrap-configuration.ts:bootstrapConfiguration` requires an HTTPS
@@ -340,27 +343,28 @@ The shell initializes the missing annotation, patches with UID and
   mounts or authentication.
 - `kubectl -n openclaw-system wait --for=condition=complete job/oce-initialization`
   should succeed before API and worker rollout checks.
-- `pnpm db:migrate:production --check` reports the accepted database history
-  without applying SQL. `MIGRATION_HISTORY_UNSUPPORTED` needs the database
-  inspected; initialization never repairs its ledger.
-- The API emits `listening`; the worker emits `worker.started`, then `worker.health`.
-  `listening` reports `startupMs` (since process start) and per-phase `phasesMs`.
-- For `KUBERNETES_VERSION_BELOW_MINIMUM`, upgrade Kubernetes to 1.35 or later.
-- `startup-error` or `worker.startup-error` with code
-  `KUBERNETES_API_UNAVAILABLE`: Compute cannot reach Kubernetes at the logged
-  `host` and `port`. Check `cluster.cidrs` and `cluster.port`; restarted
-  clusters can move it.
-- Code `PRESET_FILE_INVALID`: an invalid `presets.files` entry or file.
-- `DRIVER_CONFIGURATION_INVALID`: inspect `details` (JSON Pointer, code, message).
-  `/runtime/gatewayStorageClassName` requires a Kubernetes DNS-subdomain name.
-  `apps/controller/src/api-startup.ts:startupFailureFields` passes these diagnostics
-  to `server.mjs`.
+- `pnpm db:migrate:production --check` reports history without applying SQL.
+  For `MIGRATION_HISTORY_UNSUPPORTED`, inspect the receipts and catalog.
+- API `listening` reports `startupMs` (since process start) and per-phase
+  `phasesMs`. The worker emits `worker.started`, then `worker.health`.
+- For `compute.preflight-warning` code `KUBERNETES_VERSION_BELOW_MINIMUM`,
+  upgrade Kubernetes to 1.35 or later for support.
+- For `KUBERNETES_API_UNAVAILABLE`, compare the logged `host` and `port` with
+  `cluster.cidrs` and `cluster.port`. A cluster restart can change its address.
+- Code `PRESET_FILE_INVALID` indicates an invalid `presets.files` entry or file.
+- For `DRIVER_CONFIGURATION_INVALID`, inspect `details` (JSON Pointer, code,
+  message) in `startup-error` or `worker.startup-error`.
+  Use a DNS-subdomain name for `/runtime/gatewayStorageClassName`. Remove
+  `/drivers/credential_proxy/configuration/authorityScope` when
+  `repository.openShell` and `tokenGrant` are configured.
+  `apps/controller/src/api-startup.ts:startupFailureFields` passes the API
+  diagnostics to `apps/controller/src/server.mjs`.
 - `kubectl -n openclaw-system logs job/oce-initialization -c bootstrap` is the
-  first check for unsafe output storage, existing outputs, database-role
-  failures, auth errors (`AUTH_SECRET_INVALID`, `AUTH_BASE_URL_INVALID`), and
+  first check for invalid projected credentials, database-role failures,
+  auth errors (`AUTH_SECRET_INVALID`, `AUTH_BASE_URL_INVALID`), and
   administrator/IAM mismatch.
-- Changing an external startup Secret alone does not restart the API or worker;
-  run an explicit rollout and repeat readiness plus authenticated proof.
+- After changing an external startup Secret, roll out the API and worker. Repeat
+  readiness and authenticated checks.
 - `tests/integration/production-kubernetes-packaging.test.mjs` renders the
   chart; it does not prove deployment or model execution.
 - `tests/integration/installation-handoff-k3d-real.test.ts` exercises the CLI with
@@ -385,21 +389,29 @@ The shell initializes the missing annotation, patches with UID and
 
 ## Changelog
 
+- 2026-11-19 09:25: Record request credential authorization migration `0084` after native restart recovery. (authoring-run/3443474d-ea8c-4273-8c4f-3b3755f1eee1 - abc218e67e3325ea0db6ae3687413abd34713aff)
+
+- 2026-11-18 15:00: Preserve the precreated bootstrap credential projection and align request-authorization migration history with current main. (authoring-run/e9ec324d-033c-4ca2-b52b-f303b2cc7f5e - 4f19a93f0a22e6675cb93c82824134f8a75a7f1b)
+
 - 2026-11-18 02:53: Select the migration entry point from each controller image and retain signal handlers through cleanup. (authoring-run/4bed3583-f449-4bab-a6c6-2e8af70a39e9 - 4616630e8ab5edf25de29af948e80c72627af9c4)
 
 - 2026-11-18 02:26: Run the migration entry directly and distinguish separate-upgrade verification. (authoring-run/c3b46e7f-1066-4c87-9808-34e281ccaa98 - 8e8474eec4c7027bb45b5fe470e675e2e3e321cf)
 
 - 2026-11-18 01:53: Reconcile the generated Installation check with the production migration command. (authoring-run/d1d2f3b0-6dbf-4fce-b8d6-94df71d391b8 - 0bd8061ff988a0847541fa3d890f676f1a57a676)
 
-- 2026-11-16 09:42: Trace precreated credential Secret projection and retained-key authentication in the accompanying uncommitted implementation. (authoring-run/e8039d10-1e3b-41aa-82f2-0d2c709b421f - 81ab0a9fbe38cd2eea88f599a5e0ac9aad9c4f92)
+- 2026-11-17 21:06: Trace production migration for stock and historical request credential approvals. (authoring-run/13aee116-8880-41d5-b55f-83a0152d7460 - 7e7cb6005e6fe7f94463524ad36ae93fa8e2097a)
 
 - 2026-11-16 09:47: Document the request helper’s scoped path validation. (authoring-run/04994f45-a986-442f-8747-1595e124325f - b4a03d909a2815bbf6c44eb6e195d4503a59fe70)
+
+- 2026-11-16 09:42: Trace precreated credential Secret projection and retained-key authentication in the accompanying uncommitted implementation. (authoring-run/e8039d10-1e3b-41aa-82f2-0d2c709b421f - 81ab0a9fbe38cd2eea88f599a5e0ac9aad9c4f92)
 
 - 2026-11-14 17:11: Identify the generated API CA programs and link their TypeScript source layout. (authoring-run/6b781d32-d772-4aed-beb9-1598b28632b4 - 4ecdd59c5a64f217f0b7fafdf7a034e74b890ffc)
 
 - 2026-11-14 12:25: Document the TypeScript worker probe. (authoring-run/1be06605-515e-4261-8b21-d0d796809916 - f0bfd8b1834a7a07fc008fa822fed9035f12ffbe)
 
 - 2026-11-13 19:24: Validate auth. (authoring-run/e8f36db7-807b-453f-8274-f89ca52fcb7c - 795a920ef266c1246d7774ceb0188a0ee206fe17)
+
+- 2026-11-13 16:21: Document the combined OpenShell authority scope startup diagnostic. (authoring-run/33abde1a-eb90-429b-8b94-af7f0b901c3f - 5ff90623c3f24ba9c0efc1b3ca511a12121109f1)
 
 - 2026-11-13: Document the opt-in check of an existing Installation and its bootstrap administrator. (authoring-run/b1c2409a-da5e-4236-9fd6-3e89f1773b94 - 3c8ee8b97066d1e82a4ba9f95ad6d6f6afea5df8)
 
@@ -408,17 +420,5 @@ The shell initializes the missing annotation, patches with UID and
 - 2026-11-12 06:35: Document static Helm template refusal guidance without changing recovery. (authoring-run/da0f3f3f-c550-48b6-8ef4-60e3f2d1b973 - 64358aae61847dea8a3834fbe06bed079b5727cc)
 
 - 2026-11-11 17:05: Coalesce database readiness. (authoring-run/89773c17-5c87-4c2d-aa19-3b5a0af84b68 - 755ebc38280f84b3ec420cc0b2a475ed1fb2be0a)
-
-- 2026-11-11 15:06: Preserve explicit PostgreSQL caller options after URL parsing. (authoring-run/8367ab20-ba98-4ec6-9700-296442c6eb96 - ee419a1969d414d4aa934c59b39b868e8777b127)
-
-- 2026-11-07 21:10: Stop install dispatch on intent output failure and return final report write errors. (authoring-run/f573af51-9766-49f8-88ff-2c6294283466 - 9b23338c49448b9fc56d637a53bd0d71ec3be76b)
-
-- 2026-11-08 07:15: Clarify receipt directory. (authoring-run/ef34e45f-633b-49fb-8884-cdf519ed7d40 - 7e2eb23a7f55b5f375e52883fcb6a7bb0f10049e)
-
-- 2026-11-08 05:16: Document the preserved intent and stop before dispatch when the receipt notice write fails. (authoring-run/5809b7e1-70ee-4446-8c3a-020e78a0e7af - e0d329d9ad9560e954ce94889079ef55ba43080f)
-
-- 2026-11-04 23:30: Check complete handoff reports, including receipt outcomes. (authoring-run/48787d5f-913a-4fa5-910a-2f9ec35e504a - ce06d47cfb0b4fb29495ad4bc85bb71aa5941975)
-
-- 2026-11-04 23:14: Document report write failures. (authoring-run/58196aeb-45b5-4ea5-850d-e368b48f15f9 - 582236adfbbb392c2247995dde054eef929ca6c1)
 
 [Production startup documentation history](production-startup/history.md) preserves the older dated entries.

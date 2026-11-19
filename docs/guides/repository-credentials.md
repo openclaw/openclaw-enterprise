@@ -70,8 +70,9 @@ Standing approval is unavailable when the Agent selects multiple repositories.
    Fresh Git requests are denied even while cleanup is pending. A request with an issued one-use
    permit can still start before its original send deadline, even after removal is acknowledged.
    Do not replay a request whose outcome is unknown. See [prepared Git authorization](../reference/repository-credentials/prepared-native-git.md#what-a-request-authorizes).
-   On OpenShell, the worker removes Git and continues supervising the same execution if its
-   independent permissions still allow it. Stopping the Agent ends that execution.
+   On OpenShell, continuing the same execution also requires a profile that supports
+   removing Git in place. The [online model-plus-Git profile](../reference/drivers/credential-proxy.md#online-model-requests)
+   may retire the whole runtime instead. Stopping the Agent ends that execution.
 
 A refusal answers `409 RESOURCE_CONFLICT` and names the step: review the scope again, keep one
 binding, remove the approval before you change the binding, or ask an Installation administrator

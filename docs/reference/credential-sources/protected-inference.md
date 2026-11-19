@@ -26,13 +26,16 @@ shared exchange but does not establish static inference or Git transport support
 
 ## Bundled OpenShell admission
 
-The bundled OpenShell Credential Proxy Driver refuses new protected static
-OpenAI sources, live adoption or re-admission of a saved source, and new
-protected revisions using one. OCC returns `409 RESOURCE_CONFLICT`. Source
+The bundled OpenShell Credential Proxy Driver refuses new strict protected
+OpenAI sources, strict live adoption or re-admission of a saved source, and new
+protected revisions using the strict provider. OCC returns `409 RESOURCE_CONFLICT`. Source
 admission is refused before reading its Secret material. Deployment retirement
 is checked before contacting the counterpart, so an unavailable Gateway cannot
 turn the refusal into a retryable error. Ask an Installation administrator to
-configure a supported model access path.
+configure a supported model access path. When the full request-time model configuration
+is enabled, the request-time OpenAI provider is eligible for new sources. Creation
+requires exactly one eligible matching provider; missing or ambiguous registrations or
+unavailable enforcement refuse creation without fallback.
 
 Existing revisions keep the recorded provider for request authorization and recovery
 under the current Sandbox contract. Adoption still requires the exact current spec,
@@ -99,11 +102,13 @@ retry follows. Retain that uncertain receipt.
 
 ## Static source and response policy
 
-Fresh static sources select the first provider for their type in catalog order.
-The selected provider ID and generation must identify one registration; duplicates
-return `409` before credential material is read. Multiple distinct providers for
-the same type remain supported. Reordering distinct providers does not change the
-provider selected for an existing source update.
+Fresh model sources use ordinary Gateway delivery where permitted. Otherwise, an
+external Driver uses the first provider for the source type in catalog order.
+When the bundled Driver retires a matching provider, OCC instead requires exactly one
+eligible provider for that type. Missing or ambiguous choices refuse creation before
+credential material is read. Existing source updates retain their exact provider ID
+and generation even if distinct providers are reordered. Request-time model protection
+requires a dedicated Codex Harness using `openai-responses` at deployment.
 
 The static OpenAI profile admits an explicitly configured model and a closed set of
 text inference requests. Unsupported operations, remote provider tools, arbitrary
@@ -152,6 +157,11 @@ grant remains narrower. Adopting live material and authorizing the broader execu
 are explicit, separate decisions; a Secret edit grants neither. The first cutover
 requires an unbound source and an explicitly admitted new binding. Leave an existing
 approved copy available until its owner can make that transition safely.
+
+Re-admission can upgrade a strict provider only while its exact original registration
+and one newer strict generation of the same provider remain verifiable. If the original
+registration is missing, restore it or create a separate source; consent cannot prove
+which protection the missing generation supplied.
 
 The supervisor withholds the complete bounded response, including the last trailer,
 until Credential Proxy permits its release. The 30-second operation deadline bounds

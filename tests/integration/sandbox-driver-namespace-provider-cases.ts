@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import type { OpenShellSandboxDriverOptions } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { modelRequestProviderName } from "../../apps/controller/src/drivers/sandbox/openshell-model-request-policy.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import type {
   CredentialRevisionContext,
@@ -13,6 +14,7 @@ import { registerSandboxCredentialContractCases } from "./sandbox-driver-credent
 import { credentialGatewayOverProviders } from "./sandbox-driver-credential-fixture.ts";
 import { callCount } from "./sandbox-driver-gateway-response-fixture.ts";
 import { openShellDriver } from "./sandbox-driver-openshell-fixture.ts";
+import { completeSandboxRevision } from "./sandbox-driver-revision-fixture.ts";
 import { verifyOperatorWorkspaceChart } from "./sandbox-driver-operator-chart-case.ts";
 import { createSandboxProviderProfileChecks } from "./sandbox-driver-provider-profiles-cases.ts";
 import { verifyManagedNamespaceRejectsMutation } from "./sandbox-driver-startup-composition-cases.ts";
@@ -20,8 +22,10 @@ import type { createSandboxStartupGuardChecks } from "./sandbox-driver-startup-g
 import { buildSandboxInstallation as sandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
 import {
   kubernetesObjectClient,
+  dedicatedRevision,
   namespaceContext,
   ownedWorkspace,
+  sandboxRecord,
   type ResourceReference,
   structuralRefusal,
 } from "./sandbox-driver-startup-orchestration.ts";
@@ -125,6 +129,105 @@ export function registerSandboxDriverNamespaceProviderCases({
     );
     assert.equal(gatewayClient.workspaces.has(context.namespace.name), true);
     assert.equal(callCount(gatewayClient, "deleteWorkspace"), 0);
+
+    const workspace = context.namespace.name;
+    const revision = "rev_00000000-0000-4000-8000-000000000001";
+    const id = modelRequestProviderName(revision);
+    const owned = workspaceGatewayClient([ownedWorkspace(workspace, context.namespace.id)]);
+    const observed = {
+      name: id,
+      type: id,
+      workspace,
+      profileWorkspace: workspace,
+      resourceVersion: "1",
+      config: {},
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/namespace-id": context.namespace.id,
+        "openclaw.dev/agent-id": "agt_00000000-0000-4000-8000-000000000001",
+        "openclaw.dev/revision-id": revision,
+      },
+    };
+    const replacement = { ...observed, resourceVersion: "2", labels: {} };
+    owned.providers.set(id, observed);
+    owned.profiles.set(id, {
+      id,
+      resourceVersion: "1",
+      annotations: { "openclaw.dev/managed-by": "openclaw-enterprise:fixture" },
+    });
+    const reconciliation = openShellDriver(owned);
+    const snapshot = completeSandboxRevision(
+      dedicatedRevision(reconciliation, context, "000000000001"),
+    );
+    const modelRevision = {
+      ...snapshot,
+      egressPlan: {
+        authorization: "online-request" as const,
+        id: "model-plan",
+        generation: 1,
+        execution: {
+          installationId: "ins_fixture",
+          namespaceId: snapshot.namespaceId,
+          agentId: snapshot.agentId,
+          servicePrincipalId: snapshot.servicePrincipalId,
+          revisionId: snapshot.id,
+          executionId: snapshot.id,
+        },
+        sandboxDriverId: reconciliation.id,
+        egressDriverId: "credential-proxy",
+        routes: [],
+      },
+    };
+    const sandbox = reconciliation.harnessResource({
+      namespace: context.namespace,
+      revision: modelRevision,
+    });
+    owned.sandboxes.set(sandbox.resourceName, sandboxRecord(sandbox.resourceName, workspace));
+    const readProvider = owned.getProvider;
+    owned.getProvider = async (...args) => {
+      const prior = await readProvider(...args);
+      if (args[1] === id) {
+        owned.providers.set(id, replacement);
+      }
+      return prior;
+    };
+    await reconciliation.cleanup({ ...context, revision: modelRevision });
+    assert.equal(owned.sandboxes.has(sandbox.resourceName), false);
+    assert.equal(owned.providers.get(id), observed);
+    assert.equal(owned.profiles.has(id), true);
+    assert.equal(callCount(owned, "deleteProvider"), 0);
+    owned.getProvider = readProvider;
+    const list = owned.listProviders;
+    owned.listProviders = async (...args) => {
+      const snapshot = await list(...args);
+      owned.providers.set(id, replacement);
+      return snapshot;
+    };
+    await assert.rejects(reconciliation.cleanup(context), /Reconcile retained request-model/);
+    assert.equal(owned.providers.get(id), replacement);
+    assert.equal(owned.profiles.has(id), true);
+    assert.equal(callCount(owned, "deleteProvider"), 0);
+    assert.equal(callCount(owned, "deleteWorkspace"), 0);
+    owned.listProviders = list;
+    owned.providers.delete(id);
+    const listProfiles = owned.listProviderProfiles;
+    owned.listProviderProfiles = async () => [...owned.profiles.values()];
+    await assert.rejects(reconciliation.cleanup(context), /Reconcile retained request-model/);
+    assert.equal(callCount(owned, "deleteWorkspace"), 0, "unknown profile scope must block");
+    owned.listProviderProfiles = listProfiles;
+    owned.profiles.delete(id);
+    owned.listProviders = async (...args) => {
+      const snapshot = await list(...args);
+      owned.providers.set(id, replacement);
+      return snapshot;
+    };
+    await assert.rejects(reconciliation.cleanup(context), /still contains resources: provider/);
+    assert.equal(owned.providers.get(id), replacement);
+    assert.equal(callCount(owned, "deleteProvider"), 0);
+    owned.listProviders = list;
+    owned.providers.delete(id);
+    await reconciliation.cleanup(context);
+    assert.equal(owned.workspaces.has(workspace), false);
   });
 
   // OpenShell answers a controller identity it cannot authenticate (UNAUTHENTICATED) or that lacks

@@ -1,21 +1,18 @@
 # Credential sources
 
-A Secret holds a value, such as a GitHub App private key. A credential source
-records its Driver, configuration and Secret references in the Namespace. A
-`github-app-metadata` source names the key and repository for the read of
-`acme/widgets`.
+A credential source records its Driver, configuration and Namespace Secret references.
+For example, `github-app-metadata` names a GitHub App key and repository.
 
 The Agent draft **binds** the source by ID. On deploy, OpenClaw Control Plane
-(OCC) saves the binding in an **Agent revision**. How the sender gets
-a credential depends on the source.
+(OCC) saves the binding in an **Agent revision**.
 
-| Delivery mode            | Who holds or reads the credential                                                                                                                                                                                                   |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Gateway copy             | The selected OpenShell Credential Gateway stores a copy of a static Secret. The workload receives a placeholder. Its supervisor injects the real value on eligible traffic. Editing the Secret alone leaves the copy unchanged.     |
-| Gateway-managed OAuth    | The Credential Refresh Driver holds issuer material and manages access tokens for the Gateway. The workload keeps its placeholder across token renewal.                                                                             |
-| Protected live Secret    | After OCC authorizes an individual request, the trusted resolver reads the current Secret version. The authenticated sender receives the credential header for that request. An existing Gateway source requires explicit adoption. |
-| Worker-prepared token    | For `github-app-metadata`, the Token Service renews installation tokens in the background. An authorized Credential Proxy request can also start or join issuance for its exact registered grant.                                   |
-| Credential-free metadata | The source admits a specific repository identity read. Its resolver reads no Secret and its sender adds no credential header. Request and response controls still apply.                                                            |
+| Delivery mode            | Who holds or reads the credential                                                                                                                                                      |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Gateway copy             | OpenShell Credential Gateway copies the static Secret. The workload receives a placeholder; its supervisor injects the value on eligible traffic. Secret edits do not update the copy. |
+| Gateway-managed OAuth    | Credential Refresh holds issuer material and renews Gateway tokens. The workload keeps its placeholder.                                                                                |
+| Protected live Secret    | OCC authorizes each request; the resolver reads the current Secret version and releases its header to the authenticated sender. Gateway sources require explicit adoption.             |
+| Worker-prepared token    | Token Service renews `github-app-metadata` installation tokens. An authorized Proxy request may start or join issuance for its exact grant.                                            |
+| Credential-free metadata | The source admits a repository identity read without a Secret or credential header. Request and response controls apply.                                                               |
 
 Gateway delivery supports `openai` API keys for dedicated Codex and native
 OpenClaw models, `codex-pat` for dedicated Codex and `bearer-token` for a
@@ -69,6 +66,15 @@ The `201` response includes the `cs_` source ID, binding `ref` and status. Bind 
   a static Harness model type and the bundled Proxy handling only Git. Refresh, device
   authorization and ChatGPT OAuth are ineligible. Other registrations require protected
   admission. Explicit live adoption preserves ownership.
+- Create a source with `name`, `type`, `config`, and `secrets`. The Installation
+  selects the provider; the request does not select a protection mode. Where the
+  bundled Driver retires a provider for this type, exactly one eligible matching
+  provider must remain. Missing or ambiguous choices and unavailable enforcement
+  refuse creation before Secret reads. Existing sources retain their provider.
+  Create, GET, and list responses report live model protection in
+  `egress.protection`: `request-time`, `exact-dispatch`, or `unavailable` when the
+  exact admitted registration cannot be validated. Ordinary Gateway sources omit
+  `egress`. This value does not attest running Sandbox enforcement.
 - `config` contains nonsecret catalog fields. OpenShell's `openai` type accepts
   `authorized_base_url` as immutable destination authorization. Omission authorizes
   only `https://api.openai.com/v1`. Custom authorization must match the
@@ -126,10 +132,7 @@ selected. Newly registered metadata sources belong to the Credential Proxy.
 A Gateway source retains its Gateway owner even when the Proxy enforces its plan.
 
 Deployment with credential sources requires a selected Sandbox Driver. The revision records each source's
-ID, type and owning Driver ID. For the `widgets-metadata` example, the protected
-plan allows `GET /repos/acme/widgets` for that execution and source generation. Follow the
-[request to GitHub and its reply](../flows/credential-source-egress.md#follow-the-metadata-get).
-Cloning, pushing or creating a pull request requires a separately admitted
+ID, type and owning Driver ID. Metadata access does not permit cloning or pushing; those require a separate
 [repository binding](repository-credentials.md).
 
 For **source-backed Harness authentication**, set `harnessAuth` to
@@ -154,7 +157,7 @@ permission on the underlying model Secret. Queued and running provisioning jobs
 keep their source referenced before the Agent exists.
 
 The Console reads the Gateway catalog from Installation or [Namespace Agent capabilities](authorization/default-users.md#create-agents-in-the-console).
-Both Dedicated Harnesses share provider and Secret controls. API-key provisioning registers the Secret first. See [Console creation](console/create-and-deploy.md).
+See [Console creation](console/create-and-deploy.md).
 
 For an Agent without repositories on the bundled Git-only Proxy, bind the matching
 ready static Harness model source from the selected Gateway as the Agent’s only

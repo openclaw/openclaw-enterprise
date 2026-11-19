@@ -215,6 +215,14 @@ export class RuntimeDiagnosticsTransportError extends DependencyUnavailableError
  */
 export class PersistedStateInvalidError extends DependencyUnavailableError {}
 
+/** Exact candidate work was busy before credential policy performed any effect. */
+export class RequestCredentialWorkBusyError extends DependencyUnavailableError {
+  constructor() {
+    super("Candidate credential work is busy.");
+    this.name = "RequestCredentialWorkBusyError";
+  }
+}
+
 /**
  * A Secret the selected Secret Driver cannot serve, typically one stored through a driver the
  * Installation no longer selects. Each subclass is raised only after the caller's grant and the
@@ -731,7 +739,7 @@ export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictEr
 /** The configured Git transport does not support protected credential-source admission. */
 export class CredentialProxyRepositoryOnlyError extends ResourceStateConflictError {
   static readonly description =
-    "With repository.openShell the Credential Proxy serves only repository Git. Protected credential sources require a qualified execution profile. Ordinary model sources can use Credential Gateway without live adoption.";
+    "The selected Credential Proxy serves repository Git only. Ordinary models use Credential Gateway. Protected models require a qualified execution profile. Enable and explicitly select online-request when creating a source.";
 
   constructor() {
     super(CredentialProxyRepositoryOnlyError.description);
@@ -748,7 +756,7 @@ export class CredentialProxyRepositoryOnlyError extends ResourceStateConflictErr
  */
 export class CredentialSourceUnprotectedError extends ResourceStateConflictError {
   static readonly description =
-    "With drivers.credential_proxy selected, a revision can use only credential sources created or adopted under the Proxy, and beside repository Git its ready Gateway Harness source. Replace the other bindings, then deploy again.";
+    "With drivers.credential_proxy selected, every credential binding must belong to a supported admitted delivery profile. Replace unsupported bindings, then deploy again.";
 
   constructor() {
     super(CredentialSourceUnprotectedError.description);

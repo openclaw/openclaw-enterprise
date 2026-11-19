@@ -53,8 +53,9 @@ model ID yourself.
 If arriving from Credential Proxy setup, use only the `openai` example below,
 obtain whole-execution consent before creation, then
 [return to live-source setup](../credential-proxy.md#register-authorize-and-deploy-an-openai-static-inference-source).
-Registration creates a Gateway copy. Live-source setup requires explicit adoption;
-the copied-key rotation and cleanup below do not describe the adopted path.
+Check the recorded result before continuing: an ordinary Gateway registration creates
+a copy, while fresh protected live admission does not. The copied-key rotation and
+cleanup below apply only to a Gateway copy.
 
 Store the key as a Namespace Secret. Build the request file with owner-only
 permissions, delete it after use, and never put the key on the command line:
@@ -91,9 +92,18 @@ SOURCE_ID="$(./bin/occ credential-source create --file credential-source.json -o
 ./bin/occ credential-source get "$SOURCE_ID"
 ```
 
-Expected result: `STATE` and `GATEWAY STATUS` both show `ready`. The response
-never contains the key. Changing the Secret afterward does not change the Gateway
-copy. Explicit live adoption follows the separate procedure linked above.
+For this Gateway-copy procedure, require a ready source with no `egress` field:
+
+```bash
+./bin/occ credential-source get "$SOURCE_ID" -o json |
+  jq -e '.state == "ready" and .status.state == "ready" and (.egress == null)'
+```
+
+If `egress` is present, stop this procedure and inspect `egress.authorization` in
+[Credential Proxy setup](../credential-proxy.md). Full request-time model configuration
+can admit an omitted-profile request as `online-request`; that source has no Gateway
+copy. The response never contains the key. Changing the Secret does not change an
+ordinary Gateway copy.
 
 ## Create the Agent and grant the source
 

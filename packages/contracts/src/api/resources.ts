@@ -719,6 +719,19 @@ export const CredentialSourceSchema = Type.Object(
             Type.Literal("credential_free"),
           ]),
           retention: Type.Literal("none"),
+          protection: Type.Optional(
+            Type.Union(
+              [
+                Type.Literal("exact-dispatch"),
+                Type.Literal("request-time"),
+                Type.Literal("unavailable"),
+              ],
+              {
+                description:
+                  "Live model protection provided by the source's exact admitted provider registration. Unavailable means that registration cannot be validated. This is not evidence of running Sandbox enforcement.",
+              },
+            ),
+          ),
         },
         {
           additionalProperties: false,

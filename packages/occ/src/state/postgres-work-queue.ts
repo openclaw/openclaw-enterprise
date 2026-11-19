@@ -18,7 +18,12 @@ import {
   type ControllerWorkKind,
   type ControllerWorkState,
 } from "../controller-work.ts";
-import { ResourceConflictError, ScopeViolationError, WorkClaimLostError } from "../errors.ts";
+import {
+  RequestCredentialWorkBusyError,
+  ResourceConflictError,
+  ScopeViolationError,
+  WorkClaimLostError,
+} from "../errors.ts";
 import {
   nonempty,
   safeFailureCode,
@@ -1106,7 +1111,8 @@ export class PostgresWorkQueue {
     )`;
     const recordAudit = input.recordAudit ?? this.controlPlaneAuditEnabled;
     const transition = `UPDATE occ.controller_work AS work
-      SET state = 'claimed',
+      SET candidate_authorized = false,
+          state = 'claimed',
           attempt_count = CASE WHEN ${repositoryCleanupSql("work")}
             THEN LEAST(work.attempt_count::bigint + 1, $2::integer)::integer
             ELSE work.attempt_count + 1 END,
@@ -1161,6 +1167,26 @@ export class PostgresWorkQueue {
     return renewed.rows[0] === undefined ? undefined : asClaimedWork(renewed.rows[0]);
   }
 
+  /** A claim alone cannot authorize a candidate; only its preparation pass can. */
+  async setCandidateAuthorization(claim: WorkClaim, authorized: boolean): Promise<void> {
+    validateClaim(claim);
+    const updated = await this.client.query(
+      `UPDATE occ.controller_work
+       SET candidate_authorized = $3
+       WHERE idempotency_key = $1 AND claim_token = $2::uuid
+         AND state = 'claimed' AND (NOT $3::boolean OR lease_expires_at > clock_timestamp())
+         AND ($3::boolean OR candidate_authorized)
+         AND work_kind = 'lifecycle' AND agent_id IS NOT NULL AND revision_id IS NOT NULL
+         AND namespace_target IS NULL AND agent_target IS NULL
+         AND idempotency_key = 'agent_revision:' || revision_id || ':reconcile'
+       RETURNING idempotency_key`,
+      [claim.idempotencyKey, claim.claimToken, authorized],
+    );
+    if (authorized && updated.rows.length !== 1) {
+      throw new WorkClaimLostError();
+    }
+  }
+
   /**
    * Whether some Work could be claimed now. Work for an Agent or Namespace that
    * already has a claim (the caller's own included) does not count: no worker
@@ -1201,6 +1227,48 @@ export class PostgresWorkQueue {
       throw new ScopeViolationError("The controller work backlog contains an invalid count.");
     }
     return count;
+  }
+
+  /** Namespace is already held; never wait here on a worker holding work before Agent. */
+  async lockRequestCredentialWork(owner: RepositoryRevisionOwner): Promise<boolean> {
+    try {
+      const locked = await this.client.query(
+        `SELECT idempotency_key FROM occ.controller_work AS work
+       WHERE work.idempotency_key = 'agent_revision:' || $3::text || ':reconcile'
+         AND work.namespace_id = $1 AND work.agent_id = $2 AND work.revision_id = $3
+         AND work.work_kind = 'lifecycle' AND work.namespace_target IS NULL
+         AND work.agent_target IS NULL
+       FOR SHARE OF work NOWAIT`,
+        [owner.namespaceId, owner.agentId, owner.revisionId],
+      );
+      return locked.rows.length === 1;
+    } catch (error) {
+      // Only this exact, pre-effect lock statement can request a policy retry.
+      // Throw through State so the entire transaction releases its owner locks.
+      if (error instanceof Error && "code" in error && error.code === "55P03") {
+        throw new RequestCredentialWorkBusyError();
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Call after locking work. Read the current transition fact under the same lock.
+   * Keep the lock through authorization/release; recheck database lease time before either.
+   */
+  async requestCredentialCandidateEligible(owner: RepositoryRevisionOwner): Promise<boolean> {
+    const found = await this.client.query(
+      `SELECT 1 FROM occ.controller_work AS work
+       WHERE work.idempotency_key = 'agent_revision:' || $3::text || ':reconcile'
+         AND work.namespace_id = $1 AND work.agent_id = $2 AND work.revision_id = $3
+         AND work.work_kind = 'lifecycle' AND work.namespace_target IS NULL
+         AND work.agent_target IS NULL
+         AND work.candidate_authorized
+         AND (work.state = 'queued' OR
+              (work.state = 'claimed' AND work.lease_expires_at > clock_timestamp()))`,
+      [owner.namespaceId, owner.agentId, owner.revisionId],
+    );
+    return found.rows.length === 1;
   }
 
   async findWork(idempotencyKey: string): Promise<ControllerWork | undefined> {
@@ -1378,7 +1446,8 @@ export class PostgresWorkQueue {
     const completed = await this.client.query(
       `WITH transitioned AS (
          UPDATE occ.controller_work
-         SET state = 'succeeded',
+         SET candidate_authorized = false,
+             state = 'succeeded',
              claim_token = NULL,
              lease_expires_at = NULL,
              completed_at = clock_timestamp(),
@@ -1455,7 +1524,13 @@ export class PostgresWorkQueue {
     const deferred = await this.client.query(
       `WITH transitioned AS (
          UPDATE occ.controller_work
-         SET state = 'queued',
+         SET candidate_authorized = (candidate_authorized AND work_kind = 'lifecycle'
+               AND agent_id IS NOT NULL AND revision_id IS NOT NULL
+               AND namespace_target IS NULL AND agent_target IS NULL
+               AND idempotency_key = 'agent_revision:' || revision_id || ':reconcile'
+               AND $14::boolean AND $10::text IS NULL
+               AND NOT $13::boolean),
+             state = 'queued',
              attempt_count = GREATEST(attempt_count - 1, 0),
              available_at = clock_timestamp() +
                COALESCE($8::double precision, ${backoffDelayMsSql("attempt_count", "$5", "$6", "$7")}) * interval '1 millisecond',
@@ -1481,6 +1556,8 @@ export class PostgresWorkQueue {
         pending.refusal === undefined ? null : safeFailureCode(pending.refusal),
         options.repeatEvidence ?? false,
         pending.refusal !== undefined && pending.stopYielded === true,
+        pending.stopYielded === true,
+        pending.code === "REVISION_INCOMPLETE",
       ],
     );
     if (deferred.rows.length === 0) {
@@ -1496,7 +1573,8 @@ export class PostgresWorkQueue {
     const retried = await this.client.query(
       `WITH transitioned AS (
          UPDATE occ.controller_work AS work
-         SET state = CASE
+         SET candidate_authorized = false,
+             state = CASE
                WHEN ${exhausted} THEN 'failed_permanent'
                ELSE 'queued'
              END,
@@ -1597,7 +1675,8 @@ export class PostgresWorkQueue {
            ))
        ), transitioned AS (
          UPDATE occ.controller_work AS work
-         SET state = 'failed_permanent',
+         SET candidate_authorized = false,
+             state = 'failed_permanent',
              claim_token = NULL,
              lease_expires_at = NULL,
              completed_at = clock_timestamp(),
@@ -1662,7 +1741,8 @@ export class PostgresWorkQueue {
           AND work.idempotency_key NOT IN (SELECT idempotency_key FROM recovering_refused_stops)`,
        )} transitioned AS (
          UPDATE occ.controller_work AS work
-         SET state = CASE
+         SET candidate_authorized = false,
+             state = CASE
                WHEN ${exhaustedClaim} THEN 'failed_permanent'
                ELSE 'queued'
              END,
@@ -1736,7 +1816,8 @@ export class PostgresWorkQueue {
        )} transitioned AS (
          -- A requeued row keeps its available_at: it was already queued.
          UPDATE occ.controller_work AS work
-         SET state = CASE WHEN ${predecessorStop} THEN 'queued' ELSE 'failed_permanent' END,
+         SET candidate_authorized = false,
+             state = CASE WHEN ${predecessorStop} THEN 'queued' ELSE 'failed_permanent' END,
              attempt_count = CASE
                WHEN ${predecessorStop} THEN GREATEST($2::integer - 1, 0)
                ELSE work.attempt_count
