@@ -9,8 +9,14 @@ import type {
   RepositoryCredentialSessionStatus,
 } from "../../packages/contracts/src/index.ts";
 import type { ControllerWorkState } from "../../packages/occ/src/controller-work.ts";
+import { repositoryCleanupWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
-import { advanceCleanupRetries, completion } from "../helpers/postgres-worker-revision-queue.ts";
+import {
+  advanceCleanupRetries,
+  completion,
+  deferWork,
+  waitForWorkStateDue,
+} from "../helpers/postgres-worker-revision-queue.ts";
 import {
   repositoryAttempts,
   repositoryBoundary,
@@ -158,6 +164,91 @@ export function testRepositoryCleanup(setup: RevisionSetup) {
   }
 
   test(
+    "a stopped first deployment keeps reporting repository disposal after replacement activates",
+    requiresPostgres,
+    async (context) => {
+      const repository = repositoryBoundary();
+      const fixture = await setup(context, { repoDriver: repository.driver });
+      const { owner, candidate } = await fixture.admitInitialRevision("repository-first-stopped", {
+        revision: { repositoryCredentials: repository.snapshot },
+      });
+      const close = repository.driver.close;
+      repository.driver.close = async () => {
+        throw new Error("repository service temporarily unavailable");
+      };
+      let stop: Awaited<ReturnType<typeof fixture.requestStop>> | undefined;
+      const stopped = new Set<string>();
+      await fixture.start({
+        ...fixture.compute,
+        async prepareRevision(revision, deploymentContext) {
+          assert.ok(deploymentContext?.repositoryCredentials?.length);
+          const observed = await fixture.compute.prepareRevision(revision, deploymentContext);
+          // Stop after Compute starts, before the first revision can activate.
+          stop = await fixture.requestStop(owner);
+          return { ...observed, ready: false };
+        },
+        async stopRevision(revision) {
+          stopped.add(revision.id);
+          return fixture.compute.stopRevision(revision);
+        },
+      });
+      await fixture.work(
+        await waitFor("Stop admitted during preparation", async () => stop),
+        "succeeded",
+      );
+      await waitForWorkStateDue(fixture, candidate, "succeeded");
+      await fixture.stop();
+      assert.deepEqual([...stopped], [candidate.id]);
+      const queue = new fixture.PostgresWorkQueue(fixture.observerPool);
+      assert.equal((await repositoryAttempts(fixture, candidate))[0]?.phase, "closing");
+
+      // The next admission restores running intent while neither revision serves.
+      const replacement = await fixture.revision(owner, 2);
+      const agent = required(await fixture.currentAgent(owner), "fixture Agent");
+      assert.equal(agent.desiredRuntimeState, "running");
+      assert.equal(agent.activeRevisionId, undefined);
+
+      const cleanupKey = repositoryCleanupWorkKey(candidate.id, "sessions");
+      const disposal = required(await queue.findWork(cleanupKey), "first revision disposal");
+      assert.equal(disposal.state, "queued");
+      const pending = await fixture.deploymentStatus(owner, candidate);
+      assert.equal(pending.status, "failed");
+      assert.equal(pending.error?.code, "REVISION_STOPPED");
+      assert.deepEqual(pending.cleanup, {
+        status: "queued",
+        nextAttemptAt: disposal.availableAt.toISOString(),
+      });
+
+      // Keep disposal queued and the old repository service unavailable while the Worker
+      // activates the replacement. The new selection cannot settle the old obligation.
+      await deferWork(fixture.observerPool, cleanupKey);
+      await fixture.start(fixture.compute);
+      await fixture.work(replacement, "succeeded");
+      assert.equal((await fixture.currentAgent(owner))?.activeRevisionId, replacement.id);
+      const stillQueued = required(
+        await queue.findWork(cleanupKey),
+        "deferred first revision disposal",
+      );
+      assert.equal(stillQueued.state, "queued");
+      assert.equal((await repositoryAttempts(fixture, candidate))[0]?.phase, "closing");
+      assert.deepEqual(await fixture.deploymentStatus(owner, candidate), {
+        ...pending,
+        cleanup: { status: "queued", nextAttemptAt: stillQueued.availableAt.toISOString() },
+      });
+
+      repository.driver.close = close;
+      await advanceCleanupRetries(fixture, candidate);
+      await fixture.work({ id: candidate.id, idempotencyKey: cleanupKey }, "succeeded");
+      assert.equal((await repositoryAttempts(fixture, candidate))[0]?.phase, "disposed");
+      const settled = await fixture.deploymentStatus(owner, candidate);
+      assert.deepEqual(settled, {
+        ...pending,
+        cleanup: { status: "succeeded", nextAttemptAt: null },
+      });
+    },
+  );
+
+  test(
     "repository service outage during Agent stop still stops Compute and retains durable closing work",
     requiresPostgres,
     async (context) => {
@@ -175,6 +266,9 @@ export function testRepositoryCleanup(setup: RevisionSetup) {
         },
       });
       await fixture.work(candidate, "succeeded");
+      const beforeStop = await fixture.deploymentStatus(owner, candidate);
+      assert.equal(beforeStop.status, "succeeded");
+      assert.equal(beforeStop.cleanup, null);
       const close = repository.driver.close;
       let unavailable = true;
       repository.driver.close = async (sessionId, signal) => {
@@ -263,6 +357,9 @@ export function testRepositoryCleanup(setup: RevisionSetup) {
       );
       assert.deepEqual(await pendingCleanup(), cleanupBeforeInventory);
       assert.equal((await repositoryAttempts(fixture, candidate))[0]?.phase, "closing");
+      await fixture.work(stop, "succeeded");
+      assert.equal((await fixture.currentAgent(owner))?.activeRevisionId, undefined);
+      const pending = await fixture.deploymentStatus(owner, candidate);
       unavailable = false;
       await advanceCleanupRetries(fixture, candidate);
       await waitFor(
@@ -272,7 +369,22 @@ export function testRepositoryCleanup(setup: RevisionSetup) {
           return current[0]?.phase === "disposed" ? true : undefined;
         },
       );
-      await fixture.work(stop, "succeeded");
+      const deferredWork = required(cleanupBeforeInventory[0], "deferred stop cleanup");
+      await fixture.work(
+        { id: candidate.id, idempotencyKey: deferredWork.idempotency_key },
+        "succeeded",
+      );
+      const settled = await fixture.deploymentStatus(owner, candidate);
+      assert.deepEqual(
+        [pending.cleanup, settled.cleanup],
+        [
+          { status: "queued", nextAttemptAt: deferredWork.available_at.toISOString() },
+          { status: "succeeded", nextAttemptAt: null },
+        ],
+        "exact revision status must surface the stopped revision's durable disposal",
+      );
+      assert.deepEqual({ ...pending, cleanup: null }, beforeStop);
+      assert.deepEqual({ ...settled, cleanup: null }, beforeStop);
     },
   );
 

@@ -79,21 +79,26 @@ export async function probePackagedCodex(
   } else {
     assert.equal(Object.hasOwn(provenance, "codexDependencyPinPatchSha256"), false);
   }
-  assert.equal(
-    provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
-    historicalCodex
-      ? "4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804"
-      : "b6261ce5be40e7d3c8f2d263aba7320301cbdd66381540edbb4362e95794139a",
-  );
+  if (historicalCodex) {
+    assert.equal(
+      provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
+      "4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804",
+    );
+  } else {
+    assert.equal(
+      Object.hasOwn(provenance, "openclawRequiredWorkerAuthorityRegressionPatchSha256"),
+      false,
+    );
+  }
   if (historicalCodex) {
     assert.deepEqual(provenance.patches, {
       "openclaw-codex-read-only-paths.patch": provenance.openclawBridgePatchSha256,
       "openclaw-codex-full-access-profile.patch":
         "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a",
-      "openclaw-required-worker-authority-regression.patch":
-        provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
       "openclaw-google-worker-placeholder.patch":
         "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
+      "openclaw-required-worker-authority-regression.patch":
+        provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
       "openclaw-control-ui-browser-reconnect.patch":
         "f281242922bcd1e3349aef18e24d77e95ddf3e3d1dacbea30b26c759e0f5f947",
       "openclaw-terminated-gateway-namespace.patch":

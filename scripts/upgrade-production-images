@@ -1377,7 +1377,7 @@ verify_agent_continuity() {
 
 # Inventory is an authorized, complete view. Missing collections are not an empty fleet.
 read_restart_inventory() {
-  local destination=$1
+  local destination=$1 preflight_rehearsal=${2:-0}
   "${occ_json[@]}" installation deployment-inventory </dev/null >"$destination" ||
     die "cannot read the complete deployment inventory before stopping the worker. Restore access to the existing API if quiescence stopped it, then resume; no additional OCC writer was stopped."
   jq -es --arg installationId "$installation_id" '
@@ -1403,16 +1403,25 @@ read_restart_inventory() {
     die "the deployment inventory contains nonterminal Agent work; wait for it to finish before upgrading."
   fi
   if [[ -z "$runtime_image" ]]; then
-    local refusals
-    refusals=$(jq -r '
+    local assessment refusals original_worker_only
+    assessment=$(jq -c '
       [.namespaces[] as $namespace | $namespace.agents[] |
         select(.status == "active" and .desiredRuntimeState == "running" and .activeRevisionId != null) |
         select(.repositoryWorkerRestart != "reverification-supported" and .repositoryWorkerRestart != "not-applicable") |
         {namespace: $namespace.id, agent: .id, revision: .activeRevisionId,
          reason: (if .repositoryWorkerRestart == "original-worker-required" then "original-worker-required" else "unknown" end)}] |
-      .[:10][] | "  Namespace \(.namespace | .[:128] | tojson), Agent \(.agent | .[:128] | tojson), revision \(.revision | .[:128] | tojson): \(.reason)"
+      {originalWorkerOnly: all(.[]; .reason == "original-worker-required"),
+       refusals: ([.[:10][] | "  Namespace \(.namespace | .[:128] | tojson), Agent \(.agent | .[:128] | tojson), revision \(.revision | .[:128] | tojson): \(.reason)"] | join("\n"))}
     ' "$destination")
-    [[ -z "$refusals" ]] || die "retained Agent revisions cannot safely pass the repository worker-restart preflight:
+    json_fields "$assessment" refusals=refusals original_worker_only=originalWorkerOnly
+    if [[ -z "$refusals" ]]; then
+      return
+    fi
+    if ((preflight_rehearsal)) && [[ "$original_worker_only" == true ]]; then
+      retained_revision_blockers=$refusals
+      return
+    fi
+    die "retained Agent revisions cannot safely pass the repository worker-restart preflight:
 $refusals
 Stop and settle these Agents under an authorized interruption, or plan a normal revision replacement. Inspect $destination for the complete inventory. No additional OCC writer was stopped."
   fi
@@ -1531,7 +1540,8 @@ targets="$evidence_dir/targets.jsonl"
 : >"$targets"
 target_count=0
 inventory="$evidence_dir/inventory/deployment-inventory.json"
-read_restart_inventory "$inventory"
+retained_revision_blockers=
+read_restart_inventory "$inventory" "$preflight_only"
 normalize_restart_inventory "$inventory" >"$evidence_dir/inventory/restart-preflight.json"
 
 if [[ -z "$runtime_image" ]]; then
@@ -1859,6 +1869,13 @@ rendered="$evidence_dir/helm-attempts/$helm_attempt/rendered.yaml"
 preflight_startup
 if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]]; then
   verify_installation_switch
+fi
+if ((preflight_only)) && [[ -n "$retained_revision_blockers" ]]; then
+  touch "$evidence_dir/preflight-blocked-original-worker" ||
+    die "cannot record the original-worker blocker in the evidence directory."
+  die "Candidate startup and migration checks passed and temporary resources are gone. The upgrade remains blocked because retained Agent revisions require their original worker:
+$retained_revision_blockers
+Stop and settle these Agents under an authorized interruption, or plan a normal revision replacement. Inspect $inventory for the complete inventory. No OCC writer was stopped. Same-revision continuity is unverified."
 fi
 if ((preflight_only)); then
   printf 'Preflight passed; no OCC writer was stopped. To deploy, omit --preflight-only and use the same reviewed inputs with a fresh evidence directory.\n'

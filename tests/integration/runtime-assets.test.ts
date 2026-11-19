@@ -367,16 +367,15 @@ packages:
   }
   assert.deepEqual(Object.entries(patches), applied);
   assert.equal(Object.hasOwn(provenance, "codexDependencyPinPatchSha256"), false);
-  // The remaining per-patch fields keep their names and values.
-  for (const [field, file] of [
-    ["openclawBridgePatchSha256", "openclaw-codex-read-only-paths.patch"],
-    [
-      "openclawRequiredWorkerAuthorityRegressionPatchSha256",
-      "openclaw-required-worker-authority-regression.patch",
-    ],
-  ] as const) {
-    assert.equal(provenance[field], patches[file], field);
-  }
+  assert.equal(
+    Object.hasOwn(provenance, "openclawRequiredWorkerAuthorityRegressionPatchSha256"),
+    false,
+  );
+  // The remaining per-patch field keeps its name and value.
+  assert.equal(
+    provenance.openclawBridgePatchSha256,
+    patches["openclaw-codex-read-only-paths.patch"],
+  );
 
   // Assembly must pair the new server with the exact stock package's sandbox
   // binary and preserve the stock CLI. Execution is checked in the image test.
