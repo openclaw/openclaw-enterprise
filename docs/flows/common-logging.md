@@ -80,9 +80,9 @@ use Pino at the selected level. The API disables Fastify request logging.
 Bootstrap and migration separate protocol success output from structured
 failures. Before Pino writes, `apps/controller/src/logging.ts:emitOccLogEvent`
 keeps reviewed scalars and drops credentials, provider payloads, request and
-reply objects, and unsafe strings. The emitter applies URL and
-connection-string credential checks to approved strings. Step 7 covers
-Collector filtering.
+reply objects, and unsafe strings. The emitter applies token, URL, query, form,
+JSON, connection-string and HTTP header credential checks to approved strings.
+Step 7 covers Collector filtering.
 
 The Collector keeps allowed worker `work.operation` values and `work.id` formats.
 Agent stop keys include the operation UUID. Credential withdrawal keys end in
@@ -106,7 +106,8 @@ Pending outcomes and scheduling are unchanged.
 
 Compute preparation failures may carry a Driver-reviewed stage, classification,
 status, and message (up to 256 characters). The worker excludes raw exceptions.
-The sanitizer drops secret-shaped messages before output.
+These and Compute preflight warnings keep their message as one line of at most
+512 characters. The sanitizer drops secret-shaped messages before output.
 
 ### 3. Admission freezes runtime logging
 

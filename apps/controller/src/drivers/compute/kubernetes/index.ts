@@ -4405,7 +4405,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       message: string;
     }[] = broadStatusProxySourceCidrs(this.options).map((cidr) => ({
       code: "KUBERNETES_STATUS_PROXY_SOURCE_BROAD",
-      // The worker log keeps only plain text (logging.ts SAFE_STRING): no commas or quotes.
       message:
         `Plugin status proxy CIDR ${cidr} covers more than one address: every Pod in it ` +
         "can reach the Agent status port. Use the API server /32 or /128 source addresses.",

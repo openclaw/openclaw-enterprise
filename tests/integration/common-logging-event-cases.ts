@@ -6,6 +6,11 @@ import {
   MAX_LOGGED_IDENTIFIERS,
   skippedUserLogFields,
 } from "../../apps/controller/src/logging.ts";
+import {
+  carriesFakeCredential,
+  CREDENTIAL_SHAPE_TEXTS,
+  LEGITIMATE_DIAGNOSTIC_TEXTS,
+} from "../fixtures/logged-error-text-cases.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { captureLogs, logAt } from "./common-logging-output.ts";
 
@@ -284,24 +289,37 @@ export function registerEventCases(): void {
       assert.equal(JSON.stringify(output.lines).includes("invented-fixture"), false);
     }
 
-    // Only the preparation diagnostic changed: a preflight warning with punctuation still
-    // loses its message and keeps its other fields.
-    const index = output.lines.length;
-    emit({
+    // A preflight warning takes the same path: its punctuation keeps the message as one
+    // bounded line.
+    const warningFields = {
       event: "compute.preflight-warning",
       computeDriverId: "compute-kubernetes",
       code: "KUBERNETES_STATUS_PROXY_SOURCE_BROAD",
-      message: "Proxy CIDR 0.0.0.0/0 covers more than one address; every Pod can reach the port.",
-    });
-    const { time: warnedAt, ...warning } = logAt(output.lines, index);
-    assert.ok(warnedAt);
-    assert.deepEqual(warning, {
-      severity: "WARN",
-      service: "occ-worker",
-      event: "compute.preflight-warning",
-      computeDriverId: "compute-kubernetes",
-      code: "KUBERNETES_STATUS_PROXY_SOURCE_BROAD",
-    });
+    };
+    const warned = (message: string) => {
+      const index = output.lines.length;
+      emit({ ...warningFields, message });
+      const { time, message: kept, ...line } = logAt(output.lines, index);
+      assert.ok(time);
+      assert.deepEqual(line, { severity: "WARN", service: "occ-worker", ...warningFields });
+      return kept;
+    };
+    const punctuated =
+      "Proxy CIDR 0.0.0.0/0 covers more than one address; every Pod can reach the port.";
+    assert.equal(warned(punctuated), punctuated);
+    assert.equal(warned("Retry later,\n".repeat(60)), "Retry later, ".repeat(60).slice(0, 512));
+
+    // On both events OCC's own diagnostics are kept verbatim, and a JSON, form or
+    // connection-string pair, a credential header or a token prefix is left out.
+    for (const text of LEGITIMATE_DIAGNOSTIC_TEXTS) {
+      assert.equal(logged(text), text);
+      assert.equal(warned(text), text);
+    }
+    for (const { shape, text } of CREDENTIAL_SHAPE_TEXTS) {
+      assert.equal(logged(text), undefined, shape);
+      assert.equal(warned(text), undefined, shape);
+    }
+    assert.equal(carriesFakeCredential(JSON.stringify(output.lines)), false);
   });
 
   test("activation warning caps skipped account IDs and reports the total and truncation", () => {
