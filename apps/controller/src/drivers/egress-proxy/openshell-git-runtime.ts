@@ -1188,7 +1188,12 @@ export class OpenShellGitRuntime {
     let prepared: T;
     try {
       prepared = await release.prepare();
-      if (!canSend()) {
+      const fence = entry.fence;
+      // A different worker can withdraw during Compute's recipient or readiness reads.
+      if (canSend()) {
+        await this.fenced(entry, signal);
+      }
+      if (entry.fence !== fence || !canSend()) {
         throw new Error("Cannot release this preview startup.");
       }
     } catch (error) {
@@ -1879,7 +1884,8 @@ export class OpenShellGitRuntime {
         // unknown, and a stale fence writes nothing.
         await this.fenced(entry, signal, "rotate", material);
         // Retain the selected recipient, but authorize at this reservation's new fence.
-        const reservedInstall = install && { ...install, fence: entry.fence };
+        const fence = entry.fence;
+        const reservedInstall = install && { ...install, fence };
         try {
           const rotated = await entry.provider.rotate(
             entry.binding,
@@ -1900,6 +1906,8 @@ export class OpenShellGitRuntime {
               const isCurrent = () =>
                 !entry.blocked &&
                 !this.stopped.signal.aborted &&
+                !signal.aborted &&
+                entry.fence === fence &&
                 this.materialIsLive(entry.revision, material.expiresAt) &&
                 entry.provider.repositoryPolicyIsFresh(recipient);
               if (!isCurrent()) {
@@ -1910,9 +1918,15 @@ export class OpenShellGitRuntime {
                 current &&
                 !("absent" in current) &&
                 isDeepStrictEqual(material, current) &&
-                isCurrent() &&
-                !signal.aborted
+                isCurrent()
               ) {
+                if (entry.authorization.repositoryNetworkPolicy !== undefined) {
+                  // The material snapshot can arrive after a different worker withdraws it.
+                  await this.fenced(entry, signal);
+                  if (!isCurrent()) {
+                    return;
+                  }
+                }
                 return {
                   value: current.value,
                   expiresAt: current.expiresAt,

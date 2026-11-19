@@ -511,7 +511,7 @@ async function heldGit(t: TestContext, acl = false, modelSourceId?: string) {
   let loaded = true;
   let allowUninspectedCredentials = false;
   let observationAgeMs = 0;
-  let readWorkload = () => {};
+  let readWorkload: () => void | Promise<void> = () => {};
   const setPolicyLoaded = (value: boolean) => {
     loaded = value;
   };
@@ -662,7 +662,7 @@ async function heldGit(t: TestContext, acl = false, modelSourceId?: string) {
       model: modelProvider,
       workload: async (sandboxId) => {
         assert.equal(sandboxId, f.sandbox.id);
-        readWorkload();
+        await readWorkload();
         return "original-pods";
       },
     },
@@ -737,7 +737,7 @@ async function heldGit(t: TestContext, acl = false, modelSourceId?: string) {
     setObservationAge: (ms: number) => {
       observationAgeMs = ms;
     },
-    onWorkloadRead: (read: () => void) => {
+    onWorkloadRead: (read: () => void | Promise<void>) => {
       readWorkload = read;
     },
     reconcile,
@@ -1631,7 +1631,31 @@ for (const withdrawal of ["local", "durable"] as const) {
   });
 }
 
-test("Compute retries an unsent release after the final recipient observation expires", async (t) => {
+test("ACL rotation refuses a material snapshot returned after durable withdrawal", async (t) => {
+  const { f, store, revision, entry, reconcile, activity } = await heldGit(t, true);
+  const selectMaterial = f.owner.readOpenShellMaterial.bind(f.owner);
+  f.owner.readOpenShellMaterial = async (...args) => {
+    const material = await selectMaterial(...args);
+    if (f.calls.material === 2) {
+      // The final material read has selected a live snapshot, but the reply
+      // reaches the rotating worker only after a different worker withdraws it.
+      assert.ok(material && !("absent" in material));
+      await store.withdraw({ revisionId: revision.id });
+      assert.equal(entry.blocked, undefined);
+    }
+    return material;
+  };
+  await reconcile();
+  assert.equal(f.calls.material, 2);
+  assert.equal(store.rows.get(revision.id)?.blocked, "withdrawn");
+  assert.equal(activity.updates, 0);
+  assert.deepEqual(f.runtime.route(revision.id), { state: "blocked", reason: "withdrawn" });
+});
+
+async function checkComputeReleaseAfterRecipientRead(
+  t: TestContext,
+  interruption: "expiry" | "withdrawal",
+) {
   const driverId = "openshell-sandbox";
   const auth = {
     method: "credential_source",
@@ -1647,6 +1671,8 @@ test("Compute retries an unsent release after the final recipient observation ex
     client,
     reconcile,
     startupId,
+    store,
+    entry,
     setObservationAge,
     onWorkloadRead,
   } = await heldGit(t, true, auth.sourceId);
@@ -1769,13 +1795,24 @@ test("Compute retries an unsent release after the final recipient observation ex
   t.mock.method(performance, "now", () => realNow() + elapsed);
   let stale = true;
   let finalReads = 0;
+  let recipientReads = 0;
+  let signatures = 0;
   const custody = {
     recordEgressInstallation: async (value: EgressInstallation) => {
       committed = value;
     },
     currentEgressInstallation: async () => {
       finalReads++;
-      if (stale) {
+      if (interruption === "withdrawal") {
+        onWorkloadRead(async () => {
+          if (++recipientReads === 2) {
+            // Compute verifies the installation, then separately reads its
+            // recipient. Commit withdrawal during that final read with no local signal.
+            await store.withdraw({ revisionId: selected.id });
+            assert.equal(entry.blocked, undefined);
+          }
+        });
+      } else if (stale) {
         // The launcher and custody receipt remain the same. Only the recipient read
         // inside Compute's final verification crosses its supervisor lease.
         setObservationAge(14_000);
@@ -1793,9 +1830,27 @@ test("Compute retries an unsent release after the final recipient observation ex
       custody,
       async () => true,
       async () => harness,
-      (id, installation) => signComputeExecutionRelease(privateKey, id, installation, probePath),
+      (id, installation) => {
+        signatures += 1;
+        return signComputeExecutionRelease(privateKey, id, installation, probePath);
+      },
       (id, nonce) => signComputeRepositoryGitProbe(privateKey, id, probePath, nonce),
     );
+  if (interruption === "withdrawal") {
+    const refusal = await enroll().catch((error: unknown) => error);
+    assert.equal(posts.length, 0, "a store-only withdrawal prevents the launcher POST");
+    assert.equal(finalReads, 1);
+    assert.equal(recipientReads, 2);
+    assert.equal(signatures, 1, "the signed release reached the dispatch check");
+    assert.equal(store.rows.get(revision.id)?.blocked, "withdrawn");
+    assert.ok(refusal instanceof Error);
+    assert.match(refusal.message, /OpenShell Git route was closed by another worker/);
+    assert.equal(entry.preview.release, undefined, "the attempt remains classified as unsent");
+    assert.equal(entry.blocked, undefined, "no local unconfirmed-release tombstone");
+    assert.equal(f.runtime.previewReleased(revision.id), false);
+    return;
+  }
+
   await assert.rejects(
     enroll(),
     /Compute release requires the exact current committed installation/,
@@ -1824,6 +1879,14 @@ test("Compute retries an unsent release after the final recipient observation ex
     ),
   );
   assert.equal(f.runtime.previewReleased(revision.id), true);
+}
+
+test("Compute retries an unsent release after the final recipient observation expires", async (t) => {
+  await checkComputeReleaseAfterRecipientRead(t, "expiry");
+});
+
+test("Compute sends no launcher release after durable withdrawal during the final recipient read", async (t) => {
+  await checkComputeReleaseAfterRecipientRead(t, "withdrawal");
 });
 
 // Preserve the admission checks on the supported selected-repository workflow.

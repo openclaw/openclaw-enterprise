@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-19
-last_updated_session: "authoring-run/e5c553f7-737b-4f9e-a1bb-75ff8aa2e5cc"
+last_updated_session: "authoring-run/2b8fc8d2-014c-4fdd-8a8a-4b36f8f06904"
 ---
 
 # Protected credential request flow
@@ -306,13 +306,12 @@ Sandboxes or continued model execution.
 `packages/occ/src/state/credential-deliveries.ts:CredentialDeliveries` requires
 recipient confirmation and the reserving worker for snapshots, including bootstrap.
 
-For repository network policies,
 `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:reconcile`
-prepares Gateway authentication before checking route ownership and material.
-At dispatch it checks local withdrawal, expiry and supervisor lease.
+rechecks durable ownership after Gateway authentication and repository-policy material
+selection. `releasePreview` rechecks ownership after Compute signs the launcher release.
+Both check local withdrawal, expiry and supervisor lease at repository-policy dispatch.
 The worker cancels unsent reservations it still holds. Uncertain writes stay blocked.
-Local withdrawal blocks launcher release synchronously. `release` drops closed
-routes on Sandbox deletion.
+`release` drops closed routes on Sandbox deletion.
 
 `prepare` requires a held launch or explicit installation preview and
 closes routes from other workers before credential access.
@@ -350,6 +349,7 @@ None.
 
 ## Changelog
 
+- 2026-11-19 11:59: Recheck durable ownership at dispatch. (authoring-run/2b8fc8d2-014c-4fdd-8a8a-4b36f8f06904 - 6faced2cc2dd1b68171f9973d28416df77a42f58)
 - 2026-11-19 11:36: Fence credential dispatch and launcher release against withdrawal. (authoring-run/e5c553f7-737b-4f9e-a1bb-75ff8aa2e5cc - 88411a2c219e6903d8777d68013ae4b2330ca5a6)
 
 - 2026-11-19 05:56: Cancel writes that expire before dispatch. (authoring-run/db1dbeb6-2423-4378-b292-8e694c9e97e0 - c495c2aa1bc0ab809a92cfe449e17a9d681efad1)
