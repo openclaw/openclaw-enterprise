@@ -1022,8 +1022,9 @@ test(
     const released = await fetch(`${control}/release`, { method: "POST" });
     assert.equal(released.status, 200);
 
-    // Wait until filelog has consumed every input, then stop the owned Collector
-    // to drain its batch. Otherwise a missing forged record could be a read race.
+    // Wait until filelog has consumed every input. Otherwise a missing forged
+    // record could be a read race. Observe the allowed exports before shutdown:
+    // a clean stop may leave records in the persistent exporter queue.
     const metricsAddress = await fixture.port(8888);
     let acceptedRecords: number | null = null;
     const pipelineCounts: Record<string, number | null> = {
@@ -1067,7 +1068,7 @@ test(
     };
     try {
       await waitFor(
-        "every CRI record after Pod metadata syncs",
+        "every CRI record and both Namespace refusals after Pod metadata syncs",
         async () => {
           const response = await fetch(`http://${metricsAddress}/metrics`);
           assert.equal(response.status, 200);
@@ -1083,11 +1084,7 @@ test(
           // The last receiver scrape also locates a loss before the Collector stops.
           for (const [field, name, label] of [
             ["refused", "otelcol_receiver_refused_log_records", 'receiver="filelog"'],
-            [
-              "filtered",
-              "otelcol_processor_filter_logs_filtered",
-              'processor="filter/operational"',
-            ],
+            ["filtered", "otelcol_processor_filter_logs_filtered", 'filter="filter/operational"'],
             ["sent", "otelcol_exporter_sent_log_records", 'exporter="otlp_http"'],
             ["sendFailed", "otelcol_exporter_send_failed_log_records", 'exporter="otlp_http"'],
             ["queued", "otelcol_exporter_queue_size", 'exporter="otlp_http"'],
@@ -1105,12 +1102,26 @@ test(
               ? values.reduce((total, count) => total + count, 0)
               : null;
           }
-          return (acceptedRecords ?? 0) >= podMetadata.length;
+          return (
+            (acceptedRecords ?? 0) >= podMetadata.length && (pipelineCounts.filtered ?? 0) >= 2
+          );
         },
         fixture,
       );
     } catch (error) {
       await reportProgress("while waiting for intake");
+      throw error;
+    }
+    assert.equal(acceptedRecords, podMetadata.length);
+    assert.equal(pipelineCounts.filtered, 2, "both forged OCC records were filtered");
+    try {
+      await waitFor(
+        "the allowed records before Collector shutdown",
+        async () => (await records()).length >= 3,
+        fixture,
+      );
+    } catch (error) {
+      await reportProgress("while waiting for export");
       throw error;
     }
     await reportProgress("before drain");
