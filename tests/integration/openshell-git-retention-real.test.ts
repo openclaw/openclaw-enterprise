@@ -20,13 +20,17 @@ import {
   observeUntil,
 } from "../helpers/finite-git-agent.ts";
 import { createFiniteGitProviderObservation } from "../helpers/finite-git-providers.ts";
-import { OpenShellPreparedGitProvider } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
+import {
+  OpenShellPreparedGitProvider,
+  type OpenShellPreparedGitScope,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
 import {
   cleanEnvironment,
   run,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.ts";
 import { createOpenShellGitInstallation } from "../helpers/openshell-git-installation.mjs";
+import { ownFirstAgentWork } from "../helpers/local-first-agent-stack.mjs";
 import {
   createFiniteGitConversation,
   finiteGitConversationFailureStage,
@@ -952,12 +956,16 @@ test(
   },
 );
 
+function settleBeforeFixtureTeardown(run: (t: TestContext) => Promise<void>) {
+  return (t: TestContext) => ownFirstAgentWork(t)(run(t));
+}
+
 // Run in an approved disposable window with the documented OpenShell prerequisites:
 // OCC_TEST_OPENSHELL_K3D_REAL=1 node --test --test-name-pattern='OpenShell enforces installed Git repository ACLs with managed Basic credentials' tests/integration/openshell-git-retention-real.test.ts
 test(
   "OpenShell enforces installed Git repository ACLs with managed Basic credentials",
   { skip: !selected, timeout: 45 * 60_000 },
-  async (t) => {
+  settleBeforeFixtureTeardown(async (t) => {
     const fixture = await createOpenShellGitInstallation(t, { networkAcl: true });
     const { gatewayClient, workspace, origin } = fixture;
     const network = origin.network;
@@ -965,13 +973,30 @@ test(
     assert.deepEqual(network.repositories, ["fixture/a", "fixture/b", "fixture/c"]);
     assert.match(fixture.sandboxImage, /@sha256:[a-f0-9]{64}$/);
     const workspaceResource = await gatewayClient.getWorkspace(workspace, t.signal);
-    assert.ok(workspaceResource?.id);
-    const execute = createManagedWorkloadExec(t, {
+    const workspaceId = workspaceResource?.id;
+    assert.ok(workspaceId);
+    // The fixture owns the cluster and its operator credential. One test owns
+    // these random Sandbox names, never reuses them, and owns cluster teardown.
+    const runLabel = "openclaw.dev/git-acl-test-run";
+    const runId = randomUUID();
+    const managedExec = createManagedWorkloadExec(t, {
       backend: fixture.gatewayBackend,
       gatewayClient,
       workspace,
       checkpoint: fixture.checkpoint,
     });
+
+    const token = network.token;
+    const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
+    type Target = { sandboxName: string; sandboxId: string };
+    const execute = async (target: Target, command: string[]) => {
+      const result = await managedExec(target, command);
+      // Fail before parsing or reporting any guest output that exposes the broad credential.
+      for (const output of [result.stdout, result.stderr]) {
+        assert.ok(!output.includes(token) && !output.includes(basic), "ACL_CREDENTIAL_IN_OUTPUT");
+      }
+      return result;
+    };
 
     // Calibrate the exact broad material outside OpenShell. The origin rejects both
     // missing credentials and the guest placeholder; it does not enforce A/B/C grants.
@@ -988,13 +1013,14 @@ test(
       GIT_CONFIG_KEY_0: "maintenance.auto",
       GIT_CONFIG_VALUE_0: "false",
       GIT_CONFIG_KEY_1: "http.extraHeader",
-      GIT_CONFIG_VALUE_1: `Authorization: Basic ${Buffer.from(`x-access-token:${network.token}`).toString("base64")}`,
+      GIT_CONFIG_VALUE_1: `Authorization: Basic ${basic}`,
       GIT_CONFIG_KEY_2: "http.curloptResolve",
       GIT_CONFIG_VALUE_2: `github.com:${port}:${fixture.originBridge}`,
       NO_PROXY: "github.com",
       no_proxy: "github.com",
     });
-    const control = (args: string[]) => run("git", args, { cwd: directory, env: controlEnv });
+    const control = (args: string[]) =>
+      run("git", args, { cwd: directory, env: controlEnv, signal: t.signal });
     await control(["clone", `https://github.com:${port}/fixture/a.git`, "a"]);
     await control(["-C", "a", "push", "origin", "HEAD:refs/heads/approved"]);
     assert.equal(await network.ref("fixture/a", "refs/heads/approved"), origin.initialSha);
@@ -1003,14 +1029,15 @@ test(
     await control(["-C", "c", "push", "origin", "HEAD:refs/heads/control"]);
     assert.equal(await network.ref("fixture/c", "refs/heads/control"), origin.initialSha);
 
-    const createSandbox = async (name: string, providers: string[]) => {
-      // Sandbox deletion is name-based, so the disposable installation owns teardown.
+    const createSandbox = async (name: string, providers: string[]): Promise<Target> => {
+      const selector = { workspace, name };
+      assert.ok(!(await gatewayClient.getSandbox(selector, t.signal)), "ACL_NAME_ALREADY_USED");
       const created = await gatewayClient.createSandbox(
         {
           name,
           workspace,
           requestId: randomUUID(),
-          labels: {},
+          labels: { [runLabel]: runId },
           annotations: {},
           serviceExposures: [],
           spec: {
@@ -1035,9 +1062,14 @@ test(
         "disposable Git Sandbox startup",
         t.signal,
         async () => {
-          const current = await gatewayClient.getSandbox({ workspace, name }, t.signal);
-          assert.equal(current?.id, created.id);
-          return current?.phase === "SANDBOX_PHASE_READY" || current?.phase === 2
+          const current = await gatewayClient.getSandbox(selector, t.signal);
+          assert.ok(current?.id === created.id, "ACL_SANDBOX_IDENTITY");
+          assert.equal(current.workspace, workspace);
+          assert.equal(current.labels[runLabel], runId);
+          // This configured attachment set is checked even when the Provider's
+          // installed-policy readback is unavailable on a standalone test branch.
+          assert.deepEqual(current.spec?.providers ?? [], providers);
+          return current.phase === "SANDBOX_PHASE_READY" || current.phase === 2
             ? current
             : undefined;
         },
@@ -1061,37 +1093,63 @@ test(
     );
     assert.ok(/^\/[A-Za-z0-9_./-]+$/.test(curl!), "ACL_CURL_IDENTITY");
 
-    const name = `ga-${randomBytes(8).toString("hex")}`;
-    const provider = new OpenShellPreparedGitProvider(gatewayClient, {
-      workspace,
-      workspaceId: workspaceResource.id,
-      sandbox: name,
-      executionId: randomUUID(),
-      installationId: origin.installationId,
-      gitOrigin: "https://github.com",
-      apiOrigin: "https://api.github.com",
-      binaries: [gitHelper!, curl!],
-      repositoryNetworkPolicy: [
-        { repository: "fixture/a", access: "read" },
-        { repository: "fixture/b", access: "write" },
-      ],
-    });
-    const binding = await provider.prepare(
-      { value: network.token, expiresAt: new Date(Date.now() + 3_500_000).toISOString() },
-      t.signal,
-    );
-    const target = await createSandbox(name, [binding.provider]);
-    await fixture.verifySupervisorImage(target);
-    const installed = await observeUntil(
-      "installed managed Git Provider",
-      t.signal,
-      () => provider.observe(binding, target.sandboxId, t.signal),
-      120_000,
-    );
-    assert.equal(installed.credentialState, "active");
-    assert.equal(installed.providerResourceVersion, binding.resourceVersion);
+    const install = async (
+      repositoryNetworkPolicy: NonNullable<OpenShellPreparedGitScope["repositoryNetworkPolicy"]>,
+    ) => {
+      const name = `ga-${randomBytes(8).toString("hex")}`;
+      const scope = {
+        workspace,
+        workspaceId,
+        sandbox: name,
+        executionId: randomUUID(),
+        installationId: origin.installationId,
+        gitOrigin: "https://github.com",
+        apiOrigin: "https://api.github.com",
+        binaries: [gitHelper!, curl!],
+        // The installed policy readback must account for every attached Provider.
+        expectedProviders: [],
+        repositoryNetworkPolicy,
+      };
+      const provider = new OpenShellPreparedGitProvider(gatewayClient, scope);
+      const binding = await provider.prepare(
+        { value: token, expiresAt: new Date(Date.now() + 3_500_000).toISOString() },
+        t.signal,
+      );
+      const target = await createSandbox(name, [binding.provider]);
+      const supervisor = await fixture.verifySupervisorImage(target);
+      await fixture.checkpoint("installed-supervisor", supervisor);
+      const installed = await observeUntil(
+        "installed managed Git Provider",
+        t.signal,
+        () => provider.observe(binding, target.sandboxId, t.signal),
+        120_000,
+      );
+      assert.equal(installed.credentialState, "active");
+      assert.equal(installed.providerResourceVersion, binding.resourceVersion);
+      return { target, supervisor, installed, provider, binding };
+    };
 
-    const guest = async (script: string) => execute(target, ["sh", "-ceu", script]);
+    const original = await install([
+      { repository: "fixture/a", access: "read" },
+      { repository: "fixture/b", access: "write" },
+    ]);
+    const sandboxResource = ({ sandboxName }: Target) =>
+      fixture.kube([
+        "get",
+        "sandboxes.agents.x-k8s.io",
+        sandboxName,
+        "-n",
+        workspace,
+        "--ignore-not-found",
+        "-o",
+        'jsonpath={.metadata.uid}{" "}{.metadata.labels.openshell\\.ai/sandbox-id}',
+      ]);
+    const originalResource = await sandboxResource(original.target);
+    const [originalUid, originalSandboxId] = originalResource.split(" ");
+    assert.ok(originalUid && /^[a-f0-9-]{36}$/.test(originalUid), "ACL_SANDBOX_UID");
+    assert.equal(originalSandboxId, original.target.sandboxId);
+
+    const guest = (target: Target, script: string) => execute(target, ["sh", "-ceu", script]);
     // Check the stable alias before either client uses the original credential value.
     const requireGitHubPlaceholder = `require_github_placeholder() (
   case \${GITHUB_TOKEN-} in
@@ -1108,6 +1166,7 @@ require_github_placeholder`;
     const gitSetup = `${requireGitHubPlaceholder}; export GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0; export HOME=/tmp; git config --global credential.helper '!f() { printf "%s\\n" username=x-access-token "password=$GITHUB_TOKEN"; }; f'`;
     const beforeAllowed = network.requests().length;
     const success = await guest(
+      original.target,
       `${gitSetup}; cd /tmp; git clone -q https://github.com/fixture/a.git a; git -C a fetch -q origin; git clone -q https://github.com/fixture/b.git b; git -C b fetch -q origin; git -C b -c user.name=Fixture -c user.email=fixture@example.test commit -q --allow-empty -m change; git -C b push -q origin HEAD:refs/heads/approved; git -C b rev-parse HEAD`,
     );
     const pushed = success.stdout.toString("utf8").trim();
@@ -1115,22 +1174,21 @@ require_github_placeholder`;
     assert.equal(await network.ref("fixture/b", "refs/heads/approved"), pushed);
     assert.equal(await network.hasObject("fixture/b", pushed), true);
     const allowed = network.requests().slice(beforeAllowed);
-    assert.ok(
-      allowed.some(
-        (request: { repository: string; operation: string; authenticated: boolean }) =>
-          request.repository === "fixture/a" &&
-          request.operation === "upload-pack" &&
-          request.authenticated,
-      ),
-    );
-    assert.ok(
-      allowed.some(
-        (request: { repository: string; operation: string; authenticated: boolean }) =>
-          request.repository === "fixture/b" &&
-          request.operation === "receive-pack" &&
-          request.authenticated,
-      ),
-    );
+    for (const [repository, operation] of [
+      ["fixture/a", "upload-pack"],
+      ["fixture/b", "upload-pack"],
+      ["fixture/b", "receive-pack"],
+    ]) {
+      assert.ok(
+        allowed.some(
+          (request: { repository: string; operation: string; authenticated: boolean }) =>
+            request.repository === repository &&
+            request.operation === operation &&
+            request.authenticated,
+        ),
+        `Missing authenticated ${repository} ${operation}`,
+      );
+    }
 
     // Discovery and RPC requests are calibrated on an allowed repository, then replayed
     // byte-for-byte against each denied repository. Only the repository name changes.
@@ -1140,21 +1198,38 @@ require_github_placeholder`;
       { service: "receive", method: "GET", allowed: "b", denied: ["a", "c"] },
       { service: "receive", method: "POST", allowed: "b", denied: ["a", "c"] },
     ] as const;
-    for (const request of requests) {
-      const service = `git-${request.service}-pack`;
-      const suffix = request.method === "GET" ? `info/refs?service=${service}` : service;
+    const replay = (
+      target: Target,
+      repository: string,
+      { service: operation, method }: Pick<(typeof requests)[number], "service" | "method">,
+    ) => {
+      const service = `git-${operation}-pack`;
+      const suffix = method === "GET" ? `info/refs?service=${service}` : service;
       const body =
-        request.service === "upload" ? `0032want ${origin.initialSha}\n00000009done\n` : "0000";
+        operation === "upload" ? `0032want ${origin.initialSha}\n00000009done\n` : "0000";
       const rpc =
-        request.method === "POST"
+        method === "POST"
           ? `-H 'Content-Type: application/x-${service}-request' --data-binary '${body}'`
           : "";
-      const replay = async (repository: string) =>
-        guest(
-          `${requireGitHubPlaceholder}; '${curl}' -sS -o /dev/null -w '%{http_code} %{content_type}' -u "x-access-token:$GITHUB_TOKEN" -X '${request.method}' ${rpc} 'https://github.com/fixture/${repository}.git/${suffix}'`,
-        );
+      return guest(
+        target,
+        `${requireGitHubPlaceholder}; '${curl}' -sS -o /dev/null -w '%{http_code} %{content_type}' -u "x-access-token:$GITHUB_TOKEN" -X '${method}' ${rpc} 'https://github.com/fixture/${repository}.git/${suffix}'`,
+      );
+    };
+    const denyReplay = async (
+      target: Target,
+      repository: string,
+      request: Pick<(typeof requests)[number], "service" | "method">,
+    ) => {
+      const before = origin.snapshot().requests;
+      const response = await replay(target, repository, request);
+      assert.ok(response.stdout.toString("utf8").split(" ", 1)[0] === "403", "ACL_DENIAL_HTTP");
+      assert.equal(origin.snapshot().requests, before, "ACL_DENIAL_ORIGIN");
+    };
+    for (const request of requests) {
       const before = network.requests().length;
-      const calibration = await replay(request.allowed);
+      const calibration = await replay(original.target, request.allowed, request);
+      const service = `git-${request.service}-pack`;
       const responseType = request.method === "GET" ? "advertisement" : "result";
       assert.ok(
         calibration.stdout.toString("utf8") === `200 application/x-${service}-${responseType}`,
@@ -1171,25 +1246,151 @@ require_github_placeholder`;
         "ACL_CALIBRATION_ORIGIN",
       );
       for (const repository of request.denied) {
-        const beforeDenied = origin.snapshot().requests;
-        const response = await replay(repository);
-        assert.ok(response.stdout.toString("utf8").split(" ", 1)[0] === "403", "ACL_DENIAL_HTTP");
-        assert.equal(origin.snapshot().requests, beforeDenied, "ACL_DENIAL_ORIGIN");
+        await denyReplay(original.target, repository, request);
       }
     }
 
     // Require Git's HTTP response, not just a nonzero shell status: a failed
     // redirection must never count as a repository-policy denial. Keep raw Git
     // stderr private to the Sandbox and return only fixed diagnostics.
-    const denied = async (command: string) => {
+    const denied = async (target: Target, command: string) => {
       const before = origin.snapshot().requests;
       await guest(
+        target,
         `${gitSetup}; export LC_ALL=C; umask 077; err=$(mktemp /tmp/git-acl-denial.XXXXXX); trap 'rm -f "$err"' EXIT; if ${command} >/dev/null 2>"$err"; then printf 'ACL_NATIVE_UNEXPECTED_SUCCESS\\n' >&2; exit 1; fi; if ! grep -Eq '^fatal: .*The requested URL returned error: 403$' "$err"; then printf 'ACL_NATIVE_HTTP\\n' >&2; exit 1; fi`,
       );
       assert.equal(origin.snapshot().requests, before, "ACL_NATIVE_DENIAL_ORIGIN");
     };
-    await denied("git -C /tmp/a push -q origin HEAD:refs/heads/approved");
+    await denied(original.target, "git -C /tmp/a push -q origin HEAD:refs/heads/approved");
     assert.equal(await network.ref("fixture/a", "refs/heads/approved"), undefined);
-    await denied("git clone -q https://github.com/fixture/c.git /tmp/denied-c");
-  },
+    await denied(original.target, "git clone -q https://github.com/fixture/c.git /tmp/denied-c");
+
+    // This fixture installs the Provider directly into a fresh Sandbox. The
+    // Agent configuration, revision admission, and rollout are separate paths.
+    const replacement = await install([
+      { repository: "fixture/a", access: "read" },
+      { repository: "fixture/b", access: "read" },
+    ]);
+    assert.notEqual(replacement.target.sandboxId, original.target.sandboxId);
+    assert.notEqual(replacement.binding.providerId, original.binding.providerId);
+    assert.notEqual(replacement.installed.policyHash, original.installed.policyHash);
+    assert.notEqual(replacement.supervisor.workloadPodUid, original.supervisor.workloadPodUid);
+    assert.notEqual(replacement.supervisor.supervisorPodUid, original.supervisor.supervisorPodUid);
+
+    // DeleteSandbox selects by name. Check both recorded identities and the
+    // run label immediately before the single deletion in this owned cluster.
+    const previous = { workspace, name: original.target.sandboxName };
+    assert.equal(await sandboxResource(original.target), originalResource);
+    const current = await gatewayClient.getSandbox(previous, t.signal);
+    assert.ok(
+      current?.id === original.target.sandboxId &&
+        current.name === previous.name &&
+        current.workspace === workspace &&
+        current.labels[runLabel] === runId,
+      "ACL_RETIREMENT_IDENTITY",
+    );
+    await gatewayClient.deleteSandbox(previous, t.signal);
+
+    // A terminal Gateway delete is necessary. Independently require the same
+    // accessible Workspace, no Sandbox record, and no Kubernetes resource or
+    // Pod for the old Sandbox, including a recreated Pod with a different UID.
+    assert.equal((await gatewayClient.getWorkspace(workspace, t.signal))?.id, workspaceId);
+    assert.ok(!(await gatewayClient.getSandbox(previous, t.signal)), "ACL_RETIRED_SANDBOX_VISIBLE");
+    await observeUntil("old Sandbox and Pods to be removed", t.signal, async () => {
+      const resource = await sandboxResource(original.target);
+      assert.ok(resource === "" || resource === originalResource, "ACL_SANDBOX_REPLACED");
+      if (resource !== "") {
+        return undefined;
+      }
+      const podIdentities = await fixture.kube([
+        "get",
+        "pods",
+        "-n",
+        workspace,
+        "-o",
+        'jsonpath={range .items[*]}{.metadata.uid}{" "}{.metadata.annotations.openshell\\.ai/sandbox-id}{" "}{.metadata.ownerReferences[*].uid}{"\\n"}{end}',
+      ]);
+      const oldIdentities = [
+        originalUid,
+        original.target.sandboxId,
+        original.supervisor.workloadPodUid,
+        original.supervisor.supervisorPodUid,
+      ];
+      const identities = new Set(podIdentities.split(/\s+/u));
+      return oldIdentities.some((identity) => identities.has(identity)) ? undefined : true;
+    });
+    await original.provider.remove(t.signal);
+    assert.ok(
+      !(await gatewayClient.getProvider(workspace, original.binding.provider, t.signal)),
+      "ACL_RETIRED_PROVIDER_VISIBLE",
+    );
+    assert.ok(
+      !(await gatewayClient.getProviderProfile(workspace, original.binding.provider, t.signal)),
+      "ACL_RETIRED_PROFILE_VISIBLE",
+    );
+
+    // Build a real fast-forward candidate from the exact ref the original
+    // Sandbox pushed. A no-op, wrong parent, or locally unavailable object
+    // cannot count as a denied push. The marker file gives the push new data.
+    const b = "https://github.com/fixture/b.git";
+    const approved = "refs/heads/approved";
+    const candidate = (
+      await guest(
+        replacement.target,
+        `${gitSetup};
+git clone -q --branch approved '${b}' /tmp/b;
+printf '%s\\n' acl-downgrade > /tmp/b/acl-downgrade;
+git -C /tmp/b add acl-downgrade;
+git -C /tmp/b -c user.name=Fixture -c user.email=fixture@example.test commit -q -m acl-downgrade;
+git -C /tmp/b rev-parse HEAD HEAD^`,
+      )
+    ).stdout
+      .toString("utf8")
+      .trim()
+      .split("\n");
+    const [attempted, parent] = candidate;
+    assert.ok(
+      candidate.length === 2 && /^[a-f0-9]{40}$/.test(attempted!),
+      "ACL_DOWNGRADE_CANDIDATE",
+    );
+    assert.equal(parent, pushed);
+    assert.notEqual(attempted, pushed);
+    assert.equal(await network.ref("fixture/b", approved), pushed);
+    assert.equal(await network.hasObject("fixture/b", attempted), false);
+    await denied(replacement.target, `git -C /tmp/b push -q origin HEAD:${approved}`);
+    assert.equal(await network.ref("fixture/b", approved), pushed);
+    assert.equal(await network.hasObject("fixture/b", attempted), false);
+    t.diagnostic("Git ACL downgrade: replacement push returned HTTP 403 with zero origin requests");
+
+    // Fetch into an empty repository so a cached ref or object cannot hide
+    // a blanket Git outage after the downgrade.
+    const beforeFetch = network.requests().length;
+    const fetched = await guest(
+      replacement.target,
+      `${gitSetup}; git init -q /tmp/fresh-b; git -C /tmp/fresh-b fetch -q '${b}' '${approved}:${approved}'; git -C /tmp/fresh-b rev-parse '${approved}^{commit}'`,
+    );
+    assert.equal(fetched.stdout.toString("utf8").trim(), pushed);
+    assert.ok(
+      network
+        .requests()
+        .slice(beforeFetch)
+        .some(
+          (request: { repository: string; operation: string; authenticated: boolean }) =>
+            request.repository === "fixture/b" &&
+            request.operation === "upload-pack" &&
+            request.authenticated,
+        ),
+      "ACL_DOWNGRADE_FRESH_FETCH_ORIGIN",
+    );
+    assert.equal(await network.ref("fixture/b", approved), pushed);
+    t.diagnostic("Git ACL downgrade: fresh authenticated fetch returned the unchanged origin ref");
+
+    // The native push stops at discovery. Independently send the same calibrated
+    // receive-pack POST to catch policy that leaves direct RPC writable.
+    for (const request of requests) {
+      if (request.service === "receive") {
+        await denyReplay(replacement.target, "b", request);
+      }
+    }
+  }),
 );

@@ -547,19 +547,41 @@ export async function startSkipperPrivateGitOrigin({
           unknownRequests: () => unknownNetworkRequests,
           async ref(name, ref) {
             assert.ok(networkRepositories.includes(name));
+            // Only a successful enumeration can prove absence; Git can warn and skip broken refs.
             const result = await git(
-              ["-C", join(directory, `${name}.git`), "rev-parse", "--verify", ref],
+              [
+                "-C",
+                join(directory, `${name}.git`),
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                ref,
+              ],
               { allowFailure: true },
             );
-            return result.code === 0 ? result.stdout.trim() : undefined;
+            assert.ok(result.code === 0 && !result.stderr, "Git ref lookup failed");
+            return result.stdout
+              .split("\n")
+              .find((row) => row.startsWith(`${ref} `))
+              ?.slice(ref.length + 1);
           },
           async hasObject(name, oid) {
             assert.ok(networkRepositories.includes(name) && /^[a-f0-9]{40}$/.test(oid));
             const result = await git(
-              ["-C", join(directory, `${name}.git`), "cat-file", "-e", `${oid}^{commit}`],
-              { allowFailure: true },
+              ["-C", join(directory, `${name}.git`), "cat-file", "--batch-check"],
+              { allowFailure: true, input: `${oid}\n` },
             );
-            return result.code === 0;
+            // Git reports a missing object on stdout with a successful exit.
+            // A failed lookup or unreadable object store is missing evidence.
+            assert.ok(result.code === 0 && !result.stderr, "Git object lookup failed");
+            if (result.stdout === `${oid} missing\n`) {
+              return false;
+            }
+            assert.ok(
+              result.stdout.startsWith(`${oid} commit `) &&
+                /^\d+\n$/u.test(result.stdout.slice(oid.length + " commit ".length)),
+              "Unexpected Git object lookup result",
+            );
+            return true;
           },
           async clearRef(name, ref) {
             assert.ok(networkRepositories.includes(name));

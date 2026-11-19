@@ -41,6 +41,8 @@ test("private Git network origin accepts only its broad fixture credential acros
   assert.equal(await network.ref("fixture/a", "refs/heads/approved"), origin.initialSha);
   assert.equal(await network.ref("fixture/c", "refs/heads/control"), origin.initialSha);
   assert.equal(await network.hasObject("fixture/c", origin.initialSha), true);
+  await network.clearRef("fixture/a", "refs/heads/approved");
+  assert.equal(await network.ref("fixture/a", "refs/heads/approved"), undefined);
   const rejected = await git(
     ["ls-remote", `${origin.origin}/fixture/a.git`],
     "openshell:resolve:env:GITHUB_TOKEN",
@@ -51,6 +53,38 @@ test("private Git network origin accepts only its broad fixture credential acros
     network.requests().some((request: { authenticated: boolean }) => request.authenticated),
   );
   assert.equal(network.requests().at(-1)?.authenticated, false);
+
+  // A real fast-forward remains distinguishable from a denied update and from
+  // a no-op. The fixture must observe both the ref and the transferred object.
+  const approved = "refs/heads/approved";
+  await git(["-C", "b", "push", "origin", `HEAD:${approved}`]);
+  await git([
+    "-C",
+    "b",
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.test",
+    "commit",
+    "--allow-empty",
+    "-m",
+    "Fast-forward candidate",
+  ]);
+  const candidate = (await git(["-C", "b", "rev-parse", "HEAD"])).stdout.trim();
+  assert.notEqual(candidate, origin.initialSha);
+  assert.equal(await network.hasObject("fixture/b", candidate), false);
+  const beforeDeniedPush = network.requests().length;
+  const push = ["-C", "b", "push", "origin", `HEAD:${approved}`];
+  const deniedPush = await git(push, "openshell:resolve:env:GITHUB_TOKEN", true);
+  assert.notEqual(deniedPush.code, 0);
+  const deniedRequests = network.requests().slice(beforeDeniedPush);
+  assert.ok(deniedRequests.length > 0);
+  assert.ok(deniedRequests.every((entry: { authenticated: boolean }) => !entry.authenticated));
+  assert.equal(await network.ref("fixture/b", approved), origin.initialSha);
+  assert.equal(await network.hasObject("fixture/b", candidate), false);
+  await git(push);
+  assert.equal(await network.ref("fixture/b", approved), candidate);
+  assert.equal(await network.hasObject("fixture/b", candidate), true);
 
   const http = (path: string, method: string, body?: string) =>
     new Promise<{ status: number; type: string | undefined }>((resolve, reject) => {
@@ -97,4 +131,8 @@ test("private Git network origin accepts only its broad fixture credential acros
       "repository",
     ]);
   }
+  // A missing repository is an observation failure, not proof the forbidden ref is absent.
+  await origin.close();
+  await assert.rejects(network.ref("fixture/a", "refs/heads/approved"), /Git ref lookup failed/u);
+  await assert.rejects(network.hasObject("fixture/b", candidate), /Git object lookup failed/u);
 });
