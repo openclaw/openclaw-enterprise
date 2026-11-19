@@ -9,7 +9,7 @@ author: caseysilver-oai
 - **ID:** RFC-0044
 - **Created:** 2026-11-17
 - **Last updated:** 2026-11-18
-- **RFC PR:** Pending submission
+- **RFC PR:** [#6520](https://github.com/openclaw/openclaw-enterprise/pull/6520)
 - **Implementation plan:** [SCIM provisioning](../plans/0044-scim-provisioning.md)
 - **Related:** [RFC-0032](https://github.com/openclaw/openclaw-enterprise/blob/97db98be9a0317b98897e2a98d2cda8cc24159bd/specs/rfcs/0032-oidc-account-enrollment.md), [identity provider mapping proposal](https://github.com/openclaw/openclaw-enterprise/pull/4207)
 
