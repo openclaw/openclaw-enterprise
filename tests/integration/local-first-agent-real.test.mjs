@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { selectFirstAgentModel, verifyFirstAgentModel } from "../../scripts/first-agent-model.ts";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
+import { sha256Hex } from "../../packages/utils/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   failNativeProvisioningDeadline,
@@ -24,7 +25,6 @@ import {
   nativeFirstAgentProofTimeout,
 } from "../helpers/local-first-agent-native.mjs";
 import { localOpenShellGatewayIdentity } from "../helpers/local-openshell-gateway.mjs";
-import { openShellAgentName } from "../helpers/openshell-kubernetes-real.mjs";
 import {
   localFirstAgentStack,
   ownFirstAgentWork,
@@ -1222,6 +1222,8 @@ test(
       first.model,
       `${selectedHarness === "codex" ? "codex" : "openai"}/${expectedModel}`,
     );
+    const base = `/namespaces/${first.namespaceId}`;
+    const agentPath = `${base}/agents/${first.identity.agentId}`;
     if (selectedSandboxDriver === "openshell") {
       const kube = { stateDirectory, cluster: recorded.cluster, env };
       const deployments = await readKubernetesJson(
@@ -1337,6 +1339,23 @@ test(
           "Existing stack has no python-web startup rule; override delivery was not exercised.",
         );
       }
+      // Both OpenShell fixtures use single-cluster runtime Compute with private
+      // Gateway routing. The newly admitted first-Agent revision enables HTTP chat.
+      const { agentId, revisionId } = first.identity;
+      const admitted = await requestLocalApi(
+        first.origin,
+        serviceKey,
+        "GET",
+        `${agentPath}/revisions/${revisionId}`,
+      );
+      assert.equal(admitted.id, revisionId);
+      // Admission pins the Harness workspace to Local Setup's selected Sandbox data mount.
+      assert.equal(admitted.configuration.agents.defaults.workspace, "/sandbox/enterprise");
+      assert.equal(
+        admitted.configuration.gateway?.http?.endpoints?.chatCompletions?.enabled,
+        true,
+        "The admitted first-Agent revision must enable HTTP chat",
+      );
       const services = await readKubernetesJson(
         kube,
         [
@@ -1345,10 +1364,57 @@ test(
           "--namespace",
           namespaces.items[0].metadata.name,
           "--selector",
-          `openclaw.dev/agent=${first.identity.agentId}`,
+          `openclaw.dev/agent=${agentId}`,
         ],
-        "the Agent Service",
+        "the Agent Services",
       );
+      const agentSuffix = sha256Hex(agentId, 12);
+      const gatewayName = gateway.metadata.name;
+      const harnessName = `agent-${agentSuffix}`;
+      const chatName = `chat-${agentSuffix}-rev-${sha256Hex(revisionId, 12)}`;
+      assert.deepEqual(
+        services.items.map((service) => service.metadata.name).sort(),
+        [gatewayName, harnessName, chatName].sort(),
+        "The Agent must have exactly its Gateway, parked Harness and revision-scoped chat Services",
+      );
+      const gatewayService = services.items.find(
+        (service) => service.metadata.name === gatewayName,
+      );
+      const harnessService = services.items.find(
+        (service) => service.metadata.name === harnessName,
+      );
+      const chatService = services.items.find((service) => service.metadata.name === chatName);
+      const gatewaySelector = {
+        "openclaw.dev/namespace": first.namespaceId,
+        "openclaw.dev/agent": agentId,
+        "openclaw.dev/workload-role": "gateway",
+        "app.kubernetes.io/name": gateway.spec.template.metadata.labels["app.kubernetes.io/name"],
+      };
+      assert.deepEqual(gatewayService.spec.selector, gatewaySelector);
+      // The direct Harness Service stays parked so it cannot bypass the
+      // provider's authenticated route.
+      assert.equal(harnessService.spec.selector["openclaw.dev/namespace"], first.namespaceId);
+      assert.equal(harnessService.spec.selector["openclaw.dev/agent"], agentId);
+      assert.equal(harnessService.spec.selector["openclaw.dev/revision"], revisionId);
+      assert.equal(harnessService.spec.selector["openclaw.dev/workload-role"], "agent");
+      assert.equal(
+        harnessService.spec.selector["app.kubernetes.io/name"],
+        `${harnessName}-inactive`,
+      );
+      assert.equal(
+        chatService.metadata.labels["app.kubernetes.io/managed-by"],
+        "openclaw-enterprise",
+      );
+      assert.equal(chatService.metadata.labels["openclaw.dev/revision"], revisionId);
+      assert.equal(chatService.metadata.annotations?.["openclaw.dev/revision-id"], revisionId);
+      assert.equal(chatService.spec.type, "ClusterIP");
+      assert.deepEqual(chatService.spec.ports, gatewayService.spec.ports);
+      assert.deepEqual(chatService.spec.selector, {
+        ...gatewaySelector,
+        "openclaw.dev/revision": revisionId,
+      });
+      // The Service inventory cannot prove where the revision's HTTP chat route
+      // sends traffic. Bind that exact POST path to the observed Service and port.
       const routes = await readKubernetesJson(
         kube,
         [
@@ -1357,11 +1423,11 @@ test(
           "--namespace",
           namespaces.items[0].metadata.name,
           "--selector",
-          `openclaw.dev/agent=${first.identity.agentId}`,
+          `openclaw.dev/agent=${agentId}`,
         ],
         "the Agent revision's HTTP chat route",
       );
-      const chatPath = `/http-chat/namespaces/${first.namespaceId}/agents/${first.identity.agentId}/revisions/${first.identity.revisionId}/v1/chat/completions`;
+      const chatPath = `/http-chat/namespaces/${first.namespaceId}/agents/${agentId}/revisions/${revisionId}/v1/chat/completions`;
       const chatRoutes = routes.items.filter((route) =>
         route.spec.rules.some((rule) =>
           rule.matches.some((match) => match.path?.value === chatPath),
@@ -1369,59 +1435,22 @@ test(
       );
       assert.equal(chatRoutes.length, 1);
       const chatRoute = chatRoutes[0];
-      assert.equal(
-        chatRoute.metadata.annotations["openclaw.dev/agent-revision-id"],
-        first.identity.revisionId,
-      );
+      assert.equal(chatRoute.metadata.annotations["openclaw.dev/agent-revision-id"], revisionId);
       assert.equal(chatRoute.spec.rules.length, 1);
       const chatRule = chatRoute.spec.rules[0];
       assert.deepEqual(chatRule.matches, [
         { method: "POST", path: { type: "Exact", value: chatPath } },
       ]);
       assert.equal(chatRule.backendRefs.length, 1);
-      assert.equal(chatRule.backendRefs[0].kind, "Service");
-      assert.equal(chatRule.backendRefs[0].group, "");
-      assert.equal(chatRule.backendRefs[0].name, chatRoute.metadata.name);
-      const harnessServiceName = openShellAgentName(first.identity.agentId);
-      // HTTP chat adds a revision-pinned Gateway Service. Derive its identity
-      // from the actual revision route, not another copy of Compute's naming.
-      // The direct Harness must remain parked behind OpenShell authentication.
-      assert.equal(services.items.length, 3);
-      assert.deepEqual(
-        services.items.map((service) => service.metadata.name).sort(),
-        [gateway.metadata.name, harnessServiceName, chatRoute.metadata.name].sort(),
+      const chatBackend = chatRule.backendRefs[0];
+      assert.equal(chatBackend.kind, "Service");
+      assert.equal(chatBackend.group, "");
+      assert.equal(chatBackend.name, chatService.metadata.name);
+      assert.equal(
+        chatBackend.namespace ?? chatRoute.metadata.namespace,
+        chatService.metadata.namespace,
       );
-      const gatewayService = services.items.find(
-        (service) => service.metadata.name === gateway.metadata.name,
-      );
-      const harnessService = services.items.find(
-        (service) => service.metadata.name === harnessServiceName,
-      );
-      const chatService = services.items.find(
-        (service) => service.metadata.name === chatRoute.metadata.name,
-      );
-      assert.ok(gatewayService, "the Agent must retain its serving Gateway Service");
-      assert.ok(harnessService, "the direct Harness Service must remain parked");
-      assert.ok(chatService, "HTTP chat must retain its revision-pinned Gateway Service");
-      const gatewaySelector = {
-        "openclaw.dev/namespace": first.namespaceId,
-        "openclaw.dev/agent": first.identity.agentId,
-        "openclaw.dev/workload-role": "gateway",
-        "app.kubernetes.io/name": gateway.spec.template.metadata.labels["app.kubernetes.io/name"],
-      };
-      assert.deepEqual(gatewayService.spec.selector, gatewaySelector);
-      assert.deepEqual(chatService.spec.selector, {
-        ...gatewaySelector,
-        "openclaw.dev/revision": first.identity.revisionId,
-      });
-      assert.deepEqual(harnessService.spec.selector, {
-        "openclaw.dev/namespace": first.namespaceId,
-        "openclaw.dev/agent": first.identity.agentId,
-        "openclaw.dev/revision": first.identity.revisionId,
-        "openclaw.dev/workload-role": "agent",
-        "openclaw.dev/network-profile": "provider-fenced-v1",
-        "app.kubernetes.io/name": `${harnessServiceName}-inactive`,
-      });
+      assert.equal(chatBackend.port, chatService.spec.ports[0].port);
     }
     const reuseEnv = { ...env };
     delete reuseEnv.OPENCLAW_FIRST_AGENT_MODEL;
@@ -1490,8 +1519,6 @@ test(
       "Both invocations must use the same local controller and Namespace",
     );
 
-    const base = `/namespaces/${first.namespaceId}`;
-    const agentPath = `${base}/agents/${first.identity.agentId}`;
     const agent = await requestLocalApi(first.origin, serviceKey, "GET", agentPath);
     assert.ok(
       /^cfg_[A-Za-z0-9_-]+$/.test(agent.configurationId ?? ""),
@@ -1571,16 +1598,6 @@ test(
       original.values?.tools?.deny?.includes("*"),
       "The native Configuration must deny tools before the regression check",
     );
-    if (selectedSandboxDriver === "openshell") {
-      // Admission pins the Harness workspace to Local Setup's selected Sandbox data mount.
-      const admitted = await requestLocalApi(
-        first.origin,
-        serviceKey,
-        "GET",
-        `${agentPath}/revisions/${first.identity.revisionId}`,
-      );
-      assert.equal(admitted.configuration.agents.defaults.workspace, "/sandbox/enterprise");
-    }
     if (selectedControlUi) {
       assert.equal(original.generation, 2);
       assert.equal(original.values.gateway.publicOrigin, first.controlUiOrigin);
