@@ -483,15 +483,22 @@ test(
     };
     const dependencyPlan = { ...config, serviceDependency: dependency };
     const egressOnly = { service: dependency.service, policy: dependency.policy };
+    // A misspelled optional selection must not silently remove the requested checks.
+    const unknownSelection = { ...config, serviceDependecy: dependency };
+    const unknownRoot = await invokeDiagnostic(unknownSelection, protectedValues);
+    assert.equal(unknownRoot.status, 2);
+    assert.equal(unknownRoot.stdout, "");
+    assert.match(unknownRoot.stderr, /only supported top-level fields/u);
+
     const typoPlan = { ...config, serviceDependency: { ...egressOnly, tsl: dependency.tls } };
     const typo = await invokeDiagnostic(typoPlan, protectedValues);
     assert.equal(typo.status, 2);
     assert.equal(typo.stdout, "");
     assert.match(typo.stderr, /serviceDependency accepts only service, policy and tls/u);
 
-    async function checkDependency(plan = dependencyPlan) {
+    async function checkDependency() {
       const versions = await readVersions();
-      const result = await diagnose(plan, protectedValues);
+      const result = await diagnose(dependencyPlan, protectedValues);
       assert.deepEqual(
         await readVersions(),
         versions,
@@ -511,13 +518,13 @@ test(
 
     // Split selectors create two broad peers and do not establish the combined edge.
     await setPolicy(cidr, [{ namespaceSelector }, { podSelector }]);
-    const replacement = await signedLeaf(dir, ca, {
-      name: "replacement",
+    const wrongSan = await signedLeaf(dir, ca, {
+      name: "wrong-san",
       commonName: serverName,
       subjectAltName: `DNS:${otherName}`,
       keyPem: expired.key,
     });
-    await setLeaf(replacement.cert);
+    await setLeaf(wrongSan.cert);
     const split = await checkDependency();
     assert.equal(split.egress?.status, "failed");
     assert.deepEqual(split.egress?.missing, [
@@ -527,11 +534,15 @@ test(
     assert.match(split.tls?.summary ?? "", /DNS SAN/u);
 
     await setPolicy(cidr, [{ namespaceSelector, podSelector }]);
-    const validPlan = {
-      ...dependencyPlan,
-      serviceDependency: { ...dependency, tls: { secretName, serverName: otherName } },
-    };
-    const corrected = await checkDependency(validPlan);
+    // Repair the certificate to match the intended client's unchanged server name.
+    const repaired = await signedLeaf(dir, ca, {
+      name: "repaired",
+      commonName: serverName,
+      subjectAltName: `DNS:${serverName}`,
+      keyPem: expired.key,
+    });
+    await setLeaf(repaired.cert);
+    const corrected = await checkDependency();
     assert.equal(corrected.egress?.status, "passed");
     assert.equal(corrected.tls?.status, "passed");
     const policyOnly = await diagnose(
@@ -555,7 +566,7 @@ test(
     assert.match(noSan.tls?.summary ?? "", /DNS SAN/u);
 
     // Keep the SAN and other validity bound intact while corrupting one ASN.1 UTCTime.
-    const leaf = new X509Certificate(replacement.cert);
+    const leaf = new X509Certificate(repaired.cert);
     const validityFields = ["validFromDate", "validToDate"] as const;
     for (const field of validityFields) {
       const utc = leaf[field].toISOString().slice(2, 19).replace(/\D/g, "") + "Z";
@@ -569,14 +580,14 @@ test(
       for (const validityField of validityFields) {
         assert.equal(Number.isFinite(corrupt[validityField].getTime()), validityField !== field);
       }
-      assert.equal(corrupt.checkHost(otherName, { subject: "never" }), otherName);
+      assert.equal(corrupt.checkHost(serverName, { subject: "never" }), serverName);
       const encoded = der
         .toString("base64")
         .match(/.{1,64}/g)
         ?.join("\n");
       assert.ok(encoded);
       await setLeaf(`-----BEGIN CERTIFICATE-----\n${encoded}\n-----END CERTIFICATE-----\n`);
-      const result = await checkDependency(validPlan);
+      const result = await checkDependency();
       assert.equal(result.tls?.status, "failed");
       assert.match(result.tls?.summary ?? "", /unreadable validity window/u);
     }

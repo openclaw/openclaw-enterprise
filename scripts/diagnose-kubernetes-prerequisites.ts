@@ -311,6 +311,24 @@ function serviceDependency(value: unknown): ServiceDependency | undefined {
 }
 
 function validateConfig(value: unknown): DiagnosticPlan {
+  if (
+    !isObject(value, [
+      "kubeconfig",
+      "context",
+      "namespace",
+      "gatewayClass",
+      "controllers",
+      "crds",
+      "apiCidrs",
+      "serviceDependency",
+      "peakAdditional",
+      "eks",
+    ])
+  ) {
+    throw new DiagnosticError(
+      "The plan must be a JSON object with only supported top-level fields.",
+    );
+  }
   const config = value as PlanInput;
   const kubeconfig = requireSelection(config.kubeconfig, "kubeconfig");
   const context = requireSelection(config.context, "context");

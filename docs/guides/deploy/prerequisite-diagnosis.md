@@ -10,7 +10,8 @@ context, or run commands inside Pods.
 
 Save a JSON plan outside the checkout. Use the names of your installed controller
 Deployments, the intended GatewayClass owner, and the exact IPv4 `/32` addresses
-in your reviewed network configuration:
+in your reviewed network configuration. Unknown top-level plan fields stop the
+command before it reads Kubernetes or AWS resources.
 
 ```json
 {
@@ -69,6 +70,9 @@ exact grants. Verify that the policy's source `spec.podSelector` selects the
 intended calling Pods in the policy's namespace. The check observes destination
 grants in the named policy. It does not check for obsolete or additional grants.
 The report records the observed resource UIDs and resource versions.
+
+Use the DNS name from the intended client's reviewed TLS configuration for
+`serverName`. Ask the certificate owner to repair a mismatch for that name.
 
 Omit `tls` for a policy check alone. Kubernetes `get` on the named Secret
 authorizes reading the entire object, including `tls.key`. Use an identity
