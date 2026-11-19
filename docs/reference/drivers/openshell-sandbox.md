@@ -108,11 +108,15 @@ drivers:
                 tls: skip
 ```
 
-When `policy.filesystem` is omitted, the Driver sends OpenShell's permissive
-runtime baseline: `/bin`, `/usr`, `/lib`, `/proc`, `/dev/urandom`, `/etc`,
-`/var/log`, and `/app` are read-only; `/tmp`, `/dev/null`, the image workdir,
-approved mounts, and `/sandbox/.openclaw-runtime` are writable. An explicit `filesystem` block replaces the baseline; the Driver still adds
-required mounts, runtime root, and `/tmp`.
+Omit `policy.filesystem` for the default. Read-only paths include `/bin`, `/usr`,
+`/lib`, `/proc`, `/dev/urandom`, `/etc`, `/var/log`, `/app`, and `/opt/devtools`.
+Writable paths include `/tmp`, `/dev/null`, the image workdir, approved writable
+mounts, and `/sandbox/.openclaw-runtime`.
+
+An explicit policy replaces these defaults. The Driver still adds required
+mounts, the runtime root, and `/tmp`. Add `/opt/devtools` to
+`policy.filesystem.readOnly` for packaged native tools. Deploy a new Agent
+revision to apply the policy.
 
 Startup rejects unknown Kubernetes, policy, and Gateway readiness keys. Set
 `kubernetes.agentResources` using quoted, non-negative Kubernetes quantities.

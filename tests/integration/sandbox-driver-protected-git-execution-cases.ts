@@ -326,6 +326,32 @@ export async function verifyProtectedOpenShellGitExecution(
     },
   );
   assert.deepEqual(result.proxyWiring?.plan, plan);
+  const stored = gateway.sandboxes.get(created.name);
+  assert.ok(stored?.spec);
+  const storedPolicy = asRecord(stored.spec.policy);
+  const filesystem = asRecord(storedPolicy?.filesystem);
+  assert.ok(filesystem);
+  const { read_only: readOnly, read_write: readWrite } = filesystem;
+  assert.ok(Array.isArray(readOnly) && readOnly.includes("/opt/devtools"));
+  assert.ok(Array.isArray(readWrite) && !readWrite.includes("/opt/devtools"));
+
+  // Existing Sandboxes keep their launch policy, which Compute must verify as installed.
+  const previousFilesystem = {
+    ...filesystem,
+    read_only: readOnly.filter((path: unknown) => path !== "/opt/devtools"),
+  };
+  gateway.sandboxes.set(created.name, {
+    ...stored,
+    spec: {
+      ...stored.spec,
+      policy: { ...storedPolicy, filesystem: previousFilesystem },
+    },
+  });
+  const adopted = await sandbox.provisionHarness({ ...ctx, requirements: required });
+  assert.equal(getCreated(), created);
+  assert.deepEqual(adopted.proxyWiring?.configuration.filesystem, previousFilesystem);
+  gateway.sandboxes.set(created.name, stored);
+
   await verifyProtectedGitNetworkPolicy({
     sandboxConfiguration,
     backend,

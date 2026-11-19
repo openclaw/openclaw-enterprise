@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: "2026-11-18"
-last_updated_session: "authoring-run/cfd6b388-34b4-46c3-8b54-88867893a604"
+updated: "2026-11-19"
+last_updated_session: "authoring-run/18198434-025d-4259-b015-6f07a8fe5c8b"
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -198,46 +198,50 @@ selects the named HTTPS Responses provider.
 
 `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 
-`apps/controller/src/drivers/compute/kubernetes/index.ts:admitRevision` freezes scratch.
-After shutdown, `verifyScratchVolume` checks the claim. `workspaceVolumeMounts`
-preserves writable `/sandbox/scratch`. [Scratch PVCs](../reference/drivers/kubernetes-compute/configuration.md#scratch-volumes)
-survive Agent cleanup.
+`apps/controller/src/drivers/compute/kubernetes/index.ts:admitRevision` freezes
+[scratch](../reference/drivers/kubernetes-compute/configuration.md#scratch-volumes).
+`verifyScratchVolume` checks the surviving claim after shutdown.
+`workspaceVolumeMounts` preserves writable `/sandbox/scratch`.
 
 `sandboxDataMount` rejects scratch selection or overlapping data paths. `OpenShellGitRuntime.prepare` supplies
 process-scoped, mount-specific `safe.directory` and `push.negotiate=true`.
 
-Dedicated Codex and OpenClaw require Landlock. The Driver validates filesystem,
-process and [binary-scoped network policy](agent-sandbox-policy.md) before Kubernetes
-calls. Labels outside `allowed_pod_labels` fail with `SANDBOX_POD_LABELS_NOT_PERMITTED`.
+Dedicated Harnesses require Landlock. The Driver validates filesystem, process,
+and [network policy](agent-sandbox-policy.md) before Kubernetes calls. Labels
+outside `allowed_pod_labels` fail with `SANDBOX_POD_LABELS_NOT_PERMITTED`.
 
-`provisionHarness` creates or adopts providers. Renewal updates only `node_setup_json` after checking
-the version. `sandboxCommand` adds applicable workspace links, setup wait and account bootstrap.
-Tests target 64 KiB serialized; OpenShell permits 256 KiB across arguments, 32 KiB each.
-Adoption compares the full spec including the command. Changed immutable commands require
-[revision recovery](../guides/topics/agent-troubleshoot.md#an-openshell-agent-stops-answering).
+`provisionHarness` creates or adopts providers. Renewal checks the version and
+updates only `node_setup_json`. `sandboxCommand` builds workspace links, setup wait,
+and account bootstrap. OpenShell caps arguments at 32 KiB each and 256 KiB total.
+Tests target 64 KiB serialized.
+
+The default adds read-only `/opt/devtools`. `verifyExistingSandbox` matches the
+full spec for egress verification.
+Command changes require [revision recovery](../guides/topics/agent-troubleshoot.md#an-openshell-agent-stops-answering).
+
 `internal/occdev/kubernetes.go:openShellInstallationConfiguration` omits the
-development startup delay. Compute rolls the Gateway before checking enrollment;
-`harnessStatus` below gates readiness.
+development startup delay. Compute rolls the Gateway before enrollment checks.
+`harnessStatus` gates readiness.
 
-Dedicated Codex requires one lowercase `APP_TOKEN_SHA` and two runtime files,
-each at most 65,536 bytes. `APP_SERVER_TOKEN` is forbidden. A second model proxy,
-malformed files and other Secret-backed environment fail before Gateway mutation.
+Dedicated Codex requires one lowercase `APP_TOKEN_SHA` and two runtime files
+of at most 65,536 bytes each. A second model proxy, malformed files,
+`APP_SERVER_TOKEN`, and other Secret-backed environment fail before Gateway mutation.
 
 After login, `agentRuntimeEntrypoint` calls
 `apps/controller/src/drivers/compute/kubernetes/codex-plugin-stdio.ts:withCodexPluginStdio`.
 Clean exit permits verifier WebSocket startup; failure triggers group TERM/KILL.
 Readiness does not attest HMAC plugin status.
 
-`oce-codex-runtime`/`oce-openclaw-runtime` provide read-only setup and Gateway CA.
-Only Codex accepts `runtime.json`/`config.toml`. `harnessRuntimeCredentials` reads
-the projected Secret; `packages/utils/src/workspace-node-setup.ts:validateWorkspaceNodeSetupSecret`
-checks ownership and setup material without further reads. OpenShell keeps provider output private; failures become `OpenShellSandboxConfigurationFailure`.
-Validated setup, including `bootstrapToken`, becomes `node-setup.json`. TLS-pinned setup requires `wss://`
-at admission and supervisor replacement. WebSocket rewriting is unsupported:
-device proofs sign the literal token.
-Renewal requires expired stored setup, later live expiry and unchanged endpoint,
-TLS fingerprint, runtime and CA. Policy permits that Gateway and `/usr/local/bin/node` only;
-foreign ownership/drift prevents creation.
+`oce-codex-runtime` and `oce-openclaw-runtime` deliver read-only setup and Gateway CA.
+Only Codex accepts `runtime.json` and `config.toml`. `harnessRuntimeCredentials`
+reads the projected Secret once. `packages/utils/src/workspace-node-setup.ts:validateWorkspaceNodeSetupSecret`
+checks ownership and setup material before writing `node-setup.json` with
+`bootstrapToken`. Provider output stays private. Failures raise
+`OpenShellSandboxConfigurationFailure`. TLS-pinned setup requires `wss://` at admission
+and replacement because device proofs sign the literal token.
+Renewal requires expired stored setup, later live expiry, and the same endpoint,
+TLS fingerprint, runtime, and CA. Policy binds the Gateway to `/usr/local/bin/node`.
+Foreign ownership or drift blocks creation.
 
 State uses `/sandbox/.openclaw-runtime`; subpaths use `/sandbox/.openclaw-mounts`.
 Admitted `/home/node` paths relocate to `harnessHome` for hooks. Codex hooks
@@ -419,6 +423,8 @@ setup, retry and restart under setgid parents.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 01:12: Trace native tools. (authoring-run/18198434-025d-4259-b015-6f07a8fe5c8b - cea7d46c6956c59ba9604a710022159930eb5aa4)
 
 - 2026-11-18 14:08: Accept Podman cache misses. (authoring-run/cfd6b388-34b4-46c3-8b54-88867893a604 - f07a2b05a8db5e88142ca1a2c9fd90f0ec812284)
 

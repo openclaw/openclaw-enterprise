@@ -378,6 +378,7 @@ const OPENSHELL_DEFAULT_READ_ONLY_PATHS = Object.freeze([
   "/app",
 ]);
 const OPENSHELL_DEFAULT_READ_WRITE_PATHS = Object.freeze(["/tmp", "/dev/null"]);
+const OPENSHELL_NATIVE_TOOLS_PATH = "/opt/devtools";
 const APP_SERVER_PORT_ENVIRONMENT = "APP_SERVER_PORT";
 const APP_TOKEN_SHA_ENVIRONMENT = "APP_TOKEN_SHA";
 const PLUGIN_RUNTIME_MANIFEST_ENVIRONMENT = "OPENCLAW_PLUGIN_RUNTIME_MANIFEST";
@@ -2967,7 +2968,20 @@ function runtimeProviderSetupUpdate(
 function verifyExistingSandbox(
   existing: OpenShellSandboxResponse,
   request: OpenShellSandboxCreateRequest,
-): void {
+  previousDefaultFilesystem?: ReturnType<typeof filesystemPolicy>,
+): ReturnType<typeof filesystemPolicy> | undefined {
+  const observedSpec = canonicalSandboxSpec(existing.spec);
+  const matches = isDeepStrictEqual(observedSpec, canonicalSandboxSpec(request.spec));
+  const matchesPreviousDefault =
+    !matches &&
+    previousDefaultFilesystem !== undefined &&
+    isDeepStrictEqual(
+      observedSpec,
+      canonicalSandboxSpec({
+        ...request.spec,
+        policy: { ...asRecord(request.spec.policy), filesystem: previousDefaultFilesystem },
+      }),
+    );
   if (
     existing.name !== request.name ||
     existing.workspace !== request.workspace ||
@@ -2977,12 +2991,13 @@ function verifyExistingSandbox(
       request.annotations,
       "internal.openshell.ai/",
     ) ||
-    !isDeepStrictEqual(canonicalSandboxSpec(existing.spec), canonicalSandboxSpec(request.spec))
+    (!matches && !matchesPreviousDefault)
   ) {
     throw new OpenShellSandboxConfigurationFailure(
       `Refusing OpenShell Sandbox ${request.name} without exact AgentRevision ownership and content.`,
     );
   }
+  return matchesPreviousDefault ? previousDefaultFilesystem : undefined;
 }
 
 function checkStartupConfiguration(configuration: unknown): void {
@@ -3578,6 +3593,20 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       const readOnly = create.spec.policy.filesystem.read_only;
       readOnly.push(...git.readOnlyPaths.filter((path) => !readOnly.includes(path)));
       create.spec.restart_policy = "SANDBOX_RESTART_POLICY_NEVER";
+    }
+    const filesystem = create.spec.policy.filesystem;
+    // Keep an exact comparison for Sandboxes created before the default included the
+    // native tool directory. Explicit policies and required mounts keep their own grants.
+    const previousDefaultFilesystem =
+      this.options.policy.filesystem === undefined &&
+      !filesystem.read_only.includes(OPENSHELL_NATIVE_TOOLS_PATH) &&
+      !filesystem.read_write.includes(OPENSHELL_NATIVE_TOOLS_PATH)
+        ? { ...filesystem }
+        : undefined;
+    if (previousDefaultFilesystem) {
+      filesystem.read_only = [...filesystem.read_only, OPENSHELL_NATIVE_TOOLS_PATH];
+    }
+    if (git) {
       const continuity = this.gitContinuity(context);
       // Only the independent model attachment selected by this revision can survive Git expiry.
       const auth = context.revision.harnessAuth;
@@ -3588,22 +3617,28 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         );
       await this.openShellGit!.bind(
         context.revision.id,
-        (observed) => verifyExistingSandbox(observed, { ...create, requestId: requestIds[0]! }),
+        (observed) =>
+          verifyExistingSandbox(
+            observed,
+            { ...create, requestId: requestIds[0]! },
+            previousDefaultFilesystem,
+          ),
         originalModel ? continuity : undefined,
       );
     }
     const prepared = context.requirements.proxyWiring;
-    const result = immutableCopy({
-      ...sandbox,
-      ...(prepared === undefined
-        ? {}
-        : {
-            proxyWiring: {
-              plan: prepared.plan,
-              configuration: create.spec.policy,
-            },
-          }),
-    });
+    const result = (filesystem: ReturnType<typeof filesystemPolicy>) =>
+      immutableCopy({
+        ...sandbox,
+        ...(prepared === undefined
+          ? {}
+          : {
+              proxyWiring: {
+                plan: prepared.plan,
+                configuration: { ...create.spec.policy, filesystem },
+              },
+            }),
+      });
     // Every reconcile pass reaches here. Re-sending CreateSandbox for a Sandbox that
     // exists would hit the gateway's request_id replay, which refuses a changed spec
     // (REQUEST_ID_PAYLOAD_MISMATCH) and forgets the create after 24 h (ALREADY_EXISTS).
@@ -3686,7 +3721,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         }
         await checkEffectivePolicy();
         await this.initializeWorkspace(context, sandbox, client);
-        return result;
+        return result(filesystem);
       }
       existing = await refused(() => client.getSandbox(selector, context.signal));
       if (existing === undefined && alreadyExists) {
@@ -3737,7 +3772,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
     }
     // Exact provider equality also verifies that a withdrawn provider is absent.
-    verifyExistingSandbox(existing, { ...create, spec: expectedSpec, requestId: requestIds[0]! });
+    const existingDefaultFilesystem = verifyExistingSandbox(
+      existing,
+      { ...create, spec: expectedSpec, requestId: requestIds[0]! },
+      previousDefaultFilesystem,
+    );
     if (existing.phase === "SANDBOX_PHASE_DELETING" || existing.phase === 4) {
       throw new OpenShellSandboxConfigurationFailure(
         `OpenShell Sandbox ${sandbox.resourceName} is being deleted; it can be created again once deletion finishes.`,
@@ -3774,7 +3813,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     await checkEffectivePolicy();
     await this.initializeWorkspace(context, sandbox, client);
-    return result;
+    return result(existingDefaultFilesystem ?? filesystem);
   }
 
   /** OpenShell labels the supervisor and workload Pods as one boundary pair. Keep both
