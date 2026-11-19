@@ -283,7 +283,7 @@ A Preset is checked when a launch creates its Configuration.
 - A startup model probe can incur charges.
   A successful probe establishes model access at startup only. SSH checks process
   readiness. Neither establishes that a fallback model works.
-- OpenClaw continues eligible interrupted roots within one revision by
+- OpenClaw continues eligible interrupted roots under [native recovery policy](agents/interrupted-turns.md) by
   admitting another input. It does not restore processes. See dedicated Codex
   [qualified cases and limits](../testing/harness-restart-recovery.md).
 - Docker Compute rejects all current Harness authentication bindings and cannot

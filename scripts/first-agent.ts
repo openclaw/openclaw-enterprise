@@ -13,7 +13,7 @@ import { defaultAgentModel } from "../apps/controller/src/console/agents/starter
 import { deriveNativeAdminHost } from "../apps/controller/src/gateway/native-admin-host.ts";
 import { isName, NAME_RULE } from "../packages/contracts/src/api/plain-text.ts";
 import { createFirstAgentApi, type FirstAgentApi } from "./first-agent-api.ts";
-import { findFirstAgentSecret, grantFirstAgentSecret } from "./first-agent-database.ts";
+import { findFirstAgentSecret } from "./first-agent-database.ts";
 import { collectFirstAgentDiagnostics } from "./first-agent-diagnostics.ts";
 import {
   FirstAgentModelError,
@@ -340,15 +340,11 @@ async function loadLocalInstallation(harness: Harness, controlUi: boolean) {
     "data",
   );
   const keyData = key.data == null ? {} : fields(key.data, "key");
-  const keyMeta = key.meta == null ? {} : fields(key.meta, "installationId");
-  if (
-    typeof keyData.key !== "string" ||
-    typeof keyData.servicePrincipalId !== "string" ||
-    typeof keyMeta.installationId !== "string"
-  ) {
-    throw new Error(
-      "The recorded Local Setup administrator key is missing its Installation or identity.",
-    );
+  if (typeof keyData.key !== "string" || keyData.key.length === 0) {
+    throw new Error("The recorded Local Setup administrator key is missing its credential.");
+  }
+  if (typeof state.installationId !== "string" || state.installationId.length === 0) {
+    throw new Error("Local Setup has no confirmed Installation ID. Complete Local Setup first.");
   }
 
   const containerEngine = state.containerEngine;
@@ -464,10 +460,8 @@ async function loadLocalInstallation(harness: Harness, controlUi: boolean) {
   };
   return {
     directory,
-    key: {
-      data: { key: keyData.key, servicePrincipalId: keyData.servicePrincipalId },
-      meta: { installationId: keyMeta.installationId },
-    },
+    key: { data: { key: keyData.key } },
+    installationId: state.installationId,
     origin,
     kubectl,
     checkProvisioning: () =>
@@ -817,20 +811,22 @@ function assertManagedCredentialSource(source: Fields, record: Fields, secret: F
   }
 }
 
-async function ensureCredentialSourceGrant(
+async function ensureModelCredentialGrant(
   api: FirstAgentApi,
   base: string,
   agent: Fields,
   source: Fields,
+  resourceKind: "secret" | "credential_source",
 ) {
-  const permissions = [{ action: "operate", resourceKind: "credential_source" }];
+  const permissions = [{ action: "operate", resourceKind }];
   const suffix = createHash("sha256")
     .update(text(agent.id))
     .update("\0")
     .update(text(source.id))
     .digest("hex")
     .slice(0, 16);
-  const roleName = `Local first Agent source ${suffix}`;
+  const label = resourceKind === "secret" ? "Secret" : "source";
+  const roleName = `Local first Agent ${label} ${suffix}`;
   const roles = await api("GET", `${base}/iam/roles`);
   let role = findFields(roles, "roles", "name", (candidate) => candidate.name === roleName);
   if (role === undefined) {
@@ -840,13 +836,13 @@ async function ensureCredentialSourceGrant(
     });
   }
   if (!isDeepStrictEqual(role.permissions, permissions)) {
-    throw new Error("The first-Agent CredentialSource IAM Role changed outside this helper.");
+    throw new Error("The first-Agent model credential IAM Role changed outside this helper.");
   }
   const expected = {
     subjectKind: "identity",
     subjectId: agent.servicePrincipalId,
     roleId: role.id,
-    resourceKind: "credential_source",
+    resourceKind,
     resourceId: source.id,
   };
   const bindings = await api("GET", `${base}/iam/access-bindings`);
@@ -954,7 +950,7 @@ async function main(options: Options) {
   }
   const api = createFirstAgentApi(local);
   const installation = await objectResponse(api, "id", "GET", "/installation");
-  if (installation.id !== local.key.meta.installationId) {
+  if (installation.id !== local.installationId) {
     throw new Error("The controller Installation does not match Local Setup's administrator key.");
   }
   const namespaces = await api("GET", "/namespaces");
@@ -1232,16 +1228,10 @@ async function main(options: Options) {
     const agentPath = `${base}/agents/${agent.id}`;
     if (credentialSource === undefined) {
       progress("Authorizing the Agent to use its exact model Secret...");
-      await grantFirstAgentSecret(local.database, {
-        installationId: local.key.meta.installationId,
-        namespaceId: databaseInput(namespace.id),
-        agentId: databaseInput(agent.id),
-        secretId: databaseInput(secret.id),
-        actorId: local.key.data.servicePrincipalId,
-      });
+      await ensureModelCredentialGrant(api, base, agent, secret, "secret");
     } else {
       progress("Authorizing the Agent to use its exact model CredentialSource...");
-      await ensureCredentialSourceGrant(api, base, agent, credentialSource);
+      await ensureModelCredentialGrant(api, base, agent, credentialSource, "credential_source");
     }
     const credentials = await objectResponse(
       api,

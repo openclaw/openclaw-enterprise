@@ -1,3 +1,8 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Deploy OpenClaw Enterprise
 
 Install OpenClaw Enterprise (OCE), verify access to the OpenClaw Control Plane
@@ -44,6 +49,10 @@ The [console reference](../reference/console.md) covers browser behavior and lim
 
 ## Production
 
+Choose a path in [Control plane setup](deploy/control-plane-setup.md).
+Cloud and distribution-specific settings live in its linked subpages;
+shared Kubernetes requirements and installation steps remain below.
+
 The Kubernetes and EKS setup guides install OCE with OpenShell and prepare the
 shared operator session for **Deploy your first Agent**. Do not repeat the custom
 installation sequence below after either setup guide. Installation profiles and
@@ -62,7 +71,7 @@ For a custom Helm installation, follow these pages in order:
    Generate configuration from an
    [installation profile](deploy/installation-profiles.md) (recommended) or copy
    the manual YAML examples, then create system Secrets, prepare the fresh
-   bootstrap PVC, and [install the chart once](deploy/production-installation.md#install-the-control-plane)
+   bootstrap credential Secret, and [install the chart once](deploy/production-installation.md#install-the-control-plane)
    with `occ installation install`. Keep the bootstrap key in the installation shell.
    Use it there to authenticate to the production API.
 2. [Prepare Namespaces and deploy Agents](deploy/production-agents.md).
@@ -105,7 +114,7 @@ helm uninstall oce --namespace openclaw-system \
   --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT"
 ```
 
-Helm does not own external PostgreSQL, operator-created Secrets, bootstrap PVCs,
+Helm does not own external PostgreSQL, operator-created Secrets,
 or tenant workloads created by Compute. Retain database, bootstrap storage, and
 tenant resources until recovery and retention requirements are satisfied.
 

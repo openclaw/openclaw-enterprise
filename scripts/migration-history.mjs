@@ -112,6 +112,15 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 79 && completedCount > 79) {
     return "preRevisionRuntimeInputs";
   }
+  if (count === 80 && completedCount > 80) {
+    return "preRestartContinuation";
+  }
+  if (count === 81 && completedCount > 81) {
+    return "preAuthenticationStates";
+  }
+  if (count === 82 && completedCount > 82) {
+    return "preNativeRestartRecovery";
+  }
   if (count === completedCount) {
     return "completed";
   }

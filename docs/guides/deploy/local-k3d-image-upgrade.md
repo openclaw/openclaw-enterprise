@@ -403,7 +403,7 @@ deployment status, and version before retrying; an uncertain request may have
 already created a version. Check compatibility before selecting an older image
 or restoring state, and follow [partial-failure recovery](production-upgrade-recovery.md).
 Do not delete the cluster, database volume, Namespaces, Agents, versions,
-Secrets, bootstrap volume, or Agent PVCs to force an upgrade or recovery.
+Secrets, bootstrap credentials, or Agent PVCs to force an upgrade or recovery.
 
 ## Rehearse a compatible controller return
 

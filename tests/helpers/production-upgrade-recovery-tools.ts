@@ -20,6 +20,14 @@ export const oldRuntime = `registry.example.invalid/runtime@sha256:${"c".repeat(
 // The fixture exits 9 only for an armed fault. An interrupted run must reach that fault.
 export const injectedFault = { code: 9 };
 
+export function upgradeDiagnosticLines(stderr: string): string[] {
+  // Progress can precede the diagnostic. Keep all lines from the first diagnostic onward.
+  return stderr
+    .replace(/^(?:Upgrade: [^\n]+\n)+/u, "")
+    .trimEnd()
+    .split("\n");
+}
+
 const executeFile = promisify(execFile);
 
 export function execute(

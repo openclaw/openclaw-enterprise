@@ -14,6 +14,7 @@ import {
   newController,
   oldRuntime,
   runtime,
+  upgradeDiagnosticLines,
 } from "../helpers/production-upgrade-recovery-tools.ts";
 
 function requireObject(value: unknown): Record<string, unknown> {
@@ -556,8 +557,7 @@ export function registerFleetAdmissionCases({
       const stderr = await f
         .run()
         .then(() => assert.fail("the upgrade must refuse"), commandStderr);
-      const lines = stderr.trimEnd().split("\n");
-      assert.deepEqual(lines, [
+      assert.deepEqual(upgradeDiagnosticLines(stderr), [
         "upgrade-production-images: the deployment inventory contains a running Agent without an active revision; resolve its initial deployment first. No cluster changes were made.",
         '  - Agent agt_stranded_1 "Mail \\"triage\\"\\nbot\\u007f?" in Namespace ns_alpha "Team Alpha"',
         '  - Agent agt_stranded_2 (name unavailable) in Namespace ns_alpha "Team Alpha"',

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: "2026-11-11"
-last_updated_session: "authoring-run/ed486d39-4be4-45b1-a9ac-46e7f93d38bc"
+updated: "2026-11-16"
+last_updated_session: "authoring-run/c2d26d3b-d809-484b-b391-f6736ce6c822"
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -152,34 +152,32 @@ execution topology.
 `scripts/first-agent.ts:main`;
 `scripts/first-agent.ts:assertManagedRevision`;
 `internal/occdev/kubernetes.go:openShellInstallationConfiguration`;
-`scripts/first-agent-database.ts:grantFirstAgentSecret`
+`scripts/first-agent.ts:ensureModelCredentialGrant`
 
-The [tool](../../scripts/first-agent.ts) reads the same checkout's persistent
-`./bin/occ dev up` v3 Kubernetes state and marker before Kubernetes or OCC calls.
-Both Sandbox Drivers require the recorded canonical HTTPS Console origin,
-browser port, and cluster Agent domain. The API uses recorded loopback HTTP.
-The default with `sandboxDriver: "none"` is embedded OpenClaw.
-OpenShell requires `--harness codex`, and `--control-ui` requires OpenShell.
+The [tool](../../scripts/first-agent.ts) requires the same checkout's v3
+Kubernetes state and marker. Both Sandbox Drivers require the recorded HTTPS
+Console origin, browser port, and Agent domain; OCC uses recorded loopback HTTP.
+Embedded OpenClaw uses `sandboxDriver: "none"`. OpenShell requires `--harness codex`;
+`--control-ui` requires OpenShell.
 `loadLocalInstallation` uses the recorded Unix socket and clears inherited Docker
 TLS settings before Compose queries the controller port and PostgreSQL service.
-With the [bootstrap service key](../../packages/iam/src/index.ts), it creates a
-Secret, Configuration, and named Agent through the OCC HTTP API. A new Agent uses
-`openai/gpt-6-astra` unless `OPENCLAW_FIRST_AGENT_MODEL` selects another authorized
-plain model ID; a repeat without an override keeps the recorded model, and a
-conflicting override is rejected. Bootstrap already has Secret `operate`; the
-Agent does not.
+Local Setup saves its authenticated Installation ID in private state. Before
+provisioning, the tool checks that ID against OCC and reads only `data.key` from
+the credential file. It creates the Secret, Configuration, and named Agent through
+the OCC HTTP API. New Agents default to
+`openai/gpt-6-astra`; `OPENCLAW_FIRST_AGENT_MODEL` accepts an authorized plain model
+ID. Reruns retain that choice and reject conflicts.
 
-Without OpenShell, the tool opens the recorded local PostgreSQL service. One
-transaction verifies the Namespace, Agent, and Secret, then grants the Agent's
-existing principal `operate` on that exact Secret. It verifies the bootstrap
-identity, honors IAM restrictions, and audits a new grant.
+Without OpenShell, the tool grants the Agent's returned `servicePrincipalId`
+exact `secret:operate` through Namespace IAM operations. The server resolves the
+caller from its key, authorizes through IAM, and audits mutations. Reruns reuse
+exact bindings and verify Role permissions, including a Role left by a failed
+binding. Database access only reads existing Secret metadata.
 
-With OpenShell, the tool registers the Secret as an `openai` or `codex-pat`
-CredentialSource and uses the public Namespace IAM API to grant the Agent principal exact
-`credential_source:operate`. It does not grant Secret access. `--replace-key`
-updates the Secret and asks the Credential Gateway to reread it before deploying
-a new version. The private helper record freezes the Harness and Sandbox Driver
-choices so a rerun cannot silently change topology.
+With OpenShell, it registers an `openai` or `codex-pat` CredentialSource and grants
+the Agent exact `credential_source:operate`, not Secret access, through IAM.
+`--replace-key` updates the Secret and requests a Credential Gateway reread before
+deployment. The private record prevents Harness or Sandbox Driver changes on reruns.
 `scripts/first-agent.ts:withRecord` creates the PID lock and atomic record
 replacement with explicit owner read/write mode `0600`, independent of the
 process umask. An existing lock stops the command before record access or
@@ -340,6 +338,8 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-16 14:46: Bind the first-Agent helper to confirmed Installation state and use authenticated IAM operations for exact model credential grants. (authoring-run/c2d26d3b-d809-484b-b391-f6736ce6c822 - 6255bbe8fe564e52941b311a7ce8ce8699d1f236)
 
 - 2026-11-11 08:41: Compensate confirmed but refused Installation-private Secret creation without changing ordinary ownership or cleanup custody. (authoring-run/ed486d39-4be4-45b1-a9ac-46e7f93d38bc - 228632a152f96c22a4d7c9aa7554c6ba22911bd4)
 

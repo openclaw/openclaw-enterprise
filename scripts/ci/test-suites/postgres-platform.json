@@ -9,8 +9,10 @@
     "tests/integration/postgres-password-sign-in-limit.test.ts",
     "tests/integration/postgres-bootstrap-failures.test.ts",
     "tests/integration/postgres-agent-provisioning.test.ts",
+    "tests/integration/postgres-device-authorization.test.ts",
     "tests/integration/postgres-plugin-discovery.test.ts",
     "tests/integration/postgres-platform-state.test.ts",
+    "tests/integration/postgres-deployment-inventory.test.ts",
     "tests/integration/postgres-oidc-recovery-replacement.test.ts",
     "tests/integration/postgres-production-wireup.test.ts",
     "tests/integration/compute-singleton-worker-postgres.test.ts",
@@ -107,7 +109,7 @@
       "expectedTests": [
         "concurrent development bootstraps reject the loser and reload the committed winner",
         "production bootstrap preserves committed credentials when COMMIT acknowledgement is lost",
-        "fresh production bootstrap refuses either retained credential output before creating credentials",
+        "invalid bootstrap credential inputs create no authentication or Installation state",
         "known bootstrap failures preserve created artifacts and report safe diagnostics",
         "production and development bootstrap refuse an Installation name outside the Name rule before creating anything",
         "API and worker startup refuse a stored Installation name outside the Name rule",
@@ -115,9 +117,21 @@
       ]
     },
     {
+      "path": "tests/integration/postgres-device-authorization.test.ts",
+      "expectedTests": [
+        "shared authentication state isolates browser consent from device login across API replicas"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-plugin-discovery.test.ts",
       "expectedTests": [
         "saved Agent catalog discovery releases the database connection while reading Configuration"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-deployment-inventory.test.ts",
+      "expectedTests": [
+        "deployment inventory bounds PostgreSQL queries across retained revision history"
       ]
     },
     {
@@ -134,7 +148,7 @@
     {
       "path": "tests/integration/postgres-production-wireup.test.ts",
       "expectedTests": [
-        "production bootstrap creates a generated-password administrator that can authenticate",
+        "production bootstrap registers supplied administrator credentials that can authenticate",
         "configured read grants fence Namespace IAM mutations through COMMIT",
         "create Role: configuration first",
         "create Role: policy first",
@@ -463,6 +477,7 @@
       "expectedTests": [
         "only the installed Git recipient owner may use its material or retire its ended admission",
         "changing between repository and installation scope waits for the previous owner to settle its token",
+        "a replacement Git Driver waits out a disposed standing predecessor without taking its custody",
         "OpenShell preparation refuses historical custody and preserves v6 observed-hook custody",
         "selected repository set retires after B session across owner restart",
         "selected repository set retires after B replacement across owner restart",
@@ -637,6 +652,7 @@
       "path": "tests/integration/credential-proxy-withdrawal.test.ts",
       "expectedTests": [
         "policy reduction preserves another binding then observes deny-all (PostgreSQL)",
+        "static credential exchange rejects a changed control before reading material (PostgreSQL)",
         "Git reduction v7 preserves earlier admission meanings and rejects widening"
       ]
     },
