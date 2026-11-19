@@ -70,8 +70,9 @@ Prepare:
   runtime releases that can require data restoration.
 
 Upgrades ignore `bootstrap.password` and `bootstrap.serviceKey` from earlier charts.
-Their PVC is no longer mounted but may hold the initial administrator credentials;
-delete it once those are stored elsewhere.
+Keep the legacy PVC through [release verification](#verify-the-release).
+Before deleting it, confirm no workloads reference it and preserve any
+initial administrator credentials it holds.
 
 Repository-enabled releases require `--controller-image` and `--broker-image`,
 even for unchanged digests. Stage trusted images as UID 1000 on Linux with OpenSSL
@@ -144,14 +145,13 @@ chmod 600 /secure/occ/candidate-values.yaml /secure/occ/candidate-installation.y
 ```
 
 Candidate values support [separate migrations](separate-database-upgrade.md) and [immutable Installation Secrets](immutable-installation-upgrade.md).
-These copies may change the
-[Slack directory proxy](../integrations/slack.md#configure-both-slack-proxies)
+These copies can change the [Slack directory proxy](../integrations/slack.md#configure-both-slack-proxies)
 and select the [curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
-An explicit candidate may also wrap an existing single `drivers.plugin`
-registration in a one-element array, preserving its `id` and `configuration`.
-Remove retired `agentNativeAdmin.sharedCookieDomain` whatever its value; keep
-`auth.baseUrl` and `agentNativeAdmin.domain`, which determine cookie scope, unchanged.
-The helper does not convert the baseline automatically. Other configuration changes are unsupported.
+A candidate can wrap one existing `drivers.plugin` registration in an array
+with the same `id` and `configuration`. Remove `agentNativeAdmin.sharedCookieDomain`
+and preserve `auth.baseUrl` and `agentNativeAdmin.domain` for cookie scope.
+The helper preserves the baseline during preparation. Other configuration
+changes are unsupported.
 Review image, draft and credential compatibility before maintenance; startup
 preflight does not prove external access.
 Candidate files cannot change IAM, authentication, Installation identity, database credentials,
@@ -216,9 +216,10 @@ Never overwrite a different ID; reconcile cluster and bootstrap records.
 Add `--preflight-only --evidence-dir "${UPGRADE_EVIDENCE}-preflight"` to either
 upgrade command. Preflight checks inputs, image pairs, Helm server dry run,
 Certificate admission, startup and migration compatibility while writers run.
-The migration Job uses the candidate migration entry with `--check` and the
-initializer's credential and CA. It allows recognized pending history. The Helm
-hook rechecks history. Separate migrations require `--require-current`.
+The migration Job uses the candidate image and the initializer's credential
+and CA. Hook mode uses `--check`. [Separate mode](separate-database-upgrade.md)
+checks Installation identity with `--check-for-installation`. Both allow
+recognized pending history. The separate Helm hook requires completed history.
 Pods retain chart security and NetworkPolicy labels. Cleanup confirms Jobs and
 Pods disappear before Secrets and NetworkPolicies.
 
