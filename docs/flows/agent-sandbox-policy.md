@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-19"
-last_updated_session: "authoring-run/2ca60020-2ed8-48c5-943c-ba2890e5bb12"
+last_updated_session: "authoring-run/ceb135da-880c-4956-9a16-c6dc99a2b986"
 ---
 
 # Agent sandbox policy flow
@@ -29,7 +29,7 @@ graph TD
   Draft --> Preview["Preview draft<br/>without writes"]
   Preview -->|errors| Draft
   Preview -->|valid| U2["Review proposal"]
-  U2 --> A["OCC save admission<br/>IAM, schema and ceiling"]
+  U2 --> A["OCC save admission<br/>owner locks, IAM,<br/>schema and ceiling"]
   A --> P["PostgreSQL<br/>desired policy version"]
   P --> D["Explicit deployment<br/>immutable snapshot"]
   P --> W["Live application work<br/>exact running revision"]
@@ -77,7 +77,8 @@ Discovery can remain credentialless. Providers enforce OAuth scopes.
 
 `packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
 Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
-and checks editing, expected version, pending work, complete ceiling coverage,
+and repeats both decisions for the same editor and exact resources before it
+checks editing, expected version, pending work, complete ceiling coverage,
 and registry-resolved Driver admission. The saved additions come from the
 admitted snapshot. While the active or next revision runs under protected
 execution (the Installation selects the Credential Proxy), additions are refused
@@ -254,6 +255,10 @@ the policy read, only the network policy card states it; the suggestions card is
   exercises HTTP/IAM/storage, application-role refusal of pending application
   removal, and worker settlement; the [OpenShell runtime lane](../../tests/helpers/openshell-sandbox-workflows.mjs)
   owns real enforcement proof. Storybook proves simulated presentation only.
+- [PostgreSQL policy authority integration](../../tests/integration/postgres-agent-sandbox-policy-authority.test.ts)
+  orders an exact IAM grant withdrawal and a policy save through their shared
+  Namespace lock. It checks both required grants, persisted policy, successful
+  audit events, and another editor's independent access.
 - [Console batch browser tests](../../tests/browser/console-policy-denials.test.ts)
   cover selection across pages, stable Follow, deduplication, preservation of saved
   rules, and ceiling rejection through real controller routes. They use in-memory
@@ -271,6 +276,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 05:48: Repeat exact policy authority after the owner locks. (authoring-run/ceb135da-880c-4956-9a16-c6dc99a2b986 - 6f67f5745a814fe1d4ac001c01cb3cbb93d2701f)
 
 - 2026-11-19 09:03: Separate policy and validation context. (authoring-run/2ca60020-2ed8-48c5-943c-ba2890e5bb12 - 9dd2694f3cdbbed2c2e26222d503a2253af93ee9)
 
