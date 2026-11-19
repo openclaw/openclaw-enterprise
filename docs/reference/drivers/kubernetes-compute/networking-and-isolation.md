@@ -22,7 +22,9 @@ Cross-tenant traffic, traffic between different Agents, Kubernetes API access,
 and cloud metadata access remain denied where those addresses fall inside the
 model egress exclusions below.
 
-A provisioning Sandbox Driver may own the dedicated Harness endpoint. Configure
+For a same-cluster provider with revision-specific Harness Pods, set `network.providerHarness` to `{ "mode": "namespace", "port": 8080 }` with the actual transport port. `harnessPeerLabels` returns the Pod labels for the requested Namespace, Agent, revision, and agent workload role, or `undefined` until that Pod exists. Compute limits Gateway egress to that peer. An outbound-only OpenClaw worker needs no inbound peer. If a predecessor still serves during preparation, its grant stays available. Dedicated Kubernetes replacement stops the predecessor before preparing the candidate. A missing candidate gets no Harness route. Activation admits only the candidate.
+
+For a fixed provider endpoint, configure
 `network.providerHarness` with its namespace, Pod labels, Service ClusterIP in
 `address`, and `port`. Compute maps the hostname to that address,
 limits Gateway egress to the peer, and disables its direct Harness route.

@@ -26,6 +26,10 @@ const GATEWAY_TOOL_BASELINE = {
     "get_goal",
     "create_goal",
     "update_goal",
+    // Read-only over the session's eligible skills, including pinned Skill Library
+    // revisions whose files exist only in the Gateway.
+    "skills_search",
+    "skills_read",
     "ls",
     "read",
     "write",

@@ -1,14 +1,17 @@
 ---
-rfc: ../rfcs/0043-channel-egress.md
+rfc: ../rfcs/0044-channel-egress.md
 ---
 
 # Implementation plan: Per-Agent channel egress
 
-- **ID:** RFC-0043
+- **ID:** RFC-0044
 - **Delivery status:** In progress
 - **Owner:** kevinlin-openai
 - **Source baseline:** `b401e36cb8754af762120e28cbf150e379482fef`
-- **Authority:** [RFC-0043](../rfcs/0043-channel-egress.md), submitted in [PR #6507](https://github.com/openclaw/openclaw-enterprise/pull/6507).
+- **Authority:** [RFC-0044](../rfcs/0044-channel-egress.md), submitted in [PR #6507](https://github.com/openclaw/openclaw-enterprise/pull/6507).
+
+The proposal was submitted as RFC-0043 in PR #6507. Its number is now RFC-0044;
+this existing plan retains its filename under the specification process.
 
 ## Outcome and scope
 
@@ -19,7 +22,7 @@ routing. Remove the custom Slack proxy after both consumers use Envoy.
 
 The scope includes Slack and different destination policies, not a Microsoft
 Teams Driver, customer upstream proxies, workload identity, or automatic sharding.
-The [acceptance criteria](../rfcs/0043-channel-egress.md#acceptance-criteria)
+The [acceptance criteria](../rfcs/0044-channel-egress.md#acceptance-criteria)
 define required proof. Fixture success does not establish runtime acceptance.
 
 ## Qualification gate

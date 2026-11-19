@@ -3918,7 +3918,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
     [completedKey, completed],
     [cancelled.sessionKey, cancelledHistory],
   ];
-  async function assertRefusedWork(replacement, interrupted, queuedNonce) {
+  async function assertRefusedWork(replacement, interrupted) {
     const probeKey = `agent:main:replacement-ready-${randomUUID()}`;
     const probeNonce = `READY-${randomUUID()}`;
     await gatewayCall(topology, "chat.send", {
@@ -3938,16 +3938,6 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
     });
     assert.equal(session.hasActiveRun, false);
     assert.equal(stoppedHistory.sessionId, interrupted.sessionId);
-    if (queuedNonce !== undefined) {
-      assert.equal(stoppedHistory.pendingInputs.queuedCount, 0);
-      assert.equal(
-        stoppedHistory.messages.some(
-          (message) => message.role === "assistant" && messageText(message).trim() === queuedNonce,
-        ),
-        false,
-        "an explicit stop must not replay accepted queued input after redeployment",
-      );
-    }
     assert.equal(
       stoppedHistory.messages.some(
         (message) => message.__openclaw?.continuation?.source === "restart",
@@ -3976,7 +3966,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
   for (const replacement of [
     "owner",
     "revoked-owner",
-    "incompatible",
+    "configuration-change",
     "gateway-pod",
     "workload-pods",
     "gateway-process",
@@ -4038,7 +4028,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
       });
       assert.equal(topology.gatewayPod.metadata.uid, previousUid);
     } else if (
-      ["owner", "deployment", "explicit-stop", "revoked-owner", "incompatible"].includes(
+      ["owner", "deployment", "explicit-stop", "revoked-owner", "configuration-change"].includes(
         replacement,
       )
     ) {
@@ -4048,8 +4038,8 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
           role: "reader",
         });
       }
-      if (replacement === "incompatible") {
-        // A supported policy edit changes the compatibility domain while retaining storage.
+      if (replacement === "configuration-change") {
+        // A harmless supported settings edit retains the Harness and its saved conversation.
         const changedValues = structuredClone(recoveryValues);
         (changedValues.skills ??= {}).install ??= {};
         changedValues.skills.install.allowUploadedArchives = true;
@@ -4060,7 +4050,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
       }
       if (replacement === "explicit-stop") {
         // Deny workload deletion only for this fixture's scoped worker. A committed
-        // stop must end continuity even when its Kubernetes teardown cannot finish.
+        // stop must save the desired state even when Kubernetes teardown cannot finish.
         const role = await resource("clusterrole", topology.controllerTenantRole);
         const blockedRules = role.rules.map((rule) => ({
           ...rule,
@@ -4103,11 +4093,10 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
               : undefined;
           });
           const state = await topology.observerPool.query(
-            "SELECT restart_generation, restart_domain FROM occ.agents WHERE id = $1",
+            "SELECT desired_runtime_state FROM occ.agents WHERE id = $1",
             [topology.agent.id],
           );
-          assert.equal(state.rows[0].restart_generation, null);
-          assert.equal(state.rows[0].restart_domain, null);
+          assert.equal(state.rows[0].desired_runtime_state, "stopped");
         } finally {
           await kubectl(
             "patch",
@@ -4132,7 +4121,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
                   profiles.find((profile) => profile.id === interrupted.ownerProfileId)?.role,
                   "reader",
                 );
-                revokedHistory = await assertRefusedWork(replacement, interrupted, queuedNonce);
+                revokedHistory = await assertRefusedWork(replacement, interrupted);
               } finally {
                 await gatewayCall(topology, "users.setRole", {
                   profileId: interrupted.ownerProfileId,
@@ -4142,9 +4131,9 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
             }
           : undefined,
       );
-      if (!["owner", "deployment"].includes(replacement)) {
+      if (replacement === "revoked-owner") {
         const stoppedHistory =
-          revokedHistory ?? (await assertRefusedWork(replacement, interrupted, queuedNonce));
+          revokedHistory ?? (await assertRefusedWork(replacement, interrupted));
         finished.push([interrupted.sessionKey, stoppedHistory]);
         context.diagnostic(`${replacement} left interrupted work stopped after redeployment`);
         console.info(`k3d dedicated: ${replacement} refusal passed.`);
@@ -4152,8 +4141,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
       }
     } else if (replacement === "workload-pods") {
       const previousHarnessUid = topology.harnessPod.metadata.uid;
-      // Replace both Pods without changing the Agent revision or its recovery
-      // scope. The actual retained volumes and native shutdown paths remain in use.
+      // Replace both Pods with the same Agent revision and retained volumes.
       await Promise.all([
         kubectl(
           "delete",
@@ -4256,7 +4244,20 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
       "started\n",
       "continuation must inspect the retained effect without repeating it",
     );
-    finished.push([interrupted.sessionKey, recovered]);
+    if (queuedNonce !== undefined) {
+      // Stop shuts down the workload; deployment admits eligible native continuation.
+      // The follow-up was accepted before Stop and must not require another user send.
+      await assertConversation(topology, interrupted.sessionKey, queuedNonce);
+      finished.push([
+        interrupted.sessionKey,
+        await gatewayCall(topology, "chat.history", {
+          sessionKey: interrupted.sessionKey,
+          limit: 100,
+        }),
+      ]);
+    } else {
+      finished.push([interrupted.sessionKey, recovered]);
+    }
     context.diagnostic(`automatic interrupted-turn recovery passed: ${replacement}`);
     console.info(`k3d dedicated: ${replacement} recovery passed.`);
   }

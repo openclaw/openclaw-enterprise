@@ -325,6 +325,7 @@
     "tests/integration/presets-controller.test.ts": 2600,
     "tests/integration/production-controller-security.test.ts": 1000,
     "tests/integration/production-healthcheck.test.ts": 200,
+    "tests/integration/production-image-bootstrap-mounts.test.mjs": 4400,
     "tests/integration/production-image-qualification.test.ts": 1900,
     "tests/integration/production-image-startup.test.mjs": 5200,
     "tests/integration/production-image-upgrade-recovery.test.ts": 41000,

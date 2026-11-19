@@ -90,8 +90,7 @@ permit live Agent policy apply. See
 
 ### Sandbox-provided Harness transport
 
-When a provider supplies `harnessEndpoint`, Compute routes the Agent Gateway to
-the provider-owned Harness. For Codex, Compute derives the native hook credential
+For a provider-owned endpoint, Compute routes Gateway traffic through the [configured peer](kubernetes-compute/networking-and-isolation.md#networking). For Codex, Compute derives the native hook credential
 directory from `harnessHome`. The Sandbox creates that owner-only directory
 outside the Harness workspace and file-transfer roots. Compute validates the path
 and owns the relay URL and authentication.
@@ -328,7 +327,7 @@ inputs as Sandbox startup fields.
 - Sandbox selection is optional. Only dedicated execution with bundled Kubernetes Compute supports a Sandbox, including one from an installed package.
 - Supported facets are `networking`, `filesystem`, and `process`. The Sandbox
   does not authorize commands or create a Sandbox for each tool invocation.
-- The Sandbox reports Harness status. Compute decides when to activate traffic.
+- Each Sandbox reports Harness status, including [Strands](strands-box.md). Compute activates traffic.
 
 ## Troubleshooting
 

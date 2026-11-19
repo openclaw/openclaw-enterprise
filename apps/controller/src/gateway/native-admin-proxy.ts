@@ -16,6 +16,7 @@ export type NativeAdminWebSocketCloseReason =
   | "admission_forbidden"
   | "authorization_denied"
   | "agent_unavailable"
+  | "agent_transition"
   | "revision_changed"
   | "disabled"
   | "dependency_timeout"

@@ -897,6 +897,23 @@ test("production settings coexist in fresh and upgrade chart renders", tooling, 
   }
 });
 
+test("upgrades ignore the bootstrap output settings earlier charts required", tooling, async () => {
+  // Earlier charts refused to render without bootstrap.password.claimName, so an existing
+  // installation's own values still carry these keys when it upgrades.
+  const retired = {
+    "bootstrap.credentials.secretName": "",
+    "bootstrap.password.claimName": "bootstrap-password",
+    "bootstrap.serviceKey.fileName": "initial-admin-service-key.json",
+  };
+  const objects = await renderObjects(retired, { isUpgrade: true });
+  const initializerPod = objects.find(({ kind }) => kind === "Job").spec.template.spec;
+  assert.ok(!initializerPod.volumes.some(({ persistentVolumeClaim }) => persistentVolumeClaim));
+  // A fresh install still has to name the precreated credentials Secret.
+  await assert.rejects(render(retired), ({ stderr }) =>
+    /bootstrap\.credentials\.secretName must reference a precreated Secret/.test(stderr),
+  );
+});
+
 test(
   "packaged production chart keeps the OCE version and rendered resources",
   tooling,

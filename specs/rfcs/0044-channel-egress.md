@@ -6,7 +6,8 @@ author: kevinlin-openai
 
 # Proposal: Per-Agent channel egress through Envoy
 
-- **ID:** RFC-0043
+- **ID:** RFC-0044
+- **Original submission:** RFC-0043 in [PR #6507](https://github.com/openclaw/openclaw-enterprise/pull/6507); renumbered after main allocated 0043 to native restart recovery.
 - **Created:** 2026-11-18
 - **Last updated:** 2026-11-19
 - **Related:** [Gateway outbound proxy proposal, PR #4952](https://github.com/openclaw/openclaw-enterprise/pull/4952), [workload identity scope, #106](https://github.com/openclaw/openclaw-enterprise/issues/106), [workload delivery, #107](https://github.com/openclaw/openclaw-enterprise/issues/107).

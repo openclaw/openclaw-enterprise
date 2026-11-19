@@ -62,6 +62,17 @@ export function enforceDedicatedGatewayToolAllowlist() {
   const gatewayAllow = asRecord(tools.gatewayPolicy)?.allow;
   assert.ok(Array.isArray(gatewayAllow) && gatewayAllow.includes("oce_mcp_docs_listitems"));
 
+  // A dedicated Codex Harness cannot open Gateway-only skill files, such as pinned
+  // Skill Library revisions; the default reads approved skills through the Gateway.
+  const codex = managedGatewayConfiguration(standard, standard, true);
+  const codexAllow = asRecord(asRecord(codex.tools)?.gatewayPolicy)?.allow;
+  const codexConfig = asRecord(asRecord(asRecord(codex.plugins)?.entries)?.codex)?.config;
+  const excluded = asRecord(codexConfig)?.codexDynamicToolsExclude;
+  for (const skillTool of ["skills_search", "skills_read"]) {
+    assert.ok(Array.isArray(codexAllow) && codexAllow.includes(skillTool), skillTool);
+    assert.ok(Array.isArray(excluded) && !excluded.includes(skillTool), skillTool);
+  }
+
   const explicit = { tools: { allow: ["exec"], deny: ["oce_mcp_docs_listitems"] } };
   const configured = asRecord(
     managedGatewayConfiguration(explicit, explicit, false, undefined, [tool]).tools,
