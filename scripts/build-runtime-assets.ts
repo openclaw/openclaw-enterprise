@@ -40,7 +40,7 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "stock-codex-0.164.0-dependency-pin.patch",
-    sha256: "1ca10c576c65748498ede421a230740f2ab3d87bbfb4fa4ab92d89f809c1402f",
+    sha256: "ddce55b7cd701ae7f5db3c2932d7ddd760077592a8c96376ac7363609227c3be",
   },
   {
     file: "openclaw-required-worker-authority-regression.patch",
@@ -49,7 +49,7 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "openclaw-control-ui-browser-reconnect.patch",
-    sha256: "e29e35beb8e0bef78e6acab7786ce52491e03c2a3af5a49898f63fdecb9aa0b0",
+    sha256: "292609ff7adffb4962c5ff29f46f9179530f052d7a4fd303f5c18e5faafa77c6",
   },
   {
     file: "openclaw-terminated-gateway-namespace.patch",
@@ -61,7 +61,7 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "openclaw-node-setup-renewal.patch",
-    sha256: "de6b57665698e7c0d60aebac49f5532623f507ac4a8e2eb21804ace95aab78c8",
+    sha256: "cdda7e94a154b3508cf3eaf1513d0dee62cb58b0127c035a769911a86fd51b1e",
   },
   {
     file: "openclaw-planned-completion.patch",

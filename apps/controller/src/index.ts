@@ -16,6 +16,9 @@ import {
   ModelProviderSchema,
   ModelProviderModelSchema,
   CredentialSourceResponse,
+  RegisterTokenServiceSourceBody,
+  UpdateTokenServiceSourceBody,
+  TokenServiceSourceMetadata,
   ErrorDetail as ErrorDetailSchema,
   ErrorResponse,
   isSecretHarnessAuth,
@@ -1435,8 +1438,26 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.addSchema(StaticKeyConnectionTemplateVersionSchema);
   app.addSchema(ModelProviderModelSchema);
   app.addSchema(ModelProviderSchema);
+  app.addSchema(RegisterTokenServiceSourceBody);
+  app.addSchema(UpdateTokenServiceSourceBody);
+  app.addSchema(TokenServiceSourceMetadata);
   void app.register(swagger, {
     convertConstToEnum: false,
+    refResolver: {
+      buildLocalReference(schema, _baseUri, _fragment, index) {
+        // Standalone contracts have public names. Keep Swagger's names and titles for route schemas.
+        if (typeof schema.$id === "string") {
+          schema.title ??= schema.$id;
+          switch (schema.$id) {
+            case "RegisterTokenServiceSourceBody":
+            case "UpdateTokenServiceSourceBody":
+            case "TokenServiceSourceMetadata":
+              return schema.$id;
+          }
+        }
+        return `def-${index}`;
+      },
+    },
     openapi: {
       openapi: "3.1.0",
       info: {

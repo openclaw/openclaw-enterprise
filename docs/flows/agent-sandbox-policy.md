@@ -40,6 +40,8 @@ graph TD
   V --> R["Record applied<br/>or unconfirmed failure"]
 ```
 
+Solid arrows trace source paths, not provider verification.
+
 ## Execution Trace
 
 ### 1. Admit and persist desired additions
@@ -79,10 +81,10 @@ stale or unauthorized requests retain resource errors.
 escaped JSON, omitting records containing Unicode controls.
 
 Staged `validateDeploymentPolicy(policy, context)` checks source approval, reviewed requests and
-projection per binding. OCC supplies trusted context. The proxy checks each binding and request
-against the proposed policy. Static approvals match method, host, port and path together
-(`null` permits any method). The Sandbox qualifies complete HTTP rules and exact MCP paths.
-Discovery can remain credentialless. Providers enforce OAuth scopes.
+projections using trusted binding, source and consumer authority. Only proposed proxy configuration
+receives a source-bound resolver. The proxy qualifies bindings and requests. Static approvals match
+method, host, port and path (`null` permits any method). The Sandbox qualifies HTTP rules and exact
+MCP paths. Discovery can be credentialless; providers enforce OAuth scopes.
 
 `packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
 Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
@@ -266,6 +268,10 @@ card and hides suggestions.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 08:32: Preserve credential resolution and bounded policy admission traces. (01a1cb2b-f8fd-79b0-9789-7d0ca67c4ddd - ebafb89344294a28044b07ef5650efa2a4939bbd)
+
+- 2026-11-19 07:54: Separate credential acquisition. (authoring-run/a7f97564-0c7b-4c61-b72f-0b866891ade8 - 1eb271262)
 
 - 2026-11-19 03:37: Preserve shared request admission alongside indexed transport-ceiling coverage. (01a1cb2b-f8fd-79b0-9789-7d0ca67c4ddd - f6443620ddc03fea6e7799367d723278f11fe06f)
 

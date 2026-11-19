@@ -13,8 +13,6 @@ function calendarAccount(connection: string, environment: string) {
   return {
     bindingRef: connection,
     sourceRef: { kind: "credential_source", id: "cs_" + connection, namespaceId: "ns_example" },
-    driverId: "occ",
-    registration: { delivery: "push" },
     consumer: { kind: "plugin", pluginId: "calendar", requirement: "account", connection },
     projection: { environment, presentation: "bearer" },
   } as const;
@@ -639,9 +637,8 @@ export function registerDeploymentPolicyCases(): void {
     };
     const authorityForBinding: NonNullable<
       DeploymentPolicyValidationContext["authorityForBinding"]
-    > = ({ bindingRef, sourceRef, consumer, driverId }) =>
+    > = ({ bindingRef, sourceRef, consumer }) =>
       bindingRef === binding.bindingRef &&
-      driverId === "occ" &&
       sourceRef.namespaceId === binding.sourceRef.namespaceId &&
       sourceRef.id === binding.sourceRef.id &&
       consumer.kind === "model" &&

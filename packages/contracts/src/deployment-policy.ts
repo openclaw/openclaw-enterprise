@@ -251,10 +251,7 @@ export interface DeploymentPolicyValidationContext {
   readonly sandbox: NetworkPolicyCapabilities;
   /** OCC resolves source and consumer authority. Plugin authority includes only the named connection's reviewed request rules. */
   readonly authorityForBinding?: (
-    identity: Pick<
-      DeploymentCredentialBinding,
-      "bindingRef" | "sourceRef" | "driverId" | "consumer"
-    >,
+    identity: Pick<DeploymentCredentialBinding, "bindingRef" | "sourceRef" | "consumer">,
   ) => CredentialBindingAuthority | undefined;
   /** False only for a target known to have no issued placeholders. Retain the guard through withdrawal. */
   readonly targetMayHoldPlaceholders: boolean;
@@ -306,10 +303,10 @@ export function validateDeploymentPolicy(
         ),
       ];
     }
-    const { bindingRef, sourceRef, driverId } = binding;
+    const { bindingRef, sourceRef } = binding;
     let authority: CredentialBindingAuthority | undefined;
     try {
-      authority = context.authorityForBinding?.({ bindingRef, sourceRef, driverId, consumer });
+      authority = context.authorityForBinding?.({ bindingRef, sourceRef, consumer });
     } catch {
       return [invalid(path, "The binding's current authority is unavailable.")];
     }

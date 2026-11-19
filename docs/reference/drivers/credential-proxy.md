@@ -95,6 +95,10 @@ Material stays in the trusted resolver, sender or verified recipient. Workload
 configuration receives safe references or markers, not issuer inputs or provider
 tokens. Keep material out of logs, receipts and public status. A material read
 permits receipt or installation only; it does not authorize an upstream send.
+For a static exchange, OCC pins the selected Proxy owner and source control before
+looking up Secret metadata. Before reading material, it verifies that the owner,
+control, Backend, sender, resolver and registered provider still match; otherwise
+it refuses the exchange.
 
 ## Lifecycle
 
