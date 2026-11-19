@@ -4,7 +4,12 @@ import {
   openShellPolicySandbox,
 } from "../helpers/kubernetes-openshell-network-policy.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
-import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
+import {
+  runOpenClawRuntimeHelper,
+  workspaceNodeBinding,
+  WORKSPACE_NODE_BINDING_PATH,
+} from "../helpers/plugin-runtime.mjs";
+import { pluginRuntimeSpecForRevision } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { openShellRepositoryAccess } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { ConfigurationValidationError as SharedConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
@@ -1038,6 +1043,15 @@ async function verifyManagedRelease({
         },
       });
     }
+    selectionCases.push({
+      enabled: true,
+      driverPolicy: {
+        releaseSha256,
+        credentials: { [slotId]: "cs_test_account" },
+        toolNames,
+      },
+      tools: { [toolNames[1]]: { approval: "all_actions" } },
+    });
   }
   for (const selection of selectionCases) {
     const { enabled, driverPolicy } = selection;
@@ -1096,14 +1110,136 @@ async function verifyManagedRelease({
         slotId,
         ...(enabled && { releaseSha256 }),
         ...(driverPolicy?.toolNames?.length && { toolNames: driverPolicy.toolNames }),
+        ...(selection.tools && { approvalToolNames: [toolNames[1]] }),
       },
     ];
     const workerSettings = variable(worker.environment, "OPENCLAW_MANAGED_PLUGIN_JSON");
     assert.deepEqual(
       JSON.parse(workerSettings ?? "[]"),
-      expected.filter((pkg) => pkg.releaseSha256).map(({ id, ...pkg }) => pkg),
+      expected.filter((pkg) => pkg.releaseSha256).map(({ id, approvalToolNames, ...pkg }) => pkg),
     );
     assert.deepEqual(JSON.parse(variable(gatewayEnv, "OPENCLAW_MANAGED_PLUGIN_JSON")), expected);
+    if (selection.tools) {
+      // Execute the actual Gateway launcher with the revision inputs Compute just rendered.
+      // The VM supplies image files; a real-runtime test qualifies native registration.
+      const imageFiles = [];
+      for (const pkg of expected) {
+        const root = "/usr/local/lib/oce/plugin-catalog/" + pkg.packageName;
+        const release = await readFile(
+          new URL(
+            `../../apps/controller/plugins/${pkg.packageName}/ai.openclaw.oce/release.json`,
+            import.meta.url,
+          ),
+          "utf8",
+        );
+        imageFiles.push([root + "/ai.openclaw.oce/release.json", release]);
+        const reviewed = JSON.parse(release);
+        if (reviewed.skill) {
+          imageFiles.push([
+            root + "/skills/" + reviewed.skill + "/SKILL.md",
+            await readFile(
+              new URL(
+                `../../apps/controller/plugins/${pkg.packageName}/skills/${reviewed.skill}/SKILL.md`,
+                import.meta.url,
+              ),
+              "utf8",
+            ),
+          ]);
+        }
+      }
+      const policyRoot = "/usr/local/lib/oce/platform-plugins/oce-managed-mcp-policy";
+      for (const name of ["openclaw.plugin.json", "package.json", "index.mjs"]) {
+        imageFiles.push([
+          policyRoot + "/" + name,
+          await readFile(
+            new URL(`../../deploy/runtime/managed-mcp-policy/${name}`, import.meta.url),
+            "utf8",
+          ),
+        ]);
+      }
+      const env = {
+        OPENCLAW_MANAGED_PLUGIN_JSON: JSON.stringify(expected),
+        OPENCLAW_PLUGIN_RUNTIME_JSON: JSON.stringify({
+          manifest: pluginRuntimeSpecForRevision(fixture.revision),
+        }),
+      };
+      const launched = await runOpenClawRuntimeHelper(undefined, [], {
+        workspaceNodeId: "native-worker",
+        baseConfig: {
+          gateway: { port: 8080 },
+          plugins: { allow: [] },
+          approvals: { plugin: { slack: { plugins: { dormant: { approvers: [] } } } } },
+        },
+        files: imageFiles,
+        env,
+      });
+      const configured = JSON.parse(launched.files.get("/home/node/.openclaw/openclaw.json"));
+      assert.equal(configured.plugins.entries["oce-managed-mcp-policy"].enabled, true);
+      assert.deepEqual(configured.plugins.entries["oce-managed-mcp-policy"].config, {
+        servers: { oce_mcp_slack: { [toolNames[0]]: "allow", [toolNames[1]]: "ask" } },
+        nodeId: "native-worker",
+      });
+      assert.ok(configured.plugins.load.paths.includes(policyRoot));
+      assert.ok(configured.plugins.allow.includes("oce-managed-mcp-policy"));
+      assert.ok(configured.plugins.allow.includes("file-transfer"));
+      assert.ok(configured.gateway.nodes.commands.allow.includes("mcp.tools.call.v1"));
+      // First deployment starts before the node is paired. Pairing hot-applies only
+      // the policy's exact node identity alongside the existing file-transfer binding.
+      const intervals = [];
+      const staged = await runOpenClawRuntimeHelper(undefined, [], {
+        workspaceNodeBindingPath: true,
+        files: imageFiles,
+        env,
+        intervals,
+        setTimeout: () => ({ unref() {} }),
+        gatewayCall: (method) =>
+          method === "plugins.list"
+            ? { generation: 1, plugins: [{ id: "file-transfer", runtime: { state: "disabled" } }] }
+            : undefined,
+      });
+      assert.equal(
+        JSON.parse(staged.files.get("/home/node/.openclaw/openclaw.json")).plugins.entries[
+          "oce-managed-mcp-policy"
+        ].config.nodeId,
+        undefined,
+      );
+      staged.files.set(WORKSPACE_NODE_BINDING_PATH, workspaceNodeBinding("paired-node"));
+      await intervals.find(({ ms }) => ms === 1000).callback();
+      assert.equal(
+        JSON.parse(staged.files.get("/home/node/.openclaw/openclaw.json")).plugins.entries[
+          "oce-managed-mcp-policy"
+        ].config.nodeId,
+        "paired-node",
+      );
+      const missingPolicy = imageFiles.filter(([path]) => path !== policyRoot + "/index.mjs");
+      const rejectedCalls = [];
+      await assert.rejects(
+        runOpenClawRuntimeHelper(undefined, [], {
+          workspaceNodeId: "native-worker",
+          files: missingPolicy,
+          env,
+          calls: rejectedCalls,
+        }),
+        /managed MCP approval policy is missing/,
+      );
+      assert.equal(
+        rejectedCalls.some(({ args }) => args?.[1] === "gateway"),
+        false,
+      );
+      await assert.rejects(
+        runOpenClawRuntimeHelper(undefined, [], {
+          workspaceNodeId: "native-worker",
+          baseConfig: {
+            gateway: { port: 8080 },
+            channels: { slack: { enabled: true } },
+            approvals: { plugin: { slack: { plugins: { another: { approvers: [] } } } } },
+          },
+          files: imageFiles,
+          env,
+        }),
+        /native Slack per-plugin approver overrides/,
+      );
+    }
     // An Agent editor cannot replace deployment inputs with Secret bindings.
     for (const { name } of gatewayEnv.filter(({ name }) => name.startsWith("OPENCLAW_MANAGED_"))) {
       assert.throws(

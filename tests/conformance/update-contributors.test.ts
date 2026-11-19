@@ -100,9 +100,15 @@ test("generator collects paginated contributors, corrections and merged authors 
   assert.match(result.stdout, /Updated: 4 contributors/);
   assert.ok(readme.startsWith("before\n<!-- contributors:start -->"));
   assert.ok(readme.endsWith("<!-- contributors:end -->\nafter\n"));
-  assert.ok(readme.indexOf("github.com/Alpha") < readme.indexOf("github.com/beta"));
-  assert.ok(readme.indexOf("github.com/beta") < readme.indexOf("github.com/gamma"));
-  assert.ok(readme.indexOf("github.com/gamma") < readme.indexOf("github.com/zeta"));
+  assert.deepEqual(
+    Array.from(readme.matchAll(/<a href="(https:\/\/github\.com\/[^"]+)">/g), ([, href]) => href),
+    [
+      "https://github.com/Alpha",
+      "https://github.com/beta",
+      "https://github.com/gamma",
+      "https://github.com/zeta",
+    ],
+  );
   const gamma =
     '<a href="https://github.com/gamma"><img src="https://avatars.githubusercontent.com/u/4?s=48&amp;v=4" width="48" height="48" alt="gamma"></a>';
   const zeta =
