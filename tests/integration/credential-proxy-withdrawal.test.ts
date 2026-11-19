@@ -1,3 +1,4 @@
+/// <reference lib="es2024.promise" />
 import { createOpenAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
@@ -765,6 +766,74 @@ test(
 
 // The admission and successor validators must independently reject authority expansion.
 // This protects recovery from a forged or stale stored policy, not just the happy-path reducer.
+test(
+  "static credential exchange rejects a changed control before reading material (PostgreSQL)",
+  { ...requiresPostgres, timeout: 30_000 },
+  async (t) => {
+    let state: PostgresPlatformState | undefined;
+    const f = await staticEgressFixture(t, {
+      appFactory: async (...args: Parameters<typeof postgresApp>) => {
+        const app = await postgresApp(...args);
+        assert.ok(app.state instanceof PostgresPlatformState);
+        state = app.state;
+        return app;
+      },
+    });
+    assert.ok(state);
+    const original = state.read.bind(state);
+    const reached = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let pendingMetadata = true;
+    state.read = (work) =>
+      original((unit) =>
+        work({
+          ...unit,
+          secrets: {
+            ...unit.secrets,
+            async findSecret(...args) {
+              const secret = await unit.secrets.findSecret(...args);
+              if (pendingMetadata && args[0] === f.namespace.id && args[1] === f.secret.id) {
+                pendingMetadata = false;
+                reached.resolve();
+                await release.promise;
+              }
+              return secret;
+            },
+          },
+        }),
+      );
+    t.after(() => {
+      state!.read = original;
+      release.resolve();
+    });
+    const proxy = f.controller.selectedDriver("credential_proxy");
+    const control = proxy.sourceControl;
+    t.after(() => {
+      Reflect.set(proxy, "sourceControl", control);
+    });
+    const reads = f.secretReads;
+    const pending = f.resolve(f.capture());
+    await Promise.race([
+      reached.promise,
+      pending.then(() => {
+        throw new Error("metadata barrier was not reached");
+      }),
+    ]);
+    assert.equal(Reflect.set(proxy, "sourceControl", { ...control }), true);
+    release.resolve();
+    const result = await pending;
+    Reflect.set(proxy, "sourceControl", control);
+    assert.deepEqual(
+      { ready: Boolean(result.ready), reads: f.secretReads - reads },
+      { ready: false, reads: 0 },
+    );
+    assert.ok(
+      (await f.resolve(f.capture())).ready,
+      "restoring the selected control preserves healthy exchange",
+    );
+  },
+);
+
 test("Git reduction v7 preserves earlier admission meanings and rejects widening", async () => {
   const { assertExecutionAdmission } = await import("../../packages/contracts/src/index.ts");
   const { isReducedCredentialPlan } = await import("../../packages/occ/src/index.ts");
