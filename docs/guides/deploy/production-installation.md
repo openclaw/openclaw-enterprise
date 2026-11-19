@@ -1,3 +1,8 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Install the production control plane
 
 For an OpenShell cluster, start with [Kubernetes setup](kubernetes-setup.md) or

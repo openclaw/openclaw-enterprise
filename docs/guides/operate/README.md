@@ -1,3 +1,8 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Deploy and operate OpenClaw Enterprise
 
 <a id="operate-openclaw-enterprise"></a>

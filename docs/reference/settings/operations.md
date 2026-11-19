@@ -1,3 +1,8 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Worker, Compose, and PostgreSQL settings
 
 ## PostgreSQL connection authentication

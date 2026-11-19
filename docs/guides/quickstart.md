@@ -1,3 +1,8 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Set up OpenClaw Enterprise locally
 
 <span id="quickstart"></span>

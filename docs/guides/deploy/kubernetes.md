@@ -1,3 +1,8 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Deploy on standard Kubernetes
 
 Prepare an existing Kubernetes cluster for OpenClaw Enterprise (OCE), then run

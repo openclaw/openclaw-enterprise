@@ -1,3 +1,8 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Repository layout and conventions
 
 Use this guide to choose where a change belongs in OpenClaw Enterprise (OCE).

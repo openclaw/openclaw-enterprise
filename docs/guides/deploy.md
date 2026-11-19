@@ -1,3 +1,8 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Deploy OpenClaw Enterprise
 
 Install OpenClaw Enterprise (OCE), verify access to the OpenClaw Control Plane

@@ -1,3 +1,8 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Prepare OCE for OpenShift
 
 Use this page for OpenShift-specific networking before the shared

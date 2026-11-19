@@ -1,3 +1,8 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Configure Azure PostgreSQL workload identity
 
 Use this page only when the OCE database uses Azure workload-identity
