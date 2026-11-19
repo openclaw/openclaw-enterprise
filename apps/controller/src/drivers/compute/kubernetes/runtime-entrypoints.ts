@@ -4232,6 +4232,13 @@ const OPENSHELL_PAT_RECOVERY = String.raw`
     let deniedUpgrade;
 `;
 
+// Keep existing PAT programs byte-for-byte stable. Only the separately admitted
+// OAuth launch changes the authentication predicate; the transcript rules are shared.
+const OPENSHELL_OAUTH_RECOVERY = OPENSHELL_PAT_RECOVERY.replace(
+  "!providerManagedPat",
+  'loginMode !== "chatgptAuthTokens"',
+);
+
 // A Sandbox whose egress is an explicit proxy (no direct route; the proxy named in the
 // Harness environment) can reach the model only through it, so the authentication probe of
 // a program rendered with explicitProxy keeps the standard proxy settings when they are set
@@ -4251,10 +4258,12 @@ function agentRuntimeEntrypoint({
   computeOwned = false,
   withNode = false,
   patRecovery = false,
+  oauthRecovery = false,
   boxHttps = false,
   explicitProxy = false,
 } = {}): string {
-  const processFailed = patRecovery ? "!cleanExit" : "result.status !== 0 || result.error";
+  const transportRecovery = patRecovery || oauthRecovery;
+  const processFailed = transportRecovery ? "!cleanExit" : "result.status !== 0 || result.error";
   return String.raw`
 const { createHash } = require("node:crypto");
 const { mkdirSync, mkdtempSync, rmSync } = require("node:fs");
@@ -4704,12 +4713,12 @@ ${boxHttps ? "      ...httpsProviderArguments,\n" : ""}${disableUnboundedConnect
     // of an attempt that exits 0 with an answer counts as recovered, like a stream notice.
     let transientFailure;
     let unrecoveredTransientFailure = false;
-${patRecovery ? OPENSHELL_PAT_RECOVERY : ""}    for (const event of events) {
+${oauthRecovery ? OPENSHELL_OAUTH_RECOVERY : patRecovery ? OPENSHELL_PAT_RECOVERY : ""}    for (const event of events) {
       if (event.type === "turn.started") turnStarted = true;
       const failure = event.type === "error" ? codexProbeStatusFailure(event.message, "error-event", modelId)
         : event.type === "turn.failed" ? codexProbeStatusFailure(event.error?.message, "turn-failed", modelId) : undefined;
 ${
-  patRecovery
+  transportRecovery
     ? `      const upgradeDenied = pat?.upgrades.has(event);
       if (event.type === "error" && typeof event.message === "string" &&
           !event.message.startsWith("Reconnecting...") && codexAuthenticationRejected(event.message) &&
@@ -4724,9 +4733,9 @@ ${
         continue;
       }
       if (event.type === "error") {
-        if (pluginRuntime?.manifest.providerTools === "none" || !turnStarted || turnCompleted || ${patRecovery ? "(!upgradeDenied && !isRecoveredNativeStreamError(event))" : "!isRecoveredNativeStreamError(event)"} ||
+        if (pluginRuntime?.manifest.providerTools === "none" || !turnStarted || turnCompleted || ${transportRecovery ? "(!upgradeDenied && !isRecoveredNativeStreamError(event))" : "!isRecoveredNativeStreamError(event)"} ||
           ++recoveredStreamErrors > MAX_RECOVERED_STREAM_RETRIES) return finish(failure);
-${patRecovery ? "        if (upgradeDenied) deniedUpgrade = failure;\n" : ""}        continue;
+${transportRecovery ? "        if (upgradeDenied) deniedUpgrade = failure;\n" : ""}        continue;
       }
       if (event.type === "turn.failed") return finish(failure);
       if (!allowed.has(event.type) ||
@@ -4738,10 +4747,10 @@ ${patRecovery ? "        if (upgradeDenied) deniedUpgrade = failure;\n" : ""}   
     const answered = events.filter((event) => event.type === "turn.completed").length === 1 &&
       events.filter((event) => event.type === "turn.started").length === 1 &&
       events.at(-1)?.type === "turn.completed" &&
-      events${patRecovery ? ".slice(deniedUpgrade === undefined ? 0 : pat.answerStart)" : ""}.some((event) => event.type === "item.completed" && event.item?.type === "agent_message" &&
+      events${transportRecovery ? ".slice(deniedUpgrade === undefined ? 0 : pat.answerStart)" : ""}.some((event) => event.type === "item.completed" && event.item?.type === "agent_message" &&
         typeof event.item.text === "string" && event.item.text.trim().length > 0);
 ${
-  patRecovery
+  transportRecovery
     ? `    const cleanExit = result.status === 0 && !result.error && (deniedUpgrade === undefined || !result.signal);
     if (deniedUpgrade !== undefined && (pat.answerStart === undefined || !answered || !cleanExit)) {
       return finish(deniedUpgrade);
@@ -5652,6 +5661,8 @@ export const COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypo
 let patEntrypoint: string | undefined;
 const explicitProxyLaunches = new Map<string, string>();
 let compactPatLaunch: string | undefined;
+let oauthLaunch: string | undefined;
+let compactOAuthLaunch: string | undefined;
 let compactProviderLaunch: string | undefined;
 let compactProtectedLaunch: string | undefined;
 
@@ -5662,7 +5673,7 @@ function compactWorkspaceNodeLaunch(child: string): string {
 export interface CodexLaunch {
   readonly providerOwned: boolean;
   readonly protected: boolean;
-  readonly openShellProgram?: "pat" | "ordinary";
+  readonly openShellProgram?: "pat" | "ordinary" | "oauth";
   readonly withNode?: boolean;
   readonly workspaceSetup?: boolean;
   readonly strandsBox?: boolean;
@@ -5710,6 +5721,14 @@ export function codexLaunchEntrypoint(
       : child;
     explicitProxyLaunches.set(key, program);
     return program;
+  }
+  if (!protectedLaunch && openShellProgram === "oauth") {
+    if (withNode) {
+      return (compactOAuthLaunch ??= compactWorkspaceNodeLaunch(
+        agentRuntimeEntrypoint({ withNode: true, oauthRecovery: true }),
+      ));
+    }
+    return (oauthLaunch ??= agentRuntimeEntrypoint({ oauthRecovery: true }));
   }
   if (!protectedLaunch && openShellProgram === "pat") {
     if (withNode) {

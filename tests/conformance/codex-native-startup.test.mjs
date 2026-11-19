@@ -25,6 +25,7 @@ import {
   checkProbeEventPrecedence,
   codexProbeEvents,
 } from "./codex-failure-output-classifier-cases.ts";
+import { openShellUpgradeDenial } from "../fixtures/codex-rest-fallback.mjs";
 import { registerCodexPatLoginRetryCases } from "./codex-native-startup-login-retry-cases.ts";
 
 /** @type {import("../fixtures/codex-native-startup-types.ts").StartupExpectation & { code: "READY" }} */
@@ -107,8 +108,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
   // as an advisory item. The fixture replays those events through the real wrapper.
   const threadStarted = { type: "thread.started", thread_id: "fixture-thread" };
   const completedFallbackTurn = (...events) => [threadStarted, ...completedTurn(...events)];
-  const deniedUpgrade =
-    'unexpected status 403 Forbidden: {"error":"unsupported_l7_protocol","detail":"HTTP upgrade is not supported for REST endpoints; use a separate protocol: websocket endpoint with explicit message rules"}, url: wss://chatgpt.com/backend-api/codex/responses';
+  const deniedUpgrade = openShellUpgradeDenial;
   const detailFirstDenial =
     'unexpected status 403 Forbidden: {"detail":"HTTP upgrade is not supported for REST endpoints; use a separate protocol: websocket endpoint with explicit message rules","error":"unsupported_l7_protocol"}, url: wss://chatgpt.com/backend-api/codex/responses';
   const reconnectUpgrade = (cause = deniedUpgrade, attempts = "2/5") =>
@@ -718,7 +718,44 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       expect: probeFailure({ kind: "PROCESS_EXIT", detail: "exit-1" }),
     },
   ];
-  for (const scenario of scenarios) {
+  // Both credentials cross the same transparent REST proxy, but only a newly
+  // selected OpenShell OAuth launcher may recover its exact upgrade refusal.
+  const oauthScenarios = scenarios
+    .filter((scenario) => scenario.providerPat && scenario.events !== undefined)
+    .map((scenario) => ({
+      ...scenario,
+      name: scenario.name.replace("provider PAT", "OAuth"),
+      providerPat: false,
+      loginMode: "chatgptAuthTokens",
+      openShellOAuth: true,
+    }));
+  oauthScenarios.push({
+    name: "ordinary OAuth cannot recover an OpenShell upgrade denial",
+    loginMode: "chatgptAuthTokens",
+    events: completedFallbackTurn(reconnectUpgrade(), httpsFallback),
+    expect: forbiddenUpgradeFailure,
+  });
+  oauthScenarios.push(
+    {
+      name: "OAuth rate limiting after HTTPS fallback is not recovered",
+      loginMode: "chatgptAuthTokens",
+      openShellOAuth: true,
+      events: [
+        ...completedFallbackTurn(reconnectUpgrade(), httpsFallback).slice(0, -2),
+        failedTurn("unexpected status 429 Too Many Requests"),
+      ],
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "rate_limit" }, { status: 429 }),
+    },
+    {
+      name: "OAuth malformed native output never reaches readiness",
+      loginMode: "chatgptAuthTokens",
+      openShellOAuth: true,
+      events: [],
+      result: { stdout: "not-json" },
+      expect: probeFailure({ kind: "INVALID_OUTPUT", detail: "json" }),
+    },
+  );
+  for (const scenario of [...scenarios, ...oauthScenarios]) {
     await t.test(scenario.name, (t) => {
       return checkCodexStartup(t, scenario);
     });

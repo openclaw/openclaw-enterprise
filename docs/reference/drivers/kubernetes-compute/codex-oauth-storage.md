@@ -41,6 +41,13 @@ credential or require another login.
 
 ## OAuth launch limits
 
+New unprotected OpenShell revisions can pass the startup check after Codex switches
+from a recognized REST-endpoint WebSocket refusal to HTTPS. The same thread must
+produce a nonempty assistant answer and one completed, tool-free turn with exit 0.
+A fallback advisory, exit 0 alone, or a failed HTTPS request is not sufficient.
+Earlier revisions retain their original startup command; a new deployment selects
+the new verifier. This check does not establish live-provider qualification.
+
 OAuth remains **Experimental**. It requires a dedicated Codex Harness, Credential
 Gateway and paired Sandbox supporting the external-auth contract. Unsupported
 installations fail explicitly; there is no runtime-owned OAuth fallback.
