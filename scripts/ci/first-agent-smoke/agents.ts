@@ -772,6 +772,7 @@ export async function runFirstAgent(stack: SmokeStack, modelCredential: string) 
         OCC_DEVELOPMENT_STATE_DIRECTORY: stack.directory,
         OCC_SERVICE_KEY_FILE: stack.keyPath,
         OCC_URL: stack.origin,
+        OPENCLAW_FIRST_AGENT_MODEL: defaultAgentModel,
         OPENAI_API_KEY: modelCredential,
       },
       timeout: 15 * minute,

@@ -99,7 +99,8 @@ deployment. Use the usual steps to deploy an Agent or send a message.
 
 OCC stores session, turn, and model-call records in the audit ledger. A turn
 can contain more than one model call. Each attempt has its own call ID.
-If a runtime stops before it records a result, the result remains unknown.
+Read the runtime result in `details.outcome`. If a runtime stops before it
+records a result, the result remains unknown.
 The records contain IDs, times, and results of observed activity. They exclude
 prompts and model responses. The runtime reports its own activity. OCC
 checks the revision identity for each write.

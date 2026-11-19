@@ -18,7 +18,7 @@ import {
   waitFor,
 } from "./process.ts";
 import {
-  enableLocalSetupAudit,
+  setLocalSetupAudit,
   kubectl,
   wireField,
   podList,
@@ -107,7 +107,7 @@ export async function configureSmokeInstallation(stack: LocalSetup): Promise<Rea
     installationChecksum: createHash("sha256").update(installationData).digest("hex"),
   };
   await writeFile(valuesPath, JSON.stringify(values));
-  await enableLocalSetupAudit(stack);
+  await setLocalSetupAudit(stack, true);
   return reader;
 }
 

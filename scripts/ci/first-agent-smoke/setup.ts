@@ -372,9 +372,9 @@ export async function signInConsole(
   return api;
 }
 
-export function enableLocalSetupAudit(
+export function setLocalSetupAudit(
   stack: Pick<LocalSetup, "directory" | "context" | "kubeconfig" | "state">,
-  options?: RunOptions,
+  enabled: boolean,
 ) {
   return run(
     "helm",
@@ -391,13 +391,48 @@ export function enableLocalSetupAudit(
       "-f",
       join(stack.directory, "helm-values.json"),
       "--set",
-      "controlPlaneAudit.enabled=true",
+      `controlPlaneAudit.enabled=${enabled}`,
       "--wait",
       "--timeout",
       "5m",
     ],
-    { timeout: 6 * minute, ...options },
+    { timeout: 6 * minute },
   );
+}
+
+export async function expectNoRuntimeAuditRows(stack: LocalSetup, revisionId: string) {
+  const { stdout } = await kubectl(
+    stack,
+    [
+      "-n",
+      stack.state.platformNamespace,
+      "exec",
+      "-i",
+      "statefulset/postgres",
+      "-c",
+      "postgres",
+      "--",
+      "psql",
+      "-X",
+      "-q",
+      "-t",
+      "-A",
+      "--set",
+      "ON_ERROR_STOP=1",
+      "--set",
+      `revision_id=${revisionId}`,
+      "--username",
+      "postgres",
+      "--dbname",
+      "openclaw_enterprise",
+    ],
+    {
+      // Inspect the disposable stack's ledger even when the audit API is off.
+      input: `SELECT count(*) FROM occ.audit_events
+      WHERE kind = 'runtime_activity' AND details->>'agentRevisionId' = :'revision_id';`,
+    },
+  );
+  assert.equal(stdout.trim(), "0", "the disabled audit switch allowed a runtime write");
 }
 
 export async function apiProcess(

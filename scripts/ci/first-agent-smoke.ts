@@ -25,8 +25,10 @@ import { buildImages, writeReleaseSelection } from "./first-agent-smoke/images.t
 import { createStepRecorder, log, workDirectory } from "./first-agent-smoke/process.ts";
 import {
   apiProcess,
+  expectNoRuntimeAuditRows,
   clusterName,
   routeModelProvider,
+  setLocalSetupAudit,
   startLocalSetup,
   type LocalSetup,
   type SmokeAgent,
@@ -37,6 +39,7 @@ import {
   chatCodexWithAudit,
   assertAgentTurnAudit,
   chatWithAudit,
+  chatTurn,
   createDedicatedOpenClawAgent,
   createCodexAgent,
   deployAgent,
@@ -76,6 +79,7 @@ export {
   createApi,
   kubectl,
   routeModelProvider,
+  setLocalSetupAudit,
   startLocalSetup,
   watchCluster,
 } from "./first-agent-smoke/setup.ts";
@@ -240,6 +244,13 @@ async function smoke() {
         servingApi,
         "the API restarted during Gateway recovery",
       );
+    });
+    await smokeStep("audit-disabled", async () => {
+      await stopAgent(stack, embedded.agent);
+      await setLocalSetupAudit(stack, false);
+      const unauditedRevision = await deployAgent(stack, embedded.agent);
+      await chatTurn(stack, embedded.agent, unauditedRevision);
+      await expectNoRuntimeAuditRows(stack, unauditedRevision);
     });
   } catch (error) {
     await diagnostics(diagnosticStack);

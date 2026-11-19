@@ -677,6 +677,7 @@ interface GatewayConfigurationSnapshot {
   readonly revisionId: string;
   readonly gatewayManagedMode: boolean;
   readonly auditCodexModelAttempts?: boolean;
+  readonly auditOpenClawWorkerModelAttempts?: boolean;
   readonly usesGatewayPasswordEnv: boolean;
   readonly usesWritableNativeAdminConfig: boolean;
   readonly annotations: Readonly<Record<string, string>>;
@@ -13891,12 +13892,23 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       asRecord(nativeConfiguration.secrets),
       (setting, requirement) => new GatewaySettingFailure(setting, requirement),
     );
+    const dedicatedOpenClaw =
+      revision.harness.id === "openclaw" && revision.harness.mode === "dedicated";
+    const auditNativeWorker =
+      dedicatedOpenClaw &&
+      this.gatewayRuntimeAuditTarget !== undefined &&
+      this.options.executionCluster === undefined &&
+      revision.egressPlan === undefined;
+    const sandbox = auditNativeWorker ? this.sandboxDriverForRevision(revision) : undefined;
     return {
       name: `gateway-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
       revision: revision.revision,
       revisionId: revision.id,
       gatewayManagedMode: revision.gatewayManagedMode,
       ...(this.usesAuditedCodexServer(revision) && { auditCodexModelAttempts: true }),
+      ...(auditNativeWorker &&
+        sandbox?.provisionHarness === undefined &&
+        sandbox?.harnessEndpoint === undefined && { auditOpenClawWorkerModelAttempts: true }),
       ...(harnessNamespace === undefined ? {} : { harnessNamespace }),
       usesGatewayPasswordEnv,
       usesWritableNativeAdminConfig: this.usesWritableNativeAdminConfig(nativeConfiguration),
@@ -17801,6 +17813,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             name: "OPENCLAW_CODEX_PROVIDER_ATTEMPT_AUDIT",
             value: configuration?.auditCodexModelAttempts && providerUrl === undefined ? "1" : "0",
           });
+        }
+        if (configuration?.auditOpenClawWorkerModelAttempts) {
+          variables.push({ name: "OPENCLAW_NATIVE_WORKER_RUNTIME_AUDIT", value: "1" });
         }
         const { config } = this.gatewayRuntimeAuditTransportNames(agentId, auditRevisionId);
         volumes.push({
