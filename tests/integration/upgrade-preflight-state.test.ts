@@ -17,6 +17,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { commandCalls, commandPath, writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 
@@ -441,4 +442,89 @@ test("profiled upgrade checks and recovery bind Kubernetes requests to the appro
   );
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr);
+});
+
+test("CI tool launcher preserves proxy and certificate settings without exposing their values", (t) => {
+  const directory = temporaryDirectorySync(t, "ci-tool-launcher-");
+  const source = readFileSync(join(repository, "scripts/ci/setup-tools.sh"), "utf8");
+  // Exercise the checked-in function without running unrelated tool setup.
+  const launcher = source.match(/^run_system_tool\(\) \{\n[\s\S]*?^\}$/m)?.[0];
+  assert.ok(launcher, "CI tool launcher function is missing");
+
+  const proxy = syntheticCredentialUrl({
+    username: "fixture-proxy-user",
+    password: "fixture-proxy-private-canary",
+    host: "proxy.example.invalid",
+  });
+  const allowed = {
+    HTTPS_PROXY: proxy,
+    https_proxy: proxy,
+    ALL_PROXY: proxy,
+    all_proxy: proxy,
+    NO_PROXY: "private-fixture-bypass.invalid",
+    no_proxy: "",
+    CURL_CA_BUNDLE: join(directory, "fixture-curl-ca"),
+    SSL_CERT_FILE: join(directory, "fixture-cert"),
+    SSL_CERT_DIR: join(directory, "fixture-cert-directory"),
+  };
+  const expected = join(directory, "expected.json");
+  writePrivate(expected, allowed);
+  const startup = join(directory, "forbidden-startup");
+  writeFileSync(startup, "exit 79\n", { mode: 0o600 });
+  const candidate = join(directory, "candidate-tool");
+  const installed = join(directory, "installed-tool");
+  writeFileSync(candidate, "approved fixture bytes\n", { mode: 0o600 });
+
+  // The child compares values via private fixture input. Its output carries no secrets,
+  // even when a regression forwards the wrong environment or puts values on argv.
+  const probe = [
+    "import json, os, sys",
+    "with open(sys.argv[1], encoding='utf-8') as expected:",
+    "    allowed = json.load(expected)",
+    "assert os.environ == {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', **allowed}",
+    "assert not any(value and value in arg for value in allowed.values() for arg in sys.argv)",
+  ].join("\n");
+  const bash = [
+    "set -euo pipefail",
+    launcher,
+    'export BASH_ENV="$1"',
+    "blocked_fixture() { exit 80; }",
+    "export -f blocked_fixture",
+    "set -x",
+    "run_system_tool /bin/bash -c '[[ \"$(type -t blocked_fixture)\" != function ]]'",
+    'run_system_tool /usr/bin/python3 -I -S -c "$2" "$3"',
+    // Valid local bytes must bypass curl. This unsupported scheme cannot contact a server.
+    'run_system_tool /bin/bash "$4" offline-fixture://unused "$5" "$6" "" "$7" 0755',
+  ].join("\n");
+  const result = spawnSync(
+    "/bin/bash",
+    [
+      "--noprofile",
+      "--norc",
+      "-c",
+      bash,
+      "ci-tool-probe",
+      startup,
+      probe,
+      expected,
+      join(repository, "scripts/ci/download-pinned.sh"),
+      installed,
+      sha256(candidate),
+      candidate,
+    ],
+    {
+      env: { ...allowed, PATH: directory, UNREVIEWED_CALLER_SETTING: "should-not-leave-caller" },
+      encoding: "utf8",
+      timeout: 5000,
+    },
+  );
+  const output = result.stdout + result.stderr;
+  assert.ok(
+    [...Object.values(allowed), "fixture-proxy-private-canary"].every(
+      (value) => !value || !output.includes(value),
+    ),
+    "launcher exposed a private fixture value",
+  );
+  assert.equal(result.status, 0, "controlled child rejected the launcher boundary");
+  assert.equal(sha256(installed), sha256(candidate), "verified candidate was not published");
 });

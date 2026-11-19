@@ -18,13 +18,13 @@ runs:
         restore-keys: |
           pinned-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ci/setup-tools.sh', 'scripts/ci/download-pinned.sh') }}-
     - name: Set up CI tools
-      shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+      shell: /bin/bash --noprofile --norc -p -e -o pipefail {0}
       env:
         BASH_ENV: ""
         ENV: ""
         CI_TOOL_PROFILE: ${{ inputs.profile }}
         CI_PINNED_TOOL_CACHE: ${{ runner.temp }}/pinned-tool-downloads
-      run: /bin/bash scripts/ci/setup-tools.sh "$CI_TOOL_PROFILE"
+      run: /bin/bash -p scripts/ci/setup-tools.sh "$CI_TOOL_PROFILE"
     - name: Save verified yq and k3d downloads
       if: (inputs.profile == 'postgres' || inputs.profile == 'images' || inputs.profile == 'k3d' || inputs.profile == 'full') && steps.tool-cache.outputs.cache-hit != 'true'
       continue-on-error: true
