@@ -1843,6 +1843,49 @@ test("protected Responses forwards inline raster images from users and local too
     ...body,
     input: [{ ...user, role, content: [part] }],
   });
+  const avif = Buffer.from(
+    "AAAAIGZ0eXBhdmlmAAAAAGF2aWZtaWYxbWlhZk1BMUIAAAD5bWV0YQAAAAAAAAAvaGRscgAAAAAAAAAAcGljdAAAAAAAAAAAAAAA" +
+      "AFBpY3R1cmVIYW5kbGVyAAAAAA5waXRtAAAAAAABAAAAHmlsb2MAAAAARAAAAQABAAAAAQAAASEAAAAbAAAAKGlpbmYAAAAAAAEA" +
+      "AAAaaW5mZQIAAAAAAQAAYXYwMUNvbG9yAAAAAGppcHJwAAAAS2lwY28AAAAUaXNwZQAAAAAAAAACAAAAAgAAABBwaXhpAAAAAAMI" +
+      "CAgAAAAMYXYxQ4EADAAAAAATY29scm5jbHgAAgACAAIAAAAAF2lwbWEAAAAAAAAAAQABBAECgwQAAAAjbWRhdAoJAAAAAAZtfMAg" +
+      "Mg4QAMAAAAKAAAAAsBNLKA==",
+    "base64",
+  );
+  const malformedAvif = Buffer.from(avif);
+  malformedAvif[4] |= 0x80;
+  // Change only a marker byte and keep the PNG checksum valid so the refusal
+  // depends on the marker, even when ASCII decoding would mask the high bit.
+  const markerCases = [
+    ...[
+      { label: "high-bit IHDR", offset: 8 },
+      { label: "high-bit IDAT", offset: 33 },
+    ].map(({ label, offset }) => {
+      const bytes = Buffer.from(png);
+      const typeOffset = offset + 4;
+      const crcOffset = offset + 8 + bytes.readUInt32BE(offset);
+      bytes[typeOffset] |= 0x80;
+      bytes.writeUInt32BE(crc32(bytes.subarray(typeOffset, crcOffset)), crcOffset);
+      return { mime: "png", label, bytes };
+    }),
+    ...[
+      { label: "high-bit RIFF", offset: 0 },
+      { label: "high-bit WEBP", offset: 8 },
+      { label: "high-bit VP8", offset: 12 },
+    ].map(({ label, offset }) => {
+      const bytes = Buffer.from(webp.image_url.split(",")[1], "base64");
+      bytes[offset] |= 0x80;
+      return { mime: "webp", label, bytes };
+    }),
+    // AVIF is outside the MIME allowlist regardless of its container bytes.
+    { mime: "avif", label: "valid AVIF", bytes: avif },
+    { mime: "avif", label: "high-bit ftyp", bytes: malformedAvif },
+  ];
+  for (const { mime, label, bytes } of markerCases) {
+    const part = { ...image, image_url: `data:image/${mime};base64,${bytes.toString("base64")}` };
+    assert.ok((await f.resolve(f.capture(withPart(part)))).refused, label);
+    assert.equal(f.secretReads, reads, `${label} must be refused before reading credentials`);
+  }
+
   const rasterWith = (mime, hex) => ({
     ...image,
     image_url: `data:image/${mime};base64,${Buffer.from(hex, "hex").toString("base64")}`,

@@ -202,7 +202,7 @@ function pngRaster(bytes: Buffer): boolean {
     bytes.length < 57 ||
     !bytes.subarray(0, 8).equals(pngSignature) ||
     bytes.readUInt32BE(8) !== 13 ||
-    bytes.toString("ascii", 12, 16) !== "IHDR" ||
+    bytes.toString("latin1", 12, 16) !== "IHDR" ||
     bytes.readUInt32BE(16) === 0 ||
     bytes.readUInt32BE(20) === 0
   ) {
@@ -217,7 +217,7 @@ function pngRaster(bytes: Buffer): boolean {
       return false;
     }
     const end = offset + length + 12;
-    const type = bytes.toString("ascii", offset + 4, offset + 8);
+    const type = bytes.toString("latin1", offset + 4, offset + 8);
     if (
       !/^[A-Za-z]{4}$/.test(type) ||
       crc32(bytes.subarray(offset + 4, end - 4)) !== bytes.readUInt32BE(end - 4)
@@ -339,7 +339,7 @@ function webpChunks(bytes: Buffer, start: number, end: number, animation: boolea
   let offset = start;
   let imageData = false;
   while (offset + 8 <= end) {
-    const type = bytes.toString("ascii", offset, offset + 4);
+    const type = bytes.toString("latin1", offset, offset + 4);
     const length = bytes.readUInt32LE(offset + 4);
     const data = offset + 8;
     if (length > end - data || length + (length & 1) > end - data) {
@@ -367,10 +367,10 @@ function webpChunks(bytes: Buffer, start: number, end: number, animation: boolea
 function webpRaster(bytes: Buffer): boolean {
   return (
     bytes.length >= 20 &&
-    bytes.toString("ascii", 0, 4) === "RIFF" &&
+    bytes.toString("latin1", 0, 4) === "RIFF" &&
     bytes.readUInt32LE(4) === bytes.length - 8 &&
-    bytes.toString("ascii", 8, 12) === "WEBP" &&
-    ["VP8 ", "VP8L", "VP8X"].includes(bytes.toString("ascii", 12, 16)) &&
+    bytes.toString("latin1", 8, 12) === "WEBP" &&
+    ["VP8 ", "VP8L", "VP8X"].includes(bytes.toString("latin1", 12, 16)) &&
     webpChunks(bytes, 12, bytes.length, true)
   );
 }
