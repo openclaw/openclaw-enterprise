@@ -130,7 +130,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   validateSandboxNetworkGrants,
-  sandboxNetworkGrantsWithinCeiling,
+  networkGrantAdmissionDetails,
 } from "@openclaw-enterprise/contracts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes } from "node:crypto";
@@ -11729,26 +11729,12 @@ export class OpenClawController {
       validateSandboxNetworkGrants(input);
       const additions = immutableCopy(input);
       requireConfiguration(contribution, { additions });
-      const details: ErrorDetail[] = [];
-      additions.forEach((grant, index) => {
-        if (!sandboxNetworkGrantsWithinCeiling([grant], this.sandboxNetworkPolicyCeiling)) {
-          details.push({
-            path: `/additions/${index}`,
-            code: "OUTSIDE_CEILING",
-            message: "The grant exceeds the Installation delegation ceiling.",
-          });
-        }
-        if (
-          (!driver.networkPolicy!.wildcards && grant.host.startsWith("*.")) ||
-          (!driver.networkPolicy!.portRanges && grant.ports.some(({ from, to }) => from !== to))
-        ) {
-          details.push({
-            path: `/additions/${index}`,
-            code: "INVALID_VALUE",
-            message: "The Driver does not support the requested wildcard or port range.",
-          });
-        }
-      });
+      const details = networkGrantAdmissionDetails(
+        additions,
+        this.sandboxNetworkPolicyCeiling,
+        driver.networkPolicy,
+        "/additions",
+      );
       if (details.length > 0) {
         admissionMessage = details.some((detail) => detail.code === "OUTSIDE_CEILING")
           ? "The requested network policy exceeds the Installation delegation ceiling."
