@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-18"
-last_updated_session: "authoring-run/fcffdcd5-85ba-4fd1-ad35-bfbbcd6953b6"
+updated: "2026-11-19"
+last_updated_session: "authoring-run/fb46fd44-f1b3-4ac7-9bd8-0096c2f70fa9"
 ---
 
 # Production Startup Flow
@@ -80,9 +80,9 @@ Queries reconnect.
 
 ### 1. Prepare native production inputs
 
-`scripts/diagnose-kubernetes-prerequisites.ts:diagnose` reads CRDs, controllers,
-addresses and object quota headroom. EKS binds account, ARN, endpoint and CA.
-[Resolve failed/unknown checks](../guides/deploy/prerequisite-diagnosis.md) before Helm.
+`scripts/diagnose-kubernetes-prerequisites.ts:diagnose` validates the selected
+kubeconfig and uses private sockets for reads without redirects. EKS verifies
+cluster identity. [Resolve findings](../guides/deploy/prerequisite-diagnosis.md) before Helm.
 
 `deploy/helm/openclaw-enterprise/values.yaml:1`
 
@@ -381,6 +381,8 @@ The shell initializes the missing annotation, patches with UID and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 19:08: Trace the verified prerequisite context. (authoring-run/fb46fd44-f1b3-4ac7-9bd8-0096c2f70fa9 - a99a9c85206960539cf27f47cbe350b033d8b2ca)
 
 - 2026-11-18 13:48: Recognize migration hooks (PST). (authoring-run/fcffdcd5-85ba-4fd1-ad35-bfbbcd6953b6 - 62b4fb61d91580e4080fe3bd22da3e981bffb603)
 

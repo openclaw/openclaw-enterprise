@@ -15,6 +15,12 @@ After preparation, [install OCE](eks-openshell-installation.md) in the same prot
 
 ## Before you start
 
+Check credential policy before provisioning resources. The EKS kubeconfig below
+uses an exec plugin. The [prerequisite check](prerequisite-diagnosis.md) refuses
+that plugin unless kubectl preferences are disabled for the check. If your
+credential owner requires those preferences, obtain a different approved
+credential for the check. Do not disable a required policy.
+
 ### Prepare AWS infrastructure
 
 Provision the following through your reviewed AWS infrastructure workflow. The OCE chart does not create the EKS cluster, VPC, IAM roles, database or storage add-ons.
@@ -193,9 +199,10 @@ namespace and controllers. Save its plan as `$RUN_DIR/prerequisites.json`, using
 reviewed API/webhook CIDRs above. Set `peakAdditional` from the candidate chart
 and put the intended cluster ARN in `eks.clusterArn`.
 
-```bash
-node scripts/diagnose-kubernetes-prerequisites.ts --config "$RUN_DIR/prerequisites.json"
-```
+[Run the check in a private temporary directory](prerequisite-diagnosis.md#run-and-interpret-the-checks).
+Keep this session’s `RUN_DIR` instead of the example path. For the EKS exec
+plugin, put `KUBERC=off` before `TMPDIR=` on the diagnosis command **only if
+the credential owner permits it**. Do not export the setting.
 
 Resolve failed and unknown checks before installing. Matching address inventory
 does not prove that deployed NetworkPolicies or admission webhooks work; retain
