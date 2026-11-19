@@ -192,6 +192,7 @@ export async function runServiceApiKeysCliScenario(
   }
 
   async function exerciseConfigurationAndSecret() {
+    // Reject ambiguous object members before a credentialed mutation can reach OCC.
     await assert.rejects(
       run(occCli, ["configuration", "create", "--file", ambiguousBodyFile], { env }),
       (error: unknown) => {
@@ -316,6 +317,8 @@ export async function runServiceApiKeysCliScenario(
   }
 
   async function prepareAgent() {
+    // Seed the server-owned resource through the administrator session so the
+    // scoped CLI credential exercises only its granted Agent operations.
     const agentConfiguration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
       body: { kind: "agent", values: {} },
     });
@@ -442,6 +445,8 @@ export async function runServiceApiKeysCliScenario(
   }
 
   async function exerciseServiceKeys() {
+    // occ service-key create writes a private key file that occ itself accepts, and never
+    // prints the key. The administrator key covers its own grants, so it may rotate itself.
     const rotatedKeyFile = join(directory, "rotated-admin-key.json");
     const { OCC_NAMESPACE: _namespace, ...installationEnv } = adminEnv;
     const createServiceKey = (args: string[]) =>
@@ -699,32 +704,36 @@ export async function runServiceApiKeysCliScenario(
 
   async function exerciseRequestTimeRotation() {
     setRotateKeyBeforeResponse(() => renameSync(adminKeyFile, keyFile));
-    await assert.rejects(
-      run(occCli, ["installation", "get", "--output", "json"], { env }),
-      (error: unknown) => {
-        commandError(error);
-        assert.equal(error.code, 1);
-        assert.equal(error.stdout, "");
-        assert.match(error.stderr, /FORBIDDEN/);
-        assert.match(error.stderr, /HTTP 403/);
-        // The hint names the Namespace of the key this request sent, not the rotated one, and
-        // asks for an Installation-scoped key rather than a --namespace (finding D740), without
-        // repeating OCC's own sentence (finding D770).
-        assert.ok(
-          error.stderr.includes(
-            `"occ installation get" needs an Installation-scoped key; no --namespace value helps. Read this key's Namespace with "occ namespace get ${namespaceId}".`,
-          ),
-        );
-        assert.equal(error.stderr.split("works only in").length, 2);
-        return true;
-      },
-    );
-    // A new command reads the replacement Installation key; only the refused one used the old key.
-    assert.equal(
-      getRotateKeyBeforeResponse(),
-      undefined,
-      "rotated the key before delivering the 403",
-    );
+    try {
+      await assert.rejects(
+        run(occCli, ["installation", "get", "--output", "json"], { env }),
+        (error: unknown) => {
+          commandError(error);
+          assert.equal(error.code, 1);
+          assert.equal(error.stdout, "");
+          assert.match(error.stderr, /FORBIDDEN/);
+          assert.match(error.stderr, /HTTP 403/);
+          // The hint names the Namespace of the key this request sent, not the rotated one, and
+          // asks for an Installation-scoped key rather than a --namespace (finding D740), without
+          // repeating OCC's own sentence (finding D770).
+          assert.ok(
+            error.stderr.includes(
+              `"occ installation get" needs an Installation-scoped key; no --namespace value helps. Read this key's Namespace with "occ namespace get ${namespaceId}".`,
+            ),
+          );
+          assert.equal(error.stderr.split("works only in").length, 2);
+          return true;
+        },
+      );
+      // A new command reads the replacement Installation key; only the refused one used the old key.
+      assert.equal(
+        getRotateKeyBeforeResponse(),
+        undefined,
+        "rotated the key before delivering the 403",
+      );
+    } finally {
+      setRotateKeyBeforeResponse(undefined);
+    }
     await run(occCli, ["iam", "service-principal", "list"], { env });
   }
 }
