@@ -150,8 +150,6 @@ graph. The full `deploy/runtime/Dockerfile` uses the repository root as its buil
 context to include the emitted client router in the Agent image.
 `deploy/runtime/openclaw-source.json` owns the OpenClaw source commit, archive
 checksum, and fixed build timestamp used by that runtime recipe and its callers.
-`deploy/runtime/node/` owns the runtime's pinned Node source, termination patch,
-native build and verification. Its patch inventory is separate from OpenClaw's.
 
 Helm embeds the startup programs from `deploy/helm/openclaw-enterprise/files/`
 in rendered container commands. Edit their TypeScript sources in

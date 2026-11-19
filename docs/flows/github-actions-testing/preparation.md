@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: "2026-11-18 03:52"
-last_updated_session: "authoring-run/96d31457-49fb-4427-a877-88398bb619ab"
+updated: "2026-11-19 18:56"
+last_updated_session: "01a1f528-3827-7cb0-9d72-19b91cbb6f69"
 ---
 
 # CI resource preparation
@@ -221,10 +221,9 @@ the build. In CI, both share the remaining `CI_RUNNER_DEADLINE_MS` budget,
 reserving three minutes for preparation and tests. Exhaustion reports `Image
 build out of lane time`, starts no further build, and leaves owned-tag removal to
 job cleanup. Local runs and main's cache warmer have no lane deadline. The warmer
-gives the OpenClaw build and final runtime assembly one shared 180-minute budget;
-controller builds retain 20 minutes. Each export has a separate 20-minute limit
-within the 210-minute job. These are cancellation limits, not expected durations;
-cold Node compilation exceeded the former 20-minute build limit.
+gives each image one shared 20-minute build budget, including any first stage.
+Each cache export has a separate 20-minute limit within the 45-minute job.
+These are cancellation limits, not expected durations.
 
 For dedicated Codex preparation (and installed repository-credential preparation, once that lane is available again), each owned node supplies its actual `RuntimeDefault` syscall profile from a restricted probe Pod. In the same command path, preparation first verifies that `RuntimeDefault` denies the pinned Codex Bubblewrap sandbox, then preserves that baseline, adds the version-pinned Bubblewrap calls, installs the resulting Localhost profile, verifies its hash and effective OCI policy, and requires actual sandbox execution through the profile. A missing profile must prevent container creation. The selected relative profile path is passed to the live fixture as `runtime.codexSeccompProfile`; only the dedicated Codex container uses it. Node profile files belong to the disposable cluster, and temporary probe resources are cleaned before model tests. The live fixture checks the effective configured model before paid model turns. OpenShell continues to own containment for its provider-created Harness.
 
@@ -284,6 +283,8 @@ See [lane verification](../../testing/ci/run-lanes.md).
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 18:56: Restore stock-Node image build budgets after removing Node compilation. (01a1f528-3827-7cb0-9d72-19b91cbb6f69 - 32662b9d2)
 
 - 2026-11-18 03:52: Validate journals. (authoring-run/96d31457-49fb-4427-a877-88398bb619ab - a56c941614457b172727092dcc1c25e43496fd16)
 
