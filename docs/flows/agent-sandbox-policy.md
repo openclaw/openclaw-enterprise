@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-19"
-last_updated_session: "authoring-run/16714b20-9501-44e3-8b3a-41b43ee3949f"
+last_updated_session: "authoring-run/36174b4a-9481-45e4-b5e7-f332cc293107"
 ---
 
 # Agent sandbox policy flow
@@ -56,9 +56,11 @@ with URLs for the available facet actions. See
 
 `loadInstallationConfiguration` validates the YAML
 [repository ceiling](../reference/configuration.md). Agent and SandboxPolicy
-read permission allow GET to return the saved grants, the Installation ceiling
-and whether the state adapter can save explicit grants. An authorized PUT
-checks the requested grants against the ceiling and stores them with the next
+read permission allow GET to return the saved grants, the Namespace's delegation
+ceiling, and whether the state adapter can store explicit grants. The ceiling
+includes only Installation grants the bound repository policy owner allows for
+that Namespace. A write limit becomes read when the owner allows read alone.
+An authorized PUT checks the same ceiling and stores valid grants with the next
 policy version. An unsupported adapter refuses an explicit list with
 `409 RESOURCE_CONFLICT`. An empty list saves deny-all. Omission keeps the saved
 grants and leaves them out of the PUT response.
@@ -75,10 +77,10 @@ Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
 and checks editing, expected version, pending work, complete ceiling coverage,
 and registry-resolved Driver admission. The saved additions come from the
 admitted snapshot. While the active or next revision runs under protected
-execution (the Installation selects the Credential Proxy), additions are refused
-with `409 SANDBOX_POLICY_PROTECTED_EXECUTION`, as are live application to a
-protected revision and a protected deploy carrying them; protected
-revisions admit no ordinary Agent policy snapshot. Protected, dedicated Codex
+execution, PUT refuses additions and any explicit repository policy, including
+deny-all, with `409 SANDBOX_POLICY_PROTECTED_EXECUTION`. To clear ordinary
+additions, send an empty additions list and omit the repository field. Protected
+execution also refuses live application and deployment with ordinary additions. Protected, dedicated Codex
 repository admission can carry the Sandbox Driver's explicitly acknowledged
 [artifact subset](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
 `checkedProtectedCodexArtifactPolicy` verifies its purpose, declared keys, Driver
@@ -269,6 +271,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 04:47: Limit repository grants to Namespace authority and refuse explicit repository policy saves under protected execution. (authoring-run/36174b4a-9481-45e4-b5e7-f332cc293107 - 6a8b92278837a776fe6479dbf0418790d44bb3ff)
 
 - 2026-11-19 04:07: Trace repository grant readback, ceiling admission, and versioned saves through the Agent API. (authoring-run/16714b20-9501-44e3-8b3a-41b43ee3949f - ef779de40b885811dcc40e6eadaa8f185d4bb34d)
 

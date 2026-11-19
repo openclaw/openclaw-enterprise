@@ -8533,11 +8533,11 @@ Read one Agent sandbox policy and delegation ceiling
 | `data.policy.repositoryNetworkPolicy[].access` | `"read" or "write"` | Yes | — |
 | `data.policy.repositoryNetworkPolicy[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 | `data.policy.version` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
-| `data.protectedExecution` | `boolean` | Yes | True while the active revision or the next deploy runs under protected execution. Saving network policy additions is then refused with SANDBOX_POLICY_PROTECTED_EXECUTION; saving an empty policy stays allowed. |
-| `data.repositoryNetworkPolicyCeiling` | `array<object>` | Yes | max items: 32; Installation repository grants available for delegation to this Agent. |
+| `data.protectedExecution` | `boolean` | Yes | True while the active revision or the next deploy runs under protected execution. Saving additions or an explicit repository policy then returns SANDBOX_POLICY_PROTECTED_EXECUTION. A save can still clear additions by omitting the repository policy field. |
+| `data.repositoryNetworkPolicyCeiling` | `array<object>` | Yes | max items: 32; Installation repository grants that the current repository policy owner allows for this Agent's Namespace. |
 | `data.repositoryNetworkPolicyCeiling[].access` | `"read" or "write"` | Yes | — |
 | `data.repositoryNetworkPolicyCeiling[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
-| `data.repositoryNetworkPolicySaveSupported` | `boolean` | Yes | Whether this Installation can save an explicit Agent repository policy. |
+| `data.repositoryNetworkPolicySaveSupported` | `boolean` | Yes | Whether the state adapter can store an explicit Agent repository policy. |
 | `data.unavailableReason` | `string` | No | Why per-Agent network policy is unavailable, when capability is null: the sentence the save, validate, apply and editing refusals give. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |

@@ -32353,11 +32353,11 @@
                           "type": "object"
                         },
                         "protectedExecution": {
-                          "description": "True while the active revision or the next deploy runs under protected execution. Saving network policy additions is then refused with SANDBOX_POLICY_PROTECTED_EXECUTION; saving an empty policy stays allowed.",
+                          "description": "True while the active revision or the next deploy runs under protected execution. Saving additions or an explicit repository policy then returns SANDBOX_POLICY_PROTECTED_EXECUTION. A save can still clear additions by omitting the repository policy field.",
                           "type": "boolean"
                         },
                         "repositoryNetworkPolicyCeiling": {
-                          "description": "Installation repository grants available for delegation to this Agent.",
+                          "description": "Installation repository grants that the current repository policy owner allows for this Agent's Namespace.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -32381,7 +32381,7 @@
                           "type": "array"
                         },
                         "repositoryNetworkPolicySaveSupported": {
-                          "description": "Whether this Installation can save an explicit Agent repository policy.",
+                          "description": "Whether the state adapter can store an explicit Agent repository policy.",
                           "type": "boolean"
                         },
                         "unavailableReason": {

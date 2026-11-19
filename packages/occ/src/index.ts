@@ -2220,6 +2220,10 @@ type InstallationRepositoryAdmission = Readonly<{
       readonly namespaceId: string;
       readonly bindings: readonly RepositoryBindingRequest[];
     }): RepositoryCredentialResolution;
+    repositoryNetworkPolicyAllows?(input: {
+      readonly namespaceId: string;
+      readonly grant: RepositoryNetworkGrant;
+    }): boolean;
   };
   backendId: string;
 }>;
@@ -11594,6 +11598,34 @@ export class OpenClawController {
     return !(await this.ordinaryModelBinding(state, agent));
   }
 
+  private namespaceRepositoryNetworkPolicyCeiling(
+    namespaceId: string,
+  ): RepositoryNetworkPolicyCeiling {
+    const admission = this.selectedStandingRepositoryAdmission();
+    if (admission === undefined) {
+      return [];
+    }
+    const owner = this.repositoryPermissionOwner(admission);
+    const { policy } = admission;
+    const allowsGrant = policy.repositoryNetworkPolicyAllows?.bind(policy);
+    if (!owner?.unchanged() || allowsGrant === undefined) {
+      return [];
+    }
+    const grants = this.repositoryNetworkPolicyCeiling.flatMap<RepositoryNetworkGrant>((grant) => {
+      if (allowsGrant({ namespaceId, grant })) {
+        return [grant];
+      }
+      if (grant.access === "write") {
+        const read = { repository: grant.repository, access: "read" } as const;
+        if (allowsGrant({ namespaceId, grant: read })) {
+          return [read];
+        }
+      }
+      return [];
+    });
+    return owner.unchanged() ? grants : [];
+  }
+
   async getAgentSandboxPolicy(
     principalId: string,
     namespaceId: string,
@@ -11638,7 +11670,7 @@ export class OpenClawController {
         capability: this.sandboxDriver()?.networkPolicy ?? null,
         ...(unavailableReason === undefined ? {} : { unavailableReason }),
         ceiling: this.sandboxNetworkPolicyCeiling,
-        repositoryNetworkPolicyCeiling: this.repositoryNetworkPolicyCeiling,
+        repositoryNetworkPolicyCeiling: this.namespaceRepositoryNetworkPolicyCeiling(namespaceId),
         repositoryNetworkPolicySaveSupported:
           state.sandboxPolicies.supportsRepositoryNetworkPolicy === true,
         defaults,
@@ -11934,33 +11966,41 @@ export class OpenClawController {
           "The policy changed or an application is still pending. Reload before editing.",
         );
       }
-      let repositoryGrants = previous.repositoryNetworkPolicy;
-      if (repositoryNetworkPolicy !== undefined) {
-        try {
-          repositoryGrants = admitRepositoryNetworkPolicy(
-            repositoryNetworkPolicy,
-            this.repositoryNetworkPolicyCeiling,
-          )!.grants;
-        } catch (error) {
-          if (!(error instanceof RepositoryNetworkPolicyAdmissionError)) {
-            throw error;
-          }
-          throw new ResourceStateConflictError(error.message, [
-            {
-              path: error.path,
-              code: error.code === "UNSUPPORTED_POLICY" ? "INVALID_VALUE" : error.code,
-              message: error.message,
-            },
-          ]);
-        }
-      }
-      if (additions.length > 0) {
+      if (additions.length > 0 || repositoryNetworkPolicy !== undefined) {
         const active =
           agent.activeRevisionId === undefined
             ? undefined
             : await state.revisions.findRevision(namespaceId, agentId, agent.activeRevisionId);
         if (await this.protectedExecutionApplies(state, agent, active)) {
-          throw new ProtectedExecutionNetworkPolicyError("save");
+          throw new ProtectedExecutionNetworkPolicyError(
+            repositoryNetworkPolicy === undefined ? "save" : "saveRepository",
+          );
+        }
+      }
+      let repositoryGrants = previous.repositoryNetworkPolicy;
+      if (repositoryNetworkPolicy !== undefined) {
+        try {
+          repositoryGrants = admitRepositoryNetworkPolicy(
+            repositoryNetworkPolicy,
+            repositoryNetworkPolicy.length === 0
+              ? []
+              : this.namespaceRepositoryNetworkPolicyCeiling(namespaceId),
+          )!.grants;
+        } catch (error) {
+          if (!(error instanceof RepositoryNetworkPolicyAdmissionError)) {
+            throw error;
+          }
+          const message =
+            error.code === "OUTSIDE_CEILING"
+              ? "The grant exceeds the repository network policy delegation limit for this Namespace."
+              : error.message;
+          throw new ResourceStateConflictError(message, [
+            {
+              path: error.path,
+              code: error.code === "UNSUPPORTED_POLICY" ? "INVALID_VALUE" : error.code,
+              message,
+            },
+          ]);
         }
       }
       const admitted = this.admitAgentNetworkPolicy(additions, expectedVersion + 1, undefined, {

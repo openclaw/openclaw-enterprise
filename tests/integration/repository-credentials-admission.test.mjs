@@ -269,6 +269,7 @@ async function fixture(
     controllerOptions = {},
     extraRepositories = [],
     installationAccess = false,
+    bindRepositoryAdmission = false,
   } = {},
 ) {
   const installation = {
@@ -314,19 +315,26 @@ async function fixture(
    * @param {typeof GitHubRepositoryPolicy} [Driver]
    */
   async function compose(registry, Driver) {
-    const controller = new OpenClawController(installation, {
+    const options = {
       state,
       backends,
       ...controllerOptions,
-    });
+    };
+    const repository = registry === undefined ? undefined : repositoryDriver(registry, Driver);
+    const controller =
+      bindRepositoryAdmission && repository !== undefined
+        ? OpenClawController.forInstallation(installation, options, {
+            policy: repository,
+            backendId,
+          })
+        : new OpenClawController(installation, options);
     for (const driver of [iam, compute, configurationDriver, secretDriver]) {
       controller.registerDriver(driver);
       controller.selectDriver(driver.capability, driver.id);
     }
-    if (registry !== undefined) {
-      const driver = repositoryDriver(registry, Driver);
-      controller.registerDriver(driver);
-      controller.selectDriver(driver.capability, driver.id);
+    if (repository !== undefined) {
+      controller.registerDriver(repository);
+      controller.selectDriver(repository.capability, repository.id);
     }
     if (registry !== undefined || !repositories) {
       await controller.validateBackendConfiguration();
@@ -860,10 +868,17 @@ test("the SandboxPolicy API admits authorized repository grants and preserves ex
     { repository: "example/manual", access: "read" },
     { repository: "example/project", access: "write" },
   ]);
+  const foreignGrant = /** @type {const} */ ({
+    repository: "example/foreign-project",
+    access: "write",
+  });
   const path = join(await temporaryDirectory(t, "occ-repository-ceiling-"), "installation.yaml");
   await writeFile(
     path,
-    JSON.stringify({ ...createInstallationDriverConfiguration(), repositoryNetworkPolicyCeiling }),
+    JSON.stringify({
+      ...createInstallationDriverConfiguration(),
+      repositoryNetworkPolicyCeiling: [...repositoryNetworkPolicyCeiling, foreignGrant],
+    }),
   );
   const loaded = await loadInstallationConfiguration({
     mode: "production",
@@ -872,7 +887,8 @@ test("the SandboxPolicy API admits authorized repository grants and preserves ex
   assert.ok(loaded);
   const f = await fixture(t, {
     harness: "codex",
-    repositories: false,
+    bindRepositoryAdmission: true,
+    extraRepositories: ["manual"],
     controllerOptions: {
       ...installationControllerOptions(loaded.installation),
       driverConfigurations: [sandboxRegistration("repository-admission-openshell")],
@@ -900,6 +916,7 @@ test("the SandboxPolicy API admits authorized repository grants and preserves ex
   assert.equal(enabled.status, 200, JSON.stringify(enabled));
   const response = await f.request("GET", policyPath);
   assert.equal(response.status, 200, JSON.stringify(response));
+  // The Installation delegates a third repository to another Namespace. This Agent cannot see it.
   assert.deepEqual(response.data.repositoryNetworkPolicyCeiling, repositoryNetworkPolicyCeiling);
   assert.equal(response.data.repositoryNetworkPolicySaveSupported, true);
   assert.equal(Object.hasOwn(response.data.policy, "repositoryNetworkPolicy"), false);
@@ -956,9 +973,18 @@ test("the SandboxPolicy API admits authorized repository grants and preserves ex
     {
       path: "/repositoryNetworkPolicy/0",
       code: "OUTSIDE_CEILING",
-      message: "The grant exceeds the Installation repository network policy delegation limit.",
+      message:
+        "The grant exceeds the repository network policy delegation limit for this Namespace.",
     },
   ]);
+  for (const repositoryNetworkPolicy of [
+    [foreignGrant],
+    [{ ...foreignGrant, repository: "example/unknown" }],
+  ]) {
+    const unavailable = await f.request("PUT", policyPath, { ...desired, repositoryNetworkPolicy });
+    assert.equal(unavailable.status, 409, JSON.stringify(unavailable));
+    assert.deepEqual(unavailable.error, outside.error);
+  }
   const afterRefusals = await f.request("GET", policyPath);
   assert.equal(afterRefusals.status, 200, JSON.stringify(afterRefusals));
   assert.deepEqual(afterRefusals.data.policy, response.data.policy);

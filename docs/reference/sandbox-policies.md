@@ -17,23 +17,31 @@ The contracts package can bind an explicit repository access list to a
 SandboxPolicy snapshot. Each entry uses a lowercase `owner/name` and grants
 `read` for clone and fetch or `write` for clone, fetch, and push. Each list and
 its delegation ceiling can contain up to 32 entries, one per repository.
-Admission rejects aliases, malformed entries, duplicates, and grants
-outside the Installation delegation ceiling. A write limit allows read and
-write grants. An absent ceiling delegates no access.
+Admission rejects aliases, malformed entries, duplicates, and grants beyond
+the Installation delegation ceiling or the bound repository policy owner's
+approval for the Namespace. A write limit allows read and write grants.
+An absent ceiling delegates no access. Policy GET reports the grants available
+to this Namespace and whether the state adapter supports storing explicit lists.
 
-Omission keeps the ordinary policy. An empty list explicitly denies access to
-all repositories. Any explicit list requires the selected Driver's
-`admitRepositoryNetworkPolicy` method. The side-effect-free method receives the
-validated list and an immutable base snapshot. It returns the effective policy
-as a JSON object.
-It must require inspected HTTPS, enforce the list in addition to other rules,
-and deny ungranted repositories. It must refuse bypass paths and any weakening
-of protected execution.
+`PUT /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/networking`
+accepts optional `repositoryNetworkPolicy` with `expectedVersion` and `additions`.
+Omitting the field keeps the saved list. A new Agent has no saved list.
+An explicit empty list saves deny-all. The API refuses every explicit list
+when protected execution applies. You can still clear ordinary additions by
+sending an empty additions list and omitting the repository field.
 
-Admission binds the versioned list and effective policy in an immutable
-snapshot. Ordinary deployment rejects a repository list supplied by a Driver.
-API configuration and enforcement in a deployed Sandbox require further
-integration.
+Saving advances the desired policy version. To apply an explicit list, deploy a
+new Agent revision on an Installation with repository policy deployment
+admission and a supporting Sandbox Driver. The live apply endpoint refuses
+explicit repository policies, including deny-all.
+
+The selected Driver's `admitRepositoryNetworkPolicy` method receives the
+validated list and an immutable base snapshot. This side-effect-free method
+returns the effective policy as a JSON object. It must require inspected HTTPS,
+enforce the list alongside other rules, and deny ungranted repositories.
+It must refuse bypass paths and any weakening of protected execution.
+Deployment admission binds the versioned list and effective policy in an
+immutable Agent revision snapshot.
 
 ## Discovery and preview
 

@@ -91,15 +91,16 @@ export const SandboxPolicyViewResponse = Type.Object(
         editingEnabled: Type.Boolean(),
         protectedExecution: Type.Boolean({
           description:
-            "True while the active revision or the next deploy runs under protected execution. Saving network policy additions is then refused with SANDBOX_POLICY_PROTECTED_EXECUTION; saving an empty policy stays allowed.",
+            "True while the active revision or the next deploy runs under protected execution. Saving additions or an explicit repository policy then returns SANDBOX_POLICY_PROTECTED_EXECUTION. A save can still clear additions by omitting the repository policy field.",
         }),
         ceiling: SandboxNetworkGrantsSchema,
         repositoryNetworkPolicyCeiling: Type.Array(RepositoryNetworkGrantSchema, {
-          description: "Installation repository grants available for delegation to this Agent.",
+          description:
+            "Installation repository grants that the current repository policy owner allows for this Agent's Namespace.",
           maxItems: maxRepositoryNetworkGrants,
         }),
         repositoryNetworkPolicySaveSupported: Type.Boolean({
-          description: "Whether this Installation can save an explicit Agent repository policy.",
+          description: "Whether the state adapter can store an explicit Agent repository policy.",
         }),
         defaults: Type.Union([Type.Null(), Type.Record(Type.String(), Type.Unknown())]),
         defaultsRevisionId: Type.Optional(RevisionId),
