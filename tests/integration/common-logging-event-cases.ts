@@ -259,6 +259,12 @@ export function registerEventCases(): void {
       "Stop Agent; wait for shutdown, then redeploy.",
     );
     assert.equal(logged("Retry later, ".repeat(60)), "Retry later, ".repeat(60).slice(0, 512));
+    // Format characters collapse too, so a message cannot reorder or hide text in a terminal.
+    assert.equal(
+      logged("Refusing \u202Edecoded \u200BSecret, then redeploy."),
+      "Refusing decoded Secret, then redeploy.",
+    );
+    assert.equal(/[\u202E\u200B]/u.test(JSON.stringify(output.lines)), false);
     // Punctuation admits no credential: a message that resembles one is still left out, and
     // the line keeps its other fields.
     for (const message of [
@@ -270,10 +276,32 @@ export function registerEventCases(): void {
         host: "database.invalid",
         port: undefined,
       })} refused, then closed.`,
+      // The check runs before the 512-character cut: a token that straddles it is left out
+      // although the kept part alone would not match.
+      `${"Retry later, ".repeat(39)}x ${["Bearer", "invented-fixture-token"].join(" ")}`,
     ]) {
       assert.equal(logged(message), undefined);
       assert.equal(JSON.stringify(output.lines).includes("invented-fixture"), false);
     }
+
+    // Only the preparation diagnostic changed: a preflight warning with punctuation still
+    // loses its message and keeps its other fields.
+    const index = output.lines.length;
+    emit({
+      event: "compute.preflight-warning",
+      computeDriverId: "compute-kubernetes",
+      code: "KUBERNETES_STATUS_PROXY_SOURCE_BROAD",
+      message: "Proxy CIDR 0.0.0.0/0 covers more than one address; every Pod can reach the port.",
+    });
+    const { time: warnedAt, ...warning } = logAt(output.lines, index);
+    assert.ok(warnedAt);
+    assert.deepEqual(warning, {
+      severity: "WARN",
+      service: "occ-worker",
+      event: "compute.preflight-warning",
+      computeDriverId: "compute-kubernetes",
+      code: "KUBERNETES_STATUS_PROXY_SOURCE_BROAD",
+    });
   });
 
   test("activation warning caps skipped account IDs and reports the total and truncation", () => {

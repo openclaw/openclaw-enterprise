@@ -28,6 +28,9 @@ export function registerDependencyUnavailableFieldsCases(clientText: string) {
     deep.cause = chain;
     const fields = dependencyUnavailableLogFields(deep);
     assert.equal(fields.message, "Deep outage. Next line .");
+    // Format characters (a bidi override, a zero-width space) collapse like control characters.
+    const reordered = new DependencyUnavailableError("Gateway \u202Edown \u200Bretry.");
+    assert.equal(dependencyUnavailableLogFields(reordered).message, "Gateway down retry.");
     assert.ok(fields.causes);
     assert.deepEqual(
       fields.causes.map(({ code }) => code),
