@@ -13,6 +13,7 @@ import { readPublicFile } from "../../composition/repository-credentials/public-
 import type { EgressAuthorityConfiguration } from "../../composition/installation-fields.ts";
 
 const tokenGrantAlgorithms = ["ES256", "ES384", "RS256", "PS256"];
+const minimumRsaModulusBytes = 256;
 
 export interface OpenShellTokenGrantConfiguration {
   readonly endpoint: string;
@@ -71,6 +72,33 @@ export function validTokenGrantConfiguration(
   );
 }
 
+function readJwkUnsignedInteger(value: unknown) {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const bytes = Buffer.from(value, "base64url");
+  return bytes.length > 0 && bytes.readUInt8(0) !== 0 && bytes.toString("base64url") === value
+    ? bytes
+    : undefined;
+}
+
+function validRsaPublicKey(jwk: Record<string, unknown>) {
+  // WebCrypto imports noncanonical integers and accepts invalid exponents such as 1.
+  const modulus = readJwkUnsignedInteger(jwk.n);
+  const exponent = readJwkUnsignedInteger(jwk.e);
+  return (
+    modulus !== undefined &&
+    exponent !== undefined &&
+    (modulus.length > minimumRsaModulusBytes ||
+      (modulus.length === minimumRsaModulusBytes && modulus.readUInt8(0) >= 0x80)) &&
+    modulus.readUInt8(modulus.length - 1) % 2 === 1 &&
+    (exponent.length > 1 || exponent.readUInt8(0) >= 3) &&
+    exponent.readUInt8(exponent.length - 1) % 2 === 1 &&
+    (exponent.length < modulus.length ||
+      (exponent.length === modulus.length && Buffer.compare(exponent, modulus) < 0))
+  );
+}
+
 // The mounted trust bundle is selected by the operator. Read it again on each exchange
 // so a projected SPIRE key rotation (including key removal) applies across API replicas.
 async function loadJwtAuthorities(path: string) {
@@ -87,10 +115,10 @@ async function loadJwtAuthorities(path: string) {
       if (
         jwk &&
         jwk.use === "jwt-svid" &&
-        (jwk.kty === "EC" || jwk.kty === "RSA") &&
         typeof jwk.kid === "string" &&
         jwk.kid &&
-        !("d" in jwk)
+        !("d" in jwk) &&
+        (jwk.kty === "EC" || (jwk.kty === "RSA" && validRsaPublicKey(jwk)))
       ) {
         signingKeys.push({ ...jwk, kty: jwk.kty, use: "sig" });
       }
@@ -115,18 +143,7 @@ export async function validateOpenShellTokenGrantBundle(path: string): Promise<v
         continue;
       }
       for (const alg of tokenGrantAlgorithms) {
-        const key = await authorities({ alg, kid }).catch(() => undefined);
-        if (!key) {
-          continue;
-        }
-        const algorithm = key.algorithm;
-        if (
-          alg === "ES256" ||
-          alg === "ES384" ||
-          ("modulusLength" in algorithm &&
-            typeof algorithm.modulusLength === "number" &&
-            algorithm.modulusLength >= 2048)
-        ) {
+        if (await authorities({ alg, kid }).catch(() => undefined)) {
           return;
         }
       }

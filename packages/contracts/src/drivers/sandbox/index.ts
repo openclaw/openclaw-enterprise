@@ -99,6 +99,8 @@ export interface SandboxHarnessEndpoint {
     /** Certificate bytes only, never a source path, private key or client credential. */
     readonly caBundle: string;
   };
+  /** Exact PEM leaf for the admitted execution. The Gateway must pin it on its WSS connection. */
+  readonly tlsPeerCertificate?: string;
   /** Provider-local workspace root served by the Harness workspace node. */
   readonly workspaceRoot?: string;
   /** Request this native Codex profile when the provider supplies the sandbox boundary. */

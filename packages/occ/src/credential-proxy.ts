@@ -71,10 +71,12 @@ export interface ExchangeProvider {
   readonly isCurrent: () => boolean;
 }
 
+type ObservedMaterial = VersionedSecretValue & { readonly materialId: string };
+
 /** Final material observation runs inside the current Namespace policy fence. */
 export type RequestCredentialRelease = (
   source: StaticEgressSource,
-  read: () => Promise<VersionedSecretValue & { readonly materialId: string }>,
+  read: () => Promise<ObservedMaterial>,
 ) => Promise<boolean>;
 
 /** The source and the original in-process dependency identity of one policy decision. */
@@ -108,7 +110,7 @@ export interface EgressAuthorityPorts {
     source: StaticEgressSource,
     lifetime: CredentialReadLifetime,
     isProviderCurrent: () => boolean,
-  ): Promise<VersionedSecretValue & { readonly materialId: string }>;
+  ): Promise<ObservedMaterial>;
   readonly resolvePrepared?: PreparedTokenIssuer["resolve"];
   readonly requestCredentials?: {
     readonly sender: EgressRef;
@@ -411,6 +413,14 @@ function sameSecret(left: string, right: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+function sameMaterial(left: ObservedMaterial, right: ObservedMaterial): boolean {
+  return (
+    left.version === right.version &&
+    left.materialId === right.materialId &&
+    sameSecret(left.value, right.value)
+  );
+}
+
 /** UUIDv7 creation time fixes the replay horizon independently of a resubmitted deadline. */
 function operationCreatedAt(id: string): number | undefined {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)
@@ -612,41 +622,35 @@ export class CredentialProxy implements CredentialProxyExchange {
         }
         const source = immutableCopy(admitted.source);
         const dependenciesCurrent = admitted.isCurrent;
-        const readLifetime = {
-          signal: approvedLifetime,
-          deadlineAt: new Date(deadline).toISOString(),
-        };
+        const usableUntil = new Date(deadline).toISOString();
+        const readLifetime = { signal: approvedLifetime, deadlineAt: usableUntil };
         // Both authoritative reads are outside policy transactions. A rotation during a held
         // read invalidates this approval; a later request may select the replacement version.
-        const first = immutableCopy(
-          await this.ports.read(
+        const read = () =>
+          this.ports.read(
             source,
             readLifetime,
             () => !approvedLifetime.aborted && dependenciesCurrent(),
-          ),
-        );
+          );
+        const first = immutableCopy(await read());
         if (approvedLifetime.aborted) {
           return undefined;
         }
-        const current = immutableCopy(
-          await this.ports.read(
-            source,
-            readLifetime,
-            () => !approvedLifetime.aborted && dependenciesCurrent(),
-          ),
-        );
-        const fresh = (value: VersionedSecretValue) =>
-          value.version &&
-          value.value &&
-          Number.isFinite(Date.parse(value.authoritativeObservedAt)) &&
-          Date.parse(value.authoritativeObservedAt) <= this.ports.now() &&
-          (value.expiresAt === undefined || Date.parse(value.expiresAt) > deadline);
+        const current = immutableCopy(await read());
+        const fresh = (value: VersionedSecretValue): boolean => {
+          const observed = Date.parse(value.authoritativeObservedAt);
+          return (
+            !!value.version &&
+            !!value.value &&
+            Number.isFinite(observed) &&
+            observed <= this.ports.now() &&
+            (value.expiresAt === undefined || Date.parse(value.expiresAt) > deadline)
+          );
+        };
         if (
           !fresh(first) ||
           !fresh(current) ||
-          first.version !== current.version ||
-          first.materialId !== current.materialId ||
-          !sameSecret(first.value, current.value) ||
+          !sameMaterial(first, current) ||
           approvedLifetime.aborted
         ) {
           await ports.deny(approval, "stale_material");
@@ -665,7 +669,7 @@ export class CredentialProxy implements CredentialProxyExchange {
         const selected = await ports.check(
           approval,
           approvedLifetime,
-          async (selected, read) => {
+          async (selected, readLocked) => {
             if (!isDeepStrictEqual(selected, source) || approvedLifetime.aborted) {
               return false;
             }
@@ -679,14 +683,12 @@ export class CredentialProxy implements CredentialProxyExchange {
             try {
               // A Driver ignoring cancellation must neither retain policy locks nor escape
               // capacity accounting while its abandoned read is still pending.
-              const final = await Promise.race([retain(read()), aborted]);
+              const final = await Promise.race([retain(readLocked()), aborted]);
               return (
                 final !== undefined &&
                 !approvedLifetime.aborted &&
-                Boolean(fresh(final)) &&
-                final.version === current.version &&
-                final.materialId === current.materialId &&
-                sameSecret(final.value, current.value)
+                fresh(final) &&
+                sameMaterial(final, current)
               );
             } finally {
               approvedLifetime.removeEventListener("abort", onAbort);
@@ -709,7 +711,7 @@ export class CredentialProxy implements CredentialProxyExchange {
         return {
           value: current.value,
           version: current.version,
-          usableUntil: new Date(deadline).toISOString(),
+          usableUntil,
           releaseLifetimeMs,
         };
       },

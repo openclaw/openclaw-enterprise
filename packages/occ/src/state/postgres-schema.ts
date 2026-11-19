@@ -287,8 +287,6 @@ export const agents = occSchema.table(
     ),
     credentialSources: jsonb("credential_sources").$type<readonly AgentCredentialSourceBinding[]>(),
     activeRevisionId: text("active_revision_id"),
-    restartGeneration: text("restart_generation"),
-    restartDomain: text("restart_domain"),
     predecessorReplacement: jsonb("predecessor_replacement").$type<PredecessorReplacement>(),
     desiredRuntimeState: text("desired_runtime_state")
       .$type<AgentDesiredRuntimeState>()
@@ -308,15 +306,6 @@ export const agents = occSchema.table(
     check("agents_id_format", sql`${table.id} ~ ${identifierPatterns.agent}`),
     check("agents_name_length", sql`char_length(${table.name}) BETWEEN 1 AND 200`),
     check("agents_execution_mode_valid", sql`${table.executionMode} IN ('embedded', 'dedicated')`),
-    check(
-      "agents_restart_continuation_valid",
-      sql`(
-      (${table.restartGeneration} IS NULL AND ${table.restartDomain} IS NULL)
-      OR (${table.restartGeneration} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
-          AND char_length(${table.restartDomain}) BETWEEN 1 AND 1024 AND ${table.restartDomain} ~ '^[ -~]+$'
-          AND ${table.desiredRuntimeState} = 'running' AND ${table.status} = 'active')
-    ) IS TRUE`,
-    ),
     check(
       "agents_predecessor_replacement_valid",
       sql`${table.predecessorReplacement} IS NULL OR (
@@ -787,17 +776,8 @@ export const agentRevisions = occSchema.table(
           - 'configuration_id' - 'configuration_kind' - 'configuration_generation'
           - 'draft_spec' - 'harness' - 'compute' - 'sandbox_driver_id' - 'sandbox_policy'
           - 'secret_driver_id' - 'secret_bindings' - 'harness_auth' - 'credential_sources' - 'plugins'
-          - 'plugin_approvers' - 'repository_credentials' - 'egress_plan' - 'execution_admission' - 'restart_continuation') = '{}'::jsonb
-    AND (NOT (${table.admittedSpec} ? 'restart_continuation') OR (
-      jsonb_typeof(${table.admittedSpec}->'restart_continuation') = 'object'
-      AND (${table.admittedSpec}->'restart_continuation') ?& ARRAY['generation', 'domain']
-      AND ((${table.admittedSpec}->'restart_continuation') - 'generation' - 'domain') = '{}'::jsonb
-      AND jsonb_typeof(${table.admittedSpec} #> '{restart_continuation,generation}') = 'string'
-      AND (${table.admittedSpec} #>> '{restart_continuation,generation}') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
-      AND jsonb_typeof(${table.admittedSpec} #> '{restart_continuation,domain}') = 'string'
-      AND char_length((${table.admittedSpec} #>> '{restart_continuation,domain}')) BETWEEN 1 AND 1024 AND (${table.admittedSpec} #>> '{restart_continuation,domain}') ~ '^[ -~]+$'
-    ) IS TRUE)
-        AND jsonb_typeof(${table.admittedSpec}->'configuration_id') = 'string'
+          - 'plugin_approvers' - 'repository_credentials' - 'egress_plan' - 'execution_admission') = '{}'::jsonb
+    AND jsonb_typeof(${table.admittedSpec}->'configuration_id') = 'string'
         AND (${table.admittedSpec}->>'configuration_id') ~ ${identifierPatterns.configuration}
         AND jsonb_typeof(${table.admittedSpec}->'configuration_kind') = 'string'
         AND (${table.admittedSpec}->>'configuration_kind') = 'agent'

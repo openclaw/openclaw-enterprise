@@ -1,15 +1,14 @@
 ---
 created: 2026-08-21
 updated: 2026-11-18
-last_updated_session: authoring-run/01a1ec63-e738-7993-99ac-ba1086f636a6
+last_updated_session: authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1
 ---
 
 # Harness Execution Topology Flow
 
 ## Overview
 
-Deployment saves settings and authentication. Compute prepares workloads, publishes
-guarded routes, and retires predecessors.
+Deployment saves settings and authentication. Compute checks workload readiness, including [Strands diagnostics](../reference/drivers/strands-box.md), publishes routes and retires predecessors.
 
 ## Entry Points
 
@@ -95,10 +94,8 @@ harness-auth bindings before deployment; no Agent path is deployable.
 The [Docker gateway authentication reference](../reference/drivers/docker-compute.md#gateway-authentication)
 owns mode and password rules.
 
-Kubernetes supports managed bindings.
-SSH supports `{ "method": "runtime" }` only for unmanaged embedded OpenClaw: operator
-credentials remain on the host and OCC checks gateway readiness without model
-validation. See the [SSH flow](pr-24-ssh-compute.md).
+The Strands supervisor and workload share read-only runtime objects. `listenerCertificate` binds the supervisor certificate and Pod UID to the revision.
+[SSH](pr-24-ssh-compute.md) supports runtime authentication for unmanaged embedded OpenClaw. Operator credentials stay on the host. OCC checks Gateway readiness without model validation.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.prepareRevision`
 
@@ -210,7 +207,7 @@ Login, authentication probes and app-server launch override native log and metri
 uses CLI overrides because the probe ignores user configuration. Account login and
 other Harnesses keep their endpoints; only the Harness holds model credentials.
 
-Kubernetes Compute records admitted inference launch behavior in new protected Codex revisions. The authentication probe and app-server disable unbounded
+Compute records inference launch settings in new protected Codex revisions. The authentication probe and app-server disable unbounded
 native connection retries, avoiding indefinite reconnects. Stored revisions retain
 original retry settings.
 
@@ -234,8 +231,7 @@ the native ID.
 Kubelet probes private `/readyz`: Gateway plugin status and native `/startupz`
 and `/readyz`, Codex plugin state and authenticated app-server WebSocket, or
 dedicated OpenClaw identity gate runtime-backed workload readiness.
-Concurrent requests share the running check; a request after it ends starts a new one.
-A shared check that does not end within 5 seconds answers not ready and frees the slot.
+Concurrent probes share one check. After five seconds it returns unready and frees the slot for the next probe.
 While first-deploy [workspace setup](workspace-files.md) is pending, embedded
 preparation starts the replacement Gateway before activation. If a never-served
 version's Gateway is unready (its Service selects no Pod), for example after rejected
@@ -259,16 +255,12 @@ activation retries, then one status read per retry. That wait and the pairing wa
 early when other Work is claimable.
 
 On stop, the Driver allows 330 seconds for Gateway drain and waits for Pod
-removal before stopping the Harness. The Gateway's graceful shutdown aborts
-active turns and records them for restart recovery under its
-`OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE`, the continuation generation. Only a
-Gateway of the same generation resumes them; a stop, an incompatible deployment
-or deletion ends the generation
-([interrupted turns](../reference/agents/interrupted-turns.md)). Idle
-Gateways and pre-start wrappers exit promptly. Forced termination requires proof
-the previous owner stopped before retained state can be reused.
-[Embedded recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner)
-describes when an operator must confirm termination.
+removal before stopping the Harness. Graceful shutdown aborts active turns and
+records eligible work for [native recovery](../reference/agents/interrupted-turns.md).
+Upstream can refuse previously scoped work. Idle Gateways and pre-start wrappers
+exit promptly. Forced termination requires proof the old owner stopped before
+reusing retained state; see
+[embedded recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
 
 Gateway state survives replacements.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.gatewayPrivateStateClaim`
@@ -306,6 +298,8 @@ regardless of the Agent draft's mode. Cleanup retries precede database identity
 removal.
 
 ## Debugging and Verification
+
+[Strands companion](strands-box-companion.md).
 
 - `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:observeHeldPreview`
   reports `worker.openshell-git-continuity-refused` with the failed comparison.
@@ -357,6 +351,10 @@ removal.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 22:35: Retain native scope policy (authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1 - 3f273a16a)
+
+- 2026-11-18 20:10: Remove the recovery-generation boundary; later Gateway startup uses native eligibility (authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1 - 11cef2cb9)
 
 - 2026-11-18 02:11: Explain when Codex probes inherit Sandbox proxy settings and why existing revisions keep their commands. (authoring-run/01a1ec63-e738-7993-99ac-ba1086f636a6 - db2845858eec2f026747f6618a285a76c59fc63f)
 

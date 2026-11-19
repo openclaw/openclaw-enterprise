@@ -21,6 +21,7 @@ import {
   requireChartListener,
 } from "../../apps/controller/src/composition/installation-fields.ts";
 import { openShellGitChartListener } from "../../apps/controller/src/drivers/egress-proxy/openshell-configuration.ts";
+import { validateOpenShellTokenGrantBundle } from "../../apps/controller/src/drivers/egress-proxy/openshell-token-grant.ts";
 import { generateInstallationCheck } from "../../deploy/helm/src/generate-installation-check.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -410,38 +411,60 @@ test("the upgrade hook checks the public token grant bundle before migration", a
   assert.equal(result.stdout, "");
 
   const invalidKey = { use: "jwt-svid", kty: "EC", kid: "private-fixture-marker", crv: "P-256" };
-  const weakPublicKey = {
-    kty: "RSA",
-    e: "AQAB",
-    n: Buffer.alloc(128, 0xff).toString("base64url"),
-    kid: "weak",
+  const rsaKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const rsaKey = {
+    ...rsaKeys.publicKey.export({ format: "jwk" }),
+    kid: "rsa-test",
     use: "jwt-svid",
   };
-  for (const invalid of [
-    '{"private-fixture-marker":',
-    JSON.stringify({ keys: [] }),
-    JSON.stringify({ keys: [invalidKey] }),
-    JSON.stringify({ keys: [weakPublicKey] }),
+  const modulus = Buffer.from(rsaKey.n, "base64url");
+  const evenModulus = Buffer.from(modulus);
+  evenModulus[evenModulus.length - 1] &= 0xfe;
+  const exponentOne = { ...rsaKey, e: "AQ" };
+  for (const [reason, invalid] of [
+    ["invalid JSON", '{"private-fixture-marker":'],
+    ["no keys", JSON.stringify({ keys: [] })],
+    ["incomplete EC key", JSON.stringify({ keys: [invalidKey] })],
+    ["exponent one", JSON.stringify({ keys: [exponentOne] })],
   ]) {
     await writeFile(bundlePath, invalid, "utf8");
     const result = await runCheck(t, configuration);
-    assert.equal(result.status, 1, result.stderr || result.stdout);
+    assert.equal(result.status, 1, `${reason}: ${result.stderr || result.stdout}`);
     assert.match(result.stderr, /token grant JWT trust bundle/i);
     assert.doesNotMatch(result.stderr, /private-fixture-marker/);
     assert.equal(result.stdout, "");
   }
 
+  // Exercise additional RSA encodings through the same validator without restarting the hook.
+  for (const [reason, fields] of [
+    ["even exponent", { e: "BA" }],
+    ["empty exponent", { e: "" }],
+    ["invalid exponent encoding", { e: "!!!!" }],
+    ["padded exponent", { e: `${rsaKey.e}=` }],
+    ["exponent equal to modulus", { e: rsaKey.n }],
+    ["short modulus", { n: Buffer.alloc(256, 0x7f).toString("base64url") }],
+    ["even modulus", { n: evenModulus.toString("base64url") }],
+    [
+      "leading zero in modulus",
+      { n: Buffer.concat([Buffer.alloc(1), modulus]).toString("base64url") },
+    ],
+  ]) {
+    await writeFile(bundlePath, JSON.stringify({ keys: [{ ...rsaKey, ...fields }] }), "utf8");
+    await assert.rejects(
+      validateOpenShellTokenGrantBundle(bundlePath),
+      /JWT trust bundle/i,
+      reason,
+    );
+  }
+
   const { publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
-  await writeFile(
-    bundlePath,
-    JSON.stringify({
-      keys: [invalidKey, { ...publicKey.export({ format: "jwk" }), kid: "test", use: "jwt-svid" }],
-    }),
-    "utf8",
-  );
-  const accepted = await runCheck(t, configuration);
-  assert.equal(accepted.status, 0, accepted.stderr);
-  assert.equal(accepted.stdout, "installation-startup-ready\n");
+  const ecKey = { ...publicKey.export({ format: "jwk" }), kid: "ec-test", use: "jwt-svid" };
+  for (const keys of [[rsaKey], [invalidKey, exponentOne, ecKey]]) {
+    await writeFile(bundlePath, JSON.stringify({ keys }), "utf8");
+    const accepted = await runCheck(t, configuration);
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.equal(accepted.stdout, "installation-startup-ready\n");
+  }
 });
 
 test(

@@ -776,6 +776,80 @@ test(
   },
 );
 
+test(
+  "static credential exchange rejects a changed control before reading material (PostgreSQL)",
+  { ...requiresPostgres, timeout: 30_000 },
+  async (t) => {
+    let state: PostgresPlatformState | undefined;
+    const f = await staticEgressFixture(t, {
+      appFactory: async (...args: Parameters<typeof postgresApp>) => {
+        const app = await postgresApp(...args);
+        assert.ok(app.state instanceof PostgresPlatformState);
+        state = app.state;
+        return app;
+      },
+    });
+    assert.ok(state);
+    const proxy = f.controller.selectedDriver("credential_proxy");
+    const originalControl = proxy.sourceControl;
+    const originalRead = state.read;
+    const read = originalRead.bind(state);
+    let afterMetadata: (() => void) | undefined;
+    // Change only the selected control after PostgreSQL returns the real metadata.
+    // No server request needs to wait for a separate client-side release.
+    state.read = (work) =>
+      read((unit) =>
+        work({
+          ...unit,
+          secrets: {
+            ...unit.secrets,
+            async findSecret(...args) {
+              const secret = await unit.secrets.findSecret(...args);
+              if (secret && args[0] === f.namespace.id && args[1] === f.secret.id) {
+                const change = afterMetadata;
+                afterMetadata = undefined;
+                change?.();
+              }
+              return secret;
+            },
+          },
+        }),
+      );
+    try {
+      for (const scenario of ["unchanged", "replaced", "sender", "resolver", "restored"] as const) {
+        const control = { ...originalControl };
+        const healthy = scenario === "unchanged" || scenario === "restored";
+        assert.equal(
+          Reflect.set(proxy, "sourceControl", scenario === "restored" ? originalControl : control),
+          true,
+        );
+        const reads = f.secretReads;
+        let observed = false;
+        afterMetadata = () => {
+          if (scenario === "replaced") {
+            assert.equal(Reflect.set(proxy, "sourceControl", { ...control }), true);
+          } else if (scenario === "sender" || scenario === "resolver") {
+            const ref = control[scenario];
+            control[scenario] = { ...ref, generation: ref.generation + 1 };
+          }
+          observed = true;
+        };
+        const result = await f.resolve(f.capture());
+        assert.ok(observed, scenario + ": expected a metadata lookup");
+        assert.equal(f.secretReads - reads, healthy ? 1 : 0, scenario + ": material reads");
+        assert.equal(Boolean(result.ready), healthy, scenario);
+        if (!healthy) {
+          assert.equal(result.refused?.code, f.refusalCode("UNAVAILABLE"), scenario);
+        }
+      }
+    } finally {
+      afterMetadata = undefined;
+      state.read = originalRead;
+      Reflect.set(proxy, "sourceControl", originalControl);
+    }
+  },
+);
+
 // The admission and successor validators must independently reject authority expansion.
 // This protects recovery from a forged or stale stored policy, not just the happy-path reducer.
 test("Git reduction v7 preserves earlier admission meanings and rejects widening", async () => {

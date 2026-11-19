@@ -21,6 +21,7 @@
         "OCC_TEST_CANDIDATE_CONTROLLER_REVISION"
       ],
       "expectedTests": [
+        "Native restart migration removes recovery metadata and preserves immutable admitted revisions",
         "Separate database deployment verifies the exact candidate history without applying pending SQL",
         "Logical restore preserves reviewed canonical and Provider migration histories",
         "Canonical readiness migration defaults historical work to ineligible and constrains ownership",

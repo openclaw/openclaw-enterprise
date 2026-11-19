@@ -200,9 +200,10 @@ test(
       audience = tokenEndpoint,
       key = svidKeys.privateKey,
       kid = "svid-key",
+      alg = "ES256",
     ) =>
       new SignJWT({})
-        .setProtectedHeader({ alg: "ES256", kid })
+        .setProtectedHeader({ alg, kid })
         .setSubject(`spiffe://fixture.test/openshell/sandbox/${recipient}`)
         .setAudience(audience)
         .setIssuedAt()
@@ -501,8 +502,20 @@ test(
         replay: (await redeem(request)).status,
       });
     }
+    const selectedSecretDriver = controller.selectedDriver("secret");
+    const alternateSecretDriver = new Proxy(selectedSecretDriver, {
+      get(target, key) {
+        return key === "id" ? "another-secret-driver" : Reflect.get(target, key, target);
+      },
+    });
+    controller.registerDriver(alternateSecretDriver);
     const completionObservations = [];
     for (const mutation of [
+      // Replacing the Secret Driver after the locked read revokes the old reader's authority.
+      {
+        apply: () => controller.selectDriver("secret", alternateSecretDriver.id),
+        restore: () => controller.selectDriver("secret", selectedSecretDriver.id),
+      },
       {
         apply: () => controller.selectDriver("credential_gateway", alternate.id),
         restore: () => controller.selectDriver("credential_gateway", credentialGateway.id),
@@ -576,6 +589,7 @@ test(
           { status: 403, tokenReturned: false, reads: 0, replay: 403 },
         ],
         completionObservations: [
+          { status: 403, tokenReturned: false, replay: 403 },
           { status: 403, tokenReturned: false, replay: 403 },
           { status: 403, tokenReturned: false, replay: 403 },
         ],
@@ -838,15 +852,34 @@ test(
     await writeFile(bundlePath, JSON.stringify({ keys: [] }));
     assert.equal((await redeem(next)).status, 503);
     assert.equal(f.secretReads, beforeTrustRemoval);
+    const rotated = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const rotatedJwk = rotated.publicKey.export({ format: "jwk" });
     await writeFile(
       bundlePath,
       JSON.stringify({
         keys: [
-          { ...svidKeys.publicKey.export({ format: "jwk" }), kid: "svid-key", use: "jwt-svid" },
+          { ...rotatedJwk, kid: "rotated", use: "jwt-svid" },
+          { ...rotatedJwk, e: `${rotatedJwk.e}=`, kid: "malformed", use: "jwt-svid" },
         ],
       }),
     );
-    assert.equal((await redeem(next)).body.access_token, "synthetic-key-rotated");
+    const rotatedAssertion = (kid: string) =>
+      svid(undefined, undefined, rotated.privateKey, kid, "RS256");
+    assert.equal(
+      (await redeem(next)).status,
+      401,
+      "the retired EC signing key is no longer trusted",
+    );
+    assert.equal(
+      (await redeem(next, rotatedAssertion("malformed"))).status,
+      401,
+      "a mixed bundle does not trust the malformed RSA entry",
+    );
+    assert.equal(f.secretReads, beforeTrustRemoval);
+    assert.equal(
+      (await redeem(next, rotatedAssertion("rotated"))).body.access_token,
+      "synthetic-key-rotated",
+    );
   },
 );
 

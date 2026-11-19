@@ -7,31 +7,25 @@ rfc: ../rfcs/0023-egress-proxy-credential-lifecycle/index.md
 - **ID:** TASK-0051
 - **Delivery status:** Planned
 - **Owner:** Credential Proxy maintainers
-- **Authority:** [RFC-0023](../rfcs/0023-egress-proxy-credential-lifecycle/index.md)
-  and its proposed [model-key amendment, PR #4932](https://github.com/openclaw/openclaw-enterprise/pull/4932).
+- **Related RFC:** [RFC-0023](../rfcs/0023-egress-proxy-credential-lifecycle/index.md).
+- **Implementation:** [PR #5231](https://github.com/openclaw/openclaw-enterprise/pull/5231).
 - **Source baseline:** `17ab99f557d108b82214a13c39c63577a1c4de48`.
 
 ## Outcome and scope
 
-A dedicated Codex Agent can send an authorized OpenAI Responses request and use
-protected native Git in the same OpenShell Sandbox. Credential Proxy checks
-current authority before releasing the model key to the trusted supervisor. The
-guest receives a placeholder. Operators create the source with its name, type,
-configuration, and Secret references. The Installation selects the eligible provider;
-source readback reports its protection. Existing strict profiles keep their meaning.
+A dedicated Codex Agent can use HTTPS OpenAI Responses and protected native Git
+in the same OpenShell Sandbox. Credential Proxy checks current authority before
+releasing the model key to the trusted supervisor. The guest receives a placeholder.
+Installation configuration selects the eligible provider by source type. Operators
+create the source with its name, type, configuration, and Secret references, then
+check that it reports `request-time` protection. The Credential Gateway owns
+source metadata. The Codex guarantee ends at credential release for the
+classified request. Existing strict profiles retain their guarantees.
 
-This plan records implemented source and the work still needed to qualify and
-ship it. Its planned status reflects incomplete delivery, not an absence of
-implementation. The [model-key amendment](https://github.com/openclaw/openclaw-enterprise/pull/4932)
-remains a separate human decision. This plan neither changes that RFC nor
-approves its merge.
-
-The profile authorizes credential release for a classified request. It does not
-provide exact upstream-dispatch enforcement, response custody, generic proxying,
-WebSocket inference, or arbitrary Harness support. Ordinary Gateway ownership
-remains in source metadata; the selected model key travels through Credential
-Proxy. This work does not require the separate Proxy-owned Harness snapshot or
-packaged Credential Gateway proposals.
+This optional Codex path can ship independently of the
+[1.0 push and native delivery design in #6396](https://github.com/openclaw/openclaw-enterprise/pull/6396).
+The [dedicated OpenClaw proposal in #4932](https://github.com/openclaw/openclaw-enterprise/pull/4932)
+requires a separate human decision and manual merge.
 
 ## Contract and source touchpoints
 
@@ -42,7 +36,7 @@ owns configuration and recovery.
 
 | Owner                                                                                               | Implemented responsibility                                                                                                                  |
 | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| [OCC lifecycle](../../packages/occ/src/index.ts)                                                    | Explicit source selection, Agent admission, native IAM ownership checks, current revision/source authority, and versioned Secret reads.     |
+| [OCC lifecycle](../../packages/occ/src/index.ts)                                                    | Installation-selected provider, Agent admission, native IAM checks, current revision and source authority, and versioned Secret reads.      |
 | [Credential Proxy](../../packages/occ/src/credential-proxy.ts)                                      | Authenticate request correlation, consume one approval, enforce its remaining lifetime, and release only currently authorized material.     |
 | [Approval persistence](../../packages/occ/src/state/request-credential-approvals.ts)                | Durable one-use correlation, bounded capacity, database-relative lease and replay retention. Online policy transactions use READ COMMITTED. |
 | [OpenShell policy](../../apps/controller/src/drivers/sandbox/openshell-model-request-policy.ts)     | Exact Responses route, zero-cache token grant, mandatory middleware, provider binding and observed-policy validation.                       |
@@ -59,11 +53,11 @@ later release after withdrawal.
 
 ## Implementation and delivery
 
-1. **Retain the implemented contract.** Source creation and the regular Agent
-   deploy caller select the explicit provider profile. Keep unsupported IAM,
-   mixed strict/online model routes, missing mandatory policy and unverified
-   recipient identity fail-closed. Preserve the already applied approval
-   migration's SQL and the published migration prefix during main integration.
+1. **Retain the implemented contract.** Source creation uses the Installation's
+   eligible provider. Agent deployment admits the source's recorded profile.
+   Fail closed on unsupported IAM, mixed strict and online model routes, missing
+   mandatory policy, or unverified recipient identity. Preserve the already applied
+   approval migration's SQL and the published migration prefix during main integration.
 2. **Finish installed qualification.** Use actual OpenShell supervision, native
    Codex HTTPS/SSE and native Git, with independently constructed API and Worker
    owners sharing PostgreSQL. Register the combined scenario through the owning
@@ -76,11 +70,9 @@ later release after withdrawal.
    Git's standing approval through its supported API; verify Git denial and
    record whole-runtime retirement when the existing lifecycle requires it.
    This profile adds no independent Git IAM grant or live policy reduction.
-4. **Prepare a reviewable release.** Include the database-relative lease cap,
-   complete source-backed documentation, and commit the installed scenario and
-   QA selection. Review the full current-main composition, run applicable CI,
-   and record the RFC decision separately. Do not equate source approval with
-   installed acceptance.
+4. **Prepare the release.** Include the database-relative lease cap, finish the
+   documentation, and commit the installed scenario and QA selection. Review the
+   final main integration, run applicable CI, and record installed results.
 5. **Verify the released deployment.** Build the merged controller, use the
    supported upgrade procedure, and repeat model/Git acceptance on the intended
    installation. A worker restart may require a fresh Agent deployment for
@@ -97,13 +89,10 @@ later release after withdrawal.
 | Clock disagreement cannot extend an unused approval | Withdrawal case with a fast issuer and database-aligned redemption, including an actual expiry wait                                               | Local candidate passed the real expiry and returned-lease checks.                   |
 | Strict behavior and Helm coexistence                | [Static egress](../../tests/integration/static-egress.test.mjs) and [packaging](../../tests/integration/production-kubernetes-packaging.test.mjs) | Check the final composition; renders do not establish network enforcement.          |
 | Production listener startup                         | [Production image startup](../../tests/integration/production-image-startup.test.mjs)                                                             | Prior native amd64 image passed; release artifact needs exact-source qualification. |
-| Same-Sandbox inference, Git and denials             | Installed OpenShell test with real supervisor identity and controlled origins                                                                     | Pending registration and execution. Standing Git uses ordinary model delivery.      |
+| Same-Sandbox inference, Git and denials             | Installed OpenShell test with real supervisor identity and controlled origins                                                                     | Pending registration and execution.                                                 |
 | Supported operator cutover                          | Released artifacts, current public JWT bundle, trusted token endpoint, supervisor-only identity and enforced networking                           | Pending final deployment acceptance.                                                |
 
 ## Open decisions and prerequisites
-
-The model-key amendment retains its explicit human-merge requirement. Its
-acceptance must not be inferred from this implementation or its tests.
 
 Installed qualification requires a reachable TLS token endpoint, a current
 SPIFFE JWT trust bundle and a supervisor-only Workload API socket. Record who
@@ -124,3 +113,5 @@ release acceptance remain open. Update this record only from completed checks.
 
 - 2026-11-10: Recorded implemented source boundaries and remaining delivery gates
   from `17ab99f557d108b82214a13c39c63577a1c4de48`.
+- 2026-11-19: Aligned scope with the Installation-selected provider in `abc218e67`
+  and the 1.0 delivery design on `d3749595b`.

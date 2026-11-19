@@ -55,7 +55,7 @@ index 45e802cf454..3b6087188ba 100644
  }
  
 diff --git a/ui/src/api/gateway-connect-errors.ts b/ui/src/api/gateway-connect-errors.ts
-index 6aa163fe782..c6bae018208 100644
+index 9647f254703..aab2c125547 100644
 --- a/ui/src/api/gateway-connect-errors.ts
 +++ b/ui/src/api/gateway-connect-errors.ts
 @@ -23,6 +23,7 @@ export type GatewayBrowserCloseInfo = {
@@ -92,7 +92,7 @@ index 1f70fd5f455..3e89cfec94a 100644
  
  it.each(["cross-origin", "opened"])("does not probe a %s transport", async (kind) => {
 diff --git a/ui/src/api/gateway.ts b/ui/src/api/gateway.ts
-index 8c8ddffc4f8..cae260f8eeb 100644
+index 074f4b476ff..bb030b74668 100644
 --- a/ui/src/api/gateway.ts
 +++ b/ui/src/api/gateway.ts
 @@ -193,14 +193,17 @@ export class GatewayBrowserClient {
@@ -116,10 +116,10 @@ index 8c8ddffc4f8..cae260f8eeb 100644
                  }
                })
 diff --git a/ui/src/app/app-shell-view.test.ts b/ui/src/app/app-shell-view.test.ts
-index ae748c04967..b63eb76b8e8 100644
+index 82b363f6b83..b72ea7e20c6 100644
 --- a/ui/src/app/app-shell-view.test.ts
 +++ b/ui/src/app/app-shell-view.test.ts
-@@ -387,6 +387,24 @@ it("keeps pages interactive through transport loss and fences reload-required",
+@@ -322,6 +322,24 @@ it("keeps pages interactive through transport loss and fences reload-required",
    }
  });
  
@@ -145,10 +145,10 @@ index ae748c04967..b63eb76b8e8 100644
    let mobile = false;
    mockMobile(() => mobile);
 diff --git a/ui/src/app/app-shell-view.tsx b/ui/src/app/app-shell-view.tsx
-index dcdaa9b23a2..d523678c8a0 100644
+index 21e745b77cb..88b86e3bf09 100644
 --- a/ui/src/app/app-shell-view.tsx
 +++ b/ui/src/app/app-shell-view.tsx
-@@ -116,6 +116,11 @@ export function ApplicationShell(props: {
+@@ -135,6 +135,11 @@ export function ApplicationShell(props: {
      projectOwner(sessionOwner(), (sessions) => sessions.state.result?.sessions),
    );
    const shellConnectionStatus = createMemo(() => view().shellConnectionStatus);
@@ -158,9 +158,9 @@ index dcdaa9b23a2..d523678c8a0 100644
 +    !view().nativeEmbed &&
 +    window.top === window;
    const footerStatus = createMemo(() =>
-     shellConnectionStatus() || view().connectionRecovery ? view().gatewayStatus : null,
-   );
-@@ -436,6 +441,19 @@ export function ApplicationShell(props: {
+     view().chromeGatewayStatus.kind && (shellConnectionStatus() || view().connectionRecovery)
+       ? view().chromeGatewayStatus
+@@ -463,6 +468,19 @@ export function ApplicationShell(props: {
            onMouseDown={beginNativeWindowDragFromTopInset}
            inert={view().mobileNavLayout && view().navDrawerOpen}
          >
@@ -180,7 +180,7 @@ index dcdaa9b23a2..d523678c8a0 100644
            <Show
              when={
                floatingSidebarAttentionVisible(view().floatingUpdateCard) ||
-@@ -469,8 +487,9 @@ export function ApplicationShell(props: {
+@@ -496,8 +514,9 @@ export function ApplicationShell(props: {
              </Show>
              <RouterOutlet
                ref={(element) => (props.host.routeOutlet = element)}
@@ -193,10 +193,10 @@ index dcdaa9b23a2..d523678c8a0 100644
                retryContext={view().context}
                retryEnabled={view().gatewayConnected}
 diff --git a/ui/src/app/gateway-page-activation.test.ts b/ui/src/app/gateway-page-activation.test.ts
-index 5511184ecb9..3bc696c443b 100644
+index 90ec7cd646b..98c7eb1a47a 100644
 --- a/ui/src/app/gateway-page-activation.test.ts
 +++ b/ui/src/app/gateway-page-activation.test.ts
-@@ -319,6 +319,15 @@ it.each(["online", "visible"])("restarts a backed-off probe immediately on %s",
+@@ -414,6 +414,15 @@ it.each(["online", "visible"])("restarts a backed-off probe immediately on %s",
    expect(connect).toHaveBeenCalledOnce();
  });
  
@@ -213,7 +213,7 @@ index 5511184ecb9..3bc696c443b 100644
    "young opening",
    "opened socket",
 diff --git a/ui/src/app/gateway-page-activation.ts b/ui/src/app/gateway-page-activation.ts
-index ed18a5fc0f0..57b841ea73c 100644
+index eef0c64fa4a..f33feef8da3 100644
 --- a/ui/src/app/gateway-page-activation.ts
 +++ b/ui/src/app/gateway-page-activation.ts
 @@ -83,7 +83,8 @@ export function startGatewayPageActivation(
@@ -317,10 +317,10 @@ index 9d3c81b0526..a6a22af073d 100644
        aria-disabled={props["aria-disabled"]}
        onOpenclaw-route-element={elements.register}
 diff --git a/ui/src/i18n/locales/en.ts b/ui/src/i18n/locales/en.ts
-index d6a8dede40e..884d7a85a12 100644
+index d0e614a2e5c..17af1c9a043 100644
 --- a/ui/src/i18n/locales/en.ts
 +++ b/ui/src/i18n/locales/en.ts
-@@ -1324,6 +1324,9 @@ const startupEnglish = {
+@@ -1328,6 +1328,9 @@ const startupEnglish = {
      "reload-required": "Refresh required",
      offline: "Disconnected",
      reconnecting: "Reconnecting",
@@ -331,10 +331,10 @@ index d6a8dede40e..884d7a85a12 100644
      interrupted: "Disconnected. Check your connection and reconnect. (WebSocket {code})",
      restarting: "Restarting…",
 diff --git a/ui/src/styles/layout.css b/ui/src/styles/layout.css
-index 7d929ca3018..90f3af12adb 100644
+index 64d29b92138..26947ea8a3f 100644
 --- a/ui/src/styles/layout.css
 +++ b/ui/src/styles/layout.css
-@@ -3794,6 +3794,10 @@ openclaw-tooltip.sidebar-hover-tooltip {
+@@ -3873,6 +3873,10 @@ openclaw-tooltip.sidebar-hover-tooltip {
    min-height: 0;
  }
  

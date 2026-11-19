@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: 2026-11-18
-last_updated_session: authoring-run/8402abbe-3326-4701-82d2-ef491121ad47
+updated: 2026-11-19
+last_updated_session: authoring-run/3443474d-ea8c-4273-8c4f-3b3755f1eee1
 ---
 
 # Protected credential request flow
@@ -67,13 +67,13 @@ configuration can separately admit an [online model source](credential-source-eg
 Retained revisions keep their original provider, authorization, withdrawal and
 cleanup under the [Sandbox contract](../reference/credential-sources/protected-inference.md#bundled-openshell-admission).
 
-OCC checks source and Secret permissions; existing sources need opt-in. Version 3
-binds Sandbox and Proxy to one registered Driver.
-The plan records digest, execution, source generation, grant, and routes;
-empty routes deny all. `admitProxyPlan` derives routes from saved Harness settings
-and source consent. `checkEgressUseIn` rechecks before delivery and send authorization.
+OCC checks source and Secret grants; adoption requires consent. Version 3 binds
+Sandbox and Proxy to one Driver. `admitProxyPlan` derives routes from saved Harness
+settings and consent; empty routes deny all. Plans retain execution, digest, grant
+and source generation. `checkEgressUseIn` rechecks delivery and send authorization;
+`createCredentialProxy` rechecks ownership after metadata lookup, before Secret reads.
 `apps/controller/src/console/agents/detail.mts:requestedHarnessOverrides` captures
-settings at submission. OCC normalizes them and checks caller and Agent grants.
+submitted settings for OCC normalization and grant checks.
 
 For credential-free metadata, `packages/occ/src/index.ts:admitProxyPlan` rejects
 a Driver grant that differs from the source. Equivalent grants have the same
@@ -345,9 +345,13 @@ None.
 
 ## Changelog
 
-- 2026-11-18 06:18: Distinguish retired strict admission from configured online model sources. (authoring-run/8402abbe-3326-4701-82d2-ef491121ad47 - a87a1af97472f3dcbb9c5a5d4cda835212446e00)
+- 2026-11-19 09:25: Reconcile static material checks and online model admission with main. (authoring-run/3443474d-ea8c-4273-8c4f-3b3755f1eee1 - abc218e67e3325ea0db6ae3687413abd34713aff)
+
+- 2026-11-19 02:07: Fence static material reads. (authoring-run/5de05faa-098d-4671-b34e-4148f7a14d08 - cea7d46c69)
 
 - 2026-11-18 11:53: Require a delta to open a reasoning-text index; consolidate exchange regression coverage. (authoring-run/cd2d6ae9-eb3b-4896-b64b-ae7ecc119b99 - fe38bb0cb)
+
+- 2026-11-18 06:18: Distinguish retired strict admission from configured online model sources. (authoring-run/8402abbe-3326-4701-82d2-ef491121ad47 - a87a1af97472f3dcbb9c5a5d4cda835212446e00)
 
 - 2026-11-12 19:08: Preserve source-free Proxy admission while bypassing it for ordinary Gateway sources. (authoring-run/9928fd4c-05a8-4ce6-b0d6-5322a30b0fe8 - 988124f27)
 

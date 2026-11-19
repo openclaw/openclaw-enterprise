@@ -104,8 +104,9 @@ These approved requirements are not established by the implemented architecture:
 | Runtime trust                | Separate placement is implemented; general mutually authenticated, workload-bound transport and complete two-cluster runtime acceptance remain pending. See [Kubernetes Compute](reference/drivers/kubernetes-compute.md).                                                                                                                |
 | Resource and policy coverage | Agent-owned SandboxPolicy network additions are implemented. General shared containment policies, the published Harness and Channel resource model, and Restrictions across every integration remain beyond the current contracts. See [resource requirements](design/resources.md) and [Sandbox contract](reference/drivers/sandbox.md). |
 
-Agent and Plugin Directories, plugin invocation approval workflows, broader audit
-export and retention, Budgets, and Routers remain future work. Existing logging
+Dedicated OpenClaw MCP tools can require human approval for native Gateway-dispatched
+calls; scripts using the credential directly are outside that approval boundary.
+Agent and Plugin Directories, broader plugin approval workflows, audit export and retention, Budgets, and Routers remain future work. Existing logging
 and metrics integrations have their own [operational contracts](guides/observability.md).
 
 ## Control Plane

@@ -200,7 +200,7 @@ An OCC rotation committed before that decision therefore rejects the old
 selection. Direct external Secret writes share no OCC lock: they are observed
 only through the final read, not serialized with release.
 
-OCC carries the original Gateway, Sandbox/Proxy, provider and transport identity
+OCC carries the original Gateway, Secret Driver and reader, Sandbox/Proxy, provider and transport identity
 from the preliminary policy decision through metadata and material reads, the final
 policy transaction, and its known COMMIT acknowledgment. A changed identity refuses
 approval or release; a consumed request ID remains spent.

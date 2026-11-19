@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-18"
-last_updated_session: "authoring-run/4bed3583-f449-4bab-a6c6-2e8af70a39e9"
+updated: "2026-11-19"
+last_updated_session: "authoring-run/3443474d-ea8c-4273-8c4f-3b3755f1eee1"
 ---
 
 # Production Startup Flow
@@ -173,9 +173,9 @@ Under the advisory lock, the migrator verifies roles, receipts, catalogs and
 grants against the native or reviewed restore history. Unsupported history fails
 before migration SQL or bootstrap.
 
-Canonical history through `0082` remains unchanged. Migration `0083` directly
-adds request credential approvals and candidate Work authorization. Unlanded
-preview approval schemas are not supported upgrade histories.
+Canonical history through `0083` includes native restart recovery. Migration
+`0084` adds request credential approvals and candidate Work authorization.
+Supported upgrade histories exclude preview approval schemas.
 
 Completed apply skips Drizzle only for a writable session. Pending migrations
 and read-only sessions keep their normal checks. Cleanup releases the lock and client
@@ -388,6 +388,8 @@ The shell initializes the missing annotation, patches with UID and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 09:25: Record request credential authorization migration `0084` after native restart recovery. (authoring-run/3443474d-ea8c-4273-8c4f-3b3755f1eee1 - abc218e67e3325ea0db6ae3687413abd34713aff)
 
 - 2026-11-18 15:00: Preserve the precreated bootstrap credential projection and align request-authorization migration history with current main. (authoring-run/e9ec324d-033c-4ca2-b52b-f303b2cc7f5e - 4f19a93f0a22e6675cb93c82824134f8a75a7f1b)
 

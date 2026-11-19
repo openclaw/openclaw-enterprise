@@ -346,7 +346,7 @@ function managedPluginInstallations() {
   return (Array.isArray(settings) ? settings : [settings]).map(readManagedPluginInstallation);
 }
 
-function readManagedPluginInstallation({ id, kind, packageName, releaseSha256, slotId, toolNames = [] }) {
+function readManagedPluginInstallation({ id, kind, packageName, releaseSha256, slotId, toolNames = [], approvalToolNames = [] }) {
   if ((kind !== "cli" && kind !== "mcp") || typeof packageName !== "string" || !/^[a-z][a-z0-9-]*$/.test(packageName)) {
     throw new Error("The managed plugin package type or name is invalid.");
   }
@@ -377,11 +377,16 @@ function readManagedPluginInstallation({ id, kind, packageName, releaseSha256, s
       new Set(toolNames.map((name) => name.toLowerCase())).size !== toolNames.length) {
     throw new Error("The selected MCP tools must have distinct literal names and OpenClaw aliases within 64 characters.");
   }
+  if (!Array.isArray(approvalToolNames) || !approvalToolNames.every((name) => toolNames.includes(name)) ||
+      new Set(approvalToolNames).size !== approvalToolNames.length) {
+    throw new Error("MCP human approval is limited to selected upstream tools.");
+  }
   const mcp = credential && {
     delivery: credential.delivery,
     server: credential.mcp.server,
     localServer: "oce_mcp_" + credential.mcp.server,
     toolNames,
+    approvalToolNames,
   };
   return { id, kind, root, release, skills, skill, credential, mcp };
 }
@@ -2837,6 +2842,53 @@ function requireWorkspaceNodePlugins(config) {
   }
 }
 
+const MANAGED_MCP_POLICY_ID = "oce-managed-mcp-policy";
+const MANAGED_MCP_POLICY_PATH = "/usr/local/lib/oce/platform-plugins/" + MANAGED_MCP_POLICY_ID;
+
+// This platform extension is shipped in the selected immutable runtime image,
+// outside the operator-selectable catalog. Only a selection containing Ask needs it.
+function configureManagedMcpPolicy(config, installs) {
+  const mcp = installs.flatMap(({ mcp }) => mcp ? [mcp] : []);
+  if (!mcp.some(({ approvalToolNames }) => approvalToolNames.length > 0)) return;
+  const manifest = JSON.parse(pluginReadFileSync(MANAGED_MCP_POLICY_PATH + "/openclaw.plugin.json", "utf8"));
+  const pkg = JSON.parse(pluginReadFileSync(MANAGED_MCP_POLICY_PATH + "/package.json", "utf8"));
+  if (manifest.id !== MANAGED_MCP_POLICY_ID || pkg.name !== MANAGED_MCP_POLICY_ID ||
+      !pkg.openclaw?.extensions?.includes("./index.mjs") || !pluginExistsSync(MANAGED_MCP_POLICY_PATH + "/index.mjs")) {
+    throw new Error("The managed MCP approval policy is missing from the runtime image.");
+  }
+  const plugins = config.plugins ??= {};
+  if (plugins.enabled === false || (plugins.deny ?? []).some((id) =>
+      typeof id === "string" && id.trim().toLowerCase() === MANAGED_MCP_POLICY_ID)) {
+    throw new Error("The managed MCP approval policy is disabled by the Gateway configuration.");
+  }
+  // TODO(OpenClaw policySubject): native Slack plugin approver overrides reject
+  // subject-less node-policy prompts, so Agent-wide reviewers cannot approve them.
+  if (config.channels?.slack && config.channels.slack.enabled !== false &&
+      Object.keys(config.approvals?.plugin?.slack?.plugins ?? {}).length > 0) {
+    throw new Error("Managed MCP approval cannot use native Slack per-plugin approver overrides.");
+  }
+  const servers = {};
+  for (const { localServer, toolNames, approvalToolNames } of mcp) {
+    if (Object.hasOwn(servers, localServer)) throw new Error("Managed MCP server identities must be distinct.");
+    servers[localServer] = Object.fromEntries(toolNames.map((tool) => [
+      tool, approvalToolNames.includes(tool) ? "ask" : "allow",
+    ]));
+  }
+  const entries = plugins.entries ??= {};
+  const existing = entries[MANAGED_MCP_POLICY_ID];
+  if (existing !== undefined && (existing.enabled !== true || !pluginDeepEqual(existing.config?.servers, servers))) {
+    throw new Error("Gateway configuration conflicts with the managed MCP approval policy.");
+  }
+  entries[MANAGED_MCP_POLICY_ID] = { enabled: true, config: { servers } };
+  const load = plugins.load ??= {};
+  load.paths = [...new Set([...(load.paths ?? []), MANAGED_MCP_POLICY_PATH])];
+  if (Array.isArray(plugins.allow)) {
+    plugins.allow = [...new Set([...plugins.allow, MANAGED_MCP_POLICY_ID])];
+  }
+  // TODO(OpenClaw mandatory policy): reject MCP execution if native registration
+  // fails after these image and configuration checks. Gateway readiness does not attest it.
+}
+
 function installGatewayPlugins(runtime, failures, installs) {
   if (installs.length === 0) return installOpenClawPlugins(runtime, failures);
 
@@ -2882,6 +2934,8 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
   // The path is known at startup. Pairing supplies only the node identity, so
   // loading file-transfer should not also replace the Codex plugin.
   if (workspaceNodeId === undefined) return;
+  const managedMcp = entries[MANAGED_MCP_POLICY_ID];
+  if (managedMcp?.enabled === true) managedMcp.config.nodeId = workspaceNodeId;
   if (Array.isArray(plugins.allow)) {
     plugins.allow = [...new Set([...plugins.allow, "file-transfer"])];
   }
@@ -3331,6 +3385,7 @@ function configureGateway(peerStatus) {
     process.env.OPENCLAW_NATIVE_WORKER_PROFILE !== undefined
   ) {
     const config = readOpenClawConfig();
+    configureManagedMcpPolicy(config, installs);
     // The first pairing records its command grant before a node ID is available.
     // gateway.* changes restart OpenClaw, so this is written only before a spawn.
     const commands = ((config.gateway ??= {}).nodes ??= {}).commands ??= {};
@@ -3424,12 +3479,19 @@ function holdInvalidGatewayConfiguration(code, signal) {
 // minutes: once no holder remains, it restarts its container on purpose and the next start
 // takes the lock. An inspection that fails, or finds no holder, exits 1 as before.
 const GATEWAY_STATE_LOCK_RECHECK_MS = 300_000;
-function holdGatewayStateLock(code) {
+function holdGatewayStateLock() {
   if (runtimeStatusPort() === undefined) return false;
   const holders = openClawStateLockHolders(gatewayEnvironment());
   if (holders === undefined || holders.length === 0) return false;
+  return holdGatewayStartupFailure(new GatewayStateLockError(holders.join(" ")));
+}
+
+// Holds a refusal of the tool policy step. The state lock that its config validate met, as a
+// container restarted after a kill does, is held and rechecked as the native start's is.
+function holdGatewayStartupFailure(error) {
+  if (!holdGatewayToolPolicyFailure(error)) return false;
+  if (!(error instanceof GatewayStateLockError) || runtimeStatusPort() === undefined) return true;
   gatewayStartupHeld = true;
-  holdGatewayToolPolicyFailure(new GatewayStateLockError(holders.join(" ")));
   const recheck = setInterval(() => {
     if (gatewayTerminating) return;
     // A failed exit release (it timed out, or a foreign record made OpenClaw keep every lock)
@@ -3441,7 +3503,7 @@ function holdGatewayStateLock(code) {
     const current = openClawStateLockHolders(gatewayEnvironment());
     if (current !== undefined && current.length > 0) return;
     clearInterval(recheck);
-    if (current === undefined) process.exit(code);
+    if (current === undefined) process.exit(1);
     else stopContainer("GATEWAY_STATE_LOCK_RELEASED");
   }, GATEWAY_STATE_LOCK_RECHECK_MS);
   return true;
@@ -3473,7 +3535,7 @@ function startGatewayProcess() {
         if (!gatewayTerminating && !gatewayServed && code !== 0 && holdInvalidGatewayConfiguration(code, signal)) {
           return;
         }
-        if (!gatewayTerminating && !gatewayServed && code === 1 && holdGatewayStateLock(code)) {
+        if (!gatewayTerminating && !gatewayServed && code === 1 && holdGatewayStateLock()) {
           return;
         }
         // A native exit never passes as a deliberate restart, which Compute does not count
@@ -3769,7 +3831,7 @@ if (followsPeerStatus) {
       logStartupPhase("gateway-respawn", respawnStartedAt);
     } catch (error) {
       logStartupPhase("gateway-respawn", respawnStartedAt, "failed");
-      if (holdGatewayToolPolicyFailure(error)) {
+      if (holdGatewayStartupFailure(error)) {
         clearInterval(peerStatusPoll);
       } else {
         stopContainer(error?.peerChanged === true ? "HARNESS_PEER_CHANGED" : "HARNESS_PEER_RESPAWN_FAILED");
@@ -3799,7 +3861,7 @@ if (followsPeerStatus) {
   }, 2_000).unref();
 }
 })().catch((error) => {
-  if (!holdGatewayToolPolicyFailure(error) && !holdPluginApproverConfigurationFailure(error)) throw error;
+  if (!holdGatewayStartupFailure(error) && !holdPluginApproverConfigurationFailure(error)) throw error;
 });
 }
 `;
@@ -4119,6 +4181,18 @@ function codexReadinessFailure(url, token) {
 }
 `;
 
+const BOX_HTTPS_PROVIDER_ARGUMENTS = String.raw`// Box's HTTP egress proxy strips Upgrade. An OpenAI provider with native HTTPS
+// retains the account-selected backend URL and PAT authentication.
+const httpsProviderArguments = loginMode === "codex_pat" && pluginRuntime?.manifest.modelEndpoint === undefined ? [
+  "-c", 'model_provider="oce-openai-https"',
+  "-c", 'model_providers.oce-openai-https.name="OpenAI"',
+  "-c", 'model_providers.oce-openai-https.wire_api="responses"',
+  "-c", 'model_providers.oce-openai-https.requires_openai_auth=true',
+  "-c", 'model_providers.oce-openai-https.supports_websockets=false',
+  "-c", 'model_providers.oce-openai-https.supports_standalone_web_search=true',
+] : [];
+`;
+
 // Only newly admitted OpenShell PAT launches carry this transcript rule.
 const OPENSHELL_PAT_RECOVERY = String.raw`
     function openShellPatRecovery(events) {
@@ -4180,6 +4254,7 @@ function agentRuntimeEntrypoint({
   withNode = false,
   patRecovery = false,
   modelRequestEnrollment = false,
+  boxHttps = false,
   explicitProxy = false,
 } = {}): string {
   const processFailed = patRecovery ? "!cleanExit" : "result.status !== 0 || result.error";
@@ -4308,7 +4383,7 @@ if (pluginRuntime !== undefined) {
   assertCodexPluginRuntime(pluginRuntime);
   writeCodexConfigToml(pluginRuntime);
 }
-// A Credential Gateway supplies an opaque token, so native CLI prefix detection cannot
+${boxHttps ? BOX_HTTPS_PROVIDER_ARGUMENTS : ""}// A Credential Gateway supplies an opaque token, so native CLI prefix detection cannot
 // classify it. The native PAT auth-file contract still hydrates and validates account metadata.
 const providerManagedPat = loginMode === "codex_pat" && process.env.OCE_CODEX_CREDENTIAL_SOURCE === "1";
 if (providerManagedPat) {
@@ -4563,7 +4638,7 @@ function probeCodexAuthentication(timeout) {
     ];
     result = spawnSync(codexExecutable(), [
       ...nativeTelemetryArguments,
-${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_retries",\n' : ""}      ...disabled.flatMap((feature) => ["--disable", feature]),
+${boxHttps ? "      ...httpsProviderArguments,\n" : ""}${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_retries",\n' : ""}      ...disabled.flatMap((feature) => ["--disable", feature]),
       "-a", "never", "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
       "--skip-git-repo-check", "--json", "--sandbox", "read-only", "--cd", directory,
       "--model", modelId,
@@ -4786,7 +4861,7 @@ if (digest === undefined) {
 }
 const nativeArguments = [
     ...nativeTelemetryArguments,
-    // Preserve the admitted model selection for native policy readback.
+${boxHttps ? "    ...httpsProviderArguments,\n" : ""}    // Preserve the admitted model selection for native policy readback.
     "-c",
     "model=" + JSON.stringify(process.env.OPENCLAW_HARNESS_MODEL.slice(process.env.OPENCLAW_HARNESS_MODEL.indexOf("/") + 1)),
     // Managed container tools must retain the runtime PATH, including Skill dependencies.
@@ -4964,9 +5039,53 @@ function completeSetupCode(payload) {
 // deadline governs a setup that never arrives. SandboxDriver Harnesses still
 // receive OPENCLAW_NODE_SETUP_CODE in the environment.
 
-function agentWithNodeEntrypoint(childArguments: readonly string[]): string {
+// The legacy launcher is part of the immutable requirements for existing revisions.
+function nativeHookDirectorySetup(mounted: boolean): string {
+  if (mounted) {
+    return String.raw`function prepareHookDirectory() {
+  // A provider may mount just this directory while keeping HOME read-only.
+  mkdirSync(hookDirectory, { recursive: true, mode: 0o700 });
+  const flags = hookStorageFs.constants;
+  const fd = openSync(hookDirectory, flags.O_RDONLY | flags.O_DIRECTORY | flags.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(fd);
+    if (stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o700) {
+      throw new Error("Native hook storage must be private and owned by the Harness.");
+    }
+    const held = "/proc/self/fd/" + fd;
+    for (const entry of hookStorageFs.readdirSync(held)) {
+      rmSync(join(held, entry), { recursive: true, force: true });
+    }
+    if (hookCa) {
+      writeFileSync(join(held, "gateway-ca.pem"), hookCa, { mode: 0o600, flag: "wx" });
+    }
+  } finally {
+    closeSync(fd);
+  }
+}`;
+  }
+  return String.raw`function prepareHookDirectory() {
+  rmSync(hookDirectory, { recursive: true, force: true });
+  mkdirSync(hookDirectory, { mode: 0o700 });
+  chmodSync(hookDirectory, 0o700);
+  if (hookCa) {
+    writeFileSync(join(hookDirectory, "gateway-ca.pem"), hookCa, { mode: 0o600, flag: "wx" });
+  }
+}`;
+}
+
+function agentWithNodeEntrypoint(
+  childArguments: readonly string[],
+  mountedHookDirectory = false,
+  role: "combined" | "file-node" | "codex" = "combined",
+): string {
+  const hookStorageImport = mountedHookDirectory
+    ? '\nconst hookStorageFs = require("node:fs");'
+    : "";
+  const includeNode = role !== "codex";
+  const includeCodex = role !== "file-node";
   return String.raw`
-const { chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, rmSync } = require("node:fs");
+const { chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, rmSync } = require("node:fs");${hookStorageImport}
 const { join } = require("node:path");
 const { execFile, spawn } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
@@ -4978,8 +5097,27 @@ ${OPENCLAW_STATE_LOCK_INSPECTION}
 // The Codex child serves this container's runtime status, and it starts only after the
 // node state is current and the workspace is initialized. A failure before then is held
 // here with the named step in the log and its check served in Codex's place.
-${SUPERVISOR_HELD_FAILURE_HELPER}
-const state = process.env.OPENCLAW_NODE_STATE_DIR;
+${SUPERVISOR_HELD_FAILURE_HELPER}${
+    role === "file-node"
+      ? String.raw`
+function publishWorkspaceOutcome(check) {
+  const path = "/run/oce-workspace/outcome.sock";
+  const outcome = check === undefined ? { state: "ready" } : {
+    state: "failed",
+    runtimeFailure: { component: "agent", check, checkedAt: new Date().toISOString(), code: "UNAVAILABLE" },
+  };
+  rmSync(path, { force: true });
+  require("node:net").createServer((socket) => {
+    socket.on("error", () => socket.destroy());
+    socket.end(JSON.stringify(outcome));
+  }).listen(path);
+}
+`
+      : ""
+  }
+${
+  includeNode
+    ? String.raw`const state = process.env.OPENCLAW_NODE_STATE_DIR;
 const setupEnvironment = process.env.OPENCLAW_NODE_SETUP_CODE;
 const setupPath = process.env.OPENCLAW_NODE_SETUP_PATH;
 const setupEnvelopePath = process.env.OPENCLAW_NODE_SETUP_ENVELOPE;
@@ -4997,9 +5135,13 @@ mkdirSync(state, { recursive: true, mode: 0o700 });
 // PVC parents can propagate setgid even with mkdir's 0700 mode. Keep the
 // process-owned node state private before OpenClaw creates its child directories.
 chmodSync(state, 0o700);
-initializeRuntimeAssets();
+`
+    : ""
+}initializeRuntimeAssets();
 publishAgentPluginSkillPath();
-const configPath = join(state, "openclaw.json");
+${
+  includeNode
+    ? String.raw`const configPath = join(state, "openclaw.json");
 writeFileSync(configPath, JSON.stringify({
   agents: { defaults: JSON.parse(process.env.OPENCLAW_WORKSPACE_BOOTSTRAP || "{}") },
   plugins: {
@@ -5008,13 +5150,17 @@ writeFileSync(configPath, JSON.stringify({
     entries: { "file-transfer": { enabled: true } },
   },
 }), { mode: 0o600 });
-// Both the node file worker and Codex execute installed Skill dependencies.
+`
+    : ""
+}// Both the node file worker and Codex execute installed Skill dependencies.
 const harnessPath = [
   process.env.PATH,
   runtimeHomeDirectory + "/.local/bin",
   runtimeOpenClawDirectory + "/tools/node/npm/bin",
 ].filter(Boolean).join(":");
-const nodeEnv = {
+${
+  includeNode
+    ? String.raw`const nodeEnv = {
   HOME: process.env.HOME,
   // Persistent mount ancestors can be root-owned and group-writable. Keep
   // SQLite staging beneath the container's sticky /tmp; OpenClaw owns its private children.
@@ -5100,7 +5246,7 @@ function holdUnverifiableStateLock(check) {
 (async () => {
 const outdatedDatabases = outdatedOpenClawDatabases(state);
 if ((outdatedDatabases.length > 0 || openClawMaintenancePending(state)) && !(await migrateOpenClawState(state, outdatedDatabases, nodeEnv))) {
-  holdUnverifiableStateLock("state-migration");
+  ${role === "file-node" ? 'publishWorkspaceOutcome("state-migration");\n  ' : ""}holdUnverifiableStateLock("state-migration");
   return;
 }
 // The workspace belongs to the Harness. Native setup creates missing defaults
@@ -5151,11 +5297,15 @@ if (baseline.error || baseline.status !== 0) {
       ") " + workspaceBaselineReport(baselineResultPath) +
       " Codex was not started. Fix the cause, then deploy the Agent again.",
   );
-  holdUnverifiableStateLock("workspace-baseline");
+  ${role === "file-node" ? 'publishWorkspaceOutcome("workspace-baseline");\n  ' : ""}holdUnverifiableStateLock("workspace-baseline");
   return;
 }
 logStartupPhase("workspace-baseline", baselineStartedAt);
-const codexEnv = { ...process.env, PATH: harnessPath };
+`
+    : "(async () => {\n"
+}${
+    includeCodex
+      ? String.raw`const codexEnv = { ...process.env, PATH: harnessPath };
 // Per-run hook capabilities are delivered by the authenticated app-server connection.
 // Keep them outside the model workspace and the file-transfer plugin's roots.
 const hookDirectory = join(process.env.HOME, ${JSON.stringify(NATIVE_HOOK_CREDENTIAL_DIRECTORY)});
@@ -5186,14 +5336,7 @@ if (gatewayCa) {
 // directory; the CA copy is created exclusively, so it never follows a link. Credentials
 // left there belong to the previous Codex process's relays; the Gateway writes a new one
 // for each new or resumed run.
-function prepareHookDirectory() {
-  rmSync(hookDirectory, { recursive: true, force: true });
-  mkdirSync(hookDirectory, { mode: 0o700 });
-  chmodSync(hookDirectory, 0o700);
-  if (hookCa) {
-    writeFileSync(join(hookDirectory, "gateway-ca.pem"), hookCa, { mode: 0o600, flag: "wx" });
-  }
-}
+${nativeHookDirectorySetup(mountedHookDirectory)}
 delete codexEnv.OPENCLAW_NODE_SETUP_CODE;
 delete codexEnv.OPENCLAW_NODE_SETUP_PATH;
 delete codexEnv.OPENCLAW_NODE_SETUP_ENVELOPE;
@@ -5202,7 +5345,11 @@ delete codexEnv.OPENCLAW_NODE_CA_PATH;
 delete codexEnv.OPENCLAW_NODE_STATE_DIR;
 delete codexEnv.OPENCLAW_WORKSPACE_BOOTSTRAP;
 delete codexEnv.OPENCLAW_NODE_DISPLAY_NAME;
-// The node saves its first display name (the first Pod's host name) and reuses
+`
+      : ""
+  }${
+    includeNode
+      ? String.raw`// The node saves its first display name (the first Pod's host name) and reuses
 // it across revisions unless told otherwise; the controller names it after the Agent.
 const nodeDisplayName = process.env.OPENCLAW_NODE_DISPLAY_NAME;
 const nodeCommands = [
@@ -5280,27 +5427,37 @@ let pendingSetupCode;
 function nodeArguments() {
   // A cached provider setup bridges launch-time gaps, but cannot initiate renewal.
   const code = readSetupCode({ allowCachedProviderSetup: true }) ?? pendingSetupCode;
-  pendingSetupCode = undefined;
+  ${role === "file-node" ? 'const pairingMode = pendingSetupCode === undefined ? "--pair-if-needed" : "--pair-or-reconnect";\n  ' : ""}pendingSetupCode = undefined;
   runningSetupCode = code;
   if (code !== undefined) {
     savedIdentity = "unknown";
     identityRetryAt = 0;
     identityBackoff = 2_000;
-    return ["/app/openclaw.mjs", "node", "run", "--pair-or-reconnect", code, ...nodeCommands];
+    return ["/app/openclaw.mjs", "node", "run", ${role === "file-node" ? "pairingMode" : '"--pair-or-reconnect"'}, code, ...nodeCommands];
   }
   if (savedIdentity === "present") return ["/app/openclaw.mjs", "node", "run", ...nodeCommands];
   if (savedIdentity === "unknown" && Date.now() >= identityRetryAt) checkSavedIdentity();
   return undefined;
 }
-const processes = [
-  { name: "workspace node", args: nodeArguments, env: nodeEnv },
-  {
+`
+      : ""
+  }const processes = [
+${
+  includeNode
+    ? String.raw`  { name: "workspace node", args: nodeArguments, env: nodeEnv },
+`
+    : ""
+}${
+    includeCodex
+      ? String.raw`  {
     name: "Codex",
     args: ${JSON.stringify(["-e", ...childArguments])},
     env: codexEnv,
     prepare: prepareHookDirectory,
   },
-];
+`
+      : ""
+  }];
 let stopping = false;
 // An OpenShell Sandbox reports EPERM for a group left with only zombies, as Darwin
 // does. Signal the child itself then; a supervisor crash would end node retries.
@@ -5385,7 +5542,9 @@ function start(slot) {
 // A refreshed Secret or provider projection must reach an already-connected node.
 // Retire only its owned process group; Codex keeps running and the replacement reads
 // the latest complete setup. Missing projections and code removal do not interrupt it.
-const workspaceNode = processes[0];
+${
+  includeNode
+    ? String.raw`const workspaceNode = processes[0];
 const setupRefreshTimer = setupEnvironment ? undefined : setInterval(() => {
   if (stopping || !workspaceNode.child) return;
   const code = readSetupCode();
@@ -5401,7 +5560,9 @@ const setupRefreshTimer = setupEnvironment ? undefined : setInterval(() => {
   workspaceNode.retirementTimer = setTimeout(() => killGroup(child, "SIGKILL"), 5_000);
 }, 1_000);
 setupRefreshTimer?.unref();
-function stop(signal) {
+`
+    : "const setupRefreshTimer = undefined;"
+}function stop(signal) {
   if (stopping) return;
   stopping = true;
   clearInterval(setupRefreshTimer);
@@ -5419,14 +5580,50 @@ function stop(signal) {
 process.on("SIGTERM", () => stop("SIGTERM"));
 process.on("SIGINT", () => stop("SIGINT"));
 logStartupPhase("supervisor-spawn", startupPhaseOrigin);
-nodeSetupWait = Date.now();
+${includeNode ? "nodeSetupWait = Date.now();" : ""}
 // Codex first: it does not wait for the node setup.
-for (const slot of [...processes].reverse()) start(slot);
+for (const slot of [...processes].reverse()) start(slot);${role === "file-node" ? "\npublishWorkspaceOutcome();" : ""}
 })().catch((error) => {
   console.error(error);
   process.exit(1);
 });
 `;
+}
+
+// Only split the exact provider launcher Compute rendered. An unknown or customized
+// command must never silently lose its initialization or gain a companion process.
+export function splitBoxWorkspaceLaunch(command: readonly string[], setupVerifier: string) {
+  const launcher = codexLaunchEntrypoint({
+    providerOwned: true,
+    protected: false,
+    withNode: true,
+    strandsBox: true,
+    explicitProxy: true,
+  });
+  const expected = [...RUNTIME_WRAPPER_COMMAND, ...nodeProgramArguments(setupVerifier + launcher)];
+  if (command.length !== expected.length || expected.some((part, i) => part !== command[i])) {
+    return undefined;
+  }
+  return {
+    codex: [
+      "node",
+      "-e",
+      ...nodeProgramArguments(
+        setupVerifier +
+          agentWithNodeEntrypoint(
+            nodeProgramArguments(
+              agentRuntimeEntrypoint({ withNode: true, boxHttps: true, explicitProxy: true }),
+            ),
+            true,
+            "codex",
+          ),
+      ),
+    ],
+    fileNode: [
+      ...RUNTIME_WRAPPER_COMMAND,
+      ...nodeProgramArguments(setupVerifier + agentWithNodeEntrypoint([], false, "file-node")),
+    ],
+  };
 }
 
 export interface CodexLaunch {
@@ -5436,6 +5633,7 @@ export interface CodexLaunch {
   readonly withNode?: boolean;
   readonly workspaceSetup?: boolean;
   readonly modelRequestEnrollment?: boolean;
+  readonly strandsBox?: boolean;
   /**
    * A provider-owned launch whose Sandbox may name an explicit egress proxy in the Harness
    * environment: its authentication probe keeps the standard proxy settings. OpenShell's
@@ -5456,6 +5654,7 @@ export function codexLaunchEntrypoint(
     withNode = false,
     workspaceSetup = false,
     modelRequestEnrollment = false,
+    strandsBox = false,
     explicitProxy = false,
   }: CodexLaunch = { providerOwned: false, protected: false },
 ): string {
@@ -5466,6 +5665,9 @@ export function codexLaunchEntrypoint(
     withNode &&
     providerOwned &&
     (patRecovery || (workspaceSetup && openShellProgram !== undefined));
+  const boxLaunch = providerOwned && strandsBox && !patRecovery && !compact;
+  const boxHttps = boxLaunch && !withNode && (useExplicitProxy || !protectedLaunch);
+  const boxHookDirectory = boxLaunch && withNode;
   const key = JSON.stringify([
     computeOwned,
     protectedLaunch,
@@ -5474,6 +5676,8 @@ export function codexLaunchEntrypoint(
     compact,
     modelRequestEnrollment,
     useExplicitProxy,
+    boxHttps,
+    boxHookDirectory,
   ]);
   const cached = codexEntrypoints.get(key);
   if (cached !== undefined) {
@@ -5487,11 +5691,12 @@ export function codexLaunchEntrypoint(
     patRecovery,
     modelRequestEnrollment,
     explicitProxy: useExplicitProxy,
+    boxHttps,
   });
   let program = child;
   if (withNode) {
     const args = compact ? compactNodeChildArguments(child) : nodeProgramArguments(child);
-    program = agentWithNodeEntrypoint(args);
+    program = agentWithNodeEntrypoint(args, boxHookDirectory);
   }
   codexEntrypoints.set(key, program);
   return program;

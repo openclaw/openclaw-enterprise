@@ -120,10 +120,10 @@ index 85906093b20..7e6faf9ac4d 100644
  paired Gateway, without sending the local Gateway's password on restart.
  
 diff --git a/docs/plugins/sdk-runtime/gateway-and-nodes.md b/docs/plugins/sdk-runtime/gateway-and-nodes.md
-index 4490b35f3fe..beeb51655e2 100644
+index c55a0624429..f51a2ac9600 100644
 --- a/docs/plugins/sdk-runtime/gateway-and-nodes.md
 +++ b/docs/plugins/sdk-runtime/gateway-and-nodes.md
-@@ -545,8 +545,14 @@ applicable policy also requires fresh publication admission.
+@@ -551,8 +551,14 @@ applicable policy also requires fresh publication admission.
      Shared preparation callbacks run once per node registry initialization, not
      per invocation or reconnect. Optional providers should retain a known
      unavailable state on expected preparation failure and let `isAvailable`
@@ -664,16 +664,19 @@ index eb4a833f89a..423df96516f 100644
  }
  
 diff --git a/node-host-launcher.mjs b/node-host-launcher.mjs
-index db47fb73f15..1e4780754bb 100644
+index 127161e7744..97413336290 100644
 --- a/node-host-launcher.mjs
 +++ b/node-host-launcher.mjs
-@@ -20,9 +20,13 @@ import { resolveOpenClawCliInvocation } from "./cli-invocation.mjs";
+@@ -22,12 +22,16 @@ import { resolveOpenClawCliInvocation } from "./cli-invocation.mjs";
  
  const CHILD_ARGUMENT = "--openclaw-node-host-child";
  const MANAGED_CHILD_ARGUMENT = "--openclaw-node-host-managed-child";
 +const PROTOCOL_ARGUMENT = "--openclaw-node-host-protocol=1";
 +const ACCEPTED_RESTART_ARGUMENT = "--openclaw-node-host-accepted-restart";
  const RESUME_CHILD_ARGUMENT = "--openclaw-node-host-resume-child";
+ const PIPE_CHILD_ARGUMENT = "--openclaw-node-host-pipe-child";
+ const MANAGED_PIPE_CHILD_ARGUMENT = "--openclaw-node-host-managed-pipe-child";
+ const CHANNEL_MARKER = Symbol.for("openclaw.node-host.launcher-channel");
  const CHILD_MARKER = Symbol.for("openclaw.node-host.launcher-child");
  const MANAGED_STATE_MARKER = Symbol.for("openclaw.node-host.managed-state-path");
 +const ACCEPTED_RESTART_MARKER = Symbol.for("openclaw.node-host.accepted-restart");
@@ -681,7 +684,7 @@ index db47fb73f15..1e4780754bb 100644
  const RESTART_INTERVAL_MS = 12 * 60 * 60 * 1_000;
  const READY_TIMEOUT_MS = 5 * 60 * 1_000;
  const ROOT_VALUE_FLAGS = new Set(["--profile", "--log-level", "--container"]);
-@@ -347,8 +351,18 @@ export async function runNodeHostLauncher({ entryPath, packageRoot }) {
+@@ -437,8 +441,18 @@ export async function runNodeHostLauncher({ entryPath, packageRoot }) {
          "The private managed node launcher argument requires an absolute state database path.",
        );
      }
@@ -701,7 +704,7 @@ index db47fb73f15..1e4780754bb 100644
      if (managedStatePath) {
        process[MANAGED_STATE_MARKER] = managedStatePath;
      }
-@@ -422,6 +436,7 @@ export async function runNodeHostLauncher({ entryPath, packageRoot }) {
+@@ -512,6 +526,7 @@ export async function runNodeHostLauncher({ entryPath, packageRoot }) {
    let restartArgs = process.argv.slice(2);
    let childExecArgv = process.execArgv;
    let childEnv = process.env;
@@ -709,21 +712,21 @@ index db47fb73f15..1e4780754bb 100644
    let pending;
    let lastAcceptedRestartAt;
    let releaseActivation;
-@@ -474,8 +489,11 @@ export async function runNodeHostLauncher({ entryPath, packageRoot }) {
-       }
-       const selected = candidate ?? active;
-       const childArguments = selected.runtimeRoot
--        ? [MANAGED_CHILD_ARGUMENT, statePath]
--        : [CHILD_ARGUMENT];
-+        ? [MANAGED_CHILD_ARGUMENT, statePath, PROTOCOL_ARGUMENT]
-+        : [CHILD_ARGUMENT, PROTOCOL_ARGUMENT];
+@@ -572,7 +587,12 @@ export async function runNodeHostLauncher({ entryPath, packageRoot }) {
+         selected.manifest.openclaw?.nodeLauncherTransport === "byte-pipe-v1";
+       const childArgument = pipeTransport ? PIPE_CHILD_ARGUMENT : CHILD_ARGUMENT;
+       const managedArgument = pipeTransport ? MANAGED_PIPE_CHILD_ARGUMENT : MANAGED_CHILD_ARGUMENT;
+-      const childArguments = selected.runtimeRoot ? [managedArgument, statePath] : [childArgument];
++      const childArguments = selected.runtimeRoot
++        ? [managedArgument, statePath, PROTOCOL_ARGUMENT]
++        : [childArgument, PROTOCOL_ARGUMENT];
 +      if (acceptedAccessEnv) {
 +        childArguments.push(ACCEPTED_RESTART_ARGUMENT);
 +      }
        let ready = false;
        let candidateFailed = false;
        let bootstrap;
-@@ -487,8 +505,23 @@ export async function runNodeHostLauncher({ entryPath, packageRoot }) {
+@@ -584,8 +604,23 @@ export async function runNodeHostLauncher({ entryPath, packageRoot }) {
            execArgv: childExecArgv,
            args: [...childArguments, ...restartArgs],
          });
@@ -745,10 +748,10 @@ index db47fb73f15..1e4780754bb 100644
          child = spawn(childInvocation.command, childInvocation.args, {
 -          env: childEnv,
 +          env: restartEnv,
-           stdio: ["inherit", "inherit", "inherit", "ipc"],
+           stdio: ["inherit", "inherit", "inherit", pipeTransport ? "pipe" : "ipc"],
          });
-         if (candidate) {
-@@ -533,9 +566,30 @@ export async function runNodeHostLauncher({ entryPath, packageRoot }) {
+         const messages = pipeTransport ? new LauncherMessageChannel(child.stdio[3]) : child;
+@@ -633,9 +668,30 @@ export async function runNodeHostLauncher({ entryPath, packageRoot }) {
                message.argv.every((arg) => typeof arg === "string") &&
                message.argv[0] === "node" &&
                message.argv[1] === "run" &&
@@ -766,9 +769,9 @@ index db47fb73f15..1e4780754bb 100644
              ) {
                restartArgs = [...invocation.rootArgs, ...message.argv];
 +              acceptedAccessEnv = { ...message.accessEnv };
-+              child.send({ type: "openclaw.node.restart-args-result", ok: true }, () => {});
++              messages.send({ type: "openclaw.node.restart-args-result", ok: true }, () => {});
 +            } else {
-+              child.send(
++              messages.send(
 +                {
 +                  type: "openclaw.node.restart-args-result",
 +                  ok: false,
@@ -9015,19 +9018,19 @@ index 00000000000..5dfae0d289f
 +  };
 +}
 diff --git a/src/node-host/launcher-client.ts b/src/node-host/launcher-client.ts
-index 8d99f2f7a48..b09d9f4a41d 100644
+index 9abbd2f6130..628be45fd4a 100644
 --- a/src/node-host/launcher-client.ts
 +++ b/src/node-host/launcher-client.ts
-@@ -1,6 +1,7 @@
- // Node runtime messages to the process that owns executable selection and restart.
+@@ -4,6 +4,7 @@ import type { EventEmitter } from "node:events";
+ const CHANNEL_MARKER = Symbol.for("openclaw.node-host.launcher-channel");
  const CHILD_MARKER = Symbol.for("openclaw.node-host.launcher-child");
  const MANAGED_STATE_MARKER = Symbol.for("openclaw.node-host.managed-state-path");
 +const ACCEPTED_RESTART_MARKER = Symbol.for("openclaw.node-host.accepted-restart");
  
- /** A companion retains stdin's write end; EOF also retires the node after an app crash. */
- export function watchNodeHostParentStdin(onClose: () => void): () => void {
-@@ -32,6 +33,10 @@ export function isNodeHostLauncherChild(): boolean {
-   return Reflect.get(process, CHILD_MARKER) === true && process.connected;
+ type LauncherChannel = EventEmitter & {
+   connected: boolean;
+@@ -50,6 +51,10 @@ export function isNodeHostLauncherChild(): boolean {
+   );
  }
  
 +export function hasNodeHostLauncherRestartContext(): boolean {
@@ -9037,7 +9040,7 @@ index 8d99f2f7a48..b09d9f4a41d 100644
  export function getManagedNodeHostStatePath(): string | undefined {
    if (!isNodeHostLauncherChild()) {
      return undefined;
-@@ -56,9 +61,15 @@ export async function notifyNodeHostLauncherReady(version: string): Promise<void
+@@ -75,9 +80,15 @@ export async function notifyNodeHostLauncherReady(version: string): Promise<void
    }
  }
  
@@ -14140,7 +14143,7 @@ index 17fb4cebbf1..39d7be29ae4 100644
    isAvailable?: (context: OpenClawPluginNodeHostCommandAvailabilityContext) => boolean;
    /** Watch availability; node shutdown awaits the returned cleanup callback. */
 diff --git a/test/node-host-launcher.test.ts b/test/node-host-launcher.test.ts
-index 4440038cd00..f9040373f97 100644
+index 3f07c893d28..d86f3e7f421 100644
 --- a/test/node-host-launcher.test.ts
 +++ b/test/node-host-launcher.test.ts
 @@ -1,5 +1,5 @@
@@ -14159,7 +14162,7 @@ index 4440038cd00..f9040373f97 100644
  let bootstrapSource: string;
  let launcherClientSource: string;
  
-@@ -80,6 +80,7 @@ async function writePackage(root: string, version: string, body: string, schema
+@@ -83,6 +83,7 @@ async function writePackage(root: string, version: string, body: string, schema
  import fs from 'node:fs';
  import {
    getManagedNodeHostStatePath,
@@ -14167,7 +14170,7 @@ index 4440038cd00..f9040373f97 100644
    isNodeHostLauncherChild,
    notifyNodeHostLauncherReady,
    requestNodeHostLauncherBootstrap,
-@@ -90,6 +91,13 @@ const version = ${JSON.stringify(version)};
+@@ -93,6 +94,13 @@ const version = ${JSON.stringify(version)};
  const report = (value) => process.stdout.write(JSON.stringify(value) + '\\n');
  const ready = () => notifyNodeHostLauncherReady(version);
  const restart = () => requestNodeHostLauncherRestart({ runtimeRoot: process.env.TEST_RUNTIME_ROOT, version: process.env.TEST_VERSION });
@@ -14181,7 +14184,7 @@ index 4440038cd00..f9040373f97 100644
  async function restartAndExit(failureLabel, successCode = 0, failureCode = 2) {
    try {
      await restart();
-@@ -261,6 +269,9 @@ it.each(["commit", "disconnect"])(
+@@ -264,6 +272,9 @@ it.each(["commit", "disconnect"])(
        const [[code]] = await joined;
        expect(code).toBe(handoff === "commit" ? 0 : 1);
        expect(output).toBe(handoff === "commit" ? '{"entered":true}\n' : "");
@@ -14191,7 +14194,7 @@ index 4440038cd00..f9040373f97 100644
      } finally {
        if (child.exitCode === null && child.signalCode === null) {
          child.kill("SIGKILL");
-@@ -340,15 +351,18 @@ describe("managed node launcher", () => {
+@@ -377,15 +388,18 @@ channel.ref();
    it("runs the stored node service command through a live launcher parent", async () => {
      const f = await fixture(`
  await ready();
@@ -14211,7 +14214,7 @@ index 4440038cd00..f9040373f97 100644
        runtime: "node",
        runtimePath: process.execPath,
      });
-@@ -364,24 +378,87 @@ process.exit(0);
+@@ -401,24 +415,87 @@ process.exit(0);
      expect(child).toMatchObject({
        parentPid: service.child.pid,
        launcherChild: true,
@@ -14308,7 +14311,7 @@ index 4440038cd00..f9040373f97 100644
  ${requestUpdate}
  `);
        const candidate = await f.release(`
-@@ -389,17 +466,22 @@ if (!process.env.TEST_CANDIDATE_BOOTSTRAPPED) {
+@@ -426,17 +503,22 @@ if (!process.env.TEST_CANDIDATE_BOOTSTRAPPED) {
    await requestNodeHostLauncherBootstrap({ execArgv: [...process.execArgv, '--disable-warning=ExperimentalWarning'], env: {...process.env, TEST_CANDIDATE_BOOTSTRAPPED:'1'} });
    process.exit(0);
  }
@@ -14339,9 +14342,9 @@ index 4440038cd00..f9040373f97 100644
 +report({ argv: process.argv.slice(2), first, second: readSelector(), cwd: process.cwd(), state, disconnectedState: getManagedNodeHostStatePath() ?? null, execArgv: process.execArgv });
 +process.exit(0);
  `);
-       const result = await completed(
-         f.update(candidate, {}, [...command, "one-use-code", "--profile", "work", "--no-color"]),
-@@ -407,18 +489,167 @@ setTimeout(async () => {
+       // An installed runtime can still use the legacy Node IPC channel.
+       const manifestPath = path.join(candidate.packageRoot, "package.json");
+@@ -449,18 +531,174 @@ setTimeout(async () => {
        const lines = jsonLines(result.stdout);
        expect(lines[0]).toMatchObject({ ok: true });
        expect(lines[1]).toMatchObject({
@@ -14411,7 +14414,14 @@ index 4440038cd00..f9040373f97 100644
 +}
 +await ready();
 +const accepted = restartContext();
-+process.disconnect();
++// A byte-pipe child has no Node IPC channel; close the launcher stream it was given instead.
++const channel = process[Symbol.for('openclaw.node-host.launcher-channel')];
++if (channel) {
++  channel.connected = false;
++  channel.stream.destroy();
++} else {
++  process.disconnect();
++}
 +report({stage: 'bootstrapped', ...accepted, accessEnvironment: accessEnvironment(), disconnected: hasNodeHostLauncherRestartContext()});
 +process.exit(0);
 +`);
@@ -14511,7 +14521,7 @@ index 4440038cd00..f9040373f97 100644
    it("keeps an authenticated candidate serving when its selector cannot be persisted", async () => {
      const f = await fixture();
      const previous = await f.release(
-@@ -502,7 +733,7 @@ if (process.env.TEST_SELECT_ONLY || version === process.env.TEST_VERSION) {
+@@ -544,7 +782,7 @@ if (process.env.TEST_SELECT_ONLY || version === process.env.TEST_VERSION) {
  
    it("keeps the previous managed runtime serving after a failed candidate", async () => {
      const reportRuntime =
@@ -14520,7 +14530,7 @@ index 4440038cd00..f9040373f97 100644
      const body = `
  ${reportRuntime}
  ${restartingRuntime("await ready(); await restartAndExit('old-runtime-serving', 3, 0);")}
-@@ -520,6 +751,7 @@ ${restartingRuntime("await ready(); await restartAndExit('old-runtime-serving',
+@@ -562,6 +800,7 @@ ${restartingRuntime("await ready(); await restartAndExit('old-runtime-serving',
          version,
          state: f.state,
          argv: ["node", "run"],
@@ -14529,10 +14539,10 @@ index 4440038cd00..f9040373f97 100644
      );
      await expectSelection(f.current, previous.prefix);
 diff --git a/test/vitest/vitest.database-worker-core-paths.mjs b/test/vitest/vitest.database-worker-core-paths.mjs
-index b6a09a7abd0..96a40579502 100644
+index b94cf5f7127..de1efbc2f7b 100644
 --- a/test/vitest/vitest.database-worker-core-paths.mjs
 +++ b/test/vitest/vitest.database-worker-core-paths.mjs
-@@ -954,6 +954,7 @@ export const databaseWorkerCoreTestFiles = [
+@@ -960,6 +960,7 @@ export const databaseWorkerCoreTestFiles = [
    "src/cli/plugins-update-command.authority.integration.test.ts",
    "src/cli/plugins-update-command.generation.integration.test.ts",
    "src/cli/plugins-update-command.migrations.integration.test.ts",
