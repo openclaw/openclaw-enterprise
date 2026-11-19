@@ -465,9 +465,49 @@ test("static deployment refuses ambiguous or incompatible providers without redi
       reason,
     );
   }
+  // First deployment can create transport Secrets outside the revision transaction.
+  // Change the registration during the real Kubernetes status read, after planning.
+  const { placement } = f;
+  const provision = t.mock.fn(placement.provisionAgentRuntimeCredentials.bind(placement));
+  const binding = { namespace: f.namespace, agent: f.agent };
+  const transportConfigured = async () =>
+    (await placement.getAgentRuntimeCredentialStatus(binding)).transportConfigured;
+  const stored = f.countStoredSecrets();
+  let changeProvider = true;
+  Object.assign(compute, {
+    requiresAgentRuntimeCredentials: true,
+    async getAgentRuntimeCredentialStatus(input) {
+      const status = await placement.getAgentRuntimeCredentialStatus(input);
+      if (changeProvider) {
+        providers[0] = replacedAfterPlanning;
+      }
+      return status;
+    },
+    provisionAgentRuntimeCredentials: provision,
+  } satisfies Partial<ComputeDriver>);
+  providers.splice(0, providers.length, original);
+  assert.equal(await transportConfigured(), false);
+  const refused = await deploy();
+  const revisions = await controller.transact((unit) =>
+    unit.revisions.listRevisionMetadata(f.namespace.id, f.agent.id),
+  );
+  assert.deepEqual(
+    {
+      status: refused.status,
+      revisions: revisions.length,
+      provisions: provision.mock.callCount(),
+      newSecrets: f.countStoredSecrets() - stored,
+      transport: await transportConfigured(),
+    },
+    { status: 409, revisions: 0, provisions: 0, newSecrets: 0, transport: false },
+  );
+  assert.equal(f.countSecretReads(), reads);
+  changeProvider = false;
   providers.splice(0, providers.length, alternate, original);
   const healthy = await deploy();
   assert.equal(healthy.status, 202);
+  assert.equal(provision.mock.callCount(), 1);
+  assert.equal(await transportConfigured(), true);
   const revision = await controller.transact((unit) =>
     unit.revisions.findRevision(f.namespace.id, f.agent.id, healthy.data.id),
   );

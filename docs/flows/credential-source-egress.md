@@ -71,11 +71,12 @@ return 409 on mismatch; refused adoption preserves the Gateway copy.
 `admitStaticEgressSource` rechecks both declarations before reading and injecting material.
 
 OCC checks source and Secret grants; adoption requires consent. Version 3 binds
-Sandbox and Proxy to one Driver. `admitProxyPlan` derives routes from saved Harness
-settings and consent; empty routes deny all. Plans retain execution, digest, grant
-and source generation. `checkEgressUseIn` rechecks delivery and send authorization;
-static deployment and exchange require one exact provider with matching type and
-lifecycle. `createCredentialProxy` rechecks ownership after metadata lookup, before Secret reads.
+Sandbox and Proxy to one Driver. `admitProxyPlan` derives routes from Harness
+settings and consent; empty routes deny all. Plans pin execution, digest, grant
+and source generation. Deployment rechecks the unique compatible provider before
+provisioning transport credentials and saving the revision. `checkEgressUseIn`
+rechecks send and delivery; `createCredentialProxy` rechecks ownership between
+metadata and material reads.
 `apps/controller/src/console/agents/detail.mts:requestedHarnessOverrides` captures
 submitted settings for OCC normalization and grant checks.
 

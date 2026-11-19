@@ -13692,6 +13692,7 @@ export class OpenClawController {
             });
           }
           // The Driver creates only missing owned Secrets; a failed admission can reuse them.
+          proxyAdmission?.assertProvidersCurrent();
           const provisioned = this.runtimeCredentialStatus(
             await this.runtimeCredentialOperation(() =>
               compute.provisionAgentRuntimeCredentials!(binding, {}),

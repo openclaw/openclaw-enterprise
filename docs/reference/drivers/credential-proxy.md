@@ -102,7 +102,9 @@ tokens. Keep material out of logs, receipts and public status. A material read
 permits receipt or installation only; it does not authorize an upstream send.
 Static deployment and exchange require one provider registration whose ID and
 generation match the admitted reference, whose type matches the source, and whose
-lifecycle supports static credentials. Exchange pins the Proxy owner and source
+lifecycle supports static credentials. Deployment checks again before invoking
+runtime credential provisioning and before calling the revision store. A later
+refusal cannot undo provisioning already started. Exchange pins the Proxy owner and source
 control before Secret metadata lookup, then rechecks them, the Backend, sender,
 resolver and provider before reading material. Another registration of the same
 source type cannot replace the admitted registration.
