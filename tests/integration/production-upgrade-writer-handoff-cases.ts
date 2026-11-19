@@ -3,6 +3,7 @@ import { constants, existsSync, symlinkSync } from "node:fs";
 import {
   chmod,
   cp,
+  lstat,
   mkdir,
   open,
   readFile,
@@ -81,6 +82,53 @@ function doctorTargets(contents: string) {
       assert.ok(target, "expected a Doctor target record");
       return target;
     });
+}
+
+async function assertUnsafeWorkerStopReceipt(
+  receipt: string,
+  originalReceipt: Buffer,
+  unsafeReceipt: 0o644 | Buffer,
+  assertRefused: () => Promise<void>,
+) {
+  const access = typeof unsafeReceipt === "number" ? constants.O_RDONLY : constants.O_RDWR;
+  const file = await open(receipt, access | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const opened = await file.stat({ bigint: true });
+    assert.ok(opened.isFile(), "expected a regular worker stop receipt");
+
+    // Change and restore the opened file even if the refusal replaces the pathname.
+    if (typeof unsafeReceipt === "number") {
+      try {
+        await file.chmod(unsafeReceipt);
+        await assertRefused();
+        assert.equal((await file.stat({ bigint: true })).mode & 0o777n, BigInt(unsafeReceipt));
+        assert.deepEqual(await file.readFile(), originalReceipt);
+      } finally {
+        await file.chmod(0o600);
+      }
+    } else {
+      try {
+        const changed = await file.write(unsafeReceipt, 0, unsafeReceipt.length, 0);
+        assert.equal(changed.bytesWritten, unsafeReceipt.length);
+        await file.truncate(unsafeReceipt.length);
+        await assertRefused();
+        assert.deepEqual(await file.readFile(), unsafeReceipt);
+      } finally {
+        const restored = await file.write(originalReceipt, 0, originalReceipt.length, 0);
+        assert.equal(restored.bytesWritten, originalReceipt.length);
+        await file.truncate(originalReceipt.length);
+      }
+    }
+
+    const entry = await lstat(receipt, { bigint: true });
+    assert.deepEqual(
+      [entry.dev, entry.ino],
+      [opened.dev, opened.ino],
+      "worker stop receipt was replaced",
+    );
+  } finally {
+    await file.close();
+  }
 }
 
 export function registerWriterHandoffCases({
@@ -218,28 +266,22 @@ export function registerWriterHandoffCases({
     } finally {
       await rename(savedReceipt, receipt);
     }
-    await chmod(receipt, 0o644);
-    try {
-      await assertManagedApplyRefused();
-      assert.equal((await stat(receipt)).mode & 0o777, 0o644);
-      assert.deepEqual(await readFile(receipt), originalReceipt);
-    } finally {
-      await chmod(receipt, 0o600);
-    }
+    await assertUnsafeWorkerStopReceipt(receipt, originalReceipt, 0o644, assertManagedApplyRefused);
 
     // Keep the handoff and live writers unchanged, but bind the private receipt to another UID.
     const confirmedStop = asRecord(JSON.parse(originalReceipt.toString("utf8")));
     assert.ok(confirmedStop);
     assert.equal(typeof confirmedStop.uid, "string");
-    const mismatchedReceipt = JSON.stringify({ ...confirmedStop, uid: "different-worker-uid" });
+    const mismatchedReceipt = Buffer.from(
+      JSON.stringify({ ...confirmedStop, uid: "different-worker-uid" }),
+    );
     assert.notEqual(confirmedStop.uid, "different-worker-uid");
-    await writeFile(receipt, mismatchedReceipt);
-    try {
-      await assertManagedApplyRefused();
-      assert.equal(await readFile(receipt, "utf8"), mismatchedReceipt);
-    } finally {
-      await writeFile(receipt, originalReceipt);
-    }
+    await assertUnsafeWorkerStopReceipt(
+      receipt,
+      originalReceipt,
+      mismatchedReceipt,
+      assertManagedApplyRefused,
+    );
 
     // A replacement with the same labels and replica count does not own this handoff.
     const stateFile = join(f.directory, "state.json");
@@ -332,38 +374,34 @@ export function registerWriterHandoffCases({
       await rename(savedHandoff, handoff);
     }
 
-    for (const unsafeReceipt of ["missing", "public permissions"] as const) {
-      if (unsafeReceipt === "missing") {
-        await rename(receipt, savedReceipt);
-      } else {
-        await chmod(receipt, 0o644);
-      }
-      try {
-        const failure = await expectUpgradeFailure(
-          f.run(...resume),
-          "the recorded handoff must refuse a worker stop receipt with " + unsafeReceipt,
-        );
-        assert.equal(failure.code, 1);
-        assert.match(failure.stderr, fencedGuidance);
-        assert.doesNotMatch(failure.stderr, /\b(?:restore|restart)\b/i);
-        const held = await f.state();
-        assert.deepEqual(
-          [held.api, held.worker, held.version, held.helmSubmissions, held.dispatches],
-          [0, 0, rejected.version, 1, 0],
-        );
-        assert.deepEqual(held.deploymentIdentities, rejected.deploymentIdentities);
-        assert.deepEqual(await retryEffects(), beforeRetry);
-        assert.deepEqual(await readFile(helmIntent), originalHelmIntent);
-        assert.deepEqual(await readFile(handoff), originalHandoff);
-        assert.equal(existsSync(receipt), unsafeReceipt !== "missing");
-      } finally {
-        if (unsafeReceipt === "missing") {
-          await rename(savedReceipt, receipt);
-        } else {
-          await chmod(receipt, 0o600);
-        }
-      }
+    const assertHelmRetryRefused = async (unsafeReceipt: "missing" | "public permissions") => {
+      const failure = await expectUpgradeFailure(
+        f.run(...resume),
+        "the recorded handoff must refuse a worker stop receipt with " + unsafeReceipt,
+      );
+      assert.equal(failure.code, 1);
+      assert.match(failure.stderr, fencedGuidance);
+      assert.doesNotMatch(failure.stderr, /\b(?:restore|restart)\b/i);
+      const held = await f.state();
+      assert.deepEqual(
+        [held.api, held.worker, held.version, held.helmSubmissions, held.dispatches],
+        [0, 0, rejected.version, 1, 0],
+      );
+      assert.deepEqual(held.deploymentIdentities, rejected.deploymentIdentities);
+      assert.deepEqual(await retryEffects(), beforeRetry);
+      assert.deepEqual(await readFile(helmIntent), originalHelmIntent);
+      assert.deepEqual(await readFile(handoff), originalHandoff);
+      assert.equal(existsSync(receipt), unsafeReceipt !== "missing");
+    };
+    await rename(receipt, savedReceipt);
+    try {
+      await assertHelmRetryRefused("missing");
+    } finally {
+      await rename(savedReceipt, receipt);
     }
+    await assertUnsafeWorkerStopReceipt(receipt, originalReceipt, 0o644, () =>
+      assertHelmRetryRefused("public permissions"),
+    );
 
     // The original evidence allows completion without stopping either writer again.
     await f.run(...resume);
