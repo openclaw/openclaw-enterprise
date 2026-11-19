@@ -20,8 +20,8 @@ their own scope. Never run `npm run precommit`.
 
 | Changed contract                         | Starting proof and owner                                                                                                                                         |
 | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Domain or Driver behavior                | `node --test tests/conformance/<name>.test.mjs`; broaden to `pnpm test:conformance` when relevant.                                                               |
-| API or controller behavior               | `node --test tests/integration/<name>.test.mjs`; broaden to `pnpm test:integration`. See [local checks](../../../docs/testing/local.md).                         |
+| Domain or Driver behavior                | `node --test tests/conformance/<name>.test.ts` (existing `.test.mjs`); broaden to `pnpm test:conformance` when relevant.                                         |
+| API or controller behavior               | `node --test tests/integration/<name>.test.ts` (existing `.test.mjs`); broaden to `pnpm test:integration`. See [local checks](../../../docs/testing/local.md).   |
 | PostgreSQL persistence                   | `pnpm test:postgres` after the [database prerequisites](../../../docs/testing/postgresql.md); use the actual database for persisted invariants.                  |
 | Docker runtime                           | `pnpm docker:test` with explicit selectors, images, and credentials from [Docker testing](../../../docs/testing/docker.md).                                      |
 | Kubernetes                               | Select the exact fixture or runtime file from [Kubernetes testing](../../../docs/testing/kubernetes.md), with its disposable cluster and database prerequisites. |
