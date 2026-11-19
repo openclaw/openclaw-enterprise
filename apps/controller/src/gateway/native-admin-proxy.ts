@@ -333,15 +333,12 @@ function routeProxyReplyCandidate(response: http.IncomingMessage): boolean {
   );
 }
 
-function endHttp(reply: FastifyReply, statusCode: number): void {
+// Upstream response headers OCC refuses to relay (an unsafe redirect).
+function rejectUpstreamHeaders(reply: FastifyReply): void {
   if (reply.raw.writableEnded || reply.raw.destroyed) {
     return;
   }
-  if (reply.raw.headersSent) {
-    reply.raw.destroy();
-    return;
-  }
-  reply.raw.writeHead(statusCode, {
+  reply.raw.writeHead(502, {
     "cache-control": "no-store",
     "content-type": "text/plain; charset=utf-8",
   });
@@ -410,7 +407,7 @@ export async function proxyNativeAdminHttp(options: {
       }
       relay();
       if (headers === undefined) {
-        endHttp(options.reply, 502);
+        rejectUpstreamHeaders(options.reply);
         upstreamResponse.destroy();
         abort();
         return;
@@ -429,11 +426,14 @@ export async function proxyNativeAdminHttp(options: {
   );
 
   const abort = () => upstreamRequest.destroy();
-  // Before relaying: no answer from the Gateway at all. After: cut the started response.
+  // Before relaying: no answer from the Gateway at all. After: every relay has written its
+  // headers, so cut the started response.
   const fail = () => {
     abort();
     if (relaying) {
-      endHttp(options.reply, 503);
+      if (!options.reply.raw.writableEnded) {
+        options.reply.raw.destroy();
+      }
     } else {
       settle("gateway_unavailable");
     }

@@ -124,9 +124,10 @@ async function startNativeHttpsUpstream(t, { captureWire = false } = {}) {
   const parserErrors = [];
   /** @type {Set<import("node:tls").TLSSocket>} */
   const sockets = new Set();
-  // While set, every request gets the route proxy's own reply for a Gateway that refuses
-  // connections (a held or restarting container).
-  const routeProxy = { unreachable: false };
+  // While set, every request gets this short 503 text/plain answer, like the route proxy's own
+  // reply for a Gateway that refuses connections (a held or restarting container).
+  /** @type {{ text: string | undefined }} */
+  const routeProxy = { text: undefined };
   /**
    * @param {import("node:http").ServerResponse} response
    * @param {string} name
@@ -199,9 +200,8 @@ async function startNativeHttpsUpstream(t, { captureWire = false } = {}) {
       headers: { ...request.headers },
       body: Buffer.concat(chunks).toString("utf8"),
     });
-    if (routeProxy.unreachable) {
-      const text =
-        "upstream connect error or disconnect/reset before headers. reset reason: remote connection failure, transport failure reason: delayed connect error: Connection refused";
+    if (routeProxy.text !== undefined) {
+      const text = routeProxy.text;
       response.writeHead(503, { "content-type": "text/plain", "content-length": text.length });
       response.end(text);
       return;
@@ -855,7 +855,8 @@ test("an unreachable Gateway or a deployment answers an authorized probe 503, a 
 
   // The Gateway refuses connections, so the route's proxy answers instead of it: OCE's own answer
   // replaces that text, a page for a page load.
-  context.upstream.routeProxy.unreachable = true;
+  context.upstream.routeProxy.text =
+    "upstream connect error or disconnect/reset before headers. reset reason: remote connection failure, transport failure reason: delayed connect error: Connection refused";
   for (const headers of [{}, { accept: "application/json" }]) {
     const unreachable = await probe(context.session.cookie, "/healthz", headers);
     assert.equal(unreachable.statusCode, 503, unreachable.body);
@@ -874,7 +875,14 @@ test("an unreachable Gateway or a deployment answers an authorized probe 503, a 
   assert.ok(notResponding.body.includes(link), notResponding.body);
   assert.deepEqual(await outsiders(), available, "an unreachable Gateway is invisible to them");
   assert.equal(context.upstream.requests.length, 4, "only authorized requests reached the route");
-  context.upstream.routeProxy.unreachable = false;
+  // Any other short 503 text/plain answer is the Gateway's own and passes through as it is.
+  context.upstream.routeProxy.text = "other";
+  const other = await probe(context.session.cookie, "/healthz");
+  assert.equal(other.statusCode, 503);
+  assert.equal(other.body, "other");
+  assert.equal(other.headers["content-type"], "text/plain");
+  assert.equal(other.headers["content-length"], "5");
+  context.upstream.routeProxy.text = undefined;
 
   const replacement = await context.fixture.deployAgent(context.namespace.id, context.agent.id);
   await context.fixture.controller.transact((state) =>
@@ -922,7 +930,7 @@ test("an unreachable Gateway or a deployment answers an authorized probe 503, a 
   assert.ok(page.body.includes(link), page.body);
   assert.equal(page.body.includes(context.agent.id), false);
   assert.deepEqual(await outsiders(), available, "a stop is invisible to outsiders");
-  assert.equal(context.upstream.requests.length, 4, "only authorized running probes reached it");
+  assert.equal(context.upstream.requests.length, 5, "only authorized running probes reached it");
 });
 
 test("native browser disabled status still requires exact Agent authority", async (t) => {
