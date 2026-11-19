@@ -1621,6 +1621,10 @@ export {
   UpdateTokenServiceSourceBody,
   TokenServiceSourceMetadata,
 } from "./api/token-service-sources.ts";
+export {
+  PushAgentCredentialsBody,
+  PushAgentCredentialsResponse,
+} from "./api/agent-credential-push.ts";
 export * from "./api/resources.ts";
 export * from "./api/routes.ts";
 
