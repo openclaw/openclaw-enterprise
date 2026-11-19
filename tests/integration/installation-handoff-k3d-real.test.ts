@@ -656,7 +656,10 @@ test(
         `--key=${clientLeaf.keyPath}`,
       );
     }
-    protectedValues.push(clientLeaf.cert, Buffer.from(clientLeaf.cert).toString("base64"));
+    const clientLeafBase64 = Buffer.from(clientLeaf.cert).toString("base64");
+    const clientKeyBase64 = Buffer.from(clientLeaf.key).toString("base64");
+    protectedValues.push(clientLeaf.cert, clientLeafBase64, clientLeaf.key, clientKeyBase64);
+    const selectedMappingKey = "mapped-companion-fixture-key";
     const unrelatedSecretKey = "unrelated-fixture-key";
     const unrelatedSecretValue = Buffer.from(randomUUID()).toString("base64");
     await kubectl(
@@ -667,7 +670,9 @@ test(
       clientSecret,
       "--type=merge",
       "-p",
-      JSON.stringify({ data: { [unrelatedSecretKey]: unrelatedSecretValue } }),
+      JSON.stringify({
+        data: { [unrelatedSecretKey]: unrelatedSecretValue, [selectedMappingKey]: "" },
+      }),
     );
     protectedValues.push(unrelatedSecretKey, unrelatedSecretValue);
     const clientLabels = { app: clientName };
@@ -688,7 +693,10 @@ test(
     const publicItem = { key: "tls.crt", path: "admin.pem" };
     const clientVolume = {
       name: "client",
-      secret: { secretName: clientSecret, items: [publicItem] },
+      secret: {
+        secretName: clientSecret,
+        items: [publicItem, { key: selectedMappingKey, path: "mounted-companion.txt" }],
+      },
     };
     const clientCertificate = {
       workload: { kind: "Deployment", namespace, name: clientName },
@@ -784,12 +792,19 @@ if (args.includes("get") && args.includes("deployments.apps") && args.includes($
 if (readsSecret) {
   observation = {
     secret: true,
+    exit: result.status,
     changedWorkload,
     unrelatedSecretData: [${JSON.stringify(unrelatedSecretKey)}, ${JSON.stringify(unrelatedSecretValue)}]
       .some((value) => result.stdout?.includes(value)),
     namedWorkload: args.includes(${JSON.stringify(`deployments.apps/${clientName}`)}),
     projectionSize: Buffer.byteLength(args.find((argument) => argument.startsWith("go-template=")) ?? ""),
     rawTemplateError: result.stdout?.includes("raw data was:"),
+    privateKey: [${JSON.stringify(clientLeaf.key)}, ${JSON.stringify(clientKeyBase64)}]
+      .some((value) => result.stdout?.includes(value) || args.some((arg) => arg.includes(value))),
+    selectedMapping: result.stdout?.includes(${JSON.stringify(selectedMappingKey)}) ||
+      args.some((arg) => arg.includes(${JSON.stringify(selectedMappingKey)})),
+    publicLeaf: result.stdout?.includes(${JSON.stringify(clientLeafBase64)}),
+    publicLeafInArgs: args.some((arg) => arg.includes(${JSON.stringify(clientLeafBase64)})),
   };
 }
 appendFileSync(${JSON.stringify(commandLog)}, JSON.stringify(observation) + "\n");
@@ -804,6 +819,22 @@ process.exitCode = result.status ?? 1;
       PATH: `${dir}:${process.env.PATH}`,
       OCC_FIXTURE_ORIGINAL_PATH: process.env.PATH,
     };
+    const readObservations = async () =>
+      (await readFile(commandLog, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+    function assertSecretPrivacy(observation: Record<string, unknown>) {
+      for (const field of [
+        "unrelatedSecretData",
+        "rawTemplateError",
+        "privateKey",
+        "selectedMapping",
+        "publicLeafInArgs",
+      ]) {
+        assert.equal(observation[field], false, field);
+      }
+    }
     await writeFile(commandLog, "");
     const misspelledSelection = { ...config, clientCertifcate: clientCertificate };
     const misspelledClient = await invokeDiagnostic(
@@ -827,11 +858,10 @@ process.exitCode = result.status ?? 1;
     );
     assert.equal(changedCheck?.status, "unknown");
     assert.match(changedCheck?.summary ?? "", /could not bind the selected Secret/u);
-    const changedOutput = (await readFile(commandLog, "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
-    assert.ok(changedOutput.some(({ changedWorkload }) => changedWorkload === true));
+    const changedProjection = (await readObservations()).find(({ secret }) => secret);
+    assert.equal(changedProjection?.changedWorkload, true);
+    assertSecretPrivacy(changedProjection);
+    assert.equal(changedProjection.publicLeaf, false);
     await writeFile(commandLog, "");
 
     const clientCheck = async (plan: Plan = clientPlan) =>
@@ -861,16 +891,13 @@ process.exitCode = result.status ?? 1;
       "the selected certificate Deployment has zero replicas",
     );
     assert.equal(rollout?.resource, `${namespace}/${clientName}@${workloadIdentity.uid}`);
-    const observations = (await readFile(commandLog, "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
+    const observations = await readObservations();
     const secretOutput = observations.filter(({ secret }) => secret);
     assert.equal(secretOutput.length, 1);
     const [secretProjection] = secretOutput;
-    assert.equal(secretProjection.unrelatedSecretData, false);
+    assertSecretPrivacy(secretProjection);
     assert.equal(secretProjection.namedWorkload, true);
-    assert.equal(secretProjection.rawTemplateError, false);
+    assert.equal(secretProjection.publicLeaf, true);
     assert.ok(secretProjection.projectionSize > 0 && secretProjection.projectionSize < 12_000);
     const workloadOutput = observations.filter(({ workload }) => workload);
     assert.deepEqual(workloadOutput, [
@@ -1098,14 +1125,23 @@ process.exitCode = result.status ?? 1;
       "--role=client-workload-reader",
       `--serviceaccount=${namespace}:reader`,
     );
-    const deniedClient = await diagnose(
+    await writeFile(commandLog, "");
+    const deniedClient = await invokeDiagnostic(
       { ...clientPlan, kubeconfig: deniedConfig, context: "reader" },
       [token, ...protectedValues],
+      projectionEnv,
     );
-    const deniedSecret = deniedClient.checks.get("client-certificate");
+    const deniedSecret = (JSON.parse(deniedClient.stdout).checks as Check[]).find(
+      ({ id }) => id === "client-certificate",
+    );
     assert.equal(deniedSecret?.status, "unknown");
     assert.match(deniedSecret?.summary ?? "", /named resource could not be read.*get access/u);
     assert.deepEqual(deniedSecret?.resources, [workloadIdentity]);
+    const deniedProjection = (await readObservations()).find(({ secret }) => secret);
+    assert.equal(deniedProjection?.namedWorkload, true);
+    assert.notEqual(deniedProjection.exit, 0);
+    assertSecretPrivacy(deniedProjection);
+    assert.equal(deniedProjection.publicLeaf, false);
 
     const workerMounts = "/spec/template/spec/containers/0/volumeMounts";
     async function patchWorkerMounts(operations: object[]) {

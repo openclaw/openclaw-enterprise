@@ -1094,14 +1094,27 @@ function boundTlsSecretProjection(
                     (eq (printf "%T" $item.key) "string") $item.key) -}}
       {{- $valid = false -}}
     {{- else if $dataIsMap -}}
-      {{- $valueType := printf "%T" (index $data $item.key) -}}
-      {{- if eq $valueType "<nil>" -}}
+      {{- if not (exists $data $item.key) -}}
         {{- $requiredKeysPresent = false -}}
-      {{- else if ne $valueType "string" -}}
+      {{- else if ne (printf "%T" (index $data $item.key)) "string" -}}
         {{- $valid = false -}}
       {{- end -}}
     {{- else -}}
       {{- $requiredKeysPresent = false -}}
+    {{- end -}}
+  {{- end -}}
+  {{/* exists treats null as absent. Check explicit null only after a required lookup missed. */}}
+  {{- if and $valid $dataIsMap (not $requiredKeysPresent) -}}
+    {{- range $key, $value := $data -}}
+      {{- if eq (printf "%T" $value) "<nil>" -}}
+        {{- range $item := $mapping.items -}}
+          {{- if eq $key $item.key -}}
+            {{- $valid = false -}}
+            {{- break -}}
+          {{- end -}}
+        {{- end -}}
+      {{- end -}}
+      {{- if not $valid -}}{{- break -}}{{- end -}}
     {{- end -}}
   {{- end -}}
 {{- end -}}

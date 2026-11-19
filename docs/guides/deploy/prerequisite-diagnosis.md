@@ -117,9 +117,9 @@ its identity and public `tls.crt`. For required mappings, the command checks
 that each key exists and the workload resource version has not changed.
 The report records the resource UIDs and resource versions. A missing workload
 on the first read or a missing Secret for a matching workload fails the check.
-If the workload changes during the check or a read fails, the check reports
-`unknown`. Verify that the resource exists and the selected identity has named
-`get` access.
+A failed read yields `unknown`. For required mappings, a workload change
+between reads also yields `unknown`. Verify that the resource exists and the
+selected identity has named `get` access.
 The check validates the public leaf's dates and reads its extended key usage
 for TLS client authentication. An absent or unreadable extension yields
 `unknown` because the check cannot establish client suitability. Confirm
