@@ -4,7 +4,7 @@ import {
 } from "../../../gateway/workspace-node-observation.ts";
 import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/contracts";
 import type { OpenShellCredentialAttachments } from "../../sandbox/openshell-credential-attachments.ts";
-import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
+import { networkPolicySpecToJson, resolverEgress } from "../../kubernetes/network-policy.ts";
 import {
   KubernetesRequestTimeout,
   unreachableSocketCause,
@@ -1956,6 +1956,26 @@ function providerHarnessUrl(
     throw new ConfigurationFailure(
       "SandboxDriver Harness native hook credential directory must be outside the workspace.",
     );
+  }
+  if (endpoint.tlsPeerCertificate !== undefined) {
+    const pem = endpoint.tlsPeerCertificate;
+    try {
+      if (
+        url.protocol !== "wss:" ||
+        typeof pem !== "string" ||
+        pem.length > 16384 ||
+        !/^-----BEGIN CERTIFICATE-----[\r\n]+[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----$/u.test(
+          pem.trim(),
+        ) ||
+        !new X509Certificate(pem).checkHost(url.hostname, { subject: "never" })
+      ) {
+        throw new Error();
+      }
+    } catch {
+      throw new ConfigurationFailure(
+        "SandboxDriver TLS peer certificate must identify the WSS endpoint.",
+      );
+    }
   }
   if (endpoint.tls !== undefined) {
     if (
@@ -7617,18 +7637,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
             return incomplete();
           }
         }
-        if (!(await this.providerHarnessReady(revision, namespace, requirements.labels))) {
-          return incomplete();
-        }
-        if (heldForRepositoryGitMaterial) {
-          // Preparation of a v6 recipient, not a serving Harness or a released workload.
-          return {
-            ...result,
-            ready: false,
-            heldForRepositoryGitMaterial: true,
-            pendingReason: "REPOSITORY_GIT_ROUTE_PENDING",
-          };
-        }
         // The provider-owned Harness's own view of its startup, read through the
         // provider with the Agent transport token. `failed` carries a held startup
         // failure (a failed model probe), validated like a Compute-owned status port.
@@ -7692,6 +7700,24 @@ export class KubernetesComputeDriver implements ComputeDriver {
           }
           return { ...result, runtimeFailure };
         };
+        if (!(await this.providerHarnessReady(revision, namespace, requirements.labels))) {
+          if (sandboxDriver.implementation === "strands-box" && sandboxDriver.harnessStatus) {
+            const failure = heldProviderHarnessFailure(await observeProviderHarness());
+            if (failure) {
+              return failure;
+            }
+          }
+          return incomplete();
+        }
+        if (heldForRepositoryGitMaterial) {
+          // Preparation of a v6 recipient, not a serving Harness or a released workload.
+          return {
+            ...result,
+            ready: false,
+            heldForRepositoryGitMaterial: true,
+            pendingReason: "REPOSITORY_GIT_ROUTE_PENDING",
+          };
+        }
         if (!(await this.workspaceNodeReady(revision, namespace))) {
           if (nativeRuntime !== undefined && !nodeEnrolled) {
             // Only a connection attributes the Agent's device to this revision.
@@ -13325,22 +13351,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         podSelector: ordinaryNetworkPolicySelector(),
         policyTypes: ["Egress"],
         egress: [
-          {
-            to: [
-              this.peer(
-                namespace.plane === "execution"
-                  ? (this.options.executionCluster?.network.dns ?? network.dns)
-                  : network.dns,
-              ),
-            ],
-            ports: [
-              { protocol: "UDP", port: 53 },
-              { protocol: "TCP", port: 53 },
-              // Allow port 5353 for compatibility with OpenShift DNS.
-              { protocol: "UDP", port: 5353 },
-              { protocol: "TCP", port: 5353 },
-            ],
-          },
+          resolverEgress(
+            namespace.plane === "execution"
+              ? (this.options.executionCluster?.network.dns ?? network.dns)
+              : network.dns,
+          ),
         ],
       }),
       policy("allow-gateway-ingress", {
@@ -15063,6 +15078,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       providerOwned,
       protected: this.hasProtectedCodexAdmission(revision),
       ...(prefix === PROXY_CODEX_LAUNCH && { explicitProxy: true }),
+      ...(sandbox?.implementation === "strands-box" && { strandsBox: true }),
       ...(prefix === OPENSHELL_CODEX_LAUNCH && {
         openShellProgram:
           revision.executionAdmission.mode === "unprotected" &&
@@ -17048,6 +17064,19 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       pluginRuntime?.runtime.kind === "codex" && !embedded
         ? pluginRuntime.runtime.publicGithubRead
         : undefined;
+    if (
+      role === "gateway" &&
+      dedicated &&
+      (providerEndpoint?.tlsPeerCertificate !== undefined ||
+        this.sandboxDriver?.implementation === "strands-box")
+    ) {
+      // The bootstrap Gateway can enroll its file node before an execution is
+      // admitted. Its mandatory certificate setting refuses every native dial.
+      variables.push({
+        name: "OPENCLAW_HARNESS_TLS_PEER_CERTIFICATE",
+        value: providerEndpoint?.tlsPeerCertificate ?? "pending-execution-admission",
+      });
+    }
     if (providerEndpoint?.tls !== undefined) {
       if (role !== "gateway" || !dedicated || configuration === undefined) {
         throw new ConfigurationFailure(
@@ -17171,6 +17200,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           ...(role === "gateway" && { id: install.id }),
           ...(selection.enabled && { releaseSha256: install.releaseSha256 }),
           ...(binding?.toolNames.length && { toolNames: binding.toolNames }),
+          ...(role === "gateway" &&
+            binding?.approvalToolNames.length && { approvalToolNames: binding.approvalToolNames }),
         });
       }
       if (packages.length > 0) {
@@ -17193,11 +17224,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const providerPreparesCodexPlugins =
       dedicated &&
       pluginRuntime?.runtime.kind === "codex" &&
-      (role === "agent"
-        ? harnessAuth?.environment.some(({ name }) => name === APP_TOKEN_SHA) === true
-        : // The initial Gateway must issue node setup before the provider has an
-          // endpoint. OpenShell already selects verifier delivery in prepareRevision.
-          this.sandboxDriver?.implementation === "openshell");
+      // Strands projects the transport verifier into its contained Codex launcher.
+      // Both verifier-based providers install the selected plugins over stdio
+      // before serving. Their initial Gateway can issue the node setup immediately.
+      (this.sandboxDriver?.implementation === "strands-box" ||
+        (role === "agent"
+          ? harnessAuth?.environment.some(({ name }) => name === APP_TOKEN_SHA) === true
+          : this.sandboxDriver?.implementation === "openshell"));
     if (providerPreparesCodexPlugins && role === "gateway") {
       variables.push({ name: "OPENCLAW_CODEX_PLUGINS_PREPARED", value: "true" });
     }
