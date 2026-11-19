@@ -304,19 +304,17 @@ Sandboxes or continued model execution.
 ### 7. Retain installation custody
 
 `packages/occ/src/state/credential-deliveries.ts:CredentialDeliveries` requires
-recipient confirmation and the reserving worker for snapshots, including bootstrap.
+recipient confirmation and worker custody for snapshots, including bootstrap.
 
 `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:reconcile`
-rechecks durable ownership after Gateway authentication and repository-policy material
-selection. `releasePreview` rechecks ownership after Compute signs the launcher release.
-Both check local withdrawal, expiry and supervisor lease at repository-policy dispatch.
-The worker cancels unsent reservations it still holds. Uncertain writes stay blocked.
-`release` drops closed routes on Sandbox deletion.
+checks durable ownership after Gateway authentication and material selection.
+`releasePreview` checks ownership after Compute signs. Repository-policy dispatch
+checks local withdrawal, expiry and supervisor lease. Owners cancel unsent
+reservations. Uncertain writes stay blocked. Sandbox deletion drops closed routes.
 
-`prepare` requires a held launch or explicit installation preview and
-closes routes from other workers before credential access.
-`openshell-repository-git-evidence.ts:openShellGitRecipientEvidence` checks sessions
-before transport starts. Historical v4 and installation-wide v5 cannot issue or renew.
+`prepare` requires a held launch or explicit preview and closes other workers’
+routes before credential access. `openshell-repository-git-evidence.ts:openShellGitRecipientEvidence`
+checks sessions before transport. Historical v4 and installation-wide v5 cannot issue or renew.
 See [restart behavior](../reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery).
 
 `openshell-git-route-store.ts:confirmDetached` retains deletion custody by verifying
