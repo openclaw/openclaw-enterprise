@@ -902,13 +902,13 @@ index 94a8232..32792c3 100644
      if (recorder) {
 diff --git a/src/infra/openclaw-runtime-audit.test.ts b/src/infra/openclaw-runtime-audit.test.ts
 new file mode 100644
-index 0000000..a468870
+index 0000000..d7fb269
 --- /dev/null
 +++ b/src/infra/openclaw-runtime-audit.test.ts
-@@ -0,0 +1,193 @@
-+import { execFileSync } from "node:child_process";
+@@ -0,0 +1,326 @@
++import { execFileSync, spawn } from "node:child_process";
 +import { once } from "node:events";
-+import { mkdtemp, readFile, rm } from "node:fs/promises";
++import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 +import { createServer } from "node:http";
 +import { createServer as createHttpsServer } from "node:https";
 +import { tmpdir } from "node:os";
@@ -1099,12 +1099,145 @@ index 0000000..a468870
 +    await rm(directory, { recursive: true, force: true });
 +  }
 +});
++
++it("recovers the exact unacknowledged observation after Gateway restart within its revision", async () => {
++  const dir = await mkdtemp(join(tmpdir(), "gateway-audit-restart-"));
++  const tokenPath = join(dir, "token");
++  const received: Array<{ body: string; source: string | string[] | undefined; auth?: string }> =
++    [];
++  const accepted = Promise.withResolvers<void>();
++  let phase: "hold" | "reply" | "outage" = "hold";
++  const server = createServer(async (req, res) => {
++    const chunks: Buffer[] = [];
++    for await (const chunk of req) {
++      chunks.push(Buffer.from(chunk));
++    }
++    received.push({
++      body: Buffer.concat(chunks).toString("utf8"),
++      source: req.headers["x-openclaw-runtime-audit-source"],
++      auth: req.headers.authorization,
++    });
++    if (phase === "hold") {
++      if (received.length >= 2) {
++        accepted.resolve();
++      }
++      return;
++    }
++    res.writeHead(phase === "outage" ? 503 : 204).end();
++  });
++  server.listen(0, "127.0.0.1");
++  await once(server, "listening");
++  const children = new Set<ReturnType<typeof spawn>>();
++  try {
++    const address = server.address();
++    if (!address || typeof address === "string") {
++      throw new Error("Fixture failed to get a loopback address");
++    }
++    const url = `http://127.0.0.1:${address.port}/internal/runtime-audit`;
++    function launch(script = "") {
++      const child = spawn(
++        process.execPath,
++        [
++          "--import",
++          "./scripts/tsx.mjs",
++          "--input-type=module",
++          "-e",
++          `
++          import {
++            initializeOpenClawRuntimeAudit,
++            recordOpenClawRuntimeAudit,
++            recordObservedOpenClawRuntimeAudit,
++          } from "./src/infra/openclaw-runtime-audit.ts";
++          initializeOpenClawRuntimeAudit();
++          const complete = () => recordObservedOpenClawRuntimeAudit({
++            action: "openclaw.runtime.turn.completed", sessionId: "existing", turnId: "finished", outcome: "succeeded",
++          }, "codex");
++          const admit = () => recordOpenClawRuntimeAudit({
++            action: "openclaw.runtime.turn.admitted", sessionId: "existing", turnId: "proposed",
++          }, "codex");
++          ${script}
++        `,
++        ],
++        {
++          env: {
++            PATH: process.env.PATH,
++            HOME: dir,
++            OPENCLAW_STATE_DIR: dir,
++            OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH: tokenPath,
++            OPENCLAW_RUNTIME_AUDIT_URL: url,
++            OPENCLAW_RUNTIME_AUDIT_SOURCE: "codex",
++          },
++          timeout: 10_000,
++          stdio: ["ignore", "ignore", "pipe"],
++        },
++      );
++      children.add(child);
++      let error = "";
++      child.stderr.on("data", (chunk) => {
++        error += chunk;
++      });
++      const exited = once(child, "close").then(([code, signal]) => {
++        children.delete(child);
++        if (code !== 0 && signal !== "SIGKILL") {
++          throw new Error(`Gateway sender failed: ${error}`);
++        }
++        return signal;
++      });
++      return { child, exited };
++    }
++    await writeFile(tokenPath, "first-revision", { mode: 0o600 });
++    const original = launch("await Promise.all([complete(), admit()]);");
++    // The receiver has both bodies, but the producer never sees either HTTP response.
++    await Promise.race([
++      accepted.promise,
++      original.exited.then(() => {
++        throw new Error("Sender exited before receipt");
++      }),
++    ]);
++    original.child.kill("SIGKILL");
++    expect(await original.exited).toBe("SIGKILL");
++    expect(received).toHaveLength(2);
++    const completed = received.find(
++      ({ body }) => JSON.parse(body).action === "openclaw.runtime.turn.completed",
++    );
++    expect(completed).toMatchObject({ auth: "Bearer first-revision", source: "codex" });
++    expect(JSON.parse(completed!.body).eventId).toEqual(expect.any(String));
++
++    phase = "reply";
++    await launch().exited;
++    // Recovery sends only the observation. The interrupted admission has lost its caller.
++    expect(received.slice(2)).toEqual([completed]);
++
++    phase = "outage";
++    await launch("await complete();").exited;
++    const failed = received.slice(3);
++    // The previous acknowledgement cleared the older receipt. All outage retries share the new body.
++    expect(failed).toHaveLength(3);
++    expect(new Set(failed.map(({ body }) => body)).size).toBe(1);
++    expect(JSON.parse(failed[0]!.body).eventId).not.toEqual(JSON.parse(completed!.body).eventId);
++
++    // Simulate a new revision placed over the same files. It must never claim the old observation.
++    await writeFile(tokenPath, "second-revision");
++    phase = "reply";
++    await launch("await complete();").exited;
++    expect(received.slice(6)).toHaveLength(1);
++    expect(received[6]?.auth).toBe("Bearer second-revision");
++    expect(received[6]?.body).not.toEqual(failed[0]?.body);
++  } finally {
++    for (const child of children) {
++      child.kill("SIGKILL");
++    }
++    server.closeAllConnections();
++    server.close();
++    await rm(dir, { recursive: true, force: true });
++  }
++}, 60_000);
 diff --git a/src/infra/openclaw-runtime-audit.ts b/src/infra/openclaw-runtime-audit.ts
 new file mode 100644
-index 0000000..2927f5c
+index 0000000..b23fb4a
 --- /dev/null
 +++ b/src/infra/openclaw-runtime-audit.ts
-@@ -0,0 +1,436 @@
+@@ -0,0 +1,448 @@
 +/** OpenClaw Enterprise runtime audit sender. */
 +import { randomUUID } from "node:crypto";
 +import { readFileSync } from "node:fs";
@@ -1112,6 +1245,10 @@ index 0000000..2927f5c
 +import { Agent, fetch as fetchWithDispatcher } from "undici";
 +import type { WorkerModelObserver } from "../../packages/gateway-protocol/src/schema/worker-model-observation.js";
 +import { AsyncContext } from "../shared/async-context.js";
++import {
++  createManagedAuditSender,
++  RejectedAuditDelivery,
++} from "./openclaw-runtime-audit-delivery.js";
 +
 +export type OpenClawRuntimeAuditOutcome =
 +  | "succeeded"
@@ -1221,7 +1358,12 @@ index 0000000..2927f5c
 +      post = (url, options) => fetchWithDispatcher(url, { ...options, dispatcher });
 +    }
 +    state.source = source;
-+    state.sender = (body, source) => deliverAuditEvent({ url, token }, body, source, post);
++    const destination = { url, token };
++    const deliver = (body: string, observedSource: RuntimeAuditSource) =>
++      deliverAuditEvent(destination, body, observedSource, post);
++    state.sender = tokenPath
++      ? createManagedAuditSender(source, destination, (body) => deliver(body, source))
++      : deliver;
 +    state.initialized = true;
 +  } catch {
 +    // Neither parsing errors nor filesystem errors may disclose bootstrap configuration.
@@ -1242,7 +1384,10 @@ index 0000000..2927f5c
 +): Promise<void> {
 +  // Codex reports the start when it creates a native thread. The Gateway
 +  // reports deletion for either harness and uses the same host session ID.
-+  if (!state.sender || (action === "openclaw.runtime.session.started" && state.source === "codex")) {
++  if (
++    !state.sender ||
++    (action === "openclaw.runtime.session.started" && state.source === "codex")
++  ) {
 +    return;
 +  }
 +  await recordObservedOpenClawRuntimeAudit({ action, sessionId }, state.source);
@@ -1297,7 +1442,7 @@ index 0000000..2927f5c
 +      return;
 +    }
 +    if (response.status !== 408 && response.status !== 429 && response.status < 500) {
-+      break;
++      throw new RejectedAuditDelivery("OpenClaw Enterprise runtime audit did not accept the event");
 +    }
 +  }
 +  throw new Error("OpenClaw Enterprise runtime audit did not accept the event");
@@ -2010,3 +2155,179 @@ index c03d05f..19f06cd 100644
    }
    return persisted;
  }
+diff --git a/src/infra/openclaw-runtime-audit-delivery.ts b/src/infra/openclaw-runtime-audit-delivery.ts
+new file mode 100644
+index 0000000..7020376
+--- /dev/null
++++ b/src/infra/openclaw-runtime-audit-delivery.ts
+@@ -0,0 +1,170 @@
++// Keep observed metadata through a restart of this Pod's Gateway process.
++import { createHash } from "node:crypto";
++import { lstatSync } from "node:fs";
++import { dirname, join } from "node:path";
++import { resolveStateDir } from "../config/state-dir.js";
++import { openNodeSqliteDatabase, resolveExistingSqliteFileUri } from "./node-sqlite.js";
++import { preparePrivateStoreFileSync } from "./private-store-file.js";
++
++const MAX_PENDING = 256;
++const REQUEST_BYTE_LIMIT = 4096;
++const RECOVERY_DELAY_MS = 15_000;
++
++export class RejectedAuditDelivery extends Error {}
++
++function openPendingDatabase() {
++  // The managed Gateway's state root is Pod-local. The "state" subdirectory
++  // is a shared PVC, so keep pending metadata in a separate private child.
++  const file = join(resolveStateDir(), "pending-runtime-audit", "observations.sqlite");
++  const directory = lstatSync(dirname(file), { throwIfNoEntry: false });
++  if (directory && (!directory.isDirectory() || directory.uid !== process.getuid?.())) {
++    throw new Error("Unsafe pending audit directory");
++  }
++  preparePrivateStoreFileSync(file, Boolean(directory));
++  const stat = lstatSync(file);
++  if (
++    !stat.isFile() ||
++    stat.nlink !== 1 ||
++    stat.uid !== process.getuid?.() ||
++    (stat.mode & 0o077) !== 0
++  ) {
++    throw new Error("Unsafe pending audit file");
++  }
++  const db = openNodeSqliteDatabase(resolveExistingSqliteFileUri(file));
++  try {
++    db.exec(`
++      PRAGMA page_size = 4096;
++      PRAGMA max_page_count = 1024;
++      PRAGMA journal_mode = DELETE;
++      PRAGMA synchronous = FULL;
++      CREATE TABLE IF NOT EXISTS pending (
++        scope TEXT NOT NULL,
++        body TEXT NOT NULL PRIMARY KEY CHECK(length(CAST(body AS BLOB)) <= ${REQUEST_BYTE_LIMIT})
++      ) STRICT;
++    `);
++    return db;
++  } catch (error) {
++    db.close();
++    throw error;
++  }
++}
++
++function replayable(body: string, source: string): boolean {
++  const { action } = JSON.parse(body) as { action: string };
++  switch (action) {
++    case "openclaw.runtime.session.started":
++    case "openclaw.runtime.session.ended":
++    case "openclaw.runtime.turn.started":
++    case "openclaw.runtime.turn.completed":
++    case "openclaw.runtime.model_call.completed":
++      return true;
++    case "openclaw.runtime.model_call.started":
++      // OpenClaw waits for this write before dispatch. Codex reports a
++      // transport attempt it has already started.
++      return source === "codex";
++    default:
++      return false;
++  }
++}
++
++export function createManagedAuditSender(
++  source: string,
++  destination: { url: URL; token: string },
++  send: (body: string) => Promise<void>,
++) {
++  const scope = createHash("sha256")
++    .update(JSON.stringify([source, destination.url.href, destination.token]))
++    .digest("hex");
++  const db = openPendingDatabase();
++  db.prepare("DELETE FROM pending WHERE scope <> ?").run(scope);
++  const insert = db.prepare(`
++    INSERT INTO pending(scope, body) SELECT ?, ? WHERE (SELECT count(*) FROM pending) < ${MAX_PENDING}
++  `);
++  const remove = db.prepare("DELETE FROM pending WHERE scope = ? AND body = ?");
++  const pending = new Map<string, Promise<void> | undefined>();
++  for (const { body } of db
++    .prepare("SELECT body FROM pending WHERE scope = ? ORDER BY rowid")
++    .all(scope)) {
++    if (typeof body !== "string" || !replayable(body, source)) {
++      throw new Error("Invalid pending audit observation");
++    }
++    pending.set(body, undefined);
++  }
++
++  let timer: NodeJS.Timeout | undefined;
++  let draining = false;
++  function scheduleRecovery() {
++    if (timer || draining || !pending.size) {
++      return;
++    }
++    timer = setTimeout(() => {
++      timer = undefined;
++      void recover();
++    }, RECOVERY_DELAY_MS);
++    timer.unref();
++  }
++  function discard(body: string) {
++    remove.run(scope, body);
++    pending.delete(body);
++  }
++  function deliver(body: string) {
++    const active = pending.get(body);
++    if (active) {
++      return active;
++    }
++    const request = send(body)
++      .then(() => discard(body))
++      .catch((error: unknown) => {
++        pending.set(body, undefined);
++        if (error instanceof RejectedAuditDelivery) {
++          discard(body);
++        }
++        throw error;
++      })
++      .finally(scheduleRecovery);
++    pending.set(body, request);
++    return request;
++  }
++  async function recover() {
++    draining = true;
++    try {
++      for (const body of pending.keys()) {
++        try {
++          await deliver(body);
++        } catch (error) {
++          if (!(error instanceof RejectedAuditDelivery)) {
++            break;
++          }
++          process.emitWarning("Gateway audit receiver rejected a pending observation", {
++            code: "OPENCLAW_RUNTIME_AUDIT_DELIVERY",
++          });
++        }
++      }
++    } finally {
++      draining = false;
++      scheduleRecovery();
++    }
++  }
++  void recover();
++
++  return async (body: string, observedSource: string) => {
++    if (observedSource !== source || Buffer.byteLength(body) > REQUEST_BYTE_LIMIT) {
++      throw new Error("Invalid managed audit observation");
++    }
++    if (pending.has(body)) {
++      return deliver(body);
++    }
++    if (pending.size >= MAX_PENDING) {
++      throw new Error("Pending audit observation limit reached");
++    }
++    if (!replayable(body, source)) {
++      // Admission belongs to this execution. Only an immediate positive
++      // response may release the waiting turn or model request.
++      return send(body);
++    }
++    if (insert.run(scope, body).changes !== 1) {
++      throw new Error("Pending audit observation limit reached");
++    }
++    return deliver(body);
++  };
++}
