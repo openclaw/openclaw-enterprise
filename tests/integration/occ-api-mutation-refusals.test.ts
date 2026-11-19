@@ -59,8 +59,7 @@ function createInjectedFixture() {
     {
       wrapPlatformState: (state) => state,
       invokeApplication(factory, { backendSummaries, ...options }) {
-        assert.equal(backendSummaries, undefined);
-        return factory(options);
+        return factory(backendSummaries === undefined ? options : { ...options, backendSummaries });
       },
     },
   );
