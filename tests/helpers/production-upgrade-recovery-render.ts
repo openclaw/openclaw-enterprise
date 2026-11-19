@@ -1,3 +1,4 @@
+import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -8,7 +9,7 @@ import {
   type RecoveryState,
 } from "./production-upgrade-recovery-state.ts";
 import { execute, spawnResult, type RecoveryTools } from "./production-upgrade-recovery-tools.ts";
-import { loadYaml, yamlDocuments } from "./qa-utils.mjs";
+import { loadYaml, yamlDocuments } from "./kubernetes-yaml.ts";
 
 // Helm status forwards the complete values document to the upgrade script.
 export async function yamlFile(file: string): Promise<unknown> {
@@ -16,11 +17,7 @@ export async function yamlFile(file: string): Promise<unknown> {
 }
 
 export function renderedDocuments(rendered: string): unknown[] {
-  const documents: unknown = yamlDocuments(rendered);
-  return list(documents, "rendered YAML documents").map((document): unknown => {
-    assert.ok(typeof document === "string", "expected a rendered YAML document");
-    return loadYaml(document);
-  });
+  return yamlDocuments(rendered).map((document) => loadYaml(document));
 }
 
 // `yq -r` prints a missing or null field as "null".
@@ -205,7 +202,7 @@ export async function standInChart(
               {
                 name: "migration",
                 image,
-                args: ["scripts/migrate-production.mjs"],
+                args: [...selectedImageMigrationEntry],
                 ...(initializationResources ? { resources: initializationResources } : {}),
                 securityContext: { capabilities: { drop: ["ALL"] } },
               },

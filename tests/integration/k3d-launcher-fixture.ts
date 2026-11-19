@@ -7,7 +7,7 @@ import type { TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { writeCommand } from "../helpers/fake-commands.ts";
-import * as socketFixture from "../helpers/socket-directory.mjs";
+import * as socketFixture from "../helpers/socket-directory.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const execute = promisify(execFile);
@@ -258,7 +258,7 @@ assert.match(result.stderr, /must be an immutable image@sha256 reference/);
     bin,
     "node",
     `if [ "$1" = -e ]; then exec '${process.execPath}' "$@"; fi
-if printf '%s' "$*" | grep -q 'scripts/ci/prepare.mjs'; then
+if printf '%s' "$*" | grep -q 'scripts/ci/prepare.ts'; then
   printf '%s' "$*" | grep -q -- '--lane ${selectedHarness === "openclaw" ? "openshell" : "gateway-routing"}' || exit 93
   [ -z "$OCC_TEST_KUBERNETES_GATEWAY_IMAGE" ] || exit 92
   [ -z "$OCC_TEST_KUBERNETES_AGENT_IMAGE" ] || exit 92
@@ -284,7 +284,7 @@ if printf '%s' "$*" | grep -q 'scripts/ci/prepare.mjs'; then
   printf '%s\n' '${preparedModel === undefined ? "" : `OCC_TEST_OPENAI_MODEL=${preparedModel}`}' '${preparedBaseUrl === undefined ? "" : `${selectedHarness === "openclaw" ? "OCC_TEST_OPENSHELL_MODEL_BASE_URL" : "OCC_TEST_CODEX_OPENAI_BASE_URL"}=${preparedBaseUrl}`}' >> '${join(state, "env")}'
   exit 0
 fi
-if printf '%s' "$*" | grep -q 'scripts/ci/reset-k3d-model.mjs'; then touch '${resetCalled}'; exit 0; fi
+if printf '%s' "$*" | grep -q 'scripts/ci/reset-k3d-model.ts'; then touch '${resetCalled}'; exit 0; fi
 if [ "$1" = scripts/ci/cleanup.ts ]; then rm -f '${join(state, "state.json")}'; exit 0; fi
 /usr/bin/env -i PATH=/usr/bin:/bin INVOCATION='${invocation}' \
   DOCKER_HOST="\${DOCKER_HOST:-}" OCC_DOCKER_BIN="$OCC_DOCKER_BIN" \
@@ -440,7 +440,7 @@ if [ "$1" = scripts/ci/cleanup.ts ]; then rm -f '${join(state, "state.json")}'; 
     assert.deepEqual(
       preparations,
       (afterReset ? ["--file"] : ["--selected-file", "--file"]).map((selection) => [
-        "scripts/ci/prepare.mjs",
+        "scripts/ci/prepare.ts",
         "--lane",
         "openshell",
         selection,

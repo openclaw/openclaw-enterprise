@@ -69,6 +69,17 @@ const displayNamePattern = /^[^\p{C}\p{Zl}\p{Zp}]{1,40}$/u;
 // An `https:` URL on the default port with a DNS host and no userinfo, query or fragment.
 // Returns the parsed URL, or undefined.
 function endpointURL(value: string): URL | undefined {
+  // WHATWG URL parsing repairs tabs, escapes, empty userinfo, and backslashes in an
+  // authority. Refuse those spellings before selecting a confidential destination.
+  const authority = /^https:\/\/([^/?#]+)(?:\/|$)/i.exec(value)?.[1];
+  const hostname = authority?.replace(/:443$/i, "");
+  if (
+    hostname === undefined ||
+    !/^[A-Za-z0-9.-]+$/.test(hostname) ||
+    !dnsName.test(hostname.toLowerCase())
+  ) {
+    return undefined;
+  }
   let url: URL;
   try {
     url = new URL(value);
@@ -123,9 +134,9 @@ export function oidcLoginConfiguration(
     ["jwks", "OCC_AUTH_OIDC_JWKS_URL"],
   ] as const) {
     const url = endpointURL(values[variable]);
-    if (url === undefined || url.hostname !== issuer.hostname) {
+    if (url === undefined) {
       throw new Error(
-        `${variable} must be an https URL on port 443 on the issuer's host, with no query or fragment.`,
+        `${variable} must be an https URL on port 443 with a DNS host name and no query or fragment.`,
       );
     }
     endpoints[name] = url.href;
@@ -147,7 +158,7 @@ export function oidcLoginConfiguration(
     // The configured string itself: `iss` must match it exactly, trailing slash included.
     issuer: values.OCC_AUTH_OIDC_ISSUER,
     authorizationUrl: endpoints.authorization,
-    // Checked above: HTTPS on 443 on the issuer's DNS host. This is the only place a
+    // Checked above: each selected endpoint is HTTPS on 443 with a DNS host. This is the only place a
     // PinnedEndpoint is constructed.
     tokenUrl: endpoints.token as PinnedEndpoint,
     jwksUrl: endpoints.jwks as PinnedEndpoint,

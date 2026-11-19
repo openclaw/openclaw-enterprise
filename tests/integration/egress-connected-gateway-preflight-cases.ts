@@ -19,13 +19,13 @@ import {
   waitForProtectedAgentActivation,
 } from "../helpers/egress-installed-agent.mjs";
 import { createRunEvidence } from "../helpers/egress-installed-stack.mjs";
-import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.mjs";
+import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 import { writeCommand } from "../helpers/fake-commands.ts";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { createOpenShellKubernetesFixture } from "../helpers/openshell-kubernetes-real.mjs";
 import { isArray } from "../helpers/egress-observation-values.ts";
-import { waitFor } from "../helpers/qa-utils.mjs";
+import { waitFor } from "../helpers/qa-wait.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 type JsonRecord = Record<string, unknown>;
@@ -112,8 +112,11 @@ export function registerConnectedEgressGatewayPreflightCases(): void {
           process.kill(process.pid, "SIGKILL");
           break;
         case "overflow":
+          // execFile closes the pipe before sending SIGKILL. Let the kill end this fixture.
+          process.stdout.once("error", (error) => {
+            if (error.code !== "EPIPE") throw error;
+          });
           process.stdout.write("x".repeat(5 * 1024 * 1024));
-          // Keep the local child alive until execFile reacts to the overflow.
           setInterval(() => {}, 1000);
           break;
         case "deadline":

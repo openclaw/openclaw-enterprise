@@ -525,18 +525,17 @@ test("split dispatcher leaves skipped ticks outside the execution queue", async 
         !admitted && !skippedTick,
         `${eventName}: ${selectedLane}`,
       );
-      if (!admitted && !skippedTick) {
-        const result = spawnSync("/bin/sh", ["-c", text(present(present(reject.steps)[0]).run)], {
-          encoding: "utf8",
-          timeout: 30_000,
-          env: {},
-        });
-        assert.equal(result.error, undefined);
-        assert.equal(result.status, 1, result.stderr);
-        assert.match(result.stdout, /Preflight did not publish a matching supported lane/);
-      }
     }
   }
+  // The rejection step has no event or lane input; run its shipped shell once.
+  const result = spawnSync("/bin/sh", ["-c", text(present(present(reject.steps)[0]).run)], {
+    encoding: "utf8",
+    timeout: 30_000,
+    env: {},
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stdout, /Preflight did not publish a matching supported lane/);
   const manualDocs = {
     github: { ...github, event_name: "workflow_dispatch" },
     inputs: { lane: "docs" },
@@ -653,13 +652,9 @@ test("OpenShell waits for its protected-input warm export before source builds",
   assert.equal(await readFile(output, "utf8"), "node-base-image=protected-base\n");
 });
 
-test("workflow gates scheduled and approved manual attempts before starting lanes", async () => {
-  const workflow = await readWorkflow("full-integration");
-  const triggers = record(workflow.on);
-  assert.equal(triggers.push, undefined);
-  assert.equal(array(triggers.schedule).length, 1);
-  assert.equal(triggers.pull_request, undefined);
-  const execution = await readWorkflow("full-integration-execution");
+type Workflow = ReturnType<typeof parseWorkflow>;
+
+function assertLaneAdmission(workflow: Workflow, execution: Workflow) {
   const jobs = [...Object.entries(workflow.jobs), ...Object.entries(execution.jobs)].filter(
     ([name]) =>
       !["manual-approval", "preflight", "full-aggregate", "reject-selection"].includes(name),
@@ -697,7 +692,7 @@ test("workflow gates scheduled and approved manual attempts before starting lane
       assert.equal(
         workflowCondition(job.if, { github, needs, inputs }),
         event_name !== "schedule" || name !== "logging-collector",
-        `\${name}: first attempt`,
+        `${name}: first attempt`,
       );
       assert.equal(
         workflowCondition(job.if, {
@@ -709,12 +704,12 @@ test("workflow gates scheduled and approved manual attempts before starting lane
           },
         }),
         false,
-        `\${name}: skipped admission`,
+        `${name}: skipped admission`,
       );
       assert.equal(
         workflowCondition(job.if, { github: { ...github, run_attempt: "2" }, needs, inputs }),
         false,
-        `\${name}: use a new approved dispatch to retry`,
+        `${name}: use a new approved dispatch to retry`,
       );
       for (const patch of [
         { ref: "refs/tags/main", ref_type: "tag" },
@@ -737,6 +732,9 @@ test("workflow gates scheduled and approved manual attempts before starting lane
       );
     }
   }
+}
+
+function assertScheduledAdmission(execution: Workflow) {
   const scheduled = {
     repository: mainRun.GITHUB_REPOSITORY,
     ref: mainRun.GITHUB_REF,
@@ -780,6 +778,9 @@ test("workflow gates scheduled and approved manual attempts before starting lane
     }),
     false,
   );
+}
+
+function assertManualAdmission(workflow: Workflow) {
   const manual = present(workflow.jobs["manual-approval"]);
   assert.equal(manual.environment, "integration-main-approval");
   assert.deepEqual(manual.permissions, {});
@@ -842,6 +843,18 @@ test("workflow gates scheduled and approved manual attempts before starting lane
       result === "success",
     );
   }
+}
+
+test("workflow gates scheduled and approved manual attempts before starting lanes", async () => {
+  const workflow = await readWorkflow("full-integration");
+  const triggers = record(workflow.on);
+  assert.equal(triggers.push, undefined);
+  assert.equal(array(triggers.schedule).length, 1);
+  assert.equal(triggers.pull_request, undefined);
+  const execution = await readWorkflow("full-integration-execution");
+  assertLaneAdmission(workflow, execution);
+  assertScheduledAdmission(execution);
+  assertManualAdmission(workflow);
 });
 
 test("manual dev-up workflow prepares the complete lane and aggregates its exact source", async (t) => {
@@ -925,10 +938,10 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   assert.deepEqual(
     qaSelection.cells.map(({ cell, scenarios }) => ({ cell, scenarios })),
     [
-      { cell: "compose/OpenClaw", scenarios: ["model-ui", "console-secrets"] },
-      { cell: "compose/Codex", scenarios: ["console-secrets", "agent-audit"] },
-      { cell: "kubernetes/OpenClaw", scenarios: ["model-ui", "console-secrets"] },
-      { cell: "kubernetes/Codex", scenarios: ["console-secrets"] },
+      { cell: "compose/OpenClaw", scenarios: ["http-chat", "model-ui", "console-secrets"] },
+      { cell: "compose/Codex", scenarios: ["http-chat", "console-secrets", "agent-audit"] },
+      { cell: "kubernetes/OpenClaw", scenarios: ["http-chat", "model-ui", "console-secrets"] },
+      { cell: "kubernetes/Codex", scenarios: ["http-chat", "console-secrets"] },
     ],
   );
   assert.equal(qaSelection.exclusions.length, 2);

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 
-import { waitFor } from "./wait-for.mjs";
+import { waitFor } from "./wait-for.ts";
 
 import {
   AgentProvisioningStatusResponse,

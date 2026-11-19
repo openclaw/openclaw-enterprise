@@ -13,7 +13,7 @@ import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/comput
 import {
   cleanEnvironment,
   temporaryDirectory,
-} from "../fixtures/repository-credentials/process.mjs";
+} from "../fixtures/repository-credentials/process.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 test("stdio retains only fixed native install classifications after draining stderr", async (t) => {

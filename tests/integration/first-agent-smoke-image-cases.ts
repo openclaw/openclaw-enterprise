@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import { postgresImage, runtimeNodeBaseImage } from "../../scripts/ci/fixture-support-images.mjs";
+import { postgresImage, runtimeNodeBaseImage } from "../../scripts/ci/fixture-support-images.ts";
 import {
   bakeReferences,
   providerImageDockerfile,

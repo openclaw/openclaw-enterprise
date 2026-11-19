@@ -15,12 +15,12 @@ import {
 import {
   seedSessionRevision,
   sessionAttempt,
-} from "../conformance/repository-sessions.contract.mjs";
-import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+} from "../conformance/repository-sessions.contract.ts";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
 import { startServiceProcessFixture } from "../fixtures/repository-credentials/service-process.ts";
-import { controlRequest } from "../fixtures/repository-credentials/service.mjs";
+import { controlRequest } from "../fixtures/repository-credentials/service-fixture.ts";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 type AttemptInput = Parameters<RepositorySessionRepository["createAttempt"]>[0];
 

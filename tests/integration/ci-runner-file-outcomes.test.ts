@@ -13,6 +13,7 @@ import {
   runnerEnv,
   runRunnerAsync,
   runRunnerSync,
+  writeCleanupFixture,
   writeRunnerManifest,
   writeSingleFileRunnerLane,
 } from "../helpers/ci-runner-fixture.ts";
@@ -56,26 +57,13 @@ function onlyFile(summary: RunSummary) {
   return file;
 }
 
-async function writeCleanupFixture(root: string) {
-  await writeFile(
-    join(root, "scripts/ci/prepare.mjs"),
-    [
-      'import { appendFile } from "node:fs/promises";',
-      "export async function prepareFile({ file, statePath }) {",
-      '  return { cleanup: async () => appendFile(statePath, file.path + "\\n") };',
-      "}",
-      "",
-    ].join("\n"),
-  );
-}
-
 async function checkUpstreamInstallationPhases(root: string) {
   const file = "tests/integration/openshell-upstream-real.test.ts";
   const title = "OpenShell model and tool upstream outages fail closed";
   const repositoryUrl = new URL("../../", import.meta.url);
   const sibling = "tests/integration/local-first-agent-openshell-real.test.mjs";
   const installationModule = new URL("tests/helpers/openshell-installation.ts", repositoryUrl).href;
-  const stageModule = new URL("tests/helpers/openshell-stage.mjs", repositoryUrl).href;
+  const stageModule = new URL("tests/helpers/openshell-stage.ts", repositoryUrl).href;
   const privateValue = "/fixture/installation-phase-value";
   const failure = "synthetic gateway Helm failure";
   const child = `import assert from "node:assert/strict";

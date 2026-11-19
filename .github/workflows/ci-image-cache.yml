@@ -29,17 +29,26 @@ on:
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
       - scripts/*.mjs
+      - scripts/migrate-production.ts
       - scripts/auth-maintain.ts
       - scripts/build-repository-credentials.ts
       - scripts/build-runtime-assets.ts
       - scripts/ci/download-pinned.sh
-      - scripts/ci/prepare.mjs
+      - scripts/ci/prepare.ts
+      - scripts/ci/prepare-inputs.ts
+      - scripts/ci/warm-image-cache.ts
+      - scripts/ci/prepare-command.ts
+      - scripts/ci/image-build-cache.ts
+      - scripts/ci/fixture-support-images.ts
+      - scripts/ci/k3d-preparation.ts
+      - scripts/ci/k3d-image-admission.ts
       - scripts/ci/test-suites.ts
       - scripts/ci/openshell-full-integration.ts
       - scripts/ci/resource-names.ts
       - scripts/ci/test-suites/images-packaging.json
       - scripts/lib/**
       - scripts/migration-catalog.ts
+      - scripts/migration-history-preflight.ts
       - scripts/production-healthcheck.ts
       - tsconfig.base.json
       - tsconfig.json
@@ -103,7 +112,7 @@ jobs:
         env:
           CACHE_NODE_BASE_IMAGE: ${{ inputs.node-base-image }}
         run: |
-          node --input-type=module -e 'import { assertNodeBaseImage } from "./scripts/ci/prepare.mjs"; assertNodeBaseImage(process.env.CACHE_NODE_BASE_IMAGE);'
+          node scripts/ci/warm-image-cache.ts --validate-node-base-image "$CACHE_NODE_BASE_IMAGE"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Expose image cache credentials
         id: image-cache
@@ -140,7 +149,7 @@ jobs:
           if [[ "$REQUIRE_CACHE_EXPORT" == "true" ]]; then
             args+=(--require-cache-export --node-base-image "$CACHE_NODE_BASE_IMAGE")
           fi
-          node scripts/ci/prepare.mjs --warm-image-cache --state "$RUNNER_TEMP/state/image-cache-warm.json" "${args[@]}"
+          node scripts/ci/warm-image-cache.ts --state "$RUNNER_TEMP/state/image-cache-warm.json" "${args[@]}"
           echo "source-sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
       - name: Cleanup
         if: always()

@@ -29,8 +29,8 @@ or publication gates.
 | Push to `main`, when `QA_ADVISORY_ON_PUSH=true`    | QA matrix, OIDC Agent chat and all OpenShell jobs; no local installation job |
 
 Maintainers label reviewed same-repository PRs. Dependabot authors and triggers
-are ineligible. Narrow labels select their union. `full-qa` overrides them and
-runs `console-secrets` in both Codex cells and `agent-audit` in the Compose cell.
+are ineligible. Narrow labels select their union. `full-qa` runs `console-secrets` for Codex,
+`agent-audit` in Compose, and `http-chat` for both presets and placements.
 The focused Compose job checks
 native redeployment and required-worker execution on Kubernetes workloads.
 
@@ -77,6 +77,8 @@ for Codex.
 
 [QA matrix](../../../tests/integration/qa-matrix-real.test.mjs) and
 [scenario selection](../../../tests/helpers/qa-selection.mjs) own these checks.
+
+See [HTTP chat verification](../agent-http-chat.md).
 
 ### Scenario details
 
@@ -183,11 +185,13 @@ Local instructions run the **QA matrix only**. For other suites, follow
 `OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
 `OCC_TEST_QA_SCENARIOS` accepts `all` (default) or comma-separated selectors.
-`all` excludes `namespace-lifecycle`, `sandbox-policy`, `scratch-volume`, `plugin-install`,
+`all` excludes `native-restart`, `namespace-lifecycle`, `sandbox-policy`, `scratch-volume`, `plugin-install`,
 `openshell-linear-read`, `openshell-git-model`, `codex-search-config`, `harness-overrides` and
 `oidc-agent-chat` selectors.
-Invalid or wholly inapplicable selections fail before provisioning; missing
+Invalid selections fail before provisioning; missing
 inputs fail selected checks. Omitting `OCC_TEST_QA_MATRIX=1` skips the suite.
+
+For `native-restart`, see [recovery qualification](../harness-restart-recovery.md).
 
 Select `agent-audit` with `compose` and `Codex`. It uses the standard Codex
 deployment fixture and development audit settings. It requires the usual Codex

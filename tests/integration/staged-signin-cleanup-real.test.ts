@@ -15,7 +15,7 @@ import {
   runFixtureCommand,
   type FixtureRun,
 } from "../helpers/production-rehearsal-custody.ts";
-import { availablePort } from "../helpers/available-port.mjs";
+import { availablePort } from "../helpers/available-port.ts";
 
 const execute = promisify(execFile);
 type Owned = {
@@ -288,7 +288,7 @@ async function fixture(
     [
       "--input-type=module",
       "-e",
-      'import { prepareStagingSigninCluster } from "./scripts/ci/prepare.mjs"; console.log(JSON.stringify(await prepareStagingSigninCluster(process.argv[1])));',
+      'import { prepareStagingSigninCluster } from "./scripts/ci/prepare.ts"; console.log(JSON.stringify(await prepareStagingSigninCluster(process.argv[1])));',
       statePath,
     ],
     { cwd: root, timeout: 4 * 60_000 },

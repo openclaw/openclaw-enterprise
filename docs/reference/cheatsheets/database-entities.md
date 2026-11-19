@@ -57,6 +57,9 @@ Stores Agent drafts, their desired runtime state, and the selected version refer
 - `harness_auth_credential_source_id`
 - `credential_sources` (every bound credential source)
 - `active_revision_id`
+- `predecessor_replacement` (nullable JSONB with the predecessor and candidate
+  revision IDs and the `pre-stop` or `stopping` phase). See the
+  [common stop boundary](../agents/planned-replacement.md#common-stop-boundary).
 - `desired_runtime_state`
 - `sandbox_policy_editing`
 - `status`
@@ -140,6 +143,16 @@ Stores Secret metadata and backend references; Secret values are kept by the sel
 - `backend_uid`
 - `created_at`
 
+### `authentication_states`
+
+Stores OCC's transient [browser OAuth connection attempts](../../flows/connection-templates.md#3-authorize-the-account-in-the-browser) and [device login](../../flows/credential-source-refresh.md#device-authorization-and-configuration). The `kind` determines the required fields and lifecycle. Human sign-in attempts use `human_authentication_attempts` instead.
+
+- Common: `kind`, `id`, `namespace_id`, `actor_id`, `expires_at`, `binding` (immutable workflow data)
+- `oauth_connection`: `credential_source_id`, `connection_template_id`, `connection_template_version`, `created_at`; `binding` holds browser, PKCE, selected scope, redirect, and issuer data
+- `device_authorization`: `phase`, `next_poll_at`, `encrypted_challenge`, `private_state`, `version`; `binding` holds Agent, source, Driver, and polling-interval data
+
+OCC deletes an OAuth row when the matching browser callback consumes it. Device polling checks `version` before committing; cancellation and expiry clear the encrypted challenge and provider handle.
+
 ### `connection_templates`
 
 Stores the scope and current version of each OAuth connection template.
@@ -183,24 +196,6 @@ Records the Namespace, consenting principal, approved template version and revoc
 - `created_at`
 - `revocation_requested_by`
 - `revoked_at`
-
-### `connection_sessions`
-
-Stores the private, single-use OAuth attempt for the initiating principal and browser session.
-
-- `state_hash`
-- `namespace_id`
-- `credential_source_id`
-- `pkce_verifier`
-- `selected_scopes`
-- `issuer_required`
-- `session_id`
-- `redirect_uri`
-- `actor_id`
-- `connection_template_id`
-- `connection_template_version`
-- `created_at`
-- `expires_at`
 
 ### `connection_token_custody`
 

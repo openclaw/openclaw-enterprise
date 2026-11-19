@@ -17,15 +17,15 @@ import { randomUUID, X509Certificate } from "node:crypto";
 import test from "node:test";
 import { createServer } from "node:http";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
 import { fileURLToPath } from "node:url";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import type { NativeIAMState } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { signedLeaf } from "../helpers/certificates.mjs";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { signedLeaf } from "../helpers/certificates.ts";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 const accessToken = "at-plugin-discovery-private-fixture";

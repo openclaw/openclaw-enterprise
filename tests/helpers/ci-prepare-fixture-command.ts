@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { defaultK3sImage, lanesWithoutK3sAddons } from "../../scripts/ci/prepare.mjs";
+import { defaultK3sImage, lanesWithoutK3sAddons } from "../../scripts/ci/prepare.ts";
 import { startFakePostgres } from "./fake-postgres-server.ts";
 import {
   commandShim as fixtureCommandShim,
@@ -12,7 +12,7 @@ import {
 
 // The external commands preparation runs (docker, podman, k3d, kubectl, helm, yq,
 // corepack), faked for ci-prepare*.test.mjs through fixture-command-server.ts: each is
-// a bash script answered by the test's command server. scripts/ci/prepare.mjs and
+// a bash script answered by the test's command server. scripts/ci/prepare.ts and
 // cleanup.ts still start every command as a real process and own its timeouts, signals
 // and pipes; only the scenario logic below runs in the test process. A command sends
 // the environment variables below. The fixture directory the scenarios write to is the
@@ -445,13 +445,13 @@ async function fakeCommand({
       const role = args.includes("--target") ? "controller" : "runtime";
       const metadata = resolve(cwd, argument(args.indexOf("--metadata-file") + 1));
       if (scenario === "engine-bad-metadata") {
-        // Unparsable for the controller, no image digest for the runtime.
+        // The runtime field is an array whose string representation looks like a valid digest.
         writeFileSync(
           metadata,
           role === "controller"
             ? "{"
             : JSON.stringify({
-                "containerimage.config.digest": "sha256:not-a-digest",
+                "containerimage.config.digest": [heldImages.runtime],
               }),
         );
         return finish();
@@ -577,6 +577,10 @@ async function fakeCommand({
         state.runtime,
         "localhost/openclaw-ci-main/runtime:bbbbbbbbbbbb",
       ]);
+      if (scenario === "warm-runtime-tag-failed") {
+        stderr("Error response from daemon: synthetic runtime retention failure\n");
+        return exit(1);
+      }
       return finish();
     }
     if (equals(args.slice(0, 3), ["build", "--pull=false", "-t"]) && args.length === 5) {

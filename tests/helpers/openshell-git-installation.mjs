@@ -18,10 +18,10 @@ import {
   selectOpenShellGitWithdrawalDenials,
 } from "../../scripts/ci/openshell-git-retention.mjs";
 import { extractImageFile } from "../../scripts/lib/image-file.ts";
-import { createTlsMaterial, run } from "../fixtures/repository-credentials/process.mjs";
+import { createTlsMaterial, run } from "../fixtures/repository-credentials/process.ts";
 import { startSkipperPrivateGitOrigin } from "../fixtures/skipper-private-git-origin.mjs";
-import { availablePort } from "./available-port.mjs";
-import { listen } from "./listen.mjs";
+import { availablePort } from "./available-port.ts";
+import { listen } from "./listen.ts";
 import { localFirstAgentStack, ownFirstAgentWork } from "./local-first-agent-stack.mjs";
 import { localOpenShellGatewayOptions } from "./local-openshell-gateway.mjs";
 import { stopProcess } from "./stop-process.mjs";
@@ -393,7 +393,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     "--namespace",
     platform,
   ];
-  const serviceKeyFile = join(stack.directory, "initial-admin-service-key.json");
+  const serviceKeyFile = state.keyPath;
   const admin = JSON.parse(await readFile(serviceKeyFile, "utf8"));
   const request = createOpenShellGitApi({
     origin: stack.environment.OCC_URL,
@@ -401,6 +401,11 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     signal: t.signal,
     after: (operation) => cleanup.push(operation),
   });
+  // Locally prepared bootstrap JSON contains only data.key. Confirm access
+  // and obtain Installation metadata from the installed API, not the key file.
+  const installed = await request("GET", "/installation");
+  assert.equal(typeof installed.id, "string");
+  assert.ok(installed.id);
   const namespaces = await request("GET", "/namespaces");
   const defaults = namespaces.filter(({ name }) => name === "default");
   assert.equal(defaults.length, 1);
@@ -631,9 +636,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
   if (allowStandingApprovals) {
     // The production helper verifies that the authenticated API and Helm target
     // belong to the same Installation before reading the fleet inventory.
-    const { id } = await request("GET", "/installation");
-    assert.equal(typeof id, "string");
-    installationSecret.metadata.annotations = { "openclaw.dev/installation-id": id };
+    installationSecret.metadata.annotations = { "openclaw.dev/installation-id": installed.id };
   }
   await apply([installationSecret]);
   const values = JSON.parse(await readFile(join(stack.directory, "helm-values.json"), "utf8"));

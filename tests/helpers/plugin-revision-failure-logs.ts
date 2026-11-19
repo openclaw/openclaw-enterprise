@@ -1,7 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { RuntimeLogContainerSourceId, RuntimeLogRecord } from "@openclaw-enterprise/contracts";
 import type { AgentSelection } from "./plugin-gateway-session-evidence.ts";
-import { redactedQaTail, registerQaSecret } from "./qa-secrets.mjs";
+import { redactedQaTail, registerQaSecret } from "./qa-secrets.ts";
 
 type RevisionLogTarget = {
   namespaceId: AgentSelection["namespaceId"];

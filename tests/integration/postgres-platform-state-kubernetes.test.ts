@@ -20,7 +20,7 @@ import type {
   NamespaceResponse,
 } from "../../packages/contracts/src/index.ts";
 import type { ControllerWork } from "../../packages/occ/src/index.ts";
-import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
+import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.ts";
 import {
   adminEmail,
   admitted,
@@ -43,7 +43,7 @@ import {
 } from "../helpers/postgres-platform-state.ts";
 import { jsonLines } from "../helpers/json-lines.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
-import { servedAs } from "../helpers/agent-identity.mjs";
+import { servedAs } from "../helpers/agent-identity.ts";
 
 type WorkerEvent = Parameters<NonNullable<ControllerWorkerOptions["emit"]>>[0];
 type NamespaceCompletion = WorkerEvent & {

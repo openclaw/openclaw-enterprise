@@ -21,7 +21,7 @@ import {
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withStateLock } from "./state-lock.ts";
-import { runPostgresAdmin } from "./postgres-admin.ts";
+import { quoteIdentifier, runPostgresAdmin } from "./postgres-admin.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const composePostgresFile = join(repositoryRoot, "compose.postgres.yaml");
@@ -77,7 +77,7 @@ function errorMessage(error: unknown): unknown {
   return isRecord(error) ? error.message : undefined;
 }
 
-function isSupervisorResult(value: unknown): value is SupervisorResult {
+export function isSupervisorResult(value: unknown): value is SupervisorResult {
   return (
     isRecord(value) &&
     (value.code === null || typeof value.code === "number") &&
@@ -421,13 +421,6 @@ function composeArgs(resource: CleanupResource, state: CleanupState, ...args: st
   return ["compose", "-f", resource.composeFile, "-p", resource.name, ...args];
 }
 
-function quoteIdentifier(value: string) {
-  if (!/^[a-z0-9_]+$/.test(value)) {
-    throw new Error(`Unsafe PostgreSQL identifier: ${value}`);
-  }
-  return `"${value.replaceAll('"', '""')}"`;
-}
-
 async function cleanupComposePostgres(
   resource: CleanupResource,
   state: CleanupState,
@@ -537,7 +530,7 @@ async function cleanupK3dCluster(
 }
 
 // The fixture lanes bind <directory>/storage into every node as local-path's storage
-// (prepare.mjs). local-path creates each claim's volume directory as root and removes it with a
+// (prepare.ts). local-path creates each claim's volume directory as root and removes it with a
 // helper Pod only after the claim is deleted, so volumes of namespaces that tests deleted without
 // waiting leave directories the runner user cannot remove. The cluster is gone by now, so nothing
 // writes there again: empty the storage as root from the cluster's own node image, which is

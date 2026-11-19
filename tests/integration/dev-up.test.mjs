@@ -1,21 +1,17 @@
 import { requireConfiguration } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { once } from "node:events";
 import { createRequire } from "node:module";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { composeConfiguration } from "../helpers/compose.mjs";
-import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.ts";
+import { composeConfiguration } from "../helpers/compose.ts";
+import { startDevUpInstallationServer } from "../helpers/dev-up-installation.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 import {
   createFixture,
   matchingInstallationId,
-  mismatchedInstallationId,
   prepareLifecycleCommands,
   readJsonLines,
   runCommand,
@@ -23,6 +19,11 @@ import {
   runDevUp,
   serviceKey,
 } from "../helpers/dev-up.mjs";
+import { registerKubernetesRecoveryCases } from "./dev-up-kubernetes-recovery-cases.ts";
+import {
+  registerFreshShellCustodyCases,
+  registerStackRollbackCases,
+} from "./dev-up-stack-custody-cases.ts";
 
 // dev-up's Kubernetes Compute lifecycle: authenticated startup, cleanup, rollback and the real
 // Go launcher's recovery. The Compose startup and preflight suites cover the Compose stack.
@@ -31,85 +32,60 @@ const { loadYaml } = createRequire(new URL("../../apps/controller/package.json",
   "@kubernetes/client-node",
 );
 
+/** @typedef {NonNullable<Parameters<typeof prepareLifecycleCommands>[1]>} LifecycleScenario */
+
 // Serve the existing Installation HTTP contract in a child process so the real
 // synchronous CLI can authenticate without blocking the test runner's event loop.
-async function installationServer(t, fixture, scenario = "success") {
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {Awaited<ReturnType<typeof createFixture>>} fixture
+ * @param {LifecycleScenario} scenario
+ */
+async function installationServer(t, fixture, scenario) {
   const requestLog = join(fixture.directory, "http-requests.jsonl");
   const tlsDirectoryFile = join(fixture.directory, "browser-tls-directory");
-  fixture.writeBrowserTlsDirectory = () =>
-    writeFile(
+  const writeBrowserTlsDirectory = () => {
+    const directory = fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
+    if (directory !== undefined) {
+      return writeFile(tlsDirectoryFile, directory);
+    }
+    const temporary = fixture.env.TMPDIR;
+    assert.ok(temporary !== undefined, "The launcher fixture must select a temporary directory");
+    return writeFile(tlsDirectoryFile, join(temporary, "openclaw-development"));
+  };
+  await writeBrowserTlsDirectory();
+  const ports = await startDevUpInstallationServer(
+    t,
+    {
+      requestLog,
       tlsDirectoryFile,
-      fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY ??
-        join(fixture.env.TMPDIR, "openclaw-development"),
-    );
-  await fixture.writeBrowserTlsDirectory();
-  const child = spawn(
-    process.execPath,
-    [
-      "--input-type=module",
-      "-e",
-      `
-import http from "node:http";
-import https from "node:https";
-import tls from "node:tls";
-import path from "node:path";
-import fs from "node:fs";
-const handler = (request, response) => {
-  const authorized = request.headers["x-api-key"] === ${JSON.stringify(serviceKey)};
-  fs.appendFileSync(${JSON.stringify(requestLog)}, JSON.stringify({ method: request.method, url: request.url, authorized }) + "\\n");
-  response.setHeader("content-type", "application/json");
-  if (request.url === "/api/auth/session") {
-    if (${JSON.stringify(scenario)} === "readiness-blocked") response.writeHead(503);
-    response.end("{}"); return;
-  }
-  if (request.url === "/namespaces/namespace_fixture" && authorized) {
-    response.end(JSON.stringify({ data: { id: "namespace_fixture", name: "default", status: "ready" }, meta: { requestId: "req_fixture" } }));
-    return;
-  }
-  if (request.url !== "/installation" || !authorized || ${JSON.stringify(scenario)} === "api-unauthorized") {
-    response.writeHead(401);
-    response.end(JSON.stringify({ error: { code: "UNAUTHENTICATED", message: "A valid service API key is required." }, meta: { requestId: "req_fixture" } }));
-    return;
-  }
-  response.end(JSON.stringify({ data: { id: ${JSON.stringify(scenario === "api-mismatch" ? mismatchedInstallationId : matchingInstallationId)} }, meta: { requestId: "req_fixture" } }));
-};
-const server = http.createServer(handler);
-// Read the real launcher's generated key at handshake time, after startup wrote it.
-const browser = https.createServer({ SNICallback(_name, done) {
-  try {
-    const directory = fs.readFileSync(${JSON.stringify(tlsDirectoryFile)}, "utf8");
-    done(null, tls.createSecureContext({
-      cert: fs.readFileSync(path.join(directory, "browser-tls.crt")),
-      key: fs.readFileSync(path.join(directory, "browser-tls.key")),
-    }));
-  } catch (error) { done(error); }
-}}, handler);
-server.listen(0, "127.0.0.1", () => browser.listen(0, "127.0.0.1", () =>
-  process.stdout.write(JSON.stringify({ http: server.address().port, https: browser.address().port }) + "\\n")));
-
-`,
-    ],
-    { stdio: ["ignore", "pipe", "inherit"] },
+      scenario,
+      installationId: matchingInstallationId,
+    },
+    stopProcess,
   );
-  t.after(() => stopProcess(child));
-  const [port] = await once(child.stdout, "data");
-  const ports = JSON.parse(String(port).trim());
   fixture.env.OPENCLAW_DEV_PORT = String(ports.http);
   fixture.env.OCC_DEVELOPMENT_BROWSER_PORT = String(ports.https);
-  return requestLog;
+  return { requestLog, writeBrowserTlsDirectory };
 }
 
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {LifecycleScenario} [scenario]
+ * @param {Parameters<typeof createFixture>[1]} [options]
+ */
 async function kubernetesFixture(t, scenario = "success", options = {}) {
   const fixture = await createFixture(t, options);
   await prepareLifecycleCommands(fixture, scenario, options);
   fixture.env.OCC_DEVELOPMENT_COMPUTE_DRIVER = "kubernetes";
   fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "compose";
-  fixture.requestLog = await installationServer(t, fixture, scenario);
-  fixture.start = async (args = []) => {
-    await fixture.writeBrowserTlsDirectory();
+  const { requestLog, writeBrowserTlsDirectory } = await installationServer(t, fixture, scenario);
+  /** @param {string[]} [args] */
+  const start = async (args = []) => {
+    await writeBrowserTlsDirectory();
     return runDevUp([...args, "--", "--env-file", fixture.emptyEnv], fixture.env);
   };
-  return fixture;
+  return Object.assign(fixture, { writeBrowserTlsDirectory, requestLog, start });
 }
 
 test("Kubernetes dev-up authenticates the Installation and cleanup uses its saved endpoint and Compose configuration", async (t) => {
@@ -217,82 +193,7 @@ test("Kubernetes Compute defaults to the Kubernetes control plane", async (t) =>
   assert.deepEqual(await readJsonLines(fixture.env.SAFETY_LOG), []);
 });
 
-test("dev-down from a fresh shell stops the recorded Kubernetes stack", async (t) => {
-  const fixture = await kubernetesFixture(t);
-  delete fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
-  const started = await fixture.start();
-  assert.equal(started.status, 0, started.stderr);
-  const directory = join(fixture.directory, "openclaw-development");
-  assert.ok((await stat(directory)).isDirectory());
-
-  // A new shell exports no profile selectors; the recorded state still decides.
-  const fresh = { ...fixture.env };
-  for (const key of [
-    "OCC_DEVELOPMENT_COMPUTE_DRIVER",
-    "OCC_DEVELOPMENT_CONTROL_PLANE",
-    "OCC_DEVELOPMENT_SANDBOX_DRIVER",
-  ]) {
-    delete fresh[key];
-  }
-  const beforeCleanup = await readJsonLines(fixture.env.SAFETY_LOG);
-  const stopped = await runDevDown(fresh);
-  assert.equal(stopped.status, 0, stopped.stderr);
-  assert.match(stopped.stdout, /Stopped Kubernetes development stack occ-dev-owned\./);
-  assert.doesNotMatch(stopped.stdout, /Docker-compatible/);
-  await assert.rejects(stat(directory), { code: "ENOENT" });
-  assert.deepEqual(JSON.parse(await readFile(fixture.env.DEV_UP_RESOURCE_STATE, "utf8")), {
-    clusters: ["occ-dev-unrelated"],
-    compose: false,
-  });
-  const commands = (await readJsonLines(fixture.env.SAFETY_LOG)).slice(beforeCleanup.length);
-  assert.ok(commands.some((entry) => entry.command === "k3d" && entry.args.includes("delete")));
-});
-
-test("dev-down from a fresh shell in another checkout refuses the recorded Kubernetes stack", async (t) => {
-  const fixture = await kubernetesFixture(t);
-  delete fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
-  const started = await fixture.start();
-  assert.equal(started.status, 0, started.stderr);
-  const directory = join(fixture.directory, "openclaw-development");
-  const recordedState = await readFile(join(directory, "state.json"), "utf8");
-
-  // Every checkout shares the default state directory.
-  const other = join(fixture.directory, "other-checkout");
-  await mkdir(other);
-  for (const source of ["go.mod", "compose.yaml"]) {
-    await symlink(join(fixture.fixtureRepository, source), join(other, source));
-  }
-  const fresh = { ...fixture.env };
-  for (const key of [
-    "OCC_DEVELOPMENT_COMPUTE_DRIVER",
-    "OCC_DEVELOPMENT_CONTROL_PLANE",
-    "OCC_DEVELOPMENT_SANDBOX_DRIVER",
-  ]) {
-    delete fresh[key];
-  }
-  const beforeCleanup = await readJsonLines(fixture.env.SAFETY_LOG);
-  const refused = await runCommand(fixture.cli, ["dev", "down"], { cwd: other, env: fresh });
-  assert.notEqual(refused.status, 0);
-  for (const expected of [
-    `development state directory ${directory} records the Kubernetes development stack occ-dev-owned of checkout ${fixture.fixtureRepository}, not this checkout ${other}`,
-    "occ dev down stopped nothing",
-    `run occ dev down from ${fixture.fixtureRepository}`,
-  ]) {
-    assert.ok(refused.stderr.includes(expected), refused.stderr);
-  }
-  assert.equal(refused.stdout, "");
-  assert.equal(await readFile(join(directory, "state.json"), "utf8"), recordedState);
-  assert.deepEqual((await readJsonLines(fixture.env.SAFETY_LOG)).slice(beforeCleanup.length), []);
-
-  // An explicit Kubernetes selection still stops the recorded stack from here.
-  const stopped = await runCommand(fixture.cli, ["dev", "down"], {
-    cwd: other,
-    env: { ...fresh, OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes" },
-  });
-  assert.equal(stopped.status, 0, stopped.stderr);
-  assert.match(stopped.stdout, /Stopped Kubernetes development stack occ-dev-owned\./);
-  await assert.rejects(stat(directory), { code: "ENOENT" });
-});
+registerFreshShellCustodyCases(kubernetesFixture);
 
 for (const controlPlane of ["compose", "kubernetes"]) {
   for (const [reason, cluster] of [
@@ -411,98 +312,7 @@ test("dev-up rejects OpenShell when Kubernetes Compute is not selected", async (
   assert.equal((await readJsonLines(fixture.dockerLog)).length, 0);
 });
 
-for (const driver of ["docker"]) {
-  test(`dev-down preserves Kubernetes state when Compute selector is ${driver}`, async (t) => {
-    const fixture = await createFixture(t);
-    await prepareLifecycleCommands(fixture);
-    const directory = fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
-    await mkdir(directory, { mode: 0o700 });
-    const result = await runDevDown({ ...fixture.env, OCC_DEVELOPMENT_COMPUTE_DRIVER: driver });
-    assert.equal(result.status, 0, result.stderr);
-    assert.ok((await stat(directory)).isDirectory());
-    const commands = await readJsonLines(fixture.env.SAFETY_LOG);
-    assert.equal(
-      commands.some((entry) => entry.command === "k3d"),
-      false,
-    );
-    assert.ok(commands.some((entry) => entry.command === "docker" && entry.args.includes("down")));
-  });
-}
-
-for (const scenario of [
-  "compose-up-failed",
-  "cluster-create-failed",
-  "node-dns-refused",
-  "api-mismatch",
-  "api-unauthorized",
-]) {
-  test(`Kubernetes dev-up rolls back owned resources after ${scenario}`, async (t) => {
-    const fixture = await kubernetesFixture(t, scenario);
-    const keyOutput = join(fixture.directory, "retained-key.json");
-    const result = await fixture.start(["--key-output", keyOutput]);
-    assert.notEqual(result.status, 0);
-    assert.doesNotMatch(result.stdout + result.stderr, new RegExp(serviceKey));
-    if (scenario === "cluster-create-failed") {
-      // k3d can fail with partial resources absent from its inventory. Retain
-      // the recovery record until the operator explicitly retries cleanup.
-      assert.match(result.stderr, /rollback incomplete; preserving/);
-      assert.ok((await stat(fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY)).isDirectory());
-      const cleaned = await runDevDown(fixture.env);
-      assert.equal(cleaned.status, 0, cleaned.stderr);
-    }
-    await assert.rejects(stat(fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY), { code: "ENOENT" });
-    assert.deepEqual(JSON.parse(await readFile(fixture.env.DEV_UP_RESOURCE_STATE, "utf8")), {
-      clusters: ["occ-dev-unrelated"],
-      compose: false,
-    });
-    if (scenario === "compose-up-failed") {
-      assert.match(result.stderr, /partial compose startup/);
-    }
-    if (scenario === "cluster-create-failed") {
-      assert.match(result.stderr, /partial cluster creation/);
-    }
-    if (scenario === "node-dns-refused") {
-      // A node resolver that refuses queries stops startup before the first image pull.
-      assert.match(result.stderr, /cannot resolve registry-1\.docker\.io/);
-      assert.match(result.stderr, /OCC_DEVELOPMENT_K3D_DNS_RESOLVER/);
-      const commands = await readJsonLines(fixture.env.SAFETY_LOG);
-      assert.equal(
-        commands.some(({ command, args }) => command === "k3d" && args[0] === "image"),
-        false,
-      );
-    }
-    if (scenario.startsWith("api-")) {
-      await assert.rejects(stat(keyOutput), { code: "ENOENT" });
-      assert.match(
-        result.stderr,
-        scenario === "api-mismatch" ? /Installation ID does not match/ : /authorization failed/,
-      );
-    }
-  });
-}
-
-test("Kubernetes dev-up keeps the failed stack for inspection when KEEP_ON_FAILURE is set", async (t) => {
-  // The inspection override must skip rollback entirely: the state directory,
-  // cluster, and any copied service key stay for diagnosis, and the operator
-  // gets a cleanup hint naming occ dev down instead of a rollback error.
-  const fixture = await kubernetesFixture(t, "api-unauthorized");
-  fixture.env.OCC_DEVELOPMENT_KEEP_ON_FAILURE = "1";
-  const keyOutput = join(fixture.directory, "retained-key.json");
-  const result = await fixture.start(["--key-output", keyOutput]);
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /authorization failed/);
-  assert.match(result.stdout, /OCC_DEVELOPMENT_KEEP_ON_FAILURE is set; kept the failed stack/);
-  assert.doesNotMatch(result.stderr, /rollback incomplete; preserving/);
-  const directory = fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
-  await assert.ok((await stat(directory)).isDirectory());
-  // The authorization failure happens before the service key is copied, so
-  // the kept stack holds no key material to clean up.
-  await assert.rejects(stat(keyOutput), { code: "ENOENT" });
-  // The kept stack must still clean up through the recorded state.
-  const cleaned = await runDevDown(fixture.env);
-  assert.equal(cleaned.status, 0, cleaned.stderr);
-  await assert.rejects(stat(directory), { code: "ENOENT" });
-});
+registerStackRollbackCases(kubernetesFixture);
 
 test("Kubernetes-only dev-up stops and rolls back when the node resolver refuses queries", async (t) => {
   const fixture = await kubernetesFixture(t, "node-dns-refused");
@@ -520,6 +330,10 @@ test("Kubernetes-only dev-up stops and rolls back when the node resolver refuses
   ]);
 });
 
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {LifecycleScenario} scenario
+ */
 async function kubernetesOnlyFixture(t, scenario) {
   const fixture = await kubernetesFixture(t, scenario);
   fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "kubernetes";
@@ -550,245 +364,9 @@ test("Kubernetes-only dev-up names a Docker stack holding its API port before cr
   );
 });
 
-test("Kubernetes-only dev-up removes its state after a cluster create that k3d rolled back", async (t) => {
-  // k3d reported rolling back every change and nothing of the cluster is listed, so the
-  // start has nothing left to clean up: no "rollback incomplete", no preserved state.
-  const fixture = await kubernetesOnlyFixture(t, "cluster-create-rolled-back");
-  const result = await runDevUp([], fixture.env);
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /k3d reported: .*port is already allocated/);
-  assert.doesNotMatch(result.stderr, /rollback incomplete/);
-  assert.match(result.stdout, /cleanup_failed=false/);
-  await assert.rejects(stat(fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY), { code: "ENOENT" });
-  assert.deepEqual(JSON.parse(await readFile(fixture.env.DEV_UP_RESOURCE_STATE, "utf8")).clusters, [
-    "occ-dev-unrelated",
-  ]);
+registerKubernetesRecoveryCases({
+  kubernetesFixture,
+  kubernetesOnlyFixture,
+  stopProcess,
+  waitUntil,
 });
-
-test("Kubernetes-only dev-up names the explicit cleanup command when rollback is incomplete", async (t) => {
-  // A failed create that k3d did not roll back keeps the state directory; the message
-  // names a cleanup command that selects the Kubernetes stack and that directory.
-  const fixture = await kubernetesOnlyFixture(t, "cluster-create-failed");
-  const result = await runDevUp([], fixture.env);
-  assert.notEqual(result.status, 0);
-  const directory = fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
-  assert.ok(
-    result.stderr.includes(
-      `rollback incomplete; preserving ${directory} for occ dev down; clean up with env OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_STATE_DIRECTORY='${directory}' '${fixture.occCli}' dev down`,
-    ),
-    result.stderr,
-  );
-  const cleaned = await runDevDown({
-    ...fixture.env,
-    OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
-    OCC_DEVELOPMENT_CONTROL_PLANE: "",
-    OCC_DEVELOPMENT_SANDBOX_DRIVER: "",
-  });
-  assert.equal(cleaned.status, 0, cleaned.stderr);
-  await assert.rejects(stat(directory), { code: "ENOENT" });
-});
-
-test("Kubernetes dev-down preserves recovery state after incomplete cleanup and can retry", async (t) => {
-  const fixture = await kubernetesFixture(t, "cluster-delete-failed");
-  const started = await fixture.start();
-  assert.equal(started.status, 0, started.stderr);
-  const directory = fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
-  const state = await readFile(join(directory, "state.json"), "utf8");
-  const failed = await runDevDown(fixture.env);
-  assert.notEqual(failed.status, 0);
-  assert.match(failed.stderr, /cleanup incomplete; preserving/);
-  assert.equal(await readFile(join(directory, "state.json"), "utf8"), state);
-  assert.deepEqual(JSON.parse(await readFile(fixture.env.DEV_UP_RESOURCE_STATE, "utf8")), {
-    clusters: ["occ-dev-unrelated", "occ-dev-owned"],
-    compose: false,
-  });
-  const retried = await runDevDown({ ...fixture.env, DEV_UP_LIFECYCLE_SCENARIO: "success" });
-  assert.equal(retried.status, 0, retried.stderr);
-  await assert.rejects(stat(directory), { code: "ENOENT" });
-  assert.deepEqual(JSON.parse(await readFile(fixture.env.DEV_UP_RESOURCE_STATE, "utf8")), {
-    clusters: ["occ-dev-unrelated"],
-    compose: false,
-  });
-});
-
-test("cancelling Kubernetes startup during readiness rolls back its owned resources", async (t) => {
-  const fixture = await kubernetesFixture(t, "readiness-blocked");
-  const child = spawn(fixture.cli, ["dev", "up", "--", "--env-file", fixture.emptyEnv], {
-    cwd: fixture.fixtureRepository,
-    env: { ...fixture.env, OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS: "60" },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let output = "";
-  child.stdout.on("data", (chunk) => {
-    output += chunk;
-  });
-  child.stderr.on("data", (chunk) => {
-    output += chunk;
-  });
-  const exited = once(child, "close");
-  t.after(async () => {
-    if (child.exitCode === null && child.signalCode === null) {
-      child.kill("SIGTERM");
-    }
-    await exited;
-  });
-  // Wait for the real client to reach readiness, after all owned resources
-  // exist, so cancellation must execute rollback rather than fail preflight.
-  await waitUntil(
-    () => `startup to reach readiness: ${output}`,
-    async () => {
-      if (
-        (await readJsonLines(fixture.requestLog)).some((row) => row.url === "/api/auth/session")
-      ) {
-        return true;
-      }
-      assert.equal(child.exitCode, null, output || "startup exited before readiness");
-      return false;
-    },
-    { timeoutMs: 15_000 },
-  );
-  child.kill("SIGTERM");
-  const [status, signal] = await exited;
-  assert.notEqual(status, 0, output);
-  assert.equal(signal, null, "OCC should handle cancellation and finish rollback before exiting");
-  assert.match(output, /context canceled/);
-  assert.doesNotMatch(output, /development stack is ready/);
-  await assert.rejects(stat(fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY), { code: "ENOENT" });
-  assert.deepEqual(JSON.parse(await readFile(fixture.env.DEV_UP_RESOURCE_STATE, "utf8")), {
-    clusters: ["occ-dev-unrelated"],
-    compose: false,
-  });
-});
-
-test("Kubernetes development uses a canonical default state directory through a temporary-directory alias", async (t) => {
-  const fixture = await kubernetesFixture(t);
-  const temporary = join(fixture.directory, "system-temporary");
-  const alias = join(fixture.directory, "temporary-alias");
-  await mkdir(temporary, { mode: 0o700 });
-  await symlink(temporary, alias);
-  fixture.env.TMPDIR = alias;
-  delete fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
-
-  // macOS temporary directories commonly contain a system symlink. The
-  // helper-selected default must resolve it consistently for startup and cleanup.
-  const started = await fixture.start();
-  assert.equal(started.status, 0, started.stderr);
-  const directory = join(temporary, "openclaw-development");
-  assert.ok((await stat(directory)).isDirectory());
-  assert.ok(started.stdout.includes(`OCC_DEVELOPMENT_STATE_DIRECTORY='${directory}'`));
-  const stopped = await runDevDown(fixture.env);
-  assert.equal(stopped.status, 0, stopped.stderr);
-  await assert.rejects(stat(directory), { code: "ENOENT" });
-  assert.ok((await stat(temporary)).isDirectory());
-});
-
-for (const scenario of ["cancelled-creation", "cluster-create-failed", "node-dns-refused"]) {
-  test(
-    `launcher case recovery follows real Go rollback after ${scenario}`,
-    { timeout: 30_000 },
-    async (t) => {
-      const fixture = await createFixture(t);
-      await prepareLifecycleCommands(fixture, scenario);
-      const environment = {
-        ...fixture.env,
-        OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
-        OCC_DEVELOPMENT_CONTROL_PLANE: "kubernetes",
-        OCC_DEVELOPMENT_SANDBOX_DRIVER: "none",
-        OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS: "30",
-        DEV_UP_EXISTING_CONTROLLER_IMAGE: "1",
-        DEV_UP_EXISTING_RUNTIME_IMAGE: "1",
-      };
-      const started = join(fixture.directory, "creation-started");
-      // The cancelled-creation scenario's k3d cluster create writes this file and then
-      // never answers (tests/helpers/dev-up.mjs).
-      const controller = new AbortController();
-      let cleanup;
-      const commands = [];
-      // Adapt only the teardown script path to the existing fixture repository.
-      // Join actual process closure; no engine storage or late daemon effect is simulated.
-      const run = (program, args, options = {}) =>
-        new Promise((resolve, reject) => {
-          if (program.endsWith("/scripts/dev-down")) {
-            program = join(fixture.fixtureRepository, "scripts", "dev-down");
-          }
-          commands.push(program);
-          const child = spawn(program, args, {
-            cwd: fixture.fixtureRepository,
-            env: options.env,
-            stdio: ["ignore", "pipe", "pipe"],
-          });
-          let stdout = "";
-          let stderr = "";
-          child.stdout.on("data", (chunk) => {
-            stdout += chunk;
-          });
-          child.stderr.on("data", (chunk) => {
-            stderr += chunk;
-          });
-          const abort = () => child.kill("SIGTERM");
-          options.signal?.addEventListener("abort", abort, { once: true });
-          const deadline = setTimeout(() => child.kill("SIGKILL"), 12_000);
-          child.once("close", (code, signal) => {
-            clearTimeout(deadline);
-            options.signal?.removeEventListener("abort", abort);
-            if (code === 0 && !options.signal?.aborted) {
-              resolve({ stdout, stderr });
-            } else {
-              reject(
-                Object.assign(new Error("launcher command failed"), {
-                  stdout,
-                  stderr,
-                  code,
-                  forcedTermination: signal === "SIGKILL",
-                }),
-              );
-            }
-          });
-          child.once("error", reject);
-        });
-      const work = runDevUpModelProviderCase(
-        {
-          signal: controller.signal,
-          after: (operation) => {
-            cleanup = operation;
-          },
-        },
-        { root: fixture.directory, cluster: "occ-dev-owned", environment, run },
-        async ({ execute }) => {
-          await execute(fixture.cli, ["dev", "up"]);
-        },
-      ).catch((error) => error);
-      t.after(async () => {
-        controller.abort();
-        await work;
-      });
-      if (scenario === "cancelled-creation") {
-        await waitUntil("creation to start", () => existsSync(started), { timeoutMs: 15_000 });
-        controller.abort();
-      }
-      const failure = await work;
-      assert.ok(failure instanceof Error);
-      assert.equal(failure.forcedTermination, false);
-      const journal = join(environment.OCC_DEVELOPMENT_STATE_DIRECTORY, "state.json");
-      if (scenario === "node-dns-refused") {
-        // A synchronous failure after acknowledged creation completes rollback;
-        // the real launcher removes its state, so ordinary case cleanup is safe.
-        assert.match(failure.stderr, /cannot resolve registry-1\.docker\.io/);
-        assert.equal(existsSync(journal), false);
-        await cleanup();
-        assert.equal(existsSync(fixture.directory), false);
-      } else {
-        assert.match(failure.stderr, /cluster creation failed; verify and retry recorded cleanup/);
-        const recorded = await readFile(journal, "utf8");
-        // An absent cluster in the command fixture does not discharge the real
-        // launcher's explicit uncertainty. Repeated cleanup must preserve evidence.
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-          await assert.rejects(cleanup(), /outcome remains uncertain; recovery state preserved/);
-          assert.equal(await readFile(journal, "utf8"), recorded);
-          assert.equal(existsSync(fixture.directory), true);
-        }
-      }
-      assert.deepEqual(commands, [fixture.cli], "no automatic dev-down or creation replay");
-    },
-  );
-}

@@ -132,6 +132,20 @@ export async function writeJson(path: string, value: unknown) {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
+export async function writeCleanupFixture(root: string, mode: "sync" | "async" = "async") {
+  const asyncKeyword = mode === "async" ? "async " : "";
+  await writeFile(
+    join(root, "scripts/ci/prepare.ts"),
+    [
+      'import { appendFile } from "node:fs/promises";',
+      `export ${asyncKeyword}function prepareFile({ file, statePath }) {`,
+      `  return { cleanup: ${asyncKeyword}() => appendFile(statePath, file.path + "\\n") };`,
+      "}",
+      "",
+    ].join("\n"),
+  );
+}
+
 interface ManifestFixture {
   lanes: Record<string, unknown>;
   groups?: Record<string, string[]>;
@@ -177,8 +191,13 @@ export async function writeFirstAgentCliFixture(root: string, cliBody: string) {
     await readFile(new URL("./local-first-agent-stack.mjs", import.meta.url)),
   );
   await writeFile(
-    join(root, "tests/helpers/compose-network.mjs"),
-    await readFile(new URL("./compose-network.mjs", import.meta.url)),
+    join(root, "tests/helpers/compose-network.ts"),
+    await readFile(new URL("./compose-network.ts", import.meta.url)),
+  );
+  await mkdir(join(root, "scripts/lib"), { recursive: true });
+  await writeFile(
+    join(root, "scripts/lib/podman-compose-provider.ts"),
+    await readFile(new URL("../../scripts/lib/podman-compose-provider.ts", import.meta.url)),
   );
   await mkdir(join(root, "scripts/ci"), { recursive: true });
   await writeFile(

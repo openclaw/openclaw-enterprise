@@ -1,13 +1,19 @@
-import { readFile } from "node:fs/promises";
+// @ts-check
+
 import { createRequire } from "node:module";
-import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isDeepStrictEqual } from "node:util";
-import { catalogDigest, initialSchemaState, migrationCatalog } from "./migration-catalog.ts";
+import {
+  preflight,
+  readManifest,
+  receiptsMatchEntries,
+  refuse,
+  requireReceiptsMatchEntries,
+} from "./migration-history-preflight.ts";
 
 const directory = fileURLToPath(new URL("../migrations", import.meta.url));
 const dependency = createRequire(new URL("../packages/occ/package.json", import.meta.url));
 const { drizzle } = dependency("drizzle-orm/node-postgres");
+/** @type {{ readMigrationFiles: import("./migration-history-preflight.ts").MigrationReader }} */
 const { readMigrationFiles } = dependency("drizzle-orm/migrator");
 const lock = [1868785005, 1835624306];
 
@@ -20,109 +26,17 @@ export class UnsupportedPostgresVersionError extends Error {
   }
 }
 
-function refuse(reason) {
-  const error = new Error(`Unsupported migration history: ${reason}.`);
-  error.code = "MIGRATION_HISTORY_UNSUPPORTED";
-  throw error;
-}
-
-async function readManifest() {
-  const manifest = JSON.parse(
-    await readFile(join(directory, "meta/_canonical-history.json"), "utf8"),
-  );
-  const journal = JSON.parse(await readFile(join(directory, "meta/_journal.json"), "utf8"));
-  const expected = manifest.entries.map(({ sha256: _hash, ...entry }) => entry);
-  if (
-    manifest.version !== 1 ||
-    journal.version !== "7" ||
-    journal.dialect !== "postgresql" ||
-    !isDeepStrictEqual(journal.entries, expected)
-  ) {
-    refuse("the journal differs from the reviewed source manifest");
-  }
-  if (typeof manifest.catalogs.completed !== "string") {
-    refuse("the completed catalog has not been qualified");
-  }
-  const migrations = readMigrationFiles({ migrationsFolder: directory });
-  if (migrations.length !== manifest.entries.length) {
-    refuse("the migration source set differs");
-  }
-  for (const [index, entry] of manifest.entries.entries()) {
-    if (index > 0 && entry.when <= manifest.entries[index - 1].when) {
-      refuse(`migration timestamp does not advance for ${entry.tag}`);
-    }
-    if (migrations[index].hash !== entry.sha256 || migrations[index].folderMillis !== entry.when) {
-      refuse(`source bytes differ for ${entry.tag}`);
-    }
-  }
-  return { manifest, migrations };
-}
-
-async function requireInitialSchema(client, schema, manifest) {
-  const state = await initialSchemaState(client, schema);
-  if (
-    !isDeepStrictEqual(state, manifest.initialSchemaStates.absent) &&
-    !isDeepStrictEqual(state, manifest.initialSchemaStates.ownerOnly)
-  ) {
-    refuse(`the initial ${schema} schema state is not reviewed`);
-  }
-}
-
-async function requireMigrationRoles(client) {
-  const { rows: roles } = await client.query(`
-    SELECT current_user = 'occ_migrator' AND session_user = current_user
-      AND pg_catalog.has_database_privilege(current_user, pg_catalog.current_database(), 'CREATE')
-      AND NOT pg_catalog.has_database_privilege('occ_app', pg_catalog.current_database(), 'CREATE')
-      AND NOT pg_catalog.pg_has_role('occ_app', 'occ_migrator', 'MEMBER')
-      AND NOT pg_catalog.pg_has_role('occ_migrator', 'occ_app', 'MEMBER')
-      AND (SELECT count(*)=2 AND bool_and(rolcanlogin AND NOT rolsuper AND NOT rolbypassrls
-        AND NOT rolcreaterole AND NOT rolcreatedb AND NOT rolreplication)
-        FROM pg_catalog.pg_roles WHERE rolname IN ('occ_app','occ_migrator')) AS limited`);
-  if (roles[0]?.limited !== true) {
-    refuse("the application and migration roles are not separated");
-  }
-  const { rows: schemas } = await client.query(`
-    SELECT nspowner = current_user::pg_catalog.regrole AS owned,
-      pg_catalog.has_schema_privilege('occ_app', oid, 'CREATE') AS app_create,
-      EXISTS (SELECT 1 FROM pg_catalog.aclexplode(nspacl) x
-        WHERE x.grantee<>nspowner AND x.privilege_type='CREATE') AS other_create
-    FROM pg_catalog.pg_namespace WHERE nspname IN ('occ','drizzle')`);
-  if (schemas.some((schema) => !schema.owned || schema.app_create || schema.other_create)) {
-    refuse("a database schema has unexpected ownership or CREATE grants");
-  }
-}
-
-function receiptsMatchEntries(receipts, entries) {
-  let previousId = 0;
-  for (const [index, receipt] of receipts.entries()) {
-    const entry = entries[index];
-    if (
-      !Number.isSafeInteger(receipt.id) ||
-      receipt.id <= previousId ||
-      entry === undefined ||
-      receipt.hash !== entry.sha256 ||
-      Number(receipt.created_at) !== entry.when
-    ) {
-      return false;
-    }
-    previousId = receipt.id;
-  }
-  return receipts.length <= entries.length;
-}
-
-function requireReceiptsMatchEntries(receipts, entries) {
-  if (!receiptsMatchEntries(receipts, entries)) {
-    refuse(
-      "the applied receipts differ from canonical history; pre-merge preview histories are unsupported; preserve the database with its matching release or explicitly reset a disposable preview",
-    );
-  }
-}
-
+/**
+ * @param {import("./migration-history-preflight.ts").MigrationReceipt[]} receipts
+ * @param {import("./migration-history-preflight.ts").MigrationManifest} manifest
+ * @returns {import("./migration-history-preflight.ts").MigrationHistory}
+ */
 function classifyReceipts(receipts, manifest) {
   const expected = manifest.entries;
   const providerCompleted = manifest.compatibleLineages?.providerCompleted;
   const providerCount = providerCompleted?.entries.length ?? 0;
   const providerLineage =
+    providerCompleted !== undefined &&
     providerCount > 0 &&
     receipts.length >= providerCount &&
     receiptsMatchEntries(receipts, [
@@ -138,6 +52,11 @@ function classifyReceipts(receipts, manifest) {
   return catalogAtMigrationCount(receipts.length, expected.length);
 }
 
+/**
+ * @param {number} count
+ * @param {number} completedCount
+ * @returns {import("./migration-history-preflight.ts").MigrationHistory}
+ */
 function catalogAtMigrationCount(count, completedCount) {
   if (count === 0) {
     return "empty";
@@ -186,6 +105,21 @@ function catalogAtMigrationCount(count, completedCount) {
   }
   if (count === 77 && completedCount > 77) {
     return "prePendingSandboxPolicyApplication";
+  }
+  if (count === 78 && completedCount > 78) {
+    return "prePredecessorReplacement";
+  }
+  if (count === 79 && completedCount > 79) {
+    return "preRevisionRuntimeInputs";
+  }
+  if (count === 80 && completedCount > 80) {
+    return "preRestartContinuation";
+  }
+  if (count === 81 && completedCount > 81) {
+    return "preAuthenticationStates";
+  }
+  if (count === 82 && completedCount > 82) {
+    return "preNativeRestartRecovery";
   }
   if (count === completedCount) {
     return "completed";
@@ -301,79 +235,19 @@ function catalogAtMigrationCount(count, completedCount) {
   refuse("an incomplete or unsupported development history is installed");
 }
 
-async function requireUnambiguousTerminologyData(client) {
-  const { rows } = await client.query(`
-    SELECT NOT (
-      EXISTS (
-        SELECT 1 FROM occ.agents
-        WHERE harness_auth ?& ARRAY['providerBinding', 'backendBinding']
-      ) OR EXISTS (
-        SELECT 1 FROM occ.agent_revisions
-        WHERE (admitted_spec #> '{harness_auth}') ?& ARRAY['providerBinding', 'backendBinding']
-      ) OR EXISTS (
-        SELECT 1
-        FROM occ.agent_revisions AS revision
-        CROSS JOIN LATERAL jsonb_array_elements(
-          revision.admitted_spec #> '{repository_credentials,bindings}'
-        ) AS binding
-        WHERE jsonb_typeof(revision.admitted_spec #> '{repository_credentials,bindings}') = 'array'
-          AND binding ?& ARRAY['providerId', 'backendId']
-      ) OR EXISTS (
-        SELECT 1 FROM occ.presets
-        WHERE (template #> '{agent}') ?& ARRAY['providerId', 'backendId']
-      ) OR EXISTS (
-        SELECT 1 FROM occ.repository_session_attempts
-        WHERE (cleanup_context #> '{binding}') ?& ARRAY['providerId', 'backendId']
-      ) OR EXISTS (
-        SELECT 1 FROM occ.agent_provisioning_work
-        WHERE plan ?& ARRAY['providerId', 'backendId']
-      )
-    ) AS compatible`);
-  if (rows[0]?.compatible !== true) {
-    refuse("Provider and Backend terminology data is ambiguous");
-  }
-}
-
-async function preflight(client, manifest) {
-  await requireMigrationRoles(client);
-  const ledger = catalogDigest(await migrationCatalog(client, "drizzle"));
-  let receipts = [];
-  if (
-    ledger === manifest.ledgerCatalogs.initialized ||
-    ledger === manifest.ledgerCatalogs.completed
-  ) {
-    ({ rows: receipts } = await client.query(
-      "SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id",
-    ));
-  } else {
-    await requireInitialSchema(client, "drizzle", manifest);
-  }
-  const shape = classifyReceipts(receipts, manifest);
-  if (shape === "empty") {
-    await requireInitialSchema(client, "occ", manifest);
-  } else if (ledger !== manifest.ledgerCatalogs.completed) {
-    refuse("the Drizzle ledger objects or privileges have changed");
-  }
-  const native = manifest.catalogs[shape];
-  const actual = catalogDigest(await migrationCatalog(client));
-  const aliases = manifest.logicalRestoreCatalogs?.[native];
-  if (actual !== native && !(Array.isArray(aliases) && aliases.includes(actual))) {
-    refuse(`catalog objects or effective grants differ for ${shape}`);
-  }
-  if (shape === "providerCompleted" || shape === "backendCompleted") {
-    await requireUnambiguousTerminologyData(client);
-  }
-  return shape;
-}
-
+/**
+ * @param {Pick<import("pg").Pool, "connect">} pool
+ * @param {{ checkOnly?: boolean; expectEmpty?: boolean; requireCurrent?: boolean }} [options]
+ */
 export async function migrateWithHistory(
   pool,
   { checkOnly = false, expectEmpty = false, requireCurrent = false } = {},
 ) {
-  const { manifest, migrations } = await readManifest();
+  const { manifest, migrations } = await readManifest(directory, readMigrationFiles);
   const client = await pool.connect();
   let locked = false;
   try {
+    /** @type {{ rows: { compatible: boolean }[] }} */
     const { rows } = await client.query(
       "SELECT pg_catalog.current_setting('server_version_num')::pg_catalog.int4 >= 170000 AS compatible",
     );
@@ -382,25 +256,27 @@ export async function migrateWithHistory(
     }
     await client.query("SELECT pg_catalog.pg_advisory_lock($1, $2)", lock);
     locked = true;
-    const history = await preflight(client, manifest);
+    const history = await preflight(client, manifest, classifyReceipts);
     // Check first-install intent while holding the migration lock. A separate --check
     // could observe empty history and then lose a race to another installer.
     if (expectEmpty && history !== "empty") {
-      const error = new Error(
-        "First installation requires empty migration history; this database already has recognized OCE migrations. " +
-          "Preserve the database, inspect the original installation attempt, and use --check to inspect migration history without applying changes.",
+      throw Object.assign(
+        new Error(
+          "First installation requires empty migration history; this database already has recognized OCE migrations. " +
+            "Preserve the database, inspect the original installation attempt, and use --check to inspect migration history without applying changes.",
+        ),
+        { code: "MIGRATION_HISTORY_NOT_EMPTY" },
       );
-      error.code = "MIGRATION_HISTORY_NOT_EMPTY";
-      throw error;
     }
     if (requireCurrent) {
       if (history !== "completed") {
-        const error = new Error(
-          "The separate database deployment has not completed the candidate migration history. " +
-            "Keep writers stopped, reconcile the migration, and retry the service deployment.",
+        throw Object.assign(
+          new Error(
+            "The separate database deployment has not completed the candidate migration history. " +
+              "Keep writers stopped, reconcile the migration, and retry the service deployment.",
+          ),
+          { code: "MIGRATION_HISTORY_PENDING" },
         );
-        error.code = "MIGRATION_HISTORY_PENDING";
-        throw error;
       }
       return history;
     }
@@ -408,6 +284,7 @@ export async function migrateWithHistory(
       if (history === "completed") {
         // Keep Drizzle's refusal on read-only sessions, including standbys,
         // without overriding the operator's transaction mode.
+        /** @type {{ rows: { transaction_read_only: string }[] }} */
         const { rows } = await client.query("SHOW transaction_read_only");
         if (rows[0]?.transaction_read_only === "off") {
           return history;

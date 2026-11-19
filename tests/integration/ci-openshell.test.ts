@@ -39,7 +39,7 @@ import {
   outageAttemptRead,
   waitForOpenShellRevisionActivation,
 } from "../helpers/openshell-kubernetes-real.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { openShellTestDirectory } from "./ci-openshell-fixtures.ts";
 
 function jsonObject(text: string) {

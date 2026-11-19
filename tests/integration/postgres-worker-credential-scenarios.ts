@@ -16,7 +16,7 @@ import type {
 } from "../helpers/postgres-worker-refused-candidate.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/index.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import {
   CREDENTIAL_GATEWAY_FIXTURE_ID,
   createWorkerRevisionFixtures,

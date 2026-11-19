@@ -1,5 +1,6 @@
 import { execFile, spawn, type ExecFileOptions, type SpawnOptions } from "node:child_process";
 import { join } from "node:path";
+import type { TestContext } from "node:test";
 import { promisify } from "node:util";
 import { withoutShellStartup } from "./environment.ts";
 
@@ -18,6 +19,14 @@ export const oldRuntime = `registry.example.invalid/runtime@sha256:${"c".repeat(
 
 // The fixture exits 9 only for an armed fault. An interrupted run must reach that fault.
 export const injectedFault = { code: 9 };
+
+export function upgradeDiagnosticLines(stderr: string): string[] {
+  // Progress can precede the diagnostic. Keep all lines from the first diagnostic onward.
+  return stderr
+    .replace(/^(?:Upgrade: [^\n]+\n)+/u, "")
+    .trimEnd()
+    .split("\n");
+}
 
 const executeFile = promisify(execFile);
 
@@ -42,6 +51,14 @@ async function commandPath(name: "helm" | "sleep" | "setsid", fallback: string) 
     `command -v ${name}`,
   ]).catch(() => ({ stdout: "" }));
   return stdout.trim() || fallback;
+}
+
+export function skipWithoutHelm(t: TestContext, realHelm: string | null): boolean {
+  if (realHelm) {
+    return false;
+  }
+  t.skip("helm is unavailable to render the real chart");
+  return true;
 }
 
 export async function createRecoveryTools(repository: string) {

@@ -15,7 +15,7 @@ Usage: scripts/upgrade-production-images \
   [--occ PATH] [--timeout-seconds SECONDS] [--doctor-heap-mib MIB] [--resume] \
   [--verify-agent AGENT_ID --verify-agent-namespace NAMESPACE_ID] \
   [--migration-history-checked] [--recover-helm --recovery-reviewed] \
-  [--collector-config-reviewed] [--preflight-only]
+  [--collector-config-reviewed] [--preflight-only] [--verbose]
 
 Select at least one image. Candidate files contain reviewed settings changes;
 image fields are selected only by the image flags. A controller-only upgrade
@@ -45,12 +45,20 @@ It needs exact Agent read/operate and active AgentRevision read permissions.
 --timeout-seconds bounds each wait (default 900, at most 86400).
 --doctor-heap-mib sets OpenClaw Doctor's heap cap (default 384); raise it only
 after Doctor ran out of heap. It can change on --resume.
+Progress appears on stderr. Native scale and rollout output stays in the private
+evidence directory; use --verbose to show native command output as well.
 EOF
 }
 
 warn() {
   printf 'upgrade-production-images: %s\n' "$1" >&2
 }
+
+# A closed diagnostic pipe must not stop the upgrade or replace a native status.
+progress() (
+  trap '' PIPE
+  printf 'Upgrade: %s\n' "$1" >&2 2>/dev/null || true
+)
 
 die() {
   warn "$1"
@@ -69,6 +77,18 @@ native_command_failed() {
     warn "could not append native-command-failures.tsv in the evidence directory." || true
   warn "$operation for $component exited $status; inspect native-command-failures.tsv and reconcile live state before resuming." || true
   exit "$status"
+}
+
+native_output() {
+  local operation=$1 component=$2 output=$3
+  shift 3
+  if ((verbose)); then
+    "$@" || native_command_failed "$?" "$operation" "$component"
+  else
+    {
+      "$@" || native_command_failed "$?" "$operation" "$component"
+    } >"$evidence_dir/$output"
+  fi
 }
 
 require_command() {
@@ -427,6 +447,7 @@ timeout_seconds=900
 doctor_heap_mib=384
 resume=0
 preflight_only=0
+verbose=0
 migration_history_checked=0
 recover_helm=0
 recovery_reviewed=0
@@ -478,6 +499,10 @@ while (($#)); do
       ;;
     --preflight-only)
       preflight_only=1
+      shift
+      ;;
+    --verbose)
+      verbose=1
       shift
       ;;
     --resume)
@@ -799,7 +824,7 @@ def digest(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
 evidence = os.stat(sys.argv[16])
-print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.ts"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.ts"), "preflightStateSha256": digest("scripts/upgrade-preflight-state.py"), "preflightCleanupSha256": digest("scripts/lib/upgrade-preflight-cleanup.sh"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.ts"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "helmStateSha256": digest("scripts/upgrade-helm-state.py"), "resourceQuantitiesSha256": digest("apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
+print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.ts"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.ts"), "selectedImageMigrationSha256": digest("scripts/lib/selected-image-migration.ts"), "selectedImageMigrationProgramSha256": digest("deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs"), "preflightStateSha256": digest("scripts/upgrade-preflight-state.py"), "preflightCleanupSha256": digest("scripts/lib/upgrade-preflight-cleanup.sh"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.ts"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "helmStateSha256": digest("scripts/upgrade-helm-state.py"), "resourceQuantitiesSha256": digest("apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
 PYTHON
 )
 if ((resume)); then
@@ -1147,6 +1172,10 @@ No ${writer_qualifier}OCC writer was stopped; the old release keeps serving. Cor
             [[ -n "${message// /}" ]] || message="no output (see preflight-$component-status.json). "
             if ((resume)); then
               message="the $component application identity preflight failed: ${message}No additional OCC writer was stopped. Preserve the original evidence and writer freeze; reconcile the application connection before --resume."
+            elif grep -q '^Candidate application database Installation identity could not be verified: this Pod could not open a connection to the database\.' \
+              "$evidence_dir/preflight-$component.log"; then
+              # Not an Installation refusal: the database, its sign-in or the egress that reaches it.
+              message="the selected controller image cannot start the $component with the candidate Installation: ${message}No ${writer_qualifier}OCC writer was stopped; correct the database, the chart's database values (database.cidrs) or the network policies that admit this Pod's database egress, then start again with a new evidence directory."
             else
               message="the selected controller image cannot start the $component with the candidate Installation: ${message}No ${writer_qualifier}OCC writer was stopped; correct the Installation and start again with a new evidence directory."
             fi
@@ -1348,7 +1377,7 @@ verify_agent_continuity() {
 
 # Inventory is an authorized, complete view. Missing collections are not an empty fleet.
 read_restart_inventory() {
-  local destination=$1
+  local destination=$1 preflight_rehearsal=${2:-0}
   "${occ_json[@]}" installation deployment-inventory </dev/null >"$destination" ||
     die "cannot read the complete deployment inventory before stopping the worker. Restore access to the existing API if quiescence stopped it, then resume; no additional OCC writer was stopped."
   jq -es --arg installationId "$installation_id" '
@@ -1374,16 +1403,25 @@ read_restart_inventory() {
     die "the deployment inventory contains nonterminal Agent work; wait for it to finish before upgrading."
   fi
   if [[ -z "$runtime_image" ]]; then
-    local refusals
-    refusals=$(jq -r '
+    local assessment refusals original_worker_only
+    assessment=$(jq -c '
       [.namespaces[] as $namespace | $namespace.agents[] |
         select(.status == "active" and .desiredRuntimeState == "running" and .activeRevisionId != null) |
         select(.repositoryWorkerRestart != "reverification-supported" and .repositoryWorkerRestart != "not-applicable") |
         {namespace: $namespace.id, agent: .id, revision: .activeRevisionId,
          reason: (if .repositoryWorkerRestart == "original-worker-required" then "original-worker-required" else "unknown" end)}] |
-      .[:10][] | "  Namespace \(.namespace | .[:128] | tojson), Agent \(.agent | .[:128] | tojson), revision \(.revision | .[:128] | tojson): \(.reason)"
+      {originalWorkerOnly: all(.[]; .reason == "original-worker-required"),
+       refusals: ([.[:10][] | "  Namespace \(.namespace | .[:128] | tojson), Agent \(.agent | .[:128] | tojson), revision \(.revision | .[:128] | tojson): \(.reason)"] | join("\n"))}
     ' "$destination")
-    [[ -z "$refusals" ]] || die "retained Agent revisions cannot safely pass the repository worker-restart preflight:
+    json_fields "$assessment" refusals=refusals original_worker_only=originalWorkerOnly
+    if [[ -z "$refusals" ]]; then
+      return
+    fi
+    if ((preflight_rehearsal)) && [[ "$original_worker_only" == true ]]; then
+      retained_revision_blockers=$refusals
+      return
+    fi
+    die "retained Agent revisions cannot safely pass the repository worker-restart preflight:
 $refusals
 Stop and settle these Agents under an authorized interruption, or plan a normal revision replacement. Inspect $destination for the complete inventory. No additional OCC writer was stopped."
   fi
@@ -1502,7 +1540,8 @@ targets="$evidence_dir/targets.jsonl"
 : >"$targets"
 target_count=0
 inventory="$evidence_dir/inventory/deployment-inventory.json"
-read_restart_inventory "$inventory"
+retained_revision_blockers=
+read_restart_inventory "$inventory" "$preflight_only"
 normalize_restart_inventory "$inventory" >"$evidence_dir/inventory/restart-preflight.json"
 
 if [[ -z "$runtime_image" ]]; then
@@ -1823,12 +1862,20 @@ if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]] ||
   printf '%s\n' "$installation_checksum" >"$evidence_dir/installation-checksum"
 fi
 
+progress "Checking the candidate release and startup."
 helm_attempt=$(python3 scripts/upgrade-helm-state.py new "$evidence_dir" "$release" "$values" "${helm_args[@]}")
 candidate_values="$evidence_dir/helm-attempts/$helm_attempt/values.yaml"
 rendered="$evidence_dir/helm-attempts/$helm_attempt/rendered.yaml"
 preflight_startup
 if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]]; then
   verify_installation_switch
+fi
+if ((preflight_only)) && [[ -n "$retained_revision_blockers" ]]; then
+  touch "$evidence_dir/preflight-blocked-original-worker" ||
+    die "cannot record the original-worker blocker in the evidence directory."
+  die "Candidate startup and migration checks passed and temporary resources are gone. The upgrade remains blocked because retained Agent revisions require their original worker:
+$retained_revision_blockers
+Stop and settle these Agents under an authorized interruption, or plan a normal revision replacement. Inspect $inventory for the complete inventory. No OCC writer was stopped. Same-revision continuity is unverified."
 fi
 if ((preflight_only)); then
   printf 'Preflight passed; no OCC writer was stopped. To deploy, omit --preflight-only and use the same reviewed inputs with a fresh evidence directory.\n'
@@ -1847,9 +1894,11 @@ touch "$evidence_dir/prepared"
 }
 
 if ((resume == 0)); then
+  progress "Preparing the upgrade."
   prepare_upgrade
 fi
 
+progress "Reconciling prepared upgrade state."
 candidate_values="$evidence_dir/candidate-values.yaml"
 candidate_installation="$evidence_dir/candidate-installation.yaml"
 python3 scripts/upgrade-evidence.py verify "$evidence_dir" ||
@@ -2042,6 +2091,7 @@ if ((helm_complete == 0)); then
     rendered="$evidence_dir/helm-attempts/$helm_attempt/rendered.yaml"
     preflight_resume
   fi
+  progress "Checking and stopping OCC writers."
   # Stop the old database writers before the migration hook. Other writers and
   # autoscalers must already be stopped by the operator's maintenance window.
   deadline=$((SECONDS + timeout_seconds))
@@ -2110,9 +2160,9 @@ if ((helm_complete == 0)); then
     fi
     deployment="openclaw-enterprise-$component"
     quiescence_remaining
-    "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" patch "deployment/$deployment" \
-      --type json --patch-file "$evidence_dir/quiescence-$component-patch.json" ||
-      native_command_failed "$?" quiescence-scale "$component"
+    native_output quiescence-scale "$component" "quiescence-$component.txt" \
+      "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" patch "deployment/$deployment" \
+      --type json --patch-file "$evidence_dir/quiescence-$component-patch.json"
   done
   while true; do
     quiescence_remaining
@@ -2147,9 +2197,10 @@ if ((helm_complete == 0)); then
       ' >"$staged_handoff" || die "Cannot record the stopped Deployment generations."
       mv "$staged_handoff" "$handoff"
     fi
-    die "API and worker stopped for the separate database deployment. Keep other writers and autoscalers fenced. Run node scripts/migrate-production.mjs in the selected controller image against this Installation with the dedicated migrator credential. Confirm --require-current succeeds, then use --resume --migration-history-checked with this evidence directory. The Helm hook independently requires the complete candidate schema." 3
+    die "API and worker stopped for the separate database deployment. Keep other writers and autoscalers fenced. Run the chart-selected migration command in the selected controller image against this Installation with the dedicated migrator credential. Confirm the same command with --require-current succeeds, then use --resume --migration-history-checked with this evidence directory. The Helm hook independently requires the complete candidate schema." 3
   fi
 
+  progress "Applying reviewed settings and the Helm release."
   install_atomically "$candidate_values" "$values"
   if [[ -f "$evidence_dir/installation-changed" ]]; then
     install_atomically "$candidate_installation" "$installation"
@@ -2182,17 +2233,22 @@ PYTHON
   fi
   python3 scripts/upgrade-helm-state.py record "$evidence_dir" "$helm_attempt"
   # Open stdout before entering the native failure handler.
+  helm_status=0
   {
     helm upgrade --install "$release" "$chart" "${helm_args[@]}" \
-      --values "$values" --wait --timeout 5m ||
-      native_command_failed "$?" helm-upgrade release
+      --values "$values" --wait --timeout 5m || helm_status=$?
   } >"$evidence_dir/helm-attempts/$helm_attempt/helm-upgrade.txt"
+  if ((verbose)); then
+    cat "$evidence_dir/helm-attempts/$helm_attempt/helm-upgrade.txt" || true
+  fi
+  ((helm_status == 0)) || native_command_failed "$helm_status" helm-upgrade release
 fi
 
+progress "Waiting for OCC recovery."
 for component in api worker; do
   deployment="openclaw-enterprise-$component"
-  "${kube[@]}" --namespace "$namespace" rollout status "deployment/$deployment" --timeout=180s ||
-    native_command_failed "$?" rollout-status "$component"
+  native_output rollout-status "$component" "rollout-$component.txt" \
+    "${kube[@]}" --namespace "$namespace" rollout status "deployment/$deployment" --timeout=180s
   "${kube[@]}" --namespace "$namespace" get "deployment/$deployment" --output json \
     >"$evidence_dir/after-$component-deployment.json"
   # The broker-enabled worker may be an ordinary container on the existing
@@ -2302,6 +2358,7 @@ if [[ "$repository_enabled" == true ]]; then
 fi
 
 if [[ -n "$runtime_image" ]] && ((target_count > 0)); then
+  progress "Reconciling and deploying Agent revisions."
   confirmed_deployment_status() {
     local namespace_id=$1 agent_id=$2 revision=$3
     "${occ_json[@]}" --namespace "$namespace_id" agent deployment-status "$agent_id" "$revision" </dev/null |
@@ -2464,17 +2521,44 @@ poll_deployment_status() (
   printf '%s\n' "$status"
 )
 
+# At the timeout, name each Agent whose deployment had not succeeded: its ID, its name and the
+# last status read (none when the deadline passed before the first poll), so the operator
+# knows which Agent to inspect.
+incomplete_agents() {
+  local namespace_id agent_id status agent_name observed
+  while IFS=' ' read -r namespace_id agent_id status; do
+    agent_name=$(occ_name --namespace "$namespace_id" agent get "$agent_id") || agent_name=
+    observed="no status read"
+    [[ -z "$status" ]] || observed="last status $status"
+    printf '  - Agent %s %s: %s, waiting for succeeded\n' "$agent_id" "${agent_name:-(name unavailable)}" "$observed"
+  done
+}
+
 pending=$target_count
+if ((target_count > 0)); then
+  progress "Checking Agent readiness and OpenClaw Doctor."
+fi
+incomplete=()
+while IFS= read -r deployment; do
+  json_fields "$deployment" namespace_id=namespaceId agent_id=agentId
+  incomplete+=("$namespace_id $agent_id")
+done <"$deployments"
 while ((pending > 0)); do
-  ((SECONDS < deadline)) || die "$pending Agent deployments remained incomplete at the upgrade timeout."
+  ((SECONDS < deadline)) || die "$pending Agent deployments remained incomplete at the upgrade timeout:
+$(printf '%s\n' "${incomplete[@]}" | incomplete_agents)
+Their last statuses are in $evidence_dir/status."
   pending=0
   failed=0
+  incomplete=()
   while IFS= read -r deployment; do
     json_fields "$deployment" namespace_id=namespaceId agent_id=agentId deployment_id=deploymentId
     status_file="$evidence_dir/status/$(json_file_name "$namespace_id--$agent_id--$deployment_id").json"
     status=$(poll_deployment_status "$namespace_id" "$agent_id" "$deployment_id" "$status_file")
     case "$status" in
-      queued | running) ((pending += 1)) ;;
+      queued | running)
+        ((pending += 1))
+        incomplete+=("$namespace_id $agent_id $status")
+        ;;
       succeeded) ;;
       failed) failed=1 ;;
     esac
@@ -2836,6 +2920,7 @@ done <"$doctor_targets"
 ((pod_changed == 0)) ||
   die "at least one Agent's gateway or agent Pod did not stay on the same Ready Pod without restarts through OpenClaw Doctor, so the upgrade is not complete. Wait until each named Agent's revision Pods are Ready, then repeat the command with --resume and the same evidence directory; the resume runs Doctor again in the current gateway without new deployments."
 
+progress "Verifying upgrade completion."
 [[ -z "$verify_agent" ]] || verify_agent_continuity after
 
 if [[ "$repository_enabled" == true ]]; then

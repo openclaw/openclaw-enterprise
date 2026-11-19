@@ -39,6 +39,19 @@ allows manual entry but does not prove access. Execution mode follows the
 harness; saved tokens require Codex. **Experimental Dedicated OpenClaw** shows
 the runtime-build warning; Embedded OpenClaw does not.
 
+**Native Plugins Unrestricted**, **Native Plugins Empty Allowlist** and
+**Native Plugins Allowlist** preserve authored policy across Harness switches.
+**Native Plugins Codex Round Trip** retains the Codex-only allowlist when switching
+to OpenClaw and back. OpenClaw uses existing provider admission; this editor does
+not add a stricter permission rule.
+**Native Plugins Deny Conflict** retains a Codex denial; existing server admission
+refuses it when creation is attempted with Codex.
+**Native Plugins Disabled Entry** preserves `plugins.entries.codex.enabled: false`
+through Harness switches. Creation can proceed without a JSON repair because the
+Dedicated Codex runtime overlay enables the required plugin. An absent entry gets
+the normal enabled runtime defaults. These stories simulate API and runtime state;
+they do not prove plugin loading or model execution.
+
 In **Enter another model ID**, switch to **Choose a model from the list** and
 back: listed models survive both switches, focus moves to the active input, and
 other settings persist. Edit the manual ID to another listed model; returning
@@ -153,6 +166,13 @@ during failed or pending reads.
 Plugin stories simulate catalogs, Secret metadata, and policy capabilities; they
 do not prove installation, invocation access, runtime enforcement, or live Agent
 turns.
+
+In **Pages/Agent detail → Choose tools for a connected Slack account**, select the
+simulated account and load tools. Retry after the simulated permission error.
+Enable a tool, open **Tool policy**, and set **Require approval for** to **Every
+action**. Confirm unsupported settings are disabled. Save, reopen, and verify the
+selection. Disable the tool to remove its approval setting. The displayed note
+explains that Gateway approval does not cover direct credentialed scripts.
 
 In **Create Agent / Discover plugins with a service account token**, expand
 **Access and credential setup** and inspect its links. Collapse it; at 390×844

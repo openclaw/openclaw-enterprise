@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ControllerWorkerOptions } from "../../apps/controller/src/worker.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import type { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 
 type Setup = ReturnType<typeof createWorkerRevisionFixtures>["setup"];
@@ -140,10 +140,17 @@ export async function renewLeaseDuringSlowHealth(
   assert.equal(active?.activeRevisionId, candidate.id);
 }
 
+// Past the worker's startup warning window (HEALTH_STARTUP_WARNING_MS).
+const AFTER_STARTUP_WINDOW_MS = 30_000;
+
 export async function preserveRetryBudgetAfterHealthFailure(context: TestContext, setup: Setup) {
+  let now = 0;
   const fixture = await setup(context, {
     leaseDurationMs: 1_200,
+    healthClock: () => now,
     async onHealthy() {
+      // Every check after the first runs past the startup warning window.
+      now = AFTER_STARTUP_WINDOW_MS;
       throw new Error("readiness sink unavailable");
     },
   });
@@ -161,7 +168,20 @@ export async function preserveRetryBudgetAfterHealthFailure(context: TestContext
   );
   const completed = await fixture.work(candidate, "succeeded");
   assert.equal(completed.attempt_count, 1);
-  assert.ok(events.some(({ code }) => code === "HEALTH_UNAVAILABLE"));
+  // Each failed check names the step that failed and the error class, never the error's
+  // message (finding 3259). Past the startup window only the first check after start warns,
+  // because a sidecar can still be starting; the checks after it, during the same 2.6 s pass,
+  // fail the same way and log errors, so an outage that lasts is not hidden.
+  const failures = events
+    .filter(({ code }) => code === "HEALTH_UNAVAILABLE")
+    .map(({ event, code, dependency, cause }) => ({ event, code, dependency, cause }));
+  const failure = { code: "HEALTH_UNAVAILABLE", dependency: "readiness-report", cause: "Error" };
+  assert.ok(failures.length >= 2, "the pass must outlast more than one health check");
+  assert.deepEqual(failures, [
+    { event: "worker.health-warning", ...failure },
+    ...failures.slice(1).map(() => ({ event: "worker.error", ...failure })),
+  ]);
+  assert.equal(JSON.stringify(events).includes("readiness sink unavailable"), false);
   assert.equal(
     events.some(({ code }) => code === "CLAIM_LOST"),
     false,
@@ -170,4 +190,70 @@ export async function preserveRetryBudgetAfterHealthFailure(context: TestContext
     events.some(({ event }) => event === "worker.health"),
     false,
   );
+}
+
+function healthFailures(events: readonly WorkerEvent[]) {
+  return events
+    .filter(({ code }) => code === "HEALTH_UNAVAILABLE")
+    .map(({ event, dependency }) => ({ event, dependency }));
+}
+
+/**
+ * A dependency that has not passed once yet may still be starting (the broker is the Worker
+ * Pod's main container, so it starts after the worker's native sidecar): its failures warn
+ * during the startup window and are errors once the window is over (finding 3297).
+ */
+export async function warnWhileDependencyStarts(context: TestContext, setup: Setup) {
+  let now = 0;
+  const fixture = await setup(context, {
+    healthClock: () => now,
+    async onHealthy() {
+      throw new Error("readiness sink starting");
+    },
+  });
+  const events: WorkerEvent[] = [];
+  await fixture.start(fixture.compute, { emit: (event) => events.push(event) });
+  await waitFor("two failed health checks inside the startup window", async () =>
+    healthFailures(events).length >= 2 ? true : undefined,
+  );
+  const warned = healthFailures(events).length;
+  now = AFTER_STARTUP_WINDOW_MS;
+  await waitFor("a failed health check after the startup window", async () =>
+    healthFailures(events).length > warned ? true : undefined,
+  );
+  const failures = healthFailures(events);
+  const failure = { dependency: "readiness-report" };
+  assert.deepEqual(failures, [
+    ...failures.slice(0, warned).map(() => ({ event: "worker.health-warning", ...failure })),
+    ...failures.slice(warned).map(() => ({ event: "worker.error", ...failure })),
+  ]);
+  assert.equal(
+    events.some(({ event }) => event === "worker.health"),
+    false,
+  );
+}
+
+/** A dependency that passed once is not starting: its next failure is an error at once. */
+export async function errorAfterDependencyPassed(context: TestContext, setup: Setup) {
+  let checks = 0;
+  const fixture = await setup(context, {
+    // The clock never leaves the startup window.
+    healthClock: () => 0,
+    async onHealthy() {
+      checks += 1;
+      if (checks > 1) {
+        throw new Error("readiness sink lost");
+      }
+    },
+  });
+  const events: WorkerEvent[] = [];
+  await fixture.start(fixture.compute, { emit: (event) => events.push(event) });
+  await waitFor("a failed health check after a passing one", async () =>
+    healthFailures(events).length >= 1 ? true : undefined,
+  );
+  assert.equal(events.filter(({ event }) => event === "worker.health").length, 1);
+  assert.deepEqual(healthFailures(events)[0], {
+    event: "worker.error",
+    dependency: "readiness-report",
+  });
 }

@@ -9,7 +9,7 @@ import {
   parseProductionChart,
   productionCollectorValues,
   renderExecutionChart,
-} from "../helpers/production-chart.mjs";
+} from "../helpers/production-chart.ts";
 import {
   gatewayRoutingValues,
   gatewaySandboxValues,

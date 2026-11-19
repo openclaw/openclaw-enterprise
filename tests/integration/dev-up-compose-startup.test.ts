@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdir, readdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import test from "node:test";
 
-import { browserEnvironment } from "../helpers/compose.mjs";
+import { browserEnvironment } from "../helpers/compose.ts";
 import {
   composeInvocations,
   composeOptions,
@@ -11,7 +11,6 @@ import {
   customRuntimeOverride,
   defaultRuntimeImage,
   matchingInstallationId,
-  mismatchedInstallationId,
   perImageOverride,
   prepareLifecycleCommands,
   publicControllerOverride,
@@ -118,10 +117,39 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
   assert.ok(result.stdout.includes(`${fixture.occCli} installation get`));
   assert.doesNotMatch(result.stdout + result.stderr, new RegExp(serviceKey));
 
-  const outputMode = (await stat(keyOutput)).mode & 0o777;
-  assert.equal(outputMode & 0o077, 0);
+  const output = await open(keyOutput, "r");
+  let keyDocument: string;
+  try {
+    const outputMode = (await output.stat()).mode & 0o777;
+    assert.equal(outputMode & 0o077, 0);
+    keyDocument = await output.readFile("utf8");
+  } finally {
+    await output.close();
+  }
 
   const dockerLogs = await readEngineInvocations(fixture.dockerLog);
+  const config = dockerLogs.find(
+    (entry) => entry.args.includes("config") && entry.env.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE,
+  );
+  assert.ok(config);
+  const passwordPath = config.env.OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE;
+  const keyPath = config.env.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE;
+  assert.ok(passwordPath && keyPath);
+  const password = await readFile(passwordPath, "utf8");
+  const key = await readFile(keyPath, "utf8");
+  assert.equal(password, "openclaw-development-password");
+  assert.match(key, /^occ_[A-Za-z0-9_-]{43}$/);
+  assert.deepEqual(JSON.parse(keyDocument), { data: { key } });
+  for (const path of [passwordPath, keyPath]) {
+    assert.equal((await stat(path)).mode & 0o777, 0o600);
+  }
+  assert.equal((await stat(join(keyPath, ".."))).mode & 0o777, 0o700);
+  assert.ok(!(result.stdout + result.stderr + JSON.stringify(dockerLogs)).includes(key));
+  assert.ok(!(result.stdout + result.stderr + JSON.stringify(dockerLogs)).includes(password));
+  assert.equal(
+    dockerLogs.some((entry) => entry.args.includes("cp")),
+    false,
+  );
   assert.ok(
     dockerLogs.some((entry) => entry.args.join(" ") === `image inspect ${defaultRuntimeImage}`),
   );
@@ -442,6 +470,8 @@ for (const selection of ["environment", "explicit", "default", "interpolated"] a
             OCC_DEVELOPMENT_BROWSER_PORT: "8443",
             OCC_DEVELOPMENT_BROWSER_TLS_CERT: "/fixture/tls.crt",
             OCC_DEVELOPMENT_BROWSER_TLS_KEY: "/fixture/tls.key",
+            OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE: "/fixture/admin-password",
+            OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE: "/fixture/admin-service-key",
           },
         },
       );
@@ -463,7 +493,7 @@ test("Compose shutdown keeps copied service keys and leaves Namespace networks t
   const key = join(fixture.directory, created, "initial-admin-service-key.json");
   assert.ok(started.stdout.includes(`Service key file: ${key}`), started.stdout);
   const copy = await readFile(key, "utf8");
-  assert.match(copy, new RegExp(serviceKey));
+  assert.match(JSON.parse(copy).data.key, /^occ_[A-Za-z0-9_-]{43}$/);
 
   // Older launchers shared one list across all projects in this checkout.
   const [browser] = (await readdir(fixture.directory)).filter((name) =>
@@ -580,7 +610,7 @@ test("dev-up fails closed when the worker exits before readiness", async (t) => 
   );
 });
 
-test("dev-up preserves a copied key when the authenticated installation check is rejected", async (t) => {
+test("dev-up preserves its precreated key when the authenticated installation check is rejected", async (t) => {
   const fixture = await createFixture(t, { scenario: "api-unauthorized" });
   const keyOutput = join(fixture.directory, "unauthorized-key.json");
 
@@ -592,10 +622,15 @@ test("dev-up preserves a copied key when the authenticated installation check is
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /authorization failed: occ could not read the Installation/);
   assert.doesNotMatch(result.stdout + result.stderr, new RegExp(serviceKey));
-  assert.match(await readFile(keyOutput, "utf8"), new RegExp(serviceKey));
+  await assert.rejects(readFile(keyOutput), { code: "ENOENT" });
+  const bundle = result.stdout.match(/^Bootstrap input files: (.+)$/m)?.[1];
+  assert.ok(bundle);
+  const retained = JSON.parse(await readFile(join(bundle, "client-key.json"), "utf8"));
+  assert.match(retained.data.key, /^occ_[A-Za-z0-9_-]{43}$/);
+  assert.ok(!(result.stdout + result.stderr).includes(retained.data.key));
 });
 
-test("dev-up rejects an authenticated installation response for a different Installation", async (t) => {
+test("dev-up rejects an Installation response without its server-owned ID", async (t) => {
   const fixture = await createFixture(t, { scenario: "api-mismatch" });
   const keyOutput = join(fixture.directory, "mismatch-key.json");
 
@@ -605,9 +640,48 @@ test("dev-up rejects an authenticated installation response for a different Inst
   );
 
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, new RegExp(`Installation ID mismatch.*${mismatchedInstallationId}`));
-  assert.doesNotMatch(result.stdout + result.stderr, new RegExp(serviceKey));
-  assert.match(await readFile(keyOutput, "utf8"), new RegExp(serviceKey));
+  assert.match(result.stderr, /API did not return an Installation ID/);
+  await assert.rejects(readFile(keyOutput), { code: "ENOENT" });
+});
+
+test("dev-up resolves Compose env-file password precedence before preparing inputs", async (t) => {
+  for (const [override, expected] of [
+    [undefined, " synthetic-env-file-password "],
+    ["synthetic-shell-password", "synthetic-shell-password"],
+    [" synthetic-shell-password \n", " synthetic-shell-password "],
+    [" synthetic-shell-password \r\n", " synthetic-shell-password "],
+  ]) {
+    const fixture = await createFixture(t);
+    await writeFile(fixture.emptyEnv, 'OPENCLAW_DEV_PASSWORD=" synthetic-env-file-password "\n');
+    delete fixture.env.OPENCLAW_DEV_PASSWORD;
+    if (override !== undefined) {
+      fixture.env.OPENCLAW_DEV_PASSWORD = override;
+    }
+    const result = await runDevUp(["--", ...composeOptions(fixture)], fixture.env);
+    assert.equal(result.status, 0, result.stderr);
+    const bundle = result.stdout.match(/^Bootstrap input files: (.+)$/m)?.[1];
+    assert.ok(bundle);
+    const password = await readFile(join(bundle, "admin-password"), "utf8");
+    assert.equal(password === expected, true);
+    assert.ok(!(result.stdout + result.stderr).includes(password));
+  }
+});
+
+test("dev-up refuses retained PostgreSQL storage before starting Compose", async (t) => {
+  const fixture = await createFixture(t, { scenario: "postgres-volume-exists" });
+  const keyOutput = join(fixture.directory, "unregistered-key.json");
+  const result = await runDevUp(
+    ["--key-output", keyOutput, "--", ...composeOptions(fixture)],
+    fixture.env,
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /PostgreSQL storage already exists.*retained client-key.json/);
+  await assert.rejects(readFile(keyOutput), { code: "ENOENT" });
+  const calls = await readEngineInvocations(fixture.dockerLog);
+  assert.equal(
+    calls.some(({ args }) => args[0] === "compose" && args.includes("up")),
+    false,
+  );
 });
 
 // Container engine selection and Compose file arguments
@@ -631,7 +705,9 @@ test("dev-up selects Podman when no docker command exists and completes the supp
     ),
   );
   assert.doesNotMatch(result.stdout + result.stderr, new RegExp(serviceKey));
-  assert.match(await readFile(keyOutput, "utf8"), new RegExp(serviceKey));
+  const retained = JSON.parse(await readFile(keyOutput, "utf8"));
+  assert.match(retained.data.key, /^occ_[A-Za-z0-9_-]{43}$/);
+  assert.ok(!(result.stdout + result.stderr).includes(retained.data.key));
 
   const invocations = await readEngineInvocations(fixture.podmanLog);
   assert.ok(invocations.some((entry) => entry.args[0] === "info"));
@@ -665,13 +741,9 @@ test("dev-up selects Podman when no docker command exists and completes the supp
   assert.ok(
     invocations.some((entry) => entry.args.includes("ps") && !entry.args.includes("--all")),
   );
-  assert.ok(
-    invocations.some(
-      (entry) =>
-        entry.args[0] === "cp" &&
-        entry.args[1] ===
-          "bootstrap-container-id:/var/lib/openclaw/bootstrap/initial-admin-service-key.json",
-    ),
+  assert.equal(
+    invocations.some((entry) => entry.args.includes("cp")),
+    false,
   );
   assert.equal(await readEngineInvocations(fixture.dockerLog).then((entries) => entries.length), 0);
 });
@@ -1197,7 +1269,10 @@ test("explicit Docker Compute keeps the Compose profile through both entry point
     assert.match(result.stdout, /Container engine: Docker/);
   }
   const starts = (await readEngineInvocations(fixture.dockerLog)).filter(
-    (entry) => entry.args[0] === "compose" && entry.args.includes("up"),
+    (entry) =>
+      entry.args[0] === "compose" &&
+      entry.args.includes("up") &&
+      !entry.args.includes("--no-start"),
   );
   assert.equal(starts.length, 2);
 });

@@ -6,7 +6,7 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
+import { defaultK3sImage } from "../../scripts/ci/prepare.ts";
 import {
   assertStderrMatch,
   fixtureImageCommands,

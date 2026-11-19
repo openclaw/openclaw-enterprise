@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 
 const scenarioPresets = {
+  "native-restart": ["Codex"],
+  "http-chat": ["OpenClaw", "Codex"],
   "namespace-lifecycle": ["OpenClaw"],
   "oidc-agent-chat": ["OpenClaw"],
   "sandbox-policy": ["Codex"],
@@ -33,6 +35,7 @@ export function selectQaMatrix(env = process.env) {
   const defaultScenarios = allScenarios.filter(
     (name) =>
       ![
+        "native-restart",
         "namespace-lifecycle",
         "oidc-agent-chat",
         "sandbox-policy",
@@ -51,6 +54,12 @@ export function selectQaMatrix(env = process.env) {
     "invalid QA scenario selection",
   );
   assert.equal(new Set(scenarios).size, scenarios.length, "duplicate QA scenario selection");
+  const nativeRestart = scenarios.includes("native-restart");
+  if (nativeRestart) {
+    assert.equal(scenarios.length, 1, "native-restart requires an exclusive QA selection");
+    assert.equal(installation, "kubernetes", "native-restart requires Kubernetes");
+    assert.equal(preset, "Codex", "native-restart requires the Codex preset");
+  }
   const oidcAgentChat = scenarios.includes("oidc-agent-chat");
   if (oidcAgentChat) {
     assert.equal(scenarios.length, 1, "oidc-agent-chat requires an exclusive QA selection");
@@ -83,6 +92,7 @@ export function selectQaMatrix(env = process.env) {
       scenarios: scenarios.filter(
         (scenario) =>
           ![
+            "native-restart",
             "namespace-lifecycle",
             "sandbox-policy",
             "scratch-volume",
@@ -96,6 +106,7 @@ export function selectQaMatrix(env = process.env) {
       unselected: allScenarios.filter(
         (scenario) =>
           ![
+            "native-restart",
             "namespace-lifecycle",
             "sandbox-policy",
             "scratch-volume",
@@ -111,6 +122,7 @@ export function selectQaMatrix(env = process.env) {
       notApplicable: allScenarios.filter(
         (scenario) =>
           ![
+            "native-restart",
             "namespace-lifecycle",
             "sandbox-policy",
             "scratch-volume",
@@ -143,11 +155,42 @@ export function selectQaMatrix(env = process.env) {
   );
   const activeScenarios = [...new Set(cells.flatMap((cell) => cell.scenarios))];
   const repository = activeScenarios.some((name) => name.startsWith("git-"));
-  const requiredEnv = activePresets.map((name) =>
-    name === "Codex" && !codexSearchConfig
-      ? "OCC_TEST_QA_CODEX_TOKEN_FILE"
-      : "OCC_TEST_QA_OPENAI_KEY_FILE",
-  );
+  const requiredEnv = [];
+  if (nativeRestart) {
+    requiredEnv.push(
+      "OCC_TEST_KUBERNETES_KUBECONFIG",
+      "OCC_TEST_KUBERNETES_CONTEXT",
+      "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
+      "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+      "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+      "OCC_TEST_DATABASE_URL",
+      "OPENCLAW_ENTERPRISE_CI_STATE",
+      "OPENCLAW_ENTERPRISE_CI_PREFIX",
+      "OPENAI_API_KEY",
+      "OCC_TEST_OPENAI_MODEL",
+      "OCC_TEST_GATEWAY_CA_CERT_PATH",
+      "OCC_TEST_GATEWAY_CA_KEY_PATH",
+    );
+  }
+  for (const name of activePresets) {
+    const selectedScenarios = cells
+      .filter((cell) => cell.preset === name)
+      .flatMap((cell) => cell.scenarios);
+    if (
+      name === "OpenClaw" ||
+      selectedScenarios.some((scenario) => ["http-chat", "codex-search-config"].includes(scenario))
+    ) {
+      if (!requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE")) {
+        requiredEnv.push("OCC_TEST_QA_OPENAI_KEY_FILE");
+      }
+    }
+    if (
+      name === "Codex" &&
+      selectedScenarios.some((scenario) => !["http-chat", "codex-search-config"].includes(scenario))
+    ) {
+      requiredEnv.push("OCC_TEST_QA_CODEX_TOKEN_FILE");
+    }
+  }
   if (oidcAgentChat) {
     requiredEnv.push(
       "OCC_TEST_KUBERNETES_KUBECONFIG",
@@ -200,6 +243,7 @@ export function selectQaMatrix(env = process.env) {
   assert.ok(
     exclusions.length === 0 ||
       activeScenarios.length > 0 ||
+      nativeRestart ||
       namespaceLifecycle ||
       sandboxPolicy ||
       scratchVolume ||
@@ -278,6 +322,7 @@ export function selectQaMatrix(env = process.env) {
     pluginInstall,
     linearRead,
     harnessOverrides,
+    nativeRestart,
     presets,
     cells,
     scenarios,

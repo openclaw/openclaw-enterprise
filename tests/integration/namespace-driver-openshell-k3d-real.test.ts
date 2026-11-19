@@ -50,13 +50,13 @@ import {
 } from "../helpers/openshell-sandbox-workflows.mjs";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { redactedQaTail } from "../helpers/qa-secrets.mjs";
+import { redactedQaTail } from "../helpers/qa-secrets.ts";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import {
   createEnvoyWorkspaceGatewayPlan,
   ensureEnvoyGatewayControllers,
-  startWorkspaceGatewayHostRelay,
 } from "../helpers/envoy-workspace-gateway.mjs";
+import { startWorkspaceGatewayHostRelay } from "../helpers/workspace-gateway-host-relay.ts";
 
 const execute = promisify(execFile);
 const selected = process.env.OCC_TEST_NAMESPACE_OPENSHELL_REAL === "1";
@@ -139,7 +139,6 @@ test(
       openShellHelmPath: env.OCC_TEST_OPENSHELL_HELM,
       openShellHelmChart: env.OCC_TEST_OPENSHELL_HELM_CHART,
       openShellWorkspaceHelmChart: env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART,
-      openShellRuntimeClass: env.OCC_TEST_OPENSHELL_RUNTIME_CLASS,
     });
     const resourceMetadata = async (kind: string, name: string, namespace?: string) =>
       metadata(await fixture.resource(kind, name, namespace));
@@ -231,9 +230,11 @@ test(
       { platformNamespace },
       gatewayHelpers,
     );
+    const gatewayImage = env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE;
+    assert.ok(gatewayImage, "OCC_TEST_KUBERNETES_GATEWAY_IMAGE must select the relay image.");
     const gatewayEndpointPort = await startWorkspaceGatewayHostRelay(context, workspaceGateway, {
       ...gatewayHelpers,
-      gatewayImage: env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE,
+      gatewayImage,
     });
     const configuration = createOpenShellInstallationConfiguration({
       authentication: identity.authentication,
@@ -241,7 +242,6 @@ test(
       cluster: env.OCC_TEST_KUBERNETES_CONTEXT,
       gatewayImage: env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE,
       codexImage: env.OCC_TEST_KUBERNETES_AGENT_IMAGE,
-      openShellRuntimeClass: env.OCC_TEST_OPENSHELL_RUNTIME_CLASS,
     }) as ReturnType<typeof createOpenShellInstallationConfiguration> & {
       backend: { configuration: { serviceName: string; insecureTransport: string } }[];
       drivers: {
@@ -332,7 +332,6 @@ test(
       "--set=sandboxServiceAccount.create=false",
       `--set-string=sandboxServiceAccount.name=${sandboxAccount}`,
       "--set=podSecurityContext.seccompProfile.type=RuntimeDefault",
-      `--set-string=server.defaultRuntimeClassName=${env.OCC_TEST_OPENSHELL_RUNTIME_CLASS}`,
       `--set-json=gatewayConfig.openshell\\.drivers\\.kubernetes.allowed_pod_labels=${JSON.stringify(OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST)}`,
       ...openShellChartImageValues("gateway.image", env.OCC_TEST_OPENSHELL_GATEWAY_IMAGE),
       ...openShellChartImageValues("sandboxRuntime.image", env.OCC_TEST_OPENSHELL_SANDBOX_IMAGE),
@@ -541,7 +540,7 @@ test(
       }))!;
     };
     const drivers = await loadDrivers(true);
-    const apiLogs: Record<string, unknown>[] = [];
+    const apiLogs: unknown[] = [];
     const apiDiagnostic = () =>
       redactedQaTail(
         JSON.stringify({ events: apiLogs.slice(-12), transportFailures }),

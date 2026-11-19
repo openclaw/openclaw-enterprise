@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { chmod, lstat, mkdtemp, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
@@ -22,10 +21,10 @@ import {
   SecretReference,
 } from "../../packages/contracts/src/api/common.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
+import { composePostgresDevelopment } from "../helpers/password-hasher.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { injectJson } from "../helpers/inject-json.mjs";
@@ -55,11 +54,8 @@ interface BootstrapEnvironment extends ChildEnvironment {
   OCC_AUTH_BASE_URL: string;
   OCC_AGENT_NATIVE_ADMIN_DOMAIN: string;
   OCC_AUTH_SECRET: string;
-  OCC_BOOTSTRAP_SERVICE_KEY_FILE: string;
-}
-
-interface ProductionBootstrapEnvironment extends BootstrapEnvironment {
-  OCC_BOOTSTRAP_PASSWORD_FILE: string;
+  OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE: string;
+  OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE: string;
 }
 
 interface BootstrapEnvironmentOptions {
@@ -109,23 +105,18 @@ function jsonEvent(output: string, event: string): Record<string, unknown> {
   return line;
 }
 
-function serviceKeyOutput(text: string) {
-  const parsed: unknown = JSON.parse(text);
-  const output = jsonRecord(parsed);
-  const data = jsonRecord(output.data);
-  return {
-    meta: { installationId: stringField(jsonRecord(output.meta), "installationId") },
-    data: {
-      id: stringField(data, "id"),
-      servicePrincipalId: stringField(data, "servicePrincipalId"),
-      key: stringField(data, "key"),
-      name: stringField(data, "name"),
-    },
-  };
-}
-
-async function readServiceKeyOutput(path: string) {
-  return serviceKeyOutput(await readFile(path, "utf8"));
+async function assertStoredAttempt(attempt: Record<string, unknown>) {
+  await withPool(failureDatabaseUrl, async (pool: Pool) => {
+    const stored = await pool.query(
+      "SELECT reference_id, metadata, expires_at FROM occ.apikey WHERE id = $1",
+      [stringField(attempt, "serviceKeyId")],
+    );
+    assert.equal(stored.rowCount, 1);
+    assert.equal(stored.rows[0].reference_id, attempt.servicePrincipalId);
+    const metadata = jsonRecord(JSON.parse(stored.rows[0].metadata));
+    assert.equal(metadata.installationId, attempt.installationId);
+    assert.equal(new Date(stored.rows[0].expires_at).toISOString(), attempt.serviceKeyExpiresAt);
+  });
 }
 
 function isConfigurationDocument(value: unknown): value is OpenClawConfigurationDocument {
@@ -134,7 +125,7 @@ function isConfigurationDocument(value: unknown): value is OpenClawConfiguration
 
 const failureDatabaseUrl = process.env.OCC_BOOTSTRAP_FAILURE_DATABASE_URL;
 const commitAcknowledgementFaultFixture = fileURLToPath(
-  new URL("../fixtures/postgres-commit-ack-fault.mjs", import.meta.url),
+  new URL("../fixtures/postgres-commit-ack-fault.ts", import.meta.url),
 );
 const requiresFailurePostgres = {
   skip: failureDatabaseUrl
@@ -318,7 +309,7 @@ function productionEnvironment({
   directory,
   email,
   name,
-}: BootstrapEnvironmentOptions): ProductionBootstrapEnvironment {
+}: BootstrapEnvironmentOptions): BootstrapEnvironment {
   assert.ok(failureDatabaseUrl);
   return productionBootstrapEnvironment({
     databaseUrl: failureDatabaseUrl,
@@ -348,7 +339,7 @@ function developmentEnvironment({
 // Most cases run the Job's code in this process (bootstrapInstallationInProcess, the function
 // scripts/bootstrap-installation.mjs runs), which saves a Node start per run. These run the
 // real script, for its exit status and its output streams: the lost COMMIT acknowledgement
-// (its fault loads with --import), the retained-output refusal, the known failure, the fresh
+// (its fault loads with --import), the known failure, the fresh
 // full path and the fast path.
 async function runBootstrap(environment: ChildEnvironment): Promise<BootstrapResult> {
   return bootstrapInstallationInProcess(environment);
@@ -378,14 +369,11 @@ async function bootstrapWithLostCommitAcknowledgement(environment: BootstrapEnvi
   const failure = jsonEvent(result.stderr, "installation.bootstrap-failed");
   assert.equal(failure.code, "COMMIT_OUTCOME_UNKNOWN");
   const attempt = jsonRecord(failure.attempt);
-  assert.equal(attempt.serviceKeyFile, environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE);
-  assert.equal(existsSync(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), true);
-  const serviceKeyOutput = await readServiceKeyOutput(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE);
+  await assertStoredAttempt(attempt);
   // The logged attempt keeps the IDs the run assigned, each in its OCC format (finding 2246).
   assert.match(stringField(attempt, "installationId"), /^ins_[0-9a-f-]{36}$/);
   assert.match(stringField(attempt, "principalId"), /^prn_[0-9a-f-]{36}$/);
   assert.match(stringField(attempt, "servicePrincipalId"), /^spn_[0-9a-f-]{36}$/);
-  assert.equal(attempt.servicePrincipalId, serviceKeyOutput.data.servicePrincipalId);
   assert.deepEqual(await rowCounts(), {
     installations: 1,
     bootstrap_audits: 1,
@@ -397,7 +385,7 @@ async function bootstrapWithLostCommitAcknowledgement(environment: BootstrapEnvi
     namespaces: 1,
     namespace_work: 1,
   });
-  return { attempt, serviceKeyOutput };
+  return { attempt };
 }
 
 async function request(
@@ -423,10 +411,6 @@ async function markNamespaceReady(namespaceId: string) {
   await withPool(failureDatabaseUrl, async (pool: Pool) => {
     await pool.query("UPDATE occ.namespaces SET status = 'ready' WHERE id = $1", [namespaceId]);
   });
-}
-
-function sha256(value: string) {
-  return createHash("sha256").update(value).digest("hex");
 }
 
 function passiveComputeDriver(): ComputeDriver {
@@ -463,7 +447,7 @@ async function passiveDrivers(): Promise<InstallationRuntimeDrivers> {
   };
 }
 
-function assertBootstrapRaceOutcome(results: BootstrapResult[], sharedOutput = false) {
+function assertBootstrapRaceOutcome(results: BootstrapResult[]) {
   const successful = results.filter((result) => result.ok === true);
   const failed = results.filter((result) => result.ok === false);
   assert.equal(successful.length, 1, "expected one successful bootstrap");
@@ -479,15 +463,30 @@ function assertBootstrapRaceOutcome(results: BootstrapResult[], sharedOutput = f
     (line) => line.event === "installation.bootstrap-failed",
   );
   assert.ok(failure, "expected an installation.bootstrap-failed event");
-  if (sharedOutput && failure.code === "BOOTSTRAP_OUTPUT_EXISTS") {
-    // The winner wrote an output before the other run finished checking both destinations.
-    assert.equal(failure.attempt, undefined);
-  } else {
-    assert.ok(failure.attempt, "expected a failed bootstrap attempt");
-  }
+  assert.ok(failure.attempt, "expected a failed bootstrap attempt");
   const [winnerEvent] = bootstrapped;
   assert.ok(winnerEvent);
   return { winnerIndex: results.indexOf(winner), winnerEvent };
+}
+
+async function assertRaceAuthenticationState(results: BootstrapResult[], counts: BootstrapCounts) {
+  const loser = results.find((result) => !result.ok);
+  assert.ok(loser);
+  const attempt = jsonRecord(jsonEvent(loser.stderr, "installation.bootstrap-failed").attempt);
+  await withPool(failureDatabaseUrl, async (pool: Pool) => {
+    // The attempt receipt, not the presence of a precreated file, identifies any partial effects.
+    const users = await pool.query('SELECT id FROM occ."user" WHERE id = $1', [
+      attempt.authAccountId,
+    ]);
+    const keys = await pool.query("SELECT id FROM occ.apikey WHERE id = $1", [
+      attempt.serviceKeyId,
+    ]);
+    assert.equal(counts.users, 1 + users.rows.length);
+    assert.equal(counts.service_keys, 1 + keys.rows.length);
+    if (keys.rowCount === 1) {
+      await assertStoredAttempt(attempt);
+    }
+  });
 }
 
 function assertSingleDurableBootstrapSeed(counts: BootstrapCounts) {
@@ -513,9 +512,9 @@ function assertSingleDurableBootstrapSeed(counts: BootstrapCounts) {
   );
 }
 
-for (const sharedOutput of [false, true]) {
+for (const sharedInputs of [false, true]) {
   test(
-    `concurrent production bootstraps ${sharedOutput ? "with shared output paths" : "with separate output paths"} commit at most one seed`,
+    `concurrent production bootstraps ${sharedInputs ? "with shared inputs" : "with separate inputs"} commit at most one seed`,
     requiresFailurePostgres,
     async (context) => {
       await resetFailureDatabase();
@@ -523,7 +522,7 @@ for (const sharedOutput of [false, true]) {
       const firstDirectory = await privateOutputDirectory("openclaw-bootstrap-race-a-");
       const directories = [
         firstDirectory,
-        sharedOutput ? firstDirectory : await privateOutputDirectory("openclaw-bootstrap-race-b-"),
+        sharedInputs ? firstDirectory : await privateOutputDirectory("openclaw-bootstrap-race-b-"),
       ];
       context.after(async () => {
         await resetFailureDatabase();
@@ -543,43 +542,20 @@ for (const sharedOutput of [false, true]) {
       );
 
       const results = await Promise.all(environments.map((env) => runBootstrap(env)));
-      const { winnerEvent: winner } = assertBootstrapRaceOutcome(results, sharedOutput);
+      const { winnerEvent: winner } = assertBootstrapRaceOutcome(results);
       const counts = await rowCounts();
       assertSingleDurableBootstrapSeed(counts);
-      const winnerIndex = environments.findIndex(
-        (environment) => environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE === winner.serviceKeyFile,
-      );
-      assert.notEqual(winnerIndex, -1);
-      const loserIndex = winnerIndex === 0 ? 1 : 0;
-      const loserEnvironment = environments[loserIndex];
-      const outputEnvironment = environments[sharedOutput ? 0 : winnerIndex];
-      assert.ok(loserEnvironment && outputEnvironment);
-      const loserCreatedServiceKey =
-        !sharedOutput && existsSync(loserEnvironment.OCC_BOOTSTRAP_SERVICE_KEY_FILE);
-      if (sharedOutput) {
-        assert.ok([1, 2].includes(counts.service_keys));
-        assert.ok([1, 2].includes(counts.users));
-      } else {
-        assert.equal(counts.service_keys, loserCreatedServiceKey ? 2 : 1);
-        assert.equal(counts.users, loserCreatedServiceKey ? 2 : 1);
-      }
-      assert.equal(existsSync(outputEnvironment.OCC_BOOTSTRAP_PASSWORD_FILE), true);
-      assert.equal(existsSync(outputEnvironment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), true);
-      const output = await readServiceKeyOutput(outputEnvironment.OCC_BOOTSTRAP_SERVICE_KEY_FILE);
-      assert.equal(output.meta.installationId, winner.installationId);
-      assert.equal(output.data.servicePrincipalId, winner.servicePrincipalId);
-      assert.equal(output.data.id, winner.serviceKeyId);
-
-      for (const [index, environment] of environments.entries()) {
-        if (index === winnerIndex || sharedOutput) {
-          continue;
-        }
-        assert.equal(existsSync(environment.OCC_BOOTSTRAP_PASSWORD_FILE), loserCreatedServiceKey);
-        assert.equal(
-          existsSync(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE),
-          loserCreatedServiceKey,
+      await assertRaceAuthenticationState(results, counts);
+      await assertStoredAttempt(winner);
+      await withPool(failureDatabaseUrl, async (pool: Pool) => {
+        const incumbent = await pool.query("SELECT id FROM occ.installation");
+        assert.equal(incumbent.rows[0].id, winner.installationId);
+        const binding = await pool.query(
+          "SELECT identity_subject_id FROM occ.iam_access_bindings WHERE identity_subject_id = $1",
+          [winner.servicePrincipalId],
         );
-      }
+        assert.equal(binding.rowCount, 1);
+      });
     },
   );
 }
@@ -611,21 +587,18 @@ test(
       }),
     );
     const results = await Promise.all(environments.map((env) => runBootstrap(env)));
-    const { winnerIndex } = assertBootstrapRaceOutcome(results);
+    const { winnerIndex, winnerEvent } = assertBootstrapRaceOutcome(results);
     const loserIndex = winnerIndex === 0 ? 1 : 0;
     const winnerEnvironment = environments[winnerIndex];
     const loserEnvironment = environments[loserIndex];
     assert.ok(winnerEnvironment && loserEnvironment);
-    const winnerPath = winnerEnvironment.OCC_BOOTSTRAP_SERVICE_KEY_FILE;
-    const winnerOutputBytes = await readFile(winnerPath, "utf8");
-    const winnerOutputDigest = sha256(winnerOutputBytes);
-    const winnerOutput = serviceKeyOutput(winnerOutputBytes);
-    const loserCreatedServiceKey = existsSync(loserEnvironment.OCC_BOOTSTRAP_SERVICE_KEY_FILE);
+    const winnerPath = winnerEnvironment.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE;
+    const apiKey = await readFile(winnerPath, "utf8");
+    await assertStoredAttempt(winnerEvent);
 
     const counts = await rowCounts();
     assertSingleDurableBootstrapSeed(counts);
-    assert.equal(counts.service_keys, loserCreatedServiceKey ? 2 : 1);
-    assert.equal(counts.users, loserCreatedServiceKey ? 2 : 1);
+    await assertRaceAuthenticationState(results, counts);
 
     const reloaded = await composePostgresDevelopment(
       {
@@ -644,10 +617,14 @@ test(
       await passiveDrivers(),
     );
     apps.push(reloaded);
-    assert.equal(sha256(await readFile(winnerPath, "utf8")), winnerOutputDigest);
-    const apiKey = winnerOutput.data.key;
+    // Report only the comparison result, never either credential value on failure.
+    assert.equal(
+      (await readFile(winnerPath, "utf8")) === apiKey,
+      true,
+      "bootstrap key input changed",
+    );
     const installation = await request(reloaded, "GET", "/installation", apiKey, 200);
-    assert.equal(installation.id, winnerOutput.meta.installationId);
+    assert.equal(installation.id, winnerEvent.installationId);
     const namespace = await request(reloaded, "POST", "/namespaces", apiKey, 201, {
       name: "Logging admission",
     });
@@ -713,22 +690,16 @@ test(
     );
     assert.ok(isConfigurationDocument(revision.configuration));
     assert.equal(admittedLoggingLevel(revision.configuration), "warn");
-    if (loserCreatedServiceKey) {
-      const loserOutput = await readServiceKeyOutput(
-        loserEnvironment.OCC_BOOTSTRAP_SERVICE_KEY_FILE,
-      );
-      assert.match(loserOutput.meta.installationId, /^ins_/);
-      assert.match(loserOutput.data.servicePrincipalId, /^spn_/);
-      const rejectedInstallation: Awaited<ReturnType<ControllerApp["inject"]>> = await injectJson(
-        reloaded,
-        "GET",
-        "/installation",
-        {
-          key: loserOutput.data.key,
-        },
-      );
-      assert.ok([401, 403].includes(rejectedInstallation.statusCode), rejectedInstallation.body);
-    }
+    // A losing attempt's supplied key must never acquire the winner's IAM grants.
+    const rejectedInstallation: Awaited<ReturnType<ControllerApp["inject"]>> = await injectJson(
+      reloaded,
+      "GET",
+      "/installation",
+      {
+        key: await readFile(loserEnvironment.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE, "utf8"),
+      },
+    );
+    assert.ok([401, 403].includes(rejectedInstallation.statusCode), rejectedInstallation.body);
   },
 );
 
@@ -743,100 +714,101 @@ test(
       email: `bootstrap-unknown-${randomUUID()}@example.test`,
       name: "Bootstrap unknown production",
     });
-    const { attempt, serviceKeyOutput } = await bootstrapWithLostCommitAcknowledgement(environment);
-    assert.equal(attempt.passwordFile, environment.OCC_BOOTSTRAP_PASSWORD_FILE);
-    assert.equal(existsSync(environment.OCC_BOOTSTRAP_PASSWORD_FILE), true);
-    assert.equal(serviceKeyOutput.meta.installationId, attempt.installationId);
-    assert.equal(serviceKeyOutput.data.id, attempt.serviceKeyId);
+    await bootstrapWithLostCommitAcknowledgement(environment);
+    const repeated = await runBootstrap(environment);
+    assert.equal(repeated.ok, true, repeated.stderr);
+    assert.equal(alreadyBootstrappedEvent(repeated)?.step, "fast-path");
   },
 );
 
 test(
-  "fresh production bootstrap refuses either retained credential output before creating credentials",
+  "invalid bootstrap credential inputs create no authentication or Installation state",
   requiresFailurePostgres,
   async (context) => {
-    const directory = await prepareBootstrapFailureFixture(context, "retained-output");
-    for (const retainPassword of [true, false]) {
-      // Separate directories let the fixture clean up both cases without unlinking the marker here.
-      const env = productionEnvironment({
-        directory: await mkdtemp(join(directory, "attempt-")),
-        email: "retained-output@example.test",
-        name: "Bootstrap retained output",
-      });
-      const password = env.OCC_BOOTSTRAP_PASSWORD_FILE;
-      const serviceKey = env.OCC_BOOTSTRAP_SERVICE_KEY_FILE;
-      const [retained, absent] = retainPassword ? [password, serviceKey] : [serviceKey, password];
-      const marker = "retained-credential-sentinel";
-      const file = await open(retained, "wx+", 0o600);
-      try {
-        await file.writeFile(marker);
-        const before = await file.stat({ bigint: true });
-
-        const result = await runBootstrapScript(env);
-        assert.equal(result.ok, false);
-        const failure = jsonLines(result.stderr).find(
-          (line) => line.event === "installation.bootstrap-failed",
-        );
-        assert.ok(failure);
-        assert.equal(failure.code, "BOOTSTRAP_OUTPUT_EXISTS", result.stderr);
-        assert.equal(failure.attempt, undefined);
-        assert.match(result.stderr, /preserve it and reconcile the original installation/i);
-        for (const privateValue of [directory, marker]) {
-          assert.ok(
-            !(result.stdout + result.stderr).includes(privateValue),
-            "diagnostic disclosed a path or content",
+    const directory = await prepareBootstrapFailureFixture(context, "invalid-inputs");
+    const empty = await rowCounts();
+    // Exercise the real initializer against PostgreSQL. In particular, rejecting a
+    // bad key must happen before persisting the otherwise valid human account.
+    for (const setting of [
+      "OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE",
+      "OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE",
+    ] as const) {
+      for (const kind of [
+        "unset",
+        "missing",
+        "relative",
+        "directory",
+        "oversized",
+        "empty",
+        "invalid-utf8",
+        "nul",
+        "embedded-newline",
+        "invalid-value",
+      ] as const) {
+        await context.test(`${setting}: ${kind}`, async () => {
+          const options = {
+            directory,
+            email: `bootstrap-invalid-${randomUUID()}@example.test`,
+            name: "Invalid bootstrap input",
+          };
+          const environment: ChildEnvironment =
+            setting === "OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE"
+              ? productionEnvironment(options)
+              : developmentEnvironment(options);
+          const passwordPath = environment.OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE;
+          const keyPath = environment.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE;
+          assert.ok(passwordPath && keyPath);
+          const password = await readFile(passwordPath, "utf8");
+          const key = await readFile(keyPath, "utf8");
+          const path = join(directory, "invalid-input");
+          environment[setting] = path;
+          switch (kind) {
+            case "unset":
+              delete environment[setting];
+              break;
+            case "missing":
+              environment[setting] = join(directory, "does-not-exist");
+              break;
+            case "relative":
+              environment[setting] = "relative-credential-input";
+              break;
+            case "directory":
+              environment[setting] = directory;
+              break;
+            default: {
+              const contents = {
+                oversized: Buffer.alloc(4097, "x"),
+                empty: Buffer.alloc(0),
+                "invalid-utf8": Buffer.from([0xff]),
+                nul: Buffer.from("private\u0000input"),
+                "embedded-newline": Buffer.from("private\ninput"),
+                "invalid-value": Buffer.from("invalid"),
+              }[kind];
+              assert.ok(contents);
+              await writeFile(path, contents, { mode: 0o600 });
+            }
+          }
+          const result = await runBootstrapScript(environment);
+          assert.equal(result.ok, false);
+          const failure = jsonEvent(result.stderr, "installation.bootstrap-failed");
+          assert.equal(failure.code, "BOOTSTRAP_INPUT_INVALID");
+          assert.equal(
+            failure.attempt,
+            undefined,
+            "input validation must precede account creation",
           );
-        }
-
-        const after = await lstat(retained, { bigint: true });
-        for (const field of ["dev", "ino", "mode", "size", "ctimeNs", "mtimeNs"] as const) {
-          assert.equal(after[field], before[field]);
-        }
-        // Check the bytes on the original file, never reopen the path we just inspected.
-        const buffer = Buffer.alloc(Buffer.byteLength(marker) + 1);
-        const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
-        assert.equal(buffer.subarray(0, bytesRead).toString("utf8"), marker);
-        await assert.rejects(lstat(absent), { code: "ENOENT" });
-        const counts = await rowCounts();
-        for (const [table, count] of Object.entries(counts)) {
-          assert.equal(count, 0, table);
-        }
-      } finally {
-        await file.close();
+          assert.deepEqual(await rowCounts(), empty);
+          for (const credential of [password, key]) {
+            assert.ok(
+              !(result.stdout + result.stderr).includes(credential),
+              "credential disclosed",
+            );
+          }
+        });
       }
     }
   },
 );
-
-for (const variable of ["OCC_BOOTSTRAP_PASSWORD_FILE", "OCC_BOOTSTRAP_SERVICE_KEY_FILE"] as const) {
-  test(
-    `fresh production bootstrap rejects a trailing separator in ${variable} before creating credentials`,
-    requiresFailurePostgres,
-    async (context) => {
-      const directory = await prepareBootstrapFailureFixture(context, "trailing-separator");
-      const env = productionEnvironment({
-        directory,
-        email: "trailing-separator@example.test",
-        name: "Bootstrap trailing separator",
-      });
-      // lstat can report ENOENT for this path, but an exclusive file create cannot use it.
-      env[variable] += sep;
-      const result = await runBootstrap(env);
-      assert.equal(result.ok, false);
-      const failure = jsonLines(result.stderr).find(
-        (line) => line.event === "installation.bootstrap-failed",
-      );
-      assert.ok(failure);
-      assert.equal(failure.code, "BOOTSTRAP_FAILED");
-      assert.equal("attempt" in failure, false);
-      assert.equal((result.stdout + result.stderr).includes(directory), false, "path disclosed");
-      assert.deepEqual(await readdir(directory), []);
-      for (const [table, count] of Object.entries(await rowCounts())) {
-        assert.equal(count, 0, table);
-      }
-    },
-  );
-}
 
 test(
   "known bootstrap failures preserve created artifacts and report safe diagnostics",
@@ -857,13 +829,18 @@ test(
     assert.equal("cleanupFailures" in failure, false);
     assert.doesNotMatch(result.stderr, /^occ_/m);
     const attempt = jsonRecord(failure.attempt);
-    assert.equal(attempt.passwordFile, environment.OCC_BOOTSTRAP_PASSWORD_FILE);
-    assert.equal(attempt.serviceKeyFile, environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE);
-    assert.equal(existsSync(environment.OCC_BOOTSTRAP_PASSWORD_FILE), true);
-    assert.equal(existsSync(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), true);
-    const serviceKeyOutput = await readServiceKeyOutput(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE);
-    assert.equal(serviceKeyOutput.meta.installationId, attempt.installationId);
-    assert.equal(serviceKeyOutput.data.id, attempt.serviceKeyId);
+    await assertStoredAttempt(attempt);
+    assert.equal("passwordFile" in attempt, false);
+    assert.equal("serviceKeyFile" in attempt, false);
+    for (const path of [
+      environment.OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE,
+      environment.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE,
+    ]) {
+      assert.ok(
+        !(result.stdout + result.stderr).includes(await readFile(path, "utf8")),
+        "credential disclosed",
+      );
+    }
 
     const counts = await rowCounts();
     assert.deepEqual(counts, {
@@ -907,10 +884,6 @@ test(
         (line) => line.event === "installation.bootstrap-failed",
       );
       assert.equal(failure?.code, "INSTALLATION_NAME_INVALID", `${label}: ${result.stderr}`);
-      if (environment.OCC_BOOTSTRAP_PASSWORD_FILE !== undefined) {
-        assert.equal(existsSync(environment.OCC_BOOTSTRAP_PASSWORD_FILE), false, label);
-      }
-      assert.equal(existsSync(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), false, label);
       assert.deepEqual(
         await rowCounts(),
         {
@@ -1016,9 +989,7 @@ test(
       email: `bootstrap-development-${randomUUID()}@openclaw.local`,
       name: "Bootstrap unknown development",
     });
-    const { serviceKeyOutput } = await bootstrapWithLostCommitAcknowledgement(environment);
-    assert.match(serviceKeyOutput.data.key, /^occ_/);
-    assert.equal(serviceKeyOutput.data.name, "bootstrap-admin");
+    await bootstrapWithLostCommitAcknowledgement(environment);
   },
 );
 
@@ -1093,7 +1064,10 @@ test(
     assert.equal(missing.ok, false);
     assert.match(missing.stderr, /No existing Installation to verify/);
     assert.deepEqual(await rowCounts(), empty);
-    assert.deepEqual(await readdir(directory), []);
+    assert.deepEqual((await readdir(directory)).sort(), [
+      "admin-password-input",
+      "admin-service-key-input",
+    ]);
 
     const fresh = await runBootstrap(env);
     assert.equal(fresh.ok, true, fresh.stderr);
@@ -1103,10 +1077,10 @@ test(
     );
     const counts = await rowCounts();
     const files = await readdir(directory);
-    const outputs = await Promise.all(files.map((file) => readFile(join(directory, file))));
+    const inputs = await Promise.all(files.map((file) => readFile(join(directory, file))));
     const readonlyEnv: ChildEnvironment = { ...env };
-    delete readonlyEnv.OCC_BOOTSTRAP_PASSWORD_FILE;
-    delete readonlyEnv.OCC_BOOTSTRAP_SERVICE_KEY_FILE;
+    delete readonlyEnv.OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE;
+    delete readonlyEnv.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE;
     delete readonlyEnv.OCC_BOOTSTRAP_INSTALLATION_NAME;
     const matched = await verify(installationId, readonlyEnv);
     assert.equal(matched.ok, true, matched.stderr);
@@ -1129,7 +1103,7 @@ test(
     assert.deepEqual(await readdir(directory), files);
     assert.deepEqual(
       await Promise.all(files.map((file) => readFile(join(directory, file)))),
-      outputs,
+      inputs,
     );
   },
 );
@@ -1144,10 +1118,8 @@ test(
   "production bootstrap of a fresh database takes the full path",
   requiresFailurePostgres,
   async (context) => {
-    const { fresh } = await bootstrapExistingInstallation(
-      context,
-      "fresh-path",
-      runBootstrapScript,
+    const { fresh } = await bootstrapExistingInstallation(context, "fresh-path", (environment) =>
+      runBootstrapScript(environment, ["--require-fresh"]),
     );
     const result = jsonEvent(fresh.stdout, "installation.bootstrapped");
     // The log line names the new Installation too (finding 2245).
@@ -1166,11 +1138,20 @@ test(
   async (context) => {
     const { environment, fresh } = await bootstrapExistingInstallation(context, "fast-path");
     const counts = await rowCounts();
-    const outputs = await Promise.all(
-      [environment.OCC_BOOTSTRAP_PASSWORD_FILE, environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE].map(
-        async (path) => sha256(await readFile(path, "utf8")),
-      ),
-    );
+    const inputs = [
+      environment.OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE,
+      environment.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE,
+    ];
+    // Changed sources are not rotation. The existing-Installation path must not read/import them.
+    await Promise.all(inputs.map((path) => writeFile(path, "not-a-valid-bootstrap-credential")));
+
+    // A new install must not advertise new generated credentials after merely
+    // verifying an older Installation, even when its source files are invalid.
+    const refused = await runBootstrapScript(environment, ["--require-fresh"]);
+    assert.equal(refused.ok, false);
+    assert.match(refused.stderr, /Fresh installation requires a database without an Installation/);
+    assert.equal(refused.stdout, "");
+    assert.deepEqual(await rowCounts(), counts);
 
     const repeated = await runBootstrapScript(environment);
     assert.equal(repeated.ok, true, repeated.stderr);
@@ -1186,14 +1167,10 @@ test(
       repeated.stderr,
     );
     assert.deepEqual(await rowCounts(), counts);
-    assert.deepEqual(
-      await Promise.all(
-        [environment.OCC_BOOTSTRAP_PASSWORD_FILE, environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE].map(
-          async (path) => sha256(await readFile(path, "utf8")),
-        ),
-      ),
-      outputs,
-    );
+    await Promise.all(inputs.map((path) => rm(path)));
+    const withoutFiles = await runBootstrap(environment);
+    assert.equal(withoutFiles.ok, true, withoutFiles.stderr);
+    assert.deepEqual(await rowCounts(), counts);
   },
 );
 

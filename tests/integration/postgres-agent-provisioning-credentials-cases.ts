@@ -33,7 +33,7 @@ import {
   assertProvisioningSourceWithdrawal,
 } from "../helpers/provisioning-source-status.ts";
 import { PROVISIONING_NOT_COMPLETED } from "../helpers/refusal-text.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { createRuntimeComputeDriver } from "./postgres-agent-provisioning-transport-fixture.ts";
 
 import {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -68,35 +68,30 @@ test(
     const directory = await mkdtemp(
       join(statePath === undefined ? tmpdir() : dirname(statePath), "service-key-dependency-"),
     );
-    const initialKeyPath = join(directory, "initial-service-key.json");
+    const initialKeyPath = join(directory, "initial-service-key");
+    const passwordPath = join(directory, "initial-password");
+    const password = " supplied bootstrap password ";
+    const initialKey = `occ_${randomBytes(32).toString("base64url")}`;
+    const email = `service-key-${randomUUID()}@example.test`;
+    await writeFile(passwordPath, `${password}\r\n`, { mode: 0o600 });
+    await writeFile(initialKeyPath, `${initialKey}\n`, { mode: 0o600 });
     context.after(async () => {
       await rm(directory, { recursive: true, force: true });
     });
 
-    // Use the normal initialization Job so IAM grants and both bootstrap identities
-    // are persisted with the same invariants as a newly installed controller.
-    assert.equal(
-      await bootstrapInstallation({
-        environment: {
-          NODE_ENV: "production",
-          OCC_DATABASE_URL: databaseUrl,
-          OCC_AUTH_SECRET: secret,
-          OCC_AUTH_BASE_URL: origin,
-          OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
-          OCC_BOOTSTRAP_ADMIN_EMAIL: `service-key-${randomUUID()}@example.test`,
-          OCC_BOOTSTRAP_PASSWORD_FILE: join(directory, "initial-password"),
-          OCC_BOOTSTRAP_SERVICE_KEY_FILE: initialKeyPath,
-          OCC_BOOTSTRAP_INSTALLATION_NAME: "Service key dependency test",
-        },
-        args: [],
-      }),
-      0,
-      "the supported installation bootstrap must succeed",
-    );
-    const bootstrap = object(JSON.parse(await readFile(initialKeyPath, "utf8")) as unknown);
-    const initial = object(bootstrap.data);
-    const initialKey = nonemptyString(initial.key);
-    const servicePrincipalId = nonemptyString(initial.servicePrincipalId);
+    const environment = {
+      NODE_ENV: "production",
+      OCC_DATABASE_URL: databaseUrl,
+      OCC_AUTH_SECRET: secret,
+      OCC_AUTH_BASE_URL: origin,
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
+      OCC_BOOTSTRAP_ADMIN_EMAIL: email,
+      OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE: passwordPath,
+      OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE: initialKeyPath,
+      OCC_BOOTSTRAP_INSTALLATION_NAME: "Service key dependency test",
+    };
+    // Use the normal initializer: both identities and grants have production invariants.
+    assert.equal(await bootstrapInstallation({ environment, args: [] }), 0);
 
     // The production auth binding owns authPool. State and Native IAM use a
     // separate real pool, so closing authPool cannot manufacture an IAM outage.
@@ -126,6 +121,16 @@ test(
     const state = new PostgresPlatformState(statePool);
     const installation = await state.loadInstallation();
     assert.ok(installation);
+    const persisted = await statePool.query(
+      "SELECT key, reference_id, expires_at FROM occ.apikey WHERE name = 'bootstrap-admin'",
+    );
+    assert.equal(persisted.rows.length, 1);
+    const registered = persisted.rows[0];
+    assert.notEqual(registered.key, initialKey, "only Better Auth's hash is persisted");
+    assert.ok(
+      Math.abs(new Date(registered.expires_at).getTime() - Date.now() - 30 * 86400_000) < 60_000,
+    );
+    const servicePrincipalId = nonemptyString(registered.reference_id);
     const iam = new NativeIAMDriver(state);
     const controller = new OpenClawController(installation, { state, recordOperations: true });
     controller.registerDriver(iam);
@@ -148,6 +153,33 @@ test(
       auth,
       development: { enabled: false, installationId: installation.id },
     });
+    const signedIn = await server.inject({
+      method: "POST",
+      url: "/api/auth/sign-in/email",
+      payload: { email, password },
+    });
+    assert.equal(signedIn.statusCode, 200, signedIn.body);
+    // Existing installations must not need retained inputs or extend imported key expiry.
+    await rm(initialKeyPath);
+    await rm(passwordPath);
+    assert.equal(
+      await bootstrapInstallation({
+        environment: {
+          NODE_ENV: "production",
+          OCC_DATABASE_URL: databaseUrl,
+          OCC_AUTH_SECRET: secret,
+          OCC_AUTH_BASE_URL: origin,
+          OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
+          OCC_BOOTSTRAP_ADMIN_EMAIL: email,
+        },
+        args: [],
+      }),
+      0,
+    );
+    const unchanged = await statePool.query(
+      "SELECT key, reference_id, expires_at FROM occ.apikey WHERE name = 'bootstrap-admin'",
+    );
+    assert.deepEqual(unchanged.rows, persisted.rows);
     resources.app = server;
     const createKey = async (name: string) => {
       const response = await server.inject({

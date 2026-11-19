@@ -14,18 +14,18 @@ import type {
 } from "../../apps/controller/src/drivers/repo/access/internal-contracts.ts";
 import type { RepositoryCredentialSessionResult } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { createAlternateDriverFactory } from "../fixtures/repository-credentials/alternate.ts";
 import {
   fixtureRepository,
   startGitHubFixture,
-} from "../fixtures/repository-credentials/github.mjs";
+} from "../fixtures/repository-credentials/github.ts";
 import { requestHead } from "../fixtures/repository-credentials/request-head.ts";
-import { createGitHubTokenServiceFactory } from "../fixtures/repository-credentials/service-resources.mjs";
+import { createGitHubTokenServiceFactory } from "../fixtures/repository-credentials/service-resources.ts";
 import {
   createServiceConfiguration,
   eventually,
-} from "../fixtures/repository-credentials/service.mjs";
+} from "../fixtures/repository-credentials/service-fixture.ts";
 
 const { createCredentialService } = await import("../fixtures/repository-credentials/service.ts");
 const completed = { kind: "completed", status: 200 } as const;

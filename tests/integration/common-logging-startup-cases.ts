@@ -10,7 +10,7 @@ import {
   loadStartupConfigurationSnapshot,
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 async function fixture(t: TestContext, contents: string): Promise<string> {

@@ -5,8 +5,8 @@ import type {
   RepositoryBackend,
   RepositoryBackendFactory,
 } from "../../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
-import type { FixtureOwner } from "./registry/material.ts";
-import { createTlsMaterial, listen } from "./process.mjs";
+import type { FixtureOwner } from "./resources.ts";
+import { createTlsMaterial, listen } from "./process.ts";
 import {
   createAlternateDriver,
   type AlternateDriverEvent,

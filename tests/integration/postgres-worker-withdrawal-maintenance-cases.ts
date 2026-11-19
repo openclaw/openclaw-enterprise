@@ -6,7 +6,7 @@ import type { WorkerEvent } from "../helpers/postgres-worker-refused-candidate.t
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/index.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { removeAccessBindings } from "../helpers/postgres-worker-revision-support.mjs";
 import { completion, deferWork } from "../helpers/postgres-worker-revision-queue.ts";
 

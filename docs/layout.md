@@ -1,3 +1,8 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Repository layout and conventions
 
 Use this guide to choose where a change belongs in OpenClaw Enterprise (OCE).
@@ -12,7 +17,7 @@ The root [pnpm workspace](../pnpm-workspace.yaml) explicitly selects
 `contracts`, `occ`, `iam`, and `audit`. [TypeScript project references](../tsconfig.json) select the same
 projects. Adding a directory does not enroll it in the workspace: intentional
 workspace changes must also update these declarations and the
-[workspace boundary check](../scripts/verify-workspace-boundary.mjs).
+[workspace boundary check](../scripts/verify-workspace-boundary.ts).
 The configuration excludes `legacy/`; do not import archived implementations.
 
 The Go CLI uses the root [Go module](../go.mod). The documentation renderer in
@@ -64,6 +69,7 @@ owns their deployment, workspace resource rendering, and image import.
 | `cmd/occ/`                                                | Go CLI executable entrypoint.                                                                                |
 | `internal/occcli/`                                        | CLI commands and terminal interface.                                                                         |
 | `internal/occclient/`                                     | Go HTTP client for OCC.                                                                                      |
+| `internal/bootstrapcredentials/`                          | Private bootstrap input generation shared by installation and development tools.                             |
 | `internal/occdev/`                                        | CLI development-stack lifecycle commands.                                                                    |
 
 Start from the existing primitive that owns a capability. Keep platform core
@@ -148,12 +154,16 @@ checksum, and fixed build timestamp used by that runtime recipe and its callers.
 native build and verification. Its patch inventory is separate from OpenClaw's.
 
 Helm embeds the startup programs from `deploy/helm/openclaw-enterprise/files/`
-in rendered container commands. Edit the TypeScript sources for the API CA
-programs in `deploy/helm/src/`. Install the workspace dependencies, then run
-`node deploy/helm/src/generate-api-ca.ts` from the repository root with the
-repository's pinned Node version. Commit the generated chart updates with their
-sources. The OIDC CA integration suite checks that the chart archive contains the
-generated programs.
+in rendered container commands. Edit their TypeScript sources in
+`deploy/helm/src/`. Install the workspace dependencies and run the matching
+command from the repository root with the pinned Node version.
+
+- API CA programs: `node deploy/helm/src/generate-api-ca.ts`
+- Installation check: `node deploy/helm/src/generate-installation-check.ts`
+
+Commit any generated chart updates with their sources. The OIDC CA integration
+suite checks the packaged CA programs. The Installation preflight suite checks
+that Helm renders the Installation check from its generated chart file.
 
 Select checks using the [testing guide](testing/README.md). Follow AGENTS.md's
 integration requirements for runtime changes. For documentation-only changes,
@@ -210,6 +220,11 @@ Update affected current references, guides, and flows with behavior changes;
 shipped specifications remain historical records. Keep Manual Notes unchanged.
 Put detailed contracts in their owning reference rather than expanding
 architecture pages for every feature.
+
+Keep shared control plane installation steps in `docs/guides/deploy/production-installation.md`.
+The [setup overview](guides/deploy/control-plane-setup.md) links cloud and
+distribution-specific preparation in sibling pages under `docs/guides/deploy/`.
+Register these pages in the **Control Plane Setup** sidebar group.
 
 Put contributor workflows for documentation in `docs/contributing/`, starting
 with the [writing guide](contributing/documentation.md). Existing site-tooling

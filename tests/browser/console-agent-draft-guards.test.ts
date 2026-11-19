@@ -14,7 +14,6 @@ import type {
   OpenClawConfigurationDocument,
   Permission,
 } from "../../packages/contracts/src/index.ts";
-import { NAMESPACE_NOT_READY_MESSAGE } from "../../apps/controller/src/console/agents/list.mts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
@@ -77,7 +76,8 @@ import {
   MODEL_CREDENTIAL_REJECTED_RECORDED,
   NO_SANDBOX_DRIVER_NETWORK_POLICY,
 } from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { restrict } from "../helpers/iam-grants.ts";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 // Legacy resource fields enter the suite as unknown; the checks below narrow them.
 type NamespaceFixture = {
@@ -2131,6 +2131,7 @@ test("Deploy says a bound Secret the operator may neither read nor operate needs
 });
 
 test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) => {
+  const { NAMESPACE_NOT_READY_MESSAGE } = await importConsoleModule("agents/list.mjs");
   const {
     fixture,
     namespace: rawNamespace,

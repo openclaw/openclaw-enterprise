@@ -87,9 +87,13 @@ export function bindPlatformUnitOfWork(
       "requestConnectionRevocation",
       "confirmConnectionRevocation",
       "deleteSavedConnection",
-      "createConnectionSession",
-      "consumeConnectionSession",
-      "takeExpiredConnectionSessions",
+    ]),
+    authenticationStates: bindRepository(repositories.authenticationStates, lifetime, [
+      "findDevice",
+      "create",
+      "replaceDevice",
+      "consumeOAuth",
+      "expire",
     ]),
     secrets: bindRepository(repositories.secrets, lifetime, [
       "findSecret",
@@ -144,6 +148,8 @@ export function bindPlatformUnitOfWork(
       "delete",
     ]),
     agents: bindRepository(repositories.agents, lifetime, [
+      "findPredecessorReplacement",
+      "recordPredecessorReplacement",
       "findAgentForBrowsing",
       "listAgentsForBrowsing",
       "findAgent",
@@ -234,6 +240,7 @@ export function bindPlatformUnitOfWork(
       "append",
       "list",
       "findWork",
+      "findWorkByKeys",
       "findWorkAttempt",
       "hasRepositoryExecutionRedeployRequired",
       "hasOutstandingCredentialWithdrawalWork",
