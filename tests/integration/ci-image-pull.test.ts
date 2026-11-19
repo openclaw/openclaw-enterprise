@@ -113,14 +113,13 @@ test("pullImage retries transient failures with backoff and a per-attempt timeou
 
   // The timed-out attempt also seeds the layers once before the retry.
   assert.deepEqual(
-    calls.map(({ args }) => args[1]),
-    [image, image, seed, image],
+    calls,
+    [image, image, seed, image].map((reference) => ({
+      command: "podman",
+      args: ["pull", reference],
+      options: { timeoutMs: 120_000 },
+    })),
   );
-  for (const call of calls) {
-    assert.equal(call.command, "podman");
-    assert.equal(call.args[0], "pull");
-    assert.equal(call.options.timeoutMs, 120_000);
-  }
   assert.deepEqual(sleeps, [5_000, 10_000]);
   assert.ok(logs[1] !== undefined && logs[3] !== undefined);
   assert.match(logs[1], /toomanyrequests.*attempt 2\/4/);
@@ -321,7 +320,7 @@ test("pullImage stops at its attempt limit and its retry budget", async () => {
   assert.equal(budgeted.calls.length, 2);
 });
 
-test("pullImage seeds a timed-out Docker Hub pull once from mirror.gcr.io by digest, then retries the original", async () => {
+test("pullImage seeds a timed-out Docker Hub pull once from mirror.gcr.io by digest after the backoff, then retries the original", async () => {
   // The 11-19 CI stalls: one large layer stayed stuck through all four attempts.
   const logs: string[] = [];
   const { calls, execFile } = scriptedPull([
@@ -329,8 +328,22 @@ test("pullImage seeds a timed-out Docker Hub pull once from mirror.gcr.io by dig
     undefined, // the seed
     pullFailure("", { timedOut: true }),
   ]);
-  await pullImage(image, { execFile, sleep: async () => {}, log: (message) => logs.push(message) });
+  // The number of commands run when each backoff starts.
+  const backoffs: [commands: number, ms: number][] = [];
+  await pullImage(image, {
+    execFile,
+    sleep: async (ms) => {
+      backoffs.push([calls.length, ms]);
+    },
+    log: (message) => logs.push(message),
+  });
 
+  // The seed starts after the backoff, when the killed attempt's transfer has been
+  // cancelled, so it cannot join that stalled transfer.
+  assert.deepEqual(backoffs, [
+    [1, 5_000],
+    [3, 10_000],
+  ]);
   // One seed, without the tag and with the original digest; every attempt pulls the
   // original reference, so callers get the image from its own registry.
   assert.deepEqual(
@@ -375,7 +388,12 @@ test("pullImage seeds only a digest-pinned docker.io reference, and only after a
   }
 });
 
-test("a failed seed changes neither the pull's error nor its retries nor its budget", async () => {
+test("a failed seed changes neither the pull's error nor its retries nor its budget", async (t) => {
+  // Each backoff advances the clock the budget is measured on.
+  t.mock.timers.enable({ apis: ["Date"] });
+  const sleepOnClock = async (ms: number) => {
+    t.mock.timers.tick(ms);
+  };
   for (const seedFailure of [
     pullFailure("Error response from daemon: manifest unknown: manifest unknown"),
     pullFailure("", { timedOut: true }),
@@ -402,25 +420,45 @@ test("a failed seed changes neither the pull's error nor its retries nor its bud
     assert.deepEqual(sleeps, [5_000, 10_000, 20_000]);
     assert.ok(logs.some((line) => line.startsWith(`Seeding layers from ${seed} failed after `)));
 
-    // The seed gets only the time left before the retry must start, here about 3 s of an
-    // 8 s budget after the 5 s backoff, and the retry still runs as without a seed.
-    const budgeted = scriptedPull([failures[0]!, seedFailure, failures[1]!]);
+    // The seed gets only the time left before the retry must start, here 15 s of a 20 s
+    // budget after the 5 s backoff, and the retries still run as without a seed.
+    const budgeted = scriptedPull([failures[0]!, seedFailure, failures[1]!, failures[2]!]);
     await assert.rejects(
       pullImage(image, {
         execFile: budgeted.execFile,
-        budgetMs: 8_000,
-        sleep: async () => {},
+        budgetMs: 20_000,
+        sleep: sleepOnClock,
         log: () => {},
       }),
-      (error) => error === failures[1],
+      (error) => error === failures[2],
     );
     assert.deepEqual(
       budgeted.calls.map(({ args }) => args[1]),
-      [image, seed, image],
+      [image, seed, image, image],
     );
-    const seedLimit = budgeted.calls[1]?.options.timeoutMs ?? 0;
-    assert.ok(seedLimit > 2_000 && seedLimit <= 3_000, `seed limit ${seedLimit} ms`);
+    assert.equal(budgeted.calls[1]?.options.timeoutMs, 15_000);
   }
+});
+
+test("pullImage skips a seed the budget would cut below 10 s", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  // 7 s of a 12 s budget are left after the 5 s backoff: no seed, the same retry.
+  const failures = [1, 2, 3].map(() => pullFailure("", { timedOut: true }));
+  const { calls, execFile } = scriptedPull(failures);
+  const error = await pullImage(image, {
+    execFile,
+    budgetMs: 12_000,
+    sleep: async (ms) => t.mock.timers.tick(ms),
+    log: () => {},
+  }).catch((rejection: unknown) => rejection);
+  assert.deepEqual(
+    calls.map(({ args }) => args),
+    [
+      ["pull", image],
+      ["pull", image],
+    ],
+  );
+  assert.equal(error, failures[1]);
 });
 
 async function flakyServer(t: TestContext, handlers: RequestListener[]) {

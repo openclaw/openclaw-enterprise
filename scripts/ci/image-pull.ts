@@ -130,6 +130,10 @@ function seedReference(image: string): string | undefined {
   return `mirror.gcr.io/${path}${match[2]}`;
 }
 
+// A seed the retry budget would cut shorter than this, and shorter than a full
+// attempt, is skipped: it could not finish a layer worth seeding.
+const minimumSeedTimeoutMs = 10_000;
+
 // Best effort: every failure, a failing log included, is swallowed here, so the
 // caller's error, retry decision and budget stay its own.
 async function seedLayers<Result extends ImageCommandResult>(
@@ -171,7 +175,10 @@ async function seedLayers<Result extends ImageCommandResult>(
 // seeds the engine's layers, inside the same budget. The engine verifies the content
 // by digest and stores layers by content, so the retry of `image` that follows gets
 // its manifest from its own registry and downloads no layer the seed completed.
-// Callers still get `image` itself; a failed seed is logged and changes nothing.
+// The seed starts after the backoff: the engine shares a layer download by digest
+// across repositories, and a pull started while the killed attempt's transfer is
+// still being cancelled can join that stalled transfer. Callers still get `image`
+// itself; a failed seed changes neither the error nor the retries.
 export async function pullImage<Result extends ImageCommandResult = ImageCommandResult>(
   image: string,
   {
@@ -217,14 +224,18 @@ export async function pullImage<Result extends ImageCommandResult = ImageCommand
       log(
         `Transient image pull failure (${reason}); retrying in ${delayMs} ms (attempt ${attempt + 1}/${attempts}): ${image}`,
       );
+      await sleep(delayMs);
+      delayMs *= 2;
       // The retry is decided. The seed may use the time left before the retry must start.
-      const seedTimeoutMs = Math.min(attemptTimeoutMs, budgetMs - (Date.now() - started) - delayMs);
-      if (seed !== undefined && evidence.timedOut && seedTimeoutMs > 0) {
+      const seedTimeoutMs = Math.min(attemptTimeoutMs, budgetMs - (Date.now() - started));
+      if (
+        seed !== undefined &&
+        evidence.timedOut &&
+        seedTimeoutMs >= Math.min(attemptTimeoutMs, minimumSeedTimeoutMs)
+      ) {
         await seedLayers(seed, seedTimeoutMs, { execFile, docker, log });
         seed = undefined;
       }
-      await sleep(delayMs);
-      delayMs *= 2;
     }
   }
 }
