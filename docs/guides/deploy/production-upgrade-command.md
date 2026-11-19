@@ -56,10 +56,12 @@ expert option after `--` so preflight checks the same candidate. When preflight
 tells you to omit that flag to deploy, use `upgrade` with fresh evidence and the
 same expert options.
 
-Continue only after preflight succeeds and confirms cleanup. Compare the candidate
-manifests and enter the maintenance window. Freeze Helm changes and scaling
-automation, stop independent database writers, and settle Agent deployments as
-required by the [maintenance handoff](production-upgrade.md#rehearse-before-the-maintenance-window).
+Check that preflight confirms candidate checks and cleanup. If it exits 1 and
+reports that the original worker is required, follow the
+[maintenance handoff](production-upgrade.md#rehearse-before-the-maintenance-window)
+to resolve that blocker before upgrading. Compare the candidate manifests, then
+enter the maintenance window. Freeze Helm changes and scaling automation, stop
+independent database writers, and settle Agent deployments.
 Keep reviewed optional arguments, such as candidate-file flags, identical for the upgrade.
 
 ```bash

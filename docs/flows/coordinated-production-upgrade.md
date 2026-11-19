@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-18"
-last_updated_session: "authoring-run/61f318f2-104a-4abb-9651-5eee810e8dfd"
+updated: "2026-11-19"
+last_updated_session: "authoring-run/099c1a03-0e25-4504-9cf7-2f62d1cfa035"
 ---
 
 # Production image upgrade flow
@@ -27,9 +27,9 @@ graph TD
     OP["Private operator profile"] --> CLI["Installation upgrade CLI"]
     CLI --> AD["Translate operation and options"]
     AD --> A
-    A["Validate inputs/inventory"] --> RR{"Repository retention permitted?"}
-    RR -->|"No or unknown"| X["Retain recovery evidence"]
-    RR -->|"Yes or replacement"| HS{"Saved Harness settings<br/>or replacement?"}
+    A["Validate inputs/inventory"] --> RR{"Repository restart assessment"}
+    RR -->|"Refused or unknown"| X["Retain recovery evidence"]
+    RR -->|"Admitted for this operation"| HS{"Saved Harness settings<br/>or replacement?"}
     HS -->|No| X
     HS -->|Yes| DB["Validate compatibility receipt"]
     DB --> Q{"Repository broker enabled?"}
@@ -39,7 +39,7 @@ graph TD
     B --> V{"Startup/history/cleanup confirmed?"}
     V -->|No| X
     V -->|Yes| R{"Preflight only?"}
-    R -->|Yes| S["Exit unprepared"]
+    R -->|Yes| S["Exit unprepared<br/>Status 1 if original worker required"]
     R -->|No| T["Save prepared recovery record"]
     T --> C["Read live Secret/Helm state"]
     C --> RC{"Recover interrupted candidate?"}
@@ -80,16 +80,11 @@ graph TD
 
 ### 1. Prepare the candidate
 
-`internal/occcli/installation_upgrade.go:installationUpgradeCommand` launches `scripts/upgrade-production:main`. Plan checks profile, image selection and source HEAD offline; status observes private markers without authority. Other operations exec `scripts/upgrade-production-images`.
+`internal/occcli/installation_upgrade.go:installationUpgradeCommand` launches `scripts/upgrade-production:main`. Plan checks profile, images and HEAD offline. Status reads markers. Other operations exec `scripts/upgrade-production-images`.
 
 `scripts/upgrade-production-images:prepare_upgrade`
 
-Before access, reject [Helm overrides](../guides/deploy/production-upgrade.md), source mismatch, chart edits/symlinks and evidence/baseline aliases. Other edits/image provenance are unchecked.
-
-`preprovisionedNamespace` must yield one `false` before access
-(`preprovisioned-namespace.err`).
-
-Resume locks evidence paths/devices/inodes/aliases and dispatch journals.
+Before access, reject [Helm overrides](../guides/deploy/production-upgrade.md), source mismatch, chart edits/symlinks and evidence/baseline aliases. Other edits/image provenance are unchecked. `preprovisionedNamespace` must yield one `false` (`preprovisioned-namespace.err`).
 
 `matches_yaml` validates candidates and compares [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)/live mappings.
 Invalid inputs or unwritable evidence yield `Cannot compare upgrade YAML`.
@@ -98,15 +93,9 @@ and wrapping one registration. `agentNativeAdmin.sharedCookieDomain` is removed 
 from baseline projection; live comparison stays exact. Immutable switches require string keys.
 Startup validates controllers; broker checks references only.
 
-`read_restart_inventory` validates complete authorized inventory ownership, IDs and selections. Retained revisions require accepted
-[restart disposition](../reference/repository-credentials/worker-replacement.md).
-Controller-only upgrades require an owned revision with object-valued Harness settings; drafts cannot substitute.
-Runtime upgrades record replacements and validate draft image/size support. Quiescence is nonatomic; repository continuity is unverified.
+`read_restart_inventory` requires authorized, complete inventory without nonterminal deployments. Retained running revisions need saved Harness objects and an accepted [restart assessment](../reference/repository-credentials/worker-replacement.md). Standalone preflight admits explicit original-worker requirements and refuses unknowns. Runtime upgrades record replacements and check draft image/size, baseline versions and Namespace readiness. Exclude stopped/deleting Agents. Allow pending repository cleanup.
 
-`OpenClawController.deploymentInventorySnapshot` batches exact deployment-work reads in one State snapshot; missing/mismatched work refuses inventory. Credential withdrawal is not deployment. `findRevisionForBrowsing` yields `unknown` for unreadable snapshots; database/identity errors propagate. `getInstallationDeploymentInventory` calls Compute outside State transactions with a ten-second budget, then rechecks fleet authorization/Driver selections. Drift refuses; owner failures yield `unknown`.
-
-Refuse nonterminal deployments. Runtime upgrades require baseline versions/ready Namespaces. Exclude stopped/deleting
-Agents; allow pending repository cleanup.
+`OpenClawController.deploymentInventorySnapshot` batches deployment-work reads in one State snapshot and refuses missing/mismatched work. `findRevisionForBrowsing` yields `unknown` for unreadable snapshots and propagates database/identity errors. `getInstallationDeploymentInventory` budgets ten seconds for Compute outside State transactions, then rechecks fleet authorization/Driver selections. Drift refuses. Owner failures yield `unknown`.
 
 `prepare_upgrade` copies PostgreSQL's `run` result.
 `validate_controller_compatibility` calls `scripts/upgrade-evidence.py:validate_compatibility`
@@ -177,11 +166,10 @@ Startup Jobs retain default-deny labels and a copy of
 `openclaw-enterprise-dependency-egress`, including execution-cluster API rules.
 Controller ownership addresses EKS's standalone-Pod limitation; verify enforcement.
 
-Initial preflight failures leave writers serving. `scripts/upgrade-preflight-state.py` records attempt plans and started markers before creates; acknowledgements retain UIDs. `scripts/lib/upgrade-preflight-cleanup.sh:cleanup_preflight` confirms Jobs and children disappear before dependencies; unknown consumers retain dependencies. [Interrupted preflight cleanup](coordinated-production-upgrade/preflight-cleanup.md)
-uses these same records and deletion rules without resuming the upgrade.
+Preflight leaves writers serving. `scripts/upgrade-preflight-state.py` records create intent and acknowledged UIDs. `scripts/lib/upgrade-preflight-cleanup.sh:cleanup_preflight` confirms Jobs and children are gone before deleting dependencies. [Interrupted cleanup](coordinated-production-upgrade/preflight-cleanup.md) uses these records.
 
 Reference switches recheck Secrets after cleanup.
-`--preflight-only` leaves writers serving with non-resumable evidence.
+`--preflight-only` exits unprepared. If an original-worker requirement blocks upgrade, it exits 1 after checks and cleanup. `startup-preflight-passed` records startup and cleanup. Upgrade rechecks inventory with fresh evidence.
 Preparation locks candidates, inventory and target/parameter hashes. `scripts/upgrade-production-images:interrupted_upgrade`
 retains the lock and skips cleanup on `SIGHUP`, `SIGINT`, or `SIGTERM`.
 Before unlocking, confirm termination and reconcile accepted operations/resources.
@@ -189,8 +177,7 @@ Freeze writers, autoscalers, Helm changes and drafts per the [production guide](
 
 ### 2. Reconcile a prior attempt
 
-Resume binds prepared inputs, directory, source and cluster, requalifies images,
-and rejects changed eligible nodes.
+Resume locks evidence paths/devices/inodes/aliases and dispatch journals. It binds prepared inputs, directory, source and cluster, requalifies images and rejects changed eligible nodes.
 Values must match baseline, candidate or the recorded predecessor and revision.
 Resume checks immutable intent, Secret identity and unrelated data. `verify_installation_switch`
 rechecks both immutable Secrets' UIDs/data. Pending Installation writes require a mutable Secret before scaling. Retries require
@@ -364,6 +351,8 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 11:30: Trace candidate rehearsal when retained Agents require the original worker. (authoring-run/099c1a03-0e25-4504-9cf7-2f62d1cfa035 - 6679017155741810c2ae1bcbacba05a3eb59f3ec)
 
 - 2026-11-18 10:52: Trace Installation CLI planning, status and handoff. (authoring-run/61f318f2-104a-4abb-9651-5eee810e8dfd - aeb385b97974a6bd729f58dd73a44d518aec1edc)
 
