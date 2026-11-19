@@ -16,9 +16,10 @@ directly starts its trampoline and contained Codex Agent child in that same
 container. This removes the separate Kubernetes workload-container boundary;
 Box's native isolation must be qualified before protected use.
 
-On a clean ARM64 Helm installation, the normal Worker must deploy the Agent,
-complete a real HTTP model turn, push a commit, and open a draft pull request in
-its assigned GitHub repository. After Git access is withdrawn, the same Agent
+On a clean ARM64 Helm installation, the normal Worker must deploy the Agent.
+The deployed Agent must complete a real HTTP model turn, push a commit, and open
+a draft pull request in its assigned GitHub repository. After Git access is
+withdrawn, the same Agent
 must refuse fresh Git use and complete another model turn in the same
 conversation. V1 qualifies HTTP API-key inference only. Admission refuses
 personal access tokens (PATs), interactive login, and WebSocket credential
