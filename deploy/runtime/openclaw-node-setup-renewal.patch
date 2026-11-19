@@ -14143,7 +14143,7 @@ index 17fb4cebbf1..39d7be29ae4 100644
    isAvailable?: (context: OpenClawPluginNodeHostCommandAvailabilityContext) => boolean;
    /** Watch availability; node shutdown awaits the returned cleanup callback. */
 diff --git a/test/node-host-launcher.test.ts b/test/node-host-launcher.test.ts
-index 3f07c893d28..176a497b073 100644
+index 3f07c893d28..d86f3e7f421 100644
 --- a/test/node-host-launcher.test.ts
 +++ b/test/node-host-launcher.test.ts
 @@ -1,5 +1,5 @@
@@ -14344,7 +14344,7 @@ index 3f07c893d28..176a497b073 100644
  `);
        // An installed runtime can still use the legacy Node IPC channel.
        const manifestPath = path.join(candidate.packageRoot, "package.json");
-@@ -449,18 +531,167 @@ setTimeout(async () => {
+@@ -449,18 +531,174 @@ setTimeout(async () => {
        const lines = jsonLines(result.stdout);
        expect(lines[0]).toMatchObject({ ok: true });
        expect(lines[1]).toMatchObject({
@@ -14414,7 +14414,14 @@ index 3f07c893d28..176a497b073 100644
 +}
 +await ready();
 +const accepted = restartContext();
-+process.disconnect();
++// A byte-pipe child has no Node IPC channel; close the launcher stream it was given instead.
++const channel = process[Symbol.for('openclaw.node-host.launcher-channel')];
++if (channel) {
++  channel.connected = false;
++  channel.stream.destroy();
++} else {
++  process.disconnect();
++}
 +report({stage: 'bootstrapped', ...accepted, accessEnvironment: accessEnvironment(), disconnected: hasNodeHostLauncherRestartContext()});
 +process.exit(0);
 +`);
@@ -14514,7 +14521,7 @@ index 3f07c893d28..176a497b073 100644
    it("keeps an authenticated candidate serving when its selector cannot be persisted", async () => {
      const f = await fixture();
      const previous = await f.release(
-@@ -544,7 +775,7 @@ if (process.env.TEST_SELECT_ONLY || version === process.env.TEST_VERSION) {
+@@ -544,7 +782,7 @@ if (process.env.TEST_SELECT_ONLY || version === process.env.TEST_VERSION) {
  
    it("keeps the previous managed runtime serving after a failed candidate", async () => {
      const reportRuntime =
@@ -14523,7 +14530,7 @@ index 3f07c893d28..176a497b073 100644
      const body = `
  ${reportRuntime}
  ${restartingRuntime("await ready(); await restartAndExit('old-runtime-serving', 3, 0);")}
-@@ -562,6 +793,7 @@ ${restartingRuntime("await ready(); await restartAndExit('old-runtime-serving',
+@@ -562,6 +800,7 @@ ${restartingRuntime("await ready(); await restartAndExit('old-runtime-serving',
          version,
          state: f.state,
          argv: ["node", "run"],

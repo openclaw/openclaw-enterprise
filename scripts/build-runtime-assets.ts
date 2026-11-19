@@ -61,7 +61,7 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "openclaw-node-setup-renewal.patch",
-    sha256: "ceec0520a5831960a521d06ef93ac34179b5db4e65f7995e972b6ef177f1e1a2",
+    sha256: "cdda7e94a154b3508cf3eaf1513d0dee62cb58b0127c035a769911a86fd51b1e",
   },
   {
     file: "openclaw-planned-completion.patch",
