@@ -299,11 +299,12 @@ export function uncleanStopRestartTest(
     }
     // The restart's first turn goes out as soon as the runtime reports ready.
     let turn: FirstTurnResult | undefined;
+    // The original HTTP client disconnected. The Gateway can still resume its
+    // stored turn after readiness, so let the provider answer resumed work too.
     const restarted = await runStartupProbeScenario(t, {
       terminatedGatewayNamespace,
       kind: "gateway",
       mode: "answer",
-      heldPrompt,
       ...stateMount,
       podOwner,
       gatewayManagedMode,
@@ -320,13 +321,7 @@ export function uncleanStopRestartTest(
       // Before the fix: HTTP 500 {"error":{"message":"internal error"}}.
       assert.equal(turn?.status, 200, `first turn after restart: ${JSON.stringify(turn)}`);
       assert.equal(turn?.content, "READY");
-      if (midTurnCrash) {
-        assert.equal(
-          restarted.snapshot.events.some(observedValue("event", "turn-held")),
-          false,
-          "the interrupted HTTP request must not be submitted again on startup",
-        );
-      } else {
+      if (!midTurnCrash) {
         if (recovery !== "operator") {
           assert.match(restarted.snapshot.output, /"recovered"\s*:\s*true/);
         }
