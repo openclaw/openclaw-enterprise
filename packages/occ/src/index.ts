@@ -432,6 +432,11 @@ import {
 } from "./state/controller-work.ts";
 import { PostgresCommitOutcomeUnknownError } from "./state/postgres-state.ts";
 import {
+  isRepositoryCleanupWork,
+  repositoryCleanupWorkKey,
+  repositoryRetirementWorkKey,
+} from "./repository-withdrawal.ts";
+import {
   validAdmittedRepositoryBindings,
   validRepositoryAccess,
   normalizedRepositoryAccess,
@@ -6030,6 +6035,18 @@ export class OpenClawController {
     agentId: string,
     revisionId: string,
   ): Promise<Readonly<AgentRevision>> {
+    await this.authorizeRevisionRead(principalId, namespaceId, agentId, revisionId);
+    return this.read(
+      async (state) => (await this.exactRevision(state, namespaceId, agentId, revisionId)).revision,
+    );
+  }
+
+  private async authorizeRevisionRead(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    revisionId: string,
+  ): Promise<void> {
     if (!isNonEmptyString(namespaceId)) {
       throw new ScopeViolationError("The exact Namespace identity is missing.");
     }
@@ -6047,16 +6064,22 @@ export class OpenClawController {
       namespaceId,
       parentAgentId: agentId,
     });
-    return this.read(async (state) => {
-      const { namespace, agent } = await this.exactAgent(state, namespaceId, agentId);
-      const revision = await state.revisions.findRevision(namespace.id, agent.id, revisionId);
-      if (!revision) {
-        throw new ScopeViolationError(
-          "The AgentRevision does not belong to the exact Agent and Namespace.",
-        );
-      }
-      return revision;
-    });
+  }
+
+  private async exactRevision(
+    state: PlatformReadView,
+    namespaceId: string,
+    agentId: string,
+    revisionId: string,
+  ) {
+    const { namespace, agent } = await this.exactAgent(state, namespaceId, agentId);
+    const revision = await state.revisions.findRevision(namespace.id, agent.id, revisionId);
+    if (!revision) {
+      throw new ScopeViolationError(
+        "The AgentRevision does not belong to the exact Agent and Namespace.",
+      );
+    }
+    return { revision, agent };
   }
 
   async getRevisionForBrowsing(
@@ -6065,23 +6088,7 @@ export class OpenClawController {
     agentId: string,
     revisionId: string,
   ): Promise<Readonly<AgentRevisionRead>> {
-    if (!isNonEmptyString(namespaceId)) {
-      throw new ScopeViolationError("The exact Namespace identity is missing.");
-    }
-    if (!isNonEmptyString(agentId)) {
-      throw new ScopeViolationError("The exact Agent identity is missing.");
-    }
-    if (!isNonEmptyString(revisionId)) {
-      throw new ScopeViolationError("The exact AgentRevision identity is missing.");
-    }
-    // The route's Agent is the parent: the lookups below accept only this Agent's revision, so a
-    // revision of another Agent ends as not found, as an unknown ID does.
-    await this.authorize(principalId, "read", {
-      kind: "agent_revision",
-      id: revisionId,
-      namespaceId,
-      parentAgentId: agentId,
-    });
+    await this.authorizeRevisionRead(principalId, namespaceId, agentId, revisionId);
     return this.read(async (state) => {
       const namespace = await this.exactNamespace(state, namespaceId);
       const agent = await state.agents.findAgentForBrowsing(namespace.id, agentId);
@@ -6187,8 +6194,14 @@ export class OpenClawController {
     agentId: string,
     deploymentId: string,
   ): Promise<DeploymentStatusResult> {
-    const revision = await this.getRevision(principalId, namespaceId, agentId, deploymentId);
+    await this.authorizeRevisionRead(principalId, namespaceId, agentId, deploymentId);
     return this.read(async (state) => {
+      const { revision, agent } = await this.exactRevision(
+        state,
+        namespaceId,
+        agentId,
+        deploymentId,
+      );
       const idempotencyKey = `agent_revision:${revision.id}:reconcile`;
       const work = await state.operations.findWork(idempotencyKey);
       if (work === undefined || !workMatchesRevision(work, revision)) {
@@ -6207,12 +6220,15 @@ export class OpenClawController {
           revisionId: revision.id,
         }),
       );
+      const status = deploymentStatusForWork(work, attempt, this.clock());
+      const stopped = work.state === "succeeded" && work.reasonCode === "REVISION_STOPPED";
+      const lostSelection = status === "succeeded" && agent.activeRevisionId !== revision.id;
       return Object.freeze({
         deploymentId: revision.id,
         namespaceId: revision.namespaceId,
         agentId: revision.agentId,
-        status: deploymentStatusForWork(work, attempt, this.clock()),
-        cleanup: await this.deploymentCleanupStatus(state, revision),
+        status,
+        cleanup: await this.deploymentCleanupStatus(state, revision, stopped || lostSelection),
         error: deploymentErrorForWork(work),
         ...(repositoryAccess === undefined ? {} : { repositoryAccess }),
         warnings: deploymentWarningsForWork(work),
@@ -6224,26 +6240,51 @@ export class OpenClawController {
   private async deploymentCleanupStatus(
     state: PlatformReadView,
     revision: Readonly<AgentRevision>,
+    includeSessionDisposal: boolean,
   ): Promise<DeploymentStatusResult["cleanup"]> {
-    const key = `agent_revision:${revision.id}:repository_cleanup:retire:${createHash("sha256").update(revision.id, "utf8").digest("hex")}`;
-    const cleanup = await state.operations.findWork(key);
-    if (cleanup === undefined) {
-      return null;
-    }
-    if (!workMatchesRevision(cleanup, revision)) {
+    const retirementKey = repositoryRetirementWorkKey(revision.id);
+    const sessionsKey = repositoryCleanupWorkKey(revision.id, "sessions");
+    const workByKey = await state.operations.findWorkByKeys([retirementKey, sessionsKey]);
+    const retirement = workByKey.get(retirementKey);
+    const sessions = workByKey.get(sessionsKey);
+    if (
+      [retirement, sessions].some(
+        (work) =>
+          work !== undefined &&
+          (!isRepositoryCleanupWork(work) || !workMatchesRevision(work, revision)),
+      )
+    ) {
       throw new ScopeViolationError("Deployment cleanup does not match its revision.");
     }
-    // A started cleanup stays running between its attempts, as a deployment does (finding 2466).
+
+    const disposal = retirement !== undefined || includeSessionDisposal ? sessions : undefined;
+    if (retirement === undefined && disposal === undefined) {
+      return null;
+    }
+    if (retirement?.state === "failed_permanent" || disposal?.state === "failed_permanent") {
+      return Object.freeze({ status: "failed", nextAttemptAt: null });
+    }
+
+    const nextAttemptAt = [retirement, disposal].reduce<Date | null>(
+      (earliest, work) =>
+        work?.state === "queued" && (earliest === null || work.availableAt < earliest)
+          ? work.availableAt
+          : earliest,
+      null,
+    );
+    // Terminal retirement preserves progress across retries. The session row is reused,
+    // so its current queue state is the only evidence that this disposal is running.
     const attempt =
-      cleanup.state === "queued" && cleanup.attemptCount === 0
-        ? await state.operations.findWorkAttempt(key)
+      retirement?.state === "queued" && retirement.attemptCount === 0
+        ? await state.operations.findWorkAttempt(retirementKey)
         : undefined;
+    const running =
+      disposal?.state === "claimed" ||
+      (retirement !== undefined &&
+        deploymentStatusForWork(retirement, attempt, this.clock()) === "running");
     return Object.freeze({
-      status:
-        cleanup.state === "succeeded"
-          ? "succeeded"
-          : deploymentStatusForWork(cleanup, attempt, this.clock()),
-      nextAttemptAt: cleanup.state === "queued" ? cleanup.availableAt.toISOString() : null,
+      status: running ? "running" : nextAttemptAt === null ? "succeeded" : "queued",
+      nextAttemptAt: nextAttemptAt?.toISOString() ?? null,
     });
   }
 
