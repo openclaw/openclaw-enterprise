@@ -99,7 +99,7 @@ export async function createCleanupProcessTree(
     [
       'const { spawn } = require("node:child_process");',
       'const { existsSync, renameSync, writeFileSync } = require("node:fs");',
-      `const forever = () => spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)", ${JSON.stringify(commandPath)}], {`,
+      'const forever = () => spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)", process.argv[1]], {',
       '  stdio: "ignore",',
       "});",
       "const descendant = forever();",
