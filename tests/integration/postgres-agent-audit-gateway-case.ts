@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { request as httpsRequest } from "node:https";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import type { TestContext } from "node:test";
+import { createSecureContext } from "node:tls";
 import type { AgentAuditPage, AgentRevision } from "@openclaw-enterprise/contracts";
 import type pg from "pg";
 
@@ -38,6 +39,8 @@ async function startListener(t: TestContext, app: App) {
   );
   const address = listener.address();
   assert.ok(address && typeof address !== "string");
+  const agent = new HttpsAgent({ secureContext: createSecureContext({ ca: tls.cert }) });
+  t.after(() => agent.destroy());
   return (event: unknown, token: string, source = "openclaw", path = route) =>
     new Promise<number | undefined>((resolve, reject) => {
       const request = httpsRequest(
@@ -45,8 +48,7 @@ async function startListener(t: TestContext, app: App) {
           host: "127.0.0.1",
           port: address.port,
           path,
-          ca: tls.cert,
-          agent: false,
+          agent,
           method: "POST",
           headers: {
             "content-type": "application/json",
