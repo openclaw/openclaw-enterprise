@@ -203,16 +203,16 @@ use formatting, builds, and link checks; do not add or run tests solely for pros
 | `docs/flows/`                         | Source-backed runtime execution traces.                                                            |
 | `docs/testing/`                       | Contributor test setup, environments, fixtures, and proof limits.                                  |
 | `docs/release/`                       | Release configuration, publication, promotion, and recovery procedures.                            |
-| `specs/README.md`                     | RFC index with linked numbers, names, and implementation statuses.                                 |
+| `specs/README.md`                     | RFC index with linked IDs, names, and implementation statuses.                                     |
 | `specs/rfcs/`                         | Architectural proposals and decisions.                                                             |
 | `specs/plans/`                        | All implementation plans and historical delivery records; relevant RFCs are linked in frontmatter. |
 | `docs/snippets/`                      | Reusable Markdown and code examples embedded with `Snippet`; Markdown uses `published: false`.     |
 | `docs/assets/`                        | Documentation images and other shared assets.                                                      |
 
 Use stable feature names for living references. Follow
-[RFCs and implementation plans](contributing/specifications.md) for numbering,
+[RFCs and implementation plans](contributing/specifications.md) for naming,
 document ownership, and lifecycle. Prefer one Markdown file per RFC or plan;
-documents with supporting material use `<number>-<topic>/index.md`, with
+documents with supporting material use `<stem>/index.md`, with
 companions in the same directory. Keep completed and superseded documents in
 place. Preserve historical names and content when grouping companions. This
 first phase does not reorganize `specs/.archive/`; removed image assets remain

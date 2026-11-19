@@ -1,10 +1,10 @@
 # RFC template
 
-Start `specs/rfcs/<number>-<topic>.md` with the YAML frontmatter below, without
+Start `specs/rfcs/<yyyymmdd>-<title>.md` with the YAML frontmatter below, without
 the code fences, followed by the proposal scaffold. Replace the prompts with
-the actual decision. Allocate the number using the
+the actual decision. Choose the date and title using the
 [specification process](specifications.md#files-and-numbering).
-If the RFC needs companion files, use `<number>-<topic>/index.md` instead.
+If the RFC needs companion files, use `<yyyymmdd>-<title>/index.md` instead.
 Replace `github-login` with the original RFC PR author's GitHub login (without `@`).
 The author is required and is treated as the RFC owner. The index uses this
 frontmatter value; do not repeat it in the body or add a separate owner field.
@@ -14,7 +14,7 @@ sections that do not apply. See the
 [RFC process](rfcs.md) for review, length, and diagram guidance.
 
 Adapted from the [OpenClaw RFC template](https://github.com/openclaw/rfcs/blob/main/rfcs/0000-template.md).
-Use OCE's numbering, decision statuses, and separate implementation plans as
+Use OCE's naming, decision statuses, and separate implementation plans as
 defined in the specification process.
 
 ---
@@ -29,7 +29,7 @@ author: github-login
 
 # Proposal: [Decision or capability]
 
-- **ID:** RFC-[number]
+- **ID:** RFC-[yyyymmdd-title]
 - **Created:** [YYYY-MM-DD]
 - **Last updated:** [YYYY-MM-DD]
 - **RFC PR:** [Review URL when available]
