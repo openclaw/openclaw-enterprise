@@ -290,7 +290,7 @@ test(
               await Promise.allSettled([withdrawal, save]);
             }
           }
-          assert.ok(withdrawal && save);
+          assert.ok(withdrawal !== undefined && save !== undefined);
           assert.equal((await withdrawal).status, 204);
           const raced = await save;
           const persisted = await state.read((unit) =>
