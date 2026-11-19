@@ -314,10 +314,10 @@ may have expired or your access changed. After any sign-in, OCE rechecks your
 access and returns you to that Agent’s detail page. Select **Open Agent UI** to
 continue. With an older runtime, open the Agent root or console page for the
 same recovery. If it shows **Agent unavailable**, open the Agent in the
-console for its status; deploy a stopped Agent.
+console; deploy a stopped Agent.
 
-If the Agent host returns `503 DEPENDENCY_UNAVAILABLE` outside a deployment, check
-the controller and session store and retry after they recover.
+If the Agent host returns `503 DEPENDENCY_UNAVAILABLE` or **Agent not responding**
+outside a deployment, check `occ agent runtime`, the controller and session store.
 
 If expiry coincides with controller restarts, check persistent session storage
 and whether the configured auth secret changed. In-memory sessions disappear

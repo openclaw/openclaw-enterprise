@@ -1,3 +1,4 @@
+import { OpenShellSandboxConfigurationFailure } from "./openshell-sandbox-errors.ts";
 import { posix } from "node:path";
 import { OpenShellGatewayUnavailableError } from "./openshell-gateway-errors.ts";
 import {
@@ -268,8 +269,6 @@ export interface OpenShellSandboxDriverSelection {
   readonly backend: Backend<OpenShellGateway>;
 }
 
-class OpenShellSandboxConfigurationFailure extends Error {}
-
 const GRPC_NOT_FOUND = 5;
 const GRPC_PERMISSION_DENIED = 7;
 const GRPC_UNAUTHENTICATED = 16;
@@ -376,6 +375,7 @@ const OPENSHELL_DEFAULT_READ_ONLY_PATHS = Object.freeze([
   "/etc",
   "/var/log",
   "/app",
+  "/opt/devtools",
 ]);
 const OPENSHELL_DEFAULT_READ_WRITE_PATHS = Object.freeze(["/tmp", "/dev/null"]);
 const APP_SERVER_PORT_ENVIRONMENT = "APP_SERVER_PORT";
@@ -1034,13 +1034,19 @@ function createRequestIds(revisionId: string): readonly string[] {
 }
 
 function validateHarnessServiceUrl(value: unknown): void {
-  const endpoint = nonempty(value, "OpenShell Harness service URL");
+  if (!isNonEmptyString(value)) {
+    throw new OpenShellSandboxConfigurationFailure(
+      "OpenShell Harness service URL must be a nonempty string.",
+      "OPENSHELL_HARNESS_SERVICE_INVALID",
+    );
+  }
   let parsed: URL;
   try {
-    parsed = new URL(endpoint);
+    parsed = new URL(value);
   } catch {
     throw new OpenShellSandboxConfigurationFailure(
       "OpenShell returned an invalid Harness service URL.",
+      "OPENSHELL_HARNESS_SERVICE_INVALID",
     );
   }
   if (
@@ -1053,6 +1059,7 @@ function validateHarnessServiceUrl(value: unknown): void {
   ) {
     throw new OpenShellSandboxConfigurationFailure(
       "OpenShell Harness service URL must be an HTTP origin without credentials, query, or fragment.",
+      "OPENSHELL_HARNESS_SERVICE_INVALID",
     );
   }
 }
@@ -2981,6 +2988,7 @@ function verifyExistingSandbox(
   ) {
     throw new OpenShellSandboxConfigurationFailure(
       `Refusing OpenShell Sandbox ${request.name} without exact AgentRevision ownership and content.`,
+      "OPENSHELL_SANDBOX_OWNERSHIP_MISMATCH",
     );
   }
 }
@@ -3659,6 +3667,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         if (created.name !== sandbox.resourceName) {
           throw new OpenShellSandboxConfigurationFailure(
             "OpenShell returned a different Sandbox name than requested.",
+            "OPENSHELL_SANDBOX_IDENTITY_MISMATCH",
           );
         }
         if (exposed) {
@@ -3677,6 +3686,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         } else if (Object.keys(created.serviceUrls).length !== 0) {
           throw new OpenShellSandboxConfigurationFailure(
             "OpenShell exposed an unexpected service for the native OpenClaw Harness.",
+            "OPENSHELL_HARNESS_SERVICE_INVALID",
           );
         }
         if (this.options.startupDelayMs !== undefined) {
@@ -3768,6 +3778,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
             : "remove the stale Sandbox before retrying.";
         throw new OpenShellSandboxConfigurationFailure(
           `OpenShell Sandbox ${sandbox.resourceName} exists without its exact bearer-passthrough Harness service; ${recovery}`,
+          "OPENSHELL_HARNESS_SERVICE_INVALID",
         );
       }
       validateHarnessServiceUrl(service.url);
@@ -4179,6 +4190,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           : "";
       throw new OpenShellSandboxConfigurationFailure(
         `OpenShell workspace initialization failed${detail}.`,
+        "OPENSHELL_WORKSPACE_INITIALIZATION_FAILED",
       );
     }
     if (exit === WORKSPACE_SETUP_REFUSED_EXIT_STATUS) {
@@ -4195,6 +4207,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
       throw new OpenShellSandboxConfigurationFailure(
         `OpenShell workspace initialization failed (${detail}).`,
+        "OPENSHELL_WORKSPACE_INITIALIZATION_FAILED",
       );
     }
   }
@@ -4348,6 +4361,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         codex
           ? "OpenShell did not expose the exact Codex bearer-passthrough service."
           : "OpenShell did not expose the exact OpenClaw worker bearer-passthrough service.",
+        "OPENSHELL_HARNESS_SERVICE_INVALID",
       );
     }
     return { client, service };

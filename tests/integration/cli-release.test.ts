@@ -5,9 +5,23 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
-test("CLI release builds four installable platform binaries and rejects changed assets", async (t) => {
-  const directory = await temporaryDirectory(t, "oce-cli-release-test-");
-  // Keep current-directory packaging inside an owned source fixture, never the checkout.
+type ReleasePlatform = {
+  os: "darwin" | "linux";
+  arch: "amd64" | "arm64";
+};
+
+const releasePlatforms: readonly ReleasePlatform[] = [
+  { os: "darwin", arch: "amd64" },
+  { os: "darwin", arch: "arm64" },
+  { os: "linux", arch: "amd64" },
+  { os: "linux", arch: "arm64" },
+];
+const executableHeaders: Record<ReleasePlatform["os"], readonly number[]> = {
+  darwin: [0xcf, 0xfa, 0xed, 0xfe],
+  linux: [0x7f, 0x45, 0x4c, 0x46],
+};
+
+async function stageSourceFixture(directory: string): Promise<string> {
   const source = join(directory, "source");
   await mkdir(source);
   for (const path of ["cmd", "internal", "go.mod", "go.sum", "package.json"]) {
@@ -18,6 +32,25 @@ test("CLI release builds four installable platform binaries and rejects changed 
     "deploy/helm/openclaw-enterprise/Chart.yaml",
     join(source, "deploy/helm/openclaw-enterprise/Chart.yaml"),
   );
+  return source;
+}
+
+async function assertPlatformArtifacts(output: string, version: string): Promise<void> {
+  for (const { os, arch } of releasePlatforms) {
+    const name = `occ-v${version}-${os}-${arch}`;
+    const bytes = await readFile(join(output, name));
+    assert.deepEqual(
+      bytes.subarray(0, 4),
+      Buffer.from(executableHeaders[os]),
+      `${name} must be a native executable for its named OS.`,
+    );
+  }
+}
+
+test("CLI release builds four installable platform binaries and rejects changed assets", async (t) => {
+  const directory = await temporaryDirectory(t, "oce-cli-release-test-");
+  // Keep current-directory packaging inside an owned source fixture, never the checkout.
+  const source = await stageSourceFixture(directory);
   const output = join(directory, "dist");
   // Builds use the toolchain's normal cache (GOCACHEPROG or the setup-go cache on CI, the user
   // cache locally). A fresh cache recompiled the standard library for four platforms every run.
@@ -28,22 +61,7 @@ test("CLI release builds four installable platform binaries and rejects changed 
   assert.ok(manifest !== null && typeof manifest === "object" && "version" in manifest);
   const version = manifest.version;
   assert.ok(typeof version === "string");
-  const names = [
-    `occ-v${version}-darwin-amd64`,
-    `occ-v${version}-darwin-arm64`,
-    `occ-v${version}-linux-amd64`,
-    `occ-v${version}-linux-arm64`,
-  ];
-  for (const name of names) {
-    const bytes = await readFile(join(output, name));
-    assert.deepEqual(
-      bytes.subarray(0, 4),
-      name.includes("-darwin-")
-        ? Buffer.from([0xcf, 0xfa, 0xed, 0xfe])
-        : Buffer.from([0x7f, 0x45, 0x4c, 0x46]),
-      `${name} must be a native executable for its named OS.`,
-    );
-  }
+  await assertPlatformArtifacts(output, version);
   const nativeArch = process.arch === "x64" ? "amd64" : process.arch;
   const native = `occ-v${version}-${process.platform}-${nativeArch}`;
   assert.equal(

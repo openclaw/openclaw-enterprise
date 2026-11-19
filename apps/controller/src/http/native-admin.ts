@@ -293,6 +293,7 @@ function sendNativeAdminHtmlRefusal(
   reply: FastifyReply,
   title: string,
   body: string,
+  status = 403,
 ): void {
   reply
     .header("cache-control", "no-store")
@@ -300,7 +301,7 @@ function sendNativeAdminHtmlRefusal(
     .header("x-content-type-options", "nosniff")
     .header("referrer-policy", "no-referrer")
     .header("x-request-id", request.id)
-    .code(403)
+    .code(status)
     .type("text/html; charset=utf-8")
     .send(
       `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>${title}</title></head><body>${body}</body></html>`,
@@ -1677,6 +1678,16 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     }
     const operation = startNativeAdminAdmission(request.raw, hostname, "http");
     const admission = await boundedNativeAdminAdmission(operation.result);
+    const agentKey = /^agent-([0-9a-f]{32})\./.exec(hostname)?.[1];
+    const documentNavigation = browserDocumentNavigation(request, nativeAdminPathname(request.url));
+    // The console opens this host's Agent again from its key, after sign-in when needed.
+    const consoleUrl =
+      agentKey !== undefined &&
+      hostname === `agent-${agentKey}.${nativeAdminDomain}` &&
+      publicOrigin !== undefined &&
+      documentNavigation
+        ? new URL(`/console/#native-agent=${agentKey}`, publicOrigin)
+        : undefined;
     if (!isNativeAdminProxyResolution(admission)) {
       httpAdmissionReasons.set(request, admission?.reason ?? "admission_unavailable");
       // A deployment in progress is temporary, like an outage: the Agent UI keeps reconnecting.
@@ -1693,19 +1704,6 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         canonicalFailure(reply, dependencyUnavailable());
         return true;
       }
-      const agentKey = /^agent-([0-9a-f]{32})\./.exec(hostname)?.[1];
-      const documentNavigation = browserDocumentNavigation(
-        request,
-        nativeAdminPathname(request.url),
-      );
-      // The console opens this host's Agent again from its key, after sign-in when needed.
-      const consoleUrl =
-        agentKey !== undefined &&
-        hostname === `agent-${agentKey}.${nativeAdminDomain}` &&
-        publicOrigin !== undefined &&
-        documentNavigation
-          ? new URL(`/console/#native-agent=${agentKey}`, publicOrigin)
-          : undefined;
       if (
         consoleUrl !== undefined &&
         admission.reason === "session_invalid" &&
@@ -1792,7 +1790,20 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       canonicalFailure(reply, dependencyUnavailable());
       return true;
     }
-    await streamNativeAdminHttp({ request, reply, context });
+    if ((await streamNativeAdminHttp({ request, reply, context })) === "gateway_unavailable") {
+      // Admitted, but the Gateway gave no answer: it refused or reset the connection, or timed out.
+      if (consoleUrl === undefined) {
+        canonicalFailure(reply, dependencyUnavailable());
+      } else {
+        sendNativeAdminHtmlRefusal(
+          request,
+          reply,
+          "Agent not responding",
+          `<p>This Agent is not responding right now. Try again in a moment, or open it from the console.</p><p><a href="${escapeHtml(consoleUrl.href)}">Return to console</a></p>`,
+          503,
+        );
+      }
+    }
     return true;
   }
 

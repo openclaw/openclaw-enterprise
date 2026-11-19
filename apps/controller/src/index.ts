@@ -16,6 +16,11 @@ import {
   ModelProviderSchema,
   ModelProviderModelSchema,
   CredentialSourceResponse,
+  RegisterTokenServiceSourceBody,
+  UpdateTokenServiceSourceBody,
+  TokenServiceSourceMetadata,
+  PushAgentCredentialsBody,
+  PushAgentCredentialsResponse,
   ErrorDetail as ErrorDetailSchema,
   ErrorResponse,
   isSecretHarnessAuth,
@@ -1420,8 +1425,30 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.addSchema(StaticKeyConnectionTemplateVersionSchema);
   app.addSchema(ModelProviderModelSchema);
   app.addSchema(ModelProviderSchema);
+  app.addSchema(RegisterTokenServiceSourceBody);
+  app.addSchema(UpdateTokenServiceSourceBody);
+  app.addSchema(TokenServiceSourceMetadata);
+  app.addSchema(PushAgentCredentialsBody);
+  app.addSchema(PushAgentCredentialsResponse);
   void app.register(swagger, {
     convertConstToEnum: false,
+    refResolver: {
+      buildLocalReference(schema, _baseUri, _fragment, index) {
+        // Standalone contracts have public names. Keep Swagger's names and titles for route schemas.
+        if (typeof schema.$id === "string") {
+          schema.title ??= schema.$id;
+          switch (schema.$id) {
+            case "RegisterTokenServiceSourceBody":
+            case "UpdateTokenServiceSourceBody":
+            case "TokenServiceSourceMetadata":
+            case "PushAgentCredentialsBody":
+            case "PushAgentCredentialsResponse":
+              return schema.$id;
+          }
+        }
+        return `def-${index}`;
+      },
+    },
     openapi: {
       openapi: "3.1.0",
       info: {
@@ -2806,46 +2833,39 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
-    if (operation.operationId === "discoverAgentPlugins") {
-      const catalog = await controller.discoverAgentPlugins(
-        context.actorId,
-        namespaceId,
-        {
-          harnessId: body?.harnessId as "codex" | "openclaw",
-          ...(body?.credentialSource === undefined
-            ? {}
-            : { credentialSource: body.credentialSource as CredentialSourceReference }),
-          ...(body?.secretRef === undefined
-            ? { accessToken: body?.accessToken as string }
-            : { secretRef: body.secretRef as SecretReference }),
-          ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
-          ...(body?.q === undefined ? {} : { q: body.q as string }),
-        },
-        pluginDiscoveryRequestSignal(reply),
-      );
+    if (
+      operation.operationId === "discoverAgentPlugins" ||
+      operation.operationId === "discoverAgentPluginDetails"
+    ) {
+      const input = {
+        harnessId: body?.harnessId as "codex" | "openclaw",
+        ...(body?.credentialSource === undefined
+          ? {}
+          : { credentialSource: body.credentialSource as CredentialSourceReference }),
+        ...(body?.secretRef === undefined
+          ? { accessToken: body?.accessToken as string }
+          : { secretRef: body.secretRef as SecretReference }),
+      };
+      const result =
+        operation.operationId === "discoverAgentPlugins"
+          ? await controller.discoverAgentPlugins(
+              context.actorId,
+              namespaceId,
+              {
+                ...input,
+                ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
+                ...(body?.q === undefined ? {} : { q: body.q as string }),
+              },
+              pluginDiscoveryRequestSignal(reply),
+            )
+          : await controller.discoverAgentPluginDetails(
+              context.actorId,
+              namespaceId,
+              { ...input, pluginId: body?.pluginId as string },
+              pluginDiscoveryRequestSignal(reply),
+            );
       reply.header("cache-control", "no-store");
-      reply.send({ data: catalog, meta: { requestId: request.id } });
-      return;
-    }
-
-    if (operation.operationId === "discoverAgentPluginDetails") {
-      const plugin = await controller.discoverAgentPluginDetails(
-        context.actorId,
-        namespaceId,
-        {
-          harnessId: body?.harnessId as "codex" | "openclaw",
-          ...(body?.credentialSource === undefined
-            ? {}
-            : { credentialSource: body.credentialSource as CredentialSourceReference }),
-          ...(body?.secretRef === undefined
-            ? { accessToken: body?.accessToken as string }
-            : { secretRef: body.secretRef as SecretReference }),
-          pluginId: body?.pluginId as string,
-        },
-        pluginDiscoveryRequestSignal(reply),
-      );
-      reply.header("cache-control", "no-store");
-      reply.send({ data: plugin, meta: { requestId: request.id } });
+      reply.send({ data: result, meta: { requestId: request.id } });
       return;
     }
 

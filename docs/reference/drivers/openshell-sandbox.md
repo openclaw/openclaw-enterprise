@@ -108,11 +108,17 @@ drivers:
                 tls: skip
 ```
 
-When `policy.filesystem` is omitted, the Driver sends OpenShell's permissive
-runtime baseline: `/bin`, `/usr`, `/lib`, `/proc`, `/dev/urandom`, `/etc`,
-`/var/log`, and `/app` are read-only; `/tmp`, `/dev/null`, the image workdir,
-approved mounts, and `/sandbox/.openclaw-runtime` are writable. An explicit `filesystem` block replaces the baseline; the Driver still adds
-required mounts, runtime root, and `/tmp`.
+Omit `policy.filesystem` for the default. Read-only paths include `/bin`, `/usr`,
+`/lib`, `/proc`, `/dev/urandom`, `/etc`, `/var/log`, `/app`, and `/opt/devtools`.
+Writable paths include `/tmp`, `/dev/null`, the image workdir, approved writable
+mounts, and `/sandbox/.openclaw-runtime`.
+
+An explicit policy replaces these defaults. The Driver still adds required
+mounts, the runtime root, and `/tmp`. Add `/opt/devtools` to
+`policy.filesystem.readOnly` for packaged native tools.
+
+An existing Sandbox keeps its launch policy. Deploy a new Agent revision to
+apply a different policy.
 
 Startup rejects unknown Kubernetes, policy, and Gateway readiness keys. Set
 `kubernetes.agentResources` using quoted, non-negative Kubernetes quantities.
@@ -396,6 +402,8 @@ For `CreateSandbox`, `worker.completed` reports `grpcStatus` and
 - **9, `CLASS_ADMISSION_LABELS`**: Check RuntimeClass or PriorityClass admission labels. For either refusal, use an approved resource or obtain owner approval before relabeling.
 - **13, `RESOURCE_METADATA_FORBIDDEN`**: Kubernetes denied a metadata read (HTTP 403). Verify the Gateway ServiceAccount's read permission for the claim or cluster-scoped class.
 - **`UNKNOWN`**: The status alone does not identify the cause. Inspect the request configuration and Gateway diagnostics.
+
+See [Sandbox startup refusal codes](openshell-sandbox/harness-providers.md#sandbox-startup-refusals).
 
 ## Related documentation
 
