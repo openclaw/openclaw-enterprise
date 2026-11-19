@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-19"
-last_updated_session: "authoring-run/2ca60020-2ed8-48c5-943c-ba2890e5bb12"
+last_updated_session: "authoring-run/d7d4af8d-9bb4-4523-b8fe-bbd15bbc95c4"
 ---
 
 # Agent sandbox policy flow
@@ -131,6 +131,12 @@ cleans its exact IAM access.
 `packages/occ/src/index.ts:deployAgent` rejects a repository access list from
 ordinary Driver admission before freezing defaults and additions into
 `AgentRevision.sandboxPolicy`. OpenShell provisions from that snapshot.
+
+The [repository network policy contract](../reference/sandbox-policies.md#repository-network-policy-contract)
+has a separate admission helper. `packages/contracts/src/sandbox-policy.ts:admitSandboxRepositoryNetworkPolicy`
+checks the selected Driver's result before copying it into the immutable
+snapshot. Admission refuses pending results and arrays whose contents would
+change during JSON serialization.
 
 `applyAgentSandboxPolicy` authorizes Agent `manage_policy` and SandboxPolicy
 `update` and `read` before naming saved additions. It requires the exact active
@@ -271,6 +277,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 03:54: Validate the repository policy document before copying it. (authoring-run/d7d4af8d-9bb4-4523-b8fe-bbd15bbc95c4 - 6abc9fbff60c1fc739b35a6fa55ca5774a547a53)
 
 - 2026-11-19 09:03: Separate policy and validation context. (authoring-run/2ca60020-2ed8-48c5-943c-ba2890e5bb12 - 9dd2694f3cdbbed2c2e26222d503a2253af93ee9)
 
