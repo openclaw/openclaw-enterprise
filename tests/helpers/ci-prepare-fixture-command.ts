@@ -262,16 +262,23 @@ async function fakeCommand({
       );
     }
     // The pinned K3s node image, which preparation brings in before `k3d cluster create`.
-    // The engine holds it, except in node-image-absent until the pull.
+    // The engine holds it, except in the node-image-absent scenarios until a pull succeeds.
+    // A pull of an image the engine holds, or in node-image-pull-fails, fails.
     const nodeImage = env.OPENCLAW_CI_K3S_IMAGE || defaultK3sImage;
+    const nodeImageAbsent =
+      ["node-image-absent", "node-image-pull-fails"].includes(scenario) && !state.nodeImagePulled;
     if (equals(args, ["image", "inspect", "--format", "{{json .RepoDigests}}", nodeImage])) {
-      if (scenario === "node-image-absent" && !state.nodeImagePulled) {
+      if (nodeImageAbsent) {
         stderr(`Error response from daemon: No such image: ${nodeImage}\n`);
         return exit(1);
       }
       return finish(JSON.stringify([nodeImage.replace(/:[^/@]+@/, "@")]) + "\n");
     }
     if (equals(args, ["pull", nodeImage])) {
+      if (!nodeImageAbsent || scenario === "node-image-pull-fails") {
+        stderr("Error response from daemon: manifest unknown: manifest unknown\n");
+        return exit(1);
+      }
       state.nodeImagePulled = true;
       return finish();
     }
