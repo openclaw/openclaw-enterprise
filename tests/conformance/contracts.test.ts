@@ -36,6 +36,7 @@ import {
   type ServiceAccountReference,
   type SandboxNetworkGrant,
 } from "../../packages/contracts/src/index.ts";
+import { registerDeploymentPolicyCases } from "./contracts-deployment-policy-cases.ts";
 import { registerConfigurationCases } from "./contracts-configuration-cases.ts";
 import { registerRuntimeDiagnosticCases } from "./contracts-runtime-diagnostic-cases.ts";
 
@@ -643,3 +644,4 @@ test("only a codex_pat Harness binding names a ServiceAccount source, and only e
 
 registerRuntimeDiagnosticCases();
 registerConfigurationCases();
+registerDeploymentPolicyCases();

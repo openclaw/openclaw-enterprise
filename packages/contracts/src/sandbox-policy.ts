@@ -155,38 +155,7 @@ export const SandboxNetworkPolicyConfiguration = Object.freeze({
         });
       }
       ids.add(grant.id);
-      if (
-        grant.binary
-          .split("/")
-          .some((part, i) => i > 0 && (part === "" || part === "." || part === ".."))
-      ) {
-        details.push({
-          path: `${path}/binary`,
-          code: "INVALID_VALUE",
-          message: "Use a normalized absolute executable path.",
-        });
-      }
-      if (
-        grant.host
-          .replace(/^\*\./, "")
-          .split(".")
-          .some((part) => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(part))
-      ) {
-        details.push({
-          path: `${path}/host`,
-          code: "INVALID_VALUE",
-          message: "Use a valid DNS host or single-label wildcard.",
-        });
-      }
-      grant.ports.forEach(({ from, to }, port) => {
-        if (from > to) {
-          details.push({
-            path: `${path}/ports/${port}/to`,
-            code: "INVALID_RANGE",
-            message: "The end port must be at least the start port.",
-          });
-        }
-      });
+      details.push(...networkMatchDetails(grant, path));
     });
     return details;
   },
@@ -194,9 +163,12 @@ export const SandboxNetworkPolicyConfiguration = Object.freeze({
 
 /** Snapshot a validated ceiling once; each lookup visits only its exact and single-label hosts. */
 export function createSandboxNetworkGrantChecker(
-  ceiling: readonly SandboxNetworkGrant[],
-): (grant: SandboxNetworkGrant) => boolean {
-  const binaries = new Map<string, Map<string, SandboxNetworkGrant>>();
+  ceiling: readonly Pick<SandboxNetworkGrant, "binary" | "host" | "ports">[],
+): (grant: Pick<SandboxNetworkGrant, "binary" | "host" | "ports">) => boolean {
+  const binaries = new Map<
+    string,
+    Map<string, Pick<SandboxNetworkGrant, "binary" | "host" | "ports">>
+  >();
   for (const grant of ceiling) {
     let hosts = binaries.get(grant.binary);
     if (hosts === undefined) {
@@ -205,7 +177,7 @@ export function createSandboxNetworkGrantChecker(
     }
     let entry = hosts.get(grant.host);
     if (entry === undefined) {
-      entry = { id: grant.id, binary: grant.binary, host: grant.host, ports: [] };
+      entry = { binary: grant.binary, host: grant.host, ports: [] };
       hosts.set(grant.host, entry);
     }
     entry.ports.push(...grant.ports.map(({ from, to }) => ({ from, to })));
@@ -289,11 +261,46 @@ export function createSandboxNetworkGrantChecker(
   };
 }
 
-export function sandboxNetworkGrantsWithinCeiling(
-  grants: readonly SandboxNetworkGrant[],
-  ceiling: readonly SandboxNetworkGrant[],
-): boolean {
-  return grants.every(createSandboxNetworkGrantChecker(ceiling));
+export function validDnsHost(host: string): boolean {
+  return (
+    host.length <= 253 &&
+    host.split(".").every((part) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(part))
+  );
+}
+
+export function networkMatchDetails(
+  grant: Pick<SandboxNetworkGrant, "binary" | "host" | "ports">,
+  path: string,
+): ErrorDetail[] {
+  const details: ErrorDetail[] = [];
+  if (
+    grant.binary
+      .split("/")
+      .some((part, i) => i > 0 && (part === "" || part === "." || part === ".."))
+  ) {
+    details.push({
+      path: `${path}/binary`,
+      code: "INVALID_VALUE",
+      message: "Use a normalized absolute executable path.",
+    });
+  }
+  if (!validDnsHost(grant.host.replace(/^\*\./, ""))) {
+    details.push({
+      path: `${path}/host`,
+      code: "INVALID_VALUE",
+      message: "Use a valid DNS host or single-label wildcard.",
+    });
+  }
+  grant.ports.forEach(({ from, to }, port) => {
+    if (from > to) {
+      details.push({
+        path: `${path}/ports/${port}/to`,
+        code: "INVALID_RANGE",
+        message: "The end port must be at least the start port.",
+      });
+    }
+  });
+  return details;
 }
 
 export const SandboxPolicyDecisionSchema = Type.Object(

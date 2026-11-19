@@ -1,3 +1,8 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Deploy on standard Kubernetes
 
 Prepare an existing Kubernetes cluster for OpenClaw Enterprise (OCE), then run
@@ -94,22 +99,8 @@ addresses and ports as observed from controller Pods. These become the shared
 installation's network settings; do not substitute whole cluster or VPC ranges.
 See [networking and isolation](../../reference/drivers/kubernetes-compute/networking-and-isolation.md).
 
-On OpenShift, select the actual DNS backend namespace and Pod labels; the
-[Helm DNS grants](../../reference/settings/production.md#required-production-controller-environment)
-permit both Service and backend ports. Helm merges `dns.podLabels` into the chart
-default `k8s-app: kube-dns`. Profile rendering removes that default for you. In
-hand-written values, set `dns.podLabels.k8s-app: null` when the DNS Pods lack that
-label. Verify UDP and TCP DNS resolution from
-the initialization, API, worker, and enabled supporting workloads, plus denied
-traffic to a Pod outside the configured DNS selectors.
-
-On OpenShift with OVN-Kubernetes, the CNI applies egress policy after the
-`kubernetes` Service translates port 443 to the API server port, usually 6443.
-Set Helm `cluster.cidrs` to the API server endpoint IPs and `cluster.port` to
-that port. In a profile input, set `controlPlane.clusterCidrs` and
-`controlPlane.clusterPort`. With the default 443, the API and worker fail with
-`KUBERNETES_API_UNAVAILABLE`. List the endpoints with
-`oc get endpoints kubernetes -n default`.
+For OpenShift DNS selectors and translated API ports, complete the
+[OpenShift setup](openshift.md) before installation.
 
 ## Configure the protected copies and install
 

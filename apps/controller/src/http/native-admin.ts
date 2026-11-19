@@ -1001,7 +1001,13 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     if (!controller) {
       throw failure(403, "FORBIDDEN", GENERIC_DENIAL);
     }
-    const availability = await resolveNativeAdminAvailability(input);
+    return requireAvailable(await resolveNativeAdminAvailability(input), input);
+  }
+
+  function requireAvailable(
+    availability: NativeAdminAvailability,
+    input: { readonly expectedHost?: string; readonly expectedRevisionId?: string },
+  ) {
     if (availability.status === "disabled") {
       throw failure(403, "FORBIDDEN", GENERIC_DENIAL);
     }
@@ -1577,13 +1583,20 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       return nativeAdminProxyDenial("revision_changed");
     }
     try {
-      const resolved = await requireAvailableNativeAdminTarget({
+      const target = {
         actorId: currentActor,
         namespaceId: agent.namespaceId,
         agentId: agent.id,
         expectedHost: hostname,
         ...(requiredRevisionId === undefined ? {} : { expectedRevisionId: requiredRevisionId }),
-      });
+      };
+      // Resolution authorizes first, so only an authorized caller learns that a deployment is
+      // replacing or activating the version. Stopped and unsupported Agents keep agent_unavailable.
+      const availability = await resolveNativeAdminAvailability(target);
+      if (availability.status === "unavailable") {
+        return nativeAdminProxyDenial("agent_transition");
+      }
+      const resolved = requireAvailable(availability, target);
       const requestAuthority = nativeAdminAuthority(request.headers.host);
       if (requestAuthority !== new URL(resolved.target.origin).host.toLowerCase()) {
         return nativeAdminProxyDenial("session_invalid");
@@ -1655,7 +1668,12 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     const admission = await boundedNativeAdminAdmission(operation.result);
     if (!isNativeAdminProxyResolution(admission)) {
       httpAdmissionReasons.set(request, admission?.reason ?? "admission_unavailable");
-      if (admission === undefined || admission.reason === "dependency_failure") {
+      // A deployment in progress is temporary, like an outage: the Agent UI keeps reconnecting.
+      if (
+        admission === undefined ||
+        admission.reason === "dependency_failure" ||
+        admission.reason === "agent_transition"
+      ) {
         canonicalFailure(reply, dependencyUnavailable());
         return true;
       }

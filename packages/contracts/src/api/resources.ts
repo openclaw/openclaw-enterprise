@@ -220,7 +220,12 @@ const RuntimeEvidenceTimestamp = Type.String({
 const PluginPolicyCapabilitiesSchema = Type.Object(
   {
     driver: Type.Ref("PluginDriverIdentity"),
-    policyScopeByPlugin: Type.Optional(Type.Record(Type.String(), Type.Literal("enablement_only"))),
+    policyScopeByPlugin: Type.Optional(
+      Type.Record(
+        Type.String(),
+        Type.Union([Type.Literal("enablement_only"), Type.Literal("tool_human_approval")]),
+      ),
+    ),
     approvers: Type.Optional(
       Type.Object(
         { agent: Type.Boolean(), plugin: Type.Boolean(), tools: Type.Boolean() },

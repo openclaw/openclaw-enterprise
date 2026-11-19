@@ -130,7 +130,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   validateSandboxNetworkGrants,
-  createSandboxNetworkGrantChecker,
+  networkGrantAdmissionDetails,
 } from "@openclaw-enterprise/contracts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes } from "node:crypto";
@@ -2274,7 +2274,6 @@ export class OpenClawController {
   private readonly configurations = new DriverConfigurationRegistry();
 
   private readonly sandboxNetworkPolicyCeiling: readonly SandboxNetworkGrant[];
-  private readonly sandboxNetworkPolicyAllowsGrant: (grant: SandboxNetworkGrant) => boolean;
   private readonly iamConfiguration?: InstallationIAMConfiguration;
   private readonly authorization?: ControllerOptions["authorize"];
   private readonly deviceLoginCipher: ReturnType<typeof deviceAuthorizationCipher> | undefined;
@@ -2330,9 +2329,6 @@ export class OpenClawController {
       "/sandboxNetworkPolicyCeiling",
     );
     this.sandboxNetworkPolicyCeiling = immutableCopy(options.sandboxNetworkPolicyCeiling ?? []);
-    this.sandboxNetworkPolicyAllowsGrant = createSandboxNetworkGrantChecker(
-      this.sandboxNetworkPolicyCeiling,
-    );
     if (options.iamConfiguration !== undefined) {
       this.iamConfiguration = options.iamConfiguration;
     }
@@ -11726,26 +11722,12 @@ export class OpenClawController {
       validateSandboxNetworkGrants(input);
       const additions = immutableCopy(input);
       requireConfiguration(contribution, { additions });
-      const details: ErrorDetail[] = [];
-      additions.forEach((grant, index) => {
-        if (!this.sandboxNetworkPolicyAllowsGrant(grant)) {
-          details.push({
-            path: `/additions/${index}`,
-            code: "OUTSIDE_CEILING",
-            message: "The grant exceeds the Installation delegation ceiling.",
-          });
-        }
-        if (
-          (!driver.networkPolicy!.wildcards && grant.host.startsWith("*.")) ||
-          (!driver.networkPolicy!.portRanges && grant.ports.some(({ from, to }) => from !== to))
-        ) {
-          details.push({
-            path: `/additions/${index}`,
-            code: "INVALID_VALUE",
-            message: "The Driver does not support the requested wildcard or port range.",
-          });
-        }
-      });
+      const details = networkGrantAdmissionDetails(
+        additions,
+        this.sandboxNetworkPolicyCeiling,
+        driver.networkPolicy,
+        "/additions",
+      );
       if (details.length > 0) {
         admissionMessage = details.some((detail) => detail.code === "OUTSIDE_CEILING")
           ? "The requested network policy exceeds the Installation delegation ceiling."
