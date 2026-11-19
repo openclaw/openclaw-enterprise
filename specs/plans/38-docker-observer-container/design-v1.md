@@ -1,6 +1,6 @@
 # Docker Observer-Container Deployment Backend Design v1
 
-Status: Accepted inert design, not authorized for construction or execution
+Status: Accepted design; observer invocation persistence is implemented, while Docker observer execution remains unconstructed and unauthorized
 Backend identity: docker-observer-container-v1
 Repository baseline reviewed: 519c53ebdbb3267251834709f4f76316350c941e
 
@@ -9,6 +9,8 @@ Repository baseline reviewed: 519c53ebdbb3267251834709f4f76316350c941e
 This document defines a separately versioned Docker observer-container deployment backend. It does not reopen, replace, or revise the completed inert systemd deployment-artifact architecture. The two architectures may coexist, but only one observer execution contract may be authoritative for an invocation.
 
 This artifact is design-only. It grants no authority to build or pull an image, create or start a container, create or change a Docker network, activate a service, modify systemd, install files, change credentials, run production validation, commit, or push.
+
+The OCC persistence layer now implements the observer invocation admission and lifecycle record described by this design. PostgreSQL owns the persisted qualification, plan, progress, phase, status, cleanup, and terminal-outcome invariants. This persistence contract does not construct, select, enable, or execute the Docker observer backend, and it does not authorize container-engine activity.
 
 The governing progression remains:
 
@@ -152,6 +154,8 @@ Readiness means the observer has entered the verified target network namespace, 
 
 Every invocation must define a maximum wall-clock duration, maximum captured-record count, maximum encoded output size, and cancellation path. Reaching any bound must stop capture and enter deterministic cleanup.
 
+The implemented persistence contract records progress through target resolution, observer creation, readiness, terminal evidence, and cleanup. PostgreSQL validates the admitted plan, evidence documents, phase/status relationships, bounds, timestamps, terminal outcomes, and cleanup ordering. Application repository code retains operation and claim orchestration but does not duplicate those persisted-data invariants.
+
 The observer may write only admitted evidence fields. Raw credentials, authorization material, unrelated packet payloads, container environment, engine responses, and host identifiers are prohibited. Evidence must identify the invocation, backend version, qualified image digest, target ownership scope, admitted filter identity, start and stop outcomes, bounds reached, and cleanup outcome without exposing secret material.
 
 The observer must not stream evidence to an arbitrary network destination from inside the shared namespace. Evidence transfer requires a separately designed owner-controlled channel that does not grant general network transmission authority. Until such a channel is accepted, only bounded engine-managed logs or a dedicated non-workload evidence mount with a separately specified ownership and write contract may be considered.
@@ -159,6 +163,9 @@ The observer must not stream evidence to an arbitrary network destination from i
 ## 12. Stop, replacement, and cleanup ordering
 
 An observer is bound to one immutable target-container identifier. It must not follow a reusable target name to a replacement container. If reconciliation replaces the target, the old observer must be removed. Continued observation requires a new invocation, admission decision, target resolution, and revalidation.
+
+
+The persisted lifecycle also covers failure or cancellation before an observer container is created. In that case the invocation may settle only after verified observer absence is recorded with target-teardown authorization. It must not fabricate observer, readiness, terminal, or ordinary cleanup evidence, and this verified-absence path cannot represent successful observation.
 
 Cleanup ordering is mandatory:
 
@@ -235,15 +242,13 @@ The following remain deliberately unresolved and must be completed before constr
 2. the exact capture implementation and filter representation;
 3. proof of the minimum required Linux capability under the accepted image user model;
 4. the owner-controlled evidence channel and its persistence, permissions, and deletion contract;
-5. observer readiness and terminal evidence schemas;
-6. the exact Docker API qualification procedure and supported engine/API matrix;
-7. the OCC configuration and admission record schema;
-8. the internal backend seam used after target runtime creation;
-9. compensation behavior when the observer is created but its request response is interrupted;
-10. the complete conformance, fault-injection, and separately authorized real-engine validation plan.
+5. the exact Docker API qualification procedure and supported engine/API matrix;
+6. the internal backend seam used after target runtime creation;
+7. compensation behavior when the observer is created but its request response is interrupted;
+8. the complete conformance, fault-injection, and separately authorized real-engine validation plan.
 
 Podman support is not an open assumption. It is excluded until a distinct qualification and acceptance record establishes parity for the exact backend contract.
 
 ## 17. Design acceptance boundary
 
-This document is the accepted Docker observer-container design under the separate explicit acceptance decision tied to its exact file identity. Its acceptance is design-only: it remains inert and uncommitted, and it does not authorize construction, execution, deployment, or runtime validation.
+This document is the accepted Docker observer-container design under the separate explicit acceptance decision tied to its exact file identity. Its acceptance remains design-only for Docker observer execution: the implemented persistence contract does not authorize backend construction, execution, deployment, or runtime validation.

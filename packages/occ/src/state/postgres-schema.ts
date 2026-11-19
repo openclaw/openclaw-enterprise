@@ -1693,7 +1693,7 @@ export const observerInvocations = occSchema.table(
         WHEN 'ready' THEN ${table.progress} ?& ARRAY['targetResolution', 'observer', 'readiness']
           AND NOT ${table.progress} ?| ARRAY['terminal', 'cleanup']
         WHEN 'terminal' THEN ${table.progress} ? 'terminal' AND NOT ${table.progress} ? 'cleanup'
-        WHEN 'cleanup' THEN ${table.progress} ?& ARRAY['terminal', 'cleanup']
+        WHEN 'cleanup' THEN ${table.progress} ? 'observerAbsence' OR ${table.progress} ?& ARRAY['terminal', 'cleanup']
         ELSE false
       END`,
     ),
@@ -1708,11 +1708,16 @@ export const observerInvocations = occSchema.table(
     check(
       "observer_invocation_terminal_outcome_valid",
       sql`${table.completedPhase} <> 'cleanup'
-        OR (${table.status} = 'succeeded'
+        OR (${table.progress} ? 'observerAbsence'
+          AND ${table.status} IN ('failed', 'cancelled'))
+        OR (NOT ${table.progress} ? 'observerAbsence'
+          AND ${table.status} = 'succeeded'
           AND ${table.progress} #>> '{terminal,stopOutcome}' = 'succeeded')
-        OR (${table.status} = 'cancelled'
+        OR (NOT ${table.progress} ? 'observerAbsence'
+          AND ${table.status} = 'cancelled'
           AND ${table.progress} #>> '{terminal,stopOutcome}' = 'cancelled')
-        OR (${table.status} = 'failed'
+        OR (NOT ${table.progress} ? 'observerAbsence'
+          AND ${table.status} = 'failed'
           AND ${table.progress} #>> '{terminal,stopOutcome}' IN ('failed', 'timed_out'))`,
     ),
     index("observer_invocations_revision_history").on(

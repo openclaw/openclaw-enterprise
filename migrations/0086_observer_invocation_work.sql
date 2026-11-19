@@ -225,6 +225,27 @@ $$;
 --> statement-breakpoint
 GRANT EXECUTE ON FUNCTION occ.observer_target_resolution_is_valid(jsonb) TO occ_app;
 --> statement-breakpoint
+CREATE FUNCTION occ.observer_absence_evidence_is_valid(evidence jsonb)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+STRICT
+PARALLEL SAFE
+AS $$
+  SELECT COALESCE(
+    jsonb_typeof(evidence) = 'object'
+    AND evidence ?& ARRAY['reason', 'absenceVerifiedAt', 'targetTeardownAuthorized']
+    AND evidence - ARRAY['reason', 'absenceVerifiedAt', 'targetTeardownAuthorized'] = '{}'::jsonb
+    AND evidence->>'reason' = 'observer_not_created'
+    AND jsonb_typeof(evidence->'absenceVerifiedAt') = 'string'
+    AND occ.observer_invocation_timestamp_is_valid(evidence->>'absenceVerifiedAt') IS TRUE
+    AND evidence->'targetTeardownAuthorized' = 'true'::jsonb,
+    false
+  );
+$$;
+--> statement-breakpoint
+GRANT EXECUTE ON FUNCTION occ.observer_absence_evidence_is_valid(jsonb) TO occ_app;
+--> statement-breakpoint
 CREATE FUNCTION occ.observer_container_evidence_is_valid(evidence jsonb)
 RETURNS boolean
 LANGUAGE sql
@@ -305,10 +326,10 @@ BEGIN
       'startOutcome', 'stopOutcome', 'boundsReached', 'capturedRecordCount',
       'encodedOutputBytes'
     ] <> '{}'::jsonb
-    OR NOT occ.observer_invocation_timestamp_is_valid(evidence->>'startedAt')
-    OR NOT occ.observer_invocation_timestamp_is_valid(evidence->>'captureDeadlineAt')
-    OR NOT occ.observer_invocation_timestamp_is_valid(evidence->>'captureStoppedAt')
-    OR NOT occ.observer_invocation_timestamp_is_valid(evidence->>'terminalCompletedAt')
+    OR (occ.observer_invocation_timestamp_is_valid(evidence->>'startedAt')) IS DISTINCT FROM true
+    OR (occ.observer_invocation_timestamp_is_valid(evidence->>'captureDeadlineAt')) IS DISTINCT FROM true
+    OR (occ.observer_invocation_timestamp_is_valid(evidence->>'captureStoppedAt')) IS DISTINCT FROM true
+    OR (occ.observer_invocation_timestamp_is_valid(evidence->>'terminalCompletedAt')) IS DISTINCT FROM true
     OR jsonb_typeof(evidence->'startOutcome') IS DISTINCT FROM 'string'
     OR evidence->>'startOutcome' NOT IN ('succeeded', 'failed', 'cancelled', 'timed_out')
     OR jsonb_typeof(evidence->'stopOutcome') IS DISTINCT FROM 'string'
@@ -352,14 +373,14 @@ BEGIN
   captured_records := (evidence->>'capturedRecordCount')::numeric;
   encoded_bytes := (evidence->>'encodedOutputBytes')::numeric;
 
-  RETURN deadline_at = started_at + maximum_duration * interval '1 millisecond'
+  RETURN COALESCE(deadline_at = started_at + maximum_duration * interval '1 millisecond'
     AND stopped_at BETWEEN started_at AND deadline_at
     AND completed_at >= stopped_at
     AND captured_records <= maximum_records
     AND encoded_bytes <= maximum_bytes
     AND ((evidence->'boundsReached') ? 'duration') = (stopped_at = deadline_at)
     AND ((evidence->'boundsReached') ? 'record_count') = (captured_records = maximum_records)
-    AND ((evidence->'boundsReached') ? 'encoded_output') = (encoded_bytes = maximum_bytes);
+    AND ((evidence->'boundsReached') ? 'encoded_output') = (encoded_bytes = maximum_bytes), false);
 END;
 $$;
 --> statement-breakpoint
@@ -388,9 +409,9 @@ BEGIN
       'terminationRequestedAt', 'graceDeadline', 'forceRemovalOutcome',
       'removalCompletedAt', 'absenceVerifiedAt', 'targetTeardownAuthorized'
     ] <> '{}'::jsonb
-    OR NOT occ.observer_invocation_timestamp_is_valid(evidence->>'terminationRequestedAt')
-    OR NOT occ.observer_invocation_timestamp_is_valid(evidence->>'graceDeadline')
-    OR NOT occ.observer_invocation_timestamp_is_valid(evidence->>'absenceVerifiedAt')
+    OR (occ.observer_invocation_timestamp_is_valid(evidence->>'terminationRequestedAt')) IS DISTINCT FROM true
+    OR (occ.observer_invocation_timestamp_is_valid(evidence->>'graceDeadline')) IS DISTINCT FROM true
+    OR (occ.observer_invocation_timestamp_is_valid(evidence->>'absenceVerifiedAt')) IS DISTINCT FROM true
     OR jsonb_typeof(evidence->'forceRemovalOutcome') IS DISTINCT FROM 'string'
     OR evidence->>'forceRemovalOutcome' NOT IN ('not_required', 'removed')
     OR evidence->'targetTeardownAuthorized' IS DISTINCT FROM 'true'::jsonb
@@ -413,15 +434,15 @@ BEGIN
 
   IF evidence->>'forceRemovalOutcome' = 'removed' THEN
     IF NOT evidence ? 'removalCompletedAt'
-      OR NOT occ.observer_invocation_timestamp_is_valid(evidence->>'removalCompletedAt')
+      OR (occ.observer_invocation_timestamp_is_valid(evidence->>'removalCompletedAt')) IS DISTINCT FROM true
     THEN
       RETURN false;
     END IF;
     removal_at := (evidence->>'removalCompletedAt')::timestamptz;
-    RETURN removal_at >= grace_at AND absence_at >= removal_at;
+    RETURN COALESCE(removal_at >= grace_at AND absence_at >= removal_at, false);
   END IF;
 
-  RETURN NOT evidence ? 'removalCompletedAt' AND absence_at >= termination_at;
+  RETURN COALESCE(NOT evidence ? 'removalCompletedAt' AND absence_at >= termination_at, false);
 END;
 $$;
 --> statement-breakpoint
@@ -436,21 +457,29 @@ PARALLEL SAFE
 AS $$
 BEGIN
   IF jsonb_typeof(progress) IS DISTINCT FROM 'object'
-    OR progress - ARRAY['targetResolution', 'observer', 'readiness', 'terminal', 'cleanup']
+    OR progress - ARRAY['observerAbsence', 'targetResolution', 'observer', 'readiness', 'terminal', 'cleanup']
       <> '{}'::jsonb
   THEN
     RETURN false;
   END IF;
 
+  IF progress ? 'observerAbsence' THEN
+    IF (occ.observer_absence_evidence_is_valid(progress->'observerAbsence')) IS DISTINCT FROM true
+      OR progress ?| ARRAY['observer', 'readiness', 'terminal', 'cleanup']
+    THEN
+      RETURN false;
+    END IF;
+  END IF;
+
   IF progress ? 'targetResolution'
-    AND NOT occ.observer_target_resolution_is_valid(progress->'targetResolution')
+    AND (occ.observer_target_resolution_is_valid(progress->'targetResolution')) IS DISTINCT FROM true
   THEN
     RETURN false;
   END IF;
 
   IF progress ? 'observer' THEN
     IF NOT progress ? 'targetResolution'
-      OR NOT occ.observer_container_evidence_is_valid(progress->'observer')
+      OR (occ.observer_container_evidence_is_valid(progress->'observer')) IS DISTINCT FROM true
     THEN
       RETURN false;
     END IF;
@@ -459,7 +488,7 @@ BEGIN
   IF progress ? 'readiness' THEN
     IF NOT progress ? 'targetResolution'
       OR NOT progress ? 'observer'
-      OR NOT occ.observer_readiness_evidence_is_valid(progress->'readiness', plan, progress)
+      OR (occ.observer_readiness_evidence_is_valid(progress->'readiness', plan, progress)) IS DISTINCT FROM true
     THEN
       RETURN false;
     END IF;
@@ -467,7 +496,7 @@ BEGIN
 
   IF progress ? 'terminal' THEN
     IF NOT progress ? 'observer'
-      OR NOT occ.observer_terminal_evidence_is_valid(progress->'terminal', plan)
+      OR (occ.observer_terminal_evidence_is_valid(progress->'terminal', plan)) IS DISTINCT FROM true
     THEN
       RETURN false;
     END IF;
@@ -475,7 +504,7 @@ BEGIN
 
   IF progress ? 'cleanup' THEN
     IF NOT progress ? 'terminal'
-      OR NOT occ.observer_cleanup_evidence_is_valid(progress->'cleanup', plan)
+      OR (occ.observer_cleanup_evidence_is_valid(progress->'cleanup', plan)) IS DISTINCT FROM true
     THEN
       RETURN false;
     END IF;
@@ -550,7 +579,7 @@ CREATE TABLE occ.observer_invocations (
       WHEN 'ready' THEN progress ?& ARRAY['targetResolution', 'observer', 'readiness']
         AND NOT progress ?| ARRAY['terminal', 'cleanup']
       WHEN 'terminal' THEN progress ? 'terminal' AND NOT progress ? 'cleanup'
-      WHEN 'cleanup' THEN progress ?& ARRAY['terminal', 'cleanup']
+      WHEN 'cleanup' THEN progress ? 'observerAbsence' OR progress ?& ARRAY['terminal', 'cleanup']
       ELSE false
     END
   ),
@@ -562,9 +591,15 @@ CREATE TABLE occ.observer_invocations (
   ),
   CONSTRAINT observer_invocation_terminal_outcome_valid CHECK (
     completed_phase <> 'cleanup'
-    OR (status = 'succeeded' AND progress #>> '{terminal,stopOutcome}' = 'succeeded')
-    OR (status = 'cancelled' AND progress #>> '{terminal,stopOutcome}' = 'cancelled')
-    OR (status = 'failed'
+    OR (progress ? 'observerAbsence' AND status IN ('failed', 'cancelled'))
+    OR (NOT progress ? 'observerAbsence'
+      AND status = 'succeeded'
+      AND progress #>> '{terminal,stopOutcome}' = 'succeeded')
+    OR (NOT progress ? 'observerAbsence'
+      AND status = 'cancelled'
+      AND progress #>> '{terminal,stopOutcome}' = 'cancelled')
+    OR (NOT progress ? 'observerAbsence'
+      AND status = 'failed'
       AND progress #>> '{terminal,stopOutcome}' IN ('failed', 'timed_out'))
   )
 );
@@ -767,8 +802,16 @@ BEGIN
         work.state IN ('queued', 'claimed')
         OR invocation.status IN ('queued', 'running')
         OR invocation.completed_phase <> 'cleanup'
-        OR NOT (invocation.progress ?& ARRAY['terminal', 'cleanup'])
-        OR invocation.progress #> '{cleanup,targetTeardownAuthorized}' IS DISTINCT FROM 'true'::jsonb
+        OR NOT (
+          (
+            invocation.progress ? 'observerAbsence'
+            AND invocation.progress #> '{observerAbsence,targetTeardownAuthorized}' = 'true'::jsonb
+          )
+          OR (
+            invocation.progress ?& ARRAY['terminal', 'cleanup']
+            AND invocation.progress #> '{cleanup,targetTeardownAuthorized}' = 'true'::jsonb
+          )
+        )
       )
   ) THEN
     RETURN NULL;
@@ -826,8 +869,16 @@ BEGIN
     AND invocation.agent_id = p_agent_id
     AND invocation.completed_phase = 'cleanup'
     AND invocation.status IN ('succeeded', 'failed', 'cancelled')
-    AND invocation.progress ?& ARRAY['terminal', 'cleanup']
-    AND invocation.progress #> '{cleanup,targetTeardownAuthorized}' = 'true'::jsonb
+    AND (
+      (
+        invocation.progress ? 'observerAbsence'
+        AND invocation.progress #> '{observerAbsence,targetTeardownAuthorized}' = 'true'::jsonb
+      )
+      OR (
+        invocation.progress ?& ARRAY['terminal', 'cleanup']
+        AND invocation.progress #> '{cleanup,targetTeardownAuthorized}' = 'true'::jsonb
+      )
+    )
     AND work.work_kind = 'observer';
   DELETE FROM occ.agent_revisions
     WHERE namespace_id = p_namespace_id AND agent_id = p_agent_id;

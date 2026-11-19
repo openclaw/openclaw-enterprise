@@ -688,7 +688,7 @@
       "when": 1787000000086,
       "tag": "0086_observer_invocation_work",
       "breakpoints": true,
-      "sha256": "80feade6fcc5659b14b412fe0c329ed8cfe084f7276915200fcc86bb9c1c3986"
+      "sha256": "bf317367ae03520566560ec6610d008166c19546d3bf632b865f99243ed552da"
     }
   ],
   "initialSchemaStates": {
