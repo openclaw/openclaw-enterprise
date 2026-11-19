@@ -5,7 +5,7 @@ tests. The image provides these entrypoints.
 
 - OpenClaw gateway: `node /app/openclaw.mjs`.
 - Dedicated OpenClaw node: `node /app/openclaw.mjs connect --target-file <private-file> --ephemeral --pair-or-reconnect`.
-- Dedicated Codex app-server: `codex app-server`.
+- Dedicated Codex runs `codex app-server`. For an audited Codex revision that Kubernetes Compute starts, it runs `/opt/oce/runtime/bin/codex-audit-app-server`.
 
 `NPM_CONFIG_UPDATE_NOTIFIER=false` disables npm's background version check.
 Package installation and explicit network requests still use the configured
@@ -14,9 +14,10 @@ network policy.
 The Dockerfile uses a verified public OpenClaw archive, its pinned package
 manager, frozen lockfile, and upstream Docker assembly. A registry mirror
 requires [separate Corepack and pnpm build secrets](../../docs/guides/deploy/production-installation.md#build-through-a-package-registry-mirror).
-Both Codex entrypoints use stock Codex `0.164.0`, unpatched;
-`stock-codex-0.164.0-dependency-pin.patch` holds the lockfile there and sets
-`CODEX_APP_SERVER_VERSION` back to it while OpenClaw bundles 0.169.0. Verify native startup and
+The Codex CLI and the bundled plugin use stock Codex `0.164.0`.
+`stock-codex-0.164.0-dependency-pin.patch` pins the lockfile and
+`CODEX_APP_SERVER_VERSION`. The audit App Server uses the same release with
+the [provider attempt patch](codex-audit/provider-attempts.patch). Verify native startup and
 sandbox behavior with the image's seccomp rules. Codex and Slack come from the same source, whose
 restricted workspace-node commands and persistent device identity support
 split storage. That contract requires a newer source than `2026.9.5`.
@@ -207,6 +208,7 @@ architecture. The image rebuilds `/opt/oce/runtime/contents.json` from
 `/opt/oce/runtime/provenance.json#runtimeContentsSha256` after final permission
 normalization. Its `codex` provenance records the stock package source, version,
 lockfile integrities, platform package, and installed binary path and digest.
+The image also records source, patch, binary and `bwrap` digests in `codexAuditAppServer`.
 The OpenClaw bridge forwards the repository-bound Agent's stock
 `allow_local_binding = true` and `mode = "full"` settings; the
 [networking contract](../../docs/reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
