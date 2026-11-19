@@ -42,6 +42,7 @@ type developmentState struct {
 	Cluster                     string `json:"cluster"`
 	DockerHost                  string `json:"dockerHost"`
 	KeyPath                     string `json:"keyPath"`
+	InstallationID              string `json:"installationId,omitempty"`
 	KeyOwned                    bool   `json:"keyOwned"`
 	SignIn                      string `json:"signIn,omitempty"`
 	ProtectedEgress             bool   `json:"protectedEgress,omitempty"`

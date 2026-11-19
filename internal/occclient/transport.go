@@ -433,9 +433,9 @@ func (client *Client) apiError(status int, header http.Header, body []byte) erro
 	return result
 }
 
-// serviceKeyFileAdvice ends every key-file refusal: the file must be the
-// complete JSON answer of "occ service-key create" (or of bootstrap).
-const serviceKeyFileAdvice = "Use the complete JSON file from \"occ service-key create\"."
+// serviceKeyFileAdvice accepts both ordinary issuance responses and locally
+// prepared bootstrap files; only data.key is required for authentication.
+const serviceKeyFileAdvice = "Use a JSON file containing data.key, such as a prepared bootstrap key file or the response from \"occ service-key create\"."
 
 func readServiceKey(path string) (serviceKey, error) {
 	contents, err := os.ReadFile(path)

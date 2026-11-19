@@ -1,3 +1,8 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Repository layout and conventions
 
 Use this guide to choose where a change belongs in OpenClaw Enterprise (OCE).
@@ -64,6 +69,7 @@ owns their deployment, workspace resource rendering, and image import.
 | `cmd/occ/`                                                | Go CLI executable entrypoint.                                                                                |
 | `internal/occcli/`                                        | CLI commands and terminal interface.                                                                         |
 | `internal/occclient/`                                     | Go HTTP client for OCC.                                                                                      |
+| `internal/bootstrapcredentials/`                          | Private bootstrap input generation shared by installation and development tools.                             |
 | `internal/occdev/`                                        | CLI development-stack lifecycle commands.                                                                    |
 
 Start from the existing primitive that owns a capability. Keep platform core
@@ -216,6 +222,11 @@ Update affected current references, guides, and flows with behavior changes;
 shipped specifications remain historical records. Keep Manual Notes unchanged.
 Put detailed contracts in their owning reference rather than expanding
 architecture pages for every feature.
+
+Keep shared control plane installation steps in `docs/guides/deploy/production-installation.md`.
+The [setup overview](guides/deploy/control-plane-setup.md) links cloud and
+distribution-specific preparation in sibling pages under `docs/guides/deploy/`.
+Register these pages in the **Control Plane Setup** sidebar group.
 
 Put contributor workflows for documentation in `docs/contributing/`, starting
 with the [writing guide](contributing/documentation.md). Existing site-tooling

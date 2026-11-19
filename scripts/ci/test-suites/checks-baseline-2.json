@@ -4,6 +4,7 @@
   },
   "fileConcurrency": 8,
   "parallelFiles": [
+    "tests/conformance/strands-box-transport.test.mjs",
     "tests/integration/prepared-refresh-enrollment.test.ts",
     "tests/integration/staging-upgrade-return.test.ts",
     "tests/integration/controlled-tls-origin.test.ts",
@@ -172,6 +173,24 @@
   },
   "files": [
     {
+      "path": "tests/conformance/strands-box-transport.test.mjs",
+      "expectedTests": [
+        "Strands rejected half-open clients release listener capacity without Harness I/O",
+        "the worker port allows readiness but refuses native upgrades with the same valid bearer",
+        "Strands shutdown closes clients still reading headers and refuses queued Gateway opens",
+        "Strands supervisor refuses a racing channel without disconnecting admitted clients",
+        "Strands contained receiver refuses capacity overflow and retains native connections",
+        "Strands slow downstream closes only its channel and retains the shared transport",
+        "Strands large stream pauses for shared pipe pressure without truncation",
+        "Strands malformed or oversized IPC fails closed exactly once",
+        "Strands disconnected channel releases its pending drain and a fresh channel works",
+        "Strands routing keeps explicit connection factories on the provider proxy",
+        "a loopback readiness probe retains capacity when all session channels are busy",
+        "a terminal frame flushes queued TCP output",
+        "the policy proxy delivers the complete response to a slow reader at EOF"
+      ]
+    },
+    {
       "path": "tests/integration/prepared-refresh-enrollment.test.ts",
       "expectedTests": [
         "prepared refresh enrollment refuses before effects (legacy Refresh installed)",
@@ -244,7 +263,8 @@
         "first-Agent requires dedicated Codex for OpenShell before external calls",
         "first-Agent admits dedicated Codex Control UI with OpenShell development state",
         "first-Agent validates launcher-owned HTTPS endpoints before external calls",
-        "first-Agent runs psql through the k3d PostgreSQL StatefulSet"
+        "first-Agent runs psql through the k3d PostgreSQL StatefulSet",
+        "first-Agent refuses missing or mismatched confirmed Installation state"
       ]
     },
     {
