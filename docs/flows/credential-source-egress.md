@@ -304,24 +304,24 @@ Sandboxes or continued model execution.
 ### 7. Retain installation custody
 
 `packages/occ/src/state/credential-deliveries.ts:CredentialDeliveries` requires
-independent confirmation for registered recipients and the reserving worker for
-snapshots, including bootstrap.
+recipient confirmation and the reserving worker for snapshots, including bootstrap.
 
+For repository network policies,
 `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:reconcile`
 prepares Gateway authentication before checking route ownership and material.
-At dispatch it checks local withdrawal, expiry and the supervisor lease.
-The worker cancels unsent writes while it owns the reservation. Uncertain writes
-remain blocked. Local withdrawal blocks resolved routes before launcher release.
-`release` drops closed routes after Sandbox deletion.
+At dispatch it checks local withdrawal, expiry and supervisor lease.
+The worker cancels unsent reservations it still holds. Uncertain writes stay blocked.
+Local withdrawal blocks launcher release synchronously. `release` drops closed
+routes on Sandbox deletion.
 
-`prepare` requires a held launch or explicit installation preview and closes
-routes from another worker before credential access.
+`prepare` requires a held launch or explicit installation preview and
+closes routes from other workers before credential access.
 `openshell-repository-git-evidence.ts:openShellGitRecipientEvidence` checks sessions
-before transport startup. Historical v4 and installation-wide v5 cannot issue
-or renew. See [restart behavior](../reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery).
+before transport starts. Historical v4 and installation-wide v5 cannot issue or renew.
+See [restart behavior](../reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery).
 
-Deletion stops use and retains custody. `openshell-git-route-store.ts:confirmDetached`
-verifies the original fence, recipient, material, policy and request without reapplying.
+`openshell-git-route-store.ts:confirmDetached` retains deletion custody by verifying
+the original fence, recipient, material, policy and request without reapplying.
 
 ## Debugging and Verification
 
@@ -350,7 +350,7 @@ None.
 
 ## Changelog
 
-- 2026-11-19 11:36: Check withdrawal before credential dispatch and launcher release. (authoring-run/e5c553f7-737b-4f9e-a1bb-75ff8aa2e5cc - 88411a2c219e6903d8777d68013ae4b2330ca5a6)
+- 2026-11-19 11:36: Fence credential dispatch and launcher release against withdrawal. (authoring-run/e5c553f7-737b-4f9e-a1bb-75ff8aa2e5cc - 88411a2c219e6903d8777d68013ae4b2330ca5a6)
 
 - 2026-11-19 05:56: Cancel writes that expire before dispatch. (authoring-run/db1dbeb6-2423-4378-b292-8e694c9e97e0 - c495c2aa1bc0ab809a92cfe449e17a9d681efad1)
 
