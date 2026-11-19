@@ -140,6 +140,7 @@ import {
   withYieldingComputeStop,
 } from "./drivers/compute/operation-context.ts";
 import type { OccMetrics, WorkKind, WorkOutcome } from "./metrics/index.ts";
+import { deploymentFailureRequestLogFields } from "./logging.ts";
 import { DeploymentTimings } from "./worker/deployment-timing.ts";
 import {
   isStopYieldedCode,
@@ -1216,6 +1217,8 @@ export class ControllerWorker {
   private passOutcome: WorkOutcome = "error";
   /** The revision this pass asked Compute to prepare, if any. */
   private preparedThisPass: string | undefined;
+  private computePreparationFailedThisPass = false;
+  private computeCleanupFailedThisPass = false;
   /**
    * The refusal this deployment pass's work still waits to publish: its latest evidence is a
    * REFUSED_CANDIDATE_STOP_PENDING deferral, or a lost claim that kept its refusal.
@@ -1661,6 +1664,8 @@ export class ControllerWorker {
           const started = process.hrtime.bigint();
           this.passOutcome = "error";
           this.preparedThisPass = undefined;
+          this.computePreparationFailedThisPass = false;
+          this.computeCleanupFailedThisPass = false;
           this.refusalWait = undefined;
           this.stopYieldedThisPass = false;
           try {
@@ -1986,8 +1991,15 @@ export class ControllerWorker {
     try {
       await stage.call(this.compute, revision, context);
     } catch (error) {
-      throw primaryComputeFailure(error);
+      throw this.unwrapComputeFailure(error);
     }
+  }
+
+  private unwrapComputeFailure(failure: unknown): unknown {
+    if (failure instanceof ComputeCleanupFailedError && failure.cleanupFailures.length > 0) {
+      this.computeCleanupFailedThisPass = true;
+    }
+    return primaryComputeFailure(failure);
   }
 
   private shouldActivateAfterCommit(compute: ComputeDriver): boolean {
@@ -2161,7 +2173,7 @@ export class ControllerWorker {
       timing?.observeReadiness(prepared.observation);
       return prepared;
     } catch (failure) {
-      const error = primaryComputeFailure(failure);
+      const error = this.unwrapComputeFailure(failure);
       // The worker aborted Compute itself, on a lost claim or a graceful shutdown: the pass's
       // own claim-loss or interruption record explains it, so there is no Compute failure to
       // describe (finding 1040).
@@ -2179,6 +2191,7 @@ export class ControllerWorker {
         this.emit({
           event: "worker.compute-prepare-failed",
           ...workLogFields(claim),
+          ...(claim.auditAttemptId === undefined ? {} : { attemptId: claim.auditAttemptId }),
           namespaceId: revision.namespaceId,
           agentId: revision.agentId,
           revisionId: revision.id,
@@ -2326,6 +2339,21 @@ export class ControllerWorker {
     }
   }
 
+  private async callComputePreparation(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+    context: ComputeRevisionContext,
+  ): Promise<ComputeReadiness> {
+    return this.withClaimHeartbeat(claim, async () => {
+      try {
+        return await this.compute.prepareRevision(revision, context);
+      } catch (error) {
+        this.computePreparationFailedThisPass = true;
+        throw error;
+      }
+    });
+  }
+
   private async prepareAfterPredecessors(
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
@@ -2345,9 +2373,7 @@ export class ControllerWorker {
     }
     await this.recheckRevokedCredentialSources(claim, revision);
     this.preparedThisPass = revision.id;
-    let observation = await this.withClaimHeartbeat(claim, () =>
-      this.compute.prepareRevision(revision, prepared),
-    );
+    let observation = await this.callComputePreparation(claim, revision, prepared);
     if (!validRevisionObservation(observation, revision)) {
       throw new RepositoryCredentialAuthorityError("INVALID_DRIVER_OBSERVATION");
     }
@@ -2381,9 +2407,7 @@ export class ControllerWorker {
       prepared = { ...prepared, repositoryCredentials };
       await this.assertRepositoryAuthority(claim, revision);
       this.repositoryCredentials.validate(revision);
-      observation = await this.withClaimHeartbeat(claim, () =>
-        this.compute.prepareRevision(revision, prepared),
-      );
+      observation = await this.callComputePreparation(claim, revision, prepared);
       if (
         !validRevisionObservation(observation, revision) ||
         observation.repositoryCredentialMaterialMissing !== undefined
@@ -6214,6 +6238,36 @@ export class ControllerWorker {
     return agent?.activeRevisionId !== claim.revisionId;
   }
 
+  private emitDeploymentFailure(
+    claim: ClaimedWork,
+    code: string,
+    failureLogFields?: Readonly<Record<string, string | number>>,
+  ): void {
+    if (
+      claim.agentId === undefined ||
+      claim.revisionId === undefined ||
+      !isCandidateDeployment(claim)
+    ) {
+      return;
+    }
+    // Only the generic dependency result can carry a fixed RPC request diagnostic.
+    const requestLogFields =
+      code === "DEPENDENCY_UNAVAILABLE" && failureLogFields !== undefined
+        ? deploymentFailureRequestLogFields(failureLogFields)
+        : {};
+    this.emit({
+      event: "worker.deployment-failed",
+      ...agentWorkLogFields(claim),
+      ...(claim.auditAttemptId === undefined ? {} : { attemptId: claim.auditAttemptId }),
+      revisionId: claim.revisionId,
+      outcome: "failed_permanent",
+      code,
+      ...(this.computePreparationFailedThisPass ? { step: "compute_prepare" } : {}),
+      ...requestLogFields,
+      ...(this.computeCleanupFailedThisPass ? { computeCleanupFailed: true } : {}),
+    });
+  }
+
   private async finalizeRevision(
     claim: ClaimedWork,
     result: RevisionDispatchResult,
@@ -6362,6 +6416,7 @@ export class ControllerWorker {
     let stoppedCandidate: Readonly<AgentRevision> | undefined;
     // Set when the pointer commit lost a race: the pass then commits a retry, not `resolved`.
     let activeRevisionChanged = false;
+    let committedFailureCode: string | undefined;
     let committedOutcome: WorkOutcome =
       resolved.outcome === "retry" && claim.attemptCount >= this.maxAttempts
         ? "permanent"
@@ -6401,6 +6456,9 @@ export class ControllerWorker {
         ) {
           await queue.retry(claim, { code: "ACTIVE_REVISION_CHANGED" });
           committedOutcome = claim.attemptCount >= this.maxAttempts ? "permanent" : "retry";
+          if (committedOutcome === "permanent") {
+            committedFailureCode = "ACTIVE_REVISION_CHANGED";
+          }
           activeRevisionChanged = true;
           return;
         }
@@ -6417,6 +6475,9 @@ export class ControllerWorker {
         if (activeAgent === undefined) {
           await queue.retry(claim, { code: "ACTIVE_REVISION_CHANGED" });
           committedOutcome = claim.attemptCount >= this.maxAttempts ? "permanent" : "retry";
+          if (committedOutcome === "permanent") {
+            committedFailureCode = "ACTIVE_REVISION_CHANGED";
+          }
           activeRevisionChanged = true;
           return;
         }
@@ -6479,12 +6540,16 @@ export class ControllerWorker {
           code: resolved.code,
           ...(resolved.data === undefined ? {} : { data: resolved.data }),
         });
+        committedFailureCode = resolved.code;
       } else {
         await queue.retry(claim, {
           code: resolved.code,
         });
       }
     }, this.queueOptions);
+    if (committedFailureCode !== undefined) {
+      this.emitDeploymentFailure(claim, committedFailureCode, failureLogFields);
+    }
     if (stoppedCandidate !== undefined) {
       await this.closeRevisionCredentials(claim, stoppedCandidate);
       try {
@@ -7063,6 +7128,9 @@ export class ControllerWorker {
     }
     if (!completed) {
       this.passOutcome = claim.attemptCount >= this.maxAttempts ? "permanent" : "retry";
+      if (this.passOutcome === "permanent") {
+        this.emitDeploymentFailure(claim, "ACTIVE_REVISION_CHANGED");
+      }
       // Like the pointer commit's lost race, this pass committed a retry (finding 1611).
       this.emit({
         event: "worker.completed",
@@ -7238,6 +7306,7 @@ export class ControllerWorker {
       return false;
     }
     this.passOutcome = "permanent";
+    this.emitDeploymentFailure(claim, code, failureLogFields);
     this.emit({
       event: "worker.completed",
       ...agentWorkLogFields(claim),
@@ -7333,6 +7402,7 @@ export class ControllerWorker {
       return false;
     }
     this.passOutcome = "permanent";
+    this.emitDeploymentFailure(claim, code, failureLogFields);
     this.emit({
       event: "worker.completed",
       ...agentWorkLogFields(claim),

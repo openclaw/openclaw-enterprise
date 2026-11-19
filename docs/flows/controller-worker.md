@@ -1,15 +1,15 @@
 ---
 created: 2026-08-28
-updated: 2026-11-14
-last_updated_session: fix-4929
+updated: 2026-11-19
+last_updated_session: authoring-run/e0f97a06-464e-4651-b022-92f3cad259dd
 ---
 
 # Controller Worker Flow
 
 ## Overview
 
-The worker claims PostgreSQL work, rechecks authorization, and calls Compute.
-It saves Namespace, Agent stop/deletion, and revision results under its claim.
+The worker claims PostgreSQL work, reauthorizes, calls Compute, and persists
+Namespace, Agent lifecycle, and revision results under its claim.
 See the [controller reference](../reference/controller.md) and
 [deployment guide](../guides/deploy.md).
 
@@ -119,7 +119,7 @@ reauthorizes normally.
 
 Each pass calls `recoverStale()`. When idle and every five claims,
 `withdrawHarnessExposure` sweeps one active-at-start or failed version with
-five logged attempts. On shutdown, interrupted claims follow lease recovery.
+five logged attempts. Interrupted claims follow lease recovery.
 
 `FOR UPDATE SKIP LOCKED` protects each claim. With audit enabled, PostgreSQL
 saves the claim and `controller_work.claimed` record together. The worker starts
@@ -293,10 +293,9 @@ same metrics contract.
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.defer`,
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.retry`
 
-Pending convergence refunds the attempt and requeues unready versions on the
-cadence in
-[pending deployment progress](../reference/agents/deployment.md#pending-deployment-progress),
-others with backoff. Compute's `pendingReason` selects the pending code.
+Pending convergence refunds the attempt. Unready versions use the
+[progress cadence](../reference/agents/deployment.md#pending-deployment-progress).
+Other work uses backoff. Compute's `pendingReason` selects the pending code.
 `PostgresWorkQueue.defer` appends `reconcile` evidence only when its outcome or
 code changes. `retry` outcomes consume attempts; permanent failure, exhaustion, deadline, or `AUTHENTICATION_FAILED`
 terminates work. See [outcomes](../reference/controller.md) and
@@ -355,11 +354,10 @@ Each claim reauthorizes its actor. Exhausted observation, binding, dependency,
 or claim retries can schedule another item while the version stays selected,
 running, and within its credential deadline. Outages never retire it.
 
-`worker.completed` reports the target, outcome, and code. On `namespace.ensure`
-and `namespace.delete`, it can report a [Kubernetes access hint](../reference/drivers/kubernetes-compute.md#failure-conditions)
-from the current pass, outside the Driver observation.
-A result links to the claim by its attempt ID. A repeat of the same pending
-state can skip `reconcile` and use `controller_work.deferred` for that attempt.
+`worker.completed` reports target, outcome, and code. Namespace operations can
+include a current-pass [Kubernetes access hint](../reference/drivers/kubernetes-compute.md#failure-conditions).
+The attempt ID binds the result to its claim. Repeated pending state can use
+`controller_work.deferred` instead of `reconcile`.
 Lease loss reports `worker.error` `CLAIM_LOST` instead of stale lifecycle state.
 On `SIGTERM` or `SIGINT`, shutdown aborts in-flight work, waits for the loop,
 removes readiness, closes the other parts and then PostgreSQL, and emits `worker.stopped`.
@@ -373,10 +371,9 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Debugging and Verification
 
-- `worker.started` names the Drivers. Ready `worker.health` confirms a work query.
-- `worker.startup-error` reports startup failures. The
-  [worker exec probe](../../scripts/production-healthcheck.ts) checks the
-  readiness and progress markers.
+- `worker.started` names Drivers. `worker.health` confirms a work query.
+  The [exec probe](../../scripts/production-healthcheck.ts) checks readiness and progress.
+  Check `worker.startup-error` for startup failures.
 - For queued work, compare API and worker database and Installation settings.
   Check `worker.completed` and `worker.error`. Check IAM for `ACTOR_REVOKED` or
   `AUTHORIZATION_DENIED`. `DEPENDENCY_UNAVAILABLE` retries within
@@ -384,8 +381,10 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
   A [dependency deferral](../reference/controller/reconciliation.md#deferred-namespace-and-agent-convergence)
   logs `dependency` and `cause` (`unreachable`, `timeout` or `unavailable`).
   Other failures log the error class in `cause` and the HTTP `status` when present.
-- `worker.compute-prepare-failed` names the failed Driver stage without the raw
-  exception; match its `workId` or `revisionId` to the next `worker.completed`.
+- Local worker JSON records `worker.deployment-failed` after PostgreSQL acknowledges
+  a terminal deployment failure, including an exhausted retry. For correlation
+  and cleanup evidence, see [Diagnose a failed deployment](../guides/deploy/production-agents.md#diagnose-a-failed-deployment).
+  If commit acknowledgment is lost, check the saved deployment status.
 - [Version](../../tests/integration/postgres-worker-agent-revision.test.mjs),
   [revision lifecycle](../../tests/integration/postgres-worker-agent-revision-lifecycle.test.ts),
   [convergence](../../tests/integration/postgres-worker-agent-revision-convergence.test.ts),
@@ -425,6 +424,8 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Changelog
 
+- 2026-11-19 00:29: Include exhausted retries in terminal failure logs. (authoring-run/e0f97a06-464e-4651-b022-92f3cad259dd - fae2a1e77d1432155c3f0ba10fdc3861aee10e55)
+- 2026-11-18 23:34: Correlate terminal deployment failures with the worker attempt. (authoring-run/fcffdcd5-85ba-4fd1-ad35-bfbbcd6953b6)
 - 2026-11-14 12:25: Document the TypeScript worker probe. (authoring-run/1be06605-515e-4261-8b21-d0d796809916 - f0bfd8b1834a7a07fc008fa822fed9035f12ffbe)
 - 2026-11-14 10:00: Hint tenant access on delete. (fix-4929)
 - 2026-11-12 14:03: Save development claim evidence. (authoring-run/b3f389f0-d5ed-434d-930a-11b1f97eef2d - 8658496ea654b960bebabca40d18c7d71994db50)
