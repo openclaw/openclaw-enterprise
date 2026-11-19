@@ -319,8 +319,6 @@ test("source API rejects routing inputs and registers independently authorized d
   });
   // Neither an old routing field nor permission to use a default-provider key selects a route.
   assertRefused(await f.create("routing", { base_url: endpoint }), "base_url", /has no field/);
-  // Schema validation runs before catalog lookup and must escape the submitted key as one segment.
-  assertRefused(await f.create("invalid field", { "bad/key~name": "x" }), "bad~1key~0name");
   await f.assertNothingSaved();
   assert.equal((await f.create("default")).status, 201);
   assert.equal(

@@ -33,8 +33,6 @@ Historical RFC bodies remain unchanged; notes below identify later amendments
 and current gaps. RFC-0019's status and row were updated on 2026-10-13 to
 reflect later delivery.
 
-The proposed [RFC-0016 catalog field names amendment](rfcs/0016-sandbox-credential-injection/catalog-field-names.md) is open for review.
-
 The Author column comes from each RFC’s `author` frontmatter. Treat the author
 as the RFC owner; no separate owner field is maintained.
 

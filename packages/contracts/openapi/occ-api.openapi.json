@@ -202,11 +202,6 @@
             "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
             "description": "Non-secret source configuration keyed by catalog field name.",
             "maxProperties": 32,
-            "propertyNames": {
-              "maxLength": 64,
-              "minLength": 1,
-              "pattern": "^[a-z][a-z0-9_]{0,63}$"
-            },
             "type": "object"
           },
           "connectionTemplateId": {
@@ -230,7 +225,6 @@
             "description": "Credential values keyed by the secret fields declared by the source type.",
             "maxProperties": 16,
             "minProperties": 1,
-            "propertyNames": { "pattern": "^[a-z][a-z0-9_]{0,63}$" },
             "type": "object",
             "writeOnly": true
           },
@@ -248,34 +242,16 @@
       },
       "TokenServiceSourceMetadata": {
         "additionalProperties": false,
-        "description": "Proposed public metadata for a Namespace source. OCC retains the owner's backend reference internally. Metadata reads do not resolve a usable credential.",
+        "description": "Proposed public metadata for a Namespace source. OCC keeps the TokenService instance and private registration reference internally. Metadata reads do not resolve a usable credential.",
         "properties": {
           "config": {
             "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
             "description": "Non-secret source configuration keyed by catalog field name.",
             "maxProperties": 32,
-            "propertyNames": {
-              "maxLength": 64,
-              "minLength": 1,
-              "pattern": "^[a-z][a-z0-9_]{0,63}$"
-            },
             "type": "object"
           },
           "connectionTemplateId": {
             "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-            "type": "string"
-          },
-          "delivery": {
-            "anyOf": [
-              { "const": "push", "type": "string" },
-              { "const": "native", "type": "string" }
-            ],
-            "description": "Delivery mode reported by the owner after registration."
-          },
-          "driverId": {
-            "maxLength": 200,
-            "minLength": 1,
-            "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
             "type": "string"
           },
           "id": {
@@ -373,7 +349,7 @@
             "type": "string"
           }
         },
-        "required": ["id", "namespaceId", "ref", "name", "type", "config", "state", "driverId"],
+        "required": ["id", "namespaceId", "ref", "name", "type", "config", "state"],
         "title": "TokenServiceSourceMetadata",
         "type": "object"
       },
@@ -386,11 +362,6 @@
                 "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
                 "description": "Non-secret source configuration keyed by catalog field name.",
                 "maxProperties": 32,
-                "propertyNames": {
-                  "maxLength": 64,
-                  "minLength": 1,
-                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                },
                 "type": "object"
               },
               "secret": {
@@ -404,7 +375,6 @@
                 "description": "Credential values keyed by the secret fields declared by the source type.",
                 "maxProperties": 16,
                 "minProperties": 1,
-                "propertyNames": { "pattern": "^[a-z][a-z0-9_]{0,63}$" },
                 "type": "object",
                 "writeOnly": true
               }
@@ -419,11 +389,6 @@
                 "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
                 "description": "Non-secret source configuration keyed by catalog field name.",
                 "maxProperties": 32,
-                "propertyNames": {
-                  "maxLength": 64,
-                  "minLength": 1,
-                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                },
                 "type": "object"
               },
               "secret": {
@@ -437,7 +402,6 @@
                 "description": "Credential values keyed by the secret fields declared by the source type.",
                 "maxProperties": 16,
                 "minProperties": 1,
-                "propertyNames": { "pattern": "^[a-z][a-z0-9_]{0,63}$" },
                 "type": "object",
                 "writeOnly": true
               }
@@ -446,7 +410,7 @@
             "type": "object"
           }
         ],
-        "description": "Proposed update to the recorded owner's credential material, mutable lifecycle settings, or both. Omitted fields retain their values.",
+        "description": "Proposed update to credential material, mutable lifecycle settings, or both. Omitted fields retain their values.",
         "title": "UpdateTokenServiceSourceBody"
       },
       "def-0": {
@@ -933,11 +897,6 @@
                 "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
                 "description": "Non-secret source configuration keyed by catalog field name.",
                 "maxProperties": 32,
-                "propertyNames": {
-                  "maxLength": 64,
-                  "minLength": 1,
-                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                },
                 "type": "object"
               },
               "egress": {
@@ -13268,10 +13227,7 @@
                                           "properties": {
                                             "description": { "type": "string" },
                                             "issuerRotated": { "type": "boolean" },
-                                            "name": {
-                                              "pattern": "^[a-z][a-z0-9_]{0,63}$",
-                                              "type": "string"
-                                            },
+                                            "name": { "minLength": 1, "type": "string" },
                                             "required": { "type": "boolean" }
                                           },
                                           "required": ["name", "required"],
@@ -13315,10 +13271,7 @@
                                           "properties": {
                                             "description": { "type": "string" },
                                             "issuerRotated": { "type": "boolean" },
-                                            "name": {
-                                              "pattern": "^[a-z][a-z0-9_]{0,63}$",
-                                              "type": "string"
-                                            },
+                                            "name": { "minLength": 1, "type": "string" },
                                             "required": { "type": "boolean" }
                                           },
                                           "required": ["name", "required"],
@@ -13698,10 +13651,7 @@
                                           "properties": {
                                             "description": { "type": "string" },
                                             "issuerRotated": { "type": "boolean" },
-                                            "name": {
-                                              "pattern": "^[a-z][a-z0-9_]{0,63}$",
-                                              "type": "string"
-                                            },
+                                            "name": { "minLength": 1, "type": "string" },
                                             "required": { "type": "boolean" }
                                           },
                                           "required": ["name", "required"],
@@ -13745,10 +13695,7 @@
                                           "properties": {
                                             "description": { "type": "string" },
                                             "issuerRotated": { "type": "boolean" },
-                                            "name": {
-                                              "pattern": "^[a-z][a-z0-9_]{0,63}$",
-                                              "type": "string"
-                                            },
+                                            "name": { "minLength": 1, "type": "string" },
                                             "required": { "type": "boolean" }
                                           },
                                           "required": ["name", "required"],
@@ -15960,10 +15907,7 @@
                                           "properties": {
                                             "description": { "type": "string" },
                                             "issuerRotated": { "type": "boolean" },
-                                            "name": {
-                                              "pattern": "^[a-z][a-z0-9_]{0,63}$",
-                                              "type": "string"
-                                            },
+                                            "name": { "minLength": 1, "type": "string" },
                                             "required": { "type": "boolean" }
                                           },
                                           "required": ["name", "required"],
@@ -16007,10 +15951,7 @@
                                           "properties": {
                                             "description": { "type": "string" },
                                             "issuerRotated": { "type": "boolean" },
-                                            "name": {
-                                              "pattern": "^[a-z][a-z0-9_]{0,63}$",
-                                              "type": "string"
-                                            },
+                                            "name": { "minLength": 1, "type": "string" },
                                             "required": { "type": "boolean" }
                                           },
                                           "required": ["name", "required"],
@@ -37471,11 +37412,6 @@
                             },
                             "description": "Non-secret source configuration keyed by catalog field name.",
                             "maxProperties": 32,
-                            "propertyNames": {
-                              "maxLength": 64,
-                              "minLength": 1,
-                              "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                            },
                             "type": "object"
                           },
                           "egress": {
@@ -37759,11 +37695,6 @@
                     "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
                     "description": "Non-secret source configuration keyed by catalog field name.",
                     "maxProperties": 32,
-                    "propertyNames": {
-                      "maxLength": 64,
-                      "minLength": 1,
-                      "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                    },
                     "type": "object"
                   },
                   "name": {

@@ -404,11 +404,6 @@ export function collapseScalarUnions(
     }
   }
   return entries.flatMap((entry) => {
-    // Ajv also emits the failed constraint on the key (for example, pattern).
-    // The propertyNames error identifies that same key at the containing object's path.
-    if ("propertyName" in entry && typeof entry.propertyName === "string") {
-      return [];
-    }
     const replacement = collapsed.get(entry);
     if (replacement !== undefined) {
       return replacement === null ? [] : [replacement];
@@ -417,9 +412,6 @@ export function collapseScalarUnions(
     let path = typeof entry.instancePath === "string" ? entry.instancePath : "";
     if (entry.keyword === "required" && typeof parameters.missingProperty === "string") {
       path += `/${jsonPointer(parameters.missingProperty)}`;
-    }
-    if (entry.keyword === "propertyNames" && typeof parameters.propertyName === "string") {
-      path += `/${jsonPointer(parameters.propertyName)}`;
     }
     if (
       entry.keyword === "additionalProperties" &&

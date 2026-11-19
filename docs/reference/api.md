@@ -3011,7 +3011,7 @@ Get the singleton Installation
 | `data.capabilities.credentialSources.types[].config` | `array<object>` | Yes | — |
 | `data.capabilities.credentialSources.types[].config[].description` | `string` | No | — |
 | `data.capabilities.credentialSources.types[].config[].issuerRotated` | `boolean` | No | — |
-| `data.capabilities.credentialSources.types[].config[].name` | `string` | Yes | pattern: `^[a-z][a-z0-9_]{0,63}$` |
+| `data.capabilities.credentialSources.types[].config[].name` | `string` | Yes | min length: 1 |
 | `data.capabilities.credentialSources.types[].config[].required` | `boolean` | Yes | — |
 | `data.capabilities.credentialSources.types[].deviceAuthorization` | `object` | No | — |
 | `data.capabilities.credentialSources.types[].deviceAuthorization.harnessId` | `string` | Yes | min length: 1 |
@@ -3022,7 +3022,7 @@ Get the singleton Installation
 | `data.capabilities.credentialSources.types[].secrets` | `array<object>` | Yes | — |
 | `data.capabilities.credentialSources.types[].secrets[].description` | `string` | No | — |
 | `data.capabilities.credentialSources.types[].secrets[].issuerRotated` | `boolean` | No | — |
-| `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | pattern: `^[a-z][a-z0-9_]{0,63}$` |
+| `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
 | `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
 | `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
 | `data.capabilities.nativeAdmin` | `true` | No | — |
@@ -3133,7 +3133,7 @@ Example request
 | `data.capabilities.credentialSources.types[].config` | `array<object>` | Yes | — |
 | `data.capabilities.credentialSources.types[].config[].description` | `string` | No | — |
 | `data.capabilities.credentialSources.types[].config[].issuerRotated` | `boolean` | No | — |
-| `data.capabilities.credentialSources.types[].config[].name` | `string` | Yes | pattern: `^[a-z][a-z0-9_]{0,63}$` |
+| `data.capabilities.credentialSources.types[].config[].name` | `string` | Yes | min length: 1 |
 | `data.capabilities.credentialSources.types[].config[].required` | `boolean` | Yes | — |
 | `data.capabilities.credentialSources.types[].deviceAuthorization` | `object` | No | — |
 | `data.capabilities.credentialSources.types[].deviceAuthorization.harnessId` | `string` | Yes | min length: 1 |
@@ -3144,7 +3144,7 @@ Example request
 | `data.capabilities.credentialSources.types[].secrets` | `array<object>` | Yes | — |
 | `data.capabilities.credentialSources.types[].secrets[].description` | `string` | No | — |
 | `data.capabilities.credentialSources.types[].secrets[].issuerRotated` | `boolean` | No | — |
-| `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | pattern: `^[a-z][a-z0-9_]{0,63}$` |
+| `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
 | `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
 | `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
 | `data.capabilities.nativeAdmin` | `true` | No | — |
@@ -4209,7 +4209,7 @@ Report the Installation capabilities that Agent creation in this Namespace needs
 | `data.capabilities.credentialSources.types[].config` | `array<object>` | Yes | — |
 | `data.capabilities.credentialSources.types[].config[].description` | `string` | No | — |
 | `data.capabilities.credentialSources.types[].config[].issuerRotated` | `boolean` | No | — |
-| `data.capabilities.credentialSources.types[].config[].name` | `string` | Yes | pattern: `^[a-z][a-z0-9_]{0,63}$` |
+| `data.capabilities.credentialSources.types[].config[].name` | `string` | Yes | min length: 1 |
 | `data.capabilities.credentialSources.types[].config[].required` | `boolean` | Yes | — |
 | `data.capabilities.credentialSources.types[].deviceAuthorization` | `object` | No | — |
 | `data.capabilities.credentialSources.types[].deviceAuthorization.harnessId` | `string` | Yes | min length: 1 |
@@ -4220,7 +4220,7 @@ Report the Installation capabilities that Agent creation in this Namespace needs
 | `data.capabilities.credentialSources.types[].secrets` | `array<object>` | Yes | — |
 | `data.capabilities.credentialSources.types[].secrets[].description` | `string` | No | — |
 | `data.capabilities.credentialSources.types[].secrets[].issuerRotated` | `boolean` | No | — |
-| `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | pattern: `^[a-z][a-z0-9_]{0,63}$` |
+| `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
 | `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
 | `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
 | `data.capabilities.nativeAdmin` | `true` | No | — |

@@ -11,7 +11,6 @@ import {
   ConfigurationId,
   ConfigurationKindSchema,
   ConfigurationValues,
-  CREDENTIAL_SOURCE_FIELD_NAME_PATTERN,
   CredentialSourceConfig,
   CredentialSourceId,
   CredentialSourceReference,
@@ -290,7 +289,7 @@ export const AgentPluginPolicyCapabilitiesResponse = Type.Object(
 
 const CredentialSourceFieldSchema = Type.Object(
   {
-    name: Type.String({ pattern: CREDENTIAL_SOURCE_FIELD_NAME_PATTERN.source }),
+    name: Type.String({ minLength: 1 }),
     required: Type.Boolean(),
     description: Type.Optional(Type.String()),
     issuerRotated: Type.Optional(Type.Boolean()),

@@ -1,9 +1,7 @@
 import { Type } from "typebox";
 
 import {
-  BackendId,
   ConnectionTemplateId,
-  CREDENTIAL_SOURCE_FIELD_NAME_PATTERN,
   CredentialSourceConfig,
   CredentialSourceId,
   CredentialSourceReference,
@@ -15,7 +13,6 @@ import {
 import { CredentialSourceSchema } from "./resources.ts";
 
 const material = Type.Record(Type.String(), SecretValue, {
-  propertyNames: { pattern: CREDENTIAL_SOURCE_FIELD_NAME_PATTERN.source },
   minProperties: 1,
   maxProperties: 16,
   writeOnly: true,
@@ -52,7 +49,7 @@ export const UpdateTokenServiceSourceBody = Type.Union(
   {
     $id: "UpdateTokenServiceSourceBody",
     description:
-      "Proposed update to the recorded owner's credential material, mutable lifecycle settings, or both. Omitted fields retain their values.",
+      "Proposed update to credential material, mutable lifecycle settings, or both. Omitted fields retain their values.",
   },
 );
 
@@ -66,12 +63,6 @@ export const TokenServiceSourceMetadata = Type.Object(
     config: CredentialSourceConfig,
     connectionTemplateId: Type.Optional(ConnectionTemplateId),
     state: CredentialSourceSchema.properties.state,
-    driverId: BackendId,
-    delivery: Type.Optional(
-      Type.Union([Type.Literal("push"), Type.Literal("native")], {
-        description: "Delivery mode reported by the owner after registration.",
-      }),
-    ),
     version: Type.Optional(
       Type.String({
         minLength: 1,
@@ -84,7 +75,7 @@ export const TokenServiceSourceMetadata = Type.Object(
     $id: "TokenServiceSourceMetadata",
     additionalProperties: false,
     description:
-      "Proposed public metadata for a Namespace source. OCC retains the owner's backend reference internally. Metadata reads do not resolve a usable credential.",
+      "Proposed public metadata for a Namespace source. OCC keeps the TokenService instance and private registration reference internally. Metadata reads do not resolve a usable credential.",
   },
 );
 

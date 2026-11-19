@@ -1713,6 +1713,7 @@ export type {
   TokenServiceSourceRef,
   InstallationClientSecretRef,
   TokenServiceRegistration,
+  TokenServiceSourceInstance,
   RegisteredTokenServiceSource,
   SourceLifecycleConfig,
   SourceRegistrationInput,
@@ -1753,4 +1754,7 @@ export type {
   SandboxDeploymentContract,
 } from "./drivers/sandbox/deployment.ts";
 
-export type { CredentialProxyDeploymentContract } from "./drivers/credential-proxy/deployment.ts";
+export type {
+  CredentialUpdateNotification,
+  CredentialProxyDeploymentContract,
+} from "./drivers/credential-proxy/deployment.ts";

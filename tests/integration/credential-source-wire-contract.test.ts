@@ -51,13 +51,14 @@ test("published TokenService source schemas accept registration material and ser
     config,
     connectionTemplateId,
     state: "ready",
-    driverId: "model-credentials",
-    delivery: "push",
     version: "v2",
   };
   const internal = {
     ...metadata,
     ownerCapability: "token_service",
+    tokenServiceInstanceId: "private-instance",
+    driverId: "model-credentials",
+    delivery: "push",
     secret: credential,
     secrets: refs,
     backendRef: { key: "private" },
@@ -78,6 +79,8 @@ test("published TokenService source schemas accept registration material and ser
     });
 
     assert.equal(register({ ...source, config, secret: credential }), true);
+    // The selected source type owns its material field names.
+    assert.equal(register({ ...source, secret: { "client-id": "synthetic-material" } }), true);
     // The source attaches the template identity rather than pinning one template version.
     assert.equal(register({ ...source, connectionTemplateId, secret: credential }), true);
     assert.equal(register({ ...source, connectionTemplateId: "invalid" }), false);
@@ -95,14 +98,13 @@ test("published TokenService source schemas accept registration material and ser
     assert.equal(update({ secret: credential, driverId: "chosen-owner" }), false);
     assert.equal(update({ config, connectionTemplateId }), false);
 
-    for (const invalidConfig of [{ "BAD KEY": "x" }, { "BAD KEY": 42 }, { api_url: 42 }]) {
-      assert.equal(register({ ...source, config: invalidConfig }), false);
-      assert.equal(update({ config: invalidConfig }), false);
-      assert.equal(validMetadata({ ...metadata, config: invalidConfig }), false);
-    }
+    const invalidConfig = { "client-id": 42 };
+    assert.equal(register({ ...source, config: invalidConfig }), false);
+    assert.equal(update({ config: invalidConfig }), false);
+    assert.equal(validMetadata({ ...metadata, config: invalidConfig }), false);
     assert.equal(validMetadata(metadata), true);
     assert.equal(validMetadata(internal), false);
-    // A stored record can carry owner-only fields. Readers must receive only the metadata.
+    // Private ownership, delivery, backend, and material fields never enter public metadata.
     assert.deepEqual(JSON.parse(serializeMetadata(internal)), metadata);
   }
 });
