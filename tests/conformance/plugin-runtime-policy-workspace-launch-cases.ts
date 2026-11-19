@@ -171,7 +171,8 @@ export function registerWorkspaceLaunchCases() {
     });
     // An invalid/empty native effort list must not introduce a compat override,
     // and another row must not acquire the first row's capability metadata.
-    for (const efforts of [[], ["off"], ["high", "unknown"], [1], "high"]) {
+    // A list of only `none` disables reasoning, which needs the authored adapter.
+    for (const efforts of [[], ["none"], ["off"], ["high", "unknown"], [1], "high"]) {
       const { config } = codexGatewayConfig();
       config.models = {
         providers: {
@@ -196,6 +197,27 @@ export function registerWorkspaceLaunchCases() {
       ]);
       assert.equal(field(saved, "models", "providers", "codex", "baseUrl"), "http://127.0.0.1:9");
     }
+    // Codex lists `none` beside its other efforts. As in the pinned OpenClaw rule, that
+    // list is a native turn control: the row keeps it and nothing is reported overridden.
+    const { config: withNone } = codexGatewayConfig();
+    withNone.models = {
+      providers: {
+        codex: {
+          models: [{ id: "gpt-test", compat: { supportedReasoningEfforts: ["none", "low", "high"] } }],
+        },
+      },
+    };
+    const noneLogged: string[] = [];
+    const noneResult = await launchGateway(undefined, [], {
+      baseConfig: withNone,
+      env: { APP_SERVER_URL: "ws://harness.example.test:18790" },
+      workspaceNodeId: "enrolled-node",
+      console: { error: (line) => noneLogged.push(line) },
+    });
+    assert.deepEqual(field(readConfig(noneResult.files), "models", "providers", "codex", "models"), [
+      { id: "gpt-test", compat: { supportedReasoningEfforts: ["none", "low", "high"] } },
+    ]);
+    assert.ok(noneLogged.every((line) => !line.includes("models[].compat")));
     // An openai row that names no transport keeps OpenClaw's default (no credential
     // in the Gateway) so Codex keeps owning its account's models; overrides still go.
     // APP_SERVER_URL marks a Codex Gateway, so the pin holds without the plugin entry.

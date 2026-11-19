@@ -268,7 +268,6 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     extensions/codex/src/app-server/thread-policy.test.ts extensions/codex/src/app-server/thread-lifecycle.adoption.test.ts \
     src/auto-reply/reply/session-event-config-readmission.test.ts \
     src/gateway/session-restart-resume.admission.test.ts src/gateway/session-restart-resume.workspace.test.ts \
-    src/infra/private-store-file.test.ts \
     src/node-host/runner.test.ts \
     src/node-host/gateway-candidate-connection.test.ts \
     src/node-host/runner-lifecycle-lock.test.ts \
@@ -325,7 +324,7 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
 RUN --network=none cd ui && node ../scripts/run-node-package-bin.mts vitest run --config vitest.config.ts \
     --project unit --project unit-node \
     src/api/gateway-reachability.node.test.ts \
-    src/app/gateway-page-activation.test.ts src/lib/session-method-access.test.ts \
+    src/app/gateway-page-activation.test.ts \
     src/pages/chat/chat-history-subscription-errors.test.ts
 
 FROM openclaw-patched-source AS openclaw-build

@@ -204,9 +204,10 @@ primary or fallback. Codex accepts `codex`, or `openai` with the Codex plugin
 enabled for WebSocket app-server transport.
 
 On Kubernetes, a dedicated Codex Gateway with a workspace-node ID or binding
-path preserves `reasoning`, `thinkingLevelMap`, and nonempty
-`compat.supportedReasoningEfforts` containing only `minimal`, `low`, `medium`,
-`high`, `xhigh`, `max`, or `ultra`. Verify against the runtime/model.
+path preserves `reasoning`, `thinkingLevelMap`, and
+`compat.supportedReasoningEfforts` containing only `none`, `minimal`, `low`,
+`medium`, `high`, `xhigh`, `max`, or `ultra`, with at least one effort other
+than `none`. Verify against the runtime/model.
 Other `compat` fields, including `thinkingLevels`, are dropped.
 No capabilities are inferred.
 

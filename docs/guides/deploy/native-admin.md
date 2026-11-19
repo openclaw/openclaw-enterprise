@@ -310,9 +310,9 @@ If a refreshed tab says **Agent version changed**, choose **Return to console**,
 then open the Agent again. The old session cannot cross a deployment.
 
 If an open Gateway tab shows **Sign in to continue loading content**, select
-**Sign in**. Your sign-in may have expired or your access changed. A new tab
-opens; after any sign-in, OCE rechecks your access and shows that Agent’s detail
-page. Return to the first tab and select **Check again**; it reconnects with your
+**Sign in**. A new tab opens; after any sign-in, OCE rechecks your access and
+shows that Agent’s detail page. With host-only exchange, select **Open Agent UI**
+there. Then select **Check again** in the first tab; it reconnects with your
 draft. If the new tab shows **Agent unavailable**, open the Agent in the console;
 deploy a stopped Agent.
 

@@ -132,7 +132,7 @@ The Console’s authenticated `GET /native-admin/return/<key>` operation checks 
 
 A signed-in person who has neither chat nor administration access to the Agent is never redirected. Their top-level HTML navigation stays HTTP 403 on a page that does not name the Agent; its only link, **Go to your Agents**, points at `/console/agents`. JSON requests still receive the JSON `403`; WebSocket upgrades still close.
 
-If a failed reconnect's health probe and Control UI configuration get `401` or `403`, the Control UI shows **Sign in to continue loading content**. **Sign in** opens `/` in a new tab; **Check again** rechecks access. This prompts an access check, not proof of expiry; OCC decides whether to offer sign-in or refuse.
+If a failed reconnect's health probe and Control UI configuration get `401` or `403`, the Control UI shows **Sign in to continue loading content**. **Sign in** opens `/` in a new tab; then **Check again** appears and rechecks access. **Not now** closes the prompt, which does not return by itself: the tab keeps reconnecting quietly and recovers after a sign-in in another tab or a reload, which drops the draft. This prompts an access check, not proof of expiry; OCC decides whether to offer sign-in or refuse.
 
 ### Unsupported reasons
 
