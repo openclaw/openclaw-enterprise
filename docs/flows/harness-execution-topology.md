@@ -94,7 +94,7 @@ harness-auth bindings before deployment; no Agent path is deployable.
 The [Docker gateway authentication reference](../reference/drivers/docker-compute.md#gateway-authentication)
 owns mode and password rules.
 
-On Kubernetes, `strandsBoxResources` shares read-only runtime objects. `listenerCertificate` binds the supervisor certificate and Pod UID to the revision.
+The Strands supervisor and workload share read-only runtime objects. `listenerCertificate` binds the supervisor certificate and Pod UID to the revision.
 [SSH](pr-24-ssh-compute.md) supports runtime authentication for unmanaged embedded OpenClaw. Operator credentials stay on the host. OCC checks Gateway readiness without model validation.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.prepareRevision`
