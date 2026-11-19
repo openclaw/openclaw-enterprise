@@ -1019,7 +1019,7 @@ export class OpenShellPreparedGitProvider {
       }
       this.binding(current, previous.profileVersion, previous.expiresAt);
       // Release checks the owner's current approval, execution, session and material.
-      // The gateway client checks the policy lease again at RPC dispatch.
+      // The gateway client checks the release guard again at RPC dispatch.
       phase = "release";
       const token = await release();
       phase = "reading";

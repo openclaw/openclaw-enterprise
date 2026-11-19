@@ -1352,7 +1352,7 @@ async function loadGrpc(): Promise<{
   }
 }
 
-/** The caller withdrew authorization before the RPC was dispatched. */
+/** The credential update failed or was refused before the RPC was dispatched. */
 export class OpenShellGatewayDispatchRefusedError extends OpenShellGatewayFailure {}
 
 export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
@@ -2678,20 +2678,23 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
   ): Promise<RecordValue> {
     const unsent = () =>
       new OpenShellGatewayDispatchRefusedError("OpenShell credential update was not sent.");
-    const checkSignalBeforeDispatch = () => {
-      if (canDispatch !== undefined && signal.aborted) {
+    let grpc: typeof import("@grpc/grpc-js");
+    let client: OpenShellGrpcClient;
+    let headers: Metadata;
+    try {
+      signal.throwIfAborted();
+      ({ grpc, client } = await this.ensureClient());
+      signal.throwIfAborted();
+      headers = await openShellGatewayGrpcMetadata(grpc, this.options.auth);
+      if (canDispatch?.() === false) {
         throw unsent();
       }
       signal.throwIfAborted();
-    };
-    checkSignalBeforeDispatch();
-    const { grpc, client } = await this.ensureClient();
-    checkSignalBeforeDispatch();
-    const headers = await openShellGatewayGrpcMetadata(grpc, this.options.auth);
-    if (canDispatch?.() === false) {
-      throw unsent();
+    } catch (error) {
+      // The guarded write has not reached gRPC. This includes a bearer read
+      // that fails after the deadline and never reaches the abort check.
+      throw canDispatch === undefined ? error : unsent();
     }
-    checkSignalBeforeDispatch();
     return new Promise<RecordValue>((resolve, reject) => {
       let call: ClientUnaryCall | undefined;
       const abort = () => {

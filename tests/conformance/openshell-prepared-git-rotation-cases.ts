@@ -130,9 +130,13 @@ export function registerPreparedGitRotationCases(): void {
     );
   });
 
-  for (const writeTimeout of [false, true]) {
-    const expiry = writeTimeout ? "its write budget" : "its lease";
-    test(`prepared Git records an unsent update when ${expiry} expires during authentication`, async (t) => {
+  for (const failure of [
+    "lease expiry",
+    "write timeout",
+    "write timeout with empty bearer",
+  ] as const) {
+    test(`prepared Git records an unsent update after ${failure} during authentication`, async (t) => {
+      const writeTimeout = failure !== "lease expiry";
       const directory = await temporaryDirectory(t, "prepared-git-auth-");
       const bearer = join(directory, "bearer");
       const delayedBearer = join(directory, "delayed-bearer");
@@ -162,7 +166,9 @@ export function registerPreparedGitRotationCases(): void {
               } else {
                 expired = true;
               }
-              await output.writeFile("fixture-bearer");
+              if (failure !== "write timeout with empty bearer") {
+                await output.writeFile("fixture-bearer");
+              }
             } finally {
               await output.close();
             }

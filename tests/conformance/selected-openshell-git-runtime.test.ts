@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { generateKeyPairSync, randomBytes, randomUUID, verify } from "node:crypto";
+import { open, rename, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import {
   COMPUTE_RELEASE_PROFILE,
@@ -12,7 +15,10 @@ import {
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { HARNESS_REPOSITORY_GIT_PROBE_HEADER } from "../../apps/controller/src/drivers/compute/harness-egress-enrollment.ts";
-import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
+import {
+  OpenShellGateway,
+  openShellProviderName,
+} from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import {
   OpenShellGitRouteBlockedError,
@@ -53,6 +59,8 @@ import { workspaceGatewayClient } from "../integration/sandbox-workspace-gateway
 import { selectOpenShellGitWithdrawalDenials } from "../../scripts/ci/openshell-git-retention.mjs";
 import { routeStore } from "../fixtures/openshell-git-route-store.ts";
 import { deferred } from "../helpers/deferred.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import { signal, token, wire } from "./openshell-prepared-git-wire.ts";
 import {
   bootstrappingOpenShellGitRuntimeFixture,
   openShellGitRuntimeFixture,
@@ -88,7 +96,7 @@ function resolverPort(runtime: Runtime): {
 const runtimeFilesProvider = "oce-runtime-" + "a".repeat(16);
 const modelEndpoint = { host: "api.openai.com", port: 443, protocol: "rest" };
 
-async function selectedV5(t: TestContext, acl = false) {
+async function selectedV5(t: TestContext, acl = false, modelProvider = "openai") {
   const repository = registry.repositories[0]!;
   const repositories = [
     repository,
@@ -128,10 +136,15 @@ async function selectedV5(t: TestContext, acl = false) {
   const f = bootstrappingOpenShellGitRuntimeFixture(options);
   if (acl) {
     const client = fixtureClient(f);
+    const getProvider = client.getProvider.bind(client);
+    client.getProvider = async (workspace, name, signal) => {
+      const provider = await getProvider(workspace, name, signal);
+      return name === modelProvider && provider ? { ...provider, type: modelProvider } : provider;
+    };
     const getProfile = client.getProviderProfile.bind(client);
     client.getProviderProfile = async (workspace, id, signal) => {
       const profile = await getProfile(workspace, id, signal);
-      return id === "openai" && profile?.definition
+      return id === modelProvider && profile?.definition
         ? { ...profile, definition: { ...profile.definition, endpoints: [modelEndpoint] } }
         : profile;
     };
@@ -241,7 +254,7 @@ async function selectedV5(t: TestContext, acl = false) {
       f.sandbox.name,
       t.signal,
       "/sandbox/enterprise",
-      ["openai"],
+      [modelProvider],
       otherHosts,
       acl
         ? {
@@ -281,8 +294,8 @@ async function selectedV5(t: TestContext, acl = false) {
 const updateReceipt = (version: string) => `git-update-${version}`;
 const updateMutation = (version: string) => `git-mutation-${version}`;
 
-async function heldGit(t: TestContext, acl = false) {
-  const selected = await selectedV5(t, acl);
+async function heldGit(t: TestContext, acl = false, modelProvider = "openai") {
+  const selected = await selectedV5(t, acl, modelProvider);
   const { f, store, revision, executionId, prepare } = selected;
   const activity = { updates: 0, releases: 0, probes: 0 };
   const createProvider = f.client.createProvider;
@@ -323,7 +336,7 @@ async function heldGit(t: TestContext, acl = false) {
   };
   const sourcePolicy = { network_policies: {} };
   const modelRule = {
-    name: "_provider_openai",
+    name: "_provider_" + modelProvider.replaceAll("-", "_"),
     binaries: [],
     endpoints: [acl ? modelEndpoint : { host: "api.openai.com", port: 443 }],
   };
@@ -343,6 +356,7 @@ async function heldGit(t: TestContext, acl = false) {
       })),
     };
   };
+  const effectiveModelRule = acl ? stampOwners(modelRule, "model-id") : modelRule;
   const effectivePolicy = {
     network_policies: {
       [gitRule.name]: acl
@@ -370,13 +384,13 @@ async function heldGit(t: TestContext, acl = false) {
               },
             ],
           },
-      _provider_openai: acl ? stampOwners(modelRule, "model-id") : modelRule,
+      [modelRule.name]: effectiveModelRule,
       ["_provider_" + runtimeFilesProvider.replaceAll("-", "_")]: {
         name: "_provider_" + runtimeFilesProvider.replaceAll("-", "_"),
       },
     },
   };
-  const providers = ["openai", runtimeFilesProvider, prepared.provider];
+  const providers = [modelProvider, runtimeFilesProvider, prepared.provider];
   const started = new Date().toISOString();
   const spec = Object.assign(f.sandbox.spec, {
     policy: sourcePolicy,
@@ -440,14 +454,12 @@ async function heldGit(t: TestContext, acl = false) {
       policy: {
         network_policies: {
           ...effectivePolicy.network_policies,
-          _provider_openai: {
-            ...effectivePolicy.network_policies._provider_openai,
-            endpoints: effectivePolicy.network_policies._provider_openai.endpoints.map(
-              (endpoint) => ({
-                ...endpoint,
-                ...(allowUninspectedCredentials && { allow_uninspected_credentials: true }),
-              }),
-            ),
+          [modelRule.name]: {
+            ...effectiveModelRule,
+            endpoints: effectiveModelRule.endpoints.map((endpoint) => ({
+              ...endpoint,
+              ...(allowUninspectedCredentials && { allow_uninspected_credentials: true }),
+            })),
           },
         },
       },
@@ -476,8 +488,8 @@ async function heldGit(t: TestContext, acl = false) {
   };
   const receiptReads: { provider: string; operation: string | undefined }[] = [];
   client.getSandboxProviderStatus = async (workspace, sandbox, name, _signal, operation) => {
-    assert.ok(name === prepared.provider || name === "openai");
-    const model = name === "openai";
+    assert.ok(name === prepared.provider || name === modelProvider);
+    const model = name === modelProvider;
     const active = provider.resourceVersion !== originalBinding.resourceVersion;
     const id = model
       ? "model-observe"
@@ -564,7 +576,7 @@ async function heldGit(t: TestContext, acl = false) {
       assert.equal(box.id, f.sandbox.id);
     },
     {
-      model: "openai",
+      model: modelProvider,
       workload: async (sandboxId) => {
         assert.equal(sandboxId, f.sandbox.id);
         readWorkload();
@@ -1393,7 +1405,52 @@ test("ACL Git blocks a release when the POST acknowledgment is lost", async (t) 
   assert.equal(posts, 1);
 });
 
+test("ACL rotation never reaches the Gateway after withdrawal during authentication", async (t) => {
+  const { f, revision, client, reconcile, lookup } = await heldGit(t, true);
+  const directory = await temporaryDirectory(t, "acl-git-auth-");
+  const bearer = join(directory, "bearer");
+  await writeFile(bearer, "fixture-bearer");
+  const delayedBearer = join(directory, "delayed-bearer");
+  execFileSync("mkfifo", [delayedBearer]);
+
+  const { client: gateway, binding, state } = await wire(t, bearer);
+  await binding.prepare(token(), signal());
+  client.updateProviderCredentialsConditionally = async (...args) => {
+    await rename(delayedBearer, bearer);
+    // Opening the FIFO waits until the real Gateway client reads authentication.
+    // Keep the supervisor lease fresh and finish withdrawal before releasing the read.
+    const withdrawal = open(bearer, "w").then(async (output) => {
+      try {
+        f.runtime.withdraw(revision.id);
+        await Promise.resolve();
+        assert.equal(f.runtime.route(revision.id).state, "blocked");
+        await output.writeFile("fixture-bearer");
+      } finally {
+        await output.close();
+      }
+    });
+    const [update] = await Promise.all([
+      gateway.updateProviderCredentialsConditionally(...args),
+      withdrawal,
+    ]);
+    return update;
+  };
+  await reconcile();
+  assert.equal(state.requests.filter(({ method }) => method === "UpdateProvider").length, 0);
+  assert.equal(f.runtime.route(revision.id).state, "blocked");
+  assert.equal(await lookup(), undefined);
+});
+
 test("Compute retries an unsent release after the final recipient observation expires", async (t) => {
+  const driverId = "openshell-sandbox";
+  const auth = {
+    method: "credential_source",
+    sourceId: "cs_test",
+    sourceType: "openai",
+    credentialGatewayId: driverId,
+    loginMode: "api_key",
+  } as const;
+  const modelProvider = openShellProviderName(auth.sourceId);
   const {
     f,
     revision: selected,
@@ -1402,13 +1459,12 @@ test("Compute retries an unsent release after the final recipient observation ex
     startupId,
     setObservationAge,
     onWorkloadRead,
-  } = await heldGit(t, true);
+  } = await heldGit(t, true, modelProvider);
   await reconcile();
   assert.equal(f.runtime.route(selected.id).state, "installed");
 
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const registration = "oce-prepared-git";
-  const driverId = "openshell-sandbox";
   const serviceUrl = "http://held-codex.openshell.test/";
   const posts: Readonly<Record<string, unknown>>[] = [];
   let committed: EgressInstallation | undefined;
@@ -1470,11 +1526,13 @@ test("Compute retries an unsent release after the final recipient observation ex
       executionId: selected.egressPlan!.execution.executionId,
     },
     routes: [],
+    harnessCredentialSource: auth,
     repositoryGit: selected.repositoryCredentials!,
     repositoryGitAuthorization: "online-request",
   };
   const revision: AgentRevision = {
     ...selected,
+    harnessAuth: auth,
     sandboxPolicy: { ...selected.sandboxPolicy!, driverId },
     sandboxDriverId: driverId,
     egressPlan: plan,
@@ -1486,10 +1544,16 @@ test("Compute retries an unsent release after the final recipient observation ex
     name: f.sandbox.workspace,
   };
   const context = { namespace, revision, plan, signal: t.signal };
+  const wiring: ProxyWiring = await compute.configure(context);
   const harness = {
     ...fixture.context,
     ...context,
-    requirements: fixture.requirements,
+    requirements: {
+      ...fixture.requirements,
+      credentialAttachments: [{ sourceId: auth.sourceId, ref: modelProvider }],
+      loginMode: auth.loginMode,
+      proxyWiring: wiring,
+    },
     transportToken: "fixture-bearer",
   };
   const probePath = repositoryGitStartupProbePath(revision)!;
@@ -1498,6 +1562,7 @@ test("Compute retries an unsent release after the final recipient observation ex
     startupId,
     ...harnessEgressEnrollment(plan, probePath),
   };
+  assert.equal(challenge.inference, "credential_source");
   gateway.getServiceDocument = async (url, path) => {
     assert.equal(url, serviceUrl);
     assert.equal(path, HARNESS_EGRESS_ENROLLMENT_PATH);
@@ -1509,8 +1574,6 @@ test("Compute retries an unsent release after the final recipient observation ex
     posts.push(body);
     return { status: 200, json: { enrolled: true, startupId } };
   };
-  const wiring: ProxyWiring = await compute.configure(context);
-
   const realNow = performance.now.bind(performance);
   let elapsed = 0;
   t.mock.method(performance, "now", () => realNow() + elapsed);

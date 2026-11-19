@@ -1885,7 +1885,11 @@ export class OpenShellGitRuntime {
                   "Preview credential recipient changed before installation.",
                 );
               }
-              const isCurrent = () => entry.provider.repositoryPolicyIsFresh(recipient);
+              const isCurrent = () =>
+                !entry.blocked &&
+                !this.stopped.signal.aborted &&
+                this.materialIsLive(entry.revision, material.expiresAt) &&
+                entry.provider.repositoryPolicyIsFresh(recipient);
               if (!isCurrent()) {
                 return;
               }
@@ -1895,9 +1899,6 @@ export class OpenShellGitRuntime {
                 !("absent" in current) &&
                 isDeepStrictEqual(material, current) &&
                 isCurrent() &&
-                this.materialIsLive(entry.revision, current.expiresAt) &&
-                !entry.blocked &&
-                !this.stopped.signal.aborted &&
                 !signal.aborted
               ) {
                 return {
