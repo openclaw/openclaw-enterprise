@@ -1,3 +1,8 @@
+import {
+  compileOpenShellGitNetworkPolicy,
+  type OpenShellGitNetworkInput,
+  type OpenShellGitNetworkTarget,
+} from "../sandbox/openshell-git-network-policy.ts";
 import type { RepositoryGitRecipient } from "@openclaw-enterprise/contracts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -12,31 +17,20 @@ import {
   openShellProfileEndpoint,
   type OpenShellGatewayClient,
   type OpenShellProviderProfile,
-  type OpenShellProviderProfileEndpoint,
   type OpenShellProviderResponse,
   type OpenShellSandboxProviderStatus,
 } from "../sandbox/openshell-gateway-client.ts";
 
 /** Operator-owned scope; never populate this from a workload request. */
-export type OpenShellPreparedGitDelivery =
-  | { readonly repository: string; readonly installationId?: never }
-  | { readonly repository?: never; readonly installationId: string };
+export type OpenShellPreparedGitDelivery = OpenShellGitNetworkTarget;
 
-export type OpenShellPreparedGitScope = OpenShellPreparedGitDelivery & {
+export type OpenShellPreparedGitScope = OpenShellGitNetworkInput & {
   readonly workspace: string;
   readonly workspaceId: string;
   /** Only the v6 operator-isolated preview requires a known, completed stock receipt. */
   readonly observedHookPreview?: true;
   readonly sandbox: string;
   readonly executionId: string;
-  /** Exact HTTPS origins, including controlled origins used for qualification. */
-  readonly gitOrigin: string;
-  readonly apiOrigin: string;
-  readonly binaries: readonly string[];
-  readonly repositoryNetworkPolicy?: readonly {
-    readonly repository: string;
-    readonly access: "read" | "write";
-  }[];
 };
 
 /** Only the credential worker supplies this value; no App signing key or OAuth material. */
@@ -151,106 +145,6 @@ function readFailure(
   return undefined;
 }
 
-function origin(value: string): URL {
-  const url = new URL(value);
-  if (
-    url.protocol !== "https:" ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash ||
-    url.pathname !== "/" ||
-    !/^[a-z0-9]+(?:[.-][a-z0-9]+)+$/.test(url.hostname)
-  ) {
-    refuse();
-  }
-  return url;
-}
-
-function snapshotRepositoryNetworkPolicy(
-  policy: NonNullable<OpenShellPreparedGitScope["repositoryNetworkPolicy"]>,
-) {
-  if (!Array.isArray(policy) || policy.length === 0) {
-    refuse();
-  }
-  const grants = new Map<string, "read" | "write">();
-  for (const grant of policy) {
-    if (grant == null || typeof grant.repository !== "string") {
-      refuse();
-    }
-    const { repository, access } = grant;
-    if (
-      repository !== repository.trim() ||
-      !/^[a-z0-9_-]+\/[a-z0-9_.-]+$/.test(repository) ||
-      repository.endsWith("/.") ||
-      repository.endsWith("/..") ||
-      repository.endsWith(".git") ||
-      (access !== "read" && access !== "write") ||
-      grants.has(repository)
-    ) {
-      refuse();
-    }
-    grants.set(repository, access);
-  }
-  return Object.freeze(
-    [...grants.entries()]
-      .sort(([left], [right]) => (left < right ? -1 : 1))
-      .map(([repository, access]) => Object.freeze({ repository, access })),
-  );
-}
-
-function repositoryNetworkRules(
-  policy: NonNullable<OpenShellPreparedGitScope["repositoryNetworkPolicy"]>,
-): NonNullable<OpenShellProviderProfileEndpoint["rules"]> {
-  return policy.flatMap(({ repository, access }) => {
-    const root = `/${repository}.git`;
-    const services =
-      access === "write" ? ["git-upload-pack", "git-receive-pack"] : ["git-upload-pack"];
-    return services.flatMap((service) => [
-      {
-        allow: {
-          method: "GET",
-          path: `${root}/info/refs`,
-          query: { service: { glob: service } },
-        },
-      },
-      { allow: { method: "POST", path: `${root}/${service}` } },
-    ]);
-  });
-}
-
-function installationEndpoints(
-  git: URL,
-  api: URL,
-  policy: NonNullable<OpenShellPreparedGitScope["repositoryNetworkPolicy"]> | undefined,
-): readonly OpenShellProviderProfileEndpoint[] {
-  if (policy !== undefined) {
-    return [
-      { host: git.hostname, port: 443, protocol: "rest", rules: repositoryNetworkRules(policy) },
-    ];
-  }
-  return [
-    {
-      host: git.hostname,
-      port: 443,
-      protocol: "rest",
-      rules: [
-        { allow: { method: "GET", path: "/**/info/refs" } },
-        { allow: { method: "POST", path: "/**/git-upload-pack" } },
-        { allow: { method: "POST", path: "/**/git-receive-pack" } },
-      ],
-    },
-    { host: api.hostname, port: 443, protocol: "rest", access: "NETWORK_ACCESS_PRESET_FULL" },
-    {
-      host: api.hostname,
-      port: 443,
-      protocol: "graphql",
-      path: "/graphql",
-      access: "NETWORK_ACCESS_PRESET_FULL",
-    },
-  ];
-}
-
 /**
  * Private operator-plane provisioning, prior to Sandbox attachment/admission. The supplied
  * client must use the installation's authenticated gateway connection; never expose it to
@@ -272,37 +166,27 @@ export class OpenShellPreparedGitProvider {
   private readonly provider: string;
 
   constructor(client: OpenShellGatewayClient, scope: OpenShellPreparedGitScope) {
+    scope = { ...scope };
     if (
       !/^[a-z0-9](?:[a-z0-9-]{0,17}[a-z0-9])?$/.test(scope.workspace) ||
       !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(scope.sandbox) ||
       !scope.workspaceId ||
-      !scope.executionId ||
-      (scope.installationId !== undefined
-        ? !/^[1-9][0-9]*$/.test(scope.installationId) ||
-          scope.repository !== undefined ||
-          scope.apiOrigin !== "https://api.github.com" ||
-          scope.gitOrigin !== "https://github.com"
-        : !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(scope.repository) ||
-          scope.repository.split("/").some((part) => part === "." || part === "..")) ||
-      scope.binaries.length === 0 ||
-      scope.binaries.some(
-        (path) => !/^\/[A-Za-z0-9_./-]+$/.test(path) || path.split("/").includes(".."),
-      )
+      !scope.executionId
     ) {
       refuse();
     }
-    const git = origin(scope.gitOrigin);
-    const api = origin(scope.apiOrigin);
-    const { repositoryNetworkPolicy: requestedPolicy, ...deliveryScope } = scope;
-    const repositoryNetworkPolicy =
-      requestedPolicy === undefined ? undefined : snapshotRepositoryNetworkPolicy(requestedPolicy);
-    if (repositoryNetworkPolicy !== undefined && scope.installationId === undefined) {
+    let network: ReturnType<typeof compileOpenShellGitNetworkPolicy>;
+    try {
+      network = compileOpenShellGitNetworkPolicy(scope);
+    } catch {
       refuse();
     }
+    const repositoryNetworkPolicy = network.grants;
     this.client = client;
     this.scope = Object.freeze({
-      ...deliveryScope,
-      binaries: Object.freeze([...scope.binaries]),
+      ...scope,
+      binaries: network.binaries,
+      ...(repositoryNetworkPolicy === undefined ? {} : { repositoryNetworkPolicy }),
     });
     this.fingerprint = createHash("sha256")
       .update(
@@ -312,8 +196,8 @@ export class OpenShellPreparedGitProvider {
           scope.sandbox,
           scope.executionId,
           scope.installationId ? ["github-installation", scope.installationId] : scope.repository,
-          git.origin,
-          api.origin,
+          network.gitOrigin,
+          network.apiOrigin,
           this.scope.binaries,
           ...(repositoryNetworkPolicy === undefined
             ? []
@@ -342,22 +226,7 @@ export class OpenShellPreparedGitProvider {
       ],
       // This profile bounds transport, not credential placement or GitHub permissions. Release
       // must independently verify the mandatory request phase, verified TLS and sole recipient.
-      endpoints: scope.installationId
-        ? installationEndpoints(git, api, repositoryNetworkPolicy)
-        : [
-            {
-              host: git.hostname,
-              port: Number(git.port || 443),
-              protocol: "rest",
-              path: "/" + scope.repository + ".git/**",
-            },
-            {
-              host: api.hostname,
-              port: Number(api.port || 443),
-              protocol: "rest",
-              path: "/repos/" + scope.repository + "/pulls",
-            },
-          ],
+      endpoints: network.endpoints,
       binaries: this.scope.binaries,
       inferenceCapable: false,
       annotations: { [OWNER]: this.fingerprint },

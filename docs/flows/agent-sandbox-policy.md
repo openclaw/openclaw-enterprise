@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-11-13"
-last_updated_session: "authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c"
+updated: "2026-11-19"
+last_updated_session: "authoring-run/fb36fad3-3ccf-462a-8941-0e44b85cae7d"
 ---
 
 # Agent sandbox policy flow
@@ -39,8 +39,6 @@ graph TD
   S --> V["Confirm matching<br/>loaded version"]
   V --> R["Record applied<br/>or unconfirmed failure"]
 ```
-
-The solid arrows trace source paths, not a claim that all providers are verified.
 
 ## Execution Trace
 
@@ -96,6 +94,10 @@ the final workspace enrollment rule with its validated Agent-owned setup binding
 then returns the full immutable policy in `SandboxResourceRef.proxyWiring`.
 The proxy checks the complete artifact map and bounded auxiliary rule before
 comparing the complete loaded policy.
+
+The [Sandbox Driver](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts)
+compiles Git endpoints for OpenShell. The egress proxy binds them to the credential Provider.
+
 For an Agent with repository bindings (or a Git-bound active revision), Driver
 admission gets `repositoryCredentials`: the OpenShell Driver with its Git route
 refuses a grant or default reaching `github.com` or a name under it, or naming an
@@ -269,6 +271,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 22:48: Trace Git network policy compilation during Provider preparation. (authoring-run/fb36fad3-3ccf-462a-8941-0e44b85cae7d - 73a400e9f20fd4a41f2656b6560afdbd8e09662a)
 
 - 2026-11-13 22:21: Reject policy saves that remove a pending application. (authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c - cf0370780b4e885e35ee463033b6926e5d3109ef)
 
