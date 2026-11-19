@@ -210,6 +210,49 @@ func harnessInteger(value any, minimum, maximum float64) (int64, bool) {
 	return int64(number), true
 }
 
+// runtimeCheckName matches the startup check names a runtime wrapper holds.
+var runtimeCheckName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
+
+// printHeldGateway follows the table with the check a running, unready Gateway container
+// fails, from the revision's diagnostics: Pod status alone shows only READY false while the
+// wrapper holds a startup failure, such as the Gateway state lock. A caller who may not run
+// diagnostics, or a failed run, gets the table alone.
+func (app *application) printHeldGateway(client *occclient.Client, description any, namespace, agentID, revisionID string) error {
+	resource, _ := description.(map[string]any)
+	pods, _ := resource["pods"].([]any)
+	if !slices.ContainsFunc(pods, func(item any) bool {
+		pod, _ := item.(map[string]any)
+		containers, _ := pod["containers"].([]any)
+		return pod["role"] == "gateway" && slices.ContainsFunc(containers, func(entry any) bool {
+			container, _ := entry.(map[string]any)
+			return container["name"] == "gateway" && container["state"] == "running" && container["ready"] == false
+		})
+	}) {
+		return nil
+	}
+	diagnostics, err := client.DiagnoseAgentDeployment(namespace, agentID, revisionID)
+	if err != nil {
+		return nil
+	}
+	report, _ := diagnostics.(map[string]any)
+	checks, _ := report["checks"].([]any)
+	for _, entry := range checks {
+		check, _ := entry.(map[string]any)
+		name, _ := check["check"].(string)
+		if check["component"] != "gateway" || check["state"] != "failed" || !runtimeCheckName.MatchString(name) {
+			continue
+		}
+		if code, _ := check["code"].(string); harnessCode.MatchString(code) {
+			name += " (" + code + ")"
+		}
+		if _, err := fmt.Fprintln(app.out); err != nil {
+			return err
+		}
+		return noticef(app.out, "Gateway check failed: %s. Its log names the cause (occ --namespace %s agent logs %s --source gateway --revision %s); see https://docs-enterprise.openclaw.org/guides/topics/agent-troubleshoot/", name, namespace, agentID, revisionID)
+	}
+	return nil
+}
+
 // printRuntime prints the runtime description of one Agent revision. The
 // Namespace, Agent and revision name the exact Sandbox logs command, so a stale
 // OCC_NAMESPACE or a moved default revision cannot redirect it.

@@ -134,6 +134,14 @@ An `unobserved` answer prints nothing, and a failed read prints `unknown`, never
 `lost`. `agent list` reads no Sandbox, so a list costs no Sandbox Driver call
 per Agent. JSON and YAML print the Agent resource only.
 
+When a revision's `gateway` container is running but not ready, `occ agent
+runtime` table output ends with a `Gateway check failed:` line
+(`agent_runtime_output.go:printHeldGateway`). It names the first failed
+`gateway` check from `occclient.Client.DiagnoseAgentDeployment`, such as a held
+`gateway-state-lock`, with the Gateway logs command and the troubleshooting
+guide. Diagnostics need the same permissions as the runtime read. A refused or
+failed call prints nothing more.
+
 The helper clones rows before formatting the error so table presentation cannot
 alter the response used elsewhere. JSON and YAML bypass this projection and
 retain the typed `configurationReadError` object, together with version active

@@ -567,6 +567,16 @@ func (client *Client) GetAgentDeployment(namespaceID, agentID, deploymentID stri
 	)
 }
 
+// DiagnoseAgentDeployment runs fresh runtime checks for one revision. It needs the same
+// Agent operate and read permissions as GetAgentRuntime.
+func (client *Client) DiagnoseAgentDeployment(namespaceID, agentID, deploymentID string) (any, error) {
+	return client.send(
+		http.MethodPost,
+		[]string{"namespaces", namespaceID, "agents", agentID, "deployments", deploymentID, "diagnostics"},
+		nil,
+	)
+}
+
 // GetAgentRuntime fetches Pod status, restarts, Events and log sources for one revision.
 func (client *Client) GetAgentRuntime(namespaceID, agentID, deploymentID string) (any, error) {
 	return client.get(
