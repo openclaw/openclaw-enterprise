@@ -1,7 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 
 import {
-  failureInputLimit,
   redactFailureDetail,
   redactLogLine,
   redactOutputLines,
@@ -28,8 +27,6 @@ export function optionalReporterField(value: unknown, key: string): unknown {
 const maxFailureDetailFiles = 8;
 const maxFailureDetailTests = 20;
 const failureOutputLineChars = 1_000;
-// The reporter's output tail.
-const failureOutputLines = 400;
 const writtenFailureDetails = new Set<string>();
 export const failureDetailFiles: ReadonlySet<string> = writtenFailureDetails;
 
@@ -62,23 +59,6 @@ function outputTailLines(events: readonly unknown[]) {
   };
 }
 
-// Each tail entry is redacted whole, so a value that spans a diagnostic's lines is masked.
-// Only then is a multi-line diagnostic, such as a container log, split into its lines,
-// each cut to failureOutputLineChars.
-function reportOutputLines(lines: readonly string[], secrets: RedactionSecrets, root: string) {
-  return redactOutputLines(lines, secrets, root, failureInputLimit).flatMap((entry) =>
-    entry
-      .replace(/\n$/, "")
-      .split("\n")
-      .map((line, index) => {
-        const shown = index === 0 ? line : `diagnostic: ${line}`;
-        return shown.length > failureOutputLineChars
-          ? `${shown.slice(0, failureOutputLineChars)}... [truncated]`
-          : shown;
-      }),
-  );
-}
-
 function testName(name: unknown, absolutePath: string, secrets: RedactionSecrets) {
   return name === absolutePath ? "(file)" : redactLogLine(String(name), secrets, 200);
 }
@@ -95,7 +75,6 @@ export function failureDetails(
       optionalReporterField(reporterField(event, "data"), "error"),
   );
   const output = outputTailLines(events);
-  const shown = reportOutputLines(output.lines, secrets, root);
   // Tests a runner timeout interrupted, without the file itself.
   const interrupted = events.find((event) => reporterField(event, "type") === "test:interrupted");
   const interruptedData = optionalReporterField(interrupted, "data");
@@ -133,8 +112,8 @@ export function failureDetails(
     }),
     omittedTests: Math.max(0, failed.length - maxFailureDetailTests),
     output: {
-      lines: shown.slice(-failureOutputLines),
-      omittedLines: output.omitted + Math.max(0, shown.length - failureOutputLines),
+      lines: redactOutputLines(output.lines, secrets, root, failureOutputLineChars),
+      omittedLines: output.omitted,
     },
   };
 }
