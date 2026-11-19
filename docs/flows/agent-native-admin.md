@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-11-13
-last_updated_session: authoring-run/97aeaabf-7b1c-40d2-bd48-f7e3e105e434
+updated: 2026-11-19
+last_updated_session: fix/native-admin-transition-503
 ---
 
 # Agent Native Admin UI Flow
@@ -215,7 +215,9 @@ and Configuration.
 Attributable IAM denials get one audit attempt, even after the five-second
 admission wait, disconnect or shutdown. Timely denials await that append before
 returning `403`. Classified dependency failures, append failures and admission
-timeouts return `503`; unavailable Agents remain `403`.
+timeouts return `503`. So does a deployment replacing or activating the version
+for an authorized caller (`agent_transition`), so the Agent UI keeps reconnecting.
+Stopped and unsupported Agents remain `403`.
 For HTTP admission refusals, `http.completed` records a fixed `nativeAdmissionReason`,
 without URLs, cookies, identities or error text. Early guards and post-admission
 failures may omit it.
@@ -328,6 +330,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 10:00: A deployment in progress answers authorized Agent-host HTTP with `503`. (fix/native-admin-transition-503 - b0fe1a2196)
 
 - 2026-11-13 06:32: Clarify replacement records and native access reasons. (authoring-run/97aeaabf-7b1c-40d2-bd48-f7e3e105e434 - 4ab097ffe6f1bce048629dcdec005ed666e536c0)
 
