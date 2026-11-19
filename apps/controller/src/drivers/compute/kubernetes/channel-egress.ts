@@ -381,7 +381,14 @@ export class KubernetesChannelEgress {
           .map((entry) => asRecord(asRecord(entry)?.cluster))
           .filter((cluster) => cluster?.name === CHANNEL_EGRESS_FORWARD_CLUSTER.name)
       : [];
+    const staticForwarding = Array.isArray(clusters?.static_clusters)
+      ? clusters.static_clusters.some(
+          (entry) =>
+            asRecord(asRecord(entry)?.cluster)?.name === CHANNEL_EGRESS_FORWARD_CLUSTER.name,
+        )
+      : false;
     if (
+      staticForwarding ||
       forwarding.length !== 1 ||
       !isDeepStrictEqual(
         canonicalEnvoy(forwarding[0]),
@@ -406,13 +413,23 @@ export class KubernetesChannelEgress {
     if (!Array.isArray(dump?.dynamic_listeners)) {
       throw new Error("Channel egress returned no installed listener generations.");
     }
-    return dump.dynamic_listeners.map((listener) => {
+    const dynamic = dump.dynamic_listeners.map((listener) => {
       const value = asRecord(listener);
       if (!value) {
         throw new Error("Channel egress returned an invalid listener generation.");
       }
       return value;
     });
+    const fixed = Array.isArray(dump.static_listeners)
+      ? dump.static_listeners.map((entry) => {
+          const listener = asRecord(asRecord(entry)?.listener);
+          if (!listener) {
+            throw new Error("Channel egress returned an invalid static listener.");
+          }
+          return { name: listener.name, active_state: { listener } };
+        })
+      : [];
+    return [...dynamic, ...fixed];
   }
 
   private listenerName(port: number): string {
@@ -629,7 +646,32 @@ export class KubernetesChannelEgress {
       const installed = dumps.every((listeners) => {
         const listener = listeners.find((entry) => entry.name === this.listenerName(binding.port));
         const active = asRecord(asRecord(listener?.active_state)?.listener);
+        const socket = asRecord(asRecord(active?.address)?.socket_address);
+        const bindings = listeners.filter((entry) => {
+          const installed = asRecord(asRecord(entry.active_state)?.listener);
+          const addresses = [
+            installed?.address,
+            ...(Array.isArray(installed?.additional_addresses)
+              ? installed.additional_addresses.map((value) => asRecord(value)?.address)
+              : []),
+          ];
+          return addresses.some((address) => {
+            const socket = asRecord(asRecord(address)?.socket_address);
+            return (
+              socket?.port_value === binding.port && (!socket.protocol || socket.protocol === "TCP")
+            );
+          });
+        });
         return (
+          bindings.length === 1 &&
+          bindings[0] === listener &&
+          socket?.port_value === binding.port &&
+          (!socket.protocol || socket.protocol === "TCP") &&
+          ["0.0.0.0", "::"].includes(String(socket.address)) &&
+          !active?.filter_chain_matcher &&
+          (!Array.isArray(active?.filter_chains) || active.filter_chains.length === 0) &&
+          (!Array.isArray(active?.additional_addresses) ||
+            active.additional_addresses.length === 0) &&
           isDeepStrictEqual(canonicalEnvoy(active?.default_filter_chain), expectedChain) &&
           !listener?.warming_state &&
           !listener?.draining_state &&
@@ -824,7 +866,8 @@ export class KubernetesChannelEgress {
         throw new Error("Cannot inspect the complete additive NetworkPolicy set.");
       }
       for (const policy of policies.items) {
-        const spec = networkPolicyFields(policy, false).spec;
+        // Kubernetes list entries can omit kind; the list operation fixes it.
+        const spec = networkPolicyFields({ ...policy, kind: "NetworkPolicy" }, false).spec;
         if (namespace === binding.namespace && maySelect(spec?.podSelector, source)) {
           for (const raw of Array.isArray(spec?.egress) ? spec.egress : []) {
             const rule = asRecord(raw);

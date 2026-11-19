@@ -554,12 +554,13 @@ async function startInClusterControllers(
   let logError;
   let logStderr = "";
   let stopping = false;
+  let observationStopped = false;
   logs.once("error", (error) => {
     logError = error;
   });
   const logExit = new Promise((resolve) =>
     logs.once("close", (code) => {
-      if (!stopping) {
+      if (!stopping && !observationStopped) {
         logError ??= new Error(`Worker log stream exited unexpectedly (${code}): ${logStderr}`);
       }
       resolve();
@@ -576,12 +577,23 @@ async function startInClusterControllers(
         events.push(event);
       }
     } catch {
-      if (!stopping) {
+      if (!stopping && !observationStopped) {
         logError ??= new Error("Worker emitted an invalid structured log record.");
       }
     }
   });
   const worker = {
+    async stopObservation() {
+      if (logError !== undefined) {
+        throw logError;
+      }
+      if (!observationStopped) {
+        observationStopped = true;
+        logs.kill("SIGTERM");
+        await logExit;
+        lines.close();
+      }
+    },
     assertHealthy() {
       if (logError !== undefined) {
         throw logError;
@@ -711,6 +723,7 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
     "limits.cpu": "8",
     // Two embedded Agents plus one replacement Gateway may coexist during cutover.
     "limits.memory": `${3 * productionGatewayMemoryLimitGi}Gi`,
+    ...options.namespaceQuota,
   };
   configuration.drivers.compute.configuration.servicePrincipalCredentials.expirationSeconds = 3_600;
   if (options.gatewayRouting !== undefined) {
@@ -1369,6 +1382,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     workspaceGateway === undefined
       ? {}
       : {
+          namespaceQuota: options.namespaceQuota,
           gatewayRouting: workspaceGateway.routing,
           gatewayTrustedProxyCidrs: workspaceGateway.nativeOptions.gatewayAuth.trustedProxies,
         },
@@ -2393,6 +2407,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     adminRequest: (...args) => adminRequest(...args),
     request: (...args) => request(...args),
     restartControllerApi,
+    stopWorkerObservation: () => inClusterWorker?.stopObservation(),
     events,
     agent: topologyAgent,
     persistedAgent,

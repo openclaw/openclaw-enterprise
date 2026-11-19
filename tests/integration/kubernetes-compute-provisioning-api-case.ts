@@ -414,7 +414,7 @@ export async function runProvisioningApiCase(
       "oidc:maintainer-02": ["operator.admin"],
     },
   };
-  const body = provisioningRequestBody({
+  const requestedBody = provisioningRequestBody({
     modelSecretRef: modelSecret.data.ref,
     slackBotSecretRef: slackBotSecret.data.ref,
     authMethod: "codex_pat",
@@ -422,7 +422,18 @@ export async function runProvisioningApiCase(
   });
   // This fixture proves provisioning and retained storage. Enabled channels
   // require the separate real Envoy/runtime workflow, not a synthetic provider.
-  body.configuration.values.channels.slack.enabled = false;
+  const body = {
+    ...requestedBody,
+    configuration: {
+      ...requestedBody.configuration,
+      values: {
+        ...requestedBody.configuration.values,
+        channels: {
+          slack: { ...requestedBody.configuration.values.channels.slack, enabled: false },
+        },
+      },
+    },
+  };
   assert.equal(
     JSON.stringify(body).includes(rotatedPat),
     false,

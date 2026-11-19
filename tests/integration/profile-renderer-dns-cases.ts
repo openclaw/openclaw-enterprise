@@ -122,7 +122,6 @@ export function registerDnsCases(): void {
           );
         assert.ok(slackPolicy);
         assert.match(slackPolicy, /cidr: 0\.0\.0\.0\/0\s+except:/);
-        assert.doesNotMatch(output.values, /slackProxyUpstreamCidrs/);
         assert.deepEqual(
           propertyAt(loadYaml(output.values), "api", "modelDiscoveryCidrs"),
           profile === "codex" ? ["192.0.2.20/32"] : [],

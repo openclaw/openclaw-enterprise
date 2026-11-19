@@ -2536,6 +2536,9 @@ test(
   "managed channel egress packages separate listeners and restricted OCC access",
   tooling,
   async () => {
+    await execute(process.execPath, ["deploy/helm/src/generate-channel-egress.ts", "--check"], {
+      cwd: repository,
+    });
     const defaults = await renderObjects();
     assert.ok(!defaults.some(({ metadata }) => metadata.name === "openclaw-channel-egress"));
     const objects = await renderObjects(channelEgressValues);

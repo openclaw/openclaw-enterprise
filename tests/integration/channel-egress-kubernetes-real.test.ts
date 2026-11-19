@@ -69,7 +69,9 @@ test(
     // only for transport; the separate delivery test has exactly one consumer.
     const topology = await arrangeProductionTopology(context, "dedicated", slack, {
       channelEgressCapacity: 2,
+      namespaceQuota: { pods: "12", "limits.cpu": "20", "limits.memory": "32Gi" },
     });
+    t.diagnostic("The real dedicated Agent activated with its assigned channel listener.");
     const agentA = record(topology.agent);
     const namespaceId = text(agentA.namespaceId);
     const agentAId = text(agentA.id);
@@ -121,8 +123,10 @@ test(
     const before = (await bindings()).find((binding) => binding.agentId === agentAId);
     assert.ok(before);
     await assertActualModelTurn({ ...topology, harnessId: "codex" });
+    t.diagnostic("A real model turn completed while channel proxy routing was enabled.");
 
     const pauseWorker = async () => {
+      await topology.stopWorkerObservation();
       await kubectl(
         "scale",
         "deployment/openclaw-enterprise-worker",
@@ -133,10 +137,22 @@ test(
       await waitFor(
         "the original workers to stop",
         async () =>
-          !record(
-            record(await resource("deployment", "openclaw-enterprise-worker", platformNamespace))
-              .status ?? {},
-          ).replicas,
+          rows(
+            record(
+              JSON.parse(
+                await kubectl(
+                  "get",
+                  "pods",
+                  "--namespace",
+                  platformNamespace,
+                  "--selector",
+                  "app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/component=worker",
+                  "-o",
+                  "json",
+                ),
+              ),
+            ).items,
+          ).length === 0,
       );
     };
     const fixture = await readFile(
@@ -183,7 +199,12 @@ test(
                       "/app/tests/fixtures/destinations.json",
                     ],
                     volumeMounts: [
-                      { name: "channel-driver", mountPath: "/app/tests/fixtures", readOnly: true },
+                      ...["channel-egress-worker.mts", "destinations.json"].map((file) => ({
+                        name: "channel-driver",
+                        mountPath: `/app/tests/fixtures/${file}`,
+                        subPath: file,
+                        readOnly: true,
+                      })),
                     ],
                   },
                 ],
@@ -255,11 +276,159 @@ test(
     const originalRules = new SlackChannelDriver().enableRouting();
     const slackAddress = (await lookup("slack.com", { family: 4 })).address;
     const slackNetwork = `${slackAddress.split(".").slice(0, 3).join(".")}.0/24`;
+    const privatePodAddress = text(
+      record(record(await resource("pod", topology.approvedClient, platformNamespace)).status)
+        .podIP,
+    );
+    const prohibitedAddresses = ["127.0.0.1", "169.254.169.254", privatePodAddress];
+    const dnsName = `channel-egress-${randomUUID()}.test`;
+    const dnsMarker = `# ${dnsName}`;
+    const dnsConfig = record(await resource("configmap", "coredns", "kube-system"));
+    const dnsUid = record(dnsConfig.metadata).uid;
+    const setDns = async (addresses?: readonly string[]) => {
+      const current = record(await resource("configmap", "coredns", "kube-system"));
+      assert.equal(record(current.metadata).uid, dnsUid);
+      const corefile = text(record(current.data).Corefile);
+      const base = corefile.replace(
+        new RegExp(`${dnsMarker} begin\\n[\\s\\S]*?${dnsMarker} end\\n?`),
+        "",
+      );
+      const block =
+        addresses === undefined
+          ? ""
+          : `${dnsMarker} begin\n${dnsName}:53 {\n errors\n hosts {\n${addresses.map((address) => `  ${address} ${dnsName}`).join("\n")}\n  ttl 1\n }\n}\n${dnsMarker} end\n`;
+      const desired = `${base}${block}`;
+      if (desired === corefile) {
+        return;
+      }
+      await kubectl(
+        "patch",
+        "configmap",
+        "coredns",
+        "--namespace",
+        "kube-system",
+        "--type=merge",
+        "-p",
+        JSON.stringify({
+          metadata: { resourceVersion: record(current.metadata).resourceVersion },
+          data: { Corefile: desired },
+        }),
+      );
+      await kubectl("rollout", "restart", "deployment/coredns", "--namespace", "kube-system");
+      await kubectl(
+        "rollout",
+        "status",
+        "deployment/coredns",
+        "--namespace",
+        "kube-system",
+        "--timeout=120s",
+      );
+    };
+    context.after(() => setDns());
+    // Only this disposable cluster's unique test name changes. Its positive
+    // answer is a real public Slack address, never a private fixture endpoint.
+    await setDns([slackAddress]);
+    // Reject actual allocation writes at the API server. This exercises the
+    // regular worker's failure handling, not a patched Compute return value.
+    const rejectionName = `channel-egress-${randomUUID()}`;
+    const rejectionPath = `${topology.directory}/${rejectionName}.json`;
+    await writeFile(
+      rejectionPath,
+      JSON.stringify({
+        apiVersion: "v1",
+        kind: "List",
+        items: [
+          {
+            apiVersion: "admissionregistration.k8s.io/v1",
+            kind: "ValidatingAdmissionPolicy",
+            metadata: { name: rejectionName },
+            spec: {
+              failurePolicy: "Fail",
+              matchConstraints: {
+                resourceRules: [
+                  {
+                    apiGroups: ["gateway.envoyproxy.io"],
+                    apiVersions: ["v1alpha1"],
+                    operations: ["CREATE"],
+                    resources: ["envoypatchpolicies"],
+                  },
+                ],
+              },
+              validations: [
+                {
+                  expression: "false",
+                  message:
+                    "The disposable channel proof rejects allocation until its operator restores admission.",
+                },
+              ],
+            },
+          },
+          {
+            apiVersion: "admissionregistration.k8s.io/v1",
+            kind: "ValidatingAdmissionPolicyBinding",
+            metadata: { name: rejectionName },
+            spec: {
+              policyName: rejectionName,
+              validationActions: ["Deny"],
+              matchResources: {
+                namespaceSelector: {
+                  matchLabels: { "kubernetes.io/metadata.name": platformNamespace },
+                },
+              },
+            },
+          },
+        ],
+      }),
+      { mode: 0o600 },
+    );
+    const removeRejection = async () => {
+      await kubectl(
+        "delete",
+        "validatingadmissionpolicybinding",
+        rejectionName,
+        "--ignore-not-found=true",
+      );
+      await kubectl(
+        "delete",
+        "validatingadmissionpolicy",
+        rejectionName,
+        "--ignore-not-found=true",
+      );
+    };
+    context.after(removeRejection);
+    await kubectl("apply", "-f", rejectionPath);
     await installWorker([
       ...originalRules,
       { destination: { kind: "dns", name: "api.github.com", match: "exact" }, ports: [443] },
       { destination: { kind: "ip", address: slackAddress }, ports: [443] },
+      { destination: { kind: "dns", name: dnsName, match: "exact" }, ports: [443] },
+      ...prohibitedAddresses.map((address) => ({
+        destination: { kind: "ip", address },
+        ports: [443],
+      })),
     ]);
+    await waitFor("both real deployments to retry after policy rejection", async () => {
+      const { rows: work } = await topology.observerPool.query(
+        "SELECT agent_id, state, attempt_count FROM occ.controller_work WHERE namespace_id=$1 AND agent_id=ANY($2::text[]) AND work_kind='lifecycle' AND agent_target IS NULL",
+        [namespaceId, candidates.map(({ id }) => id)],
+      );
+      return (
+        work.length === 2 &&
+        work.every(
+          (entry: { state: string; attempt_count: number }) =>
+            entry.state === "queued" && entry.attempt_count > 0,
+        )
+      );
+    });
+    assert.equal((await topology.adminRequest("GET", "/installation")).status, 200);
+    assert.equal((await bindings()).length, 1);
+    for (const candidate of candidates) {
+      assert.equal((await pods(candidate.id, candidate.revisionId, "gateway")).length, 0);
+    }
+    await removeRejection();
+    t.diagnostic(
+      "Rejected Kubernetes allocation writes left OCC usable and started no candidate Gateway.",
+    );
     const winner = await waitFor(
       "one candidate to activate without exceeding listener capacity",
       async () => {
@@ -279,6 +448,16 @@ test(
       },
     );
     const loser = candidates.find((candidate) => candidate.id !== winner.id)!;
+    // Activation is committed before the queue completion transaction. Let the
+    // serving Agent's deployment finish before restarting workers; otherwise it
+    // is itself a retry and correctly adopts the next Driver generation too.
+    await waitFor("the serving candidate deployment to finish", async () => {
+      const { rows: work } = await topology.observerPool.query(
+        "SELECT state FROM occ.controller_work WHERE namespace_id=$1 AND agent_id=$2 AND revision_id=$3 AND work_kind='lifecycle' AND agent_target IS NULL",
+        [namespaceId, winner.id, winner.revisionId],
+      );
+      return work.some((entry: { state: string }) => entry.state === "succeeded");
+    });
     // Read the real work row; do not manufacture a lease loss or change queue state.
     const retry = await waitFor("capacity refusal to remain queued for retry", async () => {
       const { rows: work } = await topology.observerPool.query(
@@ -329,6 +508,28 @@ test(
         .status,
       403,
     );
+    assert.equal(
+      (
+        await probeChannelConnect(
+          placement,
+          podName(topology.gatewayPod),
+          proxyA,
+          "api.github.com",
+          { headers: { "x-openclaw-agent-id": winner.id } },
+        )
+      ).status,
+      403,
+      "a caller-supplied Agent identity must not select another policy",
+    );
+    assert.equal(
+      (
+        await probeChannelConnect(placement, podName(topology.gatewayPod), proxyA, "slack.com", {
+          method: "GET",
+        })
+      ).status,
+      403,
+      "ordinary HTTP proxying must not inherit CONNECT access",
+    );
     assert.deepEqual(
       await probeChannelConnect(placement, podName(peerPods[0]), proxyB, "api.github.com"),
       { status: 200, tlsVerified: true },
@@ -338,6 +539,54 @@ test(
         serverName: "slack.com",
       }),
       { status: 200, tlsVerified: true },
+    );
+    // These authorities are explicitly declared by B's Driver. A real 403 proves
+    // the concrete upstream restriction overrides the provider's destination grant.
+    for (const address of prohibitedAddresses) {
+      assert.equal(
+        (await probeChannelConnect(placement, podName(peerPods[0]), proxyB, address)).status,
+        403,
+      );
+    }
+    assert.deepEqual(
+      await probeChannelConnect(placement, podName(peerPods[0]), proxyB, dnsName, {
+        serverName: "slack.com",
+      }),
+      { status: 200, tlsVerified: true },
+    );
+    await setDns([privatePodAddress]);
+    await waitFor(
+      "a DNS change to a private address to be denied before connection",
+      async () =>
+        (
+          await probeChannelConnect(placement, podName(peerPods[0]), proxyB, dnsName, {
+            serverName: "slack.com",
+          })
+        ).status === 403,
+    );
+    await setDns([slackAddress, privatePodAddress]);
+    const mixed = new Set<number>();
+    await waitFor(
+      "both permitted and prohibited addresses to be checked in mixed DNS answers",
+      async () => {
+        const response = await probeChannelConnect(
+          placement,
+          podName(peerPods[0]),
+          proxyB,
+          dnsName,
+          { serverName: "slack.com" },
+        );
+        if (response.status === 200) {
+          assert.equal(response.tlsVerified, true);
+        }
+        // DNS replacement can temporarily make the resolver unavailable. That
+        // failure grants nothing and is not counted as either positive proof or
+        // address-denial proof; both actual outcomes must still be observed.
+        if (response.status === 200 || response.status === 403) {
+          mixed.add(Number(response.status));
+        }
+        return mixed.has(200) && mixed.has(403);
+      },
     );
     assert.equal(
       (await probeChannelConnect(placement, podName(topology.gatewayPod), proxyA, slackAddress))
@@ -350,6 +599,8 @@ test(
       "slack.com.attacker.invalid",
       "user@slack.com",
       "slack.com/invalid",
+      "[::1]",
+      "[::ffff:127.0.0.1]",
     ]) {
       const denied = await probeChannelConnect(
         placement,

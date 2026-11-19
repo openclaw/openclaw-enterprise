@@ -1,5 +1,5 @@
-import { browserSlackSender } from "../helpers/browser-slack-sender.ts";
 import { writeFile } from "node:fs/promises";
+import { lookup } from "node:dns/promises";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -10,6 +10,7 @@ import { parseGatewayObservation } from "../helpers/normal-agent-observation-rec
 import { sessionEvidenceScript } from "../helpers/normal-agent-gateway-evidence.ts";
 import {
   arrangeProductionTopology,
+  assertActualModelTurn,
   assertDeniedConnection,
   storedSecret,
   hash,
@@ -31,24 +32,16 @@ test(
   { ...requiresLiveSlack, timeout: 1_800_000 },
   async (testContext) => {
     const { context } = topologyTeardown(testContext);
-    for (const key of ["OCC_TEST_SLACK_CHANNEL_ID", "SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"]) {
+    for (const key of [
+      "OCC_TEST_SLACK_CHANNEL_ID",
+      "SLACK_APP_TOKEN",
+      "SLACK_BOT_TOKEN",
+      "OCC_TEST_SLACK_SENDER_BOT_TOKEN",
+    ]) {
       assert.ok(process.env[key], `${key} is required for explicitly requested live Slack proof.`);
     }
-    const browserDirectory = process.env.OCC_TEST_SLACK_BROWSER_DIRECTORY;
     const gatewayIdentity = await slackApi("auth.test", process.env.SLACK_BOT_TOKEN);
-    if (browserDirectory) {
-      assert.match(process.env.OCC_TEST_SLACK_SENDER_USER_ID ?? "", /^U[A-Z0-9]+$/);
-      assert.match(process.env.SLACK_TEAM_ID ?? "", /^T[A-Z0-9]+$/);
-      assert.match(process.env.SLACK_APP_ID ?? "", /^A[A-Z0-9]+$/);
-    } else {
-      assert.ok(
-        process.env.OCC_TEST_SLACK_SENDER_BOT_TOKEN,
-        "An explicitly provisioned distinct sender bot is required without browser coordination.",
-      );
-    }
-    const senderIdentity = browserDirectory
-      ? { user_id: process.env.OCC_TEST_SLACK_SENDER_USER_ID, team_id: process.env.SLACK_TEAM_ID }
-      : await slackApi("auth.test", process.env.OCC_TEST_SLACK_SENDER_BOT_TOKEN);
+    const senderIdentity = await slackApi("auth.test", process.env.OCC_TEST_SLACK_SENDER_BOT_TOKEN);
     assert.equal(
       gatewayIdentity.team_id,
       senderIdentity.team_id,
@@ -72,16 +65,10 @@ test(
       "Slack requires a Socket Mode app token",
     );
     assert.equal(slack.botToken.startsWith("xoxb-"), true, "Slack requires an approved bot token");
-    if (!browserDirectory) {
-      assert.equal(slack.senderBotToken.startsWith("xoxb-"), true);
-    }
-    // The browser coordinator supplies the human identity. Slack history verifies
-    // that this exact person authored the one message; no sender token is invented.
+    assert.equal(slack.senderBotToken.startsWith("xoxb-"), true);
     const members = [
       { role: "gateway", token: slack.botToken, userId: gatewayIdentity.user_id },
-      ...(browserDirectory
-        ? []
-        : [{ role: "sender", token: slack.senderBotToken, userId: senderIdentity.user_id }]),
+      { role: "sender", token: slack.senderBotToken, userId: senderIdentity.user_id },
     ];
     const memberships = await Promise.allSettled(
       members.map(({ token }) =>
@@ -109,6 +96,26 @@ test(
     assert.equal(membershipFailures.length, 0, membershipFailures.join("\n"));
 
     const topology = await arrangeProductionTopology(context, "dedicated", slack);
+    // Deployment already validated the saved Slack credentials through OCC's
+    // listener. Exercise both directory operations through their real API owner.
+    for (const [kind, id] of [
+      ["channels", slack.channelId],
+      ["users", senderIdentity.user_id],
+    ]) {
+      const directory = await topology.adminRequest(
+        "POST",
+        `/namespaces/${topology.agent.namespaceId}/channel-directory/lookup`,
+        {
+          agentId: topology.agent.id,
+          secretId: topology.secretApi.slackBot.id,
+          kind,
+          ids: [id],
+        },
+      );
+      assert.equal(directory.status, 200, "OCC directory must use its restricted Envoy listener");
+      assert.equal(directory.data.workspaceId, gatewayIdentity.team_id);
+      assert.ok(directory.data.candidates.some((candidate) => candidate.id === id));
+    }
     assert.ok(topology.harnessPod, "channels must preserve their separate dedicated Codex Agent");
     const suffix = hash(topology.agent.id);
     const gateway = await resource("deployment", `gateway-${suffix}`, topology.gatewayPlacement);
@@ -248,17 +255,6 @@ test(
       gatewayIdentity,
       senderIdentity,
       replyMode: "root",
-      ...(browserDirectory
-        ? {
-            sendMessage: browserSlackSender({
-              directory: browserDirectory,
-              workspaceId: gatewayIdentity.team_id,
-              channelId: slack.channelId,
-              appId: process.env.SLACK_APP_ID,
-              senderUserId: senderIdentity.user_id,
-            }),
-          }
-        : {}),
       nativeEvidence: async (nonce) => {
         const execGateway = (...args) =>
           kubectl(
@@ -324,6 +320,85 @@ test(
         mode: 0o600,
       });
     }
+    // Remove the actual forwarding Pods while retaining their recoverable fleet
+    // identity. OCC must remain usable and reject activation before admitting a
+    // revision; the existing Gateway must not gain direct provider access.
+    const revisionsPath = `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/revisions`;
+    const beforeFailure = await topology.adminRequest("GET", revisionsPath);
+    const scaleEgress = (replicas) =>
+      kubectl(
+        "patch",
+        "envoyproxy",
+        slack.channelEgress.gatewayName,
+        "--namespace",
+        topology.platformNamespace,
+        "--type=merge",
+        "-p",
+        JSON.stringify({ spec: { provider: { kubernetes: { envoyDeployment: { replicas } } } } }),
+      );
+    const egressPods = async () =>
+      JSON.parse(
+        await kubectl(
+          "get",
+          "pods",
+          "--namespace",
+          slack.channelEgress.envoyNamespace,
+          "--selector",
+          `gateway.envoyproxy.io/owning-gateway-name=${slack.channelEgress.gatewayName}`,
+          "-o",
+          "json",
+        ),
+      ).items;
+    try {
+      await scaleEgress(0);
+      await waitFor("the task egress fleet to stop", async () => (await egressPods()).length === 0);
+      assert.equal((await topology.adminRequest("GET", "/installation")).status, 200);
+      await assertActualModelTurn({ ...topology, harnessId: "codex" });
+      const refused = await topology.adminRequest(
+        "POST",
+        `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/deploy`,
+      );
+      assert.equal(refused.status, 503);
+      assert.equal(refused.error.code, "CHANNEL_CREDENTIAL_UNAVAILABLE");
+      assert.deepEqual(
+        (await topology.adminRequest("GET", revisionsPath)).data,
+        beforeFailure.data,
+      );
+      await assertDeniedConnection(
+        topology.gatewayPlacement,
+        topology.gatewayPod.metadata.name,
+        (await lookup("slack.com", { family: 4 })).address,
+        443,
+      );
+    } finally {
+      await scaleEgress(1);
+      await waitFor("the task egress fleet to recover", async () => {
+        const pods = await egressPods();
+        return (
+          pods.length > 0 &&
+          pods.every((pod) =>
+            pod.status.conditions?.some(
+              ({ type, status }) => type === "Ready" && status === "True",
+            ),
+          )
+        );
+      });
+    }
+    const recovered = await topology.adminRequest(
+      "POST",
+      `/namespaces/${topology.agent.namespaceId}/channel-directory/lookup`,
+      {
+        agentId: topology.agent.id,
+        secretId: topology.secretApi.slackBot.id,
+        kind: "users",
+        ids: [senderIdentity.user_id],
+      },
+    );
+    assert.equal(
+      recovered.status,
+      200,
+      "OCC provider access must recover through its restored listener",
+    );
     context.diagnostic(
       "Channel credential isolation, assigned Envoy listener, and single-message native Codex Slack delivery verified.",
     );

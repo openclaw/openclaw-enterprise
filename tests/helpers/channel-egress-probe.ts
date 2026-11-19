@@ -6,7 +6,7 @@ import { asRecord } from "../../packages/utils/src/objects.ts";
 const probe = String.raw`
 const http = require('node:http');
 const tls = require('node:tls');
-const [proxy, target, port, servername, size] = process.argv.slice(1);
+const [proxy, target, port, servername, size, method, headerJson] = process.argv.slice(1);
 const expected = Number(size);
 let bytes = 0;
 const chunks = [];
@@ -19,7 +19,11 @@ process.stdin.on('data', (chunk) => {
   process.stdin.pause();
   const ca = Buffer.concat(chunks).toString('utf8');
   const endpoint = new URL(proxy);
-  const request = http.request({ host: endpoint.hostname, port: endpoint.port, method: 'CONNECT', path: target + ':' + port, headers: { host: target + ':' + port } });
+  const authority = target + ':' + port;
+  const request = http.request({ host: endpoint.hostname, port: endpoint.port, method,
+    path: method === 'CONNECT' ? authority : 'https://' + authority + '/',
+    headers: { ...JSON.parse(headerJson), host: authority } });
+  request.on('response', (response) => { response.destroy(); finish({ status: response.statusCode, tlsVerified: false }); });
   request.on('connect', (response, socket, head) => {
     if (response.statusCode !== 200) { socket.destroy(); finish({ status: response.statusCode, tlsVerified: false }); return; }
     if (head.length) socket.unshift(head);
@@ -42,7 +46,12 @@ export async function probeChannelConnect(
   pod: string,
   proxy: string,
   target: string,
-  options: { serverName?: string; port?: number } = {},
+  options: {
+    serverName?: string;
+    port?: number;
+    method?: "CONNECT" | "GET";
+    headers?: Readonly<Record<string, string>>;
+  } = {},
 ) {
   assert.ok(process.env.OCC_TEST_KUBERNETES_KUBECONFIG && process.env.OCC_TEST_KUBERNETES_CONTEXT);
   // Public host trust roots belong only to this observation process. Production
@@ -72,6 +81,8 @@ export async function probeChannelConnect(
       String(options.port ?? 443),
       options.serverName ?? target,
       String(ca.length),
+      options.method ?? "CONNECT",
+      JSON.stringify(options.headers ?? {}),
     ],
     { stdio: ["pipe", "pipe", "pipe"] },
   );

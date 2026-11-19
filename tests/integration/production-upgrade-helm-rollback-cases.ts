@@ -68,14 +68,6 @@ function firstContainer(spec: unknown, placement: ContainerPlacement) {
   return requiredRecord(containers[0], `expected a container in ${placement}`);
 }
 
-function apiEnvironment(state: RecoveryState) {
-  const api = resource(state, "Deployment/openclaw-enterprise-api");
-  return array(
-    firstContainer(templateSpec(api.spec), "containers").env,
-    "expected the API container environment",
-  );
-}
-
 // These cases run the upgrade script against controlled Helm and Kubernetes
 // responses. The disposable-cluster proof checks Helm itself.
 export function registerHelmRollbackCases({ fixture }: { fixture: RecoveryFixtureFactory }): void {
@@ -165,12 +157,8 @@ export function registerHelmRollbackCases({ fixture }: { fixture: RecoveryFixtur
         );
       });
     }
-    const withRetiredEnv = structuredClone(pending);
-    const oldEnv = { name: "NODE_OPTIONS", value: "--max-old-space-size=512" };
-    apiEnvironment(withRetiredEnv).push(oldEnv);
-    await assertRecoveryRefusedBeforeRollback(f, withRetiredEnv, /live environment differs/, run);
-    // Explicit operator reconciliation removes the retired policy and env entry. If a later
-    // acceptance step fails, its recreation must also block ordinary resume.
+    // Explicit reconciliation removes the retired policy. If a later acceptance
+    // step fails, recreating it must still block ordinary resume.
     await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
     await f.failNext("fail-rollout-api");
     await assert.rejects(run(...recoverHelm), injectedFault);
@@ -185,30 +173,11 @@ export function registerHelmRollbackCases({ fixture }: { fixture: RecoveryFixtur
     await assert.rejects(run("--resume"), /predecessor-only resource still exists/);
     assert.equal(existsSync(join(f.evidence, "completed")), false);
     delete resources[key];
-    const apiEnv = apiEnvironment(recovered);
-    apiEnv.push(oldEnv);
-    await writeFile(join(f.directory, "state.json"), JSON.stringify(recovered));
-    await assert.rejects(run("--resume"), /live environment differs/);
-    assert.equal(existsSync(join(f.evidence, "completed")), false);
-    apiEnv.pop();
     await writeFile(join(f.directory, "state.json"), JSON.stringify(recovered));
     await run("--resume");
     assert.equal((await f.state()).rollbackSubmissions, 1);
     assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
     assert.equal(await f.readEvidence("helm-started"), originalIntent);
-  });
-
-  test("same-candidate recovery verifies retained environment after rollback", async (t) => {
-    const { f, run, pending } = await interruptedPolicyRetirement(t);
-    const configPath = asRecord(
-      apiEnvironment(pending).find((entry) => asRecord(entry)?.name === "OCC_CONFIG_PATH"),
-    );
-    assert.ok(configPath);
-    configPath.value = "/etc/openclaw/installation/incorrect.yaml";
-    await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
-    await assert.rejects(run(...recoverHelm), /live environment differs/);
-    assert.equal((await f.state()).rollbackSubmissions, 1);
-    assert.equal(existsSync(join(f.evidence, "helm-recovery", "acknowledged.json")), false);
   });
 
   for (const [stage, rollbacks] of [

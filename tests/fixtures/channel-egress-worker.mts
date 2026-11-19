@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
-import pg from "pg";
+import { createRequire } from "node:module";
 import { normalizeNetworkDestinationRules } from "../../packages/contracts/src/index.ts";
 import {
   loadInstallationConfiguration,
@@ -14,6 +14,10 @@ import {
   type KubernetesComputeDriverOptions,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
+import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
+
+const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+const pg = require("pg") as typeof import("pg");
 
 // A new installed Driver generation supplies controlled endpoint requirements.
 // Persistence, worker claims, authorization, Compute, Envoy and workloads remain real.
@@ -64,6 +68,7 @@ const worker = createControllerWorker({
   leaseDurationMs: 60_000,
   maxAttempts: 30,
   convergenceTimeoutMs: 900_000,
+  emit: createWorkerLogEmitter(createOccLogger({ component: "occ-worker", level: "info" })),
   onHealthy: () => marker("OCC_WORKER_READINESS_PATH"),
   onProgress: () => marker("OCC_WORKER_LIVENESS_PATH"),
 });

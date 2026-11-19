@@ -252,7 +252,7 @@ export function registerFleetAdmissionCases({
     assert.equal(events.filter((event) => event === "secret-replaced").length, 1);
     assert.ok(!events.includes("migration"), "Helm must wait for an acknowledged Secret write");
     const candidate = requireObject(JSON.parse(await readFile(path, "utf8")));
-    requireObject(candidate.api).replicas = 3;
+    candidate.api = { replicas: 3 };
     await writeFile(path, JSON.stringify(candidate));
     await assert.rejects(f.run("--resume"), /reviewed candidate values changed after preparation/);
     assert.deepEqual(await f.events(), events);

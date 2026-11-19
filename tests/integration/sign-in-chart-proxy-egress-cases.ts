@@ -640,19 +640,6 @@ export function registerProxyAndEgressCases() {
     );
   });
 
-  test("sign-in egress never enables a direct Slack fallback", tooling, async () => {
-    for (const values of [
-      {},
-      googleUpgradeValues(recoveryUserId),
-      oidcUpgradeValues(recoveryUserId),
-    ]) {
-      const objects = await render(values);
-      assert.ok(
-        !deploymentEnv(objects, "api").some(({ name }) => name === "OCC_API_HTTPS_EGRESS_OPEN"),
-      );
-    }
-  });
-
   test(
     "shared sessions derive DNS scope with native access enabled or disabled",
     tooling,

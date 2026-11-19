@@ -161,26 +161,56 @@ enforcing NetworkPolicies. Private Pod addresses are negative cases. Test model
 credentials stay only in the model-executing workload. Store no credentials or
 private test evidence in the repository.
 
-## Open decisions
+## Remaining delivery
 
-The qualification gate owns the enforcement mechanism and listener capacity.
-Production implementation waits for that result. If supported resources cannot
-meet the requirement, document the concrete extension or version change in the
-RFC for review before using it.
+The qualified implementation uses the separate Envoy 1.39.4 fleet and scoped
+patch policies described above. Finish the lifecycle and DNS-change cases,
+repeat affected checks at the final revision, and resolve independent review.
+The RFC remains Proposed; implementation does not change its human-review status.
 
 ## Delivery record
 
-The RFC branch was merged normally into the implementation branch. The Channel
-Driver contract, trusted resolver, Compute lifecycle, dedicated Envoy packaging,
-OCC listener and proxy removal are implemented in the working branch. Live
-acceptance is in progress; no acceptance criterion is yet marked complete.
+The RFC branch was merged normally into the implementation branch. The contract,
+trusted resolver, Compute lifecycle, dedicated Envoy packaging, OCC listener and
+proxy removal are implemented. [Implementation PR #6529](https://github.com/openclaw/openclaw-enterprise/pull/6529)
+is separate from the RFC PR and remains a draft during verification.
 
-Qualification passed with Envoy Gateway 1.6.7 and the dedicated Envoy 1.39.4
-image. The official runtime preparation passed its sandbox and immutable image
-checks. Formatting, TypeScript and documentation checks passed before final
-integration fixes. The real API/worker lifecycle suite remains in progress.
-A genuine incoming Slack exchange requires an authorized remote sender; local
-Chrome is unavailable. No sender credential lookup is authorized.
+The following real checks passed on the implementation candidate:
+
+- The three required Kubernetes fixture files passed four cases with zero skips.
+  They prove API, RBAC, storage, reconciliation and NetworkPolicy behavior.
+- The prepared `images-runtime-startup` lane passed 32 tests in seven files,
+  with zero skips, on native amd64. This is not ARM64 qualification.
+- The Slack runtime test passed a genuine message/reply, one correlated native
+  Codex turn, credential placement, OCC credential validation, both directory
+  operations and Harness listener denial. A subsequent run also stopped the
+  actual egress fleet: OCC stayed usable, deployment failed before creating a
+  revision, and direct Slack access remained denied.
+- The production Helm test installed OCC and disposable PostgreSQL through Helm.
+  CLI bootstrap, tenant RoleBindings, four model replies across two revisions,
+  API and Gateway network denials, and credential-output boundaries passed.
+  This is a separate installation from the Slack runtime fixture. Optional
+  OTLP and independent image-upgrade scenarios were not selected.
+- Documentation, workspace, formatting and TypeScript checks passed before the
+  final proof additions. Affected API, Compute, profile and upgrade regressions
+  passed after removal of obsolete external-proxy assumptions.
+
+The lifecycle case passed on the stricter actual-port build with zero skips. It
+covered rejected writes, concurrent allocation, exhausted capacity, saved-revision
+retry with changed Driver rules, distinct policies, public/private/mixed DNS,
+IP/CIDR and IPv6 target denial, channel disablement, deletion, safe port reuse,
+and model turns before and after replacement. Final source checks and the final
+Slack/fleet-failure repeat remain in progress.
+
+The isolated autoreview CLI failed authentication before producing an assessment.
+ClawSweeper independently reviewed checkpoint `c1b11f202` and reported no definite
+P0–P2 findings. Its low-value absence-only test was removed; real transport cases
+own that proof. Its review does not cover later changes. Before merge, the human
+RFC decision and the review's compatibility/upgrade evidence request remain open.
+No previous-release upgrade or compatibility shim is claimed; the RFC intentionally
+rejects retired proxy settings and introduces no database format.
+
+Private credentials and raw runtime evidence stay outside the repository.
 
 ## Manual Notes
 

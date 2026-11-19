@@ -76,8 +76,8 @@ special-use and installation exclusions remain mandatory. TLS stays end-to-end.
 `apps/controller/src/drivers/compute/kubernetes/channel-egress.ts:KubernetesChannelEgress.waitInstalled`
 
 The worker reads every serving Pod's configuration through the read-only
-inspection listener. It requires the intended active filter-chain generation,
-no older draining chain and a stable Pod set. It installs the exact Gateway
+inspection listener. It requires the assigned actual TCP port, one matching listener, the intended
+active filter chain, no alternate or older draining chain, and a stable Pod set. It installs the exact Gateway
 source and Envoy ingress grants, then checks the complete additive policy sets.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.deployment`

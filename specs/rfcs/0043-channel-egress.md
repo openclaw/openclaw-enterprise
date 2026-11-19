@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Partially implemented
 author: kevinlin-openai
 ---
 
@@ -8,7 +8,7 @@ author: kevinlin-openai
 
 - **ID:** RFC-0043
 - **Created:** 2026-11-18
-- **Last updated:** 2026-11-18
+- **Last updated:** 2026-11-19
 - **Related:** [Gateway outbound proxy proposal, PR #4952](https://github.com/openclaw/openclaw-enterprise/pull/4952), [workload identity scope, #106](https://github.com/openclaw/openclaw-enterprise/issues/106), [workload delivery, #107](https://github.com/openclaw/openclaw-enterprise/issues/107).
 
 ## Summary
