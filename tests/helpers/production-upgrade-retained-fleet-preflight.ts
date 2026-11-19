@@ -3,12 +3,14 @@ import { existsSync } from "node:fs";
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
 import type {
   InstallationDeploymentInventory,
   InstallationDeploymentInventoryAgent,
   InstallationDeploymentInventoryNamespace,
 } from "@openclaw-enterprise/contracts";
 import { optionalField, type RecoveryState } from "./production-upgrade-recovery-state.ts";
+import { execute } from "./production-upgrade-recovery-tools.ts";
 
 // The command fixture also accepts deliberately malformed JSON and raw stdout.
 // Undefined object fields are omitted when the fixture serializes its state.
@@ -300,7 +302,15 @@ export function registerRetainedFleetPreflightTests(
     for (const component of ["api", "worker", "migration"]) {
       assert.ok(existsSync(join(f.evidence, `preflight-${component}.log`)));
     }
-    assert.ok(existsSync(join(f.evidence, "startup-preflight-passed")));
+    const repository = fileURLToPath(new URL("../..", import.meta.url));
+    const { stdout } = await execute(
+      "scripts/upgrade-production",
+      ["status", "--evidence-dir", f.evidence],
+      { cwd: repository },
+    );
+    assert.match(stdout, /Candidate startup and migration checks passed/u);
+    assert.match(stdout, /blocked because retained Agent revisions require their original worker/u);
+    assert.match(stdout, /No deployment was prepared/u);
     for (const marker of [".upgrade-lock", "prepared", "helm-started", "completed"]) {
       assert.equal(existsSync(join(f.evidence, marker)), false, marker);
     }
