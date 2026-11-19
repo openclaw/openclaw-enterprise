@@ -298,9 +298,11 @@ until redeployment. Continued chat requires independent model access and verifie
 Git-only removal. Identity changes, overlapping GitHub access or failed observation
 can require retirement. While Git remains attached, the worker reuses one conditional
 detach request. A moved Sandbox version or unknown Gateway outcome retires the runtime.
-For repository network policies, the controller checks the supervisor lease again
-after preparing Gateway authentication. An expired lease leaves the credential
-update unsent and clears the worker's write reservation.
+For repository network policies, the worker prepares Gateway authentication before
+rechecking route ownership and credential material. A withdrawn route leaves the
+credential update unsent. At dispatch, the worker also checks for local withdrawal,
+credential expiry and an expired supervisor lease. The worker clears an unsent
+reservation while it still owns the open route.
 
 An empty profile workspace selects the platform profile. Files-only profiles may omit
 endpoint and credential lists. Exact identity and Git overlap checks still apply.

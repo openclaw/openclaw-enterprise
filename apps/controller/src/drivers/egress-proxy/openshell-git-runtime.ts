@@ -1399,29 +1399,38 @@ export class OpenShellGitRuntime {
     // Keep the tombstone to prevent adoption/recreation under the same execution identity,
     // in this process and, through the store, in any later one. The entry itself is dropped
     // once its Sandbox is gone; its reason stays.
-    void this.entries.get(revisionId)?.then(
-      (entry) => {
-        entry.blocked ??= "withdrawn";
-        entry.installed = undefined;
-      },
-      () => {},
-    );
+    const entry = this.states.get(revisionId)?.entry;
+    if (entry) {
+      this.markWithdrawn(entry);
+    } else {
+      void this.entries.get(revisionId)?.then(
+        (pending) => this.markWithdrawn(pending),
+        () => {},
+      );
+    }
     this.recordWithdrawal({ revisionId });
   }
 
   withdrawNamespace(namespaceId: string): void {
-    for (const pending of this.entries.values()) {
-      void pending.then(
-        (entry) => {
-          if (entry.revision.namespaceId === namespaceId) {
-            entry.blocked ??= "withdrawn";
-            entry.installed = undefined;
-          }
-        },
-        () => {},
-      );
+    const withdraw = (entry: Entry) => {
+      if (entry.revision.namespaceId === namespaceId) {
+        this.markWithdrawn(entry);
+      }
+    };
+    for (const [revisionId, pending] of this.entries) {
+      const entry = this.states.get(revisionId)?.entry;
+      if (entry) {
+        withdraw(entry);
+      } else {
+        void pending.then(withdraw, () => {});
+      }
     }
     this.recordWithdrawal({ namespaceId });
+  }
+
+  private markWithdrawn(entry: Entry): void {
+    entry.blocked ??= "withdrawn";
+    entry.installed = undefined;
   }
 
   /** The store's tombstone keeps any other worker from adopting the routes; this process's
@@ -1875,9 +1884,8 @@ export class OpenShellGitRuntime {
           const rotated = await entry.provider.rotate(
             entry.binding,
             async () => {
-              // Provider, profile and workspace have now been read. Recheck the fence, then
-              // ask the prepared owner for *current* approval, execution, session and material.
-              // A different selection needs a new observation, never a use receipt or a replay.
+              // Check durable custody after Gateway authentication.
+              // A changed selection needs a new observation, never a use receipt or a replay.
               await this.fenced(entry, signal);
               const recipient = await this.observation(entry, signal, { predecessor: true });
               if (!recipient && entry.authorization.repositoryNetworkPolicy !== undefined) {

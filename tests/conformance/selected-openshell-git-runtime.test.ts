@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { generateKeyPairSync, randomBytes, randomUUID, verify } from "node:crypto";
-import { open, rename, writeFile } from "node:fs/promises";
+import { open, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import {
@@ -613,6 +613,13 @@ async function heldGit(t: TestContext, acl = false, modelSourceId?: string) {
       evaluatedTime: now,
     };
   };
+  if (acl) {
+    client.prepareProviderCredentialUpdate = async () => {
+      const update = client.updateProviderCredentialsConditionally;
+      assert.ok(update);
+      return update.bind(client);
+    };
+  }
   client.updateProviderCredentialsConditionally = async (request, expectedVersion) => {
     assert.equal(request.name, prepared.provider);
     assert.equal(expectedVersion, provider.resourceVersion);
@@ -1491,6 +1498,53 @@ test("ACL Git sends no release when installed credentials expire during signing"
   assert.equal(f.runtime.previewReleased(revision.id), false);
 });
 
+for (const scope of ["revision", "Namespace"] as const) {
+  test(`ACL Git sends no release after same-turn ${scope} withdrawal`, async (t) => {
+    const { f, revision, startupId, reconcile } = await heldGit(t, true);
+    await reconcile();
+    assert.equal(f.runtime.route(revision.id).state, "installed");
+
+    const signing = deferred();
+    const signed = deferred();
+    let posts = 0;
+    const release = f.runtime.releasePreview(
+      revision.id,
+      startupId,
+      {
+        prepare: () => {
+          signing.resolve();
+          return signed.promise;
+        },
+        deliver: async () => {
+          posts++;
+          return true;
+        },
+      },
+      t.signal,
+    );
+    const outcome = release.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    await Promise.race([signing.promise, outcome.then(() => assert.fail("signing did not start"))]);
+
+    // Wake the signing continuation first. Withdrawal in the same turn must
+    // already be visible when that continuation decides whether to send.
+    signed.resolve();
+    if (scope === "revision") {
+      f.runtime.withdraw(revision.id);
+    } else {
+      f.runtime.withdrawNamespace(revision.namespaceId);
+    }
+    const refusal = await outcome;
+    assert.equal(posts, 0);
+    assert.ok(refusal instanceof Error);
+    assert.match(refusal.message, /Cannot release this preview startup/);
+    assert.equal(f.runtime.previewReleased(revision.id), false);
+    assert.deepEqual(f.runtime.route(revision.id), { state: "blocked", reason: "withdrawn" });
+  });
+}
+
 test("ACL Git blocks a release when the POST acknowledgment is lost", async (t) => {
   const { f, revision, startupId, reconcile, lookup } = await heldGit(t, true);
   await reconcile();
@@ -1516,41 +1570,66 @@ test("ACL Git blocks a release when the POST acknowledgment is lost", async (t) 
   assert.equal(posts, 1);
 });
 
-test("ACL rotation never reaches the Gateway after withdrawal during authentication", async (t) => {
-  const { f, revision, client, reconcile, lookup } = await heldGit(t, true);
-  const directory = await temporaryDirectory(t, "acl-git-auth-");
-  const bearer = join(directory, "bearer");
-  await writeFile(bearer, "fixture-bearer");
-  const delayedBearer = join(directory, "delayed-bearer");
-  execFileSync("mkfifo", [delayedBearer]);
+for (const withdrawal of ["local", "durable"] as const) {
+  test(`ACL rotation never reaches the Gateway after ${withdrawal} withdrawal during authentication`, async (t) => {
+    const { f, store, revision, client, entry, reconcile, lookup } = await heldGit(t, true);
+    const directory = await temporaryDirectory(t, "acl-git-auth-");
+    const bearer = join(directory, "bearer");
+    await writeFile(bearer, "fixture-bearer");
+    const delayedBearer = join(directory, "delayed-bearer");
+    execFileSync("mkfifo", [delayedBearer]);
 
-  const { client: gateway, binding, state } = await wire(t, bearer);
-  await binding.prepare(token(), signal());
-  client.updateProviderCredentialsConditionally = async (...args) => {
-    await rename(delayedBearer, bearer);
-    // Opening the FIFO waits until the real Gateway client reads authentication.
-    // Keep the supervisor lease fresh and finish withdrawal before releasing the read.
-    const withdrawal = open(bearer, "w").then(async (output) => {
+    const { client: gateway, binding, state } = await wire(t, bearer);
+    await binding.prepare(token(), signal());
+    const provider = structuredClone(state.provider);
+    let appliedWithdrawal: Promise<void> | undefined;
+    const withHeldBearer = async <T>(authenticate: () => Promise<T>): Promise<T> => {
+      await rename(delayedBearer, bearer);
+      // The FIFO opens when the real Gateway client reads the bearer. Commit
+      // the withdrawal before that read finishes, with the supervisor still live.
+      appliedWithdrawal = open(bearer, "w").then(async (output) => {
+        try {
+          assert.equal(store.rows.get(revision.id)?.writePending, "rotate");
+          if (withdrawal === "local") {
+            f.runtime.withdraw(revision.id);
+            assert.equal(f.runtime.route(revision.id).state, "blocked");
+          } else {
+            await store.withdraw({ revisionId: revision.id });
+            assert.equal(entry.blocked, undefined, "only the store has observed withdrawal");
+          }
+          assert.equal(store.rows.get(revision.id)?.blocked, "withdrawn");
+          await output.writeFile("fixture-bearer");
+        } finally {
+          await output.close();
+        }
+      });
       try {
-        f.runtime.withdraw(revision.id);
-        await Promise.resolve();
-        assert.equal(f.runtime.route(revision.id).state, "blocked");
-        await output.writeFile("fixture-bearer");
+        const [result] = await Promise.all([authenticate(), appliedWithdrawal]);
+        return result;
       } finally {
-        await output.close();
+        await unlink(bearer);
+        await writeFile(bearer, "fixture-bearer");
       }
-    });
-    const [update] = await Promise.all([
-      gateway.updateProviderCredentialsConditionally(...args),
-      withdrawal,
-    ]);
-    return update;
-  };
-  await reconcile();
-  assert.equal(state.requests.filter(({ method }) => method === "UpdateProvider").length, 0);
-  assert.equal(f.runtime.route(revision.id).state, "blocked");
-  assert.equal(await lookup(), undefined);
-});
+    };
+    // The runtime fixture supplies the selected Sandbox, provider and policy
+    // reads. Use the real gRPC client for the guarded credential update.
+    client.updateProviderCredentialsConditionally = (...args) =>
+      withHeldBearer(() => gateway.updateProviderCredentialsConditionally(...args));
+    const prepareUpdate = gateway.prepareProviderCredentialUpdate?.bind(gateway);
+    if (prepareUpdate) {
+      client.prepareProviderCredentialUpdate = (readSignal) =>
+        withHeldBearer(() => prepareUpdate(readSignal));
+    }
+
+    await reconcile();
+    assert.ok(appliedWithdrawal);
+    await appliedWithdrawal;
+    assert.equal(state.requests.filter(({ method }) => method === "UpdateProvider").length, 0);
+    assert.deepEqual(state.provider, provider);
+    assert.deepEqual(f.runtime.route(revision.id), { state: "blocked", reason: "withdrawn" });
+    assert.equal(await lookup(), undefined);
+  });
+}
 
 test("Compute retries an unsent release after the final recipient observation expires", async (t) => {
   const driverId = "openshell-sandbox";
@@ -3227,9 +3306,6 @@ for (const outcome of [
       assert.deepEqual(entry.authorization, authorization);
       if (outcome === "local withdrawal") {
         f.runtime.withdraw(revision.id);
-        // withdraw updates the local entry through its stored promise. Keep the
-        // admitted provider reply held until that local guard has taken effect.
-        await f.runtime["entries"].get(revision.id);
         assert.equal(entry.blocked, "withdrawn");
         assert.equal(entry.installed, undefined);
         assert.equal(store.rows.get(revision.id)?.blocked, "withdrawn");

@@ -1018,8 +1018,15 @@ export class OpenShellPreparedGitProvider {
         refuse();
       }
       this.binding(current, previous.profileVersion, previous.expiresAt);
-      // Release checks the owner's current approval, execution, session and material.
-      // The gateway client checks the release guard again at RPC dispatch.
+      // Prepare authentication before releasing material so the final owner checks
+      // run after the bearer file read. The Gateway checks the synchronous guard at send.
+      let update = this.client.updateProviderCredentialsConditionally.bind(this.client);
+      if (this.scope.repositoryNetworkPolicy !== undefined) {
+        if (!this.client.prepareProviderCredentialUpdate) {
+          refuse();
+        }
+        update = await this.client.prepareProviderCredentialUpdate(signal);
+      }
       phase = "release";
       const token = await release();
       phase = "reading";
@@ -1033,7 +1040,7 @@ export class OpenShellPreparedGitProvider {
       phase = "writing";
       // The write runs to its own deadline, not the caller's remaining read budget (finding 2211).
       const write = AbortSignal.timeout(WRITE_TIMEOUT_MS);
-      const updated = await this.client.updateProviderCredentialsConditionally(
+      const updated = await update(
         {
           workspace: this.scope.workspace,
           name: this.provider,

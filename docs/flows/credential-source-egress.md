@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-19
-last_updated_session: "authoring-run/db1dbeb6-2423-4378-b292-8e694c9e97e0"
+last_updated_session: "authoring-run/e5c553f7-737b-4f9e-a1bb-75ff8aa2e5cc"
 ---
 
 # Protected credential request flow
@@ -304,25 +304,23 @@ Sandboxes or continued model execution.
 ### 7. Retain installation custody
 
 `packages/occ/src/state/credential-deliveries.ts:CredentialDeliveries` requires
-independent confirmation for registered recipients; snapshots require their reserving
-worker, including bootstrap. Neither grants request authority.
+independent confirmation for registered recipients and the reserving worker for
+snapshots, including bootstrap.
 
 `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:reconcile`
-cancels definitely unsent writes, including a credential write timeout during
-Gateway authentication before the RPC starts. Uncertain writes remain blocked.
-`release` drops closed routes after Sandbox deletion, preserving refusal.
+prepares Gateway authentication before checking route ownership and material.
+At dispatch it checks local withdrawal, expiry and the supervisor lease.
+The worker cancels unsent writes while it owns the reservation. Uncertain writes
+remain blocked. Local withdrawal blocks resolved routes before launcher release.
+`release` drops closed routes after Sandbox deletion.
+
 `prepare` requires a held launch or explicit installation preview and closes
-another worker's persisted route before credential access. `verifyExecution`
-refuses historical installation-wide renewal. `retireExpiredRepositoryAccess`
-settles the original fenced detach.
+routes from another worker before credential access.
+`openshell-repository-git-evidence.ts:openShellGitRecipientEvidence` checks sessions
+before transport startup. Historical v4 and installation-wide v5 cannot issue
+or renew. See [restart behavior](../reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery).
 
-Before transport startup, `openshell-repository-git-evidence.ts:openShellGitRecipientEvidence`
-checks discovered sessions. Issuance requires selected online delivery or explicit
-observed-hook preview. Historical v4 and installation-wide v5 cannot issue.
-See [restart behavior](../reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery).
-
-Deletion retains custody but stops use.
-`apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts:confirmDetached`
+Deletion stops use and retains custody. `openshell-git-route-store.ts:confirmDetached`
 verifies the original fence, recipient, material, policy and request without reapplying.
 
 ## Debugging and Verification
@@ -351,6 +349,8 @@ Caller refusals stay generic.
 None.
 
 ## Changelog
+
+- 2026-11-19 11:36: Check withdrawal before credential dispatch and launcher release. (authoring-run/e5c553f7-737b-4f9e-a1bb-75ff8aa2e5cc - 88411a2c219e6903d8777d68013ae4b2330ca5a6)
 
 - 2026-11-19 05:56: Cancel writes that expire before dispatch. (authoring-run/db1dbeb6-2423-4378-b292-8e694c9e97e0 - c495c2aa1bc0ab809a92cfe449e17a9d681efad1)
 
