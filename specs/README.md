@@ -14,7 +14,8 @@ stand alone, and link relevant RFCs through `rfc` frontmatter. Use one Markdown
 file per document, or a folder with `index.md` when companions are needed.
 Browse [implementation plans](plans/) directly for delivery records.
 See the [specification process](../docs/contributing/specifications.md) for
-authoring, numbering, and review.
+authoring, naming, and review. New RFCs use `yyyymmdd-title`; existing numeric
+RFCs keep the names and links listed below.
 
 ## RFCs
 

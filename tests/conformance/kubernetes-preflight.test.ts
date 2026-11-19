@@ -20,7 +20,7 @@ import { startupDependencyFailure } from "../../apps/controller/src/startup-fail
 import {
   conformanceKubernetesOptions,
   createTestKubernetesComputeDriver,
-} from "../helpers/kubernetes-compute.mjs";
+} from "../helpers/kubernetes-compute.ts";
 import { refusingPort } from "../helpers/available-port.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
