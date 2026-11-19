@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: 2026-11-18
-last_updated_session: authoring-run/cd2d6ae9-eb3b-4896-b64b-ae7ecc119b99
+updated: 2026-11-19
+last_updated_session: authoring-run/7ccb9fb8-c9b6-440b-90a2-e9331fc81393
 ---
 
 # Protected credential request flow
@@ -277,7 +277,9 @@ Startup probes also disable retries.
 applies the [request policy](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
 through `openai-responses.ts:responsesRequestFailure` before Secret resolution. The
 grant selects model and destination. Resumed reasoning input can carry
-`content: null`.
+`content: null`. The classifier checks inline raster data in user content and
+structured local tool output before Secret resolution; the exchange still bounds
+the complete serialized request.
 
 ### 6. Reduce the live credential policy
 
@@ -346,6 +348,8 @@ Caller refusals stay generic.
 None.
 
 ## Changelog
+
+- 2026-11-19 04:26: Admit inline raster input through the Responses classifier while retaining the request bound. (authoring-run/7ccb9fb8-c9b6-440b-90a2-e9331fc81393 - f6443620ddc03fea6e7799367d723278f11fe06f)
 
 - 2026-11-18 11:53: Require a delta to open a reasoning-text index; consolidate exchange regression coverage. (authoring-run/cd2d6ae9-eb3b-4896-b64b-ae7ecc119b99 - fe38bb0cb)
 
