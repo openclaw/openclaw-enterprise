@@ -251,14 +251,16 @@ to the same session, Agent, and window.
 and `apps/controller/src/http/runtime-audit.ts`
 
 With audit and Helm-managed Gateway routing enabled, the chart creates a
-private HTTPS service. The worker creates a Kubernetes Secret for the
-revision and saves the hash of its token in PostgreSQL. The Gateway mounts
-the Secret and the public certificate of the service's certificate authority.
-A NetworkPolicy permits the Gateway to reach the audit listener. The worker
-withdraws the grant after the Gateway stops and removes the Secret when the
-revision retires.
+private HTTPS service. The OCC worker creates a Kubernetes Secret for the
+revision and saves the hash of its token in PostgreSQL. The Gateway and the
+dedicated OpenClaw worker mount the Secret and the service's public CA
+certificate when they report events. A NetworkPolicy permits those Pods to
+reach the audit listener. Compute withdraws the grant after
+the revision stops and removes the Secret when the revision retires.
 
-The Gateway sends session, turn, and model-call records to the listener.
+The Gateway sends session, turn, and observed model-call records to the
+listener. A dedicated OpenClaw worker that makes a model call uses the
+turn ID from its Gateway and reports that call directly.
 OCC checks the token and obtains the revision scope from the grant in the
 transaction that appends the event. A retry with the same event ID and values
 returns success and keeps one row. A retry with different values fails.

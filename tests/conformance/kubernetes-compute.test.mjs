@@ -878,7 +878,7 @@ test("dedicated Gateway waits for its own audit grant and reuses the winning Sec
       assert.deepEqual(gateway.read("NetworkPolicy", `allow-${name}`).spec, {
         podSelector: {
           matchLabels: {
-            "openclaw.dev/workload-role": "gateway",
+            "openclaw.dev/runtime-audit-sender": "true",
             "openclaw.dev/namespace": revision.namespaceId,
             "openclaw.dev/agent": revision.agentId,
             "openclaw.dev/revision": revision.id,

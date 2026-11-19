@@ -131,7 +131,7 @@ test("the single audit switch configures private Gateway HTTPS and scopes audit 
         assert.equal(ingress.spec.ingress[0].from.length, 1);
         assert.deepEqual(ingress.spec.ingress[0].from[0].podSelector.matchLabels, {
           "app.kubernetes.io/managed-by": "openclaw-enterprise",
-          "openclaw.dev/workload-role": "gateway",
+          "openclaw.dev/runtime-audit-sender": "true",
         });
         assert.ok(
           ingress.spec.ingress[0].from[0].namespaceSelector.matchLabels[

@@ -7207,6 +7207,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         this.reconcilePluginRuntimeConfigMap(pluginRuntime, pluginOwnership, gatewayNamespace),
       );
     }
+    await this.prepareRevisionStage("gateway_runtime_audit", () =>
+      this.ensureGatewayRuntimeAudit(revision, gatewayNamespace),
+    );
     let launchPrepared = false;
     try {
       const gatewayEnvironment = embedded
@@ -7251,9 +7254,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
             gatewayNamespace,
             gatewayOwnership,
           ),
-        );
-        await this.prepareRevisionStage("gateway_runtime_audit", () =>
-          this.ensureGatewayRuntimeAudit(revision, gatewayNamespace),
         );
         await this.prepareRevisionStage("gateway_deployment", () =>
           this.reconcile(
@@ -10322,6 +10322,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return randomBytes(32).toString("base64url");
   }
 
+  private runtimeAuditTargetInNamespace(namespace: KubernetesNamespaceAddress) {
+    // The chart publishes the listener only on the control cluster.
+    return this.options.executionCluster !== undefined && namespace.plane !== "control"
+      ? undefined
+      : this.gatewayRuntimeAuditTarget;
+  }
+
   private gatewayRuntimeAuditSecretName(agentId: string, revisionId: string): string {
     return `runtime-audit-${sha256Hex(JSON.stringify([agentId, revisionId]), 24)}`;
   }
@@ -10355,7 +10362,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ...this.manifest("networking.k8s.io/v1", "NetworkPolicy", policy, ownership, namespace),
         spec: {
           podSelector: ordinaryNetworkPolicySelector({
-            "openclaw.dev/workload-role": "gateway",
+            "openclaw.dev/runtime-audit-sender": "true",
             "openclaw.dev/namespace": revision.namespaceId,
             "openclaw.dev/agent": revision.agentId,
             "openclaw.dev/revision": revision.id,
@@ -10447,7 +10454,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
   ): Promise<void> {
-    const target = this.gatewayRuntimeAuditTarget;
+    const target = this.runtimeAuditTargetInNamespace(namespace);
     if (target === undefined || this.options.runtime === undefined) {
       return;
     }
@@ -17309,6 +17316,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         ? this.options.servicePrincipalCredentials
         : undefined;
     const runtime = this.options.runtime;
+    const auditRevisionId = configuration?.revisionId ?? ownership.revisionId;
+    const auditTarget =
+      runtime !== undefined &&
+      auditRevisionId !== undefined &&
+      (role === "gateway" || (nativeRuntime !== undefined && !providerOwnsHarness))
+        ? this.runtimeAuditTargetInNamespace(namespace)
+        : undefined;
     const dedicated = !embedded;
     // The first process to see the signing key must be the packaged launcher.
     // Custom environment and repository tooling can alter how it is loaded.
@@ -17760,58 +17774,54 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           secret("APP_SERVER_TOKEN", runtime.transportSecretPrefix, AGENT_TRANSPORT_TOKEN_KEY),
         );
       }
-      if (role === "gateway") {
-        const auditDestination = this.gatewayRuntimeAuditTarget;
-        if (auditDestination !== undefined && configuration !== undefined) {
-          volumes.push({
-            name: RUNTIME_AUDIT_VOLUME,
-            secret: {
-              secretName: this.gatewayRuntimeAuditSecretName(agentId, configuration.revisionId),
-              optional: false,
-              defaultMode: 0o440,
-              items: [{ key: RUNTIME_AUDIT_TOKEN_KEY, path: RUNTIME_AUDIT_TOKEN_KEY }],
-            },
-          });
-          volumeMounts.push({
-            name: RUNTIME_AUDIT_VOLUME,
-            mountPath: RUNTIME_AUDIT_DIRECTORY,
-            readOnly: true,
-          });
-          variables.push(
-            { name: "OPENCLAW_RUNTIME_AUDIT_URL", value: auditDestination.endpoint },
-            {
-              name: "OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH",
-              value: `${RUNTIME_AUDIT_DIRECTORY}/${RUNTIME_AUDIT_TOKEN_KEY}`,
-            },
-          );
-          if (configuration.nativeWorkerProfile === undefined) {
-            variables.push({
-              name: "OPENCLAW_CODEX_PROVIDER_ATTEMPT_AUDIT",
-              value: configuration.auditCodexModelAttempts && providerUrl === undefined ? "1" : "0",
-            });
-          }
-          const { config } = this.gatewayRuntimeAuditTransportNames(
-            agentId,
-            configuration.revisionId,
-          );
-          volumes.push({
-            name: RUNTIME_AUDIT_CA_VOLUME,
-            configMap: {
-              name: config,
-              items: [{ key: RUNTIME_AUDIT_CA_FILE, path: RUNTIME_AUDIT_CA_FILE }],
-              optional: false,
-            },
-          });
-          volumeMounts.push({
-            name: RUNTIME_AUDIT_CA_VOLUME,
-            mountPath: RUNTIME_AUDIT_CA_DIRECTORY,
-            readOnly: true,
-          });
+      if (auditTarget !== undefined && auditRevisionId !== undefined) {
+        volumes.push({
+          name: RUNTIME_AUDIT_VOLUME,
+          secret: {
+            secretName: this.gatewayRuntimeAuditSecretName(agentId, auditRevisionId),
+            optional: false,
+            defaultMode: 0o440,
+            items: [{ key: RUNTIME_AUDIT_TOKEN_KEY, path: RUNTIME_AUDIT_TOKEN_KEY }],
+          },
+        });
+        volumeMounts.push({
+          name: RUNTIME_AUDIT_VOLUME,
+          mountPath: RUNTIME_AUDIT_DIRECTORY,
+          readOnly: true,
+        });
+        variables.push(
+          { name: "OPENCLAW_RUNTIME_AUDIT_URL", value: auditTarget.endpoint },
+          {
+            name: "OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH",
+            value: `${RUNTIME_AUDIT_DIRECTORY}/${RUNTIME_AUDIT_TOKEN_KEY}`,
+          },
+        );
+        if (role === "gateway" && configuration?.nativeWorkerProfile === undefined) {
           variables.push({
-            name: "OPENCLAW_RUNTIME_AUDIT_CA_PATH",
-            value: `${RUNTIME_AUDIT_CA_DIRECTORY}/${RUNTIME_AUDIT_CA_FILE}`,
+            name: "OPENCLAW_CODEX_PROVIDER_ATTEMPT_AUDIT",
+            value: configuration?.auditCodexModelAttempts && providerUrl === undefined ? "1" : "0",
           });
         }
+        const { config } = this.gatewayRuntimeAuditTransportNames(agentId, auditRevisionId);
+        volumes.push({
+          name: RUNTIME_AUDIT_CA_VOLUME,
+          configMap: {
+            name: config,
+            items: [{ key: RUNTIME_AUDIT_CA_FILE, path: RUNTIME_AUDIT_CA_FILE }],
+            optional: false,
+          },
+        });
+        volumeMounts.push({
+          name: RUNTIME_AUDIT_CA_VOLUME,
+          mountPath: RUNTIME_AUDIT_CA_DIRECTORY,
+          readOnly: true,
+        });
+        variables.push({
+          name: "OPENCLAW_RUNTIME_AUDIT_CA_PATH",
+          value: `${RUNTIME_AUDIT_CA_DIRECTORY}/${RUNTIME_AUDIT_CA_FILE}`,
+        });
+      }
+      if (role === "gateway") {
         if (embedded) {
           variables.push({
             name: "HOME",
@@ -18084,6 +18094,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               ...workloadMetadata.labels,
               ...revisionLabels,
               ...selector,
+              ...(auditTarget === undefined ? {} : { "openclaw.dev/runtime-audit-sender": "true" }),
               "openclaw.dev/workload-role": role,
               [NETWORK_PROFILE_LABEL]: ORDINARY_NETWORK_PROFILE,
             },
