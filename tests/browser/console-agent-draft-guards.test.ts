@@ -1019,6 +1019,7 @@ test("Console saves only explicitly proposed repository grants for a later deplo
   await discard.click();
   await applySavedRules.waitFor();
   assert.equal(await applySavedRules.isEnabled(), true);
+  assert.equal(await dialog.getByText(/Review your repository draft/).count(), 0);
   assert.equal(pathRequests(requests, "PUT", base).length, 1);
   assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 0);
 

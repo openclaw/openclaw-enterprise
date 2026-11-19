@@ -2286,7 +2286,11 @@ export function renderAgentSandboxPolicy(
         keepRepositoryDraft &&
         !sameRepositoryGrants(view.policy.repositoryNetworkPolicy, repositoryDraft)
       ) {
-        feedback.textContent = `Policy v${view.policy.version} reloaded. Review your repository draft against the saved policy before saving.`;
+        feedback.textContent =
+          view.repositoryNetworkPolicySaveSupported === true &&
+          readableRepositoryGrants(view.repositoryNetworkPolicyCeiling)
+            ? `Policy v${view.policy.version} reloaded. Review your repository draft against the saved policy before saving.`
+            : `Policy v${view.policy.version} reloaded.`;
       } else if (repositoryDraft !== undefined) {
         repositoryDraft = view.policy.repositoryNetworkPolicy;
       }
