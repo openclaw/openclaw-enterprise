@@ -245,6 +245,13 @@ export interface SmokeStack extends LocalSetup {
   namespaceId: string;
 }
 
+function localApiOrigin(port: number): string {
+  assert.ok(Number.isInteger(port) && port > 0 && port <= 65535, "Invalid Local Setup API port");
+  const url = new URL("http://127.0.0.1");
+  url.port = String(port);
+  return url.origin;
+}
+
 export async function startLocalSetup(
   environment: NodeJS.ProcessEnv & { OCC_DEVELOPMENT_STATE_DIRECTORY: string },
   { privateInstall = false } = {},
@@ -270,6 +277,7 @@ export async function startLocalSetup(
   const directory = environment.OCC_DEVELOPMENT_STATE_DIRECTORY;
   const storedState: unknown = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
   const state = storedState as LocalSetupState;
+  const origin = localApiOrigin(state.apiPort);
   const key: unknown = JSON.parse(await readFile(state.keyPath, "utf8"));
   return {
     directory,
@@ -277,11 +285,8 @@ export async function startLocalSetup(
     keyPath: state.keyPath,
     kubeconfig: join(directory, "kubeconfig"),
     context: `k3d-${state.cluster}`,
-    origin: `http://127.0.0.1:${state.apiPort}`,
-    api: createApi(
-      `http://127.0.0.1:${state.apiPort}`,
-      wireField(wireField(key, "data"), "key") as string,
-    ),
+    origin,
+    api: createApi(origin, wireField(wireField(key, "data"), "key") as string),
   };
 }
 
@@ -403,7 +408,7 @@ export async function setLocalSetupAudit(
 
   // Helm checks the Pod directly. Wait for the local proxy to reach the
   // replacement API through its Service before sending the next request.
-  const ready = `http://127.0.0.1:${stack.state.apiPort}/readyz`;
+  const ready = new URL("/readyz", localApiOrigin(stack.state.apiPort));
   await waitFor(
     "the local API after the audit setting changes",
     async () => {
