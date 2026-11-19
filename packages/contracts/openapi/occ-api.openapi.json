@@ -194,6 +194,91 @@
       }
     },
     "schemas": {
+      "PushAgentCredentialsBody": {
+        "additionalProperties": false,
+        "description": "Proposed manual delivery retry request. The caller needs agent:operate on the exact Agent and credential_source:update on every selected source. OCC rejects the whole request if any selected source is ineligible or unauthorized, before notifying the Credential Proxy or resolving any credential. Retrying delivery for a shared source can affect other Agents bound to it.",
+        "properties": {
+          "sources": {
+            "anyOf": [
+              { "const": "all", "type": "string" },
+              {
+                "items": {
+                  "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              }
+            ],
+            "description": "Select all eligible sources or name each source to retry. Eligible sources have an unwithdrawn Credential Proxy binding in the deployed Agent revision. The Agent service principal must still have credential_source:operate on the source."
+          }
+        },
+        "required": ["sources"],
+        "title": "PushAgentCredentialsBody",
+        "type": "object"
+      },
+      "PushAgentCredentialsResponse": {
+        "additionalProperties": false,
+        "description": "Proposed response after authorization. OCC reports one outcome per selected source, including successes when another source fails. A delivery failure does not roll back the authoritative credential. An authorized caller can retry delivery again.",
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "properties": {
+              "results": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "outcome": {
+                      "anyOf": [
+                        {
+                          "const": "succeeded",
+                          "description": "The Credential Proxy completed the update notification according to its binding. A push confirms that every serving copy can use the resolved version. If no delivery resource exists, the proxy succeeds without resolving or creating one.",
+                          "type": "string"
+                        },
+                        {
+                          "const": "resolution_failed",
+                          "description": "The proxy requested the credential, but its source-bound resolver failed.",
+                          "type": "string"
+                        },
+                        {
+                          "const": "delivery_failed",
+                          "description": "The Credential Proxy could not complete the update notification, including when material required for a push had no resolved version.",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "sourceId": {
+                      "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                      "type": "string"
+                    }
+                  },
+                  "required": ["sourceId", "outcome"],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": ["results"],
+            "type": "object"
+          },
+          "meta": {
+            "additionalProperties": false,
+            "properties": {
+              "requestId": {
+                "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "type": "string"
+              }
+            },
+            "required": ["requestId"],
+            "type": "object"
+          }
+        },
+        "required": ["data", "meta"],
+        "title": "PushAgentCredentialsResponse",
+        "type": "object"
+      },
       "RegisterTokenServiceSourceBody": {
         "additionalProperties": false,
         "description": "Proposed registration body for a Namespace credential source. OCC allocates the identity and selects the TokenService Driver. An attached Connection Template supplies its current settings. Supply the secret fields required by the source type.",

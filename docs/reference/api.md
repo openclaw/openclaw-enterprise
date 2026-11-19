@@ -13671,6 +13671,8 @@ Reusable schema names are referenced by operation request and response tables.
 
 | Schema | Type |
 | --- | --- |
+| `PushAgentCredentialsBody` | `object` |
+| `PushAgentCredentialsResponse` | `object` |
 | `RegisterTokenServiceSourceBody` | `object` |
 | `TokenServiceSourceMetadata` | `object` |
 | `UpdateTokenServiceSourceBody` | `object or object` |

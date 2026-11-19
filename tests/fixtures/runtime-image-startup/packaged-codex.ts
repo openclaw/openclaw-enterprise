@@ -94,7 +94,7 @@ export async function probePackagedCodex(
       ? "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a"
       : "a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7",
     "openclaw-google-worker-placeholder.patch":
-      "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
+      "cfd027b90c833f0a0266c94e01dc9387143a265c711868d168fb01864468bb38",
     ...(historicalCodex
       ? {
           "openclaw-required-worker-authority-regression.patch":
@@ -114,7 +114,7 @@ export async function probePackagedCodex(
           "openclaw-planned-completion.patch":
             "402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15",
           "openclaw-node-setup-renewal.patch":
-            "cdda7e94a154b3508cf3eaf1513d0dee62cb58b0127c035a769911a86fd51b1e",
+            "1cba704e3888ff7764d62613b0bbb4918ceccb66352a1fc2baf31d72ec8d0df6",
         }),
   });
   assert.equal(read(provenance.codex).version, stagingCodexVersion);

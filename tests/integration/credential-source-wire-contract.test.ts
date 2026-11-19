@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 
 import type { UpdateTokenServiceSourceBody } from "@openclaw-enterprise/contracts";
 
 import { createRouteGenerationApp } from "../../apps/controller/src/route-generation-app.ts";
 
-test("published TokenService source schemas accept registration material and serialize only metadata", async (t) => {
+const uuid = "0000000a-0000-4000-8000-00000000000b";
+const id = `cs_${uuid}`;
+const namespaceId = `ns_${uuid}`;
+
+async function publishedCredentialComponents(t: TestContext) {
   const app = createRouteGenerationApp();
   t.after(() => app.close());
-
-  const uuid = "0000000a-0000-4000-8000-00000000000b";
-  const id = `cs_${uuid}`;
-  const namespaceId = `ns_${uuid}`;
 
   // Use the source route's validator and serializer to verify that it can resolve the shared schemas.
   const route = { method: "POST", url: `/namespaces/${namespaceId}/credential-sources` } as const;
@@ -31,6 +31,12 @@ test("published TokenService source schemas accept registration material and ser
     assert.ok(schema, `Missing OpenAPI component ${name}`);
     return schema;
   }
+  return { route, validatorCompiler, serializerCompiler, published };
+}
+
+test("published TokenService source schemas accept registration material and serialize only metadata", async (t) => {
+  const { route, validatorCompiler, serializerCompiler, published } =
+    await publishedCredentialComponents(t);
   const writeOnlySecret = { properties: { secret: { writeOnly: true } } };
   assert.partialDeepStrictEqual(published("RegisterTokenServiceSourceBody"), writeOnlySecret);
   assert.partialDeepStrictEqual(published("UpdateTokenServiceSourceBody"), {
@@ -107,4 +113,59 @@ test("published TokenService source schemas accept registration material and ser
     // Private ownership, delivery, backend, and material fields never enter public metadata.
     assert.deepEqual(JSON.parse(serializeMetadata(internal)), metadata);
   }
+});
+
+test("published manual delivery retry schemas require an explicit selection and return per-source outcomes", async (t) => {
+  const { route, validatorCompiler, serializerCompiler, published } =
+    await publishedCredentialComponents(t);
+  const select = validatorCompiler({ ...route, schema: published("PushAgentCredentialsBody") });
+  const secondId = "cs_0000000a-0000-4000-8000-00000000000c";
+  assert.equal(select({ sources: "all" }), true);
+  assert.equal(select({ sources: [id, secondId] }), true);
+  const maxSelection = Array.from(
+    { length: 64 },
+    (_, index) => `cs_0000000a-0000-4000-8000-${index.toString(16).padStart(12, "0")}`,
+  );
+  assert.equal(select({ sources: maxSelection }), true);
+  const overLimitSelection = [...maxSelection, "cs_0000000a-0000-4000-8000-000000000040"];
+  assert.equal(select({ sources: overLimitSelection }), false);
+  assert.equal(select({}), false);
+  assert.equal(select({ sources: [] }), false);
+  assert.equal(select({ sources: [id, id] }), false);
+  assert.equal(select({ sources: [namespaceId] }), false);
+
+  const response = {
+    data: {
+      results: [
+        { sourceId: id, outcome: "succeeded" },
+        { sourceId: secondId, outcome: "delivery_failed" },
+        { sourceId: "cs_0000000a-0000-4000-8000-00000000000d", outcome: "resolution_failed" },
+      ],
+    },
+    meta: { requestId: `req_${uuid}` },
+  };
+  const responseSchema = published("PushAgentCredentialsResponse");
+  const validResponse = validatorCompiler({ ...route, schema: responseSchema });
+  assert.equal(validResponse(response), true);
+  // Clients can distinguish owner resolution failures from proxy failures. A preflight
+  // denial belongs to the request's error response, never to an individual source.
+  assert.equal(
+    validResponse({ ...response, data: { results: [{ sourceId: id, outcome: "denied" }] } }),
+    false,
+  );
+
+  // Internal backend data must never reach the caller alongside partial success.
+  const internal = {
+    ...response,
+    data: {
+      results: response.data.results.map((item) => ({
+        ...item,
+        credential: "synthetic",
+        backendMessage: "private diagnostic",
+      })),
+    },
+  };
+  assert.equal(validResponse(internal), false);
+  const serialize = serializerCompiler({ ...route, schema: responseSchema });
+  assert.deepEqual(JSON.parse(serialize(internal)), response);
 });
