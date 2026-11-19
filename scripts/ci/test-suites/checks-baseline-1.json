@@ -74,7 +74,6 @@
     "tests/docs/docs-length.test.mjs",
     "tests/integration/production-image-upgrade.test.ts",
     "tests/integration/production-upgrade-chart-inputs.test.ts",
-    "tests/integration/production-upgrade-command.test.ts",
     "tests/conformance/test-files.test.ts",
     "tests/conformance/update-contributors.test.ts",
     "tests/conformance/socket-directory.test.ts",
@@ -578,9 +577,6 @@
     },
     {
       "path": "tests/integration/production-upgrade-chart-inputs.test.ts"
-    },
-    {
-      "path": "tests/integration/production-upgrade-command.test.ts"
     },
     {
       "path": "tests/integration/secret-api.test.ts"

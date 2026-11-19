@@ -7,6 +7,10 @@ database separately, set `database.upgradeMigration: separate` in the reviewed
 candidate values. Use a candidate controller image that supports `--require-current`.
 The helper exits **3** after both writers stop and before submitting Helm.
 
+Before maintenance, use the
+[migration compatibility check](production-upgrade-command.md#check-database-migration-compatibility)
+to check the selected image against the deployed release's migration history.
+
 ## Run a selected-image migration
 
 Read the migration program from the reviewed chart. From the reviewed release checkout root:
@@ -45,6 +49,9 @@ Require exit zero and a `migration.checked` event. Stop if either is missing.
 Supply the database CA and network access required by the selected connection. The program
 reads the image's production migration entry from `package.json`, accepts the supported
 JavaScript or TypeScript entry, and loads it in the same Node process.
+Mode arguments require the production-prefixed `db:migrate:production` command.
+If the loader refuses an older image before migration, select an image that
+supports the required mode.
 
 For Kubernetes, choose one mode before creating the
 [maintenance Job](auth-maintenance.md#run-the-command). To inspect recognized history without applying SQL:

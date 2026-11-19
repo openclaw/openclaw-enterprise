@@ -113,10 +113,10 @@ endpoint, Pod and Service CIDRs, and metadata endpoint fall inside them. A
 dedicated Agent has one authentication-only egress policy, pinned to its latest
 prepared Agent revision ID. Stop leaves it and the Agent's runtime and plugin-status
 policies, selecting no Pod, until the next preparation or Agent deletion.
-Channels require an approved HTTP(S) proxy in `runtime.channels`: a literal IP
-endpoint, or the exact
-Helm-managed proxy Service URL paired with `runtime.channels.managedProxy`.
-Direct public channel-provider access is denied.
+Channels require [managed channel egress](channel-egress.md) in
+`runtime.channelEgress`. Each Gateway uses its assigned Envoy listener;
+NetworkPolicies select its Agent revision and binding. Direct public
+channel-provider access is denied. OCC uses a separate provider listener.
 
 ## Explicit network profiles
 

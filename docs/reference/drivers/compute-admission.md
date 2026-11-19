@@ -72,7 +72,8 @@ completion waiting, change new-message admission, or extend deployment timeouts.
 [its rule module](../../../apps/controller/src/drivers/compute/kubernetes/configuration-rules.ts).
 `validateConfiguration` refuses:
 
-- an enabled `channels.<provider>` other than `slack` or `msteams`;
+- an enabled `channels.<provider>` without an installed Channel Driver; the bundled
+  composition currently installs Slack only;
 - a non-empty `auth`;
 - an `env` or `env.vars` name starting `OPENAI_` or `ANTHROPIC_` in any
   case, or `CODEX_ACCESS_TOKEN`, `CODEX_CHATGPT_WORKSPACE_ID` or
@@ -187,7 +188,7 @@ them. Whether the Installation supplies
 what a method needs (OAuth needs no Sandbox Driver; a credential source needs
 its paired Sandbox) stays a fixed `409`.
 The channel runtime rule stays at deployment: it depends on the execution mode
-and the Installation's `runtime.channels`.
+and the Installation's `runtime.channelEgress`.
 With `runtime` set, `validateHarnessAuth` refuses `dedicated` without
 `gatewayRouting` (and node enrollment) or `runtime.gatewayNodeSelector`,
 naming the setting, at Agent save too: the execution mode is the Agent's.

@@ -484,7 +484,6 @@ export async function checkEmbeddedGatewayRetirement() {
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
-        channels: { proxyUrl: "http://192.0.2.10:3128" },
       },
     }),
   );
@@ -550,10 +549,7 @@ export async function checkEmbeddedGatewayRetirement() {
     revision,
     target,
   );
-  const policies: ObservedResource[] = [
-    ...agentPolicies.map(({ resource }) => resource),
-    driver["channelNetworkPolicy"](revision, [], target),
-  ];
+  const policies: ObservedResource[] = [...agentPolicies.map(({ resource }) => resource)];
   for (const policy of policies) {
     save(policy);
   }

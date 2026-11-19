@@ -231,7 +231,6 @@ function options(runtime: boolean, twoCluster: boolean): KubernetesComputeDriver
           runtime: {
             transportSecretPrefix: "transport",
             gatewayStorageClassName: "local-path",
-            channels: { proxyUrl: "http://10.42.0.15:3128" },
           },
         }
       : {}),
