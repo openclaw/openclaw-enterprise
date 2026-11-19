@@ -286,8 +286,9 @@ export function registerCutOutputCases() {
     const containers = asRecord(JSON.parse(text))?.containers;
     assert.ok(Array.isArray(containers), "expected the node containers");
     assert.doesNotMatch(text, new RegExp(lineEnd), "a cut line is published");
+    const records = containers.map((entry: unknown) => asRecord(entry));
     for (const { node, label, secret, processLines } of cases) {
-      const container = containers.map(asRecord).find((entry) => entry?.name === node);
+      const container = records.find((entry) => entry?.name === node);
       // Only the whole lines after the cut remain, each one a credential-bearing line.
       assert.deepEqual(
         container?.processes,
@@ -296,7 +297,7 @@ export function registerCutOutputCases() {
       );
       assertAbsent(text, secret, label);
     }
-    const logs = asRecord(containers.map(asRecord).find((entry) => entry?.name === logNode)?.logs);
+    const logs = asRecord(records.find((entry) => entry?.name === logNode)?.logs);
     assert.equal(logs?.status, "ok");
     assert.match(String(logs?.value), /fixture progress \d+"/);
     assertAbsent(text, phrase, "a stamped cut line");
