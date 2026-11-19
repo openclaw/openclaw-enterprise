@@ -82,10 +82,15 @@ const secretKeywords = String.raw`password|passwd|passphrase|pwd|secret|token|(?
 // prose or YAML, or an Authorization header's scheme and value.
 const multiWordKeywords = /^(?:password|passwd|passphrase|pwd|authorization)$/iu;
 const multiWordEnd = /[\n\r"',;}&\]]/u;
-const assignment = new RegExp(
-  String.raw`\b([A-Za-z_-]{0,40}(${secretKeywords})s?(?:\\*["'])?\s*([:=])\s*)(?:(\\*)(["'])|([{[])|[^\s"',;}&]+)`,
-  "giu",
-);
+const assignmentAfter = (keySuffix: string) =>
+  new RegExp(
+    String.raw`\b([A-Za-z_-]{0,40}(${secretKeywords})s?${keySuffix}(?:\\*["'])?\s*([:=])\s*)(?:(\\*)(["'])|([{[])|[^\s"',;}&]+)`,
+    "giu",
+  );
+const assignment = assignmentAfter("");
+// A keyword with a suffix after "_" or "-" (client-key-data, api_key_file). Not a
+// camelCase one: secretName and tokenCount stay readable.
+const suffixedAssignment = assignmentAfter(String.raw`[_-][A-Za-z0-9_-]{0,40}`);
 
 // A diagnostic can pretty-print a credential across lines and quote a literal closing bracket.
 // Resume only after the matching close. If the bounded input ends first or the delimiters do not match,
@@ -120,22 +125,22 @@ function bracketValueEnd(text: string, start: number): number {
 // A quoted value can contain spaces, punctuation, or an escaped quote. When JSON has itself
 // been serialized, its opening delimiter tells us how many backslashes end the value. A value
 // that opens with "{" or "[" is redacted through its matching close.
-function redactSecretAssignments(text: string) {
+function redactSecretAssignments(text: string, pattern = assignment) {
   let result = "";
   let end = 0;
-  assignment.lastIndex = 0;
-  for (let match = assignment.exec(text); match !== null; match = assignment.exec(text)) {
+  pattern.lastIndex = 0;
+  for (let match = pattern.exec(text); match !== null; match = pattern.exec(text)) {
     const [value, key, keyword = "", separator, escapes = "", quote = "", bracket] = match;
     const delimiter = escapes + quote;
     result += text.slice(end, match.index) + key + delimiter + "[redacted]";
-    end = assignment.lastIndex;
+    end = pattern.lastIndex;
     if (bracket) {
       end = bracketValueEnd(text, match.index + value.length - 1);
       // Text glued to the close (`[a]b`) is part of the same value.
       while (end < text.length && !/[\s"',;}\]&]/u.test(text.charAt(end))) {
         end += 1;
       }
-      assignment.lastIndex = end;
+      pattern.lastIndex = end;
       continue;
     }
     if (!quote) {
@@ -143,7 +148,7 @@ function redactSecretAssignments(text: string) {
         // Take the following words up to the end of the phrase, but not its trailing spaces.
         // The next key starts its own assignment, so its quoted value is found; stopping
         // there also keeps the scan linear.
-        const next = assignment.exec(text);
+        const next = pattern.exec(text);
         const limit = next === null ? text.length : next.index;
         let phraseEnd = end;
         for (let index = end; index < limit && !multiWordEnd.test(text.charAt(index)); index += 1) {
@@ -152,7 +157,7 @@ function redactSecretAssignments(text: string) {
           }
         }
         end = phraseEnd;
-        assignment.lastIndex = end;
+        pattern.lastIndex = end;
       }
       continue;
     }
@@ -170,7 +175,7 @@ function redactSecretAssignments(text: string) {
       }
       backslashes = char === "\\" ? backslashes + 1 : 0;
     }
-    assignment.lastIndex = end;
+    pattern.lastIndex = end;
   }
   return result + text.slice(end);
 }
@@ -231,14 +236,18 @@ function withoutStructuredLogLines(text: string) {
     .join("\n");
 }
 
+const truncation = "... [truncated]";
+
 // `cut` says the reporter cut the text at failureInputLimit (a caller may have
-// shortened it since).
+// shortened it since). `check` is the caller's credential-line test of the bounded
+// text; the two steps after it only remove more of what it returns.
 function redactText(
   text: unknown,
   limit: number,
   secrets: RedactionSecrets,
   root: string,
   cut?: boolean,
+  check = (bounded: string) => bounded,
 ) {
   if (typeof text !== "string" || text.length === 0) {
     return undefined;
@@ -261,12 +270,28 @@ function redactText(
   result = redactSecretAssignments(result)
     .replace(urlCredential, "://[redacted]@")
     .replace(/[^\P{Cc}\n\t]/gu, "");
+  let split = 0;
   if (cut) {
     // The reporter's cut can split a value so no rule matches it; drop that tail.
     const longest = secrets[0]?.[0].length ?? 0;
-    result = result.slice(0, Math.max(0, result.length - Math.max(256, longest)));
+    const end = Math.max(0, result.length - Math.max(256, longest));
+    // A split JWT or URL password can be longer: the last run of non-space text,
+    // where it starts before `end`, is not shown either.
+    let start = result.length;
+    while (start > 0 && !/\s/u.test(result.charAt(start - 1))) {
+      start -= 1;
+    }
+    split = Math.max(0, Math.min(end, limit) - start);
+    result = result.slice(0, end);
   }
-  return result.length > limit ? `${result.slice(0, limit)}... [truncated]` : result;
+  const shown = result.slice(0, limit);
+  const checked = check(shown.length < result.length ? `${shown}${truncation}` : shown);
+  const suffix = shown.length < result.length && checked.endsWith(truncation) ? truncation : "";
+  let body = checked.slice(0, checked.length - suffix.length);
+  if (split > 0 && body.endsWith(shown.slice(-split))) {
+    body = body.slice(0, -split);
+  }
+  return redactSecretAssignments(body, suffixedAssignment) + suffix;
 }
 
 // Redacts one captured container log line the same way, bounded to `limit`.
@@ -328,9 +353,9 @@ export function isCredentialLine(line: string) {
   return namesCredential(stripControl(line.slice(0, failureInputLimit)));
 }
 
-function dropCredentialLines(text: string | undefined) {
+function dropCredentialLines(text: string) {
   return text
-    ?.split("\n")
+    .split("\n")
     .map((line) => (namesCredential(line) ? credentialLineMarker : line))
     .join("\n");
 }
@@ -350,7 +375,7 @@ function redactDetailText(text: unknown, secrets: RedactionSecrets, root: string
   const raw = dropCredentialLines(
     stripControl(filtered.slice(0, failureInputLimit)).replace(privateKeyShape, "[redacted]"),
   );
-  return dropCredentialLines(redactText(raw, failureInputLimit, secrets, root, cut));
+  return redactText(raw, failureInputLimit, secrets, root, cut, dropCredentialLines);
 }
 
 export function redactFailureDetail(error: unknown, secrets: RedactionSecrets, root: string) {
@@ -470,6 +495,9 @@ export function redactOutputLine(
   if (isCredentialLine(line)) {
     return credentialLineMarker;
   }
-  const redacted = redactText(line, limit, secrets, root) ?? "";
-  return namesCredential(redacted) ? credentialLineMarker : redacted;
+  return (
+    redactText(line, limit, secrets, root, undefined, (redacted) =>
+      namesCredential(redacted) ? credentialLineMarker : redacted,
+    ) ?? ""
+  );
 }
