@@ -24,7 +24,7 @@ import {
 import type { OperationalEvent, Outcome } from "./password-sign-in-audit-fixture.ts";
 import { registerPasswordSignInEmailCases } from "./password-sign-in-audit-email-cases.ts";
 
-test("a password-only sign-in reports its outcome to the audit seam", async () => {
+function controllerWithRecordedOutcomes() {
   const outcomes: Outcome[] = [];
   const { auth, memoryDatabase } = controller({
     accepted: async (userId) => {
@@ -34,6 +34,30 @@ test("a password-only sign-in reports its outcome to the audit seam", async () =
       outcomes.push(["refused"]);
     },
   });
+  return { auth, memoryDatabase, outcomes };
+}
+
+async function assertDenialAuditFailureSpendsBudget(
+  auth: Parameters<typeof signIn>[0],
+  denialCount: () => number,
+  events: OperationalEvent[],
+) {
+  // The audit outage is reported, never hidden behind a 401.
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    assertUnavailable(await signIn(auth, { email, password: "wrong-password-guess" }));
+  }
+  assert.equal(denialCount(), 10);
+  // Every failed guess counted: the next attempt is refused before the password is checked.
+  assertLimited(await signIn(auth, { email, password: "wrong-password-guess" }));
+  assert.equal(denialCount(), 10);
+  assert.deepEqual(
+    events.map(({ event, lane }) => [event, lane]),
+    [["authentication.sign-in-limited", "email"]],
+  );
+}
+
+test("a password-only sign-in reports its outcome to the audit seam", async () => {
+  const { auth, memoryDatabase, outcomes } = controllerWithRecordedOutcomes();
   const account = await auth.createAccount({ email, password });
   assert.equal((await signIn(auth, { email, password })).status, 200);
   // A wrong password and an unknown email get the same answer, so it names no account.
@@ -47,15 +71,7 @@ test("a password-only sign-in reports its outcome to the audit seam", async () =
 });
 
 test("a sign-in that fails on its dependency is 503, not an audited or counted refusal", async () => {
-  const outcomes: Outcome[] = [];
-  const { auth, memoryDatabase } = controller({
-    accepted: async (userId) => {
-      outcomes.push(["accepted", userId]);
-    },
-    refused: async () => {
-      outcomes.push(["refused"]);
-    },
-  });
+  const { auth, memoryDatabase, outcomes } = controllerWithRecordedOutcomes();
   await auth.createAccount({ email, password });
   // Every account read now fails, as it would with the database down.
   Object.defineProperty(memoryDatabase, "user", {
@@ -87,15 +103,7 @@ test("a sign-in whose audit cannot be written is refused and its session revoked
 
 for (const status of [500, 503, 599]) {
   test(`a dependency APIError ${status} is unavailable without spending the password budget`, async () => {
-    const outcomes: Outcome[] = [];
-    const { auth, memoryDatabase } = controller({
-      accepted: async (userId) => {
-        outcomes.push(["accepted", userId]);
-      },
-      refused: async () => {
-        outcomes.push(["refused"]);
-      },
-    });
+    const { auth, memoryDatabase, outcomes } = controllerWithRecordedOutcomes();
     const account = await auth.createAccount({ email, password });
     const users = memoryDatabase.user;
     let unavailable = true;
@@ -170,18 +178,7 @@ test("a wrong password whose denial audit fails is 503 and still spends the budg
     { onOperationalEvent: (event) => events.push(event) },
   );
   await auth.createAccount({ email, password });
-  // The audit outage is reported, never hidden behind a 401.
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    assertUnavailable(await signIn(auth, { email, password: "wrong-password-guess" }));
-  }
-  assert.equal(refusals, 10);
-  // Every failed guess counted: the next attempt is refused before the password is checked.
-  assertLimited(await signIn(auth, { email, password: "wrong-password-guess" }));
-  assert.equal(refusals, 10);
-  assert.deepEqual(
-    events.map(({ event, lane }) => [event, lane]),
-    [["authentication.sign-in-limited", "email"]],
-  );
+  await assertDenialAuditFailureSpendsBudget(auth, () => refusals, events);
 });
 
 test("guarded profile: a wrong password whose denial audit fails is 503 and still spends the budget", async () => {
@@ -203,18 +200,7 @@ test("guarded profile: a wrong password whose denial audit fails is 503 and stil
     },
     onOperationalEvent: (event) => events.push(event),
   });
-  // The audit outage is reported, never hidden behind a 401.
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    assertUnavailable(await signIn(auth, { email, password: "wrong-password-guess" }));
-  }
-  assert.equal(denials, 10);
-  // Every failed guess counted: the next attempt is refused before the password is checked.
-  assertLimited(await signIn(auth, { email, password: "wrong-password-guess" }));
-  assert.equal(denials, 10);
-  assert.deepEqual(
-    events.map(({ event, lane }) => [event, lane]),
-    [["authentication.sign-in-limited", "email"]],
-  );
+  await assertDenialAuditFailureSpendsBudget(auth, () => denials, events);
 });
 
 // The external sign-in budgets refill each minute and set no Retry-After, so the answer says to
