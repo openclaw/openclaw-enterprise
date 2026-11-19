@@ -597,6 +597,18 @@ export async function proveCodexAuditInterruptions(
   );
   log(`${agent.label}: stored cancellation of the active provider attempt and turn`);
 
+  const connectedNodeIds = async () => {
+    const nodes = wireField(await rpc("node.list", {}), "nodes");
+    assert.ok(Array.isArray(nodes));
+    return nodes
+      .filter((node) => wireField(node, "paired") === true && wireField(node, "connected") === true)
+      .map((node) => wireField(node, "nodeId"));
+  };
+  const nodes = await connectedNodeIds();
+  assert.equal(nodes.length, 1, "expected the dedicated Codex workspace node");
+  const [workspaceNodeId] = nodes;
+  assert.ok(typeof workspaceNodeId === "string" && workspaceNodeId.length > 0);
+
   // Interrupt only the native Gateway lock-holder in this revision's test Pod.
   // Its wrapper reaps the process, then kubelet restarts the Gateway container.
   const interrupted = await start("restart");
@@ -653,6 +665,13 @@ export async function proveCodexAuditInterruptions(
     3 * minute,
   );
   await waitForDeployment(stack, agent.id, revisionId, agent.label);
+  // The Gateway must accept connections before its workspace node can reconnect.
+  // A chat reads skills from that node, so wait for its live connection first.
+  await waitFor(
+    "the same Codex workspace node to reconnect to the restarted Gateway",
+    async () => ({ done: (await connectedNodeIds()).includes(workspaceNodeId) }),
+    2 * minute,
+  );
   await chatCodexWithAudit(stack, agent, revisionId, readAudit);
   const persisted = await interrupted.events();
   for (const start of [interrupted.turn, interrupted.model]) {
