@@ -13386,8 +13386,10 @@
                                       },
                                       "policyScopeByPlugin": {
                                         "additionalProperties": {
-                                          "const": "enablement_only",
-                                          "type": "string"
+                                          "anyOf": [
+                                            { "const": "enablement_only", "type": "string" },
+                                            { "const": "tool_human_approval", "type": "string" }
+                                          ]
                                         },
                                         "type": "object"
                                       },
@@ -13810,8 +13812,10 @@
                                       },
                                       "policyScopeByPlugin": {
                                         "additionalProperties": {
-                                          "const": "enablement_only",
-                                          "type": "string"
+                                          "anyOf": [
+                                            { "const": "enablement_only", "type": "string" },
+                                            { "const": "tool_human_approval", "type": "string" }
+                                          ]
                                         },
                                         "type": "object"
                                       },
@@ -16066,8 +16070,10 @@
                                       },
                                       "policyScopeByPlugin": {
                                         "additionalProperties": {
-                                          "const": "enablement_only",
-                                          "type": "string"
+                                          "anyOf": [
+                                            { "const": "enablement_only", "type": "string" },
+                                            { "const": "tool_human_approval", "type": "string" }
+                                          ]
                                         },
                                         "type": "object"
                                       },
@@ -29240,7 +29246,12 @@
                         "driver": { "$ref": "#/components/schemas/def-1" },
                         "driverPolicySchema": { "additionalProperties": {}, "type": "object" },
                         "policyScopeByPlugin": {
-                          "additionalProperties": { "const": "enablement_only", "type": "string" },
+                          "additionalProperties": {
+                            "anyOf": [
+                              { "const": "enablement_only", "type": "string" },
+                              { "const": "tool_human_approval", "type": "string" }
+                            ]
+                          },
                           "type": "object"
                         },
                         "toolDefaults": {

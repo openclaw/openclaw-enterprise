@@ -14,8 +14,9 @@ network policy.
 The Dockerfile uses a verified public OpenClaw archive, its pinned package
 manager, frozen lockfile, and upstream Docker assembly. A registry mirror
 requires [separate Corepack and pnpm build secrets](../../docs/guides/deploy/production-installation.md#build-through-a-package-registry-mirror).
-Both Codex entrypoints use stock Codex `0.164.0` from the frozen lockfile
-without dependency downgrades or binary patches. Verify native startup and
+Both Codex entrypoints use stock Codex `0.164.0`, unpatched;
+`stock-codex-0.164.0-dependency-pin.patch` holds the lockfile there and sets
+`CODEX_APP_SERVER_VERSION` and `OPENAI_CODEX_CLIENT_VERSION_FLOOR` back to it while OpenClaw bundles 0.169.0. Verify native startup and
 sandbox behavior with the image's seccomp rules. Codex and Slack come from the same source, whose
 restricted workspace-node commands and persistent device identity support
 split storage. That contract requires a newer source than `2026.9.5`.
@@ -58,10 +59,9 @@ or renewal under the same binding. Fresh setup comes first; a typed bootstrap re
 allows one validated saved-token retry. See [node enrollment](../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
 for Gateway/TLS-pin checks, local credential retirement when switching targets,
 and pairing recovery. Remove this bridge once the source provides that contract.
-The pin includes OpenClaw #197151: chat-only members can start an unused main conversation.
-Until #200358 lands, `openclaw-chat-absent-selected-agent.patch`
-binds empty-history proof to the selected Agent.
-`openclaw-restart-resume-scope.patch` resumes turns only within one revision.
+OCE omits restart scopes and keeps upstream policy unchanged.
+Previously scoped work may be refused; see
+[interrupted turns](../../docs/reference/agents/interrupted-turns.md).
 Provenance `patches` records each patch's SHA-256 in order; tests compare
 `scripts/build-runtime-assets.ts` with the Dockerfile.
 
@@ -104,7 +104,7 @@ enrollment, containment, workspace access, or model execution.
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`)          | `0.164.0`                                                                                                         |
 | Matrix crypto native library                          | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                         |
 
-The upstream package version is `2026.11.4`. Identify the custom build by
+The upstream package version is `2026.11.5`. Identify the custom build by
 `/opt/oce/runtime/provenance.json`. It records
 the source commit, archive, patch and lockfile hashes, package manager, plugins,
 architecture, Codex package identity, and SHA-256 of `contents.json`. That file
@@ -152,6 +152,8 @@ automatically. [Local checkout tests](../../docs/testing/openshell.md) use their
 
 Local assembly omits broad suites. Run [source verification](../../docs/flows/container-publication.md#runtime-source-verification) for runtime changes.
 
+See the [JIT-free ARM64 Harness](code-mode/README.md).
+
 ## Build a local runtime image
 
 For paired builds, see [QA prebuilds and caching](../../docs/testing/ci/qa-advisory.md#prebuild-local-qa-images).
@@ -190,7 +192,7 @@ instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
 The [source manifest](openclaw-source.json) selects the commit OCE builds. Its
-[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/b58996d69286d55d1bbbd9b5c03b4ad837baac45/Dockerfile)
+[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/44f24d8398428dd8593f4f3842f404545a642ad9/Dockerfile)
 keeps plugin dependencies separate when their versions differ from core.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing

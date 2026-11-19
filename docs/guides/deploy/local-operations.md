@@ -64,7 +64,7 @@ Populate private YAML copies with those references:
 
 ```bash
 umask 077
-cp deploy/examples/production/{values,installation,bootstrap-pvc}.yaml "$OCC_EXAMPLE_DIRECTORY/"
+cp deploy/examples/production/{values,installation}.yaml "$OCC_EXAMPLE_DIRECTORY/"
 yq -i '.images.controller = strenv(CONTROLLER_IMAGE)' "$OCC_EXAMPLE_DIRECTORY/values.yaml"
 yq -i '.drivers.compute.configuration.images.gateway = strenv(RUNTIME_IMAGE) |
   .drivers.compute.configuration.images.agent = strenv(RUNTIME_IMAGE)' "$OCC_EXAMPLE_DIRECTORY/installation.yaml"
@@ -112,11 +112,11 @@ startup, including macOS machine connections. See the
 [cleanup flow](../../flows/docker-compose-development.md#3-clean-up-docker-or-podman-compose)
 for how the host connection and worker socket are handled.
 
-Compose keeps PostgreSQL, Configuration, and bootstrap-key volumes unless you
+Compose keeps PostgreSQL and Configuration volumes unless you
 pass `--volumes` to delete the local Installation. Account for Agent containers
 and their Namespace networks before deleting the database. Docker Compute owns
-those networks. The service-key copy at the path printed by `dev up` also
-stays on disk. Remove that copy when you no longer need it.
+those networks. The private bootstrap input files and CLI service-key file are outside these
+volumes. Retain or remove them according to your credential-retention policy.
 
 A Kubernetes profile's `Cleanup` command instead deletes its k3d cluster,
 database, Agents, and volumes; see [stop and clean up](local-kubernetes-development.md#stop-and-clean-up).

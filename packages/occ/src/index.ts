@@ -130,7 +130,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   validateSandboxNetworkGrants,
-  sandboxNetworkGrantsWithinCeiling,
+  networkGrantAdmissionDetails,
 } from "@openclaw-enterprise/contracts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes } from "node:crypto";
@@ -544,6 +544,7 @@ export {
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   RepositoryOptionsUnavailableError,
+  RecoveryPasswordPolicyError,
   ResourceConflictError,
   ResourceStateConflictError,
   RetryLaterError,
@@ -7735,6 +7736,8 @@ export class OpenClawController {
         check: (use, material, stream, provider) =>
           this.checkEgressUse(use, material, stream, provider),
         read: async (source, lifetime, isProviderCurrent) => {
+          const owner = this.selectedProxyOwner();
+          const control = owner.require("credential_proxy").sourceControl;
           const secret = await this.state.read((state) =>
             state.secrets.findSecret(source.secret.namespaceId, source.secret.id),
           );
@@ -7745,7 +7748,14 @@ export class OpenClawController {
           if (!driver.readCredentialInput) {
             throw new DependencyUnavailableError("Versioned credential reading is unavailable.");
           }
-          if (!isProviderCurrent()) {
+          if (
+            this.selectedProxyOwner() !== owner ||
+            owner.require("credential_proxy").sourceControl !== control ||
+            !isDeepStrictEqual(control.backend, source.key.backend) ||
+            !isDeepStrictEqual(control.sender, source.sender) ||
+            !isDeepStrictEqual(control.resolver, source.resolver) ||
+            !isProviderCurrent()
+          ) {
             throw new DependencyUnavailableError("Selected credential provider changed.");
           }
           return {
@@ -11697,26 +11707,12 @@ export class OpenClawController {
       validateSandboxNetworkGrants(input);
       const additions = immutableCopy(input);
       requireConfiguration(contribution, { additions });
-      const details: ErrorDetail[] = [];
-      additions.forEach((grant, index) => {
-        if (!sandboxNetworkGrantsWithinCeiling([grant], this.sandboxNetworkPolicyCeiling)) {
-          details.push({
-            path: `/additions/${index}`,
-            code: "OUTSIDE_CEILING",
-            message: "The grant exceeds the Installation delegation ceiling.",
-          });
-        }
-        if (
-          (!driver.networkPolicy!.wildcards && grant.host.startsWith("*.")) ||
-          (!driver.networkPolicy!.portRanges && grant.ports.some(({ from, to }) => from !== to))
-        ) {
-          details.push({
-            path: `/additions/${index}`,
-            code: "INVALID_VALUE",
-            message: "The Driver does not support the requested wildcard or port range.",
-          });
-        }
-      });
+      const details = networkGrantAdmissionDetails(
+        additions,
+        this.sandboxNetworkPolicyCeiling,
+        driver.networkPolicy,
+        "/additions",
+      );
       if (details.length > 0) {
         admissionMessage = details.some((detail) => detail.code === "OUTSIDE_CEILING")
           ? "The requested network policy exceeds the Installation delegation ceiling."
@@ -13908,34 +13904,14 @@ export class OpenClawController {
           ...(computeAdmission === undefined ? {} : { admission: computeAdmission }),
         },
       });
-      const domain = compute.restartContinuationDomain?.(admittedDraft);
-      const currentContinuation = await state.agents.findRestartContinuation(
-        namespace.id,
-        lockedAgent.id,
-      );
-      const restartContinuation =
-        domain === undefined
-          ? undefined
-          : {
-              generation:
-                lockedAgent.desiredRuntimeState === "running" &&
-                currentContinuation?.domain === domain
-                  ? currentContinuation.generation
-                  : crypto.randomUUID(),
-              domain,
-            };
-      const continuationDraft = freezeAgentRevision({
-        ...admittedDraft,
-        ...(restartContinuation === undefined ? {} : { restartContinuation }),
-      });
-      const runtimeInputs = compute.snapshotRuntimeInputs?.(continuationDraft);
+      const runtimeInputs = compute.snapshotRuntimeInputs?.(admittedDraft);
       // Database locks do not freeze process-local selections across awaited Driver calls.
       if (prepared !== undefined) {
         this.assertPreparedDeploymentDrivers(prepared);
       }
       const revision = await state.revisions.createRevision(
         freezeAgentRevision({
-          ...continuationDraft,
+          ...admittedDraft,
           compute: {
             ...admittedDraft.compute,
             ...(runtimeInputs === undefined ? {} : { runtimeInputs }),
@@ -13976,7 +13952,6 @@ export class OpenClawController {
       if (running === undefined) {
         throw new ResourceStateConflictError("The Agent lifecycle changed during deployment.");
       }
-      await state.agents.setRestartContinuation(namespace.id, lockedAgent.id, restartContinuation);
       await this.record(state, {
         kind: "agent_revision",
         action: "reconcile",

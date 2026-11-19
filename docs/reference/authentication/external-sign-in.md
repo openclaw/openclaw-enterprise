@@ -90,9 +90,10 @@ only the recovery account signs in with a password, and every other account uses
 its attached Google or OIDC identity. It requires a configured provider;
 startup and Helm refuse it otherwise, and any other value.
 
+State uses the current stored designation before reading a password credential.
 Every other email, existing or not, receives the ordinary `401` bad-credential
 answer after the same password hashing, audited as `INVALID_CREDENTIALS`; no
-account is read, so the answer reveals nothing. `GET /api/auth/providers`
+other account's credential is read, so the answer reveals nothing. `GET /api/auth/providers`
 reports `password: false`. The Console keeps the password form behind
 **Recovery sign-in** while discovering sign-in methods, then adds the configured
 provider buttons. During a provider outage only the recovery account can sign in.
@@ -109,6 +110,12 @@ enabled accounts, other than the recovery account, that lack one, in the
 2. Set `recovery-only` and upgrade. If the warning lists accounts, attach their
    identities; that takes effect without a restart. Setting `all` again and upgrading restores
    passwords.
+
+State orders password-session creation with online recovery replacement. If the
+move commits first, the former holder's login receives the same audited `401`,
+even if its password was already verified. If session creation commits first,
+that session remains valid after the move. Lock failure or an uncertain session
+commit returns `503 DEPENDENCY_UNAVAILABLE` without a cookie or session key.
 
 The setting gates new password sign-ins only. Password sessions that already
 exist keep working until they expire (at most 8 hours): those of ordinary

@@ -1,6 +1,5 @@
 import type { RepositoryGitDeliveryProfile } from "./drivers/credential-proxy/index.ts";
 import type { CredentialSourceReference } from "./index.ts";
-import type { ResolvedCredential } from "./drivers/token-service/index.ts";
 import type { SandboxNetworkGrant } from "./sandbox-policy.ts";
 
 export type DeploymentRequestPolicy =
@@ -72,10 +71,6 @@ export interface BearerCredentialProjection {
 export type DeploymentCredentialBinding = {
   readonly sourceRef: CredentialSourceReference;
   readonly bindingRef: string;
-  /** Authorized for only this source; use for first-use material transfer, never shared-provider attachment. */
-  readonly resolveCredential: () => Promise<ResolvedCredential>;
-  /** Nonsecret provider locator for an implementation that owns both services. */
-  readonly sharedProviderRef?: Readonly<Record<string, string>>;
 } & (
   | {
       readonly consumer: {

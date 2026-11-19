@@ -76,7 +76,7 @@ operator values take precedence. The production example values contain a
 placeholder image, so replace it before installation.
 
 Prepare the other operator-owned values, database, Secrets, routing, and
-bootstrap volume as described in the [production installation guide](../guides/deploy/production-installation.md).
+bootstrap credential Secret as described in the [production installation guide](../guides/deploy/production-installation.md).
 Public GHCR image pulls need no node pull Secret. Private mirrors still need node
 pull credentials configured by the operator. Use the matching CLI and the reviewed
 local archive for the [first install and handoff](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff):

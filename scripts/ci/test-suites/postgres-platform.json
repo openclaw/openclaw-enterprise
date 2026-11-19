@@ -109,7 +109,7 @@
       "expectedTests": [
         "concurrent development bootstraps reject the loser and reload the committed winner",
         "production bootstrap preserves committed credentials when COMMIT acknowledgement is lost",
-        "fresh production bootstrap refuses either retained credential output before creating credentials",
+        "invalid bootstrap credential inputs create no authentication or Installation state",
         "known bootstrap failures preserve created artifacts and report safe diagnostics",
         "production and development bootstrap refuse an Installation name outside the Name rule before creating anything",
         "API and worker startup refuse a stored Installation name outside the Name rule",
@@ -148,7 +148,7 @@
     {
       "path": "tests/integration/postgres-production-wireup.test.ts",
       "expectedTests": [
-        "production bootstrap creates a generated-password administrator that can authenticate",
+        "production bootstrap registers supplied administrator credentials that can authenticate",
         "configured read grants fence Namespace IAM mutations through COMMIT",
         "create Role: configuration first",
         "create Role: policy first",
@@ -650,6 +650,7 @@
       "path": "tests/integration/credential-proxy-withdrawal.test.ts",
       "expectedTests": [
         "policy reduction preserves another binding then observes deny-all (PostgreSQL)",
+        "static credential exchange rejects a changed control before reading material (PostgreSQL)",
         "Git reduction v7 preserves earlier admission meanings and rejects widening"
       ]
     },

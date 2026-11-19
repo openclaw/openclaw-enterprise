@@ -513,6 +513,9 @@ function checkPrivateStatePreparation(
     );
     assert.ok(initialization.includes(`/${name}/${subPath}`));
   }
+  if (privateMount.mountPath === "/gateway-state") {
+    assert.ok(initialization.includes("/gateway-state/skill-library"));
+  }
   // Avoid recursively changing ownership of retained data on every start.
   assert.equal(security.fsGroup, 1000);
   assert.equal(security.fsGroupChangePolicy, "OnRootMismatch");
@@ -596,6 +599,7 @@ export function checkGatewayAndHarnessStorage() {
         [`${home}/media`, "media"],
         [`${home}/worktrees`, "worktrees"],
         [`${home}/worktree-sources`, "worktree-sources"],
+        [`${home}/skill-library`, "skill-library"],
         embedded
           ? [`${home}/workspace`, "workspace"]
           : [`${home}/agents/main/sessions`, "sessions"],

@@ -99,6 +99,8 @@ export interface SandboxHarnessEndpoint {
     /** Certificate bytes only, never a source path, private key or client credential. */
     readonly caBundle: string;
   };
+  /** Exact PEM leaf for the admitted execution. The Gateway must pin it on its WSS connection. */
+  readonly tlsPeerCertificate?: string;
   /** Provider-local workspace root served by the Harness workspace node. */
   readonly workspaceRoot?: string;
   /** Request this native Codex profile when the provider supplies the sandbox boundary. */
@@ -114,6 +116,8 @@ export interface SandboxNamespaceContext {
 export interface SandboxHarnessContext extends SandboxNamespaceContext {
   readonly revision: Readonly<AgentRevision>;
   readonly requirements: HarnessWorkloadRequirements;
+  /** Refuse a missing workload before creating resources or reading enrollment credentials. */
+  readonly existingHarnessOnly?: true;
   /**
    * True once the revision's workspace node has enrolled with its Agent Gateway. A dedicated
    * OpenClaw worker's Harness exposure serves Compute's status read only before that: a Driver
@@ -244,6 +248,8 @@ export interface SandboxDriver extends Driver {
   ): Promise<SandboxPolicyRecommendations>;
 
   readonly capability: "sandbox";
+  /** Request periodic maintenance of active revisions bound to this Sandbox. */
+  readonly maintenanceIntervalMs?: number;
   /** One or more distinct containment facets implemented by this driver. */
   readonly facets: readonly SandboxFacet[];
   /**
@@ -326,6 +332,10 @@ export interface SandboxDriver extends Driver {
    * revision's Sandbox alone, never another Sandbox in the namespace.
    */
   workspaceNodePeerLabels?(
+    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  ): Promise<Readonly<Record<string, string>> | undefined>;
+  /** Exact labels of this prepared revision's Harness, used for Gateway egress. */
+  harnessPeerLabels?(
     context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
   ): Promise<Readonly<Record<string, string>> | undefined>;
   /** Required for revision stop, retirement, and Namespace cleanup, independent of Harness ownership. */

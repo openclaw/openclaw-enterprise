@@ -82,13 +82,10 @@ function commandError(
 }
 
 const run = promisify(execFile);
-const occCli = join(process.cwd(), "bin", "occ");
 
 // Real Fastify HTTP, Better Auth plugin/storage, OCC, and native IAM. This test
 // does not claim PostgreSQL or Agent runtime coverage.
 test("service API keys authenticate scoped automation without replacing sessions or IAM", async (t) => {
-  // Build the real CLI once, then exercise it through a live Fastify socket below.
-  await run("go", ["build", "-trimpath", "-o", occCli, "./cmd/occ"]);
   const installationId = `ins_${randomUUID()}`;
   const memoryDatabase = { user: [], account: [], session: [], verification: [], apikey: [] };
   const authOptions = {
@@ -399,6 +396,9 @@ test("service API keys authenticate scoped automation without replacing sessions
 
   await t.test("occ CLI exercises Configuration CRUD and Agent stop/delete", async (t) => {
     const directory = await temporaryDirectory(t, "openclaw-occ-cli-");
+    const occCli = join(directory, "occ");
+    // Build the real CLI once, then exercise it through a live Fastify socket below.
+    await run("go", ["build", "-trimpath", "-o", occCli, "./cmd/occ"]);
     const keyFile = join(directory, "service-key.json");
     const adminKeyFile = join(directory, "admin-service-key.json");
     const bodyFile = join(directory, "configuration.json");
@@ -704,24 +704,22 @@ test("service API keys authenticate scoped automation without replacing sessions
     // prints the key. The administrator key covers its own grants, so it may rotate itself.
     const rotatedKeyFile = join(directory, "rotated-admin-key.json");
     const { OCC_NAMESPACE: _namespace, ...installationEnv } = adminEnv;
-    const rotated = await run(
-      occCli,
-      [
-        "service-key",
-        "create",
-        "--service-principal",
-        installationPrincipal.id,
-        "--name",
-        "cli-rotated",
-        "--expires-in-days",
-        "2",
-        "--out",
-        rotatedKeyFile,
-        "-o",
-        "json",
-      ],
-      { env: installationEnv },
-    );
+    const createServiceKey = (args: string[]) =>
+      run(
+        occCli,
+        ["service-key", "create", "--service-principal", installationPrincipal.id, ...args],
+        { env: installationEnv },
+      );
+    const rotated = await createServiceKey([
+      "--name",
+      "cli-rotated",
+      "--expires-in-days",
+      "2",
+      "--out",
+      rotatedKeyFile,
+      "-o",
+      "json",
+    ]);
     const rotatedDetails = jsonRecord(rotated.stdout);
     assertStringFields(rotatedDetails, "id");
     assert.equal(rotatedDetails.servicePrincipalId, installationPrincipal.id);
@@ -743,41 +741,14 @@ test("service API keys authenticate scoped automation without replacing sessions
     // An existing file is never overwritten, and no key is issued for it.
     const keysBeforeClobber = memoryDatabase.apikey.length;
     await assert.rejects(
-      run(
-        occCli,
-        [
-          "service-key",
-          "create",
-          "--service-principal",
-          installationPrincipal.id,
-          "--name",
-          "cli-clobber",
-          "--out",
-          rotatedKeyFile,
-        ],
-        { env: installationEnv },
-      ),
+      createServiceKey(["--name", "cli-clobber", "--out", rotatedKeyFile]),
       /failed to create key file/,
     );
     assert.equal(memoryDatabase.apikey.length, keysBeforeClobber);
     // An explicit zero is invalid, not the API's omitted 30-day default.
     const zeroExpiryFile = join(directory, "zero-expiry-key.json");
     await assert.rejects(
-      run(
-        occCli,
-        [
-          "service-key",
-          "create",
-          "--service-principal",
-          installationPrincipal.id,
-          "--name",
-          "zero-expiry",
-          "--out",
-          zeroExpiryFile,
-          "--expires-in-days=0",
-        ],
-        { env: installationEnv },
-      ),
+      createServiceKey(["--name", "zero-expiry", "--out", zeroExpiryFile, "--expires-in-days=0"]),
       { stderr: /between 1 and 365/ },
     );
     await assert.rejects(open(zeroExpiryFile), { code: "ENOENT" });
@@ -786,23 +757,15 @@ test("service API keys authenticate scoped automation without replacing sessions
       const before = Date.now();
       const created = jsonRecord(
         (
-          await run(
-            occCli,
-            [
-              "service-key",
-              "create",
-              "--service-principal",
-              installationPrincipal.id,
-              "--name",
-              `expiry-${days}`,
-              "--out",
-              join(directory, `expiry-${days}.json`),
-              `--expires-in-days=${days}`,
-              "-o",
-              "json",
-            ],
-            { env: installationEnv },
-          )
+          await createServiceKey([
+            "--name",
+            `expiry-${days}`,
+            "--out",
+            join(directory, `expiry-${days}.json`),
+            `--expires-in-days=${days}`,
+            "-o",
+            "json",
+          ])
         ).stdout,
       );
       assertStringFields(created, "expiresAt", "id");
@@ -812,29 +775,23 @@ test("service API keys authenticate scoped automation without replacing sessions
     assert.equal(memoryDatabase.apikey.length, keysBeforeClobber);
     // The CLI counts the name as the API does: 32 emoji are issued, 33 never leave the CLI.
     const emojiKeyFile = join(directory, "emoji-key.json");
-    const emojiCreate = (name: string, out: string) =>
-      run(
-        occCli,
-        [
-          "service-key",
-          "create",
-          "--service-principal",
-          installationPrincipal.id,
-          "--name",
-          name,
-          "--out",
-          out,
-          "-o",
-          "json",
-        ],
-        { env: installationEnv },
-      );
-    const emoji = jsonRecord((await emojiCreate("😀".repeat(32), emojiKeyFile)).stdout);
+    const emoji = jsonRecord(
+      (await createServiceKey(["--name", "😀".repeat(32), "--out", emojiKeyFile, "-o", "json"]))
+        .stdout,
+    );
     assertStringFields(emoji, "id");
     assert.equal(emoji.name, "😀".repeat(32));
-    await assert.rejects(emojiCreate("😀".repeat(33), join(directory, "emoji-33.json")), {
-      stderr: /1 to 32 characters/,
-    });
+    await assert.rejects(
+      createServiceKey([
+        "--name",
+        "😀".repeat(33),
+        "--out",
+        join(directory, "emoji-33.json"),
+        "-o",
+        "json",
+      ]),
+      { stderr: /1 to 32 characters/ },
+    );
     assert.equal(memoryDatabase.apikey.length, keysBeforeClobber + 1);
     await run(occCli, ["service-key", "revoke", emoji.id], { env: adminEnv });
     const revokedRotated = await run(

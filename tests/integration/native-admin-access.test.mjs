@@ -772,6 +772,117 @@ test("redeploy after explicit Stop keeps the old native endpoint closed", async 
   assert.deepEqual((await nativeStatus(context)).data, { status: "unavailable" });
 });
 
+// While it reconnects, the Agent UI probes GET /healthz and treats 401 or 403 as a sign-in or
+// access problem (deploy/runtime/openclaw-control-ui-browser-reconnect.patch).
+test("a deployment answers an authorized probe 503, a stop shows a page, and outsiders see neither", async (t) => {
+  const context = await createNativeAdminFixture(t, {
+    exclusiveReplacement: (revision) => revision.revision === 2,
+  });
+  trustLocalUpstreamCertificate(t, context.upstream.cert);
+  const host = nativeAuthority((await nativeStatus(context)).data);
+  const readOnly = await createReadOnlySession(context, "native-transition-reader");
+  // The Agent UI's "Reconnect in browser" link is a user-activated page load of /.
+  const navigation = {
+    accept: "text/html,application/xhtml+xml",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-dest": "document",
+    "sec-fetch-user": "?1",
+  };
+  const probe = (cookie, path = "/healthz", headers = {}) =>
+    injectJson(context.fixture, "GET", path, { headers: { ...headers, host, cookie } });
+  // Signed out, and signed in without Agent operate, for the probe and the page load: each whole
+  // answer, request ID and date aside.
+  const outsiders = async () => {
+    const answers = [];
+    for (const cookie of [undefined, readOnly.cookie]) {
+      for (const [path, headers] of [
+        ["/healthz", {}],
+        ["/", navigation],
+      ]) {
+        const response = await probe(cookie, path, headers);
+        const { "x-request-id": requestId, date, ...rest } = response.headers;
+        assert.ok(requestId);
+        // The 302 has no body, though it is labelled JSON.
+        if (
+          response.body !== "" &&
+          String(response.headers["content-type"]).startsWith("application/json")
+        ) {
+          assert.equal(response.json().meta.requestId, requestId);
+        }
+        answers.push({
+          path,
+          status: response.statusCode,
+          headers: rest,
+          body: response.body.replaceAll(String(requestId), "<request>"),
+        });
+      }
+    }
+    return answers;
+  };
+
+  assert.equal((await probe(context.session.cookie)).statusCode, 200);
+  const available = await outsiders();
+  assert.deepEqual(
+    available.map(({ status }) => status),
+    [403, 302, 403, 403],
+  );
+  assert.match(available[3].body, /You do not have access to this gateway\./);
+  assert.deepEqual(JSON.parse(available[2].body).error, {
+    code: "FORBIDDEN",
+    message: NATIVE_ADMIN_DENIED,
+  });
+
+  const replacement = await context.fixture.deployAgent(context.namespace.id, context.agent.id);
+  await context.fixture.controller.transact((state) =>
+    state.agents.recordPredecessorReplacement(context.namespace.id, context.agent.id, {
+      predecessorRevisionId: context.revision.id,
+      candidateRevisionId: replacement.id,
+      phase: "stopping",
+    }),
+  );
+  assert.deepEqual((await nativeStatus(context)).data, { status: "unavailable" });
+  const replacing = await probe(context.session.cookie);
+  assert.equal(replacing.statusCode, 503, replacing.body);
+  assert.deepEqual(replacing.json().error, {
+    code: "DEPENDENCY_UNAVAILABLE",
+    message: "A required platform dependency is unavailable.",
+  });
+  assert.deepEqual(await outsiders(), available, "a deployment is invisible to outsiders");
+
+  const stop = await context.fixture.request(
+    "POST",
+    `/namespaces/${context.namespace.id}/agents/${context.agent.id}/stop`,
+  );
+  assert.equal(stop.status, 202);
+  assert.equal((await nativeStatus(context)).data.status, "stopped");
+  // A stopped Agent stays refused, so the Agent UI still offers its sign-in panel. Its link, a page
+  // load, gets a page that says the Agent is unavailable; probes and API reads keep the JSON 403.
+  for (const headers of [{}, navigation]) {
+    const stopped = await probe(context.session.cookie, "/healthz", headers);
+    assert.equal(stopped.statusCode, 403, stopped.body);
+    assert.deepEqual(stopped.json().error, { code: "FORBIDDEN", message: GENERIC_DENIAL });
+  }
+  const apiRead = await probe(context.session.cookie, "/", { accept: "application/json" });
+  assert.equal(apiRead.statusCode, 403, apiRead.body);
+  assert.deepEqual(apiRead.json().error, { code: "FORBIDDEN", message: GENERIC_DENIAL });
+  const key = host.match(/^agent-([a-f0-9]{32})\./)[1];
+  const page = await probe(context.session.cookie, "/", navigation);
+  assert.equal(page.statusCode, 403, page.body);
+  assert.match(page.headers["content-type"], /^text\/html/);
+  assert.equal(page.headers["cache-control"], "no-store");
+  assert.equal(page.headers["referrer-policy"], "no-referrer");
+  assert.match(page.body, /<title>Agent unavailable<\/title>/);
+  assert.match(
+    page.body,
+    /<p>This Agent is not available right now\. Open it from the console\.<\/p>/,
+  );
+  const link = `<a href="${publicOrigin}/console/#native-agent=${key}">Return to console</a>`;
+  assert.ok(page.body.includes(link), page.body);
+  assert.equal(page.body.includes(context.agent.id), false);
+  assert.deepEqual(await outsiders(), available, "a stop is invisible to outsiders");
+  assert.equal(context.upstream.requests.length, 1, "only the available probe reached the Agent");
+});
+
 test("native browser disabled status still requires exact Agent authority", async (t) => {
   const context = await createNativeAdminFixture(t, { nativeAdminEnabled: false });
 

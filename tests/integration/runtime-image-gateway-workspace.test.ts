@@ -17,7 +17,7 @@ import { codexGatewayModelConfiguration } from "../../apps/controller/src/driver
 import { OPENSHELL_CODEX_APP_SERVER_POLICY } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import type { WorkspaceNodeHotApplyReceipt } from "../fixtures/runtime-workspace-node-hot-apply.ts";
-import { runDocker, commandOutput } from "../helpers/runtime-image-docker.ts";
+import { runDocker, commandOutput, waitForDockerLog } from "../helpers/runtime-image-docker.ts";
 import { jsonLogEntries } from "../helpers/runtime-image-gateway-observations.ts";
 import {
   imageTestOptions,
@@ -235,6 +235,11 @@ describe("runtime image Gateway workspace", { concurrency: 3 }, () => {
         "{{.State.Running}} {{.RestartCount}}",
       ]);
       assert.equal(inspect.stdout.trim(), "true 0");
+      // OpenClaw publishes the replaced plugin before it logs the finished reload.
+      await waitForDockerLog(
+        containerName,
+        /config hot reload applied \([^)\n]*plugins\.entries\.file-transfer/,
+      );
       const logs = await runDocker(["logs", containerName]);
       const entries: readonly unknown[] = jsonLogEntries(`${logs.stdout}\n${logs.stderr}`);
       assertGatewayLogEntry(

@@ -3,8 +3,6 @@ set -euo pipefail
 umask 077
 
 DEFAULT_RUNTIME_IMAGE="openclaw-enterprise-runtime:quickstart"
-BOOTSTRAP_SERVICE_KEY_SOURCE="bootstrap:/var/lib/openclaw/bootstrap/initial-admin-service-key.json"
-BOOTSTRAP_SERVICE_KEY_PATH="/var/lib/openclaw/bootstrap/initial-admin-service-key.json"
 STARTUP_TIMEOUT_SECONDS=300
 
 script_dir="$(CDPATH="" cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -474,6 +472,12 @@ if [ "${#compose_args[@]}" -gt 0 ]; then
   compose_diagnostic+=("${compose_args[@]}")
 fi
 
+# Retain private source files outside the checkout, including after a failed attempt.
+credential_directory="$(mktemp -d "${TMPDIR:-/tmp}/openclaw-bootstrap-inputs.XXXXXXXXXX")"
+chmod 700 "$credential_directory"
+export OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE="$credential_directory/mount-admin-password"
+export OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE="$credential_directory/mount-admin-service-key"
+printf 'Bootstrap input files: %s\n' "$credential_directory"
 compose_config="$temporary_directory/compose-config.json"
 if [ "$container_engine" = "docker" ]; then
   if ! compose config --format json >"$compose_config" 2>"$temporary_directory/compose-config.err"; then
@@ -487,6 +491,67 @@ else
   if ! yq -o=json '.' <"$compose_yaml" >"$compose_config" 2>"$temporary_directory/compose-convert.err"; then
     fail "configuration" "could not convert the resolved Podman Compose configuration to JSON" yq --version
   fi
+fi
+
+python3 - "$credential_directory" "$compose_config" <<'PY'
+import json
+import os
+import pathlib
+import secrets
+import sys
+root = pathlib.Path(sys.argv[1])
+config_path = pathlib.Path(sys.argv[2])
+config = json.loads(config_path.read_text())
+password = config.pop("x-openclaw-bootstrap-password", None)
+if not isinstance(password, str):
+    raise SystemExit("Compose must resolve x-openclaw-bootstrap-password for setup")
+password = password[:-2] if password.endswith("\r\n") else password.removesuffix("\n")
+if any(character in password for character in ("\r", "\n", "\0")):
+    raise SystemExit("administrator password must not contain NUL or embedded line breaks")
+config_path.write_text(json.dumps(config))
+key = "occ_" + secrets.token_urlsafe(32)
+for name, value in {
+    "admin-password": password,
+    "admin-service-key": key,
+    "mount-admin-password": password,
+    "mount-admin-service-key": key,
+    "client-key.json": json.dumps({"data": {"key": key}}),
+}.items():
+    with os.fdopen(os.open(root / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as output:
+        output.write(value)
+PY
+
+# Refuse retained PostgreSQL storage rather than minting an unregistered replacement key.
+if ! engine volume ls --format '{{.Name}}' >"$temporary_directory/volume-names"; then
+  fail "configuration" "could not inspect retained PostgreSQL storage"
+fi
+if ! python3 - "$compose_config" "$temporary_directory/volume-names" "${compose_args[@]}" <<'PY'
+import json
+import os
+import pathlib
+import sys
+config = json.loads(pathlib.Path(sys.argv[1]).read_text())
+existing = set(pathlib.Path(sys.argv[2]).read_text().splitlines())
+project = os.environ.get("COMPOSE_PROJECT_NAME") or config.get("name")
+args = iter(sys.argv[3:])
+for arg in args:
+    if arg in ("-p", "--project-name"):
+        project = next(args)
+    elif arg.startswith("--project-name="):
+        project = arg.split("=", 1)[1]
+    elif arg.startswith("-p") and len(arg) > 2:
+        project = arg[2:]
+volumes = config.get("volumes", {})
+for mount in config.get("services", {}).get("postgres", {}).get("volumes", []):
+    source = mount.split(":", 1)[0] if isinstance(mount, str) else mount.get("source")
+    if source in volumes:
+        declaration = volumes[source] or {}
+        name = declaration.get("name") or (source if declaration.get("external") else f"{project}_{source}")
+        if name in existing:
+            raise SystemExit(1)
+PY
+then
+  fail "configuration" "PostgreSQL storage already exists. Use the retained client-key.json to access the Installation; see docs/guides/operate/local-setup-troubleshooting.md. Do not generate replacement credentials for this project."
 fi
 
 compose_analysis="$temporary_directory/compose-analysis"
@@ -558,6 +623,10 @@ fi
 
 if ! compose config --quiet >"$temporary_directory/compose-validated" 2>"$temporary_directory/compose-validate.err"; then
   fail "configuration" "$container_engine_label Compose config validation failed" "${compose_diagnostic[@]}" config --quiet
+fi
+
+if ! OCC_DEVELOPMENT_CONTAINER_ENGINE="$container_engine" "$occ_cli" dev prepare-bootstrap-mounts --directory "$credential_directory" -- "${compose_args[@]}"; then
+  fail "configuration" "could not prepare private bootstrap mount copies"
 fi
 
 if [ "$container_engine" = "podman" ]; then
@@ -704,128 +773,46 @@ if [ "$startup_ready" -ne 1 ]; then
   fail "readiness" "worker readiness probe did not pass within ${STARTUP_TIMEOUT_SECONDS}s" "${compose_diagnostic[@]}" logs worker
 fi
 
-if [ -e "$key_output" ] || [ -L "$key_output" ]; then
-  usage_error "key output" "destination already exists"
-fi
-key_copy_temp="$(mktemp "$(dirname "$key_output")/.dev-up-service-key.XXXXXXXXXX")"
-chmod 600 "$key_copy_temp"
-if [ "$container_engine" = "docker" ]; then
-  if ! compose cp "$BOOTSTRAP_SERVICE_KEY_SOURCE" "$key_copy_temp"; then
-    fail "key copy" "could not copy bootstrap service key from stopped bootstrap container" "${compose_diagnostic[@]}" ps --all bootstrap
-  fi
-else
-  podman_status="$temporary_directory/podman-services.json"
-  if ! compose "${compose_ps_status_args[@]}" >"$podman_status" 2>"$temporary_directory/podman-services.err"; then
-    fail "key copy" "could not inspect the Podman bootstrap container" "${compose_diagnostic[@]}" "${compose_ps_diagnostic_args[@]}"
-  fi
-  if ! bootstrap_container_id="$(python3 - "$podman_status" "$temporary_directory/bootstrap-project.json" <<'PY'
-import json
-import pathlib
-import sys
-
-raw = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").strip()
-try:
-    decoded = json.loads(raw)
-except json.JSONDecodeError:
-    decoded = [json.loads(line) for line in raw.splitlines()]
-payload = decoded if isinstance(decoded, list) else [decoded]
-matches = []
-for entry in payload:
-    if not isinstance(entry, dict):
-        continue
-    labels = entry.get("Labels")
-    if isinstance(labels, str):
-        labels = dict(
-            item.split("=", 1)
-            for item in labels.split(",")
-            if "=" in item
-        )
-    elif not isinstance(labels, dict):
-        labels = {}
-    service = entry.get("Service")
-    if service is None:
-        service = labels.get("com.docker.compose.service") or labels.get("io.podman.compose.service")
-    container_id = entry.get("ID") or entry.get("Id")
-    if service == "bootstrap" and isinstance(container_id, str) and container_id:
-        # Standalone podman-compose config can retain the file's name even when
-        # -p selected a different project. Use the container it actually started.
-        project = labels.get("io.podman.compose.project", labels.get("com.docker.compose.project"))
-        if labels.get("com.docker.compose.project", project) != project:
-            project = None
-        matches.append((container_id, project))
-if len(matches) != 1:
-    raise SystemExit(f"expected one Podman bootstrap container, found {len(matches)}")
-container_id, project = matches[0]
-pathlib.Path(sys.argv[2]).write_text(json.dumps({"name": project}), encoding="utf-8")
-print(container_id)
-PY
-)"; then
-    fail "key copy" "could not identify exactly one Podman bootstrap container" "${compose_diagnostic[@]}" "${compose_ps_diagnostic_args[@]}"
-  fi
-  if ! engine cp "$bootstrap_container_id:$BOOTSTRAP_SERVICE_KEY_PATH" "$key_copy_temp"; then
-    fail "key copy" "could not copy bootstrap service key from stopped bootstrap container" "${engine_command[@]}" cp "$bootstrap_container_id:$BOOTSTRAP_SERVICE_KEY_PATH" "$key_copy_temp"
-  fi
-fi
-chmod 600 "$key_copy_temp"
-if ! python3 - "$key_copy_temp" "$key_output" <<'PY'
-import os
-import pathlib
-import shutil
-import sys
-
-source = pathlib.Path(sys.argv[1])
-destination = pathlib.Path(sys.argv[2])
-with source.open("rb") as reader:
-    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "wb") as writer:
-        shutil.copyfileobj(reader, writer)
-PY
-then
-  fail "key output" "destination already exists; copied key remains at $key_copy_temp"
-fi
-rm -f -- "$key_copy_temp"
-
-if ! key_installation_id="$(
-  python3 - "$key_output" 2>"$temporary_directory/key-validation.err" <<'PY'
-import json
-import pathlib
-import sys
-
-payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-installation_id = payload.get("meta", {}).get("installationId")
-key = payload.get("data", {}).get("key")
-if not isinstance(installation_id, str) or not installation_id:
-    raise SystemExit("bootstrap service key file does not include meta.installationId")
-if not isinstance(key, str) or not key.strip():
-    raise SystemExit("bootstrap service key file does not include data.key")
-print(installation_id)
-PY
-)"; then
-  key_error="$(cat "$temporary_directory/key-validation.err" 2>/dev/null || true)"
-  fail "key copy" "${key_error:-copied bootstrap service key is invalid}" "${compose_diagnostic[@]}" "${compose_ps_diagnostic_args[@]}"
-fi
-
 installation_response="$temporary_directory/installation-response.json"
-if ! OCC_URL="$api_url" OCC_SERVICE_KEY_FILE="$key_output" "$occ_cli" installation get --output json >"$installation_response"; then
+if ! OCC_URL="$api_url" OCC_SERVICE_KEY_FILE="$credential_directory/client-key.json" "$occ_cli" installation get --output json >"$installation_response"; then
   fail "authorization" "occ could not read the Installation" "$occ_cli" installation get --output json
 fi
 
 if ! installation_id="$(
-  python3 - "$installation_response" "$key_installation_id" 2>"$temporary_directory/installation-match.err" <<'PY'
+  python3 - "$installation_response" 2>"$temporary_directory/installation-match.err" <<'PY'
 import json
 import pathlib
 import sys
 
 payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-expected = sys.argv[2]
 observed = payload.get("id")
-if observed != expected:
-    raise SystemExit(f"Installation ID mismatch: key belongs to {expected}, API returned {observed}")
+if not isinstance(observed, str) or not observed.startswith("ins_"):
+    raise SystemExit("API did not return an Installation ID")
 print(observed)
 PY
 )"; then
   match_error="$(cat "$temporary_directory/installation-match.err" 2>/dev/null || true)"
-  fail "authorization" "${match_error:-Installation ID mismatch}" "$occ_cli" installation get --output json
+  fail "authorization" "${match_error:-API did not return an Installation ID}" "$occ_cli" installation get --output json
+fi
+
+# Publish only a credential whose authenticated Installation read succeeded.
+if ! python3 - "$credential_directory/client-key.json" "$key_output" <<'PY'
+import os
+import pathlib
+import sys
+import tempfile
+source = pathlib.Path(sys.argv[1]).read_bytes()
+destination = pathlib.Path(sys.argv[2])
+fd, temporary = tempfile.mkstemp(prefix=".verified-bootstrap-", dir=destination.parent)
+try:
+    with os.fdopen(fd, "wb") as output:
+        output.write(source)
+    os.link(temporary, destination)
+finally:
+    os.unlink(temporary)
+PY
+then
+  fail "key output" "could not exclusively publish the verified key; retained input bundle is unchanged"
 fi
 
 cleanup_environment=("OCC_DEVELOPMENT_COMPUTE_DRIVER=docker" "OCC_DEVELOPMENT_CONTAINER_ENGINE=$container_engine")
@@ -833,16 +820,35 @@ if [ -n "${podman_connection_name:-}" ]; then
   cleanup_environment+=("CONTAINER_CONNECTION=$podman_connection_name")
 fi
 project_config="$compose_config"
-if [ "$container_engine" = "podman" ]; then
-  project_config="$temporary_directory/bootstrap-project.json"
-fi
-if cleanup_project="$(python3 - "$project_config" <<'PY'
+if cleanup_project="$(python3 - "$project_config" "$container_engine" "$temporary_directory/ps-all.json" <<'PY'
 import json
 import re
 import sys
 
 with open(sys.argv[1], encoding="utf-8") as source:
     name = json.load(source).get("name")
+if sys.argv[2] == "podman":
+    # Standalone podman-compose can render the file's name despite -p. Retain
+    # the project actually started, from the already observed container labels.
+    raw = open(sys.argv[3], encoding="utf-8").read().strip()
+    try:
+        entries = json.loads(raw)
+    except json.JSONDecodeError:
+        entries = [json.loads(line) for line in raw.splitlines()]
+    if isinstance(entries, dict):
+        entries = [entries]
+    projects = set()
+    for entry in entries:
+        labels = entry.get("Labels", {})
+        if isinstance(labels, str):
+            labels = dict(item.split("=", 1) for item in labels.split(",") if "=" in item)
+        project = labels.get("io.podman.compose.project", labels.get("com.docker.compose.project"))
+        if labels.get("com.docker.compose.project", project) != project or not project:
+            raise SystemExit("missing or inconsistent Compose project identity")
+        projects.add(project)
+    if len(projects) != 1:
+        raise SystemExit("expected exactly one running Compose project")
+    name = projects.pop()
 if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name):
     raise SystemExit(1)
 print(name)

@@ -29,7 +29,13 @@ export interface CredentialProxyDeploymentContract {
   ): Promise<{ readonly proxyRouting?: CredentialProxyRouting }>;
   configureDeployment(
     input: CredentialDeploymentConfiguration & {
-      readonly bindings: readonly DeploymentCredentialBinding[];
+      readonly bindings: readonly {
+        readonly binding: DeploymentCredentialBinding;
+        /** Authorized only for binding.sourceRef; use for first-use transfer, never shared-provider attachment. */
+        readonly resolveCredential: () => Promise<ResolvedCredential>;
+        /** Nonsecret provider locator for an implementation that owns both services. */
+        readonly sharedProviderRef?: Readonly<Record<string, string>>;
+      }[];
       readonly injectionPolicies: readonly CredentialInjectionPolicy[];
     },
     signal: AbortSignal,
