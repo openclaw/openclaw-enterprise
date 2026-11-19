@@ -426,9 +426,8 @@ test(
     assert.equal((await redeem(allowed)).status, 200);
     assert.equal((await redeem(allowed)).status, 403, "stream approval is single use");
 
-    // A peer that pauses after approval can block an output write. Expiry stops
-    // delivery, but that RPC must still count against the Sandbox limit until
-    // its pending write drains or the peer cancels.
+    // A peer that pauses after approval can block an output write. Expiry must
+    // return the Sandbox slot even while the peer withholds window credit.
     const stalledBody = Buffer.from(
       JSON.stringify({ model: "fixture-model", input: messages.slice(0, 3), store: false }),
     );
@@ -444,7 +443,8 @@ test(
           : undefined;
       const call = hook(expiringBearer);
       const probes = [];
-      const settled = terminalStatus(call);
+      let stalledStatus: number | undefined;
+      const settled = terminalStatus(call).then((code) => (stalledStatus = code));
       call.on("error", () => {});
       const outputStarted = new Promise<void>((resolve, reject) =>
         call.on("data", (result: { result: string }) => {
@@ -487,9 +487,10 @@ test(
             const [result] = await response;
             return result.result;
           };
-          const admitted = await Promise.all(Array.from({ length: 15 }, () => probe()));
-          assert.deepEqual(admitted, Array(15).fill("preflight_result"));
-          assert.equal(await probe(), "deny", "the expired, blocked write still holds its slot");
+          const admitted = await Promise.all(Array.from({ length: 16 }, () => probe()));
+          assert.deepEqual(admitted, Array(16).fill("preflight_result"));
+          assert.equal(await probe(), "deny", "the Sandbox still has 16 active request slots");
+          assert.equal(stalledStatus, undefined, "the peer has not drained the expired delivery");
           call.resume();
           assert.equal(await settled, grpc.status.DEADLINE_EXCEEDED);
         } else {

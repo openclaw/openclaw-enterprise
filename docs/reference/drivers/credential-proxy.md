@@ -239,7 +239,7 @@ Omitted shares round down to at least 1. Invalid values and unknown fields fail
 startup and upgrade checks with `DRIVER_CONFIGURATION_INVALID`. A strict operation
 can hold a 1 MiB body, or about 8 GiB of bodies at maximum concurrency. Online
 authorization separately caps detached bodies at 64 MiB per process. The bundled
-request hook has its own 64 MiB capture budget, 64 active streams per authority
+request hook has its own 64 MiB capture budget, 64 active handlers per authority
 and 16 per verified Sandbox. Capacity exhaustion denies the request.
 Restart API Pods to apply changes.
 

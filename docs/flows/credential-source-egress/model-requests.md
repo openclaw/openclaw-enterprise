@@ -1,7 +1,7 @@
 ---
 created: "2026-11-10"
 updated: 2026-11-19
-last_updated_session: authoring-run/0b5a687a-0cb7-4a06-96d2-e79b845f6138
+last_updated_session: authoring-run/2e331b8b-bc59-4a99-a58c-5b8f44ef3aed
 ---
 
 # Authorize model credentials per request
@@ -116,9 +116,10 @@ authenticates the Gateway-signed supervisor identity and selects DUPLEX only whe
 the preflight advertises a held final-output limit. Authenticated calls consume a stream slot before the first frame, including idle calls: at most 64 per authority and 16 per Sandbox. The hook captures up to 16 MiB per request, with 64 MiB shared by active captures. It rejects missing protection, excess capacity, changed begin headers,
 trailers, invalid framing and over-limit input before authorization. A half-close before complete input returns a denial.
 The deadline stops capture, approval acceptance, and new output writes, and queues a
-gRPC deadline error. If HTTP/2 flow control blocks a write, the stream keeps its slot
-until the writable finishes or the peer cancels. The handler releases the capture
-memory when it exits. OCC must approve the complete body before the hook emits output.
+gRPC deadline error. The handler releases its stream slot and capture memory on exit.
+HTTP/2 flow control can keep an expired transport stream open until the peer reads or
+disconnects. Each such stream can retain one pending output chunk with up to 64 KiB
+of payload, plus transport overhead. OCC must approve the complete body before the hook emits output.
 OpenShell holds that output until the hook finishes, then redeems the approval before sending upstream. The upgraded authority accepts up to 4 MiB on the unary path. Strict exchange dispatch keeps its separate 1 MiB limit.
 
 `packages/occ/src/credential-proxy.ts:authorizeRequestCredential` charges a separate
@@ -278,6 +279,8 @@ continuity during binding removal.
 None.
 
 ## Changelog
+
+- 2026-11-19 04:43: Release request hook capacity when the handler exits at its deadline. (authoring-run/2e331b8b-bc59-4a99-a58c-5b8f44ef3aed - c21810b75c191f592889ba9c6ed47410390d3c8b)
 
 - 2026-11-19 04:33: Trace deadline handling when HTTP/2 flow control blocks the response. (authoring-run/0b5a687a-0cb7-4a06-96d2-e79b845f6138 - abc218e67e3325ea0db6ae3687413abd34713aff)
 

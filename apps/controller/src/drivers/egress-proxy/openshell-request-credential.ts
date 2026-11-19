@@ -339,7 +339,7 @@ async function writeCaptured(
 ) {
   await write(call, { output_start: { output_body_bytes: String(capture.body.length) } }, signal);
   for (let offset = 0; offset < capture.body.length; offset += capture.chunkLimit) {
-    // A blocked gRPC write can outlive the capture reservation.
+    // Copy the chunk so a blocked transport cannot retain the capture buffer.
     const data = Buffer.from(capture.body.subarray(offset, offset + capture.chunkLimit));
     await write(call, { output_chunk: { data } }, signal);
   }
@@ -462,24 +462,13 @@ export function createOpenShellRequestHook(
       call.off("close", cancel);
       call.off("error", cancel);
       capturedBytes -= held;
-      const releaseStream = () => {
-        call.off("cancelled", releaseStream);
-        call.off("finish", releaseStream);
-        streams--;
-        const remaining = sandboxStreams.get(sandboxId)! - 1;
-        if (remaining) {
-          sandboxStreams.set(sandboxId, remaining);
-        } else {
-          sandboxStreams.delete(sandboxId);
-        }
-      };
-      // grpc-js queues deadline status behind pending DATA writes. Keep the
-      // slot charged while a peer still controls the end of the writable.
-      if (call.cancelled || call.writableFinished) {
-        releaseStream();
+      // Flow control can hold the deadline status after the handler exits.
+      streams--;
+      const remaining = sandboxStreams.get(sandboxId)! - 1;
+      if (remaining) {
+        sandboxStreams.set(sandboxId, remaining);
       } else {
-        call.once("cancelled", releaseStream);
-        call.once("finish", releaseStream);
+        sandboxStreams.delete(sandboxId);
       }
     }
   }
