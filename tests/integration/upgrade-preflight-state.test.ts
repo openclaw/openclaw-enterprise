@@ -3,14 +3,11 @@ import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from "node:child_p
 import { createHash } from "node:crypto";
 import {
   closeSync,
-  constants,
   copyFileSync,
-  fstatSync,
   linkSync,
   mkdirSync,
   openSync,
   readFileSync,
-  readSync,
   realpathSync,
   rmSync,
   statSync,
@@ -447,6 +444,12 @@ test("profiled upgrade checks and recovery bind Kubernetes requests to the appro
   assert.equal(result.status, 0, result.stderr);
 });
 
+const proxyCanary = "fixture-proxy-private-canary";
+
+function traceExposesPrivateValues(output: string, values: readonly string[]): boolean {
+  return values.some((value) => value.length > 0 && output.includes(value));
+}
+
 test("CI tool launcher preserves proxy and certificate settings without exposing their values", (t) => {
   const directory = temporaryDirectorySync(t, "ci-tool-launcher-");
   const source = readFileSync(join(repository, "scripts/ci/setup-tools.sh"), "utf8");
@@ -456,7 +459,7 @@ test("CI tool launcher preserves proxy and certificate settings without exposing
 
   const proxy = syntheticCredentialUrl({
     username: "fixture-proxy-user",
-    password: "fixture-proxy-private-canary",
+    password: proxyCanary,
     host: "proxy.example.invalid",
   });
   const allowed = {
@@ -504,14 +507,25 @@ test("CI tool launcher preserves proxy and certificate settings without exposing
       timeout: 5000,
     },
   );
-  const output = result.stdout + result.stderr;
+  const privateValues = [...Object.values(allowed), proxyCanary];
   assert.ok(
-    [...Object.values(allowed), "fixture-proxy-private-canary"].every(
-      (value) => !value || !output.includes(value),
-    ),
+    !traceExposesPrivateValues(result.stdout + result.stderr, privateValues),
     "launcher exposed a private fixture value",
   );
   assert.equal(result.status, 0, "controlled child rejected the launcher boundary");
+
+  // The former shell assignment exposed the proxy in argv before reaching the child.
+  // Run only that assignment with a synthetic URL to check that the detector catches it.
+  const historical = spawnSync(
+    "/bin/bash",
+    ["-p", "-x", "-c", '/usr/bin/env -i HTTPS_PROXY="$HTTPS_PROXY" /usr/bin/true'],
+    { env: { HTTPS_PROXY: proxy }, encoding: "utf8", timeout: 2000 },
+  );
+  assert.equal(historical.status, 0, "historical trace control failed");
+  assert.ok(
+    traceExposesPrivateValues(historical.stdout + historical.stderr, privateValues),
+    "trace detector missed the historical shell assignment",
+  );
 });
 
 test("CI setup action starts without caller shell startup and reuses pinned yq", (t) => {
@@ -524,48 +538,56 @@ test("CI setup action starts without caller shell startup and reuses pinned yq",
   const installer = setup.match(/^install_yq\(\) \{\n[\s\S]*?^\}$/m)?.[0];
   const pin = installer?.match(new RegExp('"' + arch + " ([a-f0-9]{64})" + '"'))?.[1];
   assert.ok(pin, "yq installer has no pin for the packaging architecture");
-  const found = spawnSync("/bin/bash", ["-p", "-c", "type -P yq"], {
-    env: { PATH: process.env.PATH },
-    encoding: "utf8",
-    timeout: 2000,
-  }).stdout?.trim();
-  let yqBytes: Buffer | undefined;
-  if (found?.startsWith("/")) {
-    let fd: number | undefined;
-    try {
-      fd = openSync(found, constants.O_RDONLY | constants.O_NONBLOCK);
-      const info = fstatSync(fd);
-      if (info.isFile() && info.size <= 64 * 1024 * 1024) {
-        const bytes = Buffer.alloc(info.size);
-        let copied = 0;
-        while (copied < bytes.length) {
-          const count = readSync(fd, bytes, copied, bytes.length - copied, null);
-          if (count === 0) {
-            break;
-          }
-          copied += count;
-        }
-        if (copied === bytes.length && createHash("sha256").update(bytes).digest("hex") === pin) {
-          yqBytes = bytes;
-        }
-      }
-    } catch {
-      // An unavailable tool does not qualify as a pinned prerequisite.
-    } finally {
-      if (fd !== undefined) {
-        closeSync(fd);
-      }
-    }
-  }
-  if (!yqBytes) {
+  const directory = temporaryDirectorySync(t, "ci-action-entry-");
+  const bin = join(directory, "fixture-bin");
+  mkdirSync(bin, { mode: 0o700 });
+  // Discovery, reads, and staging run in one child with no subprocesses.
+  // Node kills and reaps it before the fixture can clean up its private copy.
+  const stage = spawnSync(
+    "/usr/bin/python3",
+    [
+      "-I",
+      "-S",
+      "-c",
+      [
+        "import hashlib, os, shutil, stat, sys",
+        "pin, destination = sys.argv[1:]",
+        "candidate = shutil.which('yq')",
+        "if not candidate or not os.path.isabs(candidate):",
+        "    sys.exit(3)",
+        "try:",
+        "    with os.fdopen(os.open(candidate, os.O_RDONLY | os.O_NONBLOCK), 'rb') as source:",
+        "        info = os.fstat(source.fileno())",
+        "        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 64 * 1024 * 1024:",
+        "            sys.exit(3)",
+        "        contents = source.read(info.st_size + 1)",
+        "except OSError:",
+        "    sys.exit(3)",
+        "if len(contents) != info.st_size or hashlib.sha256(contents).hexdigest() != pin:",
+        "    sys.exit(3)",
+        "with os.fdopen(os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o700), 'wb') as staged:",
+        "    staged.write(contents)",
+        "    os.fchmod(staged.fileno(), 0o700)",
+      ].join("\n"),
+      pin,
+      join(bin, "yq"),
+    ],
+    {
+      env: { PATH: process.env.PATH },
+      stdio: "ignore",
+      timeout: 5000,
+      killSignal: "SIGKILL",
+    },
+  );
+  if (stage.status === 3) {
     if (process.env.CI === "true" || process.env.GITHUB_ACTIONS === "true") {
       assert.fail("Required packaging CI must provide the repository-pinned yq from tool setup");
     }
     t.skip("local prerequisite: add the repository-pinned yq to PATH");
     return;
   }
+  assert.equal(stage.status, 0, "pinned yq staging failed or exceeded its deadline");
 
-  const directory = temporaryDirectorySync(t, "ci-action-entry-");
   const checkout = join(directory, "checkout");
   const ci = join(checkout, "scripts", "ci");
   mkdirSync(ci, { recursive: true });
@@ -592,18 +614,14 @@ test("CI setup action starts without caller shell startup and reuses pinned yq",
   const tracedCommand = selectedCommand.replace(/^(\S*\bbash)(?=\s)/, "$1 -x");
   assert.notEqual(tracedCommand, selectedCommand, "expected the setup step to select Bash");
   writeFileSync(stepFile, tracedCommand + "\n", { mode: 0o600 });
-  const bin = join(directory, "fixture-bin");
   const runner = join(directory, "runner");
-  mkdirSync(bin, { mode: 0o700 });
   mkdirSync(runner, { mode: 0o700 });
   writeFileSync(join(bin, "docker"), '#!/bin/sh\n[ "$1" = version ]\n', { mode: 0o700 });
-  writeFileSync(join(bin, "yq"), yqBytes, { mode: 0o700 });
-  assert.equal(sha256(join(bin, "yq")), pin, "fixture yq changed before use");
 
   const proxy = syntheticCredentialUrl({
     protocol: "offline-fixture",
     username: "fixture-proxy-user",
-    password: "fixture-proxy-private-canary",
+    password: proxyCanary,
     host: "proxy.example.invalid",
   });
   const startup = join(directory, "forbidden-startup");
@@ -631,9 +649,8 @@ test("CI setup action starts without caller shell startup and reuses pinned yq",
       encoding: "utf8",
     },
   );
-  const output = result.stdout + result.stderr;
   assert.ok(
-    !output.includes(proxy) && !output.includes("fixture-proxy-private-canary"),
+    !traceExposesPrivateValues(result.stdout + result.stderr, [proxy, proxyCanary]),
     "CI action trace exposed the private fixture value",
   );
   assert.equal(
