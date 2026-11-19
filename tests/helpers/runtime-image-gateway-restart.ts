@@ -401,7 +401,7 @@ async function interruptGatewayTurn(
   );
   const crash = async () => {
     const deadline = Date.now() + budgetMs;
-    while (!(await collect()).events.some(observedValue("event", "turn-held"))) {
+    while (!(await collect()).events.some((event) => event.event === "turn-held")) {
       assert.ok(Date.now() < deadline, "the provider did not receive the controlled turn");
       await delay(50);
     }
