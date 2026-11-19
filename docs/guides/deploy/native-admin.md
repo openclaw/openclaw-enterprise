@@ -313,7 +313,8 @@ If an open Gateway tab offers **Reconnect in browser**, select it. Your sign-in
 may have expired, or your access may have changed. If OCE asks you to sign in,
 it checks your access again and returns you to that Agent’s detail page. Select
 **Open Agent UI** to continue. With an older runtime, open the Agent root
-or its console page to start the same recovery.
+or its console page to start the same recovery. If the link shows **Agent not
+running**, choose **Return to console** to see why; deploy the Agent if it is stopped.
 
 If the Agent host returns `503 DEPENDENCY_UNAVAILABLE` outside a deployment, check
 the controller and session store and retry after they recover.

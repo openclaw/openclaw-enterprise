@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
 updated: 2026-11-19
-last_updated_session: authoring-run/ef3e9c03-7ddd-43c6-a55f-0460c8daed7b
+last_updated_session: authoring-run/08c23986-7eaa-48cf-aeff-d53da1475676
 ---
 
 # Agent Native Admin UI Flow
@@ -217,7 +217,9 @@ admission wait, disconnect or shutdown. Timely denials await that append before
 returning `403`. Classified dependency failures, append failures and admission
 timeouts return `503`. So does a deployment replacing or activating the version
 for an authorized caller (`agent_transition`), so the Agent UI keeps reconnecting.
-Stopped and unsupported Agents remain `403`.
+Stopped and unsupported Agents remain `403`. For a caller whose access was
+established, an eligible page load then shows **Agent not running** with a link
+to the Agent in the Console; probes and API reads keep the JSON refusal.
 For HTTP admission refusals, `http.completed` records a fixed `nativeAdmissionReason`,
 without URLs, cookies, identities or error text. Early guards and post-admission
 failures may omit it.
@@ -330,6 +332,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 06:03: A stopped or unsupported Agent shows authorized page loads an **Agent not running** page. (authoring-run/08c23986-7eaa-48cf-aeff-d53da1475676 - 4c2da280f8ee1c143ac1d34c63b6e7fac6a3ac83)
 
 - 2026-11-19 01:23: A deployment in progress answers authorized Agent-host HTTP with `503`. (authoring-run/ef3e9c03-7ddd-43c6-a55f-0460c8daed7b - 50ba6e3c180341cddc63528b98c21da57508ad2b)
 
