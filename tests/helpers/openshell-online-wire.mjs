@@ -8,13 +8,7 @@ const require = createRequire(new URL("../../apps/controller/package.json", impo
 export const grpc = require("@grpc/grpc-js");
 const loader = require("@grpc/proto-loader");
 
-export function token(
-  keys,
-  kind,
-  sandboxId,
-  audience = "online-authorizer",
-  lifetimeSeconds = 300,
-) {
+export function token(keys, kind, sandboxId, audience = "online-authorizer") {
   const now = Math.floor(Date.now() / 1000);
   const header = Buffer.from(
     JSON.stringify({ alg: "EdDSA", typ: "openshell-ext+jwt", kid: "gateway-key" }),
@@ -28,7 +22,7 @@ export function token(
           ? "https://gateway.example.test"
           : `spiffe://openshell/sandbox/${sandboxId}`,
       iat: now,
-      exp: now + lifetimeSeconds,
+      exp: now + 300,
       jti: randomUUID(),
       caller_kind: kind,
       ...(kind === "supervisor" ? { sandbox_id: sandboxId } : {}),

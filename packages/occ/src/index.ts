@@ -8076,6 +8076,7 @@ export class OpenClawController {
       authorization: provider.authorization,
       routes: provider.routes,
       classify: provider.classify,
+      authorizeRequestEndpoint: provider.authorizeRequestEndpoint,
       normalizeGrant: provider.normalizeGrant,
       inject: provider.inject,
     }));
@@ -8113,6 +8114,7 @@ export class OpenClawController {
         original.provider.authorization !== original.authorization ||
         original.provider.routes !== original.routes ||
         original.provider.classify !== original.classify ||
+        original.provider.authorizeRequestEndpoint !== original.authorizeRequestEndpoint ||
         original.provider.normalizeGrant !== original.normalizeGrant ||
         original.provider.inject !== original.inject
       ) {
@@ -8332,7 +8334,7 @@ export class OpenClawController {
       if (!dependenciesCurrent()) {
         return refuse("stale_configuration");
       }
-      const { routes: makeRoutes, classify } = provider;
+      const { routes: makeRoutes, classify, authorizeRequestEndpoint } = provider;
       if (
         !Reflect.apply(makeRoutes, provider, [
           source,
@@ -8366,19 +8368,22 @@ export class OpenClawController {
         ) {
           return refuse("unsupported_operation");
         }
-        const operation = Reflect.apply(classify, provider, [
-          route,
-          {
-            id: request.requestId,
-            deadlineAt: request.deadlineAt,
-            bindingId: request.bindingId,
-            method: target.method,
-            url: `https://${target.host}${target.port === 443 ? "" : `:${target.port}`}${target.path}${target.query ? `?${target.query}` : ""}`,
-            headers,
-            body,
-          },
-        ]);
-        if (operation?.kind !== "inference") {
+        const head = {
+          id: request.requestId,
+          deadlineAt: request.deadlineAt,
+          bindingId: request.bindingId,
+          method: target.method,
+          url: `https://${target.host}${target.port === 443 ? "" : `:${target.port}`}${target.path}${target.query ? `?${target.query}` : ""}`,
+          headers,
+        };
+        const endpointOnly =
+          route.binding.grant.kind === "inference" &&
+          route.binding.grant.requestInspection === "endpoint";
+        const allowed = endpointOnly
+          ? body === undefined && authorizeRequestEndpoint?.call(provider, route, head) === true
+          : body !== undefined &&
+            Reflect.apply(classify, provider, [route, { ...head, body }])?.kind === "inference";
+        if (!allowed) {
           return refuse("unsupported_operation");
         }
       } else if (
@@ -9440,7 +9445,10 @@ export class OpenClawController {
       if (!provider || !isDeepStrictEqual(driver.sourceControl.backend, admitted.key.backend)) {
         throw new DependencyUnavailableError("The admitted egress composition is unavailable.");
       }
-      const grant = provider.normalizeGrant([modelId], source.config);
+      const grant = provider.normalizeGrant([modelId], source.config, {
+        agentId: agent.id,
+        sourceId: source.id,
+      });
       let digestGrant = grant;
       if (source.type === credentialFreeMetadataType && admitted.adoption === "credential_free") {
         const canonical = credentialFreeMetadataGrant(source.config);

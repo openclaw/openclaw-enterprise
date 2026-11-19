@@ -1,7 +1,7 @@
 ---
 created: "2026-11-10"
 updated: 2026-11-19
-last_updated_session: authoring-run/2e331b8b-bc59-4a99-a58c-5b8f44ef3aed
+last_updated_session: authoring-run/d835039a-3f8c-4a49-9e1f-cd6987689d9f
 ---
 
 # Authorize model credentials per request
@@ -25,18 +25,15 @@ defines the guarantee. Existing strict exchanges retain their
   makes the request provider eligible and [refuses new strict OpenAI sources](../../reference/credential-sources/protected-inference.md#bundled-openshell-admission).
 - `packages/occ/src/index.ts:admitProxyPlan` records the selected profile, source,
   grant and execution. The operator and Agent need source `operate` permission.
-- `apps/controller/src/drivers/egress-proxy/openshell-request-credential.ts:createOpenShellRequestHook`
-  captures and authorizes the authenticated supervisor's complete pre-credential request.
+- `apps/controller/src/drivers/egress-proxy/openshell-request-credential.ts:authorizeOpenShellRequest`
+  handles the authenticated supervisor's pre-credential request.
 
 ## Flow
 
 ```mermaid
 graph TD
-  A["Supervisor offers protected<br/>DUPLEX request"] --> P{"Output held before<br/>grant and upstream?"}
-  P -->|No| X["Refuse credential"]
-  P -->|Yes| V["Capture complete body<br/>within memory budget"]
-  V --> B{"Current route, model<br/>and permission?"}
-  B -->|No| X
+  A["Supervisor captures<br/>HTTPS model request"] --> B{"Current route, request<br/>scope and permission?"}
+  B -->|No| X["Refuse credential"]
   B -->|Yes| C["OCC reserves<br/>the replay ID"]
   C --> K{"Transport accepts<br/>the decision?"}
   K -->|No| X
@@ -109,29 +106,29 @@ credential material.
 
 ### 2. Approve the captured request
 
-`openshell-authority.ts:describeOpenShellMiddleware` selects protected streaming only
-when the peer advertises both HTTP hooks and withheld HTTP requests. Older peers keep
-the unary path. `openshell-request-credential.ts:createOpenShellRequestHook`
-authenticates the Gateway-signed supervisor identity and selects DUPLEX only when
-the preflight advertises a held final-output limit. Authenticated calls consume a stream slot before the first frame, including idle calls: at most 64 per authority and 16 per Sandbox. The hook captures up to 16 MiB per request, with 64 MiB shared by active captures. It rejects missing protection, excess capacity, changed begin headers,
-trailers, invalid framing and over-limit input before authorization. A half-close before complete input returns a denial.
-The deadline stops capture, approval acceptance, and new output writes, and queues a
-gRPC deadline error. The handler releases its stream slot and capture memory on exit.
-HTTP/2 flow control can keep an expired transport stream open until the peer reads or
-disconnects. Each such stream can retain one pending output chunk with up to 64 KiB
-of payload, plus transport overhead. OCC must approve the complete body before the hook emits output.
-OpenShell holds that output until the hook finishes, then redeems the approval before sending upstream. The upgraded authority accepts up to 4 MiB on the unary path. Strict exchange dispatch keeps its separate 1 MiB limit.
+`openshell-request-credential.ts:authorizeOpenShellRequest` authenticates the
+Gateway-signed supervisor identity and reads the installed binding. The
+body-scoped unary hook passes the captured method, target, headers and body to
+OCC. Deployment requires the endpoint registration only for the Agent and
+bound CredentialSource selected by `endpointOnly.agentId` and
+`endpointOnly.sourceId`. It uses stock OpenShell v0.1.9's
+`openshell.supervisor-middleware.http-hooks` capability with a zero-byte
+`HTTP_REQUEST` binding at `PRE_CREDENTIALS`. The preflight passes only the
+captured method, target and headers. Malformed binding configuration is denied.
 
-`packages/occ/src/credential-proxy.ts:authorizeRequestCredential` charges a separate
-64 MiB aggregate budget before detaching online request bodies for policy evaluation.
-For bodies above 1 MiB, `openai-provider.ts:jsonRequest` refuses more than 256
-JSON nesting levels or 131,072 container openings and commas outside strings before
-parsing the object graph.
-`packages/occ/src/index.ts:checkRequestCredential` verifies the current
-recipient, installation, revision, source, route, provider and IAM permission,
-then classifies the actual request against the admitted model grant. It rejects
-unsupported IAM with `unsupported_authority` before live recipient verification
-or Secret lookup; it never calls an external IAM provider on this path. It calls
+`packages/occ/src/index.ts:checkRequestCredential` verifies the current recipient,
+installation, revision, source, route, provider and IAM permission.
+`apps/controller/src/drivers/egress-proxy/openai-provider.ts:createOpenAiRequestProvider`
+classifies body-scoped requests against the admitted model grant. For endpoint-only
+requests, it rechecks the Agent and source selection and verifies the exact
+HTTPS origin, `POST /v1/responses`, an empty query and approved headers visible
+to the hook. On approval, the endpoint preflight returns
+`continue_without_body`. OpenShell redeems the same single-use approval and relays
+the body and response. The upstream provider owns model, tool, storage and body
+semantics.
+
+OCC rejects unsupported IAM with `unsupported_authority` before live recipient verification
+or Secret lookup; it never calls an external IAM provider on this path. OCC calls
 `requestTimeCredentials.verifyRequestInstallation` with the persisted installation
 and authenticated recipient. The bundled
 `apps/controller/src/drivers/egress-proxy/openshell.ts:verifyRequestInstallation`
@@ -280,13 +277,9 @@ None.
 
 ## Changelog
 
-- 2026-11-19 04:43: Release request hook capacity when the handler exits at its deadline. (authoring-run/2e331b8b-bc59-4a99-a58c-5b8f44ef3aed - c21810b75c191f592889ba9c6ed47410390d3c8b)
+- 2026-11-19 06:03: Limit endpoint authorization to the selected Agent and source and describe which headers the hook can check. (authoring-run/d835039a-3f8c-4a49-9e1f-cd6987689d9f - f17f526dc21f57f8818f415ab0e4531f6a8e4e0c)
 
-- 2026-11-19 04:33: Trace deadline handling when HTTP/2 flow control blocks the response. (authoring-run/0b5a687a-0cb7-4a06-96d2-e79b845f6138 - abc218e67e3325ea0db6ae3687413abd34713aff)
-
-- 2026-11-19 04:13: Trace early stream admission, cancellation, half-close, and the original approval deadline in the accompanying change. (authoring-run/01187d0a-6547-4746-bbb1-a1ab2201890f - abc218e67e3325ea0db6ae3687413abd34713aff)
-
-- 2026-11-19 03:52: Trace protected DUPLEX capture, memory admission and authorization before grant redemption. (authoring-run/c5a13cec-0f64-4f38-a007-33dba3ceadc6 - abc218e67e3325ea0db6ae3687413abd34713aff)
+- 2026-11-19 05:48: Trace endpoint-only preflight and the upstream provider's body policy. (authoring-run/96d321d8-e40a-4b12-99d2-68dc5d4a4982 - f17f526dc21f57f8818f415ab0e4531f6a8e4e0c)
 
 - 2026-11-18 12:08: Require current Worker authorization before candidate preparation and clear it on stop or reclaim. (authoring-run/e9ec324d-033c-4ca2-b52b-f303b2cc7f5e - d5c331fb8da1b65683cbc9bf027c5e206f4a2e9f)
 

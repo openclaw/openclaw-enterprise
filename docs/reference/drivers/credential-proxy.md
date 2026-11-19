@@ -85,18 +85,32 @@ revision's `ProxyPlan.authorization` records the admitted profile. Deployment st
 admission and source `operate` permission for the operator and Agent.
 
 Bundled `openai-online-request` generation 1 requires native IAM for the same
-OCC state, a dedicated Codex HTTPS Responses route, an explicit model and no
-provider-hosted tools. A peer that advertises HTTP hooks and withheld HTTP requests
-uses DUPLEX. The upgraded authority accepts up to 4 MiB through unary authorization for peers without those capabilities. The streaming hook refuses a
-preflight without a held final-output limit. It authorizes
-the complete request before returning its exact bytes, grant redemption and upstream
-delivery. Online bodies are limited to 16 MiB per request. V8 admits this model route. V9 adds independently
-authorized online Git with a separate binding, approval, session and registry.
+OCC state and a dedicated Codex HTTPS Responses route. Body-scoped authorization
+checks the admitted model and rejects provider-hosted tools. V8 admits this model
+route. V9 adds independently authorized online Git with a separate binding,
+approval, session and registry.
 Both versions refuse `policyReduction`. Withdrawing Git standing approval
 denies fresh Git requests and can retire the runtime. Removing either binding
 can stop or redeploy it. Installed proof that model-source IAM denial preserves
 authorized Git remains pending. See [repository standing approval](../../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent)
 and [installed model qualification](../../guides/credential-proxy/model-requests.md).
+
+Setting `drivers.credential_proxy.configuration.endpointOnly` selects
+endpoint-only authorization for a single dedicated Codex Agent and bound
+CredentialSource by `agentId` and `sourceId` on deployment. This profile requires the signed OpenShell
+supervisor identity and an approved HTTPS origin, `POST /v1/responses`, an empty
+query and approved headers visible to the hook. OpenShell can exclude headers
+such as `Cookie` from the hook's view. Apply any required filtering for
+hidden headers before the hook or at the upstream provider. OpenShell sends zero payload bytes to the mandatory
+`HTTP_REQUEST` hook at `PRE_CREDENTIALS`. On approval, OCC returns
+`continue_without_body`. OCC receives neither request nor response body.
+The upstream provider enforces model, tool, storage and body rules. OCC still
+checks the current revision, binding and IAM and requires one-use redemption
+with `cache_ttl: 0`. Other bindings, including other Agents using the same
+CredentialSource, use the body-scoped unary hook.
+OpenShell's unary transport caps requests at 4 MiB, and OCC authorization
+caps the inspected body at 1 MiB. See the
+[endpoint-only setup](../../guides/credential-proxy/model-requests.md#enable-endpoint-only-authorization).
 
 The API verifies the live recipient against the opaque `requestConfigurationId`.
 OpenShell binds the full policy, model provider and profile, and Sandbox and
@@ -236,11 +250,8 @@ Online model replay quotas are shared across API processes.
 
 Values are integers from 1 to the maximum. Shares cannot exceed their pool.
 Omitted shares round down to at least 1. Invalid values and unknown fields fail
-startup and upgrade checks with `DRIVER_CONFIGURATION_INVALID`. A strict operation
-can hold a 1 MiB body, or about 8 GiB of bodies at maximum concurrency. Online
-authorization separately caps detached bodies at 64 MiB per process. The bundled
-request hook has its own 64 MiB capture budget, 64 active handlers per authority
-and 16 per verified Sandbox. Capacity exhaustion denies the request.
+startup and upgrade checks with `DRIVER_CONFIGURATION_INVALID`. An operation
+can hold a 1 MiB body, or about 8 GiB of bodies at maximum concurrency.
 Restart API Pods to apply changes.
 
 Handle deadlines are at most 30 seconds. Authentication charges the global

@@ -63,10 +63,7 @@ export type {
   EgressStreamProgress,
   EgressStreamLease,
 } from "./credential-proxy-exchange.ts";
-export {
-  egressAssociationInstallation,
-  MAX_REQUEST_CREDENTIAL_BODY_BYTES,
-} from "./credential-proxy-exchange.ts";
+export { egressAssociationInstallation } from "./credential-proxy-exchange.ts";
 export type {
   PreparedTokenGrant,
   PreparedTokenSource,

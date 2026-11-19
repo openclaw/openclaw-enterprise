@@ -29,7 +29,13 @@ import type {
   RequestCredentialInput,
 } from "../../packages/contracts/src/index.ts";
 import { installEgressAuthority } from "../../apps/controller/src/composition/egress-authority.ts";
+import { createOpenAiRequestProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
 import { bindOpenShellExchange } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-binding.ts";
+import {
+  bindOpenShellEgressAuthority,
+  createOpenShellEgressAuthority,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell-authority.ts";
+import { OpenShellEgressIdentity } from "../../apps/controller/src/drivers/egress-proxy/openshell-identity.ts";
 import {
   COMPUTE_RELEASE_PUBLIC_KEY,
   computeReleasePublicKey,
@@ -169,7 +175,6 @@ test(
     await grpcPort.release();
     await grantPort.release();
     const client = openShellMiddlewareClient(t, grpcPort.port, tls.caBundle);
-    const hooks = openShellMiddlewareClient(t, grpcPort.port, tls.caBundle, "HttpHooks");
     const signed = token(
       issuerKeys,
       "supervisor",
@@ -177,39 +182,6 @@ test(
       authority.audience,
     );
     const gateway = token(issuerKeys, "gateway", undefined, authority.audience);
-    const contract = "openshell.supervisor-middleware.contract";
-    const httpHooks = "openshell.supervisor-middleware.http-hooks";
-    const withheld = "openshell.supervisor-middleware.withheld-http-request";
-    const describe = (supported: string[]) =>
-      invoke(
-        client,
-        "Describe",
-        {
-          gateway: {
-            protocol_version: { major: 1, minor: 0 },
-            supported_capabilities: supported,
-            required_capabilities: [contract],
-          },
-        },
-        gateway,
-      );
-    const legacy = await describe([contract, httpHooks]);
-    assert.deepEqual(
-      legacy.extension.required_capabilities,
-      [contract],
-      "a peer without the hold guarantee retains unary authorization",
-    );
-    const protectedPeer = await describe([contract, httpHooks, withheld]);
-    assert.deepEqual(protectedPeer.extension.required_capabilities, [
-      contract,
-      httpHooks,
-      withheld,
-    ]);
-    assert.equal(
-      protectedPeer.bindings[0].max_payload_bytes,
-      String(4 * 1024 * 1024),
-      "stage payload and total stream limits are distinct",
-    );
     const wire = (input: RequestCredentialInput) => ({
       phase: 1,
       middleware_name: "model-authority",
@@ -287,296 +259,6 @@ test(
         req.end(body);
       });
     };
-
-    const hook = (bearer = signed) => {
-      const metadata = new grpc.Metadata();
-      metadata.set("authorization", bearer);
-      return hooks.EvaluateHttpRequestHook(metadata);
-    };
-    const preflight = (input: RequestCredentialInput, body?: Buffer, hold = true) => {
-      const captured = wire(input);
-      return {
-        preflight: {
-          phase: captured.phase,
-          context: captured.context,
-          middleware_name: captured.middleware_name,
-          config: captured.config,
-          request: { target: captured.target, headers: captured.headers },
-          permitted_body_modes: [2],
-          ...(body && { declared_body_bytes: String(body.byteLength) }),
-          limits: {
-            max_chunk_bytes: String(64 * 1024),
-            ...(hold && { max_output_body_bytes: String(64 * 1024 * 1024) }),
-          },
-        },
-      };
-    };
-
-    // A half-closed request must receive a terminal response even without a
-    // client deadline. It cannot retain an authority slot indefinitely.
-    const halfClosed = hook();
-    const halfResults: { result: string }[] = [];
-    halfClosed.on("data", (result: { result: string }) => halfResults.push(result));
-    const halfDone = once(halfClosed, "end");
-    halfClosed.end();
-    try {
-      await Promise.race([
-        halfDone,
-        delay(500).then(() => {
-          throw new Error("half-closed hook did not terminate");
-        }),
-      ]);
-      assert.deepEqual(
-        halfResults.map((result) => result.result),
-        ["deny"],
-      );
-    } finally {
-      halfClosed.cancel();
-    }
-
-    // Authenticated streams consume their Sandbox share before sending a first
-    // frame. A seventeenth idle or active opening must fail closed.
-    const idle = Array.from({ length: 16 }, () => hook());
-    for (const call of idle) {
-      call.on("error", () => {});
-    }
-    await delay(50);
-    const overflow = hook();
-    const overflowResults: { result: string }[] = [];
-    overflow.on("data", (result: { result: string }) => overflowResults.push(result));
-    const overflowDone = once(overflow, "end");
-    overflow.write(preflight(fixture.request(), Buffer.from("{}")));
-    try {
-      await overflowDone;
-      assert.deepEqual(
-        overflowResults.map((result) => result.result),
-        ["deny"],
-      );
-    } finally {
-      for (const call of idle) {
-        call.cancel();
-      }
-      overflow.cancel();
-    }
-
-    await delay(50);
-
-    const streamRequest = async (input: RequestCredentialInput, body: Buffer, hold = true) => {
-      const call = hook();
-      type HookResult = {
-        result: string;
-        preflight_result?: { decision?: string };
-        output_chunk?: { data: Uint8Array };
-      };
-      const results: HookResult[] = [];
-      const done = new Promise<void>((resolve, reject) => {
-        call.on("data", (result: HookResult) => results.push(result));
-        call.on("end", resolve);
-        call.on("error", reject);
-      });
-      const captured = wire(input);
-      call.write(preflight(input, body, hold));
-      await once(call, "data");
-      if (results[0]?.result === "deny") {
-        await done;
-        return results;
-      }
-      assert.equal(results[0]?.preflight_result?.decision, "inspect");
-      call.write({ begin: { headers: captured.headers } });
-      for (let offset = 0; offset < body.length; offset += 64 * 1024) {
-        await new Promise<void>((resolve, reject) =>
-          call.write(
-            { input_chunk: { data: body.subarray(offset, offset + 64 * 1024) } },
-            (error?: Error) => (error ? reject(error) : resolve()),
-          ),
-        );
-      }
-      assert.equal(
-        (await redeem(input)).status,
-        403,
-        "no approval exists before the complete input",
-      );
-      assert.equal(results.length, 1, "the hook emits no request bytes before input_end");
-      call.write({ input_end: {} });
-      await done;
-      return results;
-    };
-
-    // Exercise the real signed gRPC hook, OCC policy, PostgreSQL approval and TLS
-    // redemption. A forbidden root field at the end must prevent any output or grant.
-    const messages = Array.from({ length: 6 }, () => ({
-      role: "user",
-      content: "x".repeat(800_000),
-    }));
-    const large = Buffer.from(
-      JSON.stringify({ model: "fixture-model", input: messages, store: false }),
-    );
-    assert.ok(large.length > 4 * 1024 * 1024);
-    const allowed = fixture.request();
-    const allowedResults = await streamRequest(allowed, large);
-    assert.equal(allowedResults.at(-1)?.result, "finish");
-    assert.deepEqual(
-      Buffer.concat(
-        allowedResults
-          .filter((result) => result.result === "output_chunk")
-          .map((result) => result.output_chunk!.data),
-      ),
-      large,
-    );
-    assert.equal((await redeem(allowed)).status, 200);
-    assert.equal((await redeem(allowed)).status, 403, "stream approval is single use");
-
-    // A peer that pauses after approval can block an output write. Expiry must
-    // return the Sandbox slot even while the peer withholds window credit.
-    const stalledBody = Buffer.from(
-      JSON.stringify({ model: "fixture-model", input: messages.slice(0, 3), store: false }),
-    );
-    const terminalStatus = (call: ReturnType<typeof hook>) =>
-      new Promise<number>((resolve) =>
-        call.on("status", ({ code }: { code: number }) => resolve(code)),
-      );
-    for (let attempt = 0; attempt < 4; attempt++) {
-      const input = fixture.request();
-      const expiringBearer =
-        attempt === 0
-          ? token(issuerKeys, "supervisor", fixture.installation.sandboxId, authority.audience, 4)
-          : undefined;
-      const call = hook(expiringBearer);
-      const probes = [];
-      let stalledStatus: number | undefined;
-      const settled = terminalStatus(call).then((code) => (stalledStatus = code));
-      call.on("error", () => {});
-      const outputStarted = new Promise<void>((resolve, reject) =>
-        call.on("data", (result: { result: string }) => {
-          if (result.result === "deny") {
-            reject(new Error("stalled request was denied"));
-          }
-          if (result.result === "output_start") {
-            call.pause();
-            resolve();
-          }
-        }),
-      );
-      try {
-        call.write(preflight(input));
-        await once(call, "data");
-        call.write({ begin: { headers: wire(input).headers } });
-        for (let offset = 0; offset < stalledBody.length; offset += 64 * 1024) {
-          await new Promise<void>((resolve, reject) =>
-            call.write(
-              { input_chunk: { data: stalledBody.subarray(offset, offset + 64 * 1024) } },
-              (error?: Error) => (error ? reject(error) : resolve()),
-            ),
-          );
-        }
-        call.write({ input_end: {} });
-        await outputStarted;
-        if (expiringBearer) {
-          // An idle call with the same JWT and no client timeout observes the
-          // authority deadline without granting the stalled call more credit.
-          const idleAtDeadline = hook(expiringBearer);
-          probes.push(idleAtDeadline);
-          idleAtDeadline.on("error", () => {});
-          assert.equal(await terminalStatus(idleAtDeadline), grpc.status.DEADLINE_EXCEEDED);
-          const probe = async () => {
-            const opening = hook();
-            probes.push(opening);
-            opening.on("error", () => {});
-            const response = once(opening, "data");
-            opening.write(preflight(fixture.request(), Buffer.from("{}")));
-            const [result] = await response;
-            return result.result;
-          };
-          const admitted = await Promise.all(Array.from({ length: 16 }, () => probe()));
-          assert.deepEqual(admitted, Array(16).fill("preflight_result"));
-          assert.equal(await probe(), "deny", "the Sandbox still has 16 active request slots");
-          assert.equal(stalledStatus, undefined, "the peer has not drained the expired delivery");
-          call.resume();
-          assert.equal(await settled, grpc.status.DEADLINE_EXCEEDED);
-        } else {
-          await delay(50);
-        }
-      } finally {
-        call.cancel();
-        for (const probe of probes) {
-          probe.cancel();
-        }
-      }
-      await delay(20);
-    }
-    const recoveredHook = hook();
-    recoveredHook.on("error", () => {});
-    const firstRecovery = once(recoveredHook, "data");
-    recoveredHook.write(preflight(fixture.request()));
-    try {
-      const [result] = await firstRecovery;
-      assert.equal(
-        result.result,
-        "preflight_result",
-        "expired and cancelled deliveries release their capture reservations",
-      );
-    } finally {
-      recoveredHook.cancel();
-    }
-
-    const invalid = fixture.request();
-    const lateInvalid = Buffer.from(
-      JSON.stringify({ model: "fixture-model", input: messages, store: false, unexpected: true }),
-    );
-    const beforeInvalid = f.secretReads;
-    const invalidResults = await streamRequest(invalid, lateInvalid);
-    assert.deepEqual(
-      invalidResults.map((result) => result.result),
-      ["preflight_result", "deny"],
-    );
-    assert.equal((await redeem(invalid)).status, 403);
-    assert.equal(f.secretReads, beforeInvalid, "late denial never reads model material");
-
-    // A large, otherwise supported local tool schema must be refused before the
-    // JSON parser can allocate an excessive object graph.
-    const leafProperties = Object.fromEntries(
-      Array.from({ length: 256 }, (_, i) => [`field_${i}`, { type: "string" }]),
-    );
-    const groups = Object.fromEntries(
-      Array.from({ length: 256 }, (_, i) => [
-        `group_${i}`,
-        { type: "object", properties: leafProperties },
-      ]),
-    );
-    const structural = fixture.request();
-    const structuralBody = Buffer.from(
-      JSON.stringify({
-        model: "fixture-model",
-        input: "hello",
-        store: false,
-        tools: [
-          {
-            type: "function",
-            name: "large_schema",
-            parameters: { type: "object", properties: groups },
-          },
-        ],
-      }),
-    );
-    assert.ok(structuralBody.length > 1024 * 1024);
-    const structuralResults = await streamRequest(structural, structuralBody);
-    assert.deepEqual(
-      structuralResults.map((result) => result.result),
-      ["preflight_result", "deny"],
-    );
-    assert.equal((await redeem(structural)).status, 403);
-    assert.equal(f.secretReads, beforeInvalid);
-
-    const unsupported = fixture.request();
-    assert.deepEqual(
-      (await streamRequest(unsupported, large, false)).map((result) => result.result),
-      ["deny"],
-    );
-    assert.equal(
-      (await redeem(unsupported)).status,
-      403,
-      "an incremental peer cannot obtain a grant",
-    );
 
     // The generated launcher consumes the real admitted v8 plan. This is startup/signature
     // proof with a controlled external observer, not a packaged Codex or installed OpenShell test.
@@ -1176,6 +858,198 @@ test(
       }),
     );
     assert.equal((await redeem(next)).body.access_token, "synthetic-key-rotated");
+  },
+);
+
+test(
+  "signed endpoint hooks require the selected Agent and source without accepting a unary downgrade (PostgreSQL)",
+  { ...requiresPostgres, timeout: 30_000 },
+  async (t) => {
+    const tls = await harnessTlsFixture(t);
+    const fixture = await requestCredentialFixture(t, { endpointOnly: true });
+    const { f, installation } = fixture;
+    // The same source can serve other Agents. Deploy a fresh sibling through the API
+    // with identical model settings and IAM permission to prove it retains body policy.
+    const namespacePath = `/namespaces/${f.namespace.id}`;
+    const sibling = await f.request("POST", `${namespacePath}/agents`, {
+      body: {
+        name: "sibling-inference-agent",
+        configurationId: f.agent.configurationId,
+        executionMode: "dedicated",
+        harnessAuth: { method: "credential_source", sourceId: f.source.id },
+        credentialSources: [{ sourceId: f.source.id }],
+      },
+    });
+    assert.equal(sibling.status, 201, JSON.stringify(sibling.body));
+    const siblingAccess = await f.request("POST", `${namespacePath}/iam/access-bindings`, {
+      body: {
+        subjectKind: "identity",
+        subjectId: sibling.data.servicePrincipalId,
+        roleId: f.grant.roleId,
+        resourceKind: "credential_source",
+        resourceId: f.source.id,
+      },
+    });
+    assert.equal(siblingAccess.status, 201, JSON.stringify(siblingAccess.body));
+    const siblingDeployment = await f.deployAgent(f.namespace.id, sibling.data.id);
+    const controller: OpenClawController = f.controller;
+    const siblingRevision = await controller.transact((state) =>
+      state.revisions.findRevision(f.namespace.id, sibling.data.id, siblingDeployment.id),
+    );
+    const siblingRoute = siblingRevision?.egressPlan?.routes[0];
+    assert.ok(siblingRoute && siblingRoute.binding.grant.kind === "inference");
+    assert.equal(siblingRoute.binding.source.source.id, f.source.id);
+    assert.equal(siblingRoute.binding.grant.requestInspection, undefined);
+
+    const keys = generateKeyPairSync("ed25519");
+    const endpointName = "model-authority-endpoint";
+    const bodyAudience = "model-authorizer";
+    const endpointAudience = `${bodyAudience}/endpoint`;
+    const identity = (audience: string) =>
+      new OpenShellEgressIdentity({
+        issuer: "https://gateway.example.test",
+        audience,
+        keyId: "gateway-key",
+        publicKey: keys.publicKey.export({ type: "spki", format: "pem" }),
+        sender: installation.sender,
+      });
+    const server = createOpenShellEgressAuthority(
+      identity(bodyAudience),
+      f.controller,
+      "model-authority",
+      { name: endpointName, identity: identity(endpointAudience) },
+    );
+    t.after(() => server.forceShutdown());
+    const port = await bindOpenShellEgressAuthority(
+      server,
+      "127.0.0.1:0",
+      Buffer.from(tls.cert),
+      Buffer.from(tls.key),
+    );
+    const hook = openShellMiddlewareClient(t, port, tls.caBundle, "HttpHooks");
+    const unary = openShellMiddlewareClient(t, port, tls.caBundle);
+    const bodyBearer = token(keys, "supervisor", installation.sandboxId, bodyAudience);
+    const endpointBearer = token(keys, "supervisor", installation.sandboxId, endpointAudience);
+    const requestFrame = (input: RequestCredentialInput) => ({
+      phase: 1,
+      middleware_name: endpointName,
+      context: {
+        request_id: input.requestId,
+        sandbox_id: input.recipient.id,
+        workspace: f.namespace.name,
+      },
+      config: {
+        fields: Object.fromEntries(
+          Object.entries({
+            binding_id: input.bindingId,
+            namespace_id: input.execution.namespaceId,
+            agent_id: input.execution.agentId,
+            revision_id: input.execution.revisionId,
+          }).map(([name, value]) => [name, { stringValue: value }]),
+        ),
+      },
+      request: {
+        target: { ...input.http.target, scheme: input.http.target.reportedScheme },
+        headers: input.http.headers.map(([name, value]) => ({ name, value })),
+      },
+      limits: {},
+      declared_body_bytes: "5000000",
+    });
+    const preflight = (input: ReturnType<typeof requestFrame>, bearer = endpointBearer) =>
+      new Promise<Record<string, unknown>>((resolve, reject) => {
+        const metadata = new grpc.Metadata();
+        metadata.set("authorization", bearer);
+        const rpc = hook.EvaluateHttpRequestHook(metadata, { deadline: Date.now() + 5000 });
+        rpc.once("data", resolve);
+        rpc.once("error", reject);
+        rpc.end({ preflight: input });
+      });
+    const redeem = (input: RequestCredentialInput) =>
+      fixture.exchange.resolveRequestCredential!(fixture.grant(input), AbortSignal.timeout(5000));
+    const initialReads = f.secretReads;
+    const unsupported = fixture.request();
+    const invalid = requestFrame(unsupported);
+    assert.equal((await preflight(invalid, bodyBearer)).result, "deny");
+    assert.equal(
+      (await preflight({ ...invalid, limits: { max_chunk_bytes: 4096 } })).result,
+      "deny",
+    );
+    const wrongHead = {
+      ...invalid.request,
+      target: { ...invalid.request.target, query: "route=elsewhere" },
+    };
+    assert.equal((await preflight({ ...invalid, request: wrongHead })).result, "deny");
+    const unknownHeader = {
+      ...invalid.request,
+      headers: [...invalid.request.headers, { name: "x-http-method-override", value: "GET" }],
+    };
+    assert.equal((await preflight({ ...invalid, request: unknownHeader })).result, "deny");
+    const { request, ...unaryFrame } = invalid;
+    assert.equal(
+      (
+        await invoke(
+          unary,
+          "EvaluateHttpRequest",
+          {
+            ...unaryFrame,
+            ...request,
+            middleware_name: "model-authority",
+            body: unsupported.http.body,
+          },
+          bodyBearer,
+        )
+      ).decision,
+      2,
+    );
+    assert.equal(await redeem(unsupported), undefined);
+    assert.equal(f.secretReads, initialReads);
+
+    // Changing either configured ID after approval withdraws permission to redeem
+    // a retained endpoint grant before the Secret Driver can read material.
+    const { providers } = fixture.owner.require("credential_proxy").sourceControl;
+    const originalProvider = providers[0];
+    assert.ok(originalProvider);
+    for (const selection of [
+      { agentId: sibling.data.id, sourceId: f.source.id },
+      { agentId: f.agent.id, sourceId: randomUUID() },
+    ]) {
+      const withdrawn = fixture.request();
+      assert.equal((await preflight(requestFrame(withdrawn))).result, "preflight_result");
+      try {
+        assert.ok(Reflect.set(providers, 0, createOpenAiRequestProvider(selection)));
+        assert.equal(await redeem(withdrawn), undefined);
+        assert.equal(f.secretReads, initialReads);
+      } finally {
+        assert.ok(Reflect.set(providers, 0, originalProvider));
+      }
+    }
+
+    // Hold live recipient verification while a mutable Driver replaces its
+    // endpoint classifier with an unconditional allow. The old request must fail.
+    const mutableProvider = { ...originalProvider };
+    const verification = fixture.pauseNextVerification();
+    assert.ok(Reflect.set(providers, 0, mutableProvider));
+    const pending = preflight({ ...requestFrame(fixture.request()), request: unknownHeader });
+    try {
+      await reachBarrier(verification.reached, pending, "endpoint recipient verification");
+      mutableProvider.authorizeRequestEndpoint = () => true;
+      verification.release();
+      assert.equal((await pending).result, "deny");
+      assert.equal(f.secretReads, initialReads);
+    } finally {
+      verification.release();
+      assert.ok(Reflect.set(providers, 0, originalProvider));
+    }
+
+    const accepted = fixture.request();
+    const result = await preflight(requestFrame(accepted));
+    assert.deepEqual(result.preflight_result, {
+      continue_without_body: {},
+      decision: "continue_without_body",
+    });
+    assert.equal(f.secretReads, initialReads, "only redemption may read material");
+    assert.ok(await redeem(accepted));
+    assert.equal(await redeem(accepted), undefined);
   },
 );
 

@@ -18,6 +18,10 @@ import { validChatRequest, responsesRequestFailure } from "./openai-responses.ts
 import { protectedResponseOutput, protectedResponsesStream } from "./openai-responses-stream.ts";
 import { parseUnambiguousJson } from "../json-members.ts";
 import { openAiRequestProviderRef } from "../openai-request-adapter.ts";
+import {
+  matchesEndpointOnlyBinding,
+  type OpenShellEndpointOnlySelection,
+} from "./openshell-exchange-capabilities.ts";
 
 export { openAiRequestProviderRef } from "../openai-request-adapter.ts";
 
@@ -40,36 +44,6 @@ function validHeaders(headers: EgressRequest["headers"], forbidden: string[]): b
   );
 }
 
-// Larger model requests are usually long strings. Bound the number of values
-// and parser frames before JSON.parse and duplicate-member detection allocate
-// them. Grammar and decoded keys are still checked by parseUnambiguousJson.
-function fitsModelJsonBudget(text: string): boolean {
-  let inString = false;
-  let depth = 0;
-  let entries = 0;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (inString && c === "\\") {
-      i++;
-    } else if (c === '"') {
-      inString = !inString;
-    } else if (!inString) {
-      if (c === "[" || c === "{") {
-        depth++;
-        entries++;
-      } else if (c === "]" || c === "}") {
-        depth--;
-      } else if (c === ",") {
-        entries++;
-      }
-      if (depth > 256 || entries > 131_072) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
 function jsonRequest(request: EgressRequest): Record<string, unknown> | undefined {
   const headers = request.headers;
   if (
@@ -85,11 +59,7 @@ function jsonRequest(request: EgressRequest): Record<string, unknown> | undefine
     return undefined;
   }
   try {
-    const text = utf8.decode(request.body);
-    if (request.body.byteLength > 1024 * 1024 && !fitsModelJsonBudget(text)) {
-      return undefined;
-    }
-    return asRecord(parseUnambiguousJson(text));
+    return asRecord(parseUnambiguousJson(utf8.decode(request.body)));
   } catch {
     return undefined;
   }
@@ -251,24 +221,47 @@ function openAiRoute(
   });
 }
 
-const classify: CredentialProviderDefinition["classify"] = (route, request, refused) => {
+function matchesRequestEndpoint(route: EgressRoute, request: Omit<EgressRequest, "body">): boolean {
   let url: URL;
   try {
     url = new URL(request.url);
   } catch {
-    return undefined;
+    return false;
   }
-  if (
-    url.href !== request.url ||
-    url.protocol !== "https:" ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash ||
-    request.method !== route.method ||
-    url.origin !== route.origin ||
-    url.pathname !== route.path
-  ) {
+  return (
+    url.href === request.url &&
+    url.protocol === "https:" &&
+    !url.username &&
+    !url.password &&
+    !url.search &&
+    !url.hash &&
+    request.method === route.method &&
+    url.origin === route.origin &&
+    url.pathname === route.path
+  );
+}
+
+const endpointRequestHeaders = new Set([
+  "accept",
+  "accept-encoding",
+  "content-type",
+  "originator",
+  "session-id",
+  "thread-id",
+  "user-agent",
+  "version",
+  "x-client-request-id",
+  "x-codex-beta-features",
+  "x-codex-installation-id",
+  "x-codex-parent-thread-id",
+  "x-codex-turn-metadata",
+  "x-codex-turn-state",
+  "x-codex-window-id",
+  "x-openai-subagent",
+]);
+
+const classify: CredentialProviderDefinition["classify"] = (route, request, refused) => {
+  if (!matchesRequestEndpoint(route, request)) {
     return undefined;
   }
   const body = jsonRequest(request);
@@ -344,16 +337,31 @@ export function createOpenAiStaticProvider(): CredentialProviderDefinition {
   });
 }
 
-/** The same bounded request policy, with online release instead of dispatch/response custody. */
-export function createOpenAiRequestProvider(): CredentialProviderDefinition {
+/** Online release for body-scoped requests and one operator-selected Agent and source binding. */
+export function createOpenAiRequestProvider(
+  endpointOnly?: OpenShellEndpointOnlySelection,
+): CredentialProviderDefinition {
+  const selection = endpointOnly && immutableCopy(endpointOnly);
   return Object.freeze<CredentialProviderDefinition>({
     ref: openAiRequestProviderRef,
     authorization: "online-request",
     schemaVersion: 1,
     sourceType: openAiSourceType(),
     normalizeConfig,
-    normalizeGrant,
+    normalizeGrant(models, config, binding) {
+      const grant = normalizeGrant(models, config);
+      return binding && matchesEndpointOnlyBinding(selection, binding.agentId, binding.sourceId)
+        ? immutableCopy({ ...grant, requestInspection: "endpoint" as const })
+        : grant;
+    },
     routes(source, binding, harnessConfiguration) {
+      if (
+        binding.grant.kind === "inference" &&
+        binding.grant.requestInspection === "endpoint" &&
+        !matchesEndpointOnlyBinding(selection, binding.execution.agentId, source.id)
+      ) {
+        return [];
+      }
       const base = openAiDestination(source, harnessConfiguration);
       return [
         openAiRoute(base, binding, "responses", {
@@ -363,6 +371,17 @@ export function createOpenAiRequestProvider(): CredentialProviderDefinition {
       ];
     },
     classify,
+    authorizeRequestEndpoint(route, request) {
+      const names = request.headers.map(([name]) => name.toLowerCase());
+      return (
+        matchesRequestEndpoint(route, request) &&
+        route.path === "/v1/responses" &&
+        jsonType.test(contentType(request.headers)) &&
+        validHeaders(request.headers, []) &&
+        new Set(names).size === names.length &&
+        names.every((name) => endpointRequestHeaders.has(name))
+      );
+    },
     inject,
     // Online authorization never receives the upstream response.
     credentialRejected: () => false,
