@@ -84,6 +84,51 @@ names. The report contains no certificate or private key bytes. Verify the
 actual served leaf, trust chain, and policy enforcement separately from the
 caller's network.
 
+To check one workload's client certificate, add `clientCertificate` to the plan:
+
+```json
+{
+  "workload": {
+    "kind": "Deployment",
+    "namespace": "oce-system",
+    "name": "openclaw-enterprise-api"
+  },
+  "container": "api",
+  "certificatePath": "/etc/openclaw/openshell/tls.crt"
+}
+```
+
+For the OpenShell administrator connection, copy `auth.certificatePath` from
+the configured [OpenShell Backend](../../reference/backends.md#openshell-gateway).
+Run a separate check for each selected Deployment or StatefulSet and container.
+The path must resolve through one direct Secret volume mount in that container
+or restartable init container to the public `tls.crt` key. Secret item mappings
+may give the file a different name. For a required Secret volume, every mapped
+key must exist. An optional volume can omit other mapped keys, but the selected
+`tls.crt` must still exist. The check rejects overlapping item paths at the
+selected file and StatefulSet claims that replace its volume. Subpath mounts
+and mixed projected volumes are outside the supported check.
+
+Use named `get` access to the selected workload and its mounted Secret.
+This permission grants access to the whole object. The command collects only
+the workload identity and relevant mount fields, plus rollout fields if you
+also select the Deployment as a controller. For the Secret, the command reads
+its identity and public `tls.crt`. For required mappings, the command checks
+that each key exists and the workload resource version has not changed.
+The report records the resource UIDs and resource versions. A missing workload
+on the first read or a missing Secret for a matching workload fails the check.
+A failed read yields `unknown`. For required mappings, a workload change
+between reads also yields `unknown`. Verify that the resource exists and the
+selected identity has named `get` access.
+The check validates the public leaf's dates and reads its extended key usage
+for TLS client authentication. An absent or unreadable extension yields
+`unknown` because the check cannot establish client suitability. Confirm
+client authentication with the operator who owns the mTLS connection.
+
+This is static evidence from the current Pod template and Secret. Verify the
+mounted bytes, active process credentials, gateway issuer and client-CA policy,
+peer identity, and the actual mTLS RPC separately.
+
 For EKS, add `eks` with the intended cluster ARN and expected webhook caller
 addresses. AWS CLI must already have authorized credentials:
 
@@ -135,6 +180,7 @@ A failed check can coexist with unknown checks; inspect the complete report.
 | API addresses                      | The expected `/32` set matches the current Service and IPv4 EndpointSlice inventory.                                                                             |
 | ResourceQuotas                     | Each Job and ReplicaSet object limit fits reported usage plus the planned peak. A complete list can establish that neither limit exists.                         |
 | Service dependency                 | The named policy grants both required TCP edges. With `tls`, the selected public leaf has a current validity window and a matching DNS subject alternative name. |
+| Workload client certificate        | The selected container's Secret mount supplies a currently valid public leaf whose extended key usage allows client authentication.                              |
 | EKS identity and webhook addresses | The account, ARN, TLS endpoint and CA identify the intended EKS cluster, and expected webhook `/32`s match the filtered control-plane interface inventory.       |
 
 For `api-addresses` and `webhook-addresses`, `missing` lists observed `/32` addresses

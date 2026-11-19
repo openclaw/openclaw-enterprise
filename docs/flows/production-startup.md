@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-18"
-last_updated_session: "authoring-run/fcffdcd5-85ba-4fd1-ad35-bfbbcd6953b6"
+updated: "2026-11-19"
+last_updated_session: "authoring-run/7f466ed0-ec17-457f-846d-eb2049aa2be5"
 ---
 
 # Production Startup Flow
@@ -80,8 +80,9 @@ Queries reconnect.
 
 ### 1. Prepare native production inputs
 
-`scripts/diagnose-kubernetes-prerequisites.ts:diagnose` checks controllers, CRDs, addresses,
-quotas, Service grants and public TLS leaves. EKS verifies identity.
+`scripts/diagnose-kubernetes-prerequisites.ts:diagnose` checks prerequisites.
+Required keys need matching workload UID and `resourceVersion`.
+Incomplete or changed reads yield `unknown`.
 [Resolve failed/unknown checks](../guides/deploy/prerequisite-diagnosis.md) before Helm.
 
 `deploy/helm/openclaw-enterprise/values.yaml:1`
@@ -93,8 +94,8 @@ Installation YAML selects Drivers, Backends, runtime images, projected identity,
 networking and storage.
 
 File-backed Secrets supply startup Installation, database URLs/optional CA,
-Better Auth signing, and optional ChatGPT administrator credentials. Supply
-Driver configuration and runtime images explicitly.
+Better Auth signing, and optional ChatGPT administrator credentials. Specify
+Driver configuration and runtime images.
 
 ### 2. Precreate the bootstrap credential Secret
 
@@ -113,11 +114,10 @@ retained sources does not rotate credentials.
 
 `internal/occcli/installation_receipt.go:installationInstallCommand` snapshots
 kubeconfig/chart/values, checks release states and syncs intent and its directory.
-A failed stdout notice names and preserves intent, stopping before dispatch.
-Otherwise it syncs the unknown marker before Helm.
-`observeInstallationJob` records the first recognized attempt-matched Job UID
-(installs only). Helm's outcome stays separate; report write errors fail without
-changing it or replaying install.
+A failed stdout notice names and preserves intent; dispatch stops. Otherwise the
+CLI syncs the unknown marker before Helm. `observeInstallationJob` records the
+first recognized, attempt-matched install Job UID. Report errors leave Helm's
+outcome unchanged and never replay install.
 
 Template failures add [offline-render guidance](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff).
 Helm stderr is bounded to 4 MiB in memory; raw diagnostics are not printed or saved.
@@ -149,14 +149,14 @@ ports, hosts or paths as `CHART_LISTENER_MISMATCH`.
 `openclaw.listenerEnv` passes routing settings to the hook, API and worker.
 `requireChartGatewayRouting` reports mismatched fields without values.
 
-The hook validates its name and distinct database Secret keys; both database containers can mount the CA. See [production settings](../reference/settings/production.md).
+The hook validates its name and distinct database Secret keys; both database containers can mount the CA ([production settings](../reference/settings/production.md)).
 
 For [handoff](../guides/deploy/production-handoff.md#resume-an-installation-in-progress),
 `internal/occcli/installation_doctor.go:installationHandoffCommand` verifies the receipt
 target before reading the Job. `initializationEvidence` checks its marker, UID, exact chart
 steps, controller and terminal status. A separate-upgrade Job verifies schema before bootstrap.
-Missing, replaced, refused or inconclusive evidence leaves the checkpoint unknown.
-Doctor reports Helm separately; report write errors exit `1`.
+Missing, replaced, refused or inconclusive evidence stays unknown.
+Doctor reports Helm separately; write errors exit `1`.
 
 `scripts/migrate-production.ts:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
@@ -382,7 +382,11 @@ The shell initializes the missing annotation, patches with UID and
 
 ## Changelog
 
+- 2026-11-19 07:23: Bind certificates. (authoring-run/7f466ed0-ec17-457f-846d-eb2049aa2be5 - b2bb9012f21bbbd83e0b2718192f01ac31038b55)
+
 - 2026-11-18 14:20: Reconcile credential inputs (PST). (authoring-run/fcffdcd5-85ba-4fd1-ad35-bfbbcd6953b6 - 10aa89ec05593393b17607d5b91ed06205f4ae2f)
+
+- 2026-11-18 21:28: Check mounted client certificates. (authoring-run/da926a36-2fb0-4cf2-8e67-0b1b08e9ead5 - 741723fa9a6d09a4d3cbf7e453cdac91936a9877)
 
 - 2026-11-18 13:04: Check Service dependencies. (authoring-run/fd6bab1e-731b-4e93-8d14-0e64f6280246 - cb0f0300e53fd639cec1741323c7799a425b6dc9)
 
