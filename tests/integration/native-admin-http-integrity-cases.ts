@@ -351,7 +351,7 @@ export function registerNativeAdminHttpIntegrityCases(
     assert.equal(complete.complete, true);
     const beforeHeaders = await liveNativeRequest(context, "/integrity-response-pre-header");
     assert.equal(beforeHeaders.statusCode, 503);
-    assert.match(beforeHeaders.body, /native gateway is unavailable/);
+    assert.match(beforeHeaders.body, /"code":"DEPENDENCY_UNAVAILABLE"/);
     assert.equal(beforeHeaders.complete, true);
     // Reset only after the client receives a prefix, so the relay has already committed 200.
     const interrupted = await liveNativeRequest(context, "/integrity-response-reset", {

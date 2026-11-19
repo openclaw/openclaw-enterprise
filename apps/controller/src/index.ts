@@ -16,6 +16,11 @@ import {
   ModelProviderSchema,
   ModelProviderModelSchema,
   CredentialSourceResponse,
+  RegisterTokenServiceSourceBody,
+  UpdateTokenServiceSourceBody,
+  TokenServiceSourceMetadata,
+  PushAgentCredentialsBody,
+  PushAgentCredentialsResponse,
   ErrorDetail as ErrorDetailSchema,
   ErrorResponse,
   isSecretHarnessAuth,
@@ -51,8 +56,6 @@ import {
   type SecretDriver,
   type SecretReference,
   type CredentialSourceReference,
-  type UpdateWorkspaceFileBody,
-  type WorkspaceFileName,
 } from "@openclaw-enterprise/contracts";
 import {
   AuthAccountRoleInvalidError,
@@ -69,7 +72,6 @@ import {
   DependencyUnavailableError,
   DeviceAuthorizationScopeMismatchError,
   DeviceAuthorizationStartError,
-  NoActiveAgentRevisionError,
   PostgresCommitOutcomeUnknownError,
   ResourceStateConflictError,
   RuntimeCredentialsForbiddenByClusterError,
@@ -112,20 +114,14 @@ import { createBootstrapResources } from "./composition/installation-bootstrap.t
 import { discoverMcpAuthorization } from "./connections/mcp-discovery.ts";
 import { listManagedMcpToolNames } from "./connections/mcp-tool-discovery.ts";
 import type { ConsoleTheme } from "./console-theme.ts";
-import {
-  ControllerWorkspaceFileUnknownOutcomeError,
-  isAllowedWorkspaceFileName,
-  type ControllerWorkspaceFileReadResult,
-  type ControllerWorkspaceFilesAccess,
-  type ControllerWorkspaceFileWriteResult,
-} from "./gateway/contracts.ts";
+import type { ControllerWorkspaceFilesAccess } from "./gateway/contracts.ts";
 import { normalizeNativeAdminDomain } from "./gateway/native-admin.ts";
 import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
 import { createAgentHandlers } from "./http/agents.ts";
 import { callerDenialMessage, GENERIC_DENIAL, requestedValues } from "./http/caller-denial.ts";
 import { configurationHandlers } from "./http/configurations.ts";
 import { credentialSourceHandlers } from "./http/credential-sources.ts";
-import { jsonPointer, type ErrorDetail } from "./http/error-details.ts";
+import { jsonPointer } from "./http/error-details.ts";
 import {
   canonicalFailure,
   cappedPath,
@@ -138,7 +134,6 @@ import {
   requestFailure,
   responseHeaders,
   unstorableTextFailure,
-  workspaceWithoutRunningVersion,
 } from "./http/errors.ts";
 import { iamHandlers } from "./http/iam.ts";
 import { MAX_JSON_BODY_DEPTH, tooDeepFailure, tooDeepJsonPath } from "./http/json-depth.ts";
@@ -182,6 +177,7 @@ import {
 import { secretHandlers } from "./http/secrets.ts";
 import { serviceAccountHandlers } from "./http/service-accounts.ts";
 import type { RequestContext, ResourceHandlers } from "./http/types.ts";
+import { createWorkspaceFileHandlers, WORKSPACE_FILE_BODY_LIMIT } from "./http/workspace-files.ts";
 
 export { cachedRequestValidators, cachedResponseSerializers } from "./http/route-compilers.ts";
 
@@ -298,9 +294,6 @@ const PRESET_BODY_LIMIT = 6 * PRESET_JSON_MAX_BYTES + 8 * 1024;
 // bindings, each a 253-character name and a reference: under 32 KiB), all written with
 // six-byte JSON escapes. Like Preset writes, these routes check the grant before the body.
 const CONFIGURATION_BODY_LIMIT = 6 * (1024 * 1024 + 32 * 1024);
-const WORKSPACE_FILE_CONTENT_LIMIT = 16 * 1024;
-// 16 KiB of content may need six bytes per UTF-8 byte in JSON (`\u0001`), plus `{"content":""}`.
-const WORKSPACE_FILE_BODY_LIMIT = 6 * WORKSPACE_FILE_CONTENT_LIMIT + 1024;
 // Path parameters such as IAM Role and AccessBinding IDs hold up to 200 characters (code
 // points). The router compares a parameter's decoded UTF-16 length, so 200 characters need
 // at most 400 units; its default of 100 refused contract-valid IDs before any handler ran.
@@ -313,6 +306,7 @@ const RESOURCE_ID_PREFIX = {
   configurationId: "cfg_",
   serviceAccountId: "sa_",
   secretId: "sec_",
+  sessionId: "sec_",
   credentialSourceId: "cs_",
   agentId: "agt_",
   revisionId: "rev_",
@@ -651,7 +645,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
 
   if (operation.operationId.endsWith("DeviceAuthorization")) {
     const saved = operation.operationId.includes("SavedAgent");
-    return [
+    const permissions: RequiredPermission[] = [
       {
         action: saved ? "update" : "create",
         resourceKind: "agent",
@@ -660,12 +654,17 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
       ...(saved
         ? [{ action: "read" as const, resourceKind: "agent" as const, scope: "requested" as const }]
         : []),
-      {
-        action: operation.operationId.startsWith("start") ? "create" : "operate",
-        resourceKind: "secret",
-        scope: operation.operationId.startsWith("start") ? "namespace" : "requested",
-      },
     ];
+    if (operation.operationId.startsWith("start")) {
+      permissions.push({ action: "create", resourceKind: "credential_source", scope: "namespace" });
+    } else if (operation.operationId.startsWith("poll")) {
+      permissions.push({
+        action: "operate",
+        resourceKind: "credential_source",
+        scope: "requested",
+      });
+    }
+    return permissions;
   }
 
   if (operation.operationId === "createNamespace") {
@@ -1178,6 +1177,13 @@ function permissionDescription(
       if (condition === "iam_binding_target") {
         return `Requires ${action} permission on the request body ${name} when the AccessBinding targets that resource kind.`;
       }
+      if (
+        operation?.operationId.startsWith("poll") &&
+        operation.operationId.endsWith("DeviceAuthorization") &&
+        resourceKind === "credential_source"
+      ) {
+        return `Requires ${action} permission on the exact credential source associated with the login.`;
+      }
       switch (scope) {
         case "installation":
           return `Requires ${action} permission for ${name} resources in the Installation.`;
@@ -1191,6 +1197,12 @@ function permissionDescription(
     })
     .join(" ");
 
+  if (
+    operation?.operationId.endsWith("DeviceAuthorization") &&
+    !operation.operationId.startsWith("start")
+  ) {
+    return `${description} Only the initiating actor can poll or cancel the login.`;
+  }
   if (operation?.operationId === "deployAgent") {
     return `${description} Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each ${names.credential_source} the Agent lists.`;
   }
@@ -1401,8 +1413,30 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.addSchema(StaticKeyConnectionTemplateVersionSchema);
   app.addSchema(ModelProviderModelSchema);
   app.addSchema(ModelProviderSchema);
+  app.addSchema(RegisterTokenServiceSourceBody);
+  app.addSchema(UpdateTokenServiceSourceBody);
+  app.addSchema(TokenServiceSourceMetadata);
+  app.addSchema(PushAgentCredentialsBody);
+  app.addSchema(PushAgentCredentialsResponse);
   void app.register(swagger, {
     convertConstToEnum: false,
+    refResolver: {
+      buildLocalReference(schema, _baseUri, _fragment, index) {
+        // Standalone contracts have public names. Keep Swagger's names and titles for route schemas.
+        if (typeof schema.$id === "string") {
+          schema.title ??= schema.$id;
+          switch (schema.$id) {
+            case "RegisterTokenServiceSourceBody":
+            case "UpdateTokenServiceSourceBody":
+            case "TokenServiceSourceMetadata":
+            case "PushAgentCredentialsBody":
+            case "PushAgentCredentialsResponse":
+              return schema.$id;
+          }
+        }
+        return `def-${index}`;
+      },
+    },
     openapi: {
       openapi: "3.1.0",
       info: {
@@ -1653,107 +1687,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     return disconnected.signal;
   }
 
-  function workspaceFileRequestSignal(
-    request: FastifyRequest,
-    reply: FastifyReply,
-    timeoutMs: number,
-  ): { readonly signal: AbortSignal; readonly dispose: () => void } {
-    const controller = new AbortController();
-    const abort = (message: string) => {
-      if (!controller.signal.aborted) {
-        controller.abort(new Error(message));
-      }
-    };
-    const timeout = setTimeout(
-      () => abort(`The workspace file request exceeded its ${timeoutMs}ms deadline.`),
-      timeoutMs,
-    );
-    timeout.unref?.();
-    const onRequestAborted = () =>
-      abort("The HTTP client disconnected before the workspace file request completed.");
-    const onReplyClosed = () => {
-      if (!reply.raw.writableEnded) {
-        abort("The HTTP client disconnected before the workspace file request completed.");
-      }
-    };
-    if (request.raw.aborted || reply.raw.destroyed) {
-      abort("The HTTP client disconnected before the workspace file request.");
-    }
-    request.raw.once("aborted", onRequestAborted);
-    reply.raw.once("close", onReplyClosed);
-    return {
-      signal: controller.signal,
-      dispose() {
-        clearTimeout(timeout);
-        request.raw.off("aborted", onRequestAborted);
-        reply.raw.off("close", onReplyClosed);
-      },
-    };
-  }
-
-  async function withWorkspaceFileRequestSignal<T>(
-    signal: AbortSignal,
-    operation: Promise<T>,
-    abortError: () => Error = dependencyUnavailable,
-  ): Promise<T> {
-    if (signal.aborted) {
-      // The operation has already started; observe any rejection after the HTTP deadline.
-      void operation.catch(() => {});
-      throw abortError();
-    }
-    let abort: (() => void) | undefined;
-    const aborted = new Promise<never>((_, reject) => {
-      abort = () => reject(abortError());
-      signal.addEventListener("abort", abort, { once: true });
-    });
-    try {
-      return await Promise.race([operation, aborted]);
-    } finally {
-      if (abort !== undefined) {
-        signal.removeEventListener("abort", abort);
-      }
-    }
-  }
-
-  function workspaceFileAuditEvent(
-    operation: OccApiRoute,
-    request: FastifyRequest,
-    resource: ResourceRef,
-    context: RequestContext,
-    filename: WorkspaceFileName,
-    result?: { readonly outcome: "success" | "failure"; readonly reasonCode?: string },
-  ): AuditEvent {
-    const base = event(operation, request, resource, "mutation", context, undefined, result);
-    return {
-      ...base,
-      details: {
-        ...base.details,
-        workspaceFileName: filename,
-      },
-    };
-  }
-
-  function validateWorkspaceFileBody(body: UpdateWorkspaceFileBody): void {
-    const details: ErrorDetail[] = [];
-    if (Buffer.byteLength(body.content, "utf8") > WORKSPACE_FILE_CONTENT_LIMIT) {
-      details.push({ path: "/content", code: "TOO_LONG" });
-    }
-    const isWellFormed = (
-      String.prototype as unknown as { isWellFormed: (this: string) => boolean }
-    ).isWellFormed;
-    if (body.content.includes("\u0000") || !isWellFormed.call(body.content)) {
-      details.push({ path: "/content", code: "INVALID_VALUE" });
-    }
-    if (details.length > 0) {
-      throw failure(
-        400,
-        "INVALID_REQUEST",
-        "The request does not match the operation contract.",
-        details,
-      );
-    }
-  }
-
   async function requireInstallationAdmin(
     request: FastifyRequest,
     operation: OccApiRoute,
@@ -1999,6 +1932,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       rejectDeployment: (request, context) =>
         rejectedMutation(context.operation, request, context, "NAMESPACE_NOT_READY"),
     }),
+    ...createWorkspaceFileHandlers({
+      access: options.workspaceFilesAccess,
+      timeoutMs: workspaceFileRequestTimeoutMs,
+      auditSink: options.auditSink,
+      requireCsrf: requireWorkspaceFileCsrf,
+      isAuditManaged: (request) => requestAuditState.has(request),
+      logAuditFailure: (request, operation, error) =>
+        logRequestAuditFailure(request, operation, operation.action, error),
+    }),
   };
 
   const chatBodyDeadlines = new WeakMap<FastifyRequest, ReturnType<typeof setTimeout>>();
@@ -2094,6 +2036,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "listAgentRepositoryOptions" &&
       operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
       operation.operationId !== "deleteServiceAccount" &&
+      operation.operationId !== "stopAgent" &&
       operation.operationId !== "listAgentRevisions" &&
       operation.operationId !== "listAgentAuditEvents" &&
       operation.operationId !== "recoverAgentFirstDeployment" &&
@@ -2744,14 +2687,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         result = await controller.pollAgentDeviceAuthorization(
           context.actorId,
           namespaceId,
-          params.secretId as string,
+          params.sessionId as string,
           agentId,
         );
       } else {
         await controller.cancelAgentDeviceAuthorization(
           context.actorId,
           namespaceId,
-          params.secretId as string,
+          params.sessionId as string,
           agentId,
         );
       }
@@ -2787,46 +2730,39 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
-    if (operation.operationId === "discoverAgentPlugins") {
-      const catalog = await controller.discoverAgentPlugins(
-        context.actorId,
-        namespaceId,
-        {
-          harnessId: body?.harnessId as "codex" | "openclaw",
-          ...(body?.credentialSource === undefined
-            ? {}
-            : { credentialSource: body.credentialSource as CredentialSourceReference }),
-          ...(body?.secretRef === undefined
-            ? { accessToken: body?.accessToken as string }
-            : { secretRef: body.secretRef as SecretReference }),
-          ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
-          ...(body?.q === undefined ? {} : { q: body.q as string }),
-        },
-        pluginDiscoveryRequestSignal(reply),
-      );
+    if (
+      operation.operationId === "discoverAgentPlugins" ||
+      operation.operationId === "discoverAgentPluginDetails"
+    ) {
+      const input = {
+        harnessId: body?.harnessId as "codex" | "openclaw",
+        ...(body?.credentialSource === undefined
+          ? {}
+          : { credentialSource: body.credentialSource as CredentialSourceReference }),
+        ...(body?.secretRef === undefined
+          ? { accessToken: body?.accessToken as string }
+          : { secretRef: body.secretRef as SecretReference }),
+      };
+      const result =
+        operation.operationId === "discoverAgentPlugins"
+          ? await controller.discoverAgentPlugins(
+              context.actorId,
+              namespaceId,
+              {
+                ...input,
+                ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
+                ...(body?.q === undefined ? {} : { q: body.q as string }),
+              },
+              pluginDiscoveryRequestSignal(reply),
+            )
+          : await controller.discoverAgentPluginDetails(
+              context.actorId,
+              namespaceId,
+              { ...input, pluginId: body?.pluginId as string },
+              pluginDiscoveryRequestSignal(reply),
+            );
       reply.header("cache-control", "no-store");
-      reply.send({ data: catalog, meta: { requestId: request.id } });
-      return;
-    }
-
-    if (operation.operationId === "discoverAgentPluginDetails") {
-      const plugin = await controller.discoverAgentPluginDetails(
-        context.actorId,
-        namespaceId,
-        {
-          harnessId: body?.harnessId as "codex" | "openclaw",
-          ...(body?.credentialSource === undefined
-            ? {}
-            : { credentialSource: body.credentialSource as CredentialSourceReference }),
-          ...(body?.secretRef === undefined
-            ? { accessToken: body?.accessToken as string }
-            : { secretRef: body.secretRef as SecretReference }),
-          pluginId: body?.pluginId as string,
-        },
-        pluginDiscoveryRequestSignal(reply),
-      );
-      reply.header("cache-control", "no-store");
-      reply.send({ data: plugin, meta: { requestId: request.id } });
+      reply.send({ data: result, meta: { requestId: request.id } });
       return;
     }
 
@@ -3163,206 +3099,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         meta: { requestId: request.id },
       });
       return;
-    }
-
-    if (
-      operation.operationId === "getAgentWorkspaceFile" ||
-      operation.operationId === "putAgentWorkspaceFile"
-    ) {
-      const deadlineMs = workspaceFileRequestTimeoutMs;
-      const workspaceFileSignal = workspaceFileRequestSignal(request, reply, deadlineMs);
-      const signal = workspaceFileSignal.signal;
-      const deadline = new Date(Date.now() + deadlineMs);
-      try {
-        requireWorkspaceFileCsrf(request, operation.operationId === "putAgentWorkspaceFile");
-        const filename = params.name;
-        if (filename === undefined || !isAllowedWorkspaceFileName(filename)) {
-          throw failure(
-            400,
-            "INVALID_REQUEST",
-            "The request does not match the operation contract.",
-          );
-        }
-        if (signal.aborted) {
-          throw dependencyUnavailable();
-        }
-        const { agent, revision } = await withWorkspaceFileRequestSignal(
-          signal,
-          operation.operationId === "getAgentWorkspaceFile"
-            ? controller.getReadableActiveAgentRevision(context.actorId, namespaceId, agentId)
-            : controller.getOperableActiveAgentRevision(context.actorId, namespaceId, agentId),
-        ).catch((error: unknown) => {
-          // Raised after the Agent read or operate authorization, so a caller without the grant
-          // still gets its 403; this names the Agent's state instead of a 503 (finding D768).
-          throw error instanceof NoActiveAgentRevisionError
-            ? workspaceWithoutRunningVersion(agentId, error.stopped)
-            : error;
-        });
-        const target = { kind: "agent" as const, id: agent.id, namespaceId: agent.namespaceId };
-        // After authorization, so a caller without the grant gets its 403, not this 503
-        // (finding 2584).
-        if (options.workspaceFilesAccess === undefined || signal.aborted) {
-          throw dependencyUnavailable();
-        }
-
-        if (operation.operationId === "getAgentWorkspaceFile") {
-          let result: ControllerWorkspaceFileReadResult;
-          try {
-            if (signal.aborted) {
-              throw dependencyUnavailable();
-            }
-            result = await withWorkspaceFileRequestSignal(
-              signal,
-              options.workspaceFilesAccess.read({
-                revision,
-                filename,
-                signal,
-                deadline,
-              }),
-            );
-          } catch {
-            throw dependencyUnavailable();
-          }
-          if (result.status === "missing") {
-            throw failure(404, "NOT_FOUND", "The requested workspace file was not found.");
-          }
-          if (result.status === "unavailable") {
-            throw dependencyUnavailable();
-          }
-          const isWellFormed = (
-            String.prototype as unknown as { isWellFormed: (this: string) => boolean }
-          ).isWellFormed;
-          if (
-            Buffer.byteLength(result.file.content, "utf8") > WORKSPACE_FILE_CONTENT_LIMIT ||
-            result.file.content.includes("\u0000") ||
-            !isWellFormed.call(result.file.content)
-          ) {
-            throw dependencyUnavailable();
-          }
-          reply.send({
-            data: { name: filename, content: result.file.content },
-            meta: { requestId: request.id },
-          });
-          return;
-        }
-
-        const writeBody = body as unknown as UpdateWorkspaceFileBody;
-        validateWorkspaceFileBody(writeBody);
-        const appendWorkspaceAudit = async (
-          event: AuditEvent,
-          onAbort?: () => Error,
-        ): Promise<void> => {
-          try {
-            await withWorkspaceFileRequestSignal(signal, options.auditSink.append(event), onAbort);
-          } catch (error) {
-            if (requestAuditState.has(request)) {
-              logRequestAuditFailure(request, operation, operation.action, error);
-            }
-            throw error;
-          }
-        };
-        let result: ControllerWorkspaceFileWriteResult;
-        try {
-          if (signal.aborted) {
-            throw dependencyUnavailable();
-          }
-          result = await withWorkspaceFileRequestSignal(
-            signal,
-            options.workspaceFilesAccess.write({
-              revision,
-              filename,
-              content: writeBody.content,
-              signal,
-              deadline,
-            }),
-            () =>
-              new ControllerWorkspaceFileUnknownOutcomeError(
-                "The workspace file write reached the OCC request deadline before the controller observed its outcome.",
-              ),
-          );
-        } catch (error) {
-          if (error instanceof ControllerWorkspaceFileUnknownOutcomeError) {
-            try {
-              await appendWorkspaceAudit(
-                workspaceFileAuditEvent(operation, request, target, context, filename, {
-                  outcome: "failure",
-                  reasonCode: "UNKNOWN_OUTCOME",
-                }),
-                () => new ControllerWorkspaceFileUnknownOutcomeError(error.message),
-              );
-            } catch {
-              throw failure(503, "UNKNOWN_OUTCOME", error.message);
-            }
-            throw failure(503, "UNKNOWN_OUTCOME", error.message);
-          }
-          try {
-            await appendWorkspaceAudit(
-              workspaceFileAuditEvent(operation, request, target, context, filename, {
-                outcome: "failure",
-                reasonCode: "DEPENDENCY_UNAVAILABLE",
-              }),
-            );
-          } catch {
-            throw dependencyUnavailable();
-          }
-          throw dependencyUnavailable();
-        }
-        if (result.status === "missing") {
-          try {
-            await appendWorkspaceAudit(
-              workspaceFileAuditEvent(operation, request, target, context, filename, {
-                outcome: "failure",
-                reasonCode: "FILE_MISSING",
-              }),
-            );
-          } catch {
-            if (!requestAuditState.has(request)) {
-              throw dependencyUnavailable();
-            }
-          }
-          throw failure(404, "NOT_FOUND", "The requested workspace file was not found.");
-        }
-        if (result.status === "unavailable") {
-          try {
-            await appendWorkspaceAudit(
-              workspaceFileAuditEvent(operation, request, target, context, filename, {
-                outcome: "failure",
-                reasonCode: "DEPENDENCY_UNAVAILABLE",
-              }),
-            );
-          } catch {
-            throw dependencyUnavailable();
-          }
-          throw dependencyUnavailable();
-        }
-        try {
-          await appendWorkspaceAudit(
-            workspaceFileAuditEvent(operation, request, target, context, filename, {
-              outcome: "success",
-            }),
-            () =>
-              new ControllerWorkspaceFileUnknownOutcomeError(
-                "The workspace file was written, but its final audit outcome could not be persisted before the request ended.",
-              ),
-          );
-        } catch {
-          throw failure(
-            503,
-            "UNKNOWN_OUTCOME",
-            "The workspace file was written, but its final audit outcome could not be persisted.",
-          );
-        }
-        reply.send({
-          data: {
-            name: filename,
-            size: Buffer.byteLength(writeBody.content, "utf8"),
-          },
-          meta: { requestId: request.id },
-        });
-        return;
-      } finally {
-        workspaceFileSignal.dispose();
-      }
     }
 
     if (

@@ -769,6 +769,8 @@ async function buildStaticEgressFixture(
       ...app,
       ...admissionControls,
       fixtureKind: /** @type {const} */ ("undeployed"),
+      placement,
+      countStoredSecrets: () => objects.size,
       agent,
       source,
       grant,

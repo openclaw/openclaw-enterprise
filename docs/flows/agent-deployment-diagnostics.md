@@ -161,16 +161,16 @@ state after admission.
   across container replacements; fix the cause, then deploy again.
 - A `gateway` `gateway-state-lock` check with code `UNAVAILABLE` is a Gateway
   that OpenClaw refused to configure or to start: an earlier Gateway process did
-  not stop cleanly, and the restarted container cannot verify that the lock
-  holder stopped. The log line quotes each holder OpenClaw lists. OpenClaw's own
-  start can refuse after `config validate` passed, for example for the owner
-  lease of a force-deleted Pod; it exits 1. A Kubernetes Gateway, dedicated or
-  embedded, that never served and exits 1 then runs the read-only
-  `openclaw gateway recover-lock --json` (never `--confirm`) and holds this
-  check when holders remain (`runtime-entrypoints.ts:holdGatewayStateLock`).
-  Every 5 minutes it retries a failed release of its own child's records,
-  inspects again, and restarts on purpose (exit 75) once no holder remains. A
-  failed inspection, or one with no holder, exits 1. Follow
+  not stop cleanly, and this container cannot verify that the holder stopped.
+  The log line quotes each holder. A dedicated Kubernetes Gateway holds it when
+  `config validate` meets the lock, as after a kill. OpenClaw's own start can
+  also refuse, for example on a force-deleted Pod's owner lease, and exit 1. A
+  Kubernetes Gateway that never served then runs the read-only
+  `openclaw gateway recover-lock --json` (never `--confirm`) and holds when
+  holders remain, or exits 1 if none do. Every 5 minutes either hold
+  (`runtime-entrypoints.ts:holdGatewayStartupFailure`) retries a failed release
+  of its own child's records and inspects again. It restarts on purpose
+  (exit 75) once no holder remains; a failed inspection exits 1. Follow
   [unverifiable state owner recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
 - An `agent` `gateway-state-lock` check is a Kubernetes Harness whose Doctor or
   native setup met node state lock holders. Both fail the deployment with

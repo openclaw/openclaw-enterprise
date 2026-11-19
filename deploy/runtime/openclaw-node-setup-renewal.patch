@@ -1,39 +1,8 @@
-diff --git a/docs/cli/connect.md b/docs/cli/connect.md
-index 6b662203b..c3a049766 100644
---- a/docs/cli/connect.md
-+++ b/docs/cli/connect.md
-@@ -186,10 +186,22 @@ npx openclaw connect https://gateway.example/j/<shortcode> --service
- ```
- 
- OpenClaw completes the first authenticated connection before installing the
--service. The short-lived bootstrap token is never stored in the service command
--or node-host configuration; later starts use the durable paired-device token.
--When restarting against that saved endpoint, ambient Gateway credentials from
--the environment or a co-located Gateway's config do not override the pairing.
-+service. Installation retains that connection's complete Gateway endpoint and
-+Cloudflare Access credentials, if any; Access credentials used only to fetch a
-+join URL are not passed to a different Gateway. Node-service startup preserves
-+that Access selection; `.env` files and the config's `env` section cannot add or
-+replace it. The generated service keeps its selected path and TLS pin, including
-+their absence, when saved node settings change. Inherited Access SecretRefs remain
-+references, so file and command providers can rotate their values. Only selected
-+conventional Access environment fields are copied into the service environment.
-+The short-lived bootstrap token is never stored in the service command
-+or node-host configuration. Paired services use `--require-device-auth`: later
-+starts require the saved device credential for that exact endpoint and TLS pin.
-+Missing credentials or a changed saved binding stop startup before authentication;
-+ambient Gateway credentials cannot replace the pairing. Reinstalling or repairing
-+the service preserves this requirement and its installed Access selection, even
-+when the interactive shell loads different credentials. To change a paired
-+service's Gateway, use a fresh `connect --service`.
- For an intentional shared-credential override, use `openclaw node run
- --auth-from-env` or `openclaw node install --auth-from-env --force`; see
- [node-host authentication](/cli/node#gateway-auth-for-node-host).
 diff --git a/docs/cli/node.md b/docs/cli/node.md
-index 90fc264a6..42a232314 100644
+index 85906093b20..88cc90173f1 100644
 --- a/docs/cli/node.md
 +++ b/docs/cli/node.md
-@@ -135,6 +135,13 @@ openclaw node run --pair "oc-pair://<setup-code>"
+@@ -136,6 +136,13 @@ openclaw node run --pair "oc-pair://<setup-code>"
  Stopping a foreground node also cancels startup. If termination arrives before
  the Gateway connection is ready, the node drains its prepared resources and exits.
  
@@ -47,7 +16,7 @@ index 90fc264a6..42a232314 100644
  Options:
  
  - `--host <host>`: Gateway WebSocket host (default: `127.0.0.1`)
-@@ -153,6 +160,7 @@ Options:
+@@ -154,6 +161,7 @@ Options:
  - `--display-name <name>`: Override the node display name
  - `--session-host`: Host worker sessions for this foreground process without changing the saved worker-hosting preference
  - `--auth-from-env`: Explicitly use environment Gateway credentials instead of the saved paired credential
@@ -55,7 +24,7 @@ index 90fc264a6..42a232314 100644
  - `--commands <ids>`: Persist an exact comma-separated command allowlist (repeatable); advertise only available matches and their required capabilities. Disables computer use, skills, plugin tools, MCP servers, and worker hosting. Omitting the flag preserves the saved list.
  - `--all-commands`: Advertise the full default command surface and forget any saved `--commands` allowlist. Cannot be combined with `--commands`.
  - `--share-installed-apps`: On macOS, advertise installed applications through `device.apps`
-@@ -161,7 +169,9 @@ Options:
+@@ -162,7 +170,9 @@ Options:
  ## Gateway auth for node host
  
  `--pair` uses a 10-minute single-use bootstrap token for the first connection.
@@ -66,7 +35,7 @@ index 90fc264a6..42a232314 100644
  bootstrap enrollment approves the device and its first declared command surface,
  including `system.run` when declared. Later command, capability, or permission
  expansion still requires `openclaw nodes approve`. Gateway command policy and
-@@ -171,6 +181,17 @@ using a setup link if that access is too broad. `node install --pair` is
+@@ -172,6 +182,17 @@ using a setup link if that access is too broad. `node install --pair` is
  intentionally unavailable because a short-lived bearer setup link must not be
  persisted in service arguments.
  
@@ -84,20 +53,7 @@ index 90fc264a6..42a232314 100644
  For a managed foreground process, `--pair-if-needed` reuses native device-token
  storage across restarts; it does not keep a separate enrollment marker. Preserve
  the node state directory. After the setup code expires, the node can still reconnect
-@@ -187,6 +208,12 @@ the state-directory `.env`, or a co-located Gateway's `gateway.auth.*` do not
- override that pairing. A paired service install does not save those ambient
- Gateway credentials in its service environment.
- 
-+Paired service installs record `--require-device-auth`. A missing token or changed
-+saved binding stops startup instead of falling back to shared credentials.
-+Reinstall and Doctor repair preserve that requirement; an explicit
-+`--auth-from-env` reinstall replaces it. Fresh unpaired installs retain the normal
-+config/environment authentication below.
-+
- For an intentional shared-token or password connection, use `--auth-from-env`:
- 
- ```bash
-@@ -201,8 +228,8 @@ when reinstalling if you want to retain this override. When this replaces an
+@@ -202,8 +223,8 @@ when reinstalling if you want to retain this override. When this replaces an
  available paired credential, startup names the selected environment variable
  in a warning without printing its value.
  
@@ -108,7 +64,7 @@ index 90fc264a6..42a232314 100644
  
  - `OPENCLAW_GATEWAY_TOKEN` / `OPENCLAW_GATEWAY_PASSWORD` are checked first.
  - Otherwise, local config fallback applies: `gateway.auth.token` / `gateway.auth.password`.
-@@ -212,8 +239,8 @@ resolution remains available (there are no `--token`/`--password` flags):
+@@ -213,8 +234,8 @@ resolution remains available (there are no `--token`/`--password` flags):
  - Node host auth resolution only honors `OPENCLAW_GATEWAY_*` env vars.
  - A CWD `.env` cannot supply `OPENCLAW_*` variables; those are blocked by workspace dotenv policy.
  
@@ -120,10 +76,10 @@ index 90fc264a6..42a232314 100644
  paired Gateway, without sending the local Gateway's password on restart.
  
 diff --git a/docs/plugins/sdk-runtime/gateway-and-nodes.md b/docs/plugins/sdk-runtime/gateway-and-nodes.md
-index 3f2a510d4..7240d0c4e 100644
+index c55a0624429..f51a2ac9600 100644
 --- a/docs/plugins/sdk-runtime/gateway-and-nodes.md
 +++ b/docs/plugins/sdk-runtime/gateway-and-nodes.md
-@@ -545,8 +545,14 @@ applicable policy also requires fresh publication admission.
+@@ -551,8 +551,14 @@ applicable policy also requires fresh publication admission.
      Shared preparation callbacks run once per node registry initialization, not
      per invocation or reconnect. Optional providers should retain a known
      unavailable state on expected preparation failure and let `isAvailable`
@@ -140,540 +96,20 @@ index 3f2a510d4..7240d0c4e 100644
      The cleanup callback returned by `watchAvailability` may return a promise.
      Node shutdown awaits that callback and reports cleanup failures.
  
-diff --git a/extensions/cua-computer/src/commands.ts b/extensions/cua-computer/src/commands.ts
-index f424a1008..99ff2ba03 100644
---- a/extensions/cua-computer/src/commands.ts
-+++ b/extensions/cua-computer/src/commands.ts
-@@ -417,9 +417,19 @@ export function createCuaComputerProvider(): ComputerUseProvider {
-     }),
-     isAvailable,
-     prepare: async () => {
--      if (isSupportedPlatform && macOsEndpoint === undefined && !stopped) {
--        await availabilityDriver().prepareAvailability?.();
-+      try {
-+        if (isSupportedPlatform && macOsEndpoint === undefined && !stopped) {
-+          await availabilityDriver().prepareAvailability?.();
-+        }
-+      } catch (error) {
-+        try {
-+          await disposeAvailabilityDriver();
-+        } catch (cleanupError) {
-+          throw new AggregateError([error, cleanupError], "CUA preparation and cleanup failed");
-+        }
-+        throw error;
-       }
-+      return disposeAvailabilityDriver;
-     },
-     watchAvailability: (_context, onChange) => {
-       let knownAvailable = isAvailable();
-diff --git a/extensions/cua-computer/src/driver-client.test.ts b/extensions/cua-computer/src/driver-client.test.ts
-index 340e82011..a87989697 100644
---- a/extensions/cua-computer/src/driver-client.test.ts
-+++ b/extensions/cua-computer/src/driver-client.test.ts
-@@ -1,7 +1,25 @@
-+import { registerComputerUseProvider } from "openclaw/plugin-sdk/computer-use";
-+import type { OpenClawPluginNodeHostCommand } from "openclaw/plugin-sdk/plugin-entry";
- import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
--import { execution } from "./commands.test-helpers.js";
-+import { resetNodeHostPluginRegistry } from "../../../src/node-host/plugin-node-host.test-support.js";
-+import { prepareNodeHostRuntime } from "../../../src/node-host/runtime.js";
-+import { createEmptyPluginRegistry } from "../../../src/plugins/registry-empty.js";
-+import {
-+  getActivePluginRegistry,
-+  resetPluginRuntimeStateForTest,
-+  setActivePluginRegistry,
-+} from "../../../src/plugins/runtime.js";
-+import { createPluginRecord } from "../../../src/plugins/status.test-helpers.js";
-+import { createTestProvider, execution } from "./commands.test-helpers.js";
- import { cuaToolResult } from "./cua-driver-contract.test-fixtures.js";
- 
-+// The real runtime receives this test's registered production provider. Native
-+// driver operations remain at the explicitly controlled SDK boundary below.
-+vi.mock("../../../src/plugins/loader.js", () => ({
-+  loadPluginRegistryHandle: () => getActivePluginRegistry(),
-+}));
-+vi.mock("../../../src/infra/path-env.js", () => ({ ensureOpenClawCliOnPath: vi.fn() }));
-+
- const mocks = vi.hoisted(() => {
-   const state = async () => ({
-     session: "openclaw-test",
-@@ -111,6 +129,8 @@ describe("CUA Driver direct session", () => {
-     driver = makeDriver();
-   });
-   afterEach(async () => {
-+    resetNodeHostPluginRegistry();
-+    resetPluginRuntimeStateForTest();
-     for (const created of drivers.splice(0)) {
-       await created.dispose();
-     }
-@@ -124,6 +144,205 @@ describe("CUA Driver direct session", () => {
-     expect(ScrollDirection).toEqual({ Up, Down, Left: ScrollLeft, Right: ScrollRight });
-   });
- 
-+  it.each([{ commands: ["computer.act"] }, { commands: ["screen.snapshot", "computer.act"] }])(
-+    "owns selected CUA commands through the actual node runtime: $commands",
-+    async ({ commands }) => {
-+      const provider = createTestProvider(driver);
-+      const watching = vi.spyOn(provider, "watchAvailability");
-+      const registry = createEmptyPluginRegistry();
-+      registry.plugins.push(
-+        createPluginRecord({ id: "cua-computer", enabled: true, status: "loaded" }),
-+      );
-+      registerComputerUseProvider(
-+        {
-+          registerNodeHostCommand: (command) =>
-+            registry.nodeHostCommands.push({
-+              pluginId: "cua-computer",
-+              command,
-+              source: "test",
-+            }),
-+        },
-+        provider,
-+      );
-+      setActivePluginRegistry(registry);
-+      const prepared = await prepareNodeHostRuntime({
-+        config: { nodeHost: { skills: { enabled: false } } },
-+        env: { PATH: process.env.PATH },
-+        commands,
-+      });
-+      let runtime: ReturnType<typeof prepared.start> | undefined;
-+      try {
-+        expect(prepared.manifest.commands.toSorted()).toEqual(commands.toSorted());
-+        expectCalls(1, "createConfigured", "createTrustedSession");
-+        runtime = prepared.start({
-+          client: { request: async <T>() => ({}) as T },
-+          onManifestChanged: vi.fn(),
-+        });
-+        // Selecting two commands backed by one provider must still acquire only
-+        // one availability watcher and one native owner.
-+        expect(watching).toHaveBeenCalledOnce();
-+        await runtime.close();
-+        expectCalls(1, "close", "shutdown");
-+      } finally {
-+        await runtime?.close();
-+        await prepared.dispose();
-+        watching.mockRestore();
-+      }
-+    },
-+  );
-+
-+  it("retains failed polling cleanup through repeated runtime shutdown without reacquiring native state", async () => {
-+    // Keep a real builtin command available while the optional provider starts
-+    // unavailable. Polling, registration and shutdown use production owners;
-+    // only the native SDK and the interval clock are controlled.
-+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-+    const unavailable = new Error("optional SDK temporarily unavailable");
-+    const construction = new Error("desktop target initialization failed");
-+    const cleanup = new Error("native shutdown failed");
-+    const loadSdk = vi.fn(async () => sdk as never).mockRejectedValueOnce(unavailable);
-+    const pollingDriver = makeDriver(loadSdk);
-+    const provider = createTestProvider(pollingDriver);
-+    const registry = createEmptyPluginRegistry();
-+    registry.plugins.push(
-+      createPluginRecord({ id: "cua-computer", enabled: true, status: "loaded" }),
-+    );
-+    registerComputerUseProvider(
-+      {
-+        registerNodeHostCommand: (command) =>
-+          registry.nodeHostCommands.push({
-+            pluginId: "cua-computer",
-+            command,
-+            source: "test",
-+          }),
-+      },
-+      provider,
-+    );
-+    setActivePluginRegistry(registry);
-+    let prepared: Awaited<ReturnType<typeof prepareNodeHostRuntime>> | undefined;
-+    let runtime:
-+      | ReturnType<Awaited<ReturnType<typeof prepareNodeHostRuntime>>["start"]>
-+      | undefined;
-+    try {
-+      prepared = await prepareNodeHostRuntime({
-+        config: { nodeHost: { skills: { enabled: false } } },
-+        env: { PATH: process.env.PATH },
-+        commands: ["system.which", "computer.act"],
-+      });
-+      expect(prepared.manifest.commands).not.toContain("computer.act");
-+      runtime = prepared.start({
-+        client: { request: async <T>() => ({}) as T },
-+        onManifestChanged: vi.fn(),
-+      });
-+      mocks.createDesktopTarget.mockImplementationOnce(() => {
-+        throw construction;
-+      });
-+      mocks.shutdown.mockRejectedValueOnce(cleanup);
-+      await vi.advanceTimersByTimeAsync(5_000);
-+      expectCalls(1, "createConfigured", "close", "shutdown");
-+      await vi.advanceTimersByTimeAsync(15_000);
-+      expect(loadSdk).toHaveBeenCalledTimes(2);
-+      expectCalls(1, "createConfigured", "close", "shutdown");
-+      const firstClose = await runtime.close().then(
-+        () => undefined,
-+        (error: unknown) => error,
-+      );
-+      expect(firstClose).toBeInstanceOf(AggregateError);
-+      await expect(runtime.close()).rejects.toBeInstanceOf(AggregateError);
-+      const disposed = pollingDriver.dispose();
-+      expect(pollingDriver.dispose()).toBe(disposed);
-+      await expect(disposed).rejects.toMatchObject({ errors: [construction, cleanup] });
-+      drivers.splice(drivers.indexOf(pollingDriver), 1);
-+      expectCalls(1, "createConfigured", "close", "shutdown");
-+    } finally {
-+      vi.useRealTimers();
-+      await runtime?.close().catch(() => {});
-+      await prepared?.dispose();
-+    }
-+  });
-+
-+  it("releases prepared CUA ownership before a watcher exists without retiring another provider", async () => {
-+    // Production provider, registration and driver wrapper; this suite controls
-+    // the SDK boundary and does not establish native ABI or desktop execution.
-+    const provider = createTestProvider(driver);
-+    const commands: OpenClawPluginNodeHostCommand[] = [];
-+    registerComputerUseProvider(
-+      { registerNodeHostCommand: (command) => commands.push(command) },
-+      provider,
-+    );
-+    const snapshot = commands.find((command) => command.command === "screen.snapshot")!;
-+    const close = await snapshot.prepare!({ config: {}, env: process.env });
-+    const independentClose = vi.fn();
-+    const independentShutdown = vi.fn(async () => {});
-+    mocks.createConfigured.mockReturnValueOnce({
-+      isAvailable: () => true,
-+      shutdown: independentShutdown,
-+    });
-+    mocks.createTrustedSession.mockReturnValueOnce({ ...mocks.session, close: independentClose });
-+    const independent = makeDriver();
-+    await independent.prepareAvailability?.();
-+    expectCalls(2, "createConfigured", "createTrustedSession");
-+    expect(mocks.close).not.toHaveBeenCalled();
-+    expect(typeof close).toBe("function");
-+    if (!close) {
-+      throw new Error("CUA preparation did not return its resource owner");
-+    }
-+    await close();
-+    await close();
-+    expectCalls(1, "close", "shutdown");
-+    expect(independent.isAvailable()).toBe(true);
-+    expect(independentClose).not.toHaveBeenCalled();
-+    expect(independentShutdown).not.toHaveBeenCalled();
-+    await independent.dispose();
-+    expect(independentClose).toHaveBeenCalledOnce();
-+    expect(independentShutdown).toHaveBeenCalledOnce();
-+  });
-+
-+  it("joins and reports partial native initialization cleanup failure", async () => {
-+    // Only the native SDK is controlled: the real lazy wrapper must retain the
-+    // acquired runtime/session even when constructing the target fails.
-+    const construction = new Error("desktop target initialization failed");
-+    const cleanup = new Error("runtime shutdown failed");
-+    const retiring = Promise.withResolvers<void>();
-+    const shutdownEntered = Promise.withResolvers<void>();
-+    mocks.createDesktopTarget.mockImplementationOnce(() => {
-+      throw construction;
-+    });
-+    mocks.shutdown.mockImplementationOnce(async () => {
-+      shutdownEntered.resolve();
-+      await retiring.promise;
-+      throw cleanup;
-+    });
-+    let prepared = false;
-+    const preparation = driver.prepareAvailability!();
-+    void preparation.then(
-+      () => {
-+        prepared = true;
-+      },
-+      () => {
-+        prepared = true;
-+      },
-+    );
-+    try {
-+      await shutdownEntered.promise;
-+      expect(prepared).toBe(false);
-+      expect(mocks.close).toHaveBeenCalledOnce();
-+      retiring.resolve();
-+      await expect(preparation).rejects.toMatchObject({
-+        message: "CUA initialization and cleanup failed",
-+        errors: [construction, cleanup],
-+      });
-+      expect(driver.isAvailable()).toBe(false);
-+      expect(mocks.shutdown).toHaveBeenCalledOnce();
-+      const disposal = driver.dispose();
-+      expect(driver.dispose()).toBe(disposal);
-+      await expect(disposal).rejects.toMatchObject({ errors: [construction, cleanup] });
-+      drivers.splice(drivers.indexOf(driver), 1);
-+    } finally {
-+      retiring.resolve();
-+      await preparation.catch(() => {});
-+    }
-+  });
-+
-   it("uses configured creation with one trusted lifecycle session", async () => {
-     await driver.prepareAvailability?.();
-     expect(driver.isAvailable()).toBe(true);
-@@ -353,7 +572,7 @@ describe("CUA Driver direct session", () => {
-     },
-   );
- 
--  it("reports failed expired-session cleanup and recovers on the next provider action", async () => {
-+  it("retains failed expired-session cleanup and refuses a replacement provider action", async () => {
-     const computer = await execution(driver);
-     await driver.prepareExecution?.();
-     const generation = driver.generation;
-@@ -363,13 +582,16 @@ describe("CUA Driver direct session", () => {
-     mocks.endSession.mockRejectedValueOnce(denied);
-     const action = '{"action":"type","text":"hello"}';
-     await expect(computer.act(action)).rejects.toBe(denied);
--    expect(driver.generation).not.toBe(generation);
-+    expect(driver.generation).toBe(generation);
-     expectCalls(1, "close", "shutdown");
-     expect(mocks.typeText).not.toHaveBeenCalled();
--    mocks.typeText.mockResolvedValueOnce(cuaToolResult({}));
--    expect(JSON.parse(await computer.act(action))).toMatchObject({ ok: true });
--    expectCalls(1, "typeText");
--    await computer.close("completion");
-+    await expect(computer.act(action)).rejects.toBe(denied);
-+    expect(mocks.typeText).not.toHaveBeenCalled();
-+    expect(mocks.createConfigured).toHaveBeenCalledOnce();
-+    await expect(computer.close("completion")).rejects.toBe(denied);
-+    await expect(driver.dispose()).rejects.toBe(denied);
-+    await expect(driver.dispose()).rejects.toBe(denied);
-+    drivers.splice(drivers.indexOf(driver), 1);
-   });
- 
-   it("does not loop if the replacement session also refuses authority", async () => {
-diff --git a/extensions/cua-computer/src/driver-client.ts b/extensions/cua-computer/src/driver-client.ts
-index eb4a833f8..423df9651 100644
---- a/extensions/cua-computer/src/driver-client.ts
-+++ b/extensions/cua-computer/src/driver-client.ts
-@@ -76,16 +76,22 @@ function asyncOptions(signal?: AbortSignal) {
-   return signal ? { signal } : undefined;
- }
- 
-+class CuaDriverInitializationCleanupError extends AggregateError {}
-+
- class DirectCuaDriverSession {
--  private readonly runtime: CuaDriverLike;
--  private readonly session: CuaDriverSessionLike;
--  private readonly publicSession = `openclaw-${randomUUID()}`;
--  private readonly desktopTarget: import("@trycua/cua-driver").ActionTarget;
-   private startPromise: Promise<void> | undefined;
-   private started = false;
-   private disposed = false;
- 
--  constructor(private readonly sdk: CuaDriverSdk) {
-+  private constructor(
-+    private readonly sdk: CuaDriverSdk,
-+    private readonly runtime: CuaDriverLike,
-+    private readonly session: CuaDriverSessionLike,
-+    private readonly publicSession: string,
-+    private readonly desktopTarget: import("@trycua/cua-driver").ActionTarget,
-+  ) {}
-+
-+  static async create(sdk: CuaDriverSdk): Promise<DirectCuaDriverSession> {
-     const unrestricted = sdk.SessionPermissionMode.Unrestricted;
-     // This is an OpenClaw-owned ceiling, not plugin configuration or tool input.
-     // The model cannot select a session or widen this authorization after start.
-@@ -98,19 +104,47 @@ class DirectCuaDriverSession {
-     };
-     // Never use CuaDriver.create(): configured creation fixes the authorization
-     // ceiling before the lifecycle session is admitted.
--    this.runtime = sdk.CuaDriver.createConfigured({
-+    const runtime = sdk.CuaDriver.createConfigured({
-       claudeCodeCompatibility: false,
-       authorization,
-     });
--    this.session = sdk.createTrustedSession(this.runtime, {
--      mode: unrestricted,
--      ttlSeconds: authorization.maxSessionTtlSeconds,
--      idleTtlSeconds: authorization.maxIdleTtlSeconds,
--      publicSession: this.publicSession,
--    });
--    // CUA 0.20 moves modality from session state to each action. Keep one
--    // lifecycle/authority owner and make the desktop target explicit per call.
--    this.desktopTarget = sdk.ActionTarget.Desktop.new({ displayId: "primary" });
-+    let session: CuaDriverSessionLike | undefined;
-+    try {
-+      const publicSession = `openclaw-${randomUUID()}`;
-+      session = sdk.createTrustedSession(runtime, {
-+        mode: unrestricted,
-+        ttlSeconds: authorization.maxSessionTtlSeconds,
-+        idleTtlSeconds: authorization.maxIdleTtlSeconds,
-+        publicSession,
-+      });
-+      // Modality belongs to each action; retain one lifecycle/authority owner.
-+      const target = sdk.ActionTarget.Desktop.new({ displayId: "primary" });
-+      return new DirectCuaDriverSession(sdk, runtime, session, publicSession, target);
-+    } catch (error) {
-+      const failures: unknown[] = [error];
-+      try {
-+        session?.close();
-+      } catch (cleanupError) {
-+        failures.push(cleanupError);
-+      }
-+      try {
-+        await runtime.shutdown();
-+      } catch (cleanupError) {
-+        failures.push(cleanupError);
-+      }
-+      try {
-+        (runtime as CuaDriverLike & { uniffiDestroy?: () => void }).uniffiDestroy?.();
-+      } catch (cleanupError) {
-+        failures.push(cleanupError);
-+      }
-+      if (failures.length > 1) {
-+        throw new CuaDriverInitializationCleanupError(
-+          failures,
-+          "CUA initialization and cleanup failed",
-+        );
-+      }
-+      throw error;
-+    }
-   }
- 
-   private async ensureSessionStarted(signal?: AbortSignal): Promise<void> {
-@@ -308,26 +342,31 @@ class LazyCuaDriverSession implements CuaDriverSession {
-   private loadFailure: unknown;
-   private hasLoadFailure = false;
-   private disposed = false;
-+  private failedCleanup: { error: unknown } | undefined;
-+  private disposal: Promise<void> | undefined;
- 
-   constructor(private readonly loadSdk: () => Promise<CuaDriverSdk>) {}
- 
-   private resolveRuntime(): DirectCuaDriverSession | undefined {
--    if (this.disposed || this.hasLoadFailure || this.loadPromise) {
-+    if (this.disposed || this.failedCleanup || this.hasLoadFailure || this.loadPromise) {
-       return undefined;
-     }
-     if (this.runtime) {
-       return this.runtime;
-     }
-     const loadPromise = this.loadSdk()
--      .then((sdk) => {
-+      .then(async (sdk) => {
-         this.loadedSdk = sdk;
--        this.runtime = new DirectCuaDriverSession(sdk);
-+        this.runtime = await DirectCuaDriverSession.create(sdk);
-         return this.runtime;
-       })
-       .catch((error: unknown) => {
-         materializeErrorStack(error);
-         this.loadFailure = error;
-         this.hasLoadFailure = true;
-+        if (error instanceof CuaDriverInitializationCleanupError) {
-+          this.failedCleanup ??= { error };
-+        }
-         throw error;
-       })
-       .finally(() => {
-@@ -366,10 +405,14 @@ class LazyCuaDriverSession implements CuaDriverSession {
-     // Loading failure remains an unavailable capability with its original
-     // diagnostic; an optional driver must not prevent the node from starting.
-     await this.loadPromise?.catch(() => {});
-+    // Optional unavailability cannot hide a failed retirement of native state.
-+    if (this.failedCleanup) {
-+      throw this.failedCleanup.error;
-+    }
-   }
- 
-   resetAvailabilityCache(): void {
--    if (!this.runtime && !this.disposed && !this.loadPromise) {
-+    if (!this.runtime && !this.disposed && !this.failedCleanup && !this.loadPromise) {
-       this.loadFailure = undefined;
-       this.hasLoadFailure = false;
-     }
-@@ -379,6 +422,9 @@ class LazyCuaDriverSession implements CuaDriverSession {
-     const assertActive = () => {
-       signal?.throwIfAborted();
-       assertAuthority?.();
-+      if (this.failedCleanup) {
-+        throw this.failedCleanup.error;
-+      }
-       if (this.disposed) {
-         throw unavailableError(new Error("cua-computer is stopping"));
-       }
-@@ -398,13 +444,21 @@ class LazyCuaDriverSession implements CuaDriverSession {
-         assertActive();
-         try {
-           await runtime.dispose();
--        } finally {
--          // Disposal is terminal even when native cleanup reports a failure.
--          this.runtime = undefined;
--          this.generation = randomUUID();
-+        } catch (error) {
-+          this.failedCleanup ??= { error };
-+          throw error;
-         }
-+        this.runtime = undefined;
-+        this.generation = randomUUID();
-         assertActive();
--        this.runtime = new DirectCuaDriverSession(sdk);
-+        try {
-+          this.runtime = await DirectCuaDriverSession.create(sdk);
-+        } catch (error) {
-+          if (error instanceof CuaDriverInitializationCleanupError) {
-+            this.failedCleanup ??= { error };
-+          }
-+          throw error;
-+        }
-         await this.runtime.getSessionState(signal).catch((replacementError: unknown) => {
-           throw driverToolError(sdk, replacementError);
-         });
-@@ -429,19 +483,29 @@ class LazyCuaDriverSession implements CuaDriverSession {
-   typeText = this.bindRuntime((runtime) => runtime.typeText.bind(runtime));
-   pressKey = this.bindRuntime((runtime) => runtime.pressKey.bind(runtime));
- 
--  async dispose(): Promise<void> {
--    if (this.disposed) {
--      return;
--    }
-+  dispose(): Promise<void> {
-     this.disposed = true;
--    try {
--      await this.loadPromise;
--    } catch {
--      // A failed load has no native resources to release.
--    }
--    // Mark disposed before waiting, so expiry recovery cannot reopen authority.
--    await this.preparePromise?.catch(() => {});
--    await this.runtime?.dispose();
-+    return (this.disposal ??= Promise.resolve().then(async () => {
-+      // Failed acquisition may still own a failed retirement. Both in-flight
-+      // paths must settle before reading that retained result.
-+      await this.loadPromise?.catch(() => {});
-+      await this.preparePromise?.catch(() => {});
-+      const failures: unknown[] = this.failedCleanup ? [this.failedCleanup.error] : [];
-+      try {
-+        await this.runtime?.dispose();
-+      } catch (error) {
-+        this.failedCleanup ??= { error };
-+        if (!failures.includes(error)) {
-+          failures.push(error);
-+        }
-+      }
-+      if (failures.length === 1) {
-+        throw failures[0];
-+      }
-+      if (failures.length > 1) {
-+        throw new AggregateError(failures, "CUA driver cleanup failed");
-+      }
-+    }));
-   }
- }
- 
 diff --git a/node-host-launcher.mjs b/node-host-launcher.mjs
-index 717493a9c..ce32e1bac 100644
+index 127161e7744..97413336290 100644
 --- a/node-host-launcher.mjs
 +++ b/node-host-launcher.mjs
-@@ -21,9 +21,13 @@ import { resolveOpenClawCliInvocation } from "./cli-invocation.mjs";
+@@ -22,12 +22,16 @@ import { resolveOpenClawCliInvocation } from "./cli-invocation.mjs";
  
  const CHILD_ARGUMENT = "--openclaw-node-host-child";
  const MANAGED_CHILD_ARGUMENT = "--openclaw-node-host-managed-child";
 +const PROTOCOL_ARGUMENT = "--openclaw-node-host-protocol=1";
 +const ACCEPTED_RESTART_ARGUMENT = "--openclaw-node-host-accepted-restart";
  const RESUME_CHILD_ARGUMENT = "--openclaw-node-host-resume-child";
+ const PIPE_CHILD_ARGUMENT = "--openclaw-node-host-pipe-child";
+ const MANAGED_PIPE_CHILD_ARGUMENT = "--openclaw-node-host-managed-pipe-child";
+ const CHANNEL_MARKER = Symbol.for("openclaw.node-host.launcher-channel");
  const CHILD_MARKER = Symbol.for("openclaw.node-host.launcher-child");
  const MANAGED_STATE_MARKER = Symbol.for("openclaw.node-host.managed-state-path");
 +const ACCEPTED_RESTART_MARKER = Symbol.for("openclaw.node-host.accepted-restart");
@@ -681,7 +117,7 @@ index 717493a9c..ce32e1bac 100644
  const RESTART_INTERVAL_MS = 12 * 60 * 60 * 1_000;
  const READY_TIMEOUT_MS = 5 * 60 * 1_000;
  const ROOT_VALUE_FLAGS = new Set(["--profile", "--log-level", "--container"]);
-@@ -348,8 +352,18 @@ export async function runNodeHostLauncher({ entryPath, packageRoot }) {
+@@ -437,8 +441,18 @@ export async function runNodeHostLauncher({ entryPath, packageRoot }) {
          "The private managed node launcher argument requires an absolute state database path.",
        );
      }
@@ -701,7 +137,7 @@ index 717493a9c..ce32e1bac 100644
      if (managedStatePath) {
        process[MANAGED_STATE_MARKER] = managedStatePath;
      }
-@@ -423,6 +437,7 @@ export async function runNodeHostLauncher({ entryPath, packageRoot }) {
+@@ -512,6 +526,7 @@ export async function runNodeHostLauncher({ entryPath, packageRoot }) {
    let restartArgs = process.argv.slice(2);
    let childExecArgv = process.execArgv;
    let childEnv = process.env;
@@ -709,21 +145,21 @@ index 717493a9c..ce32e1bac 100644
    let pending;
    let lastAcceptedRestartAt;
    let releaseActivation;
-@@ -475,8 +490,11 @@ export async function runNodeHostLauncher({ entryPath, packageRoot }) {
-       }
-       const selected = candidate ?? active;
-       const childArguments = selected.runtimeRoot
--        ? [MANAGED_CHILD_ARGUMENT, statePath]
--        : [CHILD_ARGUMENT];
-+        ? [MANAGED_CHILD_ARGUMENT, statePath, PROTOCOL_ARGUMENT]
-+        : [CHILD_ARGUMENT, PROTOCOL_ARGUMENT];
+@@ -572,7 +587,12 @@ export async function runNodeHostLauncher({ entryPath, packageRoot }) {
+         selected.manifest.openclaw?.nodeLauncherTransport === "byte-pipe-v1";
+       const childArgument = pipeTransport ? PIPE_CHILD_ARGUMENT : CHILD_ARGUMENT;
+       const managedArgument = pipeTransport ? MANAGED_PIPE_CHILD_ARGUMENT : MANAGED_CHILD_ARGUMENT;
+-      const childArguments = selected.runtimeRoot ? [managedArgument, statePath] : [childArgument];
++      const childArguments = selected.runtimeRoot
++        ? [managedArgument, statePath, PROTOCOL_ARGUMENT]
++        : [childArgument, PROTOCOL_ARGUMENT];
 +      if (acceptedAccessEnv) {
 +        childArguments.push(ACCEPTED_RESTART_ARGUMENT);
 +      }
        let ready = false;
        let candidateFailed = false;
        let bootstrap;
-@@ -488,8 +506,23 @@ export async function runNodeHostLauncher({ entryPath, packageRoot }) {
+@@ -584,8 +604,23 @@ export async function runNodeHostLauncher({ entryPath, packageRoot }) {
            execArgv: childExecArgv,
            args: [...childArguments, ...restartArgs],
          });
@@ -745,10 +181,10 @@ index 717493a9c..ce32e1bac 100644
          child = spawn(childInvocation.command, childInvocation.args, {
 -          env: childEnv,
 +          env: restartEnv,
-           stdio: ["inherit", "inherit", "inherit", "ipc"],
+           stdio: ["inherit", "inherit", "inherit", pipeTransport ? "pipe" : "ipc"],
          });
-         if (candidate) {
-@@ -534,9 +567,30 @@ export async function runNodeHostLauncher({ entryPath, packageRoot }) {
+         const messages = pipeTransport ? new LauncherMessageChannel(child.stdio[3]) : child;
+@@ -633,9 +668,30 @@ export async function runNodeHostLauncher({ entryPath, packageRoot }) {
                message.argv.every((arg) => typeof arg === "string") &&
                message.argv[0] === "node" &&
                message.argv[1] === "run" &&
@@ -766,9 +202,9 @@ index 717493a9c..ce32e1bac 100644
              ) {
                restartArgs = [...invocation.rootArgs, ...message.argv];
 +              acceptedAccessEnv = { ...message.accessEnv };
-+              child.send({ type: "openclaw.node.restart-args-result", ok: true }, () => {});
++              messages.send({ type: "openclaw.node.restart-args-result", ok: true }, () => {});
 +            } else {
-+              child.send(
++              messages.send(
 +                {
 +                  type: "openclaw.node.restart-args-result",
 +                  ok: false,
@@ -781,7 +217,7 @@ index 717493a9c..ce32e1bac 100644
              return;
            }
 diff --git a/packages/gateway-client/src/client-device-auth.ts b/packages/gateway-client/src/client-device-auth.ts
-index 4333f616f..7155dba21 100644
+index 4333f616f7f..7155dba2121 100644
 --- a/packages/gateway-client/src/client-device-auth.ts
 +++ b/packages/gateway-client/src/client-device-auth.ts
 @@ -66,7 +66,7 @@ export class GatewayClientDeviceAuth {
@@ -813,7 +249,7 @@ index 4333f616f..7155dba21 100644
  
    clear(
 diff --git a/packages/gateway-client/src/client.device-auth.test.ts b/packages/gateway-client/src/client.device-auth.test.ts
-index c54a7ccb6..a09e44998 100644
+index c54a7ccb662..a09e4499867 100644
 --- a/packages/gateway-client/src/client.device-auth.test.ts
 +++ b/packages/gateway-client/src/client.device-auth.test.ts
 @@ -85,9 +85,9 @@ function connectionAuthority() {
@@ -1847,7 +1283,7 @@ index c54a7ccb6..a09e44998 100644
      ["grant-revoked", false],
 diff --git a/packages/gateway-client/src/client.node-invocation.test.ts b/packages/gateway-client/src/client.node-invocation.test.ts
 new file mode 100644
-index 000000000..53feb1f39
+index 00000000000..53feb1f3945
 --- /dev/null
 +++ b/packages/gateway-client/src/client.node-invocation.test.ts
 @@ -0,0 +1,212 @@
@@ -2064,7 +1500,7 @@ index 000000000..53feb1f39
 +  }
 +});
 diff --git a/packages/gateway-client/src/client.ts b/packages/gateway-client/src/client.ts
-index 5805a94e3..f909e87b6 100644
+index 5805a94e363..f909e87b65d 100644
 --- a/packages/gateway-client/src/client.ts
 +++ b/packages/gateway-client/src/client.ts
 @@ -11,7 +11,12 @@ import {
@@ -2768,7 +2204,7 @@ index 5805a94e3..f909e87b6 100644
      const rawUrl = this.opts.url ?? "ws://127.0.0.1:18789";
      try {
 diff --git a/packages/gateway-client/src/connect-auth.ts b/packages/gateway-client/src/connect-auth.ts
-index b6ab7fa74..3417d9aaf 100644
+index b6ab7fa746b..3417d9aafae 100644
 --- a/packages/gateway-client/src/connect-auth.ts
 +++ b/packages/gateway-client/src/connect-auth.ts
 @@ -107,16 +107,22 @@ export function shouldRetryGatewayWithDeviceToken(params: {
@@ -2802,7 +2238,7 @@ index b6ab7fa74..3417d9aaf 100644
    }
    const advice = readConnectErrorRecoveryAdvice(params.errorDetails);
 diff --git a/packages/gateway-client/src/protocol-client.ts b/packages/gateway-client/src/protocol-client.ts
-index a36cf831f..463d81957 100644
+index a36cf831f57..463d81957ce 100644
 --- a/packages/gateway-client/src/protocol-client.ts
 +++ b/packages/gateway-client/src/protocol-client.ts
 @@ -420,8 +420,8 @@ export class GatewayProtocolClient<TPlan> {
@@ -2817,7 +2253,7 @@ index a36cf831f..463d81957 100644
          this.connectFailure = undefined;
          this.reconnectSupervisor.reset();
 diff --git a/packages/gateway-client/src/reconnect-policy.ts b/packages/gateway-client/src/reconnect-policy.ts
-index 02964eadc..205c883b6 100644
+index 02964eadc80..205c883b61e 100644
 --- a/packages/gateway-client/src/reconnect-policy.ts
 +++ b/packages/gateway-client/src/reconnect-policy.ts
 @@ -28,6 +28,7 @@ const NON_RECOVERABLE_AUTH_ERRORS = new Set<string>([
@@ -2839,7 +2275,7 @@ index 02964eadc..205c883b6 100644
      return !params.deviceTokenRetryPending;
    }
 diff --git a/packages/gateway-protocol/src/frame-guards.ts b/packages/gateway-protocol/src/frame-guards.ts
-index 815e2ec3f..068217011 100644
+index 815e2ec3f1d..0682170117b 100644
 --- a/packages/gateway-protocol/src/frame-guards.ts
 +++ b/packages/gateway-protocol/src/frame-guards.ts
 @@ -1,6 +1,12 @@
@@ -2866,870 +2302,8 @@ index 815e2ec3f..068217011 100644
 +export function isGatewayHelloOk(value: unknown): value is HelloOk {
 +  return Value.Check(HelloOkSchema, value);
 +}
-diff --git a/src/cli/connect-cli-access.test.ts b/src/cli/connect-cli-access.test.ts
-new file mode 100644
-index 000000000..e4831c48f
---- /dev/null
-+++ b/src/cli/connect-cli-access.test.ts
-@@ -0,0 +1,856 @@
-+// Real CLI selection, native profile storage, HTTPS requests and WSS upgrades.
-+// The daemon plan is real; OS service installation, command capabilities and
-+// the remote Gateway protocol peer are fixtures.
-+import { execFileSync } from "node:child_process";
-+import { X509Certificate } from "node:crypto";
-+import { once } from "node:events";
-+import fs from "node:fs/promises";
-+import { createServer, type Server } from "node:https";
-+import path from "node:path";
-+import { getCACertificates, setDefaultCACertificates } from "node:tls";
-+import { rawDataToString } from "@openclaw/gateway-client/websocket-data";
-+import { Command } from "commander";
-+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-+import { WebSocketServer } from "ws";
-+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-+import { resetConfigRuntimeState } from "../config/runtime-snapshot.js";
-+import type { GatewayServiceInstallArgs } from "../daemon/service-types.js";
-+import {
-+  buildMinimalGatewayHelloOkPayload,
-+  closeMinimalGatewayServer,
-+  sendMinimalGatewayConnectChallenge,
-+  sendMinimalGatewayResponse,
-+} from "../gateway/minimal-gateway.test-helpers.js";
-+import { clearDeviceAuthToken, loadDeviceAuthToken } from "../infra/device-auth-store.js";
-+import { loadOrCreateDeviceIdentity } from "../infra/device-identity.js";
-+import { configureNodeHost, loadNodeHostConfig } from "../node-host/config.js";
-+import { encodePairingSetupCode } from "../pairing/setup-code.js";
-+import { AsyncWorkScope } from "../shared/async-work-scope.js";
-+import { withEnvAsync } from "../test-utils/env.js";
-+import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-+import { acquireTestPortBlock } from "../test-utils/port-claims.js";
-+import { registerConnectCli } from "./connect-cli.js";
-+import { loadCliDotEnv } from "./dotenv.js";
-+import { runNodeDaemonInstall } from "./node-cli/daemon.js";
-+import { registerNodeCli } from "./node-cli/register.js";
-+
-+const fixture = vi.hoisted(() => ({
-+  install: vi.fn<(args: GatewayServiceInstallArgs) => Promise<void>>(),
-+  readCommand: vi.fn(),
-+  afterConsent: vi.fn<() => Promise<void>>(),
-+  connected: vi.fn(),
-+  runtime: { error: vi.fn(), exit: vi.fn(), log: vi.fn(), writeJson: vi.fn() },
-+}));
-+vi.mock("../runtime.js", async (importOriginal) => ({
-+  ...(await importOriginal<typeof import("../runtime.js")>()),
-+  defaultRuntime: fixture.runtime,
-+}));
-+// mock-isolation: Exercise the real daemon planner and environment builder;
-+// never register or launch a service on the test host.
-+vi.mock("../daemon/node-service.js", () => ({
-+  resolveNodeService: () => ({
-+    label: "Test node service",
-+    loadedText: "loaded",
-+    notLoadedText: "not loaded",
-+    install: fixture.install,
-+    readCommand: fixture.readCommand,
-+    isLoaded: async () => fixture.install.mock.calls.length > 0,
-+  }),
-+}));
-+// Host runtime/linger diagnostics are unrelated to endpoint and credential planning.
-+vi.mock("../commands/daemon-install-runtime-warning.js", () => ({
-+  emitNodeRuntimeWarning: async () => {},
-+}));
-+vi.mock("../daemon/systemd.js", async (importOriginal) => ({
-+  ...(await importOriginal<typeof import("../daemon/systemd.js")>()),
-+  isSystemdUserServiceAvailable: async () => false,
-+}));
-+// Keep the actual consent mutation. The callback schedules a separate profile
-+// writer after pairing has released custody and before service planning starts.
-+vi.mock("../config/config.js", async (importOriginal) => {
-+  const actual = await importOriginal<typeof import("../config/config.js")>();
-+  return {
-+    ...actual,
-+    mutateConfigFileWithRetry: async (
-+      ...args: Parameters<typeof actual.mutateConfigFileWithRetry>
-+    ) => {
-+      const result = await actual.mutateConfigFileWithRetry(...args);
-+      await fixture.afterConsent();
-+      return result;
-+    },
-+  };
-+});
-+// mock-isolation: No plugins, subprocesses or model execution are needed to
-+// observe actual credential-bearing requests and native pairing persistence.
-+vi.mock("../node-host/runtime.js", () => ({
-+  prepareNodeHostRuntime: async () => ({
-+    manifest: { caps: [], commands: [] },
-+    workerHostingEnabled: false,
-+    preparedWorkspacesEnabled: false,
-+    nativeInferenceEnabled: false,
-+    initialInventory: { skills: [], pluginTools: [] },
-+    dispose: async () => {},
-+    start: () => ({
-+      connect: () => {},
-+      updateGatewayConnection: fixture.connected,
-+      cancelAll: async () => {},
-+      close: async () => {},
-+    }),
-+  }),
-+}));
-+
-+const tempDirs = useAutoCleanupTempDirTracker(afterAll);
-+let cert: string;
-+let key: string;
-+let fingerprint: string;
-+const originalCa = getCACertificates("default");
-+let previousExitCode: typeof process.exitCode;
-+beforeEach(() => {
-+  previousExitCode = process.exitCode;
-+  fixture.install.mockResolvedValue(undefined);
-+  fixture.readCommand.mockResolvedValue(null);
-+  fixture.afterConsent.mockResolvedValue(undefined);
-+  vi.stubEnv("OPENCLAW_WRAPPER", process.execPath);
-+  vi.stubEnv("OPENCLAW_NIX_MODE", undefined);
-+  vi.stubEnv("OPENCLAW_SUPERVISOR_MODE", undefined);
-+  vi.stubEnv("OPENCLAW_SERVICE_KIND", undefined);
-+  vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", undefined);
-+  vi.stubEnv("OPENCLAW_GATEWAY_PASSWORD", undefined);
-+  vi.stubEnv("NODE_TEST_ACCESS_ID", undefined);
-+});
-+beforeAll(async () => {
-+  const directory = tempDirs.make("openclaw-access-tls-");
-+  const certPath = path.join(directory, "cert.pem");
-+  const keyPath = path.join(directory, "key.pem");
-+  execFileSync(
-+    "openssl",
-+    [
-+      "req",
-+      "-x509",
-+      "-newkey",
-+      "rsa:2048",
-+      "-sha256",
-+      "-days",
-+      "2",
-+      "-nodes",
-+      "-keyout",
-+      keyPath,
-+      "-out",
-+      certPath,
-+      "-subj",
-+      "/CN=localhost",
-+      "-addext",
-+      "subjectAltName=DNS:localhost,IP:127.0.0.1",
-+    ],
-+    { stdio: "ignore" },
-+  );
-+  [cert, key] = await Promise.all([fs.readFile(certPath, "utf8"), fs.readFile(keyPath, "utf8")]);
-+  fingerprint = new X509Certificate(cert).fingerprint256.replaceAll(":", "").toLowerCase();
-+  // Trust the fixture certificate normally; never disable TLS verification.
-+  setDefaultCACertificates([...originalCa, cert]);
-+});
-+afterAll(() => setDefaultCACertificates(originalCa));
-+afterEach(() => {
-+  process.exitCode = previousExitCode;
-+  vi.restoreAllMocks();
-+  vi.clearAllMocks();
-+  vi.unstubAllEnvs();
-+});
-+
-+async function runConnect(args: string[]) {
-+  const program = new Command().exitOverride();
-+  registerConnectCli(program);
-+  await program.parseAsync(["connect", ...args], { from: "user" });
-+}
-+async function waitForNodeConnection(running: Promise<unknown>, expectedUrl: string) {
-+  // An outbound auth frame alone does not prove that the runner accepted hello.
-+  await Promise.race([
-+    vi.waitFor(
-+      () =>
-+        expect(fixture.connected).toHaveBeenCalledWith(
-+          expect.objectContaining({ url: expectedUrl }),
-+        ),
-+      { timeout: 5_000 },
-+    ),
-+    running.then(() => {
-+      throw new Error("Node runner exited before connecting to the expected Gateway");
-+    }),
-+  ]);
-+}
-+async function closeServer(server: Server) {
-+  server.closeAllConnections();
-+  await new Promise<void>((resolve, reject) =>
-+    server.close((error) => (error ? reject(error) : resolve())),
-+  );
-+}
-+function selectExplicitAccess(explicit: boolean) {
-+  vi.stubEnv("CF_ACCESS_CLIENT_ID", explicit ? "current-access-id" : undefined);
-+  vi.stubEnv("CF_ACCESS_CLIENT_SECRET", explicit ? "current-access-secret" : undefined);
-+}
-+const savedAccess = { clientId: "saved-access-id", clientSecret: "saved-access-secret" };
-+
-+describe("connect Access credential boundaries", () => {
-+  it.each([false, true])(
-+    "HTTPS join with a replacement certificate uses only explicit Access (%s)",
-+    async (explicit) => {
-+      await withOpenClawTestState({ label: "join-access-boundary" }, async () => {
-+        selectExplicitAccess(explicit);
-+        const claim = await acquireTestPortBlock({ offsets: [0] });
-+        const requests: Array<{ id?: string | string[]; secret?: string | string[] }> = [];
-+        const server = createServer({ cert, key }, (request, response) => {
-+          requests.push({
-+            id: request.headers["cf-access-client-id"],
-+            secret: request.headers["cf-access-client-secret"],
-+          });
-+          response.writeHead(404).end();
-+        });
-+        try {
-+          server.listen(claim.port, "127.0.0.1");
-+          await once(server, "listening");
-+          await configureNodeHost({
-+            gateway: {
-+              host: "127.0.0.1",
-+              port: claim.port,
-+              tls: true,
-+              tlsFingerprint: "ab".repeat(32),
-+              cloudflareAccess: savedAccess,
-+            },
-+            fallbackDisplayName: "Saved join profile",
-+          });
-+          expect(fingerprint).not.toBe("ab".repeat(32));
-+          await runConnect([
-+            `https://127.0.0.1:${claim.port}/j/${"a".repeat(22)}`,
-+            "--ephemeral",
-+            "--pair-or-reconnect",
-+          ]);
-+          expect(requests).toEqual([
-+            {
-+              id: explicit ? "current-access-id" : undefined,
-+              secret: explicit ? "current-access-secret" : undefined,
-+            },
-+          ]);
-+          expect(fixture.runtime.error).toHaveBeenCalledWith(
-+            "Gateway join code was not found or has expired.",
-+          );
-+          expect(fixture.install).not.toHaveBeenCalled();
-+        } finally {
-+          await closeServer(server);
-+          await claim.release();
-+        }
-+      });
-+    },
-+  );
-+
-+  it.each([false, true])(
-+    "a different Gateway path receives only explicit Access (%s)",
-+    async (explicit) => {
-+      await withOpenClawTestState({ label: "path-access-boundary" }, async () => {
-+        selectExplicitAccess(explicit);
-+        const claim = await acquireTestPortBlock({ offsets: [0] });
-+        const server = createServer({ cert, key });
-+        const websocket = new WebSocketServer({ server });
-+        const connectAuth: Array<Record<string, unknown> | undefined> = [];
-+        const upgrades: Array<{
-+          path?: string;
-+          id?: string | string[];
-+          secret?: string | string[];
-+        }> = [];
-+        websocket.on("connection", (socket, request) => {
-+          upgrades.push({
-+            path: request.url,
-+            id: request.headers["cf-access-client-id"],
-+            secret: request.headers["cf-access-client-secret"],
-+          });
-+          sendMinimalGatewayConnectChallenge(socket, "access-boundary-challenge");
-+          socket.on("message", (data) => {
-+            const frame = JSON.parse(rawDataToString(data)) as {
-+              id: string;
-+              method: string;
-+              params?: { auth?: Record<string, unknown> };
-+            };
-+            if (frame.method === "connect") {
-+              connectAuth.push(frame.params?.auth);
-+            }
-+            sendMinimalGatewayResponse(
-+              socket,
-+              frame.id,
-+              frame.method === "connect"
-+                ? buildMinimalGatewayHelloOkPayload({
-+                    snapshot: {
-+                      presence: [],
-+                      health: {},
-+                      stateVersion: { presence: 0, health: 0 },
-+                      uptimeMs: 0,
-+                    },
-+                    auth: { role: "node", scopes: [], deviceToken: "path-bound-node-token" },
-+                  })
-+                : {},
-+            );
-+          });
-+        });
-+        try {
-+          server.listen(claim.port, "127.0.0.1");
-+          await once(server, "listening");
-+          await configureNodeHost({
-+            gateway: {
-+              host: "127.0.0.1",
-+              port: claim.port,
-+              tls: true,
-+              contextPath: "/saved",
-+              tlsFingerprint: fingerprint,
-+              cloudflareAccess: savedAccess,
-+            },
-+            fallbackDisplayName: "Saved Access profile",
-+          });
-+          await runConnect([
-+            encodePairingSetupCode({
-+              url: `wss://127.0.0.1:${claim.port}/selected`,
-+              tlsFingerprint: fingerprint,
-+              bootstrapToken: "path-bootstrap-token",
-+              expiresAtMs: Date.now() + 60_000,
-+            }),
-+            "--service",
-+          ]);
-+          expect(fixture.runtime.error).not.toHaveBeenCalled();
-+          // Bootstrap persists the grant before a second, token-only handshake.
-+          // Both TLS upgrades must preserve the selected Access boundary.
-+          expect(connectAuth).toEqual([
-+            { bootstrapToken: "path-bootstrap-token" },
-+            { deviceToken: "path-bound-node-token" },
-+          ]);
-+          const selectedUpgrade = {
-+            path: "/selected",
-+            id: explicit ? "current-access-id" : undefined,
-+            secret: explicit ? "current-access-secret" : undefined,
-+          };
-+          expect(upgrades).toEqual([selectedUpgrade, selectedUpgrade]);
-+          expect(fixture.install).toHaveBeenCalledOnce();
-+          const pairedPlan = fixture.install.mock.calls[0]![0];
-+          expect(pairedPlan.programArguments).toEqual([
-+            process.execPath,
-+            "node",
-+            "run",
-+            "--host",
-+            "127.0.0.1",
-+            "--port",
-+            String(claim.port),
-+            "--tls",
-+            "--tls-fingerprint",
-+            fingerprint,
-+            "--context-path",
-+            "/selected",
-+            "--require-device-auth",
-+          ]);
-+          expect(pairedPlan.environment?.CF_ACCESS_CLIENT_ID).toBe(
-+            explicit ? "current-access-id" : undefined,
-+          );
-+          expect(pairedPlan.environment?.CF_ACCESS_CLIENT_SECRET).toBe(
-+            explicit ? "current-access-secret" : undefined,
-+          );
-+          expect((await loadNodeHostConfig())?.gateway?.contextPath).toBe("/selected");
-+          const identity = loadOrCreateDeviceIdentity();
-+          expect(
-+            await loadDeviceAuthToken({ deviceId: identity.deviceId, role: "node" }),
-+          ).toMatchObject({ token: "path-bound-node-token" });
-+          if (!explicit) {
-+            // Standalone reinstall must match the persisted certificate pin when
-+            // deciding whether durable device auth replaces ambient shared auth.
-+            vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", "ambient-shared-token");
-+            vi.stubEnv("OPENCLAW_GATEWAY_PASSWORD", "ambient-shared-password");
-+            fixture.install.mockClear();
-+            await runNodeDaemonInstall({ force: true });
-+            expect(fixture.runtime.error).not.toHaveBeenCalled();
-+            expect(fixture.install).toHaveBeenCalledOnce();
-+            expect(
-+              fixture.install.mock.calls[0]![0].environment?.OPENCLAW_GATEWAY_TOKEN,
-+            ).toBeUndefined();
-+            expect(
-+              fixture.install.mock.calls[0]![0].environment?.OPENCLAW_GATEWAY_PASSWORD,
-+            ).toBeUndefined();
-+            fixture.install.mockClear();
-+            await runNodeDaemonInstall({ force: true, authFromEnv: true });
-+            expect(fixture.install).toHaveBeenCalledOnce();
-+            expect(fixture.install.mock.calls[0]![0].environment?.OPENCLAW_GATEWAY_TOKEN).toBe(
-+              "ambient-shared-token",
-+            );
-+            expect(fixture.install.mock.calls[0]![0].environment?.OPENCLAW_GATEWAY_PASSWORD).toBe(
-+              "ambient-shared-password",
-+            );
-+          }
-+        } finally {
-+          await closeMinimalGatewayServer(websocket);
-+          await closeServer(server);
-+          await claim.release();
-+        }
-+      });
-+    },
-+  );
-+
-+  it.each(["paired", "changed", "missing", "shared-first"] as const)(
-+    "service handoff keeps accepted authentication through install and reinstall (%s)",
-+    async (stateChange) => {
-+      const changeProfile = stateChange === "changed";
-+      const sharedFirst = stateChange === "shared-first";
-+      await withOpenClawTestState({ label: "join-service-handoff" }, async (state) => {
-+        await state.writeConfig({
-+          gateway: {
-+            mode: "remote",
-+            remote: { url: "wss://configured-other.example", token: "configured-other-token" },
-+          },
-+        });
-+        // The operator's join credentials come from the profile dotenv file,
-+        // which remains on disk when the accepted service starts for another origin.
-+        selectExplicitAccess(false);
-+        const writeJoinAccess = () =>
-+          fs.writeFile(
-+            state.statePath(".env"),
-+            "CF_ACCESS_CLIENT_ID=current-access-id\nCF_ACCESS_CLIENT_SECRET=current-access-secret\n",
-+          );
-+        if (!sharedFirst) {
-+          await writeJoinAccess();
-+          loadCliDotEnv();
-+        }
-+        vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", "ambient-shared-token");
-+        vi.stubEnv("OPENCLAW_GATEWAY_PASSWORD", "ambient-shared-password");
-+        const claim = await acquireTestPortBlock({ offsets: [0, 1] });
-+        const gatewayPort = claim.port + 1;
-+        const requests: Array<{ id?: string | string[]; secret?: string | string[] }> = [];
-+        const upgrades: Array<{
-+          path?: string;
-+          id?: string | string[];
-+          secret?: string | string[];
-+        }> = [];
-+        const connectAuth: Array<Record<string, unknown> | undefined> = [];
-+        const joinServer = createServer({ cert, key }, (request, response) => {
-+          requests.push({
-+            id: request.headers["cf-access-client-id"],
-+            secret: request.headers["cf-access-client-secret"],
-+          });
-+          response.writeHead(200, { "content-type": "application/json" }).end(
-+            JSON.stringify({
-+              url: `wss://127.0.0.1:${gatewayPort}`,
-+              bootstrapToken: "service-bootstrap-token",
-+              expiresAtMs: Date.now() + 60_000,
-+            }),
-+          );
-+        });
-+        const gatewayServer = createServer({ cert, key });
-+        const websocket = new WebSocketServer({ server: gatewayServer });
-+        websocket.on("connection", (socket, request) => {
-+          upgrades.push({
-+            path: request.url,
-+            id: request.headers["cf-access-client-id"],
-+            secret: request.headers["cf-access-client-secret"],
-+          });
-+          sendMinimalGatewayConnectChallenge(socket, "service-handoff-challenge");
-+          socket.on("message", (data) => {
-+            const frame = JSON.parse(rawDataToString(data)) as {
-+              id: string;
-+              method: string;
-+              params?: { auth?: Record<string, unknown> };
-+            };
-+            if (frame.method === "connect") {
-+              connectAuth.push(frame.params?.auth);
-+            }
-+            sendMinimalGatewayResponse(
-+              socket,
-+              frame.id,
-+              frame.method === "connect"
-+                ? buildMinimalGatewayHelloOkPayload({
-+                    snapshot: {
-+                      presence: [],
-+                      health: {},
-+                      stateVersion: { presence: 0, health: 0 },
-+                      uptimeMs: 0,
-+                    },
-+                    auth: { role: "node", scopes: [], deviceToken: "service-node-token" },
-+                  })
-+                : {},
-+            );
-+          });
-+        });
-+        try {
-+          joinServer.listen(claim.port, "127.0.0.1");
-+          gatewayServer.listen(gatewayPort, "127.0.0.1");
-+          await Promise.all([once(joinServer, "listening"), once(gatewayServer, "listening")]);
-+          if (changeProfile) {
-+            fixture.afterConsent.mockImplementationOnce(async () => {
-+              // Simulate a separate native profile writer selecting a different
-+              // same-host endpoint after the first runner released its custody.
-+              await configureNodeHost({
-+                gateway: {
-+                  host: "127.0.0.1",
-+                  port: gatewayPort,
-+                  tls: true,
-+                  contextPath: "/unaccepted",
-+                  tlsFingerprint: "ab".repeat(32),
-+                },
-+                fallbackDisplayName: "Concurrent endpoint selection",
-+              });
-+            });
-+          }
-+          if (sharedFirst) {
-+            // Current supported provenance: install before pairing, then let an
-+            // ordinary service hello persist its first durable node credential.
-+            const install = new Command().exitOverride();
-+            registerNodeCli(install);
-+            await install.parseAsync(
-+              [
-+                "node",
-+                "install",
-+                "--force",
-+                "--host",
-+                "127.0.0.1",
-+                "--port",
-+                String(gatewayPort),
-+                "--tls",
-+              ],
-+              { from: "user" },
-+            );
-+            expect(fixture.runtime.error).not.toHaveBeenCalled();
-+            expect(fixture.install).toHaveBeenCalledOnce();
-+            const initial = fixture.install.mock.calls[0]![0];
-+            expect(initial.programArguments).not.toContain("--require-device-auth");
-+            await withEnvAsync(initial.environment ?? {}, async () => {
-+              resetConfigRuntimeState();
-+              loadCliDotEnv();
-+              const scope = new AsyncWorkScope();
-+              const program = new Command().exitOverride();
-+              registerNodeCli(program);
-+              const started = scope.track(() =>
-+                program.parseAsync(initial.programArguments.slice(1), { from: "user" }),
-+              );
-+              void started.catch(() => undefined);
-+              try {
-+                await vi.waitFor(() => expect(connectAuth).toHaveLength(1), { timeout: 5_000 });
-+                expect(connectAuth[0]).toMatchObject({ token: "ambient-shared-token" });
-+                const identity = loadOrCreateDeviceIdentity();
-+                await vi.waitFor(
-+                  async () => {
-+                    expect(
-+                      await loadDeviceAuthToken({ deviceId: identity.deviceId, role: "node" }),
-+                    ).toMatchObject({ token: "service-node-token" });
-+                  },
-+                  { timeout: 5_000 },
-+                );
-+              } finally {
-+                scope.beginClose();
-+                await started.catch(() => undefined);
-+              }
-+            });
-+          } else {
-+            await runConnect([
-+              `https://127.0.0.1:${claim.port}/j/${"b".repeat(22)}`,
-+              "--service",
-+              ...(changeProfile ? ["--session-host"] : []),
-+            ]);
-+          }
-+          expect(fixture.runtime.error).not.toHaveBeenCalled();
-+          expect(fixture.install).toHaveBeenCalledOnce();
-+          let plan = fixture.install.mock.calls[0]![0];
-+          // Root and absent pin remain intentional, despite later profile data.
-+          expect(plan.programArguments).toEqual([
-+            process.execPath,
-+            "node",
-+            "run",
-+            "--host",
-+            "127.0.0.1",
-+            "--port",
-+            String(gatewayPort),
-+            "--tls",
-+            ...(sharedFirst ? [] : ["--require-device-auth"]),
-+          ]);
-+          expect(requests).toEqual(
-+            sharedFirst ? [] : [{ id: "current-access-id", secret: "current-access-secret" }],
-+          );
-+          const acceptedUpgrade = { path: "/", id: undefined, secret: undefined };
-+          if (sharedFirst) {
-+            expect(upgrades).toEqual([acceptedUpgrade]);
-+          } else {
-+            expect(connectAuth).toEqual([
-+              { bootstrapToken: "service-bootstrap-token" },
-+              { deviceToken: "service-node-token" },
-+            ]);
-+            expect(upgrades).toEqual([acceptedUpgrade, acceptedUpgrade]);
-+          }
-+          // Keep observing through reinstall: it must not send credentials itself.
-+          connectAuth.length = 0;
-+          upgrades.length = 0;
-+          expect(plan.environment?.CF_ACCESS_CLIENT_ID).toBeUndefined();
-+          expect(plan.environment?.CF_ACCESS_CLIENT_SECRET).toBeUndefined();
-+          expect(plan.environment?.OPENCLAW_GATEWAY_TOKEN).toBe(
-+            sharedFirst ? "ambient-shared-token" : undefined,
-+          );
-+          expect(plan.environment?.OPENCLAW_GATEWAY_PASSWORD).toBe(
-+            sharedFirst ? "ambient-shared-password" : undefined,
-+          );
-+          if (stateChange === "paired" || sharedFirst) {
-+            fixture.readCommand.mockResolvedValue({
-+              programArguments: plan.programArguments,
-+              environment: plan.environment,
-+            });
-+            fixture.install.mockClear();
-+            // A package update enters through an interactive CLI again. Its
-+            // trusted dotenv still holds credentials for the old join origin.
-+            if (sharedFirst) {
-+              await writeJoinAccess();
-+            }
-+            resetConfigRuntimeState();
-+            loadCliDotEnv();
-+            expect(process.env.CF_ACCESS_CLIENT_ID).toBe("current-access-id");
-+            const reinstall = new Command().exitOverride();
-+            registerNodeCli(reinstall);
-+            await reinstall.parseAsync(["node", "install", "--force"], { from: "user" });
-+            expect(fixture.runtime.error).not.toHaveBeenCalled();
-+            expect(fixture.install).toHaveBeenCalledOnce();
-+            plan = fixture.install.mock.calls[0]![0];
-+            expect(plan.programArguments).toContain("--require-device-auth");
-+            expect(plan.environment?.OPENCLAW_GATEWAY_TOKEN).toBeUndefined();
-+            expect(plan.environment?.OPENCLAW_GATEWAY_PASSWORD).toBeUndefined();
-+            expect(plan.environment?.CF_ACCESS_CLIENT_ID).toBeUndefined();
-+            expect(plan.environment?.CF_ACCESS_CLIENT_SECRET).toBeUndefined();
-+            fixture.install.mockClear();
-+            const changedEndpoint = new Command().exitOverride();
-+            registerNodeCli(changedEndpoint);
-+            await changedEndpoint.parseAsync(
-+              ["node", "install", "--force", "--host", "other.example"],
-+              { from: "user" },
-+            );
-+            expect(fixture.install).not.toHaveBeenCalled();
-+            expect(fixture.runtime.error).toHaveBeenCalledWith(
-+              expect.stringContaining("fresh connect --service"),
-+            );
-+            fixture.runtime.error.mockClear();
-+          }
-+          expect(connectAuth).toHaveLength(0);
-+          expect(upgrades).toHaveLength(0);
-+          const identity = loadOrCreateDeviceIdentity();
-+          if (stateChange === "missing") {
-+            await clearDeviceAuthToken({ deviceId: identity.deviceId, role: "node" });
-+          }
-+          const beforeConfig = await loadNodeHostConfig();
-+          const beforeToken = await loadDeviceAuthToken({
-+            deviceId: identity.deviceId,
-+            role: "node",
-+          });
-+          expect(plan.environment?.OPENCLAW_SERVICE_KIND).toBe("node");
-+          await withEnvAsync(plan.environment ?? {}, async () => {
-+            // Match actual startup: the installed environment is hydrated before
-+            // Commander reaches the runner, while unrelated shared auth is eligible.
-+            // A new service process has no runtime snapshot from its installer.
-+            // Keep actual config.env hydration instead of reusing that old cache.
-+            resetConfigRuntimeState();
-+            loadCliDotEnv();
-+            const scope = new AsyncWorkScope();
-+            const program = new Command().exitOverride();
-+            registerNodeCli(program);
-+            fixture.connected.mockClear();
-+            const restarted = scope.track(() =>
-+              program.parseAsync(plan.programArguments.slice(1), { from: "user" }),
-+            );
-+            void restarted.catch(() => undefined);
-+            try {
-+              if (stateChange === "paired" || sharedFirst) {
-+                await waitForNodeConnection(restarted, `wss://127.0.0.1:${gatewayPort}`);
-+                expect(connectAuth).toEqual([{ deviceToken: "service-node-token" }]);
-+                expect(upgrades).toEqual([acceptedUpgrade]);
-+              } else {
-+                await expect(restarted).rejects.toThrow(
-+                  "Required device authentication needs a saved token",
-+                );
-+                expect(upgrades).toHaveLength(0);
-+                expect(connectAuth).toHaveLength(0);
-+                expect(await loadNodeHostConfig()).toEqual(beforeConfig);
-+                expect(
-+                  await loadDeviceAuthToken({ deviceId: identity.deviceId, role: "node" }),
-+                ).toEqual(beforeToken);
-+              }
-+            } finally {
-+              scope.beginClose();
-+              await restarted.catch(() => undefined);
-+            }
-+          });
-+        } finally {
-+          await closeMinimalGatewayServer(websocket);
-+          await Promise.all([closeServer(gatewayServer), closeServer(joinServer)]);
-+          await claim.release();
-+        }
-+      });
-+    },
-+  );
-+
-+  it.each(["file", "custom-env", "conventional-env"] as const)(
-+    "service preserves and resolves rotating Access references (%s)",
-+    async (idSource) => {
-+      await withOpenClawTestState({ label: "service-access-rotation" }, async (state) => {
-+        selectExplicitAccess(false);
-+        const secretFile = state.statePath("access.json");
-+        await fs.writeFile(
-+          secretFile,
-+          JSON.stringify({ id: "file-id-before", secret: "secret-before" }),
-+          { mode: 0o600 },
-+        );
-+        await state.writeConfig({
-+          env: { vars: { NODE_TEST_ACCESS_ID: "custom-env-id" } },
-+          secrets: { providers: { access: { source: "file", path: secretFile, mode: "json" } } },
-+        });
-+        let access = {
-+          clientId:
-+            idSource === "custom-env"
-+              ? { source: "env" as const, provider: "default", id: "NODE_TEST_ACCESS_ID" }
-+              : { source: "file" as const, provider: "access", id: "/id" },
-+          clientSecret: { source: "file" as const, provider: "access", id: "/secret" },
-+        };
-+        const claim = await acquireTestPortBlock({ offsets: [0] });
-+        const server = createServer({ cert, key });
-+        const websocket = new WebSocketServer({ server });
-+        const upgrades: Array<{ id?: string | string[]; secret?: string | string[] }> = [];
-+        const authFrames: Array<Record<string, unknown> | undefined> = [];
-+        websocket.on("connection", (socket, request) => {
-+          upgrades.push({
-+            id: request.headers["cf-access-client-id"],
-+            secret: request.headers["cf-access-client-secret"],
-+          });
-+          sendMinimalGatewayConnectChallenge(socket, "reference-rotation-challenge");
-+          socket.on("message", (data) => {
-+            const frame = JSON.parse(rawDataToString(data)) as {
-+              id: string;
-+              method: string;
-+              params?: { auth?: Record<string, unknown> };
-+            };
-+            if (frame.method === "connect") {
-+              authFrames.push(frame.params?.auth);
-+            }
-+            sendMinimalGatewayResponse(
-+              socket,
-+              frame.id,
-+              frame.method === "connect"
-+                ? buildMinimalGatewayHelloOkPayload({
-+                    snapshot: {
-+                      presence: [],
-+                      health: {},
-+                      stateVersion: { presence: 0, health: 0 },
-+                      uptimeMs: 0,
-+                    },
-+                    auth: { role: "node", scopes: [], deviceToken: "rotation-node-token" },
-+                  })
-+                : {},
-+            );
-+          });
-+        });
-+        try {
-+          server.listen(claim.port, "127.0.0.1");
-+          await once(server, "listening");
-+          await configureNodeHost({
-+            gateway: {
-+              host: "127.0.0.1",
-+              port: claim.port,
-+              tls: true,
-+              tlsFingerprint: fingerprint,
-+              cloudflareAccess: access,
-+            },
-+            fallbackDisplayName: "Rotating Access node",
-+          });
-+          await runConnect([
-+            encodePairingSetupCode({
-+              url: `wss://127.0.0.1:${claim.port}`,
-+              tlsFingerprint: fingerprint,
-+              bootstrapToken: "reference-bootstrap-token",
-+              expiresAtMs: Date.now() + 60_000,
-+            }),
-+            "--service",
-+          ]);
-+          expect(fixture.runtime.error).not.toHaveBeenCalled();
-+          expect(fixture.install).toHaveBeenCalledOnce();
-+          let plan = fixture.install.mock.calls[0]![0];
-+          expect(plan.programArguments).toContain("--require-device-auth");
-+          expect(plan.environment?.CF_ACCESS_CLIENT_ID).toBeUndefined();
-+          expect(plan.environment?.CF_ACCESS_CLIENT_SECRET).toBeUndefined();
-+          expect((await loadNodeHostConfig())?.gateway?.cloudflareAccess).toEqual(access);
-+          expect(authFrames).toEqual([
-+            { bootstrapToken: "reference-bootstrap-token" },
-+            { deviceToken: "rotation-node-token" },
-+          ]);
-+          const initialUpgrade = {
-+            id: idSource === "custom-env" ? "custom-env-id" : "file-id-before",
-+            secret: "secret-before",
-+          };
-+          expect(upgrades).toEqual([initialUpgrade, initialUpgrade]);
-+          // Profile repair must not perform another authenticated connection.
-+          authFrames.length = 0;
-+          upgrades.length = 0;
-+
-+          if (idSource === "conventional-env") {
-+            // A paired service repair can retain one conventional environment
-+            // field alongside a rotating file ref, without converting that ref.
-+            access = {
-+              ...access,
-+              clientId: { source: "env", provider: "default", id: "CF_ACCESS_CLIENT_ID" },
-+            };
-+            await configureNodeHost({
-+              gateway: { ...(await loadNodeHostConfig())!.gateway, cloudflareAccess: access },
-+              fallbackDisplayName: "Mixed Access node",
-+            });
-+            fixture.install.mockClear();
-+            await withEnvAsync({ ...plan.environment, CF_ACCESS_CLIENT_ID: "installed-id" }, () =>
-+              runNodeDaemonInstall({
-+                force: true,
-+                host: "127.0.0.1",
-+                port: claim.port,
-+                tls: true,
-+                tlsFingerprint: fingerprint,
-+              }),
-+            );
-+            expect(fixture.runtime.error).not.toHaveBeenCalled();
-+            expect(fixture.install).toHaveBeenCalledOnce();
-+            plan = fixture.install.mock.calls[0]![0];
-+            expect(plan.environment?.CF_ACCESS_CLIENT_ID).toBe("installed-id");
-+            expect(plan.environment?.CF_ACCESS_CLIENT_SECRET).toBeUndefined();
-+          }
-+          expect(authFrames).toHaveLength(0);
-+          expect(upgrades).toHaveLength(0);
-+
-+          // Rotate the provider, retaining its reference. A copied service secret
-+          // would keep presenting the old value on this real TLS restart.
-+          await fs.writeFile(
-+            secretFile,
-+            JSON.stringify({ id: "file-id-after", secret: "secret-after" }),
-+            { mode: 0o600 },
-+          );
-+          await withEnvAsync({ ...plan.environment, NODE_TEST_ACCESS_ID: undefined }, async () => {
-+            // A new service process has no runtime snapshot from its installer.
-+            // Keep actual config.env hydration instead of reusing that old cache.
-+            resetConfigRuntimeState();
-+            loadCliDotEnv();
-+            const scope = new AsyncWorkScope();
-+            const program = new Command().exitOverride();
-+            registerNodeCli(program);
-+            fixture.connected.mockClear();
-+            const restarted = scope.track(() =>
-+              program.parseAsync(plan.programArguments.slice(1), { from: "user" }),
-+            );
-+            void restarted.catch(() => undefined);
-+            try {
-+              await waitForNodeConnection(restarted, `wss://127.0.0.1:${claim.port}`);
-+              expect(authFrames).toEqual([{ deviceToken: "rotation-node-token" }]);
-+              const expectedIds = {
-+                "conventional-env": "installed-id",
-+                file: "file-id-after",
-+                "custom-env": "custom-env-id",
-+              };
-+              expect(upgrades).toEqual([{ id: expectedIds[idSource], secret: "secret-after" }]);
-+              expect((await loadNodeHostConfig())?.gateway?.cloudflareAccess).toEqual(access);
-+            } finally {
-+              scope.beginClose();
-+              await restarted;
-+            }
-+          });
-+        } finally {
-+          await closeMinimalGatewayServer(websocket);
-+          await closeServer(server);
-+          await claim.release();
-+        }
-+      });
-+    },
-+  );
-+});
 diff --git a/src/cli/connect-cli.reconnect.test.ts b/src/cli/connect-cli.reconnect.test.ts
-index d49e4b692..d4126145e 100644
+index d49e4b69275..d4126145e20 100644
 --- a/src/cli/connect-cli.reconnect.test.ts
 +++ b/src/cli/connect-cli.reconnect.test.ts
 @@ -1,26 +1,47 @@
@@ -5517,7 +4091,7 @@ index d49e4b692..d4126145e 100644
      { name: "manual session host", token: true, wrongGateway: false, args: ["--session-host"] },
      { name: "manual service", token: true, wrongGateway: false, args: ["--service"] },
 diff --git a/src/cli/connect-cli.test.ts b/src/cli/connect-cli.test.ts
-index 9e839d27e..4c2a0ee00 100644
+index 9e839d27ea4..1d046d691d2 100644
 --- a/src/cli/connect-cli.test.ts
 +++ b/src/cli/connect-cli.test.ts
 @@ -57,6 +57,16 @@ const payload = {
@@ -5582,15 +4156,7 @@ index 9e839d27e..4c2a0ee00 100644
        displayName: "Build Node",
      });
      expect(release).toHaveBeenCalledOnce();
-@@ -426,6 +428,7 @@ describe("connect cli", () => {
-       nodeHost: { skills: { enabled: false }, workerRuns: { enabled: true } },
-     });
-     expect(mocks.runNodeDaemonInstall).toHaveBeenCalledWith({
-+      connection: acceptedConnection,
-       displayName: "Runner Node",
-       force: true,
-     });
-@@ -456,6 +459,16 @@ describe("connect cli", () => {
+@@ -456,6 +458,16 @@ describe("connect cli", () => {
      expect(mocks.runNodeDaemonInstall).not.toHaveBeenCalled();
    });
  
@@ -5607,7 +4173,7 @@ index 9e839d27e..4c2a0ee00 100644
    it("refuses plain HTTP join URLs for non-loopback gateways", async () => {
      await runConnect([`http://gateway.example/j/${"a".repeat(22)}`]);
  
-@@ -463,31 +476,141 @@ describe("connect cli", () => {
+@@ -463,31 +475,141 @@ describe("connect cli", () => {
      expect(mocks.fetchWithSsrFGuard).not.toHaveBeenCalled();
    });
  
@@ -5771,7 +4337,7 @@ index 9e839d27e..4c2a0ee00 100644
      await runConnect([`http://127.0.0.1/j/${"a".repeat(22)}`]);
  
 diff --git a/src/cli/connect-cli.ts b/src/cli/connect-cli.ts
-index 511f6b4ff..1e3834998 100644
+index 511f6b4ff23..62aa3623f98 100644
 --- a/src/cli/connect-cli.ts
 +++ b/src/cli/connect-cli.ts
 @@ -5,6 +5,7 @@ import { readRegularFile } from "@openclaw/fs-safe/advanced";
@@ -5913,16 +4479,8 @@ index 511f6b4ff..1e3834998 100644
          if (opts.sessionHost) {
            await mutateConfigFileWithRetry({
              writeOptions: {
-@@ -389,6 +404,7 @@ export function registerConnectCli(program: Command): void {
-           });
-         }
-         await runNodeDaemonInstall({
-+          connection,
-           displayName: opts.displayName,
-           commands: opts.commands,
-           allCommands: opts.allCommands,
 diff --git a/src/cli/node-cli/daemon.test.ts b/src/cli/node-cli/daemon.test.ts
-index 1fae81675..ea8b179c3 100644
+index 1fae81675ab..6e5c68c2da0 100644
 --- a/src/cli/node-cli/daemon.test.ts
 +++ b/src/cli/node-cli/daemon.test.ts
 @@ -1,7 +1,7 @@
@@ -5934,467 +4492,28 @@ index 1fae81675..ea8b179c3 100644
  const pinSnapshotMock = vi.hoisted(() =>
    vi.fn<() => DaemonRuntimePinSnapshot>(() => ({ revision: "empty", stored: false })),
  );
-@@ -351,6 +351,7 @@ describe("runNodeDaemonInstall", () => {
-       () => runNodeDaemonInstall({ force: true }),
-     );
-     const plan = installedPlan();
-+    expect(plan.programArguments).not.toContain("--require-device-auth");
-     expect(plan.environment?.OPENCLAW_GATEWAY_TOKEN).toBe("node-token");
-     expect(plan.environment?.OPENCLAW_GATEWAY_PASSWORD).toBe("node-password");
-     expect(plan.environmentValueSources).toEqual({
-@@ -361,6 +362,133 @@ describe("runNodeDaemonInstall", () => {
-     });
-   });
- 
-+  it("keeps a flag-like display name from enabling device authentication during reinstall", async () => {
-+    await withEnvAsync({ OPENCLAW_GATEWAY_TOKEN: "shared-service-token" }, async () => {
-+      await runNodeDaemonInstall({
-+        force: true,
-+        displayName: "--require-device-auth",
-+        nodeId: "--version",
-+      });
-+      const initial = installedPlan();
-+      expect(initial.programArguments).toContain("--display-name=--require-device-auth");
-+      expect(initial.programArguments).toContain("--node-id=--version");
-+      expect(initial.environment?.OPENCLAW_GATEWAY_TOKEN).toBe("shared-service-token");
-+
-+      // Reinstall the real generated command with no existing device identity.
-+      // The display value is not a request to switch this service's authentication.
-+      mocks.service.readCommand.mockResolvedValue({
-+        programArguments: initial.programArguments,
-+        environment: Object.fromEntries(
-+          Object.entries(initial.environment ?? {}).filter(
-+            (entry): entry is [string, string] => entry[1] !== undefined,
-+          ),
-+        ),
-+      });
-+      mocks.service.install.mockClear();
-+      await runNodeDaemonInstall({ force: true });
-+      const reinstalled = installedPlan();
-+      expect(reinstalled.programArguments).not.toContain("--require-device-auth");
-+      expect(reinstalled.environment?.OPENCLAW_GATEWAY_TOKEN).toBe("shared-service-token");
-+    });
-+  });
-+
-+  it.each([false, true])(
-+    "retains paired-service intent without a token unless explicitly overridden (env=%s)",
-+    async (authFromEnv) => {
-+      mocks.service.readCommand.mockResolvedValue({
-+        programArguments: [
-+          NODE_RUNTIME_PATH,
-+          "/openclaw.mjs",
-+          "node",
-+          "run",
-+          "--host",
-+          "saved-gateway.local",
-+          "--port",
-+          "18789",
-+          "--tls",
-+          "--tls-fingerprint",
-+          TLS_FINGERPRINT,
-+          "--context-path",
-+          "/saved",
-+          "--display-name=--require-device-auth",
-+          "--require-device-auth",
-+        ],
-+      });
-+      await withEnvAsync({ OPENCLAW_GATEWAY_TOKEN: "configured-other-token" }, () =>
-+        runNodeDaemonInstall({ force: true, authFromEnv }),
-+      );
-+      const plan = installedPlan();
-+      expect(plan.programArguments.includes("--require-device-auth")).toBe(!authFromEnv);
-+      expect(plan.programArguments.includes("--auth-from-env")).toBe(authFromEnv);
-+      expect(plan.environment?.OPENCLAW_GATEWAY_TOKEN).toBe(
-+        authFromEnv ? "configured-other-token" : undefined,
-+      );
-+    },
-+  );
-+
-+  it.each([
-+    { label: "duplicate host", extra: ["--host", "other.example"] },
-+    { label: "unsupported flag", extra: ["--unexpected-option"] },
-+    {
-+      label: "display name repeated in equals and split forms",
-+      extra: ["--display-name=first", "--display-name", "second"],
-+    },
-+    {
-+      label: "node ID repeated in split and equals forms",
-+      extra: ["--node-id", "first", "--node-id=second"],
-+    },
-+  ])("rejects ambiguous or unsupported paired service options: $label", async ({ extra }) => {
-+    mocks.service.readCommand.mockResolvedValue({
-+      programArguments: [
-+        NODE_RUNTIME_PATH,
-+        "/openclaw.mjs",
-+        "node",
-+        "run",
-+        "--host",
-+        "saved-gateway.local",
-+        "--port",
-+        "18789",
-+        "--tls",
-+        "--require-device-auth",
-+        ...extra,
-+      ],
-+    });
-+    await runNodeDaemonInstall({ force: true });
-+    expect(mocks.service.install).not.toHaveBeenCalled();
-+    expect(mocks.runtime.error).toHaveBeenCalledWith(
-+      expect.stringContaining("ambiguous or unsupported"),
-+    );
-+  });
-+
-+  it("rejects an installed plaintext command that also specifies a certificate pin", async () => {
-+    // Match the unpinned saved endpoint so silently discarding the installed pin
-+    // would otherwise pass the binding check and publish a plaintext service.
-+    mocks.loadNodeHostConfig.mockResolvedValue({
-+      gateway: { host: "saved-gateway.local", port: 18789, tls: false },
-+    });
-+    mocks.service.readCommand.mockResolvedValue({
-+      programArguments: [
-+        NODE_RUNTIME_PATH,
-+        "/openclaw.mjs",
-+        "node",
-+        "run",
-+        "--host",
-+        "saved-gateway.local",
-+        "--port",
-+        "18789",
-+        "--no-tls",
-+        "--tls-fingerprint",
-+        TLS_FINGERPRINT,
-+        "--require-device-auth",
-+      ],
-+    });
-+    await runNodeDaemonInstall({ force: true });
-+    expect(mocks.service.install).not.toHaveBeenCalled();
-+    expect(mocks.runtime.error).toHaveBeenCalledWith(
-+      expect.stringContaining("--no-tls cannot be combined with --tls-fingerprint"),
-+    );
-+  });
-+
-   it.each([
-     [{ tls: false, tlsFingerprint: TLS_FINGERPRINT }, "--no-tls cannot be combined"],
-     [{ tlsFingerprint: "sha256:abc123" }, "Invalid TLS fingerprint"],
 diff --git a/src/cli/node-cli/daemon.ts b/src/cli/node-cli/daemon.ts
-index 95a7cd88e..f879a9fe6 100644
+index 95a7cd88e95..92f8722846e 100644
 --- a/src/cli/node-cli/daemon.ts
 +++ b/src/cli/node-cli/daemon.ts
-@@ -40,7 +40,16 @@ import {
- import { loadDeviceIdentityIfPresentAsync } from "../../infra/device-identity-async.js";
+@@ -41,6 +41,7 @@ import { loadDeviceIdentityIfPresentAsync } from "../../infra/device-identity-as
  import { formatErrorMessage } from "../../infra/errors.js";
  import { loadNodeHostConfig } from "../../node-host/config.js";
--import { canReuseNodeHostDeviceToken } from "../../node-host/gateway-auth.js";
-+import {
-+  canReuseNodeHostDeviceToken,
-+  normalizeSavedNodeHostTlsFingerprint,
-+} from "../../node-host/gateway-auth.js";
-+import {
-+  isNodeHostAccessEnvInput,
-+  nodeHostGatewaysShareScope,
-+} from "../../node-host/gateway-cloudflare-access.js";
+ import { canReuseNodeHostDeviceToken } from "../../node-host/gateway-auth.js";
 +import { resolveNodeGatewayOptions } from "../../node-host/gateway-options.js";
-+import type { NodeHostConnectionResult } from "../../node-host/runner.js";
  import { defaultRuntime } from "../../runtime.js";
  import { VERSION } from "../../version.js";
  import { formatCliCommand } from "../command-format.js";
-@@ -66,9 +75,10 @@ import {
+@@ -66,7 +67,6 @@ import {
  import { inspectServiceRuntimeIntent } from "../daemon-cli/status.runtime-intent.js";
  import { formatInvalidConfigPort, formatInvalidPortOption } from "../error-format.js";
  import { quoteCliArg } from "../quote-cli-arg.js";
 -import { resolveNodeGatewayOptions } from "./gateway-options.js";
  
  type NodeDaemonInstallOptions = Parameters<typeof resolveNodeGatewayOptions>[0] & {
-+  /** Accepted one-shot connection, authoritative over mutable profile defaults. */
-+  connection?: NodeHostConnectionResult;
    nodeId?: string;
-   displayName?: string;
-   shareInstalledApps?: boolean;
-@@ -121,6 +131,103 @@ async function warnIfSystemdUserLingerDisabled(warn: (message: string) => void):
-   );
- }
- 
-+/** Classify option positions without interpreting freeform values as flags. */
-+function readNodeServiceOptions(argv: string[]) {
-+  const start = argv.findIndex((arg, index) => arg === "node" && argv[index + 1] === "run");
-+  const valued = new Set([
-+    "--host",
-+    "--port",
-+    "--context-path",
-+    "--tls-fingerprint",
-+    "--node-id",
-+    "--display-name",
-+    "--commands",
-+  ]);
-+  const boolean = new Set([
-+    "--tls",
-+    "--no-tls",
-+    "--share-installed-apps",
-+    "--no-share-installed-apps",
-+    "--all-commands",
-+    "--require-device-auth",
-+    "--auth-from-env",
-+  ]);
-+  const values = new Map<string, string | true>();
-+  if (start < 0) {
-+    return undefined;
-+  }
-+  for (let index = start + 2; index < argv.length; index++) {
-+    const argument = argv[index]!;
-+    const inlineValue = /^(--display-name|--node-id)=(.*)$/su.exec(argument);
-+    const flag = inlineValue?.[1] ?? argument;
-+    if (values.has(flag) || (!valued.has(flag) && !boolean.has(flag))) {
-+      throw new Error(
-+        "Paired node service has ambiguous or unsupported options; reconnect with connect --service.",
-+      );
-+    }
-+    if (inlineValue) {
-+      values.set(flag, inlineValue[2]!);
-+    } else if (valued.has(flag)) {
-+      const value = argv[++index];
-+      if (value === undefined) {
-+        throw new Error(
-+          "Paired node service has an incomplete command; reconnect with connect --service.",
-+        );
-+      }
-+      values.set(flag, value);
-+    } else {
-+      values.set(flag, true);
-+    }
-+  }
-+  return values;
-+}
-+
-+/** Read only the complete command shape emitted by resolveNodeProgramArguments. */
-+function readPairedServiceGateway(values: ReturnType<typeof readNodeServiceOptions>) {
-+  if (!values) {
-+    throw new Error(
-+      "Paired node service has an unsupported command; reconnect with connect --service.",
-+    );
-+  }
-+  const host = values.get("--host");
-+  const port = values.get("--port");
-+  if (
-+    typeof host !== "string" ||
-+    typeof port !== "string" ||
-+    values.has("--tls") === values.has("--no-tls") ||
-+    (values.has("--require-device-auth") && values.has("--auth-from-env"))
-+  ) {
-+    throw new Error(
-+      "Paired node service needs a complete endpoint; reconnect with connect --service.",
-+    );
-+  }
-+  if (values.has("--no-tls") && values.has("--tls-fingerprint")) {
-+    throw new Error(
-+      "Paired node service: --no-tls cannot be combined with --tls-fingerprint; reconnect with connect --service.",
-+    );
-+  }
-+  const text = (flag: string) => {
-+    const value = values.get(flag);
-+    return typeof value === "string" ? value : undefined;
-+  };
-+  const selected = resolveNodeGatewayOptions(
-+    {
-+      host,
-+      port,
-+      tls: values.has("--tls"),
-+      contextPath: text("--context-path"),
-+      tlsFingerprint: text("--tls-fingerprint"),
-+    },
-+    null,
-+    undefined,
-+    {},
-+  );
-+  if (selected.port === null) {
-+    throw new Error("Paired node service has an invalid port; reconnect with connect --service.");
-+  }
-+  return { ...selected, port: selected.port };
-+}
-+
- export async function runNodeDaemonInstall(opts: NodeDaemonInstallOptions) {
-   const { json, stdout, warnings, warn, emit, emitMessage, fail } =
-     createDaemonInstallActionContext(opts.json);
-@@ -130,10 +237,126 @@ export async function runNodeDaemonInstall(opts: NodeDaemonInstallOptions) {
-     return;
-   }
- 
--  const config = await loadNodeHostConfig();
-+  const service = resolveNodeService();
-+  let existingServiceCommand;
-+  try {
-+    existingServiceCommand = await service.readCommand(process.env);
-+  } catch (error) {
-+    fail(`Node service inspection failed: ${formatErrorMessage(error)}`);
-+    return;
-+  }
-+  const existingManagedCommand = resolveManagedGatewayServiceCommand(existingServiceCommand);
-+  const installEnv: NodeJS.ProcessEnv = {
-+    ...process.env,
-+    OPENCLAW_WRAPPER:
-+      process.env.OPENCLAW_WRAPPER ?? existingManagedCommand?.environment?.OPENCLAW_WRAPPER,
-+  };
-+  let requireDeviceAuth = false;
-   let gatewayOptions;
-   try {
--    gatewayOptions = resolveNodeGatewayOptions(opts, config);
-+    const existingServiceOptions =
-+      !opts.connection && existingManagedCommand
-+        ? readNodeServiceOptions(existingManagedCommand.programArguments)
-+        : undefined;
-+    const existingRequiresDeviceAuth =
-+      existingServiceOptions?.has("--require-device-auth") === true;
-+    requireDeviceAuth = !opts.authFromEnv && Boolean(opts.connection || existingRequiresDeviceAuth);
-+    if (opts.connection) {
-+      // An accepted connection names a WebSocket endpoint, never a saved OpenClaw ID target.
-+      gatewayOptions = { ...opts.connection.gateway, gatewayTarget: undefined };
-+      // Join Access may authorize a different origin from the accepted Gateway.
-+      delete installEnv.CF_ACCESS_CLIENT_ID;
-+      delete installEnv.CF_ACCESS_CLIENT_SECRET;
-+      const accessSource = opts.connection.gateway.cloudflareAccess;
-+      const resolvedAccess = opts.connection.cloudflareAccess;
-+      if (accessSource && resolvedAccess) {
-+        if (isNodeHostAccessEnvInput(accessSource.clientId, "clientId")) {
-+          installEnv.CF_ACCESS_CLIENT_ID = resolvedAccess.clientId;
-+        }
-+        if (isNodeHostAccessEnvInput(accessSource.clientSecret, "clientSecret")) {
-+          installEnv.CF_ACCESS_CLIENT_SECRET = resolvedAccess.clientSecret;
-+        }
-+      }
-+      delete installEnv.OPENCLAW_GATEWAY_TOKEN;
-+      delete installEnv.OPENCLAW_GATEWAY_PASSWORD;
-+    } else {
-+      const saved = await loadNodeHostConfig(installEnv);
-+      if (saved?.gateway?.kind === "openclaw-id") {
-+        // An OpenClaw ID node resumes its enrolled key. It has no device-token pairing
-+        // to retain, and its target replaces any previously installed WebSocket binding.
-+        requireDeviceAuth = false;
-+        gatewayOptions = resolveNodeGatewayOptions(opts, saved);
-+      } else {
-+        const identity = saved?.gateway
-+          ? await loadDeviceIdentityIfPresentAsync({ env: installEnv })
-+          : null;
-+        // A service first installed with shared auth may have received its device
-+        // token on a later hello without rewriting the installed command.
-+        const hasSavedPairing = Boolean(
-+          saved?.gateway &&
-+          identity &&
-+          (await canReuseNodeHostDeviceToken({
-+            savedGateway: saved.gateway,
-+            gatewayCandidates: [saved.gateway],
-+            deviceId: identity.deviceId,
-+            env: installEnv,
-+          })),
-+        );
-+        if (existingManagedCommand && (existingRequiresDeviceAuth || hasSavedPairing)) {
-+          const installed = readPairedServiceGateway(existingServiceOptions);
-+          const sameBinding = (candidate: Parameters<typeof nodeHostGatewaysShareScope>[0]) =>
-+            nodeHostGatewaysShareScope(installed, candidate) &&
-+            normalizeSavedNodeHostTlsFingerprint(installed) ===
-+              normalizeSavedNodeHostTlsFingerprint(candidate);
-+          if (!saved?.gateway || !sameBinding(saved.gateway)) {
-+            throw new Error(
-+              "Paired node service no longer matches the saved Gateway; reconnect with connect --service.",
-+            );
-+          }
-+          // Package updates are interactive commands. Retain the installed Access
-+          // selection, including absence, instead of importing that shell's dotenv.
-+          installEnv.CF_ACCESS_CLIENT_ID = existingManagedCommand.environment?.CF_ACCESS_CLIENT_ID;
-+          installEnv.CF_ACCESS_CLIENT_SECRET =
-+            existingManagedCommand.environment?.CF_ACCESS_CLIENT_SECRET;
-+          gatewayOptions = resolveNodeGatewayOptions(
-+            {
-+              host: opts.host ?? installed.host,
-+              port: opts.port ?? installed.port,
-+              tls: opts.tls ?? installed.tls,
-+              tlsFingerprint: opts.tlsFingerprint ?? installed.tlsFingerprint,
-+              contextPath: opts.contextPath ?? installed.contextPath,
-+            },
-+            saved,
-+            undefined,
-+            { ...installEnv, OPENCLAW_SERVICE_KIND: "node" },
-+          );
-+          if (
-+            gatewayOptions.port === null ||
-+            !sameBinding({ ...gatewayOptions, port: gatewayOptions.port })
-+          ) {
-+            throw new Error(
-+              "Changing a paired service Gateway requires a fresh connect --service.",
-+            );
-+          }
-+        } else {
-+          gatewayOptions = resolveNodeGatewayOptions(opts, saved);
-+        }
-+        if (
-+          !opts.authFromEnv &&
-+          hasSavedPairing &&
-+          saved?.gateway &&
-+          gatewayOptions.port !== null &&
-+          nodeHostGatewaysShareScope(saved.gateway, {
-+            ...gatewayOptions,
-+            port: gatewayOptions.port,
-+          }) &&
-+          normalizeSavedNodeHostTlsFingerprint(saved.gateway) ===
-+            normalizeSavedNodeHostTlsFingerprint({ ...gatewayOptions, port: gatewayOptions.port })
-+        ) {
-+          requireDeviceAuth = true;
-+        }
-+      }
-+    }
-   } catch (error) {
-     fail(error instanceof Error ? error.message : String(error));
-     return;
-@@ -156,21 +379,6 @@ export async function runNodeDaemonInstall(opts: NodeDaemonInstallOptions) {
-     fail("Cloudflare Access credentials require --tls for the node Gateway connection");
-     return;
-   }
--
--  const service = resolveNodeService();
--  let existingServiceCommand;
--  try {
--    existingServiceCommand = await service.readCommand(process.env);
--  } catch (error) {
--    fail(`Node service inspection failed: ${formatErrorMessage(error)}`);
--    return;
--  }
--  const existingManagedCommand = resolveManagedGatewayServiceCommand(existingServiceCommand);
--  const installEnv: NodeJS.ProcessEnv = {
--    ...process.env,
--    OPENCLAW_WRAPPER:
--      process.env.OPENCLAW_WRAPPER ?? existingManagedCommand?.environment?.OPENCLAW_WRAPPER,
--  };
-   let pinSnapshot;
-   try {
-     pinSnapshot = await withDaemonRuntimePinMigration(
-@@ -313,23 +521,10 @@ export async function runNodeDaemonInstall(opts: NodeDaemonInstallOptions) {
-     delete environment.OPENCLAW_GATEWAY_PASSWORD;
-     delete environment.CF_ACCESS_CLIENT_ID;
-     delete environment.CF_ACCESS_CLIENT_SECRET;
--  } else if (!opts.authFromEnv) {
--    const savedGateway = (await loadNodeHostConfig(installEnv))?.gateway;
--    const identity = savedGateway
--      ? await loadDeviceIdentityIfPresentAsync({ env: installEnv })
--      : null;
--    if (
--      identity &&
--      (await canReuseNodeHostDeviceToken({
--        savedGateway,
--        gatewayCandidates: [{ host, port, contextPath, tls: Boolean(tls) }],
--        deviceId: identity.deviceId,
--        env: installEnv,
--      }))
--    ) {
--      delete environment.OPENCLAW_GATEWAY_TOKEN;
--      delete environment.OPENCLAW_GATEWAY_PASSWORD;
--    }
-+  } else if (requireDeviceAuth) {
-+    programArguments.push("--require-device-auth");
-+    delete environment.OPENCLAW_GATEWAY_TOKEN;
-+    delete environment.OPENCLAW_GATEWAY_PASSWORD;
-   }
-   const installationMessage = [
-     `OpenClaw ${VERSION}`,
 diff --git a/src/cli/node-cli/gateway-options.test.ts b/src/cli/node-cli/gateway-options.test.ts
-index d6d9b6f57..ce6e2c01c 100644
+index d6d9b6f5756..ce6e2c01c00 100644
 --- a/src/cli/node-cli/gateway-options.test.ts
 +++ b/src/cli/node-cli/gateway-options.test.ts
 @@ -1,9 +1,43 @@
@@ -6746,7 +4865,7 @@ index d6d9b6f57..ce6e2c01c 100644
 +  },
 +);
 diff --git a/src/cli/node-cli/gateway-options.ts b/src/cli/node-cli/gateway-options.ts
-index 696a0474e..1c0514df1 100644
+index 696a0474eff..1c0514df1b2 100644
 --- a/src/cli/node-cli/gateway-options.ts
 +++ b/src/cli/node-cli/gateway-options.ts
 @@ -1,11 +1,4 @@
@@ -6838,7 +4957,7 @@ index 696a0474e..1c0514df1 100644
 -  };
 -}
 diff --git a/src/cli/node-cli/register.test.ts b/src/cli/node-cli/register.test.ts
-index 3432524ea..5d7d507c9 100644
+index 3432524ea3a..5d7d507c9de 100644
 --- a/src/cli/node-cli/register.test.ts
 +++ b/src/cli/node-cli/register.test.ts
 @@ -1,5 +1,5 @@
@@ -7001,7 +5120,7 @@ index 3432524ea..5d7d507c9 100644
 +  },
 +);
 diff --git a/src/cli/node-cli/register.ts b/src/cli/node-cli/register.ts
-index cd8bdde99..5156d19b9 100644
+index 81b46dc31f4..9a1ebf22659 100644
 --- a/src/cli/node-cli/register.ts
 +++ b/src/cli/node-cli/register.ts
 @@ -4,13 +4,14 @@ import { theme } from "../../../packages/terminal-core/src/theme.js";
@@ -7020,7 +5139,7 @@ index cd8bdde99..5156d19b9 100644
  
  function addNodeGatewayOptions(command: Command): Command {
    return command
-@@ -83,7 +84,13 @@ export function registerNodeCli(program: Command) {
+@@ -86,7 +87,13 @@ export function registerNodeCli(program: Command) {
          new Option(
            "--pair-if-needed <code-or-url>",
            "Use the saved device token when available; otherwise pair with this setup code",
@@ -7035,7 +5154,7 @@ index cd8bdde99..5156d19b9 100644
        ),
    )
      .option("--session-host", "Host worker sessions for this foreground process")
-@@ -97,6 +104,12 @@ export function registerNodeCli(program: Command) {
+@@ -100,6 +107,12 @@ export function registerNodeCli(program: Command) {
        "--auth-from-env",
        "Use environment Gateway credentials instead of the paired device token",
      )
@@ -7048,7 +5167,7 @@ index cd8bdde99..5156d19b9 100644
      .addOption(new Option("--parent-stdin").hideHelp())
      .option("--share-installed-apps", "Share installed macOS applications with the Gateway")
      .option("--no-share-installed-apps", "Disable installed application sharing")
-@@ -104,14 +117,20 @@ export function registerNodeCli(program: Command) {
+@@ -107,14 +120,20 @@ export function registerNodeCli(program: Command) {
        let pair;
        let gatewayOptions;
        try {
@@ -7076,7 +5195,7 @@ index cd8bdde99..5156d19b9 100644
        } catch (error) {
          defaultRuntime.error(error instanceof Error ? error.message : String(error));
          defaultRuntime.exit(1);
-@@ -124,6 +143,7 @@ export function registerNodeCli(program: Command) {
+@@ -127,6 +146,7 @@ export function registerNodeCli(program: Command) {
          tls,
          tlsFingerprint,
          cloudflareAccess,
@@ -7084,7 +5203,7 @@ index cd8bdde99..5156d19b9 100644
          gatewayCandidates,
          gatewayTarget,
        } = gatewayOptions;
-@@ -139,17 +159,30 @@ export function registerNodeCli(program: Command) {
+@@ -142,17 +162,30 @@ export function registerNodeCli(program: Command) {
        }
        const { runNodeHost } = await import("../../node-host/runner.js");
        await runNodeHost({
@@ -7116,7 +5235,7 @@ index cd8bdde99..5156d19b9 100644
          ...(opts.ephemeral === true || opts.sessionHost === true ? { forceWorkerRuns: true } : {}),
          ...(opts.ephemeral === true ? { ephemeral: true } : {}),
          nodeId: opts.nodeId,
-@@ -157,6 +190,7 @@ export function registerNodeCli(program: Command) {
+@@ -160,6 +193,7 @@ export function registerNodeCli(program: Command) {
          installedAppsSharing: opts.shareInstalledApps,
          desktopSharingEnabled: opts.desktopSharing,
          gatewayAuthFromEnv: opts.authFromEnv,
@@ -7124,43 +5243,8 @@ index cd8bdde99..5156d19b9 100644
          resumeDeviceId: opts.resumeDevice,
          parentStdin: opts.parentStdin,
          commands: opts.commands ?? inheritOptionFromParent<string[]>(command, "commands"),
-diff --git a/src/commands/doctor-node-services.test.ts b/src/commands/doctor-node-services.test.ts
-index aee2e1a44..6ddb948ed 100644
---- a/src/commands/doctor-node-services.test.ts
-+++ b/src/commands/doctor-node-services.test.ts
-@@ -33,7 +33,7 @@ let home: string;
- let packageRoot: string;
- let plist: string;
- let original: string;
--const nodeOptions = ["node", "run", "--display-name", "Original node"];
-+const nodeOptions = ["node", "run", "--display-name", "Original node", "--require-device-auth"];
- const isolatedEnvKeys = [
-   "OPENCLAW_HOME",
-   "OPENCLAW_CONFIG_PATH",
-diff --git a/src/config/config-env-vars.ts b/src/config/config-env-vars.ts
-index b401c0f37..f71248a07 100644
---- a/src/config/config-env-vars.ts
-+++ b/src/config/config-env-vars.ts
-@@ -1,4 +1,5 @@
- import { AsyncLocalStorage } from "node:async_hooks";
-+import { isNodeHostManagedCloudflareAccessKey } from "../daemon/service-managed-env.js";
- import {
-   expandEnvNormalizationKeys,
-   normalizeZaiEnv,
-@@ -633,6 +634,11 @@ export function applyConfigEnvVars(
-   const before = { ...env };
-   const previousOwnedEnv = resolveAppliedConfigEnvOwnership(env);
-   const entries = collectConfigRuntimeEnvVars(cfg);
-+  for (const key of Object.keys(entries)) {
-+    if (isNodeHostManagedCloudflareAccessKey(env, key)) {
-+      delete entries[key];
-+    }
-+  }
-   const lowerPrecedenceEntries = Object.entries(options.lowerPrecedenceEnv ?? {});
-   const lowerPrecedenceEnv = new Map(
-     lowerPrecedenceEntries.map(([key, value]) => [envSnapshotKey(key), value]),
 diff --git a/src/daemon/program-args.test.ts b/src/daemon/program-args.test.ts
-index aa230c274..a44357f8d 100644
+index aa230c27405..a44357f8dc0 100644
 --- a/src/daemon/program-args.test.ts
 +++ b/src/daemon/program-args.test.ts
 @@ -338,6 +338,7 @@ describe("resolveNodeProgramArguments", () => {
@@ -7183,10 +5267,10 @@ index aa230c274..a44357f8d 100644
          ]),
        );
 diff --git a/src/daemon/program-args.ts b/src/daemon/program-args.ts
-index cdc25dbfd..615678139 100644
+index b7709f544b6..efefcbd7af0 100644
 --- a/src/daemon/program-args.ts
 +++ b/src/daemon/program-args.ts
-@@ -339,10 +339,10 @@ export async function resolveNodeProgramArguments(params: {
+@@ -348,10 +348,10 @@ export async function resolveNodeProgramArguments(params: {
      }
    }
    if (params.nodeId) {
@@ -7199,199 +5283,8 @@ index cdc25dbfd..615678139 100644
    }
    if (params.installedAppsSharing !== undefined) {
      args.push(params.installedAppsSharing ? "--share-installed-apps" : "--no-share-installed-apps");
-diff --git a/src/daemon/service-managed-env.ts b/src/daemon/service-managed-env.ts
-index 43226dbb4..e7d67905a 100644
---- a/src/daemon/service-managed-env.ts
-+++ b/src/daemon/service-managed-env.ts
-@@ -2,6 +2,8 @@
- import { sortUniqueStrings } from "@openclaw/normalization-core/string-normalization";
- import { normalizeEnvVarKey } from "../infra/host-env-security.js";
- import { detectRespawnSupervisor } from "../infra/supervisor-markers.js";
-+import { hasNodeHostLauncherRestartContext } from "../node-host/launcher-client.js";
-+import { NODE_SERVICE_KIND } from "./constants.js";
- import type {
-   GatewayServiceInstallArgs,
-   GatewayServiceEnvironmentValueSource,
-@@ -14,6 +16,18 @@ type ServiceEnvCommand = Pick<
-   "environment" | "environmentValueSources"
- > | null;
- 
-+/** Managed node starts retain their accepted Access selection, including no Access. */
-+export function isNodeHostManagedCloudflareAccessKey(
-+  env: Readonly<Record<string, string | undefined>>,
-+  key: string,
-+): boolean {
-+  const upper = key.toUpperCase();
-+  return (
-+    (env.OPENCLAW_SERVICE_KIND === NODE_SERVICE_KIND || hasNodeHostLauncherRestartContext()) &&
-+    (upper === "CF_ACCESS_CLIENT_ID" || upper === "CF_ACCESS_CLIENT_SECRET")
-+  );
-+}
-+
- export function normalizeServiceEnvKey(key: string): string | null {
-   return normalizeEnvVarKey(key, { portable: true })?.toUpperCase() ?? null;
- }
-diff --git a/src/daemon/systemd.environment-preservation.test.ts b/src/daemon/systemd.environment-preservation.test.ts
-index 261e8be4a..014e438c6 100644
---- a/src/daemon/systemd.environment-preservation.test.ts
-+++ b/src/daemon/systemd.environment-preservation.test.ts
-@@ -4,15 +4,20 @@ import { PassThrough } from "node:stream";
- import { expectDefined } from "@openclaw/normalization-core/expect";
- import { afterEach, beforeEach, expect, it, vi } from "vitest";
- import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-+import { loadCliDotEnv } from "../cli/dotenv.js";
- import { buildGatewayInstallPlan } from "../commands/daemon-install-helpers.js";
-+import { withEnvAsync } from "../test-utils/env.js";
-+import { resolveNodeServiceIdentityEnvironment } from "./constants.js";
- import { execFileUtf8 } from "./exec-file.js";
- import { auditGatewayServiceConfig } from "./service-audit.js";
-+import { buildNodeServiceEnvironment } from "./service-env.js";
- import { resolveManagedGatewayServiceCommand } from "./service-types.js";
- import {
-   buildSystemdManagerPropertyOutput,
-   buildSystemdUnitPropertyOutput,
-   type SystemdManagerSnapshotFixture,
- } from "./service.test-helpers.js";
-+import { readSystemdEnvironmentFile } from "./systemd-environment-files.js";
- import { stageSystemdService } from "./systemd-install.js";
- import {
-   readSystemdServiceExecStart,
-@@ -242,3 +247,105 @@ it.skipIf(process.platform === "win32").each([
-     expect(rewritten?.managedDefinition?.environment?.PATH).toBe(plan.environment.PATH);
-   },
- );
-+
-+it.skipIf(process.platform === "win32").each([false, true])(
-+  "preserves installed node Access selection through files and startup (accepted=%s)",
-+  async (accepted) => {
-+    const home = await fs.realpath(tempDirs.make("systemd-node-access-"));
-+    const stateDir = path.join(home, "state");
-+    const base = { HOME: home, OPENCLAW_STATE_DIR: stateDir };
-+    const env = { ...base, ...resolveNodeServiceIdentityEnvironment(base) };
-+    const environment = buildNodeServiceEnvironment({
-+      env: {
-+        ...env,
-+        CF_ACCESS_CLIENT_ID: accepted ? "accepted-id" : undefined,
-+        CF_ACCESS_CLIENT_SECRET: accepted ? "accepted-secret" : undefined,
-+      },
-+      platform: "linux",
-+      runtime: "node",
-+    });
-+    const unitPath = resolveSystemdUnitPath(env);
-+    const envFilePath = resolveSystemdEnvironmentFilePath({ stateDir, environment });
-+    const programArguments = [
-+      "/usr/bin/node",
-+      "openclaw.mjs",
-+      "node",
-+      "run",
-+      "--host",
-+      "gateway.example",
-+      "--port",
-+      "443",
-+      "--tls",
-+    ];
-+    await fs.mkdir(stateDir, { mode: 0o700 });
-+    await fs.mkdir(path.dirname(unitPath), { recursive: true, mode: 0o755 });
-+    await fs.mkdir(path.dirname(envFilePath), { recursive: true, mode: 0o700 });
-+    // A prior generated credential must be removed even while the operator's
-+    // profile dotenv still contains credentials used only at the join origin.
-+    await fs.writeFile(
-+      path.join(stateDir, ".env"),
-+      "CF_ACCESS_CLIENT_ID=join-only-id\nCF_ACCESS_CLIENT_SECRET=join-only-secret\n",
-+    );
-+    await fs.writeFile(
-+      envFilePath,
-+      "CF_ACCESS_CLIENT_ID=stale-id\nCF_ACCESS_CLIENT_SECRET=stale-secret\n",
-+      { mode: 0o600 },
-+    );
-+    await fs.writeFile(
-+      unitPath,
-+      buildSystemdUnit({
-+        programArguments,
-+        environment: env,
-+        environmentFiles: [envFilePath],
-+      }),
-+      { mode: 0o600 },
-+    );
-+    mockSystemdManagerSnapshot({
-+      programArguments,
-+      fragmentPath: unitPath,
-+      environment: Object.entries(env).map(([key, value]) => `${key}=${value}`),
-+      environmentFiles: [[envFilePath, false]],
-+    });
-+    await stageSystemdService({
-+      env,
-+      stdout: new PassThrough(),
-+      programArguments,
-+      environment,
-+      environmentValueSources: { CF_ACCESS_CLIENT_ID: "file", CF_ACCESS_CLIENT_SECRET: "file" },
-+    });
-+    const generated = await readSystemdEnvironmentFile(envFilePath);
-+    expect(generated.environment.CF_ACCESS_CLIENT_ID).toBe(accepted ? "accepted-id" : undefined);
-+    expect(generated.environment.CF_ACCESS_CLIENT_SECRET).toBe(
-+      accepted ? "accepted-secret" : undefined,
-+    );
-+    const unit = await fs.readFile(unitPath, "utf8");
-+    expect(unit).not.toContain("stale-");
-+    expect(unit).not.toContain("join-only-");
-+    mockSystemdManagerSnapshot({
-+      programArguments,
-+      fragmentPath: unitPath,
-+      environment: Object.entries(environment).flatMap(([key, value]) =>
-+        value === undefined || key.startsWith("CF_ACCESS_") ? [] : [`${key}=${value}`],
-+      ),
-+      environmentFiles: accepted ? [[envFilePath, false]] : [],
-+    });
-+    const installed = expectDefined(
-+      await readSystemdServiceExecStart(env),
-+      "installed node service",
-+    );
-+    vi.spyOn(process, "cwd").mockReturnValue(home);
-+    await withEnvAsync(
-+      {
-+        ...env,
-+        ...installed.environment,
-+        CF_ACCESS_CLIENT_ID: installed.environment?.CF_ACCESS_CLIENT_ID,
-+        CF_ACCESS_CLIENT_SECRET: installed.environment?.CF_ACCESS_CLIENT_SECRET,
-+      },
-+      async () => {
-+        loadCliDotEnv();
-+        expect(process.env.CF_ACCESS_CLIENT_ID).toBe(accepted ? "accepted-id" : undefined);
-+        expect(process.env.CF_ACCESS_CLIENT_SECRET).toBe(accepted ? "accepted-secret" : undefined);
-+      },
-+    );
-+  },
-+);
-diff --git a/src/gateway/desktop/computer-authority.runtime.test.ts b/src/gateway/desktop/computer-authority.runtime.test.ts
-index 96916e428..dc402f42f 100644
---- a/src/gateway/desktop/computer-authority.runtime.test.ts
-+++ b/src/gateway/desktop/computer-authority.runtime.test.ts
-@@ -379,6 +379,10 @@ module.exports = {
-       id: ${JSON.stringify(pluginId)},
-       label: "Synthetic computer",
-       isAvailable: () => true,
-+      prepare: () => {
-+        record("prepare:start");
-+        return () => record("prepare:stop");
-+      },
-       watchAvailability: () => () => {
-         record("watch-stop:start");
-         const finish = () => {
-@@ -455,10 +459,12 @@ module.exports = {
-     expect(child.isCurrent()).toBe(false);
-     expect(fs.readFileSync(lifecycleFile, "utf8").trim().split("\n")).toEqual([
-       `runtime:${process.execPath}`,
-+      "prepare:start",
-       `open:${executionId}`,
-       "close:completion",
-       "watch-stop:start",
-       "watch-stop:done",
-+      "prepare:stop",
-       cleanupMode === "reject" ? "exit:1" : "exit:0",
-     ]);
-   },
 diff --git a/src/gateway/desktop/computer.worker.ts b/src/gateway/desktop/computer.worker.ts
-index 3c1adc4b9..4820cb98e 100644
+index 3c1adc4b990..4820cb98e88 100644
 --- a/src/gateway/desktop/computer.worker.ts
 +++ b/src/gateway/desktop/computer.worker.ts
 @@ -10,7 +10,7 @@ import {
@@ -7453,7 +5346,7 @@ index 3c1adc4b9..4820cb98e 100644
        })();
        void startup.catch(stopAfterError);
 diff --git a/src/gateway/node-registry-pairing.test.ts b/src/gateway/node-registry-pairing.test.ts
-index b982f6ff6..273df9208 100644
+index b982f6ff6d0..273df9208dd 100644
 --- a/src/gateway/node-registry-pairing.test.ts
 +++ b/src/gateway/node-registry-pairing.test.ts
 @@ -31,6 +31,129 @@ afterEach(() => {
@@ -7587,7 +5480,7 @@ index b982f6ff6..273df9208 100644
    "uses the published pairing authority after a delayed read (%s)",
    async (publication) => {
 diff --git a/src/gateway/node-registry.ts b/src/gateway/node-registry.ts
-index 4b943dae5..ae72ffef9 100644
+index 4b943dae503..ae72ffef987 100644
 --- a/src/gateway/node-registry.ts
 +++ b/src/gateway/node-registry.ts
 @@ -142,6 +142,7 @@ export type NodeRegistryOptions = {
@@ -7657,7 +5550,7 @@ index 4b943dae5..ae72ffef9 100644
  
      return node;
 diff --git a/src/gateway/server-methods/nodes.pairing.ts b/src/gateway/server-methods/nodes.pairing.ts
-index 9d7671610..c05cf29ff 100644
+index 9d7671610b6..c05cf29ffcf 100644
 --- a/src/gateway/server-methods/nodes.pairing.ts
 +++ b/src/gateway/server-methods/nodes.pairing.ts
 @@ -26,6 +26,7 @@ import type { NodeSession } from "../node-session.types.js";
@@ -7682,7 +5575,7 @@ index 9d7671610..c05cf29ff 100644
          const notified = await context.nodeRegistry.sendEventForPairingIdentity({
            nodeId: updatedNode.nodeId,
 diff --git a/src/gateway/server-methods/nodes.read.ts b/src/gateway/server-methods/nodes.read.ts
-index 19a529ffe..641fd2925 100644
+index 19a529ffedf..641fd2925cc 100644
 --- a/src/gateway/server-methods/nodes.read.ts
 +++ b/src/gateway/server-methods/nodes.read.ts
 @@ -230,6 +230,9 @@ export const nodeReadHandlers: GatewayRequestHandlers = {
@@ -7696,7 +5589,7 @@ index 19a529ffe..641fd2925 100644
              ? { active: true }
              : {}),
 diff --git a/src/gateway/server.auth.openclaw-id-node-host.test.ts b/src/gateway/server.auth.openclaw-id-node-host.test.ts
-index 5d5605554..4f0ef9009 100644
+index 13884861aa5..3eb6e18268b 100644
 --- a/src/gateway/server.auth.openclaw-id-node-host.test.ts
 +++ b/src/gateway/server.auth.openclaw-id-node-host.test.ts
 @@ -329,7 +329,6 @@ describe.skipIf(!hasBinding)("native OpenClaw ID node transport", () => {
@@ -7708,7 +5601,7 @@ index 5d5605554..4f0ef9009 100644
      client.start();
      try {
 diff --git a/src/gateway/server.node-bootstrap-reconnect.test.ts b/src/gateway/server.node-bootstrap-reconnect.test.ts
-index ac8e08700..27171ad93 100644
+index ac8e087008f..27171ad9379 100644
 --- a/src/gateway/server.node-bootstrap-reconnect.test.ts
 +++ b/src/gateway/server.node-bootstrap-reconnect.test.ts
 @@ -1,70 +1,430 @@
@@ -8182,178 +6075,8 @@ index ac8e08700..27171ad93 100644
      }
    });
  });
-diff --git a/src/infra/dotenv-global-core.ts b/src/infra/dotenv-global-core.ts
-index 50c6f42c1..8e48979dd 100644
---- a/src/infra/dotenv-global-core.ts
-+++ b/src/infra/dotenv-global-core.ts
-@@ -4,6 +4,7 @@ import os from "node:os";
- import path from "node:path";
- import { readRegularFile, readRegularFileSync } from "@openclaw/fs-safe/advanced";
- import { parse as parseDotEnv } from "dotenv";
-+import { isNodeHostManagedCloudflareAccessKey } from "../daemon/service-managed-env.js";
- import { resolveConfigDir } from "./config-dir.js";
- import { clearFsSafeEnvFallback, normalizeFsSafeNativeEnv } from "./fs-safe-env.js";
- import { resolveRequiredHomeDir } from "./home-dir.js";
-@@ -174,7 +175,8 @@ function resolveGlobalDotEnvFiles(opts: GlobalRuntimeDotEnvOptions, env: NodeJS.
-     env.OPENCLAW_STATE_DIR?.trim() !== undefined &&
-     path.resolve(stateEnvPath) !== path.resolve(defaultStateEnvPath);
-   const readOptions = {
--    entryFilter: opts.entryFilter,
-+    entryFilter: (key: string, value: string) =>
-+      !isNodeHostManagedCloudflareAccessKey(env, key) && (opts.entryFilter?.(key, value) ?? true),
-   };
-   return {
-     globalFiles: globalEnvPaths.map((filePath) => Object.assign({}, readOptions, { filePath })),
-diff --git a/src/infra/dotenv.test.ts b/src/infra/dotenv.test.ts
-index 1aa463914..e075bb449 100644
---- a/src/infra/dotenv.test.ts
-+++ b/src/infra/dotenv.test.ts
-@@ -1,11 +1,45 @@
- import path from "node:path";
--import { beforeEach, describe, expect, it, vi } from "vitest";
-+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
- import { loadCliDotEnv } from "../cli/dotenv.js";
-+import { applyConfigEnvVars } from "../config/config-env-vars.js";
- import { deleteTestEnvValue, setTestEnvValue } from "../test-utils/env.js";
- import { loadGlobalRuntimeDotEnvFiles } from "./dotenv-global.js";
--import { loadDotEnv, loadWorkspaceDotEnvFile } from "./dotenv.js";
-+import { loadDotEnv, loadDotEnvAsync, loadWorkspaceDotEnvFile } from "./dotenv.js";
- import { clearEnv, envContents, useDotEnvFixture, writeEnvFile } from "./dotenv.test-support.js";
- 
-+const launcherChildMarker = Symbol.for("openclaw.node-host.launcher-child");
-+const acceptedRestartMarker = Symbol.for("openclaw.node-host.accepted-restart");
-+const launcherProperties = [launcherChildMarker, acceptedRestartMarker, "connected"] as const;
-+let originalLauncherProperties: Map<PropertyKey, PropertyDescriptor | undefined>;
-+
-+beforeEach(() => {
-+  originalLauncherProperties = new Map(
-+    launcherProperties.map((key) => [key, Object.getOwnPropertyDescriptor(process, key)]),
-+  );
-+});
-+
-+afterEach(() => {
-+  for (const [key, descriptor] of originalLauncherProperties) {
-+    if (descriptor) {
-+      Object.defineProperty(process, key, descriptor);
-+    } else {
-+      Reflect.deleteProperty(process, key);
-+    }
-+  }
-+});
-+
-+function setLauncherContext(accepted: boolean) {
-+  // Supply the process context admitted by the real launcher; exercise the
-+  // production selector/loaders rather than replacing their decisions.
-+  for (const [key, value] of [
-+    [launcherChildMarker, true],
-+    [acceptedRestartMarker, accepted],
-+    ["connected", true],
-+  ] as const) {
-+    Object.defineProperty(process, key, { configurable: true, value });
-+  }
-+}
-+
- const loggerMocks = vi.hoisted(() => ({ warn: vi.fn() }));
- 
- vi.mock("../logging/subsystem.js", () => ({
-@@ -140,6 +174,65 @@ describe("loadDotEnv", () => {
- });
- 
- describe("loadCliDotEnv", () => {
-+  it.each([
-+    { kind: undefined, launcher: "none", inherited: "none", expected: "workspace" },
-+    { kind: "gateway", launcher: "none", inherited: "none", expected: "workspace" },
-+    { kind: "node", launcher: "none", inherited: "none", expected: undefined },
-+    { kind: "node", launcher: "none", inherited: "both", expected: "installed" },
-+    { kind: undefined, launcher: "initial", inherited: "none", expected: "workspace" },
-+    { kind: undefined, launcher: "restart", inherited: "none", expected: undefined },
-+    { kind: undefined, launcher: "restart", inherited: "both", expected: "installed" },
-+    { kind: undefined, launcher: "restart", inherited: "id", expected: "installed" },
-+  ])(
-+    "preserves managed node Access ownership through hydration ($kind, launcher=$launcher, inherited=$inherited)",
-+    async ({ kind, launcher, inherited, expected }) => {
-+      if (launcher !== "none") {
-+        setLauncherContext(launcher === "restart");
-+      }
-+      clearEnv(["OPENCLAW_SERVICE_KIND", "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"]);
-+      if (kind) {
-+        setTestEnvValue("OPENCLAW_SERVICE_KIND", kind);
-+      }
-+      if (inherited !== "none") {
-+        setTestEnvValue("CF_ACCESS_CLIENT_ID", "installed-id");
-+      }
-+      if (inherited === "both") {
-+        setTestEnvValue("CF_ACCESS_CLIENT_SECRET", "installed-secret");
-+      }
-+      const expectedSecret = inherited === "id" ? undefined : expected;
-+      await writeWorkspace(
-+        "CF_ACCESS_CLIENT_ID=workspace-id\nCF_ACCESS_CLIENT_SECRET=workspace-secret\n",
-+      );
-+      await writeState(
-+        "CF_ACCESS_CLIENT_ID=profile-id\nCF_ACCESS_CLIENT_SECRET=profile-secret\nBAR=from-profile\n",
-+      );
-+      loadCliDotEnv();
-+      expect(process.env.CF_ACCESS_CLIENT_ID).toBe(expected ? `${expected}-id` : undefined);
-+      expect(process.env.CF_ACCESS_CLIENT_SECRET).toBe(
-+        expectedSecret ? `${expectedSecret}-secret` : undefined,
-+      );
-+      expect(process.env.BAR).toBe("from-profile");
-+
-+      // Runtime config reads hydrate again; neither async dotenv nor config.env
-+      // may refill a slot the managed node start intentionally left absent.
-+      await loadDotEnvAsync({ env: process.env, cwd: fixture.cwdDir });
-+      applyConfigEnvVars({
-+        env: {
-+          vars: {
-+            CF_ACCESS_CLIENT_ID: "config-id",
-+            CF_ACCESS_CLIENT_SECRET: "config-secret",
-+            FOO: "from-config",
-+          },
-+        },
-+      });
-+      expect(process.env.CF_ACCESS_CLIENT_ID).toBe(expected ? `${expected}-id` : undefined);
-+      expect(process.env.CF_ACCESS_CLIENT_SECRET).toBe(
-+        expectedSecret ? `${expectedSecret}-secret` : undefined,
-+      );
-+      expect(process.env.FOO).toBe("from-config");
-+    },
-+  );
-+
-   it("blocks OPENCLAW_STATE_DIR from workspace .env even when unset in process env", async () => {
-     await writeWorkspace("OPENCLAW_STATE_DIR=./evil-state\n");
- 
-diff --git a/src/infra/dotenv.ts b/src/infra/dotenv.ts
-index 2d172961f..c5ce2b504 100644
---- a/src/infra/dotenv.ts
-+++ b/src/infra/dotenv.ts
-@@ -1,5 +1,6 @@
- // Loads dotenv files while blocking unsafe workspace env keys.
- import path from "node:path";
-+import { isNodeHostManagedCloudflareAccessKey } from "../daemon/service-managed-env.js";
- import {
-   listKnownProviderAuthEnvVarNamesCore,
-   listKnownProviderAuthEnvVarNamesAsync,
-@@ -259,6 +260,7 @@ export function loadWorkspaceDotEnvFile(filePath: string, opts?: { env?: NodeJS.
-   const parsed = readDotEnvFile({
-     filePath,
-     entryFilter: (key) =>
-+      !isNodeHostManagedCloudflareAccessKey(env, key) &&
-       !shouldBlockWorkspaceStaticDotEnvKey(key) &&
-       !getProviderAuthBlockedKeys().has(key.toUpperCase()),
-   });
-@@ -281,7 +283,9 @@ async function loadWorkspaceDotEnvFileAsync(
- ): Promise<void> {
-   const parsed = await readDotEnvFileAsync({
-     filePath,
--    entryFilter: (key) => !shouldBlockWorkspaceStaticDotEnvKey(key),
-+    entryFilter: (key) =>
-+      !isNodeHostManagedCloudflareAccessKey(opts.env, key) &&
-+      !shouldBlockWorkspaceStaticDotEnvKey(key),
-   });
-   if (!parsed?.entries.length) {
-     return;
 diff --git a/src/node-host/codex-node-plugin.integration.test.ts b/src/node-host/codex-node-plugin.integration.test.ts
-index 535dd3201..6b739e372 100644
+index 535dd32012c..6b739e3729d 100644
 --- a/src/node-host/codex-node-plugin.integration.test.ts
 +++ b/src/node-host/codex-node-plugin.integration.test.ts
 @@ -35,14 +35,20 @@ describe("Codex node command availability", () => {
@@ -8382,7 +6105,7 @@ index 535dd3201..6b739e372 100644
      },
    );
 diff --git a/src/node-host/config-shared.ts b/src/node-host/config-shared.ts
-index 25a2a7e3e..258b65c5d 100644
+index 25a2a7e3eb1..258b65c5ddb 100644
 --- a/src/node-host/config-shared.ts
 +++ b/src/node-host/config-shared.ts
 @@ -160,3 +160,15 @@ export type PreparedNodeHostConfig = {
@@ -8402,7 +6125,7 @@ index 25a2a7e3e..258b65c5d 100644
 +  };
 +}
 diff --git a/src/node-host/connection.test.ts b/src/node-host/connection.test.ts
-index db1a5123f..cda8eebfa 100644
+index a6f3e738832..bd20de41714 100644
 --- a/src/node-host/connection.test.ts
 +++ b/src/node-host/connection.test.ts
 @@ -157,6 +157,7 @@ function startConnectionFixture(
@@ -8414,7 +6137,7 @@ index db1a5123f..cda8eebfa 100644
    };
    const writeStderrLine = vi.fn();
 diff --git a/src/node-host/gateway-auth.ts b/src/node-host/gateway-auth.ts
-index c3f893f76..7aa6a91e1 100644
+index c3f893f76e3..7aa6a91e1ae 100644
 --- a/src/node-host/gateway-auth.ts
 +++ b/src/node-host/gateway-auth.ts
 @@ -1,28 +1,45 @@
@@ -8475,7 +6198,7 @@ index c3f893f76..7aa6a91e1 100644
    );
  }
 diff --git a/src/node-host/gateway-candidate-connection.test.ts b/src/node-host/gateway-candidate-connection.test.ts
-index 8a4dc6783..4a28e4ee5 100644
+index 8a4dc67834e..4a28e4ee539 100644
 --- a/src/node-host/gateway-candidate-connection.test.ts
 +++ b/src/node-host/gateway-candidate-connection.test.ts
 @@ -1,5 +1,7 @@
@@ -8622,7 +6345,7 @@ index 8a4dc6783..4a28e4ee5 100644
 -  expect(mocks.clients[1]?.stopAndWait).toHaveBeenCalledOnce();
  });
 diff --git a/src/node-host/gateway-candidate-connection.ts b/src/node-host/gateway-candidate-connection.ts
-index 1ca6a6fd7..35653cf2b 100644
+index 1ca6a6fd717..35653cf2b4d 100644
 --- a/src/node-host/gateway-candidate-connection.ts
 +++ b/src/node-host/gateway-candidate-connection.ts
 @@ -26,10 +26,16 @@ type CandidateConnectionOptions = Omit<
@@ -8782,7 +6505,7 @@ index 1ca6a6fd7..35653cf2b 100644
        });
        return stopPromise;
 diff --git a/src/node-host/gateway-cloudflare-access.test.ts b/src/node-host/gateway-cloudflare-access.test.ts
-index 876e55d85..aee0e9a86 100644
+index 876e55d850d..aee0e9a8624 100644
 --- a/src/node-host/gateway-cloudflare-access.test.ts
 +++ b/src/node-host/gateway-cloudflare-access.test.ts
 @@ -4,6 +4,7 @@ import { resetSecretRedactionRegistryForTest } from "../logging/secret-redaction
@@ -8810,7 +6533,7 @@ index 876e55d85..aee0e9a86 100644
      const gateway = { host: "gateway.example", port: 443, tls: true };
      expect(nodeHostGatewayMatchesUrl(gateway, new URL("https://gateway.example/j/code"))).toBe(
 diff --git a/src/node-host/gateway-cloudflare-access.ts b/src/node-host/gateway-cloudflare-access.ts
-index 2c87b3941..1cf044a7f 100644
+index 2c87b3941ab..1cf044a7f9a 100644
 --- a/src/node-host/gateway-cloudflare-access.ts
 +++ b/src/node-host/gateway-cloudflare-access.ts
 @@ -1,13 +1,18 @@
@@ -8893,7 +6616,7 @@ index 2c87b3941..1cf044a7f 100644
  }
 diff --git a/src/node-host/gateway-options.ts b/src/node-host/gateway-options.ts
 new file mode 100644
-index 000000000..5dfae0d28
+index 00000000000..5dfae0d289f
 --- /dev/null
 +++ b/src/node-host/gateway-options.ts
 @@ -0,0 +1,117 @@
@@ -9015,19 +6738,19 @@ index 000000000..5dfae0d28
 +  };
 +}
 diff --git a/src/node-host/launcher-client.ts b/src/node-host/launcher-client.ts
-index 8d99f2f7a..b09d9f4a4 100644
+index 9abbd2f6130..628be45fd4a 100644
 --- a/src/node-host/launcher-client.ts
 +++ b/src/node-host/launcher-client.ts
-@@ -1,6 +1,7 @@
- // Node runtime messages to the process that owns executable selection and restart.
+@@ -4,6 +4,7 @@ import type { EventEmitter } from "node:events";
+ const CHANNEL_MARKER = Symbol.for("openclaw.node-host.launcher-channel");
  const CHILD_MARKER = Symbol.for("openclaw.node-host.launcher-child");
  const MANAGED_STATE_MARKER = Symbol.for("openclaw.node-host.managed-state-path");
 +const ACCEPTED_RESTART_MARKER = Symbol.for("openclaw.node-host.accepted-restart");
  
- /** A companion retains stdin's write end; EOF also retires the node after an app crash. */
- export function watchNodeHostParentStdin(onClose: () => void): () => void {
-@@ -32,6 +33,10 @@ export function isNodeHostLauncherChild(): boolean {
-   return Reflect.get(process, CHILD_MARKER) === true && process.connected;
+ type LauncherChannel = EventEmitter & {
+   connected: boolean;
+@@ -50,6 +51,10 @@ export function isNodeHostLauncherChild(): boolean {
+   );
  }
  
 +export function hasNodeHostLauncherRestartContext(): boolean {
@@ -9037,7 +6760,7 @@ index 8d99f2f7a..b09d9f4a4 100644
  export function getManagedNodeHostStatePath(): string | undefined {
    if (!isNodeHostLauncherChild()) {
      return undefined;
-@@ -56,9 +61,15 @@ export async function notifyNodeHostLauncherReady(version: string): Promise<void
+@@ -75,9 +80,15 @@ export async function notifyNodeHostLauncherReady(version: string): Promise<void
    }
  }
  
@@ -9056,7 +6779,7 @@ index 8d99f2f7a..b09d9f4a4 100644
  }
  
 diff --git a/src/node-host/node-worker-journal.worker.ts b/src/node-host/node-worker-journal.worker.ts
-index 4c9c09e9a..08c2df17d 100644
+index 4c9c09e9aae..08c2df17daf 100644
 --- a/src/node-host/node-worker-journal.worker.ts
 +++ b/src/node-host/node-worker-journal.worker.ts
 @@ -12,6 +12,7 @@ import type {
@@ -9085,234 +6808,8 @@ index 4c9c09e9a..08c2df17d 100644
            };
          },
          input.updatedAtMs,
-diff --git a/src/node-host/openclaw-id-join.test.ts b/src/node-host/openclaw-id-join.test.ts
-index 39cb66314..e770c473c 100644
---- a/src/node-host/openclaw-id-join.test.ts
-+++ b/src/node-host/openclaw-id-join.test.ts
-@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
-   prepare: vi.fn(),
-   enroll: vi.fn(),
-   run: vi.fn(),
-+  lock: vi.fn(),
-   install: vi.fn(),
-   key: vi.fn(),
- }));
-@@ -20,7 +21,7 @@ vi.mock("./config.js", () => ({
- // mock-isolation: the prepared manifest is an input here, not the behavior under test.
- vi.mock("./runtime.js", () => ({ prepareNodeHostRuntime: mocks.prepare }));
- // mock-isolation: the runner's connection and persistence are covered by runner.test.ts.
--vi.mock("./runner.js", () => ({ runNodeHost: mocks.run }));
-+vi.mock("./runner.js", () => ({ runNodeHost: mocks.run, withNodeHostRunnerLock: mocks.lock }));
- // mock-isolation: signed enrollment is covered against a real HTTP fixture in its own suite.
- vi.mock("./openclaw-id-enrollment.js", () => ({ enrollNode: mocks.enroll }));
- // mock-isolation: never read or create a real node key from this suite.
-@@ -53,7 +54,8 @@ const link = buildNodeJoinLink({
-   hostname: target.hostname,
-   relay_url: target.relayUrl,
- });
--const prepared = { manifest: { commands: ["system.run"], caps: ["system"] } };
-+const dispose = vi.fn();
-+const prepared = { manifest: { commands: ["system.run"], caps: ["system"] }, dispose };
- beforeEach(() => {
-   vi.clearAllMocks();
-   mocks.load.mockResolvedValue({
-@@ -64,6 +66,7 @@ beforeEach(() => {
-   mocks.prepare.mockResolvedValue(prepared);
-   mocks.enroll.mockResolvedValue(target);
-   mocks.run.mockResolvedValue({ connected: true });
-+  mocks.lock.mockImplementation((run: () => Promise<unknown>) => run());
-   mocks.key.mockImplementation(() => Buffer.alloc(32, 7));
- });
- 
-@@ -128,3 +131,48 @@ test("does not install after a runner exits without a successful first hello", a
-   await expect(runNodeJoin(link, { service: true })).rejects.toThrow("service was not installed");
-   expect(mocks.install).not.toHaveBeenCalled();
- });
-+
-+// A single-use invitation is spent when the owner approves. If another runner owns this
-+// profile, join must learn that first: afterwards the node is admitted with no local target.
-+test("holds the runner lock before enrollment and releases it before installing the service", async () => {
-+  const events: string[] = [];
-+  mocks.lock.mockImplementation(async (run: () => Promise<unknown>) => {
-+    events.push("lock");
-+    try {
-+      return await run();
-+    } finally {
-+      events.push("release");
-+    }
-+  });
-+  mocks.enroll.mockImplementation(async () => {
-+    events.push("enroll");
-+    return target;
-+  });
-+  mocks.run.mockImplementation(async () => {
-+    events.push("run");
-+    return { connected: true };
-+  });
-+  mocks.install.mockImplementation(async () => {
-+    events.push("install");
-+  });
-+  await runNodeJoin(link, { service: true });
-+  expect(events).toEqual(["lock", "enroll", "run", "release", "install"]);
-+  expect(mocks.run).toHaveBeenCalledWith(expect.objectContaining({ runnerLockHeld: true }));
-+});
-+test("a profile owned by another runner fails before the invitation is spent", async () => {
-+  mocks.lock.mockRejectedValueOnce(new Error("lock timeout"));
-+  await expect(runNodeJoin(link, {})).rejects.toThrow("lock timeout");
-+  expect(mocks.key).not.toHaveBeenCalled();
-+  expect(mocks.enroll).not.toHaveBeenCalled();
-+  expect(mocks.run).not.toHaveBeenCalled();
-+});
-+test("a failed enrollment disposes the prepared runtime it still owns", async () => {
-+  mocks.enroll.mockRejectedValueOnce(new Error("Possible claw substitution"));
-+  await expect(runNodeJoin(link, {})).rejects.toThrow("substitution");
-+  expect(dispose).toHaveBeenCalledOnce();
-+  mocks.run.mockResolvedValueOnce({ connected: true });
-+  dispose.mockClear();
-+  await runNodeJoin(link, {});
-+  // After handoff the runner disposes the runtime, so join must not.
-+  expect(dispose).not.toHaveBeenCalled();
-+});
-diff --git a/src/node-host/openclaw-id-join.ts b/src/node-host/openclaw-id-join.ts
-index ad4f92d72..4bc41eed8 100644
---- a/src/node-host/openclaw-id-join.ts
-+++ b/src/node-host/openclaw-id-join.ts
-@@ -12,7 +12,7 @@ import { loadNodeHostConfig, refreshNodeHostOpenClawIdTarget } from "./config.js
- import { enrollNode } from "./openclaw-id-enrollment.js";
- import { parseNodeDiscoveryOrigin } from "./openclaw-id-target.js";
- import { loadNodeTunnelKey } from "./openclaw-id-transport.js";
--import { runNodeHost } from "./runner.js";
-+import { runNodeHost, withNodeHostRunnerLock } from "./runner.js";
- import { prepareNodeHostRuntime } from "./runtime.js";
- import { ensureNodeHostStateReady } from "./startup-state-readiness.js";
- 
-@@ -56,57 +56,73 @@ export async function runNodeJoin(linkText: string, opts: NodeJoinOptions): Prom
-         : saved?.commands;
-   const fallbackDisplayName = await getMachineDisplayName();
-   const displayName = opts.displayName?.trim() || saved?.displayName || fallbackDisplayName;
--  await ensureNodeHostStateReady();
--  // Use the real prepared manifest, not a guessed command list. Passing it to the runner
--  // keeps the first connection identical to the surface the owner compared and approved.
--  const preparedRuntime = await prepareNodeHostRuntime({
--    config: cfg,
--    env: process.env,
--    enableAgentRuns: true,
--    receivesLocalMcpPolicy: true,
--    installedAppsSharingEnabled: saved?.installedAppsSharing,
--    commands,
--  });
--  const key = loadNodeTunnelKey();
--  const signer = await ed25519SignerFromSeed(key).finally(() => key.fill(0));
--  const previous = saved?.gateway?.openclawId;
--  const target = await enrollNode({
--    link,
--    discoveryUrl,
--    signer,
--    previous:
--      previous && saved
--        ? {
--            target: previous,
--            persist: (next) =>
--              refreshNodeHostOpenClawIdTarget({
--                nodeId: saved.nodeId,
--                expected: previous,
--                // Retain trust without switching routing before enrollment succeeds.
--                target: { ...next, discoveryUrl: previous.discoveryUrl },
--              }),
--          }
--        : undefined,
--    description: {
--      display_name: displayName,
--      platform: process.platform,
--      commands: preparedRuntime.manifest.commands,
--      caps: preparedRuntime.manifest.caps,
--    },
--    signal: getAsyncWorkSignal(),
--    log: (message) => defaultRuntime.log(message),
--  });
--  getAsyncWorkSignal()?.throwIfAborted();
--  const gateway = { kind: "openclaw-id" as const, openclawId: target };
--  const result = await runNodeHost({
--    gatewayTarget: gateway,
--    gatewayHost: "",
--    gatewayPort: 0,
--    displayName,
--    commands,
--    allCommands: opts.allCommands,
--    preparedRuntime,
--    ...(opts.service ? { stopAfterFirstConnect: true } : {}),
-+  // The runner lock is held from before enrollment to the first connection: an approved
-+  // invitation is single use, so a runner that owns this profile must be found out first,
-+  // not after the node is admitted with no local target to resume. The service install
-+  // below runs after release because the installed service takes the lock itself.
-+  const result = await withNodeHostRunnerLock(async () => {
-+    await ensureNodeHostStateReady();
-+    // Use the real prepared manifest, not a guessed command list. Passing it to the runner
-+    // keeps the first connection identical to the surface the owner compared and approved.
-+    const preparedRuntime = await prepareNodeHostRuntime({
-+      config: cfg,
-+      env: process.env,
-+      enableAgentRuns: true,
-+      receivesLocalMcpPolicy: true,
-+      installedAppsSharingEnabled: saved?.installedAppsSharing,
-+      commands,
-+    });
-+    // The runner disposes a prepared runtime it was handed; until then it is ours.
-+    let handedOff = false;
-+    try {
-+      const key = loadNodeTunnelKey();
-+      const signer = await ed25519SignerFromSeed(key).finally(() => key.fill(0));
-+      const previous = saved?.gateway?.openclawId;
-+      const target = await enrollNode({
-+        link,
-+        discoveryUrl,
-+        signer,
-+        previous:
-+          previous && saved
-+            ? {
-+                target: previous,
-+                persist: (next) =>
-+                  refreshNodeHostOpenClawIdTarget({
-+                    nodeId: saved.nodeId,
-+                    expected: previous,
-+                    // Retain trust without switching routing before enrollment succeeds.
-+                    target: { ...next, discoveryUrl: previous.discoveryUrl },
-+                  }),
-+              }
-+            : undefined,
-+        description: {
-+          display_name: displayName,
-+          platform: process.platform,
-+          commands: preparedRuntime.manifest.commands,
-+          caps: preparedRuntime.manifest.caps,
-+        },
-+        signal: getAsyncWorkSignal(),
-+        log: (message) => defaultRuntime.log(message),
-+      });
-+      getAsyncWorkSignal()?.throwIfAborted();
-+      const gateway = { kind: "openclaw-id" as const, openclawId: target };
-+      handedOff = true;
-+      return await runNodeHost({
-+        gatewayTarget: gateway,
-+        gatewayHost: "",
-+        gatewayPort: 0,
-+        displayName,
-+        commands,
-+        allCommands: opts.allCommands,
-+        preparedRuntime,
-+        runnerLockHeld: true,
-+        ...(opts.service ? { stopAfterFirstConnect: true } : {}),
-+      });
-+    } finally {
-+      if (!handedOff) {
-+        await preparedRuntime.dispose();
-+      }
-+    }
-   });
-   if (opts.service) {
-     getAsyncWorkSignal()?.throwIfAborted();
 diff --git a/src/node-host/plugin-node-host.test.ts b/src/node-host/plugin-node-host.test.ts
-index 7b742951b..f5c9b8b1b 100644
+index 7b742951b30..f5c9b8b1b9d 100644
 --- a/src/node-host/plugin-node-host.test.ts
 +++ b/src/node-host/plugin-node-host.test.ts
 @@ -10,7 +10,7 @@ import {
@@ -9348,7 +6845,7 @@ index 7b742951b..f5c9b8b1b 100644
      expect(cleanup).toHaveBeenCalledTimes(2);
    } finally {
 diff --git a/src/node-host/plugin-node-host.ts b/src/node-host/plugin-node-host.ts
-index 332de3002..62a620eae 100644
+index 332de300280..62a620eaecf 100644
 --- a/src/node-host/plugin-node-host.ts
 +++ b/src/node-host/plugin-node-host.ts
 @@ -45,7 +45,7 @@ export async function ensureNodeHostPluginRegistry(params: {
@@ -9490,7 +6987,7 @@ index 332de3002..62a620eae 100644
  /** Release plugin command state before a reconnected Gateway can invoke it again. */
 diff --git a/src/node-host/runner-lifecycle-lock.test.ts b/src/node-host/runner-lifecycle-lock.test.ts
 new file mode 100644
-index 000000000..4937d53d4
+index 00000000000..4937d53d4cd
 --- /dev/null
 +++ b/src/node-host/runner-lifecycle-lock.test.ts
 @@ -0,0 +1,247 @@
@@ -9742,7 +7239,7 @@ index 000000000..4937d53d4
 +  getCliProcessTestTimeout(CHILD_TIMEOUT_MS),
 +);
 diff --git a/src/node-host/runner.auto-update.test.ts b/src/node-host/runner.auto-update.test.ts
-index 12b70419e..3037c743e 100644
+index 12b70419eba..3037c743ea5 100644
 --- a/src/node-host/runner.auto-update.test.ts
 +++ b/src/node-host/runner.auto-update.test.ts
 @@ -16,8 +16,18 @@ const updateMocks = vi.hoisted(() => ({
@@ -9849,7 +7346,7 @@ index 12b70419e..3037c743e 100644
                ],
              },
 diff --git a/src/node-host/runner.shutdown.test.ts b/src/node-host/runner.shutdown.test.ts
-index 91bf6b7fd..7cc0e1d76 100644
+index 91bf6b7fdf1..7cc0e1d760e 100644
 --- a/src/node-host/runner.shutdown.test.ts
 +++ b/src/node-host/runner.shutdown.test.ts
 @@ -26,7 +26,7 @@ describe("node runner shutdown", () => {
@@ -9929,7 +7426,7 @@ index 91bf6b7fd..7cc0e1d76 100644
      const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
      try {
 diff --git a/src/node-host/runner.test-support.ts b/src/node-host/runner.test-support.ts
-index ab3d6031d..8f8a63f56 100644
+index ab3d6031d7d..8f8a63f5676 100644
 --- a/src/node-host/runner.test-support.ts
 +++ b/src/node-host/runner.test-support.ts
 @@ -1,7 +1,10 @@
@@ -10047,7 +7544,7 @@ index ab3d6031d..8f8a63f56 100644
  }
  
 diff --git a/src/node-host/runner.test.ts b/src/node-host/runner.test.ts
-index b3dc09530..2ed7cc30b 100644
+index b3dc09530de..2ed7cc30b22 100644
 --- a/src/node-host/runner.test.ts
 +++ b/src/node-host/runner.test.ts
 @@ -1,3 +1,5 @@
@@ -10807,7 +8304,7 @@ index b3dc09530..2ed7cc30b 100644
      },
    );
 diff --git a/src/node-host/runner.ts b/src/node-host/runner.ts
-index 6cfcb6fa0..b91f9f249 100644
+index 6cfcb6fa0b8..b91f9f249af 100644
 --- a/src/node-host/runner.ts
 +++ b/src/node-host/runner.ts
 @@ -1,7 +1,12 @@
@@ -12132,7 +9629,7 @@ index 6cfcb6fa0..b91f9f249 100644
    }
  }
 diff --git a/src/node-host/runtime.test-support.ts b/src/node-host/runtime.test-support.ts
-index fc3ffba6c..99e3e7ea7 100644
+index fc3ffba6c75..99e3e7ea7ab 100644
 --- a/src/node-host/runtime.test-support.ts
 +++ b/src/node-host/runtime.test-support.ts
 @@ -58,7 +58,7 @@ vi.mock("./node-worker-workspace.js", () => ({
@@ -12145,7 +9642,7 @@ index fc3ffba6c..99e3e7ea7 100644
    notifyRegisteredNodeHostCommandDisconnect: mocks.disconnectPlugins,
    isRegisteredNodeHostCommandDuplex: vi.fn((command: string) => command === "test.duplex"),
 diff --git a/src/node-host/runtime.ts b/src/node-host/runtime.ts
-index 0b34d0d55..91cb90cb3 100644
+index 0b34d0d550a..91cb90cb306 100644
 --- a/src/node-host/runtime.ts
 +++ b/src/node-host/runtime.ts
 @@ -1,6 +1,6 @@
@@ -13392,7 +10889,7 @@ index 0b34d0d55..91cb90cb3 100644
 +  }
  }
 diff --git a/src/node-host/runtime.worker-hosting.test.ts b/src/node-host/runtime.worker-hosting.test.ts
-index 8c2027c2d..9a0250648 100644
+index 8c2027c2d0a..9a0250648fb 100644
 --- a/src/node-host/runtime.worker-hosting.test.ts
 +++ b/src/node-host/runtime.worker-hosting.test.ts
 @@ -6,6 +6,7 @@ import { mockProcessPlatform } from "../test-utils/vitest-spies.js";
@@ -13535,7 +11032,7 @@ index 8c2027c2d..9a0250648 100644
    it("retries non-container reconciliation after a bounded delay before publishing capacity", async () => {
      vi.useFakeTimers();
 diff --git a/src/node-host/runtime.worker-supervisor.test.ts b/src/node-host/runtime.worker-supervisor.test.ts
-index a1ca38135..0a906f7e2 100644
+index a1ca38135cb..0a906f7e2eb 100644
 --- a/src/node-host/runtime.worker-supervisor.test.ts
 +++ b/src/node-host/runtime.worker-supervisor.test.ts
 @@ -33,11 +33,14 @@ vi.mock("./mcp.js", () => ({
@@ -13556,7 +11053,7 @@ index a1ca38135..0a906f7e2 100644
    invokeRegisteredNodeHostCommand: vi.fn(async () => null),
  }));
 diff --git a/src/node-host/startup-state-readiness.test.ts b/src/node-host/startup-state-readiness.test.ts
-index 8ea8b73e4..f0850de24 100644
+index 8ea8b73e4fa..f0850de24e4 100644
 --- a/src/node-host/startup-state-readiness.test.ts
 +++ b/src/node-host/startup-state-readiness.test.ts
 @@ -185,9 +185,11 @@ describe("node-host state readiness", () => {
@@ -13575,7 +11072,7 @@ index 8ea8b73e4..f0850de24 100644
          const canonical = identityStore.loadOrCreateDeviceIdentity({ env });
          const { sourcePath, raw } = writeSource("identity/device.json", {
 diff --git a/src/node-host/worker-runtime.test.ts b/src/node-host/worker-runtime.test.ts
-index dd2612109..a5741cc7e 100644
+index dd2612109e7..a5741cc7ef5 100644
 --- a/src/node-host/worker-runtime.test.ts
 +++ b/src/node-host/worker-runtime.test.ts
 @@ -54,12 +54,12 @@ vi.mock("./mcp.js", async (importOriginal) => ({
@@ -13610,7 +11107,7 @@ index dd2612109..a5741cc7e 100644
      }));
      await withWorker(
 diff --git a/src/node-host/worker.ts b/src/node-host/worker.ts
-index cfd8885d9..cb69ad010 100644
+index cfd8885d97b..cb69ad010af 100644
 --- a/src/node-host/worker.ts
 +++ b/src/node-host/worker.ts
 @@ -34,128 +34,136 @@ export async function runNodeHostWorker(
@@ -13862,264 +11359,8 @@ index cfd8885d9..cb69ad010 100644
 +    await prepared.dispose();
    }
  }
-diff --git a/src/plugins/computer-use-contract.test.ts b/src/plugins/computer-use-contract.test.ts
-index 3dc9fceb0..c876cac4f 100644
---- a/src/plugins/computer-use-contract.test.ts
-+++ b/src/plugins/computer-use-contract.test.ts
-@@ -11,7 +11,7 @@ import {
-   registerComputerUseProvider,
-   type ComputerUseProvider,
- } from "./computer-use-registration.js";
--import { trackCompletion } from "./plugin-instance.test-support.js";
-+import { createOwnedTestInstance, trackCompletion } from "./plugin-instance.test-support.js";
- import type { OpenClawPluginNodeHostCommand } from "./types.js";
- 
- function capabilityDescriptor(
-@@ -272,6 +272,74 @@ describe("Computer Use provider registration", () => {
-     expect(physicalClose).toHaveBeenCalledOnce();
-   });
- 
-+  it.each([false, true])(
-+    "shares provider lifecycle through wrapped command views (cleanup fails=%s)",
-+    async (fails) => {
-+      const instance = createOwnedTestInstance("computer-lifecycle");
-+      const events: string[] = [];
-+      const failure = new Error("provider retirement failed");
-+      const registered = registerProvider(
-+        openMock(async () => {}),
-+        {
-+          prepare: () => {
-+            events.push("prepare");
-+            return () => {
-+              events.push("prepared-close");
-+            };
-+          },
-+          watchAvailability: () => {
-+            events.push("watch");
-+            return () => {
-+              events.push("watch-close");
-+              if (fails) {
-+                throw failure;
-+              }
-+            };
-+          },
-+        },
-+      );
-+      // Real instance binding creates distinct method views for the two command
-+      // receivers. Provider acquisition must remain shared across those views.
-+      const commands = registered.commands.map((command) => instance.wrap(command));
-+      const context = { config: {}, env: {} };
-+      for (let cycle = 0; cycle < (fails ? 1 : 2); cycle += 1) {
-+        const preparations = await Promise.all(
-+          commands.map((command) => command.prepare!(context)),
-+        );
-+        const stops = commands.map((command) => command.watchAvailability!(context, () => {}));
-+        expect(events.filter((event) => event === "prepare")).toHaveLength(cycle + 1);
-+        expect(events.filter((event) => event === "watch")).toHaveLength(cycle + 1);
-+        const outcomes = await Promise.allSettled(stops.map(async (stop) => stop?.()));
-+        if (fails) {
-+          expect(outcomes).toEqual(commands.map(() => ({ status: "rejected", reason: failure })));
-+        } else {
-+          expect(outcomes).toEqual(commands.map(() => ({ status: "fulfilled", value: undefined })));
-+        }
-+        await Promise.all(preparations.map(async (close) => close?.()));
-+        expect(events.filter((event) => event === "watch-close")).toHaveLength(cycle + 1);
-+        expect(events.filter((event) => event === "prepared-close")).toHaveLength(cycle + 1);
-+      }
-+      if (fails) {
-+        expect(() => commands[0]!.watchAvailability!(context, () => {})).toThrow(failure);
-+        await expect(Promise.resolve().then(() => commands[1]!.prepare!(context))).rejects.toBe(
-+          failure,
-+        );
-+        expect(events).toEqual(["prepare", "watch", "watch-close", "prepared-close"]);
-+      } else {
-+        expect(events).toEqual([
-+          "prepare",
-+          "watch",
-+          "watch-close",
-+          "prepared-close",
-+          "prepare",
-+          "watch",
-+          "watch-close",
-+          "prepared-close",
-+        ]);
-+      }
-+    },
-+  );
-+
-   it("registers one command pair and dispatches both through one execution", async () => {
-     const snapshot = vi.fn(async () => "snapshot");
-     const act = vi.fn(async () => "act");
-diff --git a/src/plugins/computer-use-registration.ts b/src/plugins/computer-use-registration.ts
-index b288e7e93..1de717aa6 100644
---- a/src/plugins/computer-use-registration.ts
-+++ b/src/plugins/computer-use-registration.ts
-@@ -7,7 +7,6 @@ import {
- } from "./computer-use-contract.js";
- import type {
-   OpenClawPluginNodeHostCommand,
--  OpenClawPluginNodeHostCommandAvailabilityContext,
-   OpenClawPluginNodeHostCommandContext,
- } from "./types.node-host.js";
- 
-@@ -22,7 +21,7 @@ export type ComputerUseProvider = {
-   label: string;
-   capabilities(): ComputerUseCapabilityDescriptor;
-   isAvailable(): boolean;
--  prepare?: (context: OpenClawPluginNodeHostCommandAvailabilityContext) => Promise<void> | void;
-+  prepare?: OpenClawPluginNodeHostCommand["prepare"];
-   watchAvailability?: OpenClawPluginNodeHostCommand["watchAvailability"];
-   openExecution(context: {
-     executionId: string;
-@@ -150,31 +149,115 @@ export function registerComputerUseProvider(
-     return joined;
-   };
- 
-+  type Lifecycle = {
-+    preparation?: Promise<() => Promise<void>>;
-+    preparationClosed: boolean;
-+    watchStop?: () => Promise<void>;
-+    watchClosed: boolean;
-+    failure?: { error: unknown };
-+  };
-+  let lifecycle: Lifecycle | undefined;
-+  const recordFailure = (owner: Lifecycle, error: unknown) => {
-+    if (!owner.failure) {
-+      owner.failure = { error };
-+    } else if (owner.failure.error !== error) {
-+      owner.failure = {
-+        error: new AggregateError(
-+          [owner.failure.error, error],
-+          "computer provider lifecycle failed",
-+        ),
-+      };
-+    }
-+  };
-+  const activeLifecycle = () => {
-+    if (lifecycle?.failure) {
-+      throw lifecycle.failure.error;
-+    }
-+    return (lifecycle ??= { preparationClosed: false, watchClosed: false });
-+  };
-+  const releaseLifecycle = (owner: Lifecycle) => {
-+    if (
-+      lifecycle === owner &&
-+      !owner.failure &&
-+      (!owner.preparation || owner.preparationClosed) &&
-+      (!owner.watchStop || owner.watchClosed)
-+    ) {
-+      lifecycle = undefined;
-+    }
-+  };
-+  // Instance binding gives each command its own executable view. Acquisition
-+  // belongs to their shared provider, not to the identity of those views.
-+  const prepare: NonNullable<OpenClawPluginNodeHostCommand["prepare"]> = (context) => {
-+    const owner = activeLifecycle();
-+    return (owner.preparation ??= Promise.resolve()
-+      .then(() => provider.prepare?.(context))
-+      .then(
-+        (cleanup) => {
-+          let closing: Promise<void> | undefined;
-+          return () =>
-+            (closing ??= Promise.resolve()
-+              .then(() => cleanup?.())
-+              .then(
-+                () => {
-+                  owner.preparationClosed = true;
-+                  releaseLifecycle(owner);
-+                },
-+                (error: unknown) => {
-+                  recordFailure(owner, error);
-+                  throw error;
-+                },
-+              ));
-+        },
-+        (error: unknown) => {
-+          recordFailure(owner, error);
-+          throw error;
-+        },
-+      ));
-+  };
-+  const watchAvailability: NonNullable<OpenClawPluginNodeHostCommand["watchAvailability"]> = (
-+    context,
-+    onChange,
-+  ) => {
-+    const owner = activeLifecycle();
-+    if (owner.watchStop) {
-+      return owner.watchStop;
-+    }
-+    let stopWatching: ReturnType<NonNullable<ComputerUseProvider["watchAvailability"]>>;
-+    try {
-+      stopWatching = provider.watchAvailability?.(context, onChange);
-+    } catch (error) {
-+      recordFailure(owner, error);
-+      throw error;
-+    }
-+    let closing: Promise<void> | undefined;
-+    owner.watchStop = () =>
-+      (closing ??= Promise.resolve()
-+        .then(async () => {
-+          const results = await Promise.allSettled([
-+            Promise.resolve().then(() => stopWatching?.()),
-+            closeExecution(undefined, "node-host-stop"),
-+          ]);
-+          throwIfSettledRejected(results, "computer provider shutdown failed");
-+          owner.watchClosed = true;
-+          releaseLifecycle(owner);
-+        })
-+        .catch((error: unknown) => {
-+          recordFailure(owner, error);
-+          throw error;
-+        }));
-+    return owner.watchStop;
-+  };
-+  const onDisconnect = async () => await closeExecution(undefined, "gateway-disconnect");
-+
-   api.registerNodeHostCommand({
-     command: "screen.snapshot",
-     cap: "screen",
-     dangerous: false,
--    prepare: (context) => provider.prepare?.(context),
-+    prepare,
-     isAvailable: () => provider.isAvailable(),
-     hasActiveWork,
--    watchAvailability: (context, onChange) => {
--      const stopWatching = provider.watchAvailability?.(context, onChange);
--      let availabilityStop: Promise<void> | undefined;
--      return async () => {
--        availabilityStop ??= Promise.resolve()
--          .then(() => stopWatching?.())
--          .catch((error: unknown) => {
--            availabilityStop = undefined;
--            throw error;
--          });
--        const results = await Promise.allSettled([
--          availabilityStop,
--          closeExecution(undefined, "node-host-stop"),
--        ]);
--        throwIfSettledRejected(results, "computer provider shutdown failed");
--      };
--    },
--    onDisconnect: async () => await closeExecution(undefined, "gateway-disconnect"),
-+    watchAvailability,
-+    onDisconnect,
-     handle: async (paramsJSON, _io, context) => {
-       const envelope = executionEnvelopeFromParams(paramsJSON);
-       if (envelope.executionId) {
-@@ -198,8 +281,11 @@ export function registerComputerUseProvider(
-     cap: "computer",
-     dangerous: true,
-     computerUse: () => provider.capabilities(),
-+    prepare,
-     isAvailable: () => provider.isAvailable(),
-     hasActiveWork,
-+    watchAvailability,
-+    onDisconnect,
-     handle: async (paramsJSON, _io, context) => {
-       const envelope = executionEnvelopeFromParams(paramsJSON);
-       if (!envelope.executionId) {
 diff --git a/src/plugins/types.node-host.ts b/src/plugins/types.node-host.ts
-index 17fb4cebb..39d7be29a 100644
+index 17fb4cebbf1..39d7be29ae4 100644
 --- a/src/plugins/types.node-host.ts
 +++ b/src/plugins/types.node-host.ts
 @@ -70,8 +70,14 @@ type OpenClawPluginNodeHostCommandBase = {
@@ -14140,7 +11381,7 @@ index 17fb4cebb..39d7be29a 100644
    isAvailable?: (context: OpenClawPluginNodeHostCommandAvailabilityContext) => boolean;
    /** Watch availability; node shutdown awaits the returned cleanup callback. */
 diff --git a/test/node-host-launcher.test.ts b/test/node-host-launcher.test.ts
-index 4440038..f904037 100644
+index 3f07c893d28..d86f3e7f421 100644
 --- a/test/node-host-launcher.test.ts
 +++ b/test/node-host-launcher.test.ts
 @@ -1,5 +1,5 @@
@@ -14159,7 +11400,7 @@ index 4440038..f904037 100644
  let bootstrapSource: string;
  let launcherClientSource: string;
  
-@@ -80,6 +80,7 @@ async function writePackage(root: string, version: string, body: string, schema
+@@ -83,6 +83,7 @@ async function writePackage(root: string, version: string, body: string, schema
  import fs from 'node:fs';
  import {
    getManagedNodeHostStatePath,
@@ -14167,7 +11408,7 @@ index 4440038..f904037 100644
    isNodeHostLauncherChild,
    notifyNodeHostLauncherReady,
    requestNodeHostLauncherBootstrap,
-@@ -90,6 +91,13 @@ const version = ${JSON.stringify(version)};
+@@ -93,6 +94,13 @@ const version = ${JSON.stringify(version)};
  const report = (value) => process.stdout.write(JSON.stringify(value) + '\\n');
  const ready = () => notifyNodeHostLauncherReady(version);
  const restart = () => requestNodeHostLauncherRestart({ runtimeRoot: process.env.TEST_RUNTIME_ROOT, version: process.env.TEST_VERSION });
@@ -14181,7 +11422,7 @@ index 4440038..f904037 100644
  async function restartAndExit(failureLabel, successCode = 0, failureCode = 2) {
    try {
      await restart();
-@@ -261,6 +269,9 @@ it.each(["commit", "disconnect"])(
+@@ -264,6 +272,9 @@ it.each(["commit", "disconnect"])(
        const [[code]] = await joined;
        expect(code).toBe(handoff === "commit" ? 0 : 1);
        expect(output).toBe(handoff === "commit" ? '{"entered":true}\n' : "");
@@ -14191,7 +11432,7 @@ index 4440038..f904037 100644
      } finally {
        if (child.exitCode === null && child.signalCode === null) {
          child.kill("SIGKILL");
-@@ -340,15 +351,18 @@ describe("managed node launcher", () => {
+@@ -377,15 +388,18 @@ channel.ref();
    it("runs the stored node service command through a live launcher parent", async () => {
      const f = await fixture(`
  await ready();
@@ -14211,7 +11452,7 @@ index 4440038..f904037 100644
        runtime: "node",
        runtimePath: process.execPath,
      });
-@@ -364,24 +378,87 @@ process.exit(0);
+@@ -401,24 +415,87 @@ process.exit(0);
      expect(child).toMatchObject({
        parentPid: service.child.pid,
        launcherChild: true,
@@ -14308,7 +11549,7 @@ index 4440038..f904037 100644
  ${requestUpdate}
  `);
        const candidate = await f.release(`
-@@ -389,17 +466,22 @@ if (!process.env.TEST_CANDIDATE_BOOTSTRAPPED) {
+@@ -426,17 +503,22 @@ if (!process.env.TEST_CANDIDATE_BOOTSTRAPPED) {
    await requestNodeHostLauncherBootstrap({ execArgv: [...process.execArgv, '--disable-warning=ExperimentalWarning'], env: {...process.env, TEST_CANDIDATE_BOOTSTRAPPED:'1'} });
    process.exit(0);
  }
@@ -14339,9 +11580,9 @@ index 4440038..f904037 100644
 +report({ argv: process.argv.slice(2), first, second: readSelector(), cwd: process.cwd(), state, disconnectedState: getManagedNodeHostStatePath() ?? null, execArgv: process.execArgv });
 +process.exit(0);
  `);
-       const result = await completed(
-         f.update(candidate, {}, [...command, "one-use-code", "--profile", "work", "--no-color"]),
-@@ -407,18 +489,167 @@ setTimeout(async () => {
+       // An installed runtime can still use the legacy Node IPC channel.
+       const manifestPath = path.join(candidate.packageRoot, "package.json");
+@@ -449,18 +531,174 @@ setTimeout(async () => {
        const lines = jsonLines(result.stdout);
        expect(lines[0]).toMatchObject({ ok: true });
        expect(lines[1]).toMatchObject({
@@ -14411,7 +11652,14 @@ index 4440038..f904037 100644
 +}
 +await ready();
 +const accepted = restartContext();
-+process.disconnect();
++// A byte-pipe child has no Node IPC channel; close the launcher stream it was given instead.
++const channel = process[Symbol.for('openclaw.node-host.launcher-channel')];
++if (channel) {
++  channel.connected = false;
++  channel.stream.destroy();
++} else {
++  process.disconnect();
++}
 +report({stage: 'bootstrapped', ...accepted, accessEnvironment: accessEnvironment(), disconnected: hasNodeHostLauncherRestartContext()});
 +process.exit(0);
 +`);
@@ -14511,7 +11759,7 @@ index 4440038..f904037 100644
    it("keeps an authenticated candidate serving when its selector cannot be persisted", async () => {
      const f = await fixture();
      const previous = await f.release(
-@@ -502,7 +733,7 @@ if (process.env.TEST_SELECT_ONLY || version === process.env.TEST_VERSION) {
+@@ -544,7 +782,7 @@ if (process.env.TEST_SELECT_ONLY || version === process.env.TEST_VERSION) {
  
    it("keeps the previous managed runtime serving after a failed candidate", async () => {
      const reportRuntime =
@@ -14520,7 +11768,7 @@ index 4440038..f904037 100644
      const body = `
  ${reportRuntime}
  ${restartingRuntime("await ready(); await restartAndExit('old-runtime-serving', 3, 0);")}
-@@ -520,6 +751,7 @@ ${restartingRuntime("await ready(); await restartAndExit('old-runtime-serving',
+@@ -562,6 +800,7 @@ ${restartingRuntime("await ready(); await restartAndExit('old-runtime-serving',
          version,
          state: f.state,
          argv: ["node", "run"],
@@ -14528,15 +11776,3 @@ index 4440038..f904037 100644
        })),
      );
      await expectSelection(f.current, previous.prefix);
-diff --git a/test/vitest/vitest.database-worker-core-paths.mjs b/test/vitest/vitest.database-worker-core-paths.mjs
-index 1f71bc5e4..e238f726c 100644
---- a/test/vitest/vitest.database-worker-core-paths.mjs
-+++ b/test/vitest/vitest.database-worker-core-paths.mjs
-@@ -952,6 +952,7 @@ export const databaseWorkerCoreTestFiles = [
-   "src/cli/plugins-update-command.authority.integration.test.ts",
-   "src/cli/plugins-update-command.generation.integration.test.ts",
-   "src/cli/plugins-update-command.migrations.integration.test.ts",
-+  "src/cli/connect-cli-access.test.ts",
-   "src/cli/connect-cli.reconnect.test.ts",
-   "src/cli/devices-cli.gateway.test.ts",
-   "src/cli/update-cli/update-command-post-update.test.ts",

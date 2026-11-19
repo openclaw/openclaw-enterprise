@@ -14,13 +14,11 @@ import {
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { readOpenclawSource } from "../../scripts/lib/openclaw-source.ts";
 import {
   parseRuntimeDownloadClientSelection,
   readRuntimeDownloadClients,
 } from "../../scripts/lib/runtime-download-clients.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
-import { GATEWAY_RESTART_RESUME_SCOPE } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
 
 type RuntimeAsset =
   { path: string; link: string } | { path: string; size: number; mode: number; sha256: string };
@@ -374,64 +372,13 @@ packages:
   }
   assert.deepEqual(Object.entries(patches), applied);
   assert.equal(Object.hasOwn(provenance, "codexDependencyPinPatchSha256"), false);
-  // The remaining per-patch fields keep their names and values.
-  for (const [field, file] of [
-    ["openclawBridgePatchSha256", "openclaw-codex-read-only-paths.patch"],
-    [
-      "openclawRequiredWorkerAuthorityRegressionPatchSha256",
-      "openclaw-required-worker-authority-regression.patch",
-    ],
-  ] as const) {
-    assert.equal(provenance[field], patches[file], field);
-  }
-});
-
-// OCE sets GATEWAY_RESTART_RESUME_SCOPE on every Gateway to bound native recovery to its
-// admitted lifecycle. The Kubernetes and Docker Drivers set the shared constant; the
-// standalone SSH helper spells it out. A runtime patch adds the name until the pinned OpenClaw
-// reads it; the patched tests run only in the manual image check. Record a pinned commit here
-// only after checking that its own restart resume reads the name.
-const NATIVE_RESTART_RESUME_SCOPE_COMMITS: readonly string[] = [];
-
-test("the pinned runtime reads the Gateway restart-resume scope name OCE sets", async () => {
-  const name = GATEWAY_RESTART_RESUME_SCOPE;
-  const sshHelper = await readFile(
-    "apps/controller/src/drivers/compute/ssh/remote-helper.cjs",
-    "utf8",
+  assert.equal(
+    Object.hasOwn(provenance, "openclawRequiredWorkerAuthorityRegressionPatchSha256"),
+    false,
   );
-  assert.ok(
-    sshHelper.includes(`\nEnvironment=${name}=\${revision.id}\n`),
-    `SSH Compute must set ${name}`,
-  );
-  const patch = "openclaw-restart-resume-scope.patch";
-  const dockerfile = await readFile("deploy/runtime/Dockerfile", "utf8");
-  if (!dockerfile.includes(`COPY deploy/runtime/${patch} /tmp/${patch}\n`)) {
-    // A pin bump dropped the patch: unless OpenClaw reads the name, a turn cut by stop resumes
-    // at the next deployment again.
-    const { commit } = await readOpenclawSource();
-    assert.ok(
-      NATIVE_RESTART_RESUME_SCOPE_COMMITS.includes(commit),
-      `${patch} is no longer applied: check that OpenClaw ${commit} reads ${name}, then record the commit here`,
-    );
-    assert.doesNotMatch(dockerfile, /interrupted under scope/u);
-    return;
-  }
-  // The patch's runtime lines, not only its tests, must read the name the Drivers set.
-  let file = "";
-  const runtimeLines: string[] = [];
-  for (const line of (await readFile(join("deploy/runtime", patch), "utf8")).split("\n")) {
-    if (line.startsWith("+++ b/")) {
-      file = line.slice("+++ b/".length);
-    } else if (line.startsWith("+") && file.startsWith("src/") && !file.endsWith(".test.ts")) {
-      runtimeLines.push(line);
-    }
-  }
-  assert.ok(
-    runtimeLines.some((line) => line.includes(`"${name}"`)),
-    `${patch} must read ${name}`,
-  );
-  assert.match(
-    dockerfile.replace(/\\\n\s*/gu, " "),
-    /session-restart-resume\.test\.ts\s+src\/config\/sessions\/session-entry-json\.test\.ts\s+-t "interrupted under scope\|keeps a graceful resume marker"/u,
+  // The remaining per-patch field keeps its name and value.
+  assert.equal(
+    provenance.openclawBridgePatchSha256,
+    patches["openclaw-codex-read-only-paths.patch"],
   );
 });

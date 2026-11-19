@@ -112,7 +112,7 @@ umask 077
 : "${OCC_URL:?Set OCC_URL to the approved HTTPS endpoint or local console origin}"
 : "${OCC_ORIGIN:?Set OCC_ORIGIN to the console origin; see Requirements}"
 export OCC_ADMIN_EMAIL='<first-admin@example.com>'
-export OCC_ADMIN_PASSWORD_FILE='/secure/occ/initial-admin-password'
+export OCC_ADMIN_PASSWORD_FILE='/secure/occ/admin-password'
 OCC_SESSION_DIRECTORY="$(mktemp -d)"
 export OCC_SESSION_COOKIE_JAR="$OCC_SESSION_DIRECTORY/cookies"
 python3 -c 'import json, os, pathlib, sys; json.dump({"email": os.environ["OCC_ADMIN_EMAIL"], "password": pathlib.Path(os.environ["OCC_ADMIN_PASSWORD_FILE"]).read_text().rstrip("\n")}, sys.stdout)' |
@@ -157,45 +157,57 @@ creation and bootstrap still require human sessions.
 
 ## Retrieve the bootstrap service key
 
-Fresh bootstrap writes a 30-day key for the Installation service administrator.
-In production, retrieve `initial-admin-service-key.json` from the protected
-bootstrap PVC through approved storage access. Save it to a private path and
-set `OCC_SERVICE_KEY_FILE`. See the [bootstrap storage settings](../settings/production.md#production-installation-bootstrap-environment)
-if the file was given a different name.
+Fresh bootstrap registers the operator-supplied key for the Installation service
+administrator. It expires 30 days after registration. Bootstrap does not return
+or write credentials. Use your retained source file or approved access to the
+source Kubernetes Secret. Reading that Secret grants access to both administrator
+identities; do not print its contents. See the [bootstrap input contract](../authentication.md#installation-and-account-ownership).
 
-For a local stack started with `dev-up`, use the `Service key file` path it
-prints. To copy the key from a Compose stack by hand, create a fresh directory:
+For a local stack started with `occ dev up` or `scripts/dev-up`, use the
+`Service key file` path it prints. The setup tool prepares that file before
+bootstrap; no container extraction is needed.
+
+With automatic `occ installation install`, use `bootstrap-client-key.json` in
+the recovery directory recorded by `bootstrap-secret.json` in the installation
+receipt. The file contains prepared material; authenticate it before treating
+installation access as verified. See [production sign-in](../../guides/deploy/production-installation.md#authenticate-to-the-production-api).
+
+For a manual install, wrap the retained raw key in the CLI's `data.key` envelope.
+This example uses the default production input filename and refuses overwrites:
 
 ```bash
 umask 077
-export OCC_SERVICE_KEY_DIRECTORY="$(mktemp -d)"
-export OCC_SERVICE_KEY_FILE="$OCC_SERVICE_KEY_DIRECTORY/initial-admin-service-key.json"
-docker compose cp bootstrap:/var/lib/openclaw/bootstrap/initial-admin-service-key.json \
-  "$OCC_SERVICE_KEY_FILE"
-chmod 600 "$OCC_SERVICE_KEY_FILE"
+export OCC_SERVICE_KEY_FILE=/secure/occ/initial-admin-service-key.json
+node --input-type=module <<'JS'
+import { readFileSync, writeFileSync } from 'node:fs';
+const key = readFileSync('/secure/occ/admin-service-key', 'utf8').replace(/\r?\n$/, '');
+writeFileSync(process.env.OCC_SERVICE_KEY_FILE, JSON.stringify({ data: { key } }), { mode: 0o600, flag: 'wx' });
+JS
+occ installation get --output json
 ```
 
-Validate it with `occ installation get`; the displayed ID should match
-`meta.installationId` in the protected response file. Never print the whole
-file to obtain the ID.
+The local JSON contains no key ID, expiry, or Installation ID. Obtain the
+server-owned Installation ID from `id` in CLI JSON output (`data.id` in the
+HTTP response envelope).
+Preparing a key file does not prove that installation succeeded. Ordinary key
+issuance still returns its complete response with metadata and a generated key.
 
 ## Recover an incomplete bootstrap
 
-Fresh bootstrap checks both configured password and service-key output paths
-before creating credentials. `BOOTSTRAP_OUTPUT_EXISTS` means preserve the output
-and reconcile the original attempt; it does not establish who owns the file.
-`BOOTSTRAP_OUTPUT_UNVERIFIED` means absence could not be established. Neither
-result authorizes a retry. Exclusive, no-follow creation still refuses a later collision,
-which can leave partial effects. Migration may already have run; the check does
-not establish an empty database. Existing-Installation verification and upgrades
-are unchanged.
+Fresh bootstrap reads and validates both input files before creating credentials.
+A rejected input does not establish an empty database: migration may already
+have run. Correct invalid files only after checking the original attempt's state.
 
-Bootstrap makes one attempt. On failure, preserve logs, non-secret IDs, and
-protected output. Confirm database commit state before deleting anything. If the
-attempt did not commit, remove only proven orphan accounts or keys and
-quarantine only that attempt's output. If it did commit, retain the credentials
-and use normal key recovery. Do not delete output, reset the database, or rerun
-bootstrap as an automatic fallback. See [bootstrap behavior](../authentication.md#installation-and-account-ownership).
+Bootstrap makes one attempt. Better Auth writes and the Installation/IAM commit
+are separate. On failure, preserve logs, non-secret attempt IDs, and protected
+inputs. Confirm database commit state before changing anything. If the attempt
+did not commit, remove only proven orphan accounts or keys under an authorized
+reconciliation procedure. If it committed, retain the credentials and use normal
+account or key recovery. Do not reset the database, generate replacements, or
+rerun bootstrap as an automatic fallback. A verified existing Installation reads
+neither input and does not reset passwords, import a new key, renew expiry, or
+restore grants. Editing the source Secret is not rotation. See
+[bootstrap behavior](../authentication.md#installation-and-account-ownership).
 
 ## Recover a lost or exposed service key
 

@@ -127,12 +127,10 @@ controlPlaneAudit:
 
 bootstrap:
   adminEmail: ""
-  password:
-    claimName: ""
-    mountPath: /var/lib/openclaw/bootstrap
-    fileName: initial-admin-password
-  serviceKey:
-    fileName: initial-admin-service-key.json
+  credentials:
+    secretName: ""
+    passwordKey: admin-password
+    serviceKeyKey: admin-service-key
 
 backend:
   openshell:
@@ -196,6 +194,10 @@ publicGithubRead:
   clusterIP: ""
   # Operator-approved IPv4 CIDRs for api.github.com; no default Internet grant.
   upstreamCidrs: []
+
+# Enable when the Installation selects the in-Pod Strands Box Sandbox Driver.
+strandsBox:
+  workerReadiness: false
 
 gatewayRouting:
   # Requires operator-installed routing controllers/CRDs, an existing GatewayClass,

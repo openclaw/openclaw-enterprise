@@ -94,13 +94,12 @@ operation was not authorized.`
   admit a browser session.
 - [Experimental personal Codex login](../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login)
   (device login) requires Namespace `agent:create`, or exact `agent:read` and
-  `agent:update` for an existing Agent. Start also requires `secret:create` and
-  `credential_source:create`, which the Namespace policy API cannot grant, so
-  only an Installation administrator or a holder of a configured Role with
-  those permissions can start it. Polling and closure require the initiating actor
-  and exact session `secret:operate`; source use requires exact
-  `credential_source:operate`. The session holds only an opaque Gateway handle.
-  Saved-Agent discovery also checks the Agent principal's source grant.
+  `agent:update` for an existing Agent. Start also requires
+  `credential_source:create` in the Namespace. Only the initiating actor can poll
+  or cancel the login, with current Agent permissions. Polling additionally
+  requires exact `credential_source:operate` on the resulting source. The
+  temporary login session is not an IAM resource. Saved-Agent discovery also
+  checks the Agent principal's source grant.
 
 - [Channel directory lookup](../api.md#post-namespacesnamespaceidchanneldirectorylookup)
   requires `agent:create` in the Namespace, or `agent:update` or

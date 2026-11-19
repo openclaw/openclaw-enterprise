@@ -1,18 +1,18 @@
 ---
 created: "2026-09-19"
-updated: 2026-11-13
-last_updated_session: authoring-run/97aeaabf-7b1c-40d2-bd48-f7e3e105e434
+updated: 2026-11-19
+last_updated_session: authoring-run/08c23986-7eaa-48cf-aeff-d53da1475676
 ---
 
 # Agent Native Admin UI Flow
 
 ## Overview
 
-OCC authorizes exact-Agent browser access through the OCE session or a host-only handle, then proxies HTTP and WebSockets under the selected access mode.
+OCC authorizes and proxies exact-Agent HTTP/WebSocket browser access using OCE sessions or host-only handles.
 
 ## Entry Points
 
-- Trigger: Console opts into native admin during Agent creation, opens an Agent native admin URL, or `scripts/first-agent.ts --control-ui` creates a compatible Agent in Local Setup with OpenShell.
+- Trigger: Enable native admin at Agent creation, open its URL, or run `scripts/first-agent.ts --control-ui` in Local Setup with OpenShell.
 - Source: `scripts/first-agent.ts:nativeConfiguration`
 - Source: `apps/controller/src/console/agents/native-admin.mts:renderNativeAdminAccess`
 - Source: `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
@@ -22,11 +22,11 @@ OCC authorizes exact-Agent browser access through the OCE session or a host-only
 
 ```mermaid
 graph TD
-  C0["Create Agent enables browser chat"] --> C1["Authorize provisioning and reserve Agent identity"]
-  C0 --> O1["Ordinary create: authorize Agent creation<br/>and Configuration update"]
-  O1 --> O2["Check generation and no Agent references<br/>then prepare origin and policy"]
+  C0["Enable browser chat at Agent creation"] --> C1["Authorize provisioning; reserve Agent identity"]
+  C0 --> O1["Authorize Agent creation<br/>and Configuration update"]
+  O1 --> O2["Check generation and no Agent references;<br/>prepare origin and policy"]
   O2 -->|refused| C3
-  O2 -->|valid| O3["Save Configuration and Agent together<br/>then deploy through normal workflow"]
+  O2 -->|valid| O3["Save Configuration and Agent atomically;<br/>deploy normally"]
   O3 --> A
   C1 --> C2["Prepare exact origin and trusted-proxy policy"]
   C2 -->|conflicting policy or feature disabled| C3["Refuse before queueing work"]
@@ -221,32 +221,32 @@ account or grant. See [session limits](../reference/agent-native-admin.md#host-o
 The `onRequest` hook blocks ordinary controller routes on Agent subdomains
 except the Console host, even when native access is disabled.
 
-OCC authenticates the session or handle and resolves the IAM identity. Before
-lookup it requires `agent-`, exactly 32 lowercase hex characters, a dot and the
-configured domain. It scans Installation Agent references and rejects unknown,
-deleted or ambiguous hosts. OCC selects `admin` or `chat` and checks the version
-and Configuration.
+OCC authenticates the session or handle and resolves IAM identity. It requires
+`agent-<32 lowercase hex>.<configured domain>` before lookup, then rejects unknown,
+deleted or ambiguous Installation Agent references. It selects `admin` or `chat`
+and checks the version and Configuration.
 
-Attributable IAM denials get one audit attempt, even after the five-second
-admission wait, disconnect or shutdown. Timely denials await that append before
-returning `403`. Classified dependency failures, append failures and admission
-timeouts return `503`; unavailable Agents remain `403`.
+Attributable IAM denials receive one audit attempt despite the five-second
+admission timeout, disconnect or shutdown. Timely denials await the append before
+`403`. Dependency failures, append failures, timeouts and an authorized deployment
+transition (`agent_transition`) return `503`, keeping the Agent UI reconnecting.
+Stopped or unsupported Agents remain `403`; authorized page loads show **Agent
+unavailable**.
 For HTTP admission refusals, `http.completed` records a fixed `nativeAdmissionReason`,
 without URLs, cookies, identities or error text. Early guards and post-admission
 failures may omit it.
 
 See [navigation and sign-in rules](../reference/agent-native-admin.md#authorization-and-availability)
 for Console redirects, **Sign in**, and **Agent version changed**. Version
-refusals leave cookies intact and do not relaunch. Permission refusals link to
-`/console/agents` on the public origin or name the required permission in JSON.
-The text omits Agent identity and matches unknown-host refusals.
+refusals preserve cookies without relaunch. Permission refusals link to
+public-origin `/console/agents` or name the required permission in JSON, omitting
+Agent identity like unknown-host refusals.
 
-Status and proxy checks reuse one Better Auth lookup for identity, expiry and
-attribution. Each WebSocket lease checks the original session, selected mode and Agent again. After handling
-stopped, replacing or unsupported Agents, admission rechecks both Compute owner
-fields. A mismatch returns HTTP `403` or closes an upgrading socket without an
-HTTP response, before gateway-key lookup or connection. A failed lease closes
-both sockets.
+Status and proxy checks share one Better Auth lookup for identity, expiry and
+attribution. Every WebSocket lease rechecks the original session, mode and Agent.
+After lifecycle/configuration checks, admission verifies both Compute owner
+fields. Mismatch returns HTTP `403` or closes an upgrading socket without an HTTP
+response before gateway-key lookup; failed leases close both sockets.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminHttp`
 
@@ -264,9 +264,10 @@ The proxy blocks service-worker scripts, adds CSP `worker-src 'none'`, rewrites
 same-upstream redirects to the Agent origin, and strips upstream `Set-Cookie`
 and `Clear-Site-Data`.
 
-An upstream transfer failure returns `503` before headers or aborts an already
-started response. Avatar `502` becomes empty `404` for initials; the proxy
-cancels its upstream body.
+A transfer failure, or the route proxy's `503` for an unreachable Gateway, before
+response headers gives `503` (a page load: **Agent not responding**); afterwards
+the proxy aborts the response. An avatar `502` becomes an empty `404` (initials
+fallback); the proxy cancels its upstream body.
 
 ### 7. OCC proxies native WebSocket upgrades
 
@@ -339,6 +340,10 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 06:03: Add the **Agent unavailable** page. (authoring-run/08c23986-7eaa-48cf-aeff-d53da1475676 - 4c2da280f8ee1c143ac1d34c63b6e7fac6a3ac83)
+
+- 2026-11-19 01:23: A deployment in progress answers authorized Agent-host HTTP with `503`. (authoring-run/ef3e9c03-7ddd-43c6-a55f-0460c8daed7b - 50ba6e3c180341cddc63528b98c21da57508ad2b)
 
 - 2026-11-13 06:32: Clarify replacement records and native access reasons. (authoring-run/97aeaabf-7b1c-40d2-bd48-f7e3e105e434 - 4ab097ffe6f1bce048629dcdec005ed666e536c0)
 

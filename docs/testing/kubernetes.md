@@ -90,8 +90,8 @@ OCC_TEST_KUBERNETES_CONTEXT=k3d-oce \
 Checks named-Job access, replacement, interrupted Helm dispatch, CRDs/controllers,
 quota headroom, address drift and denials. EKS connectivity and Envoy acceptance
 remain unproved. The [production observability lane](local.md#kubernetes-observability-acceptance)
-runs `installation-receipt-k3d-real.test.ts` with PostgreSQL to check bootstrap
-after interruption before and after UID capture.
+checks PostgreSQL bootstrap after interrupted Job capture and lost Secret-create
+acknowledgements through `installation-receipt-k3d-real.test.ts`.
 
 ### Production workload network access
 
@@ -482,10 +482,10 @@ from controller and runtime Pods before creating Agents.
 ### Install and exercise the platform
 
 Follow [production installation](../guides/deploy/production-installation.md)
-for PostgreSQL, restricted roles, bootstrap and the CP Helm release. Prepare
-bootstrap PVC ownership before initialization. If initialization fails, check
+for PostgreSQL, restricted roles, bootstrap and the CP Helm release. Precreate
+the bootstrap Secret before initialization. If initialization fails, check
 commit state and follow bootstrap recovery; do not reset the database or delete
-protected output automatically.
+protected inputs automatically.
 
 Grant the DP tenant worker and API bindings and the three CP bindings in
 [Agent preparation](../guides/deploy/production-agents.md#grant-tenant-rolebindings).

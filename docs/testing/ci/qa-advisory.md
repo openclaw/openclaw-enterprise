@@ -9,9 +9,9 @@ last_verified: "2026-11-04"
 
 ## Overview
 
-QA exercises Console Secrets on Compose/Kubernetes, OpenShell, local
-installation and native Agent browsing with real dependencies in disposable
-installations. Results are advisory, not merge or publication gates.
+QA exercises Console Secrets, OpenShell, local installation and native Agent
+browsing on real, disposable Compose/Kubernetes dependencies. Results are advisory, not
+merge or publication gates.
 
 <a id="when-it-runs"></a>
 
@@ -184,11 +184,13 @@ Local instructions run the **QA matrix only**. For other suites, follow
 `OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
 `OCC_TEST_QA_SCENARIOS` accepts `all` (default) or comma-separated selectors.
-`all` excludes `namespace-lifecycle`, `sandbox-policy`, `scratch-volume`, `plugin-install`,
+`all` excludes `native-restart`, `namespace-lifecycle`, `sandbox-policy`, `scratch-volume`, `plugin-install`,
 `openshell-linear-read`, `openshell-git-model`, `codex-search-config`, `harness-overrides` and
 `oidc-agent-chat` selectors.
-Invalid or wholly inapplicable selections fail before provisioning; missing
+Invalid selections fail before provisioning; missing
 inputs fail selected checks. Omitting `OCC_TEST_QA_MATRIX=1` skips the suite.
+
+For `native-restart`, see [recovery qualification](../harness-restart-recovery.md).
 
 Select `agent-audit` with `compose` and `Codex`. It uses the standard Codex
 deployment fixture and development audit settings. It requires the usual Codex

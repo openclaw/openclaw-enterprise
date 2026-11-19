@@ -6,16 +6,30 @@ import type { Server } from "node:net";
 import { join } from "node:path";
 import { createSecureContext, type SecureContext } from "node:tls";
 
-const [requestLog, tlsDirectoryFile, serviceKey, scenario, installationId] = process.argv.slice(2);
+const [requestLog, tlsDirectoryFile, scenario, installationId] = process.argv.slice(2);
 assert.ok(
-  requestLog && tlsDirectoryFile && serviceKey && scenario && installationId,
+  requestLog && tlsDirectoryFile && scenario && installationId,
   "Dev-up Installation fixture arguments are required",
 );
 
 const routes = ["/api/auth/session", "/namespaces/namespace_fixture", "/installation"] as const;
 
-function respond(log: string, request: IncomingMessage, response: ServerResponse): void {
-  const authorized = request.headers["x-api-key"] === serviceKey;
+function respond(
+  log: string,
+  inputDirectoryFile: string,
+  request: IncomingMessage,
+  response: ServerResponse,
+): void {
+  // Consume the launcher's retained raw input, not a fixture-issued credential.
+  // This checks transport wiring only, not the controller's authentication.
+  let serviceKey: string | undefined;
+  try {
+    const directory = readFileSync(inputDirectoryFile, "utf8");
+    serviceKey = readFileSync(join(directory, "initial-admin-service-key"), "utf8");
+  } catch {
+    // Browser readiness may run before credential preparation.
+  }
+  const authorized = serviceKey !== undefined && request.headers["x-api-key"] === serviceKey;
   // Record the observed route without persisting arbitrary request targets or query strings.
   const url = routes.find((route) => route === request.url) ?? "unrecognized";
   const method = METHODS.find((verb) => verb === request.method) ?? "unrecognized";
@@ -45,7 +59,9 @@ function respond(log: string, request: IncomingMessage, response: ServerResponse
     );
     return;
   }
-  response.end(JSON.stringify({ data: { id: installationId }, meta }));
+  response.end(
+    JSON.stringify({ data: scenario === "api-mismatch" ? {} : { id: installationId }, meta }),
+  );
 }
 
 function listen(server: Server): Promise<number> {
@@ -64,7 +80,7 @@ function listen(server: Server): Promise<number> {
 }
 
 const handler = (request: IncomingMessage, response: ServerResponse) =>
-  respond(requestLog, request, response);
+  respond(requestLog, tlsDirectoryFile, request, response);
 const server = createServer(handler);
 // Read the launcher's generated key at handshake time, after startup writes it.
 const browser = createTlsServer(

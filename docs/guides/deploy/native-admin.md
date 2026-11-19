@@ -1,6 +1,6 @@
 # Deploy native admin UI access
 
-Expose native Agent chat or administration on an isolated Agent host through OCC. Access requires an OCE session and exact Agent `operate` or `administer` permission. Start with [Local development](#local-development), or [production installation](production-installation.md) and [workspace routing](workspace-routing.md) for existing clusters.
+Expose native Agent chat or administration on an isolated host through OCC. Require an OCE session and exact-Agent `operate` or `administer`. Configure [Local development](#local-development) or [production installation](production-installation.md) with [workspace routing](workspace-routing.md).
 
 ## Local development
 
@@ -310,14 +310,15 @@ the OCE login.
 If a refreshed tab says **Agent version changed**, choose **Return to console**,
 then open the Agent again. The old session cannot cross a deployment.
 
-If an open Gateway tab offers **Reconnect in browser**, select it. Your sign-in
-may have expired, or your access may have changed. If OCE asks you to sign in,
-it checks your access again and returns you to that Agent’s detail page. Select
-**Open Agent UI** to continue. With an older runtime, open the Agent root
-or its console page to start the same recovery.
+If an open Gateway tab shows **Sign in to continue loading content**, select
+**Sign in**. Your sign-in may have expired or your access changed. A new tab
+opens; after any sign-in, OCE rechecks your access and shows that Agent’s detail
+page. Return to the first tab and select **Check again**; it reconnects with your
+draft. If the new tab shows **Agent unavailable**, open the Agent in the console;
+deploy a stopped Agent.
 
-If the Agent host returns `503 DEPENDENCY_UNAVAILABLE`, check the controller and
-session store and retry after they recover.
+If the Agent host returns `503 DEPENDENCY_UNAVAILABLE` or **Agent not responding**
+outside a deployment, check `occ agent runtime`, the controller and session store.
 
 If expiry coincides with controller restarts, check persistent session storage
 and whether the configured auth secret changed. In-memory sessions disappear

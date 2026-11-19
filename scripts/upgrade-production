@@ -104,48 +104,87 @@ def profile_input(parser, filename):
 
 
 def report_status(parser, directory):
+    blocker = "preflight-blocked-original-worker"
+    startup = "startup-preflight-passed"
+    markers = (
+        # Writers take the lock before publishing markers.
+        (".upgrade-lock", True),
+        ("prepared", False),
+        ("database-migration-handoff.json", False),
+        ("helm-started", False),
+        ("completed", False),
+        ("native-command-failures.tsv", False),
+        # Read the blocker before its prerequisite while preflight may still be running.
+        (blocker, False),
+        (startup, False),
+    )
+
+    def check_directory(fd):
+        info = os.fstat(fd)
+        if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            parser.error("evidence must be an owner-only directory, not a symbolic link")
+
+    def observe_markers(fd):
+        observed = {}
+        for name, is_directory in markers:
+            try:
+                item = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            except FileNotFoundError:
+                observed[name] = None
+                continue
+            expected = stat.S_ISDIR(item.st_mode) if is_directory else stat.S_ISREG(item.st_mode)
+            if not expected or item.st_uid != os.geteuid() or item.st_mode & 0o077:
+                parser.error("evidence contains an invalid or nonprivate status marker")
+            if name in (blocker, startup) and (item.st_size != 0 or not item.st_mode & stat.S_IRUSR):
+                parser.error("evidence contains an invalid or nonprivate status marker")
+            observed[name] = (item.st_dev, item.st_ino, item.st_mode, item.st_size)
+        return observed
+
     try:
         fd = os.open(Path(directory), os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_DIRECTORY)
         try:
-            info = os.fstat(fd)
-            if info.st_uid != os.geteuid() or info.st_mode & 0o077:
-                parser.error("evidence must be an owner-only directory, not a symbolic link")
-            observed = {}
-            for name, is_directory in (
-                ("prepared", False),
-                ("database-migration-handoff.json", False),
-                ("helm-started", False),
-                ("completed", False),
-                (".upgrade-lock", True),
-                ("native-command-failures.tsv", False),
-            ):
-                try:
-                    item = os.stat(name, dir_fd=fd, follow_symlinks=False)
-                except FileNotFoundError:
-                    observed[name] = False
-                    continue
-                expected = stat.S_ISDIR(item.st_mode) if is_directory else stat.S_ISREG(item.st_mode)
-                if not expected or item.st_uid != os.geteuid() or item.st_mode & 0o077:
-                    parser.error("evidence contains an invalid or nonprivate status marker")
-                observed[name] = True
+            check_directory(fd)
+            observed = observe_markers(fd)
+            repeated = observe_markers(fd)
+            check_directory(fd)
         finally:
             os.close(fd)
     except OSError:
         parser.error("cannot inspect private local evidence directory")
 
-    print("Local evidence observations (not current cluster health or resume authority):")
-    for name, present in observed.items():
-        print(f"  {name}: {'present' if present else 'absent'}")
+    if observed != repeated:
+        print("Local evidence changed during this read. Run status again to inspect the attempt.")
+        return
+    if observed[blocker] and not observed[startup]:
+        parser.error("evidence contains inconsistent preflight status markers")
+
+    print("Historical local evidence observations (not current cluster health or resume authority):")
+    for name, item in observed.items():
+        print(f"  {name}: {'observed' if item else 'not observed'}")
     if observed["completed"]:
         print("Completion was recorded; verify the current release and workloads separately.")
     elif observed["helm-started"]:
         print("Helm intent was recorded; its outcome remains uncertain without completion evidence.")
     elif observed["database-migration-handoff.json"]:
         print("A migration pause was recorded; confirm migration history before an authorized resume.")
+    elif observed[startup] and not (
+        observed["prepared"] or observed[".upgrade-lock"] or observed["native-command-failures.tsv"]
+    ):
+        if observed[blocker]:
+            print("Candidate startup and migration checks passed and temporary resources were removed in this attempt.")
+            print("The upgrade was blocked because retained Agent revisions require their original worker.")
+            print("No deployment was prepared in the recorded preflight. Resolve the blocker through an authorized interruption or revision replacement, then recheck inventory with fresh upgrade evidence.")
+        else:
+            print("Candidate startup checks passed and temporary resources were removed in this attempt.")
+            print("The final preflight outcome is unknown from this marker alone.")
+            print(
+                "Preserve the original attempt's top-level evidence. "
+                "Reconcile the command result and current inventory before any further write."
+            )
     else:
         print("No completion was recorded; inspect the original attempt before any further write.")
     if observed[".upgrade-lock"]:
-        print("A lock marker exists; it does not prove whether the previous process is still running.")
+        print("A lock marker was observed. Verify separately whether the previous process is still running.")
 
 
 def main():

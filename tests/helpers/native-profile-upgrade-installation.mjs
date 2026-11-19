@@ -5,10 +5,7 @@ import { join } from "node:path";
 import { execFile } from "../../scripts/ci/prepare-command.ts";
 import { assertDockerImageId } from "../../scripts/ci/k3d-image-admission.ts";
 import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
-import {
-  privateBootstrapDirectory,
-  productionBootstrapEnvironment,
-} from "./bootstrap-installation.mjs";
+import { privateBootstrapDirectory } from "./bootstrap-installation.mjs";
 
 // Run the image's real production entrypoints, never the host checkout's
 // bootstrap implementation. Only this short-lived initializer gets the
@@ -17,7 +14,24 @@ export async function initializeNativeUpgradeInstallation(context, options) {
   const { image, migrationUrl, databaseUrl, expectedInstallationId } = options;
   assertDockerImageId(image, "native upgrade initializer image");
   const directory = await privateBootstrapDirectory(context, "oce-native-upgrade-bootstrap-");
-  const environment = productionBootstrapEnvironment({ ...options, directory: "/bootstrap" });
+  // Frozen535 generates recovery credentials as protected output files. Current
+  // verification accepts no removed output settings and needs no credential input.
+  // Do not call the current fresh-bootstrap fixture to initialize the old image.
+  const environment = {
+    NODE_ENV: "production",
+    OCC_DATABASE_URL: databaseUrl,
+    OCC_AUTH_SECRET: options.authSecret,
+    OCC_AUTH_BASE_URL: options.authBaseURL ?? "https://console.oce.localhost",
+    OCC_AGENT_NATIVE_ADMIN_DOMAIN: options.agentDomain ?? "agents.oce.localhost",
+    OCC_BOOTSTRAP_ADMIN_EMAIL: options.email,
+    OCC_BOOTSTRAP_INSTALLATION_NAME: options.installationName,
+    ...(expectedInstallationId === undefined
+      ? {
+          OCC_BOOTSTRAP_PASSWORD_FILE: "/bootstrap/initial-admin-password",
+          OCC_BOOTSTRAP_SERVICE_KEY_FILE: "/bootstrap/initial-admin-service-key.json",
+        }
+      : {}),
+  };
   // The existing production launcher reads the selected image's declared
   // command: fixed535 runs its MJS migrator, current images their typed migrator.
   const docker = process.env.OCC_DOCKER_BIN ?? "docker";

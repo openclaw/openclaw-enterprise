@@ -1,3 +1,8 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Worker, Compose, and PostgreSQL settings
 
 ## PostgreSQL connection authentication
@@ -32,7 +37,7 @@ for `https://ossrdbms-aad.database.windows.net/.default`. The SDK handles cachin
 and renewal; OCC does not persist tokens or fall back to a developer login.
 Use `pnpm db:migrate` or `pnpm db:migrate:production` in this mode.
 
-See [operator setup](../../guides/deploy/production-installation.md#azure-postgresql-workload-identity)
+See [operator setup](../../guides/deploy/azure-postgresql.md)
 for deployment-owned identity inputs and chart limits, and
 [PostgreSQL testing](../../testing/postgresql.md#azure-workload-identity-connections)
 for the available connection proof and its limits.
@@ -165,7 +170,7 @@ project and retains its volume.
 
 For unsupported premerge history, retain the old installation and separately
 configure a fresh one, or discard that specific disposable installation. Preserve
-needed database/storage archives and protected bootstrap output first. Archives
+needed database/storage archives and protected bootstrap inputs first. Archives
 are not supported imports into canonical history; whole-database restore also
 restores the unsupported ledger. No general reset, conversion, or reseed exists.
 Recreate selected business data through its owning supported API or import
@@ -174,7 +179,7 @@ removing control-plane storage does not retire external resources or grants.
 
 For Docker or Podman, copy the exact `Cleanup` command printed by the original
 startup. Add `--volumes` before its `--` only when intentionally deleting that
-installation's PostgreSQL, Configuration, and bootstrap volumes. Preserve its
+installation's PostgreSQL and Configuration volumes. Preserve its
 engine connection, environment, project, Compose files, and overrides. For
 example, after setting `DEV_COMPOSE_PROJECT` to your own recorded project:
 
@@ -197,9 +202,8 @@ OCC_DEVELOPMENT_STATE_DIRECTORY="$DEV_STATE_DIRECTORY" ./bin/occ dev down
 Start the chosen fresh profile from the canonical source using a new protected
 key-output path. `occ dev up` applies migrations, bootstraps the initial
 administrators/Installation/default Namespace, and checks authenticated
-Installation access. Fresh bootstrap refuses existing output files; an old
-bootstrap volume or key file is not valid output for the new database. Repeating
-bootstrap against an existing Installation verifies it and issues no new key.
+Installation access using locally prepared CLI key JSON. Repeating bootstrap
+verifies the existing Installation without reading inputs or issuing keys.
 
 Use the startup's printed authenticated-check command, or privately select
 `OCC_URL` and `OCC_SERVICE_KEY_FILE` and run:
@@ -208,8 +212,9 @@ Use the startup's printed authenticated-check command, or privately select
 ./bin/occ installation get --output json
 ```
 
-Its Installation ID must match the protected key response's
-`meta.installationId`. Stop on mismatches, missing output, failed migration,
+The authenticated response supplies the server-owned Installation ID; locally
+prepared bootstrap key JSON has no Installation metadata. Stop on unexpected IDs,
+missing credentials, failed migration,
 uncertain bootstrap outcome, or incomplete cleanup. This proves control-plane
 access; qualify worker, Agent, repository, and provider behavior separately.
 
@@ -266,9 +271,9 @@ impose a Namespace-wide Agent limit.
 The root Compose development stack starts PostgreSQL 18.6, migrations,
 bootstrap, API, and worker. `occ dev up` starts the supported development
 profile; the checkout-local `scripts/dev-up` entry point uses the same path.
-Startup validates Compose configuration, waits for services, copies
-the bootstrap service-key response to a private file, and proves authenticated
-access. `OCC_DEVELOPMENT_COMPUTE_DRIVER` selects Docker Compute or Kubernetes
+Startup prepares private credential files outside the checkout, validates
+Compose configuration, waits for services, and proves authenticated access with
+the locally prepared CLI key file. `OCC_DEVELOPMENT_COMPUTE_DRIVER` selects Docker Compute or Kubernetes
 Compute. Kubernetes Compute can use a Compose control plane or the
 [Kubernetes-only profile](../../guides/deploy/local-kubernetes-development.md).
 The helper prefers a usable Docker Engine and otherwise selects Podman directly,
@@ -339,15 +344,17 @@ pnpm db:migrate
 ```
 
 Add the application connection URL to the [required development controller environment](development.md#required-development-controller-environment), then initialize before starting the same server manually. Use an
-existing private output directory and an unused absolute filename for fresh
-setup. Retain that directory for credential recovery; subsequent initialization
-does not reissue a key. This path is only for intentional host-process debugging:
+private input directory outside the checkout. Follow the
+[input contract](../authentication.md#installation-and-account-ownership) and
+[credential generation example](../../guides/deploy/production-installation-preparation.md#shared-credential-and-configuration-checks).
+Retain the files; reinitialization does not reissue keys. For host-process debugging:
 
 ```bash
 export OCC_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_enterprise
 export OCC_DATABASE_POOL_MAX=10
 export OCC_DEVELOPMENT_CONFIGURATION_ROOT="$(pwd)/.development/configurations"
-export OCC_BOOTSTRAP_SERVICE_KEY_FILE='/absolute/private-directory/initial-admin-service-key.json'
+export OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE='/absolute/private-directory/admin-password'
+export OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE='/absolute/private-directory/admin-service-key'
 NODE_ENV=development node scripts/bootstrap-installation.mjs
 NODE_ENV=development node apps/controller/src/server.mjs
 ```
@@ -360,13 +367,13 @@ Compose keeps relational OCC metadata in the `occ_postgres_data` named volume
 and native development Configuration documents in the `occ_configuration_data`
 named volume. The configuration volume is mounted only into the controller at
 `/app/.development/configurations`; it is not mounted into the worker or
-runtime containers. Initial service-key output uses a third bootstrap-only
-volume, `occ_bootstrap_data`, at `/var/lib/openclaw/bootstrap`; the API and
-worker do not mount it. For Docker Compute, the printed cleanup command retains
-all three volumes and uses the selected container engine. Podman cleanup retains
+runtime containers. Bootstrap alone receives the two input files as Compose
+secrets at `/run/secrets/admin-password` and `/run/secrets/admin-service-key`;
+migration, API, and worker do not receive them. For Docker Compute, the printed
+cleanup command retains both named volumes and uses the selected container engine. Podman cleanup retains
 the caller's `CONTAINER_CONNECTION` or `CONTAINER_HOST` selection.
 Add `--volumes` before any `--` separator only when
-intentionally deleting them, including the initial credential delivery copy.
+intentionally deleting those volumes. Private credential files are separate.
 [Kubernetes development cleanup](../../guides/deploy/local-kubernetes-development.md#stop-and-clean-up)
 always deletes the selected profile's volumes.
 

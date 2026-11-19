@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { prepareNativeProfileUpgradeDatabase } from "../../scripts/ci/prepare.ts";
 import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
@@ -23,7 +24,14 @@ type Inputs = {
   writeState: (path: string, state: unknown) => Promise<void>;
 };
 
-type CommandEvidence = { args: string[]; migrator: boolean; modelForwarded: boolean };
+type CommandEvidence = {
+  args: string[];
+  migrator: boolean;
+  modelForwarded: boolean;
+  legacyOutputSettings: boolean;
+  credentialInputSettings: boolean;
+  currentConfigurationChecked: boolean;
+};
 
 function commandEvidence(text: string): CommandEvidence[] {
   return text
@@ -35,9 +43,24 @@ function commandEvidence(text: string): CommandEvidence[] {
       const args = record?.args;
       const migrator = record?.migrator;
       const modelForwarded = record?.modelForwarded;
+      const legacyOutputSettings = record?.legacyOutputSettings;
+      const credentialInputSettings = record?.credentialInputSettings;
+      const currentConfigurationChecked = record?.currentConfigurationChecked;
       assert.ok(Array.isArray(args) && args.every((arg: unknown) => typeof arg === "string"));
       assert.ok(typeof migrator === "boolean" && typeof modelForwarded === "boolean");
-      return { args, migrator, modelForwarded };
+      assert.ok(
+        typeof legacyOutputSettings === "boolean" &&
+          typeof credentialInputSettings === "boolean" &&
+          typeof currentConfigurationChecked === "boolean",
+      );
+      return {
+        args,
+        migrator,
+        modelForwarded,
+        legacyOutputSettings,
+        credentialInputSettings,
+        currentConfigurationChecked,
+      };
     });
 }
 
@@ -52,7 +75,15 @@ export function registerNativeProfileUpgradeCases({ repositoryRoot, writeState }
       String.raw`#!${process.execPath}
 const { appendFileSync, writeFileSync } = require("node:fs");
 const args = process.argv.slice(2);
-appendFileSync(${JSON.stringify(log)}, JSON.stringify({args, migrator: Boolean(process.env.OCC_MIGRATION_DATABASE_URL), modelForwarded: args.includes("OPENAI_API_KEY")}) + "\n");
+const legacyOutputSettings = Boolean(process.env.OCC_BOOTSTRAP_PASSWORD_FILE || process.env.OCC_BOOTSTRAP_SERVICE_KEY_FILE);
+const credentialInputSettings = Boolean(process.env.OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE || process.env.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE);
+const currentConfigurationChecked = args.includes("--verify-existing");
+if (currentConfigurationChecked) {
+  // Execute the current production parser, not a copied validation rule.
+  const { bootstrapConfiguration } = require(${JSON.stringify(fileURLToPath(new URL("../../scripts/lib/bootstrap-configuration.ts", import.meta.url)))});
+  bootstrapConfiguration("production", process.env);
+}
+appendFileSync(${JSON.stringify(log)}, JSON.stringify({args, migrator: Boolean(process.env.OCC_MIGRATION_DATABASE_URL), modelForwarded: args.includes("OPENAI_API_KEY"), legacyOutputSettings, credentialInputSettings, currentConfigurationChecked}) + "\n");
 if (args[0] === "run" && args.includes("scripts/bootstrap-installation.mjs") && !args.includes("--verify-existing")) {
   const mount = args[args.indexOf("--mount") + 1];
   const directory = mount.match(/src=([^,]+)/)[1];
@@ -111,6 +142,17 @@ if (args[0] === "run") {
     assert.deepEqual(
       runs.map(({ migrator }) => migrator),
       [true, true, false, true, true, false],
+    );
+    assert.deepEqual(
+      runs.map(({ legacyOutputSettings }) => legacyOutputSettings),
+      [true, true, true, false, false, false],
+      "only the frozen baseline accepts credential output-file settings",
+    );
+    assert.ok(runs.every(({ credentialInputSettings }) => !credentialInputSettings));
+    assert.deepEqual(
+      runs.map(({ currentConfigurationChecked }) => currentConfigurationChecked),
+      [false, false, false, false, false, true],
+      "candidate incumbent verification must pass the real current configuration parser",
     );
     const initialMigration = runs[0];
     const catalogCheck = runs[1];

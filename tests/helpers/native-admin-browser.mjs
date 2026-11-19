@@ -1063,16 +1063,23 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
   await assertDeviceNotEnrolled(topology, unaffected.deviceId);
   await assertNativeDenied(unaffected.page);
 
-  const reconnect = nativePage.getByRole("link", {
-    name: "Reconnect in browser",
-    exact: true,
+  // The refused reconnect opens the Agent UI's sign-in dialog; Sign in opens the root in a
+  // new tab while the first tab keeps its conversation.
+  const dialog = nativePage
+    .locator("openclaw-modal-dialog")
+    .filter({ hasText: "Sign in to continue loading content" });
+  await dialog.waitFor({ timeout: 45_000 });
+  const rootLoad = nativePage.context().waitForEvent("response", {
+    predicate: (response) =>
+      response.url() === status.url && response.request().isNavigationRequest(),
+    timeout: 15_000,
   });
-  const [root] = await Promise.all([
-    nativePage.waitForResponse(
-      (response) => response.url() === status.url && response.request().isNavigationRequest(),
-    ),
-    reconnect.click({ timeout: 15_000 }),
+  const [signInPage] = await Promise.all([
+    nativePage.context().waitForEvent("page", { timeout: 15_000 }),
+    dialog.getByRole("button", { name: "Sign in", exact: true }).click({ timeout: 15_000 }),
   ]);
+  const root = await rootLoad;
+  assert.equal(root.frame().page(), signInPage, "Sign in loads the root in the new tab");
   assert.equal(root.status(), 302);
   const agentKey = status.host.split(".")[0].slice("agent-".length);
   // Console removes the fragment before showing sign-in. Check the redirect itself.
@@ -1081,31 +1088,42 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
     ingress.origin + "/console/#native-agent=" + agentKey,
   );
   const [resolved] = await Promise.all([
-    nativePage.waitForResponse(ingress.origin + "/native-admin/return/" + agentKey),
-    login(nativePage, unaffected.credentials),
+    signInPage.waitForResponse(ingress.origin + "/native-admin/return/" + agentKey),
+    login(signInPage, unaffected.credentials),
   ]);
   assert.equal(resolved.status(), 200);
   const { agentId, namespaceId } = (await resolved.json()).data;
   assert.equal(agentId, topology.agent.id);
   assert.equal(namespaceId, topology.agent.namespaceId);
+  await signInPage.close();
 
-  const reopened = await openNativeAdminConsole(nativePage, status.origin);
-  await waitFor("a live Gateway hello on the page opened after signing back in", () =>
+  // Back on the first tab, focus or Check again rechecks access and closes the dialog; the
+  // tab then reconnects on its own.
+  await nativePage.bringToFront();
+  const checkAgain = dialog.getByRole("button", { name: "Check again", exact: true });
+  await waitFor("the first tab to recheck access and close the sign-in dialog", async () => {
+    if ((await dialog.count()) === 0) {
+      return true;
+    }
+    await checkAgain.click({ timeout: 2_000 }).catch(() => {});
+    return undefined;
+  });
+  await waitFor("a live Gateway hello on the first tab after signing back in", () =>
     unaffected.frames.find(
       (frame) =>
-        frame.page === reopened &&
+        frame.page === nativePage &&
         !frame.socket.isClosed() &&
         JSON.parse(textFromFrame(frame)).payload?.type === "hello-ok",
     ),
   );
   assert.equal(
-    (await nativeProfile(reopened, "operator.admin")).id,
+    (await nativeProfile(nativePage, "operator.admin")).id,
     unaffected.profileId,
     "signing back in retains the same native person",
   );
   // A positive ingress-log control proves the observer sees real upstream I/O.
   // Denied requests precede it and must never reach Envoy or the native Gateway.
-  const allowedProbe = await nativeProbe(reopened, 200);
+  const allowedProbe = await nativeProbe(nativePage, 200);
   const routing = topology.workspaceGateway.routing;
   const ingressLog = await waitFor("authorized native probe in Envoy access log", async () => {
     const log = await kubectl(
