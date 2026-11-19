@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-11-14
-last_updated_session: authoring-run/7504b1da-810c-4ead-a42b-831ed5e9c3e8
+updated: 2026-11-19
+last_updated_session: authoring-run/64d7828e-4701-4e9c-8c92-0b3617945c7a
 ---
 
 # Agent Channel Directory Lookup Flow
@@ -36,11 +36,10 @@ graph TD
   P -->|yes| C["SecretDriver reads current value"]
   C --> D["OCC rechecks target, Secret grant, and backend identity"]
   D -->|changed| X
-  D -->|current| M{"Managed Helm proxy?"}
-  M -->|yes| H["Tunnel through proxy Service DNS"]
-  M -->|no| I["Tunnel through external proxy IP"]
+  D -->|current| M{"Managed OCC listener configured?"}
+  M -->|no| X
+  M -->|yes| H["Tunnel through the reserved Envoy listener"]
   H --> E["Slack Driver reads workspace and directory pages"]
-  I --> E
   E -->|provider error| X
   E --> F["Console shows names and exact IDs"]
   F --> G["Configuration saves selected IDs"]
@@ -61,27 +60,13 @@ platform state. A missing or foreign target is rejected before provider I/O.
 
 `packages/occ/src/index.ts:OpenClawController.lookupChannelDirectory`
 
-Production composition selects the bundled Slack ChannelDriver only when the
-API has an approved `OCC_CHANNEL_DIRECTORY_PROXY_URL`. Without it, an authorized
-lookup returns `501` before the Secret value is read. Development selects the
-Driver directly. In production the Driver tunnels requests to `slack.com:443`
-through the configured proxy. With the managed proxy enabled, Helm points the
-API at the `openclaw-enterprise-slack-proxy.<namespace>.svc` Service, sets that
-exact host in `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST`, and limits API egress
-to the proxy Pod selector. With an external literal IPv4 proxy, Helm limits API
-egress to that IP and port. The managed proxy accepts CONNECT only for Slack
-hostnames on port 443, while its NetworkPolicy allows upstream egress to public
-IPv4 addresses on TCP 443, excluding private and reserved ranges.
-
-In `apps/controller/src/slack-proxy.mjs:createSlackProxyServer`, the managed
-proxy starts a 10-second wait when a write to the client is pending, even if
-the write buffer is below its high-water mark. The proxy clears the wait when
-all pending writes complete. A later pending write starts a new wait. A quiet
-tunnel has no write deadline. An upstream end, an upstream close, or a client
-close also clears the wait. If the wait expires with a write still pending,
-the proxy resets the client connection so a partial reply cannot appear
-complete. After a clean upstream end, a separate wait gives the client time
-to read the remaining bytes and close its side.
+Composition binds the Slack Driver to the reserved OCC channel-egress listener
+from the validated Installation configuration. Missing routing prevents provider
+I/O; it never enables direct fallback. Directory failures are returned as
+unavailable. Credential validation reports a configuration conflict when the
+managed route is absent. Helm admits only the authorized API Pods to this
+listener. Agent and Harness grants remain separate. See
+[channel egress](channel-egress.md) for policy enforcement and address checks.
 
 The selected SecretDriver invokes `withValue` and verifies backend ownership.
 OCC rechecks grants and Secret backend identity after the read. It passes the
@@ -95,14 +80,7 @@ An incomplete page cannot establish that a name is absent or unique.
 cancels an unused response body on a non-success HTTP status before returning
 the safe rate-limit or unavailable error. This releases occupied transport
 capacity even when the error body has not finished. The same request owner
-serves credential validation; no automatic retry is added. Production
-composition sets `expectProxy`: with no proxy URL, a credential check whose
-fetch fails to connect, resolve, or answer within the time budget raises
-`SlackRouteNotConfiguredError` (`409`) instead of the unavailable error (finding
-2521). Its message names the Helm proxy settings and says to try again when the
-API has another approved route, since an open route can also time out (finding
-2531). Any other fetch rejection, such as a refused redirect, a TLS failure, or
-an invalid header value, stays unavailable (finding 2532). Successful responses
+serves credential validation; no automatic retry is added. Successful responses
 have an 8,000,000-byte streaming cap before decoded JSON is checked against the
 existing limit of 2,000,000 UTF-16 code units. Overflow cancels the body read and returns `invalid_response`.
 
@@ -157,10 +135,9 @@ view.
 - A denied lookup requires checking the exact edit permission and Secret
   `operate` grant. A token, scope, rate limit, or provider error returns a
   safe code without the token or upstream payload.
-- A `501` lookup in production means the API has no directory proxy configured.
-  Enable Helm `slackProxy.enabled` or set the approved
-  external proxy IP and port in `api.channelDirectoryProxyUrl`, then verify that
-  the proxy permits CONNECT to `slack.com:443`.
+- An unavailable lookup requires the managed OCC listener. Check the
+  [channel egress fleet](../reference/drivers/kubernetes-compute/channel-egress.md)
+  and its exact API Pod grant before retrying.
 - Directory conformance tests cover provider pagination, safe errors, and native
   HTTP connection recovery after unfinished 429 and 503 response bodies. The
   OCC API integration test covers both authorization checks and response
@@ -182,6 +159,8 @@ view.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 00:02: Routed provider requests through managed OCC channel egress (authoring-run/64d7828e-4701-4e9c-8c92-0b3617945c7a - e05a54b4b3daf86249c89aaeb2a8491dd52c80cc)
 
 - 2026-11-14 00:08: Clarify pending client writes and fresh drain budgets in the accompanying Slack proxy correction. (authoring-run/7504b1da-810c-4ead-a42b-831ed5e9c3e8 - 3309c7be21ce3c3c0256eb470f294c75c2c771f1)
 

@@ -5,7 +5,7 @@ the team needs to understand. An RFC explains the problem, the proposed decision
 and its consequences so that people can give useful feedback while work proceeds.
 Start with the [RFC template](rfc-template.md) and adapt it to the change.
 [RFCs and implementation plans](specifications.md) owns file placement,
-numbering, status, and when to create a separate delivery plan.
+naming, status, and when to create a separate delivery plan.
 
 Ordinary bug fixes, small features, and polish do not need an RFC. A large diff
 alone does not make a change architectural. Reuse or update an existing RFC when

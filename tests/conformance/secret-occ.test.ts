@@ -987,6 +987,7 @@ function createTestChannelDriver(binding?: string) {
   const driver = {
     id: "channel-test",
     capability: "channel" as const,
+    enableRouting: () => [],
     implementation: "test-channel",
     binding,
     async validateCredentials(
