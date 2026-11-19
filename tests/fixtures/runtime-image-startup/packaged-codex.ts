@@ -90,8 +90,9 @@ export async function probePackagedCodex(
       : "a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7",
     "openclaw-required-worker-authority-regression.patch":
       provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
-    "openclaw-google-worker-placeholder.patch":
-      "cfd027b90c833f0a0266c94e01dc9387143a265c711868d168fb01864468bb38",
+    "openclaw-google-worker-placeholder.patch": historicalCodex
+      ? "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31"
+      : "cfd027b90c833f0a0266c94e01dc9387143a265c711868d168fb01864468bb38",
     ...(historicalCodex
       ? {
           "openclaw-control-ui-browser-reconnect.patch":
