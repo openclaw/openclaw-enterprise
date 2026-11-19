@@ -119,7 +119,8 @@ Kubernetes Compute are selected.
 
 ### Driver interface
 
-The method set matches main's [interface](../../../docs/reference/drivers/credential-gateway.md).
+Methods match the [interface](../../../docs/reference/drivers/credential-gateway.md).
+Proposed [catalog amendment](catalog-field-names.md).
 
 ```ts
 interface CredentialGatewayDriver extends Driver {

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-11-18
-last_updated_session: authoring-run/f10d3e7e-18d9-4ae8-9bdb-8004b6815fb7
+updated: 2026-11-19
+last_updated_session: authoring-run/b0e8e24d-3e5e-40a1-ae3b-10e0dfe3e6a8
 ---
 
 # Credential source lifecycle Flow
@@ -81,12 +81,10 @@ with `ResourceConflictError` before effects. OCC commits intermediate State befo
 `apps/controller/src/http/credential-sources.ts:createCredentialSource`,
 `packages/occ/src/index.ts:createCredentialSource`
 
-OCC checks field names on advertised types during discovery and on the selected type during
-registration.
-[CRUD routes](../../packages/contracts/src/api/routes.ts) use Secret references.
+The route accepts `name`, `type`, optional `config` and lowercase-keyed `secrets`.
 [TokenService source schemas](../../packages/contracts/src/api/token-service-sources.ts) are standalone OpenAPI components.
 One transaction authorizes `credential_source:create`, locks the ready Namespace,
-and reads the selected source Driver's catalog.
+requires its selected source Driver, then reads the catalog.
 An unoffered type returns `CredentialSourceTypeNotOfferedError` (`409`). Unknown
 or missing catalog fields and Driver-invalid values return `400 INVALID_REQUEST`
 before Secret reads, record creation, or gateway writes. OCC checks normalized
@@ -374,6 +372,8 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 03:15: Keep the flow current while moving catalog enforcement to a separate change. (authoring-run/b0e8e24d-3e5e-40a1-ae3b-10e0dfe3e6a8 - ea34779cc)
 
 - 2026-11-18 14:02: Check the selected catalog type during registration. (authoring-run/f10d3e7e-18d9-4ae8-9bdb-8004b6815fb7 - 293833c72)
 
