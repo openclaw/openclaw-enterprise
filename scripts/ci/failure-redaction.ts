@@ -291,7 +291,15 @@ function redactText(
   if (split > 0 && body.endsWith(shown.slice(-split))) {
     body = body.slice(0, -split);
   }
-  return redactSecretAssignments(body, suffixedAssignment) + suffix;
+  const masked = redactSecretAssignments(body, suffixedAssignment);
+  if (masked.length <= Math.max(limit, body.length)) {
+    return masked + suffix;
+  }
+  // "[redacted]" can be longer than the value it replaces: keep the caller's bound.
+  // The cut keeps a prefix of `masked`, so it can only hide more; it ends before a
+  // "[redacted]" it would split.
+  const open = masked.lastIndexOf("[redacted]", limit - 1);
+  return `${masked.slice(0, open >= 0 && open + 10 > limit ? open : limit)}${truncation}`;
 }
 
 // Redacts one captured container log line the same way, bounded to `limit`.

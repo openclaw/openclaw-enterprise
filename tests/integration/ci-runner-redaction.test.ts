@@ -431,17 +431,12 @@ test("a value the input limit cuts and a key with a suffix stay out of every sur
   const marker = "[redacted credential-bearing line]";
   // Every surface a failure's text reaches: results and the job log, the diagnostics
   // report's message and stack and its output entries, and a container log line.
-  const surfaces = (text: string) =>
+  const surfaces = (text: string, using = secrets) =>
     JSON.stringify([
-      redactFailure({ message: text, frame: text }, secrets, "/repo"),
-      redactFailureDetail({ message: text, stack: text }, secrets, "/repo"),
-      redactOutputLines(
-        [`diagnostic: ${text}`.slice(0, failureInputLimit)],
-        secrets,
-        "/repo",
-        1_000,
-      ),
-      redactLogLine(text, secrets, failureInputLimit),
+      redactFailure({ message: text, frame: text }, using, "/repo"),
+      redactFailureDetail({ message: text, stack: text }, using, "/repo"),
+      redactOutputLines([`diagnostic: ${text}`.slice(0, failureInputLimit)], using, "/repo", 1_000),
+      redactLogLine(text, using, failureInputLimit),
     ]);
   // Synthetic values only. A value is shown when any 8 characters of it are.
   const assertAbsent = (shown: string, value: string, label: string) => {
@@ -542,4 +537,31 @@ test("a value the input limit cuts and a key with a suffix stay out of every sur
     redactOutputLine("stdout: client-key-data: fixturePrivateValue0 rest", named, "/repo", 1_000),
     marker,
   );
+  // Such a value is masked after the bound, so a long one does not pull the text after
+  // it into the 600 (message), 240 (frame) or 1,000 (output entry) character window.
+  const later = "fixtureTextAfterTheBound";
+  const front = `api_key_file=${key.repeat(5)} ${later}`;
+  const windowed = redactFailure({ message: front, frame: front }, secrets, "/repo");
+  assert.equal(windowed.message, "api_key_file=[redacted]... [truncated]");
+  assert.equal(windowed.frame, "api_key_file=[redacted]... [truncated]");
+  assert.deepEqual(redactOutputLines([`diagnostic: ${front}`], secrets, "/repo", 1_000), [
+    "diagnostic: api_key_file=[redacted]... [truncated]",
+  ]);
+  // A "[redacted]" longer than the value it replaces still keeps the caller's bound
+  // (600, 240, 160 plus the marker); the cut ends before a "[redacted]" it would split.
+  const many = "token_a=b ".repeat(200);
+  const bounded = redactFailure({ message: many, frame: many }, secrets, "/repo");
+  const line = redactLogLine(many, secrets, 160);
+  assert.equal(bounded.message?.length, 612);
+  assert.equal(bounded.frame?.length, 251);
+  assert.equal(line.length, 175);
+  assert.equal(line, `${"token_a=[redacted] ".repeat(8)}token_a=... [truncated]`);
+  assert(bounded.message?.endsWith("token_a=... [truncated]"));
+
+  // A registered secret with spaces that the cut splits: dropping the last
+  // max(256, longest secret) characters removes what is left of it.
+  const spaced = Array.from({ length: 40 }, (_, index) => `Zml4${index}U3BhY2VkU2Vj`).join(" ");
+  const spacedSecrets = failureSecrets([{ FIXTURE_SPACED_SECRET: spaced }]);
+  const split = `${words(failureInputLimit - 300)} ${spaced}`.slice(0, failureInputLimit);
+  assertAbsent(surfaces(split, spacedSecrets), spaced, "a split spaced secret");
 });
