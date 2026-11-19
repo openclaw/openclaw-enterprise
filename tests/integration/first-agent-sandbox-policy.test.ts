@@ -105,6 +105,13 @@ test(
     forward.once("close", () => {
       closed = true;
     });
+    context.after(async () => {
+      if (!closed) {
+        const closing = once(forward, "close");
+        forward.kill("SIGKILL");
+        await within(closing, "closing the owned forward child", 1_000);
+      }
+    });
     let opened = false;
     let clientClosed = false;
     let checked = false;
