@@ -18,7 +18,7 @@ import { assertApiError } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { grantRole } from "../helpers/iam-grants.ts";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 import {
   registerHarnessPlacementAdmissionCases,

@@ -1,3 +1,4 @@
+import { channelEgressOptions, slackChannelDrivers } from "./channel-egress.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import {
@@ -81,10 +82,10 @@ export async function createConsoleRepositoryLaunchFixture(
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
         gatewayNodeSelector: { "oce-role": "control" },
-        channels: { proxyUrl: "http://10.42.0.15:3128" },
+        channelEgress: channelEgressOptions,
       },
     },
-    { id: "console-launch-compute", nodeEnrollment: {} },
+    { id: "console-launch-compute", nodeEnrollment: {}, channelDrivers: slackChannelDrivers },
   );
   // This draft/deploy fixture has no PostgreSQL provisioning queue.
   assert.ok(Reflect.set(compute, "agentProvisioning", undefined));
