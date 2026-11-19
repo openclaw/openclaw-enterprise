@@ -20,7 +20,7 @@
     "tests/conformance/ssh-compute.test.ts",
     "tests/conformance/module-boundaries.test.ts",
     "tests/integration/repository-credentials-router.test.ts",
-    "tests/conformance/module-policy.test.mjs",
+    "tests/conformance/module-policy.test.ts",
     "tests/integration/native-admin-access.test.mjs",
     "tests/integration/repository-credentials-transport-bounds.test.ts",
     "tests/integration/cli-release.test.ts",
@@ -810,7 +810,7 @@
       "path": "tests/conformance/module-boundaries.test.ts"
     },
     {
-      "path": "tests/conformance/module-policy.test.mjs",
+      "path": "tests/conformance/module-policy.test.ts",
       "expectedTests": [
         "repository source obeys its dependency policy with exact current exceptions",
         "repository policy allows a public root and rejects a new HTTP Driver import"

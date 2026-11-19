@@ -1129,6 +1129,10 @@
                         "label": "Sandbox"
                       },
                       {
+                        "page": "reference/drivers/strands-box",
+                        "label": "Strands Box"
+                      },
+                      {
                         "page": "reference/drivers/secret",
                         "label": "Secret"
                       },
