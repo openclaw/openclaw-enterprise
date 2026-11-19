@@ -37,7 +37,10 @@ function frame(value: string | Buffer): Buffer {
 // This fixture covers Git profiles, whose only populated policy maps are allow queries.
 export function stockGitPolicy(rule: GitRule, providerId: string) {
   const gitEndpoints: ReadonlyArray<
-    GitRule["endpoints"][number] & Pick<OpenShellProviderProfileEndpoint, "rules">
+    GitRule["endpoints"][number] &
+      Pick<OpenShellProviderProfileEndpoint, "rules"> & {
+        readonly provider_credentialed?: boolean;
+      }
   > = rule.endpoints;
   const endpoints = gitEndpoints.map(({ provider_credentialed, rules, ...endpoint }) => ({
     ...endpoint,
