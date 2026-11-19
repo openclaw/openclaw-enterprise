@@ -90,6 +90,20 @@ denials and resource lifecycle evidence apply with either audit setting.
 If PostgreSQL loses confirmation of a result commit, `worker.error` reports
 `COMMIT_OUTCOME_UNKNOWN`. Check the job before requesting a retry.
 
+### Agent runtime activity
+
+Enable [Control Plane audit](../../reference/settings/production.md#control-plane-audit)
+on a Helm installation with managed Gateway routing. Deploy a revision
+with a bundled runtime image. The worker configures audit reporting during
+deployment. Use the usual steps to deploy an Agent or send a message.
+
+OCC stores session, turn, and model-call records in the audit ledger. A turn
+can contain more than one model call. Each attempt has its own call ID.
+If a runtime stops before it records a result, the result remains unknown.
+The records contain IDs, times, and results of observed activity. They exclude
+prompts and model responses. The runtime reports its own activity. OCC
+checks the revision identity for each write.
+
 ### Agent runtime logs
 
 Reading an Agent's container output has a separate access record. Each
@@ -185,8 +199,8 @@ with the `read_audit` permission directly to your Principal and the Agent.
 OCC checks the grant each time you request a page.
 
 Send `GET /namespaces/{namespaceId}/agents/{agentId}/audit-events`.
-The response lists selected Agent lifecycle records, API reads, and worker
-events from the preceding 24 hours, newest first. Lifecycle records show the
+The response lists selected Agent lifecycle records, runtime activity, API
+reads, and worker events from the preceding 24 hours, newest first. Lifecycle records show the
 saved action, such as Agent creation, deployment admission, or activation.
 They include an Agent revision ID when OCC verifies that revision belongs to
 the Agent. A work ID connects job records without exposing the internal work key.

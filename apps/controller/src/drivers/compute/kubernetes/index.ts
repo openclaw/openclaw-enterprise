@@ -29,7 +29,7 @@ import {
   encodeReplacementRuntime,
   replacementCompatibility,
 } from "./replacement-runtime.ts";
-import type { InstalledDriver } from "@openclaw-enterprise/occ";
+import type { GatewayRuntimeAuditGrant, InstalledDriver } from "@openclaw-enterprise/occ";
 import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import { rewrittenIpv4Hostname } from "../../../auth/configuration.ts";
 import { nativeOpenAiModelSelections } from "../../native-openai-catalog.ts";
@@ -657,11 +657,26 @@ interface Ownership {
   readonly revisionId?: string;
 }
 
+type GatewayRuntimeAuditCredential = GatewayRuntimeAuditGrant & { readonly tokenDigest: string };
+
+interface GatewayRuntimeAuditEnrollment {
+  register(grant: GatewayRuntimeAuditCredential): Promise<void>;
+  remove(grant: GatewayRuntimeAuditCredential): Promise<void>;
+  exists(grant: GatewayRuntimeAuditGrant): Promise<boolean>;
+}
+
+interface GatewayRuntimeAuditTarget {
+  readonly endpoint: string;
+  readonly caBundle: string;
+  readonly peer: KubernetesWorkloadPeer & { readonly port: number };
+}
+
 interface GatewayConfigurationSnapshot {
   readonly name: string;
   readonly revision: number;
   readonly revisionId: string;
   readonly gatewayManagedMode: boolean;
+  readonly auditCodexModelAttempts?: boolean;
   readonly usesGatewayPasswordEnv: boolean;
   readonly usesWritableNativeAdminConfig: boolean;
   readonly annotations: Readonly<Record<string, string>>;
@@ -737,6 +752,7 @@ type KubernetesPreparationStage =
   | "gateway_secret_environment"
   | "gateway_channel_network_policy"
   | "gateway_workspace_node_binding"
+  | "gateway_runtime_audit"
   | "gateway_deployment"
   | "gateway_service"
   | "gateway_route"
@@ -1184,6 +1200,12 @@ function prepareHarnessAuth(
 const MANAGER = "openclaw-enterprise";
 const FIELD_MANAGER = "openclaw-enterprise-compute";
 const TOKEN_PATH = "/var/run/secrets/openclaw/service-principal";
+const RUNTIME_AUDIT_VOLUME = "runtime-audit";
+const RUNTIME_AUDIT_DIRECTORY = "/var/run/openclaw-runtime-audit";
+const RUNTIME_AUDIT_TOKEN_KEY = "token";
+const RUNTIME_AUDIT_CA_VOLUME = "runtime-audit-ca";
+const RUNTIME_AUDIT_CA_DIRECTORY = "/etc/openclaw-runtime-audit";
+const RUNTIME_AUDIT_CA_FILE = "ca.pem";
 const CONFIGURATION_DIRECTORY = "/etc/openclaw";
 const WRITABLE_CONFIGURATION_PATH = "/home/node/.openclaw/openclaw.json";
 const CONFIGURATION_DOCUMENT = "openclaw.json";
@@ -3713,6 +3735,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     executionModes: Object.freeze(["dedicated"] as const),
   });
   private readonly options: KubernetesComputeDriverOptions;
+  private readonly gatewayRuntimeAudit: GatewayRuntimeAuditEnrollment | undefined;
+  private readonly gatewayRuntimeAuditTarget: GatewayRuntimeAuditTarget | undefined;
   private readonly sandboxDriver: SandboxDriver | undefined;
   private readonly preprovisionedNamespace: PreprovisionedKubernetesNamespace | undefined;
   private readonly preparedRepositoryIngress: boolean;
@@ -4313,6 +4337,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
       readonly id?: string;
       readonly implementation?: string;
       readonly lifecycleDrivers?: readonly Driver[];
+      readonly gatewayRuntimeAudit?: GatewayRuntimeAuditEnrollment;
+      readonly gatewayRuntimeAuditTarget?: GatewayRuntimeAuditTarget;
       readonly sandboxDriver?: SandboxDriver;
       readonly preparedRepositoryIngress?: true;
       readonly preparedTokens?: TokenService;
@@ -4337,6 +4363,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     );
     // Keep the Driver-owned configuration isolated from its constructor caller.
     this.options = structuredClone(options);
+    this.gatewayRuntimeAudit = selection.gatewayRuntimeAudit;
+    if (selection.gatewayRuntimeAuditTarget !== undefined) {
+      const target = structuredClone(selection.gatewayRuntimeAuditTarget);
+      this.gatewayRuntimeAuditTarget = { ...target, caBundle: publicCaBundle(target.caBundle) };
+    }
     if (options.runtime !== undefined) {
       this.requiresAgentRuntimeCredentials = true;
       this.supportsGatewayManagedMode = true;
@@ -7221,6 +7252,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
             gatewayOwnership,
           ),
         );
+        await this.prepareRevisionStage("gateway_runtime_audit", () =>
+          this.ensureGatewayRuntimeAudit(revision, gatewayNamespace),
+        );
         await this.prepareRevisionStage("gateway_deployment", () =>
           this.reconcile(
             this.deployment(
@@ -8388,6 +8422,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       gatewayOwnership,
     );
     await this.reconcileHarnessTrust(revision, providerEndpoint, gatewayNamespace, namespace.name);
+    await this.ensureGatewayRuntimeAudit(revision, gatewayNamespace);
     await this.reconcile(
       this.deployment(
         gatewayName,
@@ -8880,6 +8915,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (existingNamespace === undefined) {
       await this.lifecycle.beforeWorkloadStop(revision);
       await this.removeStoppedGateway(revision, namespace);
+      await this.releaseGatewayRuntimeAudit(revision, gatewayNamespace, "stop");
       return;
     }
     this.verifyNamespaceOwnership(
@@ -8913,6 +8949,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     // Its Pods are gone, so drop the revision's credential copies and snapshots.
     // Preparing the revision again re-projects them from the canonical sources.
+    await this.releaseGatewayRuntimeAudit(revision, gatewayNamespace, "stop");
     await this.deleteRetiredRevisionArtifacts(revision, namespace);
     if (this.projectsRepositoryMaterial(revision)) {
       await this.removeRepositoryMaterial(revision, namespace);
@@ -8942,6 +8979,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (existingNamespace === undefined) {
       await this.lifecycle.beforeWorkloadStop(revision);
       await this.removeRetiredGateway(revision, namespace);
+      await this.releaseGatewayRuntimeAudit(revision, gatewayNamespace, "retire");
       return;
     }
     this.verifyNamespaceOwnership(
@@ -8959,6 +8997,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     await this.shutdownRevisionRuntime(revision, namespace);
     await this.retireLegacyWorkspaceNode(revision, namespace);
     await this.removeRetiredGateway(revision, namespace);
+    await this.releaseGatewayRuntimeAudit(revision, gatewayNamespace, "retire");
     if (this.projectsRepositoryMaterial(revision)) {
       await this.waitForRevisionPodsToTerminate(
         revision,
@@ -10281,6 +10320,239 @@ export class KubernetesComputeDriver implements ComputeDriver {
 
   private generateRuntimeCredentialToken(): string {
     return randomBytes(32).toString("base64url");
+  }
+
+  private gatewayRuntimeAuditSecretName(agentId: string, revisionId: string): string {
+    return `runtime-audit-${sha256Hex(JSON.stringify([agentId, revisionId]), 24)}`;
+  }
+
+  private gatewayRuntimeAuditTransportNames(agentId: string, revisionId: string) {
+    const scope = this.gatewayRuntimeAuditSecretName(agentId, revisionId);
+    return { config: `${scope}-ca`, policy: `allow-${scope}` };
+  }
+
+  private async reconcileGatewayRuntimeAuditTransport(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+    managed: GatewayRuntimeAuditTarget,
+  ): Promise<void> {
+    const ownership = this.gatewayRuntimeAuditOwnership(revision);
+    const { config, policy } = this.gatewayRuntimeAuditTransportNames(
+      revision.agentId,
+      revision.id,
+    );
+    await this.reconcile(
+      {
+        ...this.manifest("v1", "ConfigMap", config, ownership, namespace),
+        immutable: true,
+        data: { [RUNTIME_AUDIT_CA_FILE]: managed.caBundle },
+      },
+      ownership,
+      namespace,
+    );
+    await this.reconcile(
+      {
+        ...this.manifest("networking.k8s.io/v1", "NetworkPolicy", policy, ownership, namespace),
+        spec: {
+          podSelector: ordinaryNetworkPolicySelector({
+            "openclaw.dev/workload-role": "gateway",
+            "openclaw.dev/namespace": revision.namespaceId,
+            "openclaw.dev/agent": revision.agentId,
+            "openclaw.dev/revision": revision.id,
+          }),
+          policyTypes: ["Egress"],
+          egress: [
+            {
+              to: [this.peer(managed.peer)],
+              ports: [{ protocol: "TCP", port: managed.peer.port }],
+            },
+          ],
+        },
+      },
+      ownership,
+      namespace,
+    );
+  }
+
+  private async removeGatewayRuntimeAuditTransport(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<void> {
+    const ownership = this.gatewayRuntimeAuditOwnership(revision);
+    const { config, policy } = this.gatewayRuntimeAuditTransportNames(
+      revision.agentId,
+      revision.id,
+    );
+    await this.deleteOwnedNamespacedResource("NetworkPolicy", policy, ownership, namespace);
+    await this.deleteOwnedNamespacedResource("ConfigMap", config, ownership, namespace);
+  }
+
+  private gatewayRuntimeAuditOwnership(revision: AgentRevision): Ownership {
+    return {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      revisionId: revision.id,
+      servicePrincipalId: revision.servicePrincipalId,
+    };
+  }
+
+  private gatewayRuntimeAuditScope(revision: AgentRevision): GatewayRuntimeAuditGrant {
+    const { id: runtimeSource } = revision.harness;
+    if (runtimeSource !== "openclaw" && runtimeSource !== "codex") {
+      throw new ConfigurationFailure("The revision uses an unsupported Gateway runtime.");
+    }
+    return {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      agentRevisionId: revision.id,
+      runtimeSource,
+    };
+  }
+
+  private readGatewayRuntimeAuditCredential(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+    secret: ManagedKubernetesObject<"Secret">,
+  ): { readonly grant: GatewayRuntimeAuditCredential; readonly uid: string } {
+    const { name, uid, deletionTimestamp } = secret.metadata;
+    const encoded = secret.data?.[RUNTIME_AUDIT_TOKEN_KEY];
+    const bytes = typeof encoded === "string" ? Buffer.from(encoded, "base64") : undefined;
+    const token = bytes?.toString("utf8");
+    if (
+      secret.apiVersion !== "v1" ||
+      secret.type !== "Opaque" ||
+      secret.immutable !== true ||
+      name !== this.gatewayRuntimeAuditSecretName(revision.agentId, revision.id) ||
+      secret.metadata.namespace !== namespace.name ||
+      !isNonEmptyString(uid) ||
+      deletionTimestamp !== undefined ||
+      Object.keys(secret.data ?? {}).length !== 1 ||
+      bytes?.toString("base64") !== encoded ||
+      token === undefined ||
+      !/^[A-Za-z0-9_-]{43}$/u.test(token) ||
+      Buffer.from(token, "base64url").toString("base64url") !== token
+    ) {
+      throw new ResourceConflictError("The Gateway runtime audit Secret is invalid.");
+    }
+    return {
+      grant: {
+        ...this.gatewayRuntimeAuditScope(revision),
+        tokenDigest: sha256Hex(token, 64),
+      },
+      uid,
+    };
+  }
+
+  private async ensureGatewayRuntimeAudit(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<void> {
+    const target = this.gatewayRuntimeAuditTarget;
+    if (target === undefined || this.options.runtime === undefined) {
+      return;
+    }
+    const enrollment = this.gatewayRuntimeAudit;
+    if (enrollment === undefined) {
+      throw new ConfigurationFailure("Gateway runtime audit grant enrollment is unavailable.");
+    }
+    const name = this.gatewayRuntimeAuditSecretName(revision.agentId, revision.id);
+    const ownership = this.gatewayRuntimeAuditOwnership(revision);
+    const read = () => this.getOwned("Secret", name, namespace, ownership);
+    let secret = await read();
+    if (secret === undefined) {
+      const clients = await this.clients(namespace.plane);
+      try {
+        await this.request(
+          () =>
+            clients.core.createNamespacedSecret({
+              namespace: namespace.name,
+              body: {
+                ...this.manifest("v1", "Secret", name, ownership, namespace),
+                type: "Opaque",
+                immutable: true,
+                stringData: { [RUNTIME_AUDIT_TOKEN_KEY]: this.generateRuntimeCredentialToken() },
+              },
+            }),
+          { mutating: true },
+        );
+      } catch (error) {
+        this.operationSignal().throwIfAborted();
+        const status = numericErrorStatus(error);
+        const ambiguous = status === undefined || status === 409 || status === 429 || status >= 500;
+        if (!ambiguous || (secret = await read()) === undefined) {
+          throw privateWriteFailure("Gateway runtime audit Secret creation is unavailable.", error);
+        }
+      }
+      // The persisted object supplies the winning bytes after a concurrent or uncertain create.
+      secret ??= await read();
+    }
+    if (secret === undefined) {
+      throw new DependencyUnavailableError(
+        "Kubernetes did not confirm the Gateway runtime audit Secret.",
+      );
+    }
+    this.operationSignal().throwIfAborted();
+    const { grant } = this.readGatewayRuntimeAuditCredential(revision, namespace, secret);
+    await this.reconcileGatewayRuntimeAuditTransport(revision, namespace, target);
+    this.operationSignal().throwIfAborted();
+    await enrollment.register(grant);
+  }
+
+  private async releaseGatewayRuntimeAudit(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+    lifecycle: "stop" | "retire",
+  ): Promise<void> {
+    const enrollment = this.gatewayRuntimeAudit;
+    if (
+      enrollment === undefined ||
+      this.options.runtime === undefined ||
+      (revision.harness.id !== "openclaw" && revision.harness.id !== "codex")
+    ) {
+      return;
+    }
+    const name = this.gatewayRuntimeAuditSecretName(revision.agentId, revision.id);
+    const ownership = this.gatewayRuntimeAuditOwnership(revision);
+    const secret = await this.getOwned("Secret", name, namespace, ownership);
+    if (secret === undefined) {
+      // Without the owning Secret, removal cannot compare its digest against the stored grant.
+      if (await enrollment.exists(this.gatewayRuntimeAuditScope(revision))) {
+        throw new ResourceConflictError(
+          "The Gateway runtime audit grant remains but its owning Secret is missing.",
+        );
+      }
+      await this.removeGatewayRuntimeAuditTransport(revision, namespace);
+      return;
+    }
+    const { grant, uid } = this.readGatewayRuntimeAuditCredential(revision, namespace, secret);
+    this.operationSignal().throwIfAborted();
+    await enrollment.remove(grant);
+    if (await enrollment.exists(this.gatewayRuntimeAuditScope(revision))) {
+      throw new ResourceConflictError(
+        "The Gateway runtime audit grant remains but its token does not match the owning Secret.",
+      );
+    }
+    await this.removeGatewayRuntimeAuditTransport(revision, namespace);
+    // A stopped revision can restart with its original credential. Retirement removes the Secret.
+    if (lifecycle === "stop") {
+      return;
+    }
+    const clients = await this.clients(namespace.plane);
+    try {
+      await this.request(
+        () =>
+          clients.core.deleteNamespacedSecret({
+            name,
+            namespace: namespace.name,
+            body: { preconditions: { uid } },
+          }),
+        { mutating: true },
+      );
+    } catch (error) {
+      if (numericErrorStatus(error) !== 404) {
+        throw error;
+      }
+    }
   }
 
   private async withRuntimeCredentialErrors<T>(operation: () => Promise<T>): Promise<T> {
@@ -13617,6 +13889,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       revision: revision.revision,
       revisionId: revision.id,
       gatewayManagedMode: revision.gatewayManagedMode,
+      ...(this.usesAuditedCodexServer(revision) && { auditCodexModelAttempts: true }),
       ...(harnessNamespace === undefined ? {} : { harnessNamespace }),
       usesGatewayPasswordEnv,
       usesWritableNativeAdminConfig: this.usesWritableNativeAdminConfig(nativeConfiguration),
@@ -15066,6 +15339,19 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return sandbox.implementation === "openshell" ? OPENSHELL_CODEX_LAUNCH : PROXY_CODEX_LAUNCH;
   }
 
+  private usesAuditedCodexServer(revision: AgentRevision): boolean {
+    if (
+      revision.harness.id !== "codex" ||
+      revision.harness.mode !== "dedicated" ||
+      this.gatewayRuntimeAuditTarget === undefined ||
+      this.options.runtime === undefined
+    ) {
+      return false;
+    }
+    const sandbox = this.sandboxDriverForRevision(revision);
+    return sandbox?.provisionHarness === undefined && sandbox?.harnessEndpoint === undefined;
+  }
+
   private codexLaunch(revision: AgentRevision, sandbox: SandboxDriver | undefined): CodexLaunch {
     const saved = this.savedRuntimeAdmission(revision);
     const prefix = CODEX_LAUNCH_PREFIXES.find((marker) => saved?.startsWith(marker));
@@ -15077,6 +15363,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return {
       providerOwned,
       protected: this.hasProtectedCodexAdmission(revision),
+      ...(this.usesAuditedCodexServer(revision) && { auditModelAttempts: true }),
       ...(prefix === PROXY_CODEX_LAUNCH && { explicitProxy: true }),
       ...(sandbox?.implementation === "strands-box" && { strandsBox: true }),
       ...(prefix === OPENSHELL_CODEX_LAUNCH && {
@@ -17474,6 +17761,57 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         );
       }
       if (role === "gateway") {
+        const auditDestination = this.gatewayRuntimeAuditTarget;
+        if (auditDestination !== undefined && configuration !== undefined) {
+          volumes.push({
+            name: RUNTIME_AUDIT_VOLUME,
+            secret: {
+              secretName: this.gatewayRuntimeAuditSecretName(agentId, configuration.revisionId),
+              optional: false,
+              defaultMode: 0o440,
+              items: [{ key: RUNTIME_AUDIT_TOKEN_KEY, path: RUNTIME_AUDIT_TOKEN_KEY }],
+            },
+          });
+          volumeMounts.push({
+            name: RUNTIME_AUDIT_VOLUME,
+            mountPath: RUNTIME_AUDIT_DIRECTORY,
+            readOnly: true,
+          });
+          variables.push(
+            { name: "OPENCLAW_RUNTIME_AUDIT_URL", value: auditDestination.endpoint },
+            {
+              name: "OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH",
+              value: `${RUNTIME_AUDIT_DIRECTORY}/${RUNTIME_AUDIT_TOKEN_KEY}`,
+            },
+          );
+          if (configuration.nativeWorkerProfile === undefined) {
+            variables.push({
+              name: "OPENCLAW_CODEX_PROVIDER_ATTEMPT_AUDIT",
+              value: configuration.auditCodexModelAttempts && providerUrl === undefined ? "1" : "0",
+            });
+          }
+          const { config } = this.gatewayRuntimeAuditTransportNames(
+            agentId,
+            configuration.revisionId,
+          );
+          volumes.push({
+            name: RUNTIME_AUDIT_CA_VOLUME,
+            configMap: {
+              name: config,
+              items: [{ key: RUNTIME_AUDIT_CA_FILE, path: RUNTIME_AUDIT_CA_FILE }],
+              optional: false,
+            },
+          });
+          volumeMounts.push({
+            name: RUNTIME_AUDIT_CA_VOLUME,
+            mountPath: RUNTIME_AUDIT_CA_DIRECTORY,
+            readOnly: true,
+          });
+          variables.push({
+            name: "OPENCLAW_RUNTIME_AUDIT_CA_PATH",
+            value: `${RUNTIME_AUDIT_CA_DIRECTORY}/${RUNTIME_AUDIT_CA_FILE}`,
+          });
+        }
         if (embedded) {
           variables.push({
             name: "HOME",

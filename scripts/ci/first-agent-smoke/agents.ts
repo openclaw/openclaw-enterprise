@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { defaultAgentModel } from "../../../apps/controller/src/console/agents/starter-model.mts";
+import type { AgentAuditPage } from "../../../packages/contracts/src/index.ts";
 import { createHarnessConfiguration } from "../../../tests/helpers/harness-configuration.mjs";
 import {
   log,
@@ -21,6 +22,7 @@ import {
   kubectl,
   modelEvents,
   podList,
+  signInConsole,
   wireField,
   type LocalSetup,
   type SmokeStack,
@@ -235,6 +237,393 @@ export async function chatTurn(stack: SmokeStack, agent: SmokeAgent, revisionId:
   log(`${agent.label}: chat turn on ${revisionId} answered over ${transport}`);
 }
 
+export async function allowAgentAuditRead(
+  stack: Pick<LocalSetup, "directory" | "state"> & { namespaceId: string },
+  agent: Pick<SmokeAgent, "id">,
+  adminPassword: string,
+) {
+  const administrator = await signInConsole(stack, {
+    email: "admin@development.openclaw.invalid",
+    password: adminPassword,
+  });
+  const reader = {
+    email: `smoke-audit-${randomUUID()}@development.openclaw.invalid`,
+    password: randomUUID(),
+  };
+  // Provision the reader without an initial role. The response identifies its IAM Principal.
+  const account = await administrator("POST", "/api/auth/accounts", reader);
+  const principalId = wireField(account, "principalId");
+  assert.ok(
+    typeof principalId === "string" && principalId.startsWith("prn_"),
+    "missing Principal ID",
+  );
+  const base = `/namespaces/${stack.namespaceId}`;
+  // The audit route requires a human session and a direct binding to this Agent.
+  const role = await administrator("POST", `${base}/iam/roles`, {
+    name: "First Agent audit reader",
+    permissions: [{ action: "read_audit", resourceKind: "agent" }],
+  });
+  await administrator("POST", `${base}/iam/access-bindings`, {
+    subjectKind: "identity",
+    subjectId: principalId,
+    roleId: wireField(role, "id"),
+    resourceKind: "agent",
+    resourceId: agent.id,
+  });
+  const api = await signInConsole(stack, reader);
+  return async () =>
+    (await api("GET", `${base}/agents/${agent.id}/audit-events?limit=100`)) as AgentAuditPage;
+}
+
+export async function assertAgentTurnAudit(
+  readAudit: () => Promise<AgentAuditPage>,
+  {
+    label,
+    revisionId,
+    runtimeSource,
+    sessionId,
+    model,
+    previousIds,
+  }: {
+    label: string;
+    revisionId: string;
+    runtimeSource: "openclaw" | "codex";
+    sessionId?: string;
+    model?: string;
+    previousIds?: ReadonlySet<string>;
+  },
+) {
+  await waitFor(
+    `${label} turn audit on ${revisionId}`,
+    async () => {
+      const page = await readAudit();
+      const events = page.events
+        .filter((event) => event.event === "runtime_activity")
+        .filter(
+          (event) =>
+            event.details.runtimeSource === runtimeSource &&
+            event.details.agentRevisionId === revisionId &&
+            !previousIds?.has(event.id) &&
+            (sessionId === undefined ||
+              ("sessionId" in event.details && event.details.sessionId === sessionId)),
+        );
+      const sessions = page.events
+        .filter((event) => event.event === "runtime_activity")
+        .filter(
+          (event) =>
+            event.action === "openclaw.runtime.session.started" &&
+            event.details.agentRevisionId === revisionId &&
+            event.details.runtimeSource === runtimeSource,
+        );
+      const starts = events.filter((event) => event.action === "openclaw.runtime.turn.started");
+      const completes = events.filter(
+        (event) => event.action === "openclaw.runtime.turn.completed",
+      );
+      const modelStarts = events.filter(
+        (event) => event.action === "openclaw.runtime.model_call.started",
+      );
+      const modelResults = events.filter(
+        (event) => event.action === "openclaw.runtime.model_call.completed",
+      );
+      return {
+        done: completes.some(({ details: turn }) => {
+          const started = starts.some(
+            ({ details }) => details.sessionId === turn.sessionId && details.turnId === turn.turnId,
+          );
+          if (
+            !sessions.some(({ details }) => details.sessionId === turn.sessionId) ||
+            !started ||
+            turn.outcome !== "succeeded"
+          ) {
+            return false;
+          }
+          if (model === undefined) {
+            return true;
+          }
+          return modelResults.some(({ details: result }) => {
+            if (
+              result.outcome !== "succeeded" ||
+              result.model !== model ||
+              result.sessionId !== turn.sessionId ||
+              result.turnId !== turn.turnId
+            ) {
+              return false;
+            }
+            return modelStarts.some(
+              ({ details: start }) =>
+                start.modelCallId === result.modelCallId &&
+                start.sessionId === result.sessionId &&
+                start.turnId === result.turnId &&
+                start.model === result.model &&
+                start.provider === result.provider,
+            );
+          });
+        }),
+        state: { actions: events.map(({ action }) => action) },
+      };
+    },
+    minute,
+  );
+  log(`${label}: stored matching turn start and successful completion on ${revisionId}`);
+}
+
+export async function chatWithAudit(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  revisionId: string,
+  readAudit: () => Promise<AgentAuditPage>,
+  runtimeSource: "codex" | "openclaw",
+) {
+  const previousIds = new Set((await readAudit()).events.map(({ id }) => id));
+  await chatTurn(stack, agent, revisionId);
+  await assertAgentTurnAudit(readAudit, {
+    label: agent.label,
+    revisionId,
+    runtimeSource,
+    model: defaultAgentModel,
+    previousIds,
+  });
+  log(`${agent.label}: stored the linked model call and successful result on ${revisionId}`);
+}
+
+export function chatCodexWithAudit(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  revisionId: string,
+  readAudit: () => Promise<AgentAuditPage>,
+) {
+  return chatWithAudit(stack, agent, revisionId, readAudit, "codex");
+}
+
+async function codexGatewayRpc(
+  stack: LocalSetup,
+  { namespace, pod }: GatewayPod,
+  method: string,
+  params: Record<string, unknown>,
+): Promise<unknown> {
+  // The runtime CLI uses the Gateway's own credentials. Send the test input on stdin.
+  const input = `
+    import { execFileSync } from "node:child_process";
+    process.stdout.write(execFileSync(process.execPath, ["/app/openclaw.mjs", "gateway", "call",
+      ${JSON.stringify(method)}, "--params", ${JSON.stringify(JSON.stringify(params))},
+      "--json", "--timeout", "30000"], { timeout: 45000 }));
+  `;
+  const { stdout } = await kubectl(
+    stack,
+    ["exec", "-i", "-n", namespace, pod, "-c", "gateway", "--", "node", "--input-type=module", "-"],
+    { input, timeout: minute },
+  );
+  return JSON.parse(stdout) as unknown;
+}
+
+export async function proveCodexAuditInterruptions(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  revisionId: string,
+  readAudit: () => Promise<AgentAuditPage>,
+) {
+  const gateway = await readyGateway(stack, agent.id, revisionId);
+  const rpc = (method: string, params: Record<string, unknown>) =>
+    codexGatewayRpc(stack, gateway, method, params);
+
+  async function start(fault: "retry" | "cancel" | "restart") {
+    const sessionKey = `agent:main:audit-${randomUUID()}`;
+    const nonce = `OCE_SMOKE_${fault}-${randomUUID()}`;
+    await rpc("sessions.create", { key: sessionKey, agentId: "main" });
+    const history = await rpc("chat.history", { sessionKey, limit: 10 });
+    const sessionId = wireField(history, "sessionId");
+    assert.ok(typeof sessionId === "string" && sessionId.length > 0);
+    const admitted = await rpc("chat.send", {
+      sessionKey,
+      idempotencyKey: randomUUID(),
+      message: `Reply with exactly ${nonce} and no other text. Do not use tools.`,
+    });
+    const runId = wireField(admitted, "runId");
+    assert.ok(typeof runId === "string" && runId.length > 0);
+    const events = async () =>
+      (await readAudit()).events
+        .filter((event) => event.event === "runtime_activity")
+        .filter(
+          ({ details }) =>
+            details.runtimeSource === "codex" &&
+            details.agentRevisionId === revisionId &&
+            "sessionId" in details &&
+            details.sessionId === sessionId,
+        );
+    const starts = await waitFor(
+      `the ${fault} provider request and its audit start`,
+      async () => {
+        const [provider, audit] = await Promise.all([modelEvents(), events()]);
+        const reached = provider.some(
+          ({ event, caller, text }) =>
+            event === `audit-provider-${fault}` && caller === agent.label && text === nonce,
+        );
+        const model = audit.find((event) => event.action === "openclaw.runtime.model_call.started");
+        const turn = audit
+          .filter((event) => event.action === "openclaw.runtime.turn.started")
+          .find(({ details }) => details.turnId === model?.details.turnId);
+        return {
+          done: reached && model !== undefined && turn !== undefined,
+          value: { model, turn },
+        };
+      },
+      minute,
+    );
+    assert.ok(starts?.model && starts.turn);
+    return { sessionId, sessionKey, nonce, runId, events, model: starts.model, turn: starts.turn };
+  }
+
+  // The provider fails an actual Responses request once. Codex must recover within
+  // the same turn and report separate attempt IDs, including the failed attempt.
+  const retried = await start("retry");
+  await assertAgentTurnAudit(readAudit, {
+    label: agent.label,
+    revisionId,
+    runtimeSource: "codex",
+    sessionId: retried.sessionId,
+    model: defaultAgentModel,
+  });
+  await assertModelAnswered(retried.nonce, agent.label);
+  const retryRecords = await retried.events();
+  const results = retryRecords.filter(
+    (event) => event.action === "openclaw.runtime.model_call.completed",
+  );
+  const failure = results.find(({ details }) => details.outcome === "failed");
+  assert.ok(failure, "the retried turn has no failed provider attempt");
+  assert.ok(
+    retryRecords.some(
+      (event) =>
+        event.action === "openclaw.runtime.model_call.started" &&
+        event.details.modelCallId === failure.details.modelCallId &&
+        event.details.turnId === failure.details.turnId,
+    ),
+    "the failed provider attempt has no matching start",
+  );
+  assert.ok(
+    results.some(
+      ({ details }) =>
+        details.outcome === "succeeded" &&
+        details.turnId === failure.details.turnId &&
+        details.modelCallId !== failure.details.modelCallId,
+    ),
+    "the provider retry must have a distinct model attempt ID in the same turn",
+  );
+  log(`${agent.label}: stored separate failed and successful attempts for one retried turn`);
+
+  // Cancellation uses the active run's native RPC while the provider is still held.
+  const cancel = await start("cancel");
+  const aborted = await rpc("chat.abort", {
+    sessionKey: cancel.sessionKey,
+    runId: cancel.runId,
+    userInitiated: true,
+  });
+  assert.equal(wireField(aborted, "aborted"), true);
+  await waitFor(
+    "the explicitly cancelled provider attempt and turn",
+    async () => {
+      const audit = await cancel.events();
+      const { turnId, modelCallId } = cancel.model.details;
+      return {
+        done:
+          audit.some(
+            (event) =>
+              event.action === "openclaw.runtime.turn.completed" &&
+              event.details.turnId === turnId &&
+              event.details.outcome === "cancelled",
+          ) &&
+          audit.some(
+            (event) =>
+              event.action === "openclaw.runtime.model_call.completed" &&
+              event.details.modelCallId === modelCallId &&
+              event.details.turnId === turnId &&
+              event.details.outcome === "cancelled",
+          ),
+      };
+    },
+    minute,
+  );
+  log(`${agent.label}: stored cancellation of the active provider attempt and turn`);
+
+  // Interrupt only the native Gateway lock-holder in this revision's test Pod.
+  // Its wrapper reaps the process, then kubelet restarts the Gateway container.
+  const interrupted = await start("restart");
+  const ownedPod = async () =>
+    (await agentPods(stack, agent.id)).find(
+      ({ metadata }) => metadata.name === gateway.pod && metadata.namespace === gateway.namespace,
+    );
+  const container = (pod: Pod | undefined) =>
+    pod?.status?.containerStatuses?.find(({ name }) => name === "gateway");
+  const before = await ownedPod();
+  const previous = container(before);
+  assert.ok(before?.metadata.uid && previous?.containerID);
+  await kubectl(
+    stack,
+    [
+      "exec",
+      "-i",
+      "-n",
+      gateway.namespace,
+      gateway.pod,
+      "-c",
+      "gateway",
+      "--",
+      "node",
+      "--input-type=module",
+      "-",
+    ],
+    {
+      input: `
+      import assert from "node:assert/strict";
+      import { spawn } from "node:child_process";
+      import { readFileSync } from "node:fs";
+      const { pid } = JSON.parse(readFileSync("/home/node/.openclaw/tmp/openclaw-1000/gateway.state.lock", "utf8"));
+      assert.ok(Number.isSafeInteger(pid) && pid > 1);
+      spawn(process.execPath, ["-e", "setTimeout(() => process.kill(Number(process.argv[1]), 'SIGKILL'), 500)", String(pid)],
+        { detached: true, stdio: "ignore" }).unref();
+    `,
+    },
+  );
+  await waitFor(
+    "the same revision Gateway to restart",
+    async () => {
+      const pod = await ownedPod();
+      const running = container(pod);
+      return {
+        done:
+          pod?.metadata.uid === before.metadata.uid &&
+          running?.containerID !== undefined &&
+          running.containerID !== previous.containerID &&
+          running.restartCount > previous.restartCount &&
+          pod.status?.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
+      };
+    },
+    3 * minute,
+  );
+  await waitForDeployment(stack, agent.id, revisionId, agent.label);
+  await chatCodexWithAudit(stack, agent, revisionId, readAudit);
+  const persisted = await interrupted.events();
+  for (const start of [interrupted.turn, interrupted.model]) {
+    assert.deepEqual(
+      persisted.filter(
+        ({ action, details }) =>
+          action === start.action && "turnId" in details && details.turnId === start.details.turnId,
+      ),
+      [start],
+      "the original starts must survive the producer restart once with their original IDs",
+    );
+  }
+  assert.ok(
+    !persisted.some(
+      (event) =>
+        (event.action === "openclaw.runtime.model_call.completed" ||
+          event.action === "openclaw.runtime.turn.completed") &&
+        event.details.turnId === interrupted.model.details.turnId,
+    ),
+    "the interrupted turn must have no completion without an observed terminal result",
+  );
+  log(`${agent.label}: same revision resumed writing audit records after Gateway restart`);
+}
+
 export async function readLogs(stack: SmokeStack, agent: SmokeAgent, source: "gateway" | "agent") {
   const { stdout } = await cli(stack, [
     "agent",
@@ -438,11 +827,6 @@ export async function createCodexAgent(
   label: string,
   modelCredential: string,
 ): Promise<CodexAdmission> {
-  const base = `/namespaces/${stack.namespaceId}`;
-  const secret = await stack.api("POST", `${base}/secrets`, {
-    name: `smoke-codex-${randomUUID()}`,
-    value: modelCredential,
-  });
   const configurationValues: unknown = createHarnessConfiguration("codex", defaultAgentModel);
   const values = configurationValues as CodexValues;
   if (reader) {
@@ -453,6 +837,29 @@ export async function createCodexAgent(
       domains: { [reader.peer.address]: "allow" },
     };
   }
+  return createDedicatedAgent(stack, label, modelCredential, values);
+}
+
+export function createDedicatedOpenClawAgent(stack: SmokeStack, modelCredential: string) {
+  return createDedicatedAgent(
+    stack,
+    "dedicated-openclaw",
+    modelCredential,
+    createHarnessConfiguration("openclaw", defaultAgentModel),
+  );
+}
+
+async function createDedicatedAgent<Values>(
+  stack: SmokeStack,
+  label: string,
+  modelCredential: string,
+  values: Values,
+) {
+  const base = `/namespaces/${stack.namespaceId}`;
+  const secret = await stack.api("POST", `${base}/secrets`, {
+    name: `smoke-${label}-${randomUUID()}`,
+    value: modelCredential,
+  });
   const configuration = await stack.api("POST", `${base}/configurations`, {
     kind: "agent",
     values,

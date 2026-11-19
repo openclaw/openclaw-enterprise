@@ -152,12 +152,14 @@ type Phase =
   | "admit-codex"
   | "admit-reader-control"
   | "codex-chat"
+  | "openclaw-audit"
   | "public-read"
   | "reader-retirement"
   | "agent-logs"
   | "stop-agents"
   | "start-agents"
-  | "chat-after-start";
+  | "chat-after-start"
+  | "codex-audit-interruptions";
 
 interface TimingRow {
   name: string | undefined;
@@ -175,19 +177,21 @@ export function createStepRecorder(now = () => performance.now()) {
   const timings: TimingRow[] = [];
   const phases = new Map<Phase, string>([
     ["local-setup", "Local Setup (occ dev up)"],
-    ["install-reader", "install public reader and select its peer"],
+    ["install-reader", "install public reader and enable auditing"],
     ["route-model", "route api.openai.com to the stand-in provider"],
     ["initial-admissions", "initial Agent admissions"],
     ["admit-embedded", "embedded OpenClaw Agent via scripts/first-agent.ts"],
     ["admit-codex", "dedicated Codex Agent via the API"],
     ["admit-reader-control", "selected reader control via the API"],
     ["codex-chat", "dedicated Codex chat turn"],
+    ["openclaw-audit", "embedded and dedicated OpenClaw audit"],
     ["public-read", "selected Agent managed-skill public read"],
     ["reader-retirement", "reader retirement and unselected successor"],
     ["agent-logs", "occ agent logs"],
-    ["stop-agents", "stop both Agents"],
-    ["start-agents", "start both Agents"],
+    ["stop-agents", "stop audited Agents"],
+    ["start-agents", "start audited Agents"],
     ["chat-after-start", "chat turns after start"],
+    ["codex-audit-interruptions", "Codex provider retry, cancellation, and Gateway recovery"],
   ]);
 
   async function step<T>(

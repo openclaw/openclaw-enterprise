@@ -44,18 +44,32 @@ body is needed to record an operation's result.
 
 ## Verification
 
-| Required outcome | Evidence |
-| --- | --- |
-| Each documented HTTP operation has a recorder | Real Fastify requests saved a result for 150 of 153 operations in PostgreSQL. Separate tests verified the Google and OIDC sign-in callbacks and runtime log disclosure. |
-| Required evidence and state changes commit together | PostgreSQL tests refused an audit write and checked password sessions, service API keys, and worker follow-up jobs. A successful retry saved the change and record. |
-| A reader can find creation and deployment for one Agent | The Agent audit API returned lifecycle records with a direct Agent grant. Tests checked a peer Agent, provisioning handoff, and a failed disclosure. |
-| An upgrade preserves existing records | PostgreSQL 18.6 passed the canonical and Provider migration and restore cases for the lifecycle index. |
-| Saved OAuth connection cleanup records completion | The required Keycloak CI lane runs the browser and worker test. The local fixture requires a loopback host entry. |
+| Required outcome                                        | Evidence                                                                                                                                                                |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Each documented HTTP operation has a recorder           | Real Fastify requests saved a result for 150 of 153 operations in PostgreSQL. Separate tests verified the Google and OIDC sign-in callbacks and runtime log disclosure. |
+| Required evidence and state changes commit together     | PostgreSQL tests refused an audit write and checked password sessions, service API keys, and worker follow-up jobs. A successful retry saved the change and record.     |
+| A reader can find creation and deployment for one Agent | The Agent audit API returned lifecycle records with a direct Agent grant. Tests checked a peer Agent, provisioning handoff, and a failed disclosure.                    |
+| An upgrade preserves existing records                   | PostgreSQL 18.6 passed the canonical and Provider migration and restore cases for the lifecycle index.                                                                  |
+| Saved OAuth connection cleanup records completion       | The required Keycloak CI lane runs the browser and worker test. The local fixture requires a loopback host entry.                                                       |
 
 The route inventory checks the published HTTP operations. It excludes
 arbitrary unmatched URLs. The worker checks durable job and resource changes.
 The separate Harness exposure sweep logs its outcome. The Driver can report
 the same result after removal, prior absence, or omission of the Sandbox hook.
+
+## Milestone 2
+
+Extend the existing ledger and Agent audit API to record sessions, turns,
+and model-call attempts. Use the same audit switch. The
+[enrollment proposal](../rfcs/0039-event-contract-ownership/runtime-audit-producers.md)
+defines the producer scope, delivery rules, and acceptance checks.
+
+1. Restore the earlier write and read path for Milestone 2.
+2. Register and revoke Gateway producers from normal revision lifecycle work.
+3. Add runtime recorders for embedded OpenClaw, dedicated OpenClaw, and
+   dedicated Codex.
+4. Exercise each runtime and two revisions through the installed workflow.
+   Check the API response, request retries, cancellation, and restart.
 
 ## Manual Notes
 

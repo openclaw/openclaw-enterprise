@@ -18,6 +18,7 @@ import {
   waitFor,
 } from "./process.ts";
 import {
+  enableLocalSetupAudit,
   kubectl,
   wireField,
   podList,
@@ -55,9 +56,9 @@ interface InstallationValues {
   drivers: { compute: { configuration: { network: { publicGithubRead?: Reader["peer"] } } } };
 }
 
-// Local Setup installs the controller first. Use its generated Installation and
-// chart values to add the reserved reader peer before admitting a revision.
-export async function enablePublicReader(stack: LocalSetup): Promise<Reader> {
+// Use Local Setup's Installation and chart values to add the reader peer and
+// turn on the default chart-managed audit transport before admitting revisions.
+export async function configureSmokeInstallation(stack: LocalSetup): Promise<Reader> {
   const valuesPath = join(stack.directory, "helm-values.json");
   const chartValues: unknown = JSON.parse(await readFile(valuesPath, "utf8"));
   const values = chartValues as HelmValues;
@@ -106,22 +107,7 @@ export async function enablePublicReader(stack: LocalSetup): Promise<Reader> {
     installationChecksum: createHash("sha256").update(installationData).digest("hex"),
   };
   await writeFile(valuesPath, JSON.stringify(values));
-  await run("helm", [
-    "upgrade",
-    "openclaw-enterprise",
-    "deploy/helm/openclaw-enterprise",
-    "--namespace",
-    stack.state.platformNamespace,
-    "--kubeconfig",
-    stack.kubeconfig,
-    "--kube-context",
-    stack.context,
-    "-f",
-    valuesPath,
-    "--wait",
-    "--timeout",
-    "5m",
-  ]);
+  await enableLocalSetupAudit(stack);
   return reader;
 }
 

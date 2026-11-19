@@ -71,6 +71,7 @@ export interface PostgresDevelopmentConfig {
   readonly trustedDevelopmentForwarderCidr?: string;
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
   readonly gatewayApiKeyPath?: string;
+  readonly privateGatewayRuntimeAudit?: boolean;
   readonly nativeAdmin?: NativeAdminAccessConfig;
   /** Default: enabled. `false` makes both runtime routes answer 501. */
   readonly agentRuntimeLogsEnabled?: boolean;
@@ -339,7 +340,11 @@ export async function composePostgresDevelopment(
       resolveHarness: resolveApprovedHarness,
       auditSink: state.auditSink,
       ...(auditEnabled
-        ? { durableRequestAuditSink: state.auditSink, agentAuditCursorSecret: config.authSecret }
+        ? {
+            durableRequestAuditSink: state.auditSink,
+            agentAuditCursorSecret: config.authSecret,
+            ...(config.privateGatewayRuntimeAudit ? { gatewayRuntimeAuditWriter: state } : {}),
+          }
         : {}),
       ...(drivers === undefined
         ? {}

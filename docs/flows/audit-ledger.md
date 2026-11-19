@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-18"
-last_updated_session: "authoring-run/d9552e4e-b5ce-4d02-aa1f-b9e2666a360d"
+updated: "2026-11-19"
+last_updated_session: "authoring-run/fe4ad3ff-b579-4d9b-a15e-622a822cd15f"
 ---
 
 # Audit ledger flow
@@ -245,6 +245,26 @@ projection version, and number of returned records. The API releases the
 page after it confirms commit. The next-page cursor is encrypted and bound
 to the same session, Agent, and window.
 
+### 7. A Gateway reports work for one revision
+
+`apps/controller/src/drivers/compute/kubernetes/index.ts:ensureGatewayRuntimeAudit`
+and `apps/controller/src/http/runtime-audit.ts`
+
+With audit and Helm-managed Gateway routing enabled, the chart creates a
+private HTTPS service. The worker creates a Kubernetes Secret for the
+revision and saves the hash of its token in PostgreSQL. The Gateway mounts
+the Secret and the public certificate of the service's certificate authority.
+A NetworkPolicy permits the Gateway to reach the audit listener. The worker
+withdraws the grant after the Gateway stops and removes the Secret when the
+revision retires.
+
+The Gateway sends session, turn, and model-call records to the listener.
+OCC checks the token and obtains the revision scope from the grant in the
+transaction that appends the event. A retry with the same event ID and values
+returns success and keeps one row. A retry with different values fails.
+The Agent audit API returns the approved runtime fields with the same grant
+and disclosure check as other Agent events.
+
 ## Debugging and Verification
 
 - The [audit guide](../guides/topics/audit-log.md#read-an-agents-audit-events)
@@ -277,6 +297,8 @@ to the same session, Agent, and window.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 10:04: Trace runtime enrollment, event delivery, and reads. (authoring-run/fe4ad3ff-b579-4d9b-a15e-622a822cd15f - d517d45f0ffdce32b9b7663efe062fc3e8a997bb)
 
 - 2026-11-18 17:35: Trace Agent lifecycle reads and additional control-plane audit sources. (authoring-run/d9552e4e-b5ce-4d02-aa1f-b9e2666a360d - 86265b4ed8e8b22ae3882889d4febccdef1b5f65)
 - 2026-11-12 16:19: Explain how Native IAM counts Agent audit grants for account and key management. (authoring-run/09158870-8481-4ef1-9ff0-f1e2d5ae4df9 - 9912bddae4ac3d94e9f4d22c6283d957a4cf1e9a)

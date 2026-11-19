@@ -66,6 +66,7 @@ export interface ProductionConfig {
   readonly serviceAccountDriverFactory?: ServiceAccountDriverFactory;
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
   readonly gatewayApiKeyPath?: string;
+  readonly privateGatewayRuntimeAudit?: boolean;
   readonly channelDirectoryProxyUrl?: string;
   readonly channelDirectoryManagedProxyHost?: string;
   /**
@@ -389,7 +390,11 @@ export async function composeProduction(
       resolveHarness: resolveApprovedProductionHarness,
       auditSink: state.auditSink,
       ...(auditEnabled
-        ? { durableRequestAuditSink: state.auditSink, agentAuditCursorSecret: config.authSecret }
+        ? {
+            durableRequestAuditSink: state.auditSink,
+            agentAuditCursorSecret: config.authSecret,
+            ...(config.privateGatewayRuntimeAudit ? { gatewayRuntimeAuditWriter: state } : {}),
+          }
         : {}),
       backendSummaries: backendSummariesFromDefinitions(installation.backend),
       ...(installation.observability === undefined

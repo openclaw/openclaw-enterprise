@@ -19,10 +19,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendFile, readFile, realpath, statfs } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 
 import { buildImages, writeReleaseSelection } from "./first-agent-smoke/images.ts";
 import { createStepRecorder, log, workDirectory } from "./first-agent-smoke/process.ts";
 import {
+  apiProcess,
   clusterName,
   routeModelProvider,
   startLocalSetup,
@@ -31,16 +33,21 @@ import {
   type SmokeStack,
 } from "./first-agent-smoke/setup.ts";
 import {
-  chatTurn,
+  allowAgentAuditRead,
+  chatCodexWithAudit,
+  assertAgentTurnAudit,
+  chatWithAudit,
+  createDedicatedOpenClawAgent,
   createCodexAgent,
   deployAgent,
+  proveCodexAuditInterruptions,
   readLogs,
   runFirstAgent,
   stopAgent,
 } from "./first-agent-smoke/agents.ts";
 import {
+  configureSmokeInstallation,
   diagnostics,
-  enablePublicReader,
   proveRetirement,
   publicReadTurn,
 } from "./first-agent-smoke/reader.ts";
@@ -90,8 +97,10 @@ async function smoke() {
     }
   }
   const modelDirectory = process.env.OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY;
+  const adminPassword = randomUUID();
   const environment: NodeJS.ProcessEnv & { OCC_DEVELOPMENT_STATE_DIRECTORY: string } = {
     ...process.env,
+    OPENCLAW_DEV_PASSWORD: adminPassword,
     OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
     OCC_DEVELOPMENT_CONTROL_PLANE: "kubernetes",
     OCC_DEVELOPMENT_SANDBOX_DRIVER: "none",
@@ -100,9 +109,11 @@ async function smoke() {
     OCC_DEVELOPMENT_KUBERNETES_CLUSTER: clusterName,
     OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS: "900",
   };
+  delete environment.OCC_DEVELOPMENT_SIGN_IN;
   delete environment.OPENAI_API_KEY;
   const modelCredentials = {
     embedded: `sk-oce-smoke-${randomUUID()}`,
+    "dedicated-openclaw": `sk-oce-smoke-${randomUUID()}`,
     codex: `sk-oce-smoke-${randomUUID()}`,
     "reader-control": `sk-oce-smoke-${randomUUID()}`,
   };
@@ -123,14 +134,29 @@ async function smoke() {
     const initialized = Object.assign(setup, { namespaceId });
     assert.ok(initialized.namespaceId, "Local Setup created no default Namespace");
     const stack = initialized as SmokeStack;
-    const reader = await smokeStep("install-reader", () => enablePublicReader(stack));
+    const reader = await smokeStep("install-reader", async () => {
+      const installedReader = await configureSmokeInstallation(stack);
+      // Gateway audit ingestion is available only on the chart's private listener.
+      const ordinaryAudit = await fetch(new URL("/internal/runtime-audit", stack.origin), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+        redirect: "error",
+        signal: AbortSignal.timeout(30_000),
+      });
+      await ordinaryAudit.body?.cancel();
+      assert.equal(ordinaryAudit.status, 404, "the ordinary API listener exposes audit ingestion");
+      return installedReader;
+    });
+    // Both Codex revisions must enroll after the serving API has started.
+    const servingApi = await apiProcess(stack);
     await smokeStep("route-model", () =>
       routeModelProvider(
         stack,
         modelDirectory,
         process.env.OCC_FIRST_AGENT_SMOKE_PROVIDER_IMAGE ||
           process.env.OCC_KUBERNETES_RUNTIME_IMAGE,
-        { credentialDigests },
+        { credentialDigests, auditFailures: true },
       ),
     );
     const [embedded, codex, control] = await initialAdmissions({
@@ -139,7 +165,38 @@ async function smoke() {
       control: () =>
         createCodexAgent(stack, reader, "reader-control", modelCredentials["reader-control"]),
     });
-    await smokeStep("codex-chat", () => chatTurn(stack, codex.agent, codex.revisionId));
+    const readCodexAudit = await smokeStep("codex-chat", async () => {
+      const readAudit = await allowAgentAuditRead(stack, codex.agent, adminPassword);
+      await chatCodexWithAudit(stack, codex.agent, codex.revisionId, readAudit);
+      return readAudit;
+    });
+    const { dedicated, readDedicatedAudit, readEmbeddedAudit } = await smokeStep(
+      "openclaw-audit",
+      async () => {
+        const dedicated = await createDedicatedOpenClawAgent(
+          stack,
+          modelCredentials["dedicated-openclaw"],
+        );
+        const [readDedicatedAudit, readEmbeddedAudit] = await Promise.all([
+          allowAgentAuditRead(stack, dedicated.agent, adminPassword),
+          allowAgentAuditRead(stack, embedded.agent, adminPassword),
+        ]);
+        await chatWithAudit(
+          stack,
+          dedicated.agent,
+          dedicated.revisionId,
+          readDedicatedAudit,
+          "openclaw",
+        );
+        await assertAgentTurnAudit(readEmbeddedAudit, {
+          label: embedded.agent.label,
+          revisionId: embedded.revisionId,
+          runtimeSource: "openclaw",
+          model: defaultAgentModel,
+        });
+        return { dedicated, readDedicatedAudit, readEmbeddedAudit };
+      },
+    );
     await smokeStep("public-read", () => publicReadTurn(stack, codex, reader));
     const retiredRevision = await smokeStep("reader-retirement", () =>
       proveRetirement(stack, codex, control, reader, proofResults),
@@ -150,19 +207,40 @@ async function smoke() {
       await readLogs(stack, codex.agent, "agent");
     });
     await smokeStep("stop-agents", () =>
-      Promise.all([stopAgent(stack, embedded.agent), stopAgent(stack, codex.agent)]),
-    );
-    const [embeddedRevision, codexRevision] = await smokeStep("start-agents", () =>
-      Promise.all([deployAgent(stack, embedded.agent), deployAgent(stack, codex.agent)]),
-    );
-    assert.notEqual(embeddedRevision, embedded.revisionId, "start must admit a new revision");
-    assert.notEqual(codexRevision, retiredRevision, "start must admit a new revision");
-    await smokeStep("chat-after-start", () =>
       Promise.all([
-        chatTurn(stack, embedded.agent, embeddedRevision),
-        chatTurn(stack, codex.agent, codexRevision),
+        stopAgent(stack, embedded.agent),
+        stopAgent(stack, codex.agent),
+        stopAgent(stack, dedicated.agent),
       ]),
     );
+    const [embeddedRevision, codexRevision, dedicatedRevision] = await smokeStep(
+      "start-agents",
+      () =>
+        Promise.all([
+          deployAgent(stack, embedded.agent),
+          deployAgent(stack, codex.agent),
+          deployAgent(stack, dedicated.agent),
+        ]),
+    );
+    assert.notEqual(dedicatedRevision, dedicated.revisionId, "start must admit a new revision");
+    assert.notEqual(embeddedRevision, embedded.revisionId, "start must admit a new revision");
+    assert.notEqual(codexRevision, retiredRevision, "start must admit a new revision");
+    await smokeStep("chat-after-start", async () => {
+      await Promise.all([
+        chatWithAudit(stack, embedded.agent, embeddedRevision, readEmbeddedAudit, "openclaw"),
+        chatWithAudit(stack, dedicated.agent, dedicatedRevision, readDedicatedAudit, "openclaw"),
+        chatCodexWithAudit(stack, codex.agent, codexRevision, readCodexAudit),
+      ]);
+      assert.deepEqual(await apiProcess(stack), servingApi, "the API restarted during enrollment");
+    });
+    await smokeStep("codex-audit-interruptions", async () => {
+      await proveCodexAuditInterruptions(stack, codex.agent, codexRevision, readCodexAudit);
+      assert.deepEqual(
+        await apiProcess(stack),
+        servingApi,
+        "the API restarted during Gateway recovery",
+      );
+    });
   } catch (error) {
     await diagnostics(diagnosticStack);
     throw error;
