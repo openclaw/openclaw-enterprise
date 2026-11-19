@@ -12,7 +12,7 @@ import {
   NamespaceId,
   SecretValue,
 } from "./common.ts";
-import { CredentialSourceStatusSchema } from "./resources.ts";
+import { CredentialSourceSchema } from "./resources.ts";
 
 const material = Type.Record(Type.String(), SecretValue, {
   propertyNames: { pattern: CREDENTIAL_SOURCE_FIELD_NAME_PATTERN.source },
@@ -65,11 +65,7 @@ export const TokenServiceSourceMetadata = Type.Object(
     type: CredentialSourceType,
     config: CredentialSourceConfig,
     connectionTemplateId: Type.Optional(ConnectionTemplateId),
-    state: Type.Union([
-      Type.Literal("registering"),
-      Type.Literal("ready"),
-      Type.Literal("deleting"),
-    ]),
+    state: CredentialSourceSchema.properties.state,
     driverId: BackendId,
     delivery: Type.Optional(
       Type.Union([Type.Literal("push"), Type.Literal("native")], {
@@ -82,7 +78,7 @@ export const TokenServiceSourceMetadata = Type.Object(
         description: "Opaque usable credential version when recorded by the owner.",
       }),
     ),
-    status: Type.Optional(CredentialSourceStatusSchema),
+    status: CredentialSourceSchema.properties.status,
   },
   {
     $id: "TokenServiceSourceMetadata",
