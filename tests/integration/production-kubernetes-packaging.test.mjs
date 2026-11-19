@@ -1670,6 +1670,8 @@ esac
               TEST_SECRET: secret,
               TEST_WORKER: worker,
               TEST_NODES: nodes,
+              // This raw broker probe uses a get-only kubectl stand-in, not a credential plugin.
+              KUBERC: "off",
               TEST_PROBE_CALLS: probeCalls,
               TEST_REAL_NODE: process.execPath,
               TEST_LIVE_VALUES: liveValues,

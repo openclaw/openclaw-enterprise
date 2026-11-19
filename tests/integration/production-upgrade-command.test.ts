@@ -1222,12 +1222,12 @@ test("profile and native snapshot paths reject selected built-in authentication"
     assert.match(refused.stderr, diagnostic);
     assert.ok(!refused.stderr.includes(withheld));
     assert.deepEqual(await readdir(f.evidence), []);
-    await assert.rejects(stat(invoked), { code: "ENOENT" });
+    await assert.rejects(readFile(invoked), { code: "ENOENT" });
 
     const protectedRaw = native(join(f.directory, "protected-raw-evidence"));
     assert.equal(protectedRaw.status, 1, protectedRaw.stderr);
     assert.match(protectedRaw.stderr, diagnostic);
-    await assert.rejects(stat(invoked), { code: "ENOENT" });
+    await assert.rejects(readFile(invoked), { code: "ENOENT" });
 
     const raw = native(join(f.directory, "raw-evidence"), undefined, "off");
     assert.notEqual(raw.status, 0, raw.stdout + raw.stderr);
