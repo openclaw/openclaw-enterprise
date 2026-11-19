@@ -19,9 +19,10 @@ author: freeqaz-openai
 A Codex Agent needs permission to push a fix to GitHub. Giving its shell a GitHub token would also
 let any code that can read the token take it outside the Agent. We propose Strands Box as an
 optional Sandbox for OpenClaw Enterprise (OCE). Box would isolate the Agent's processes and control
-their network access. A trusted parent process would keep the credentials and add them to approved
-requests as they leave the Sandbox. An operator could withdraw Git access after the Agent opens a
-draft pull request, then ask the Agent to explain the fix in the same conversation.
+their network access. TokenService would issue credentials, CredentialProxy would deliver them to a
+trusted Box parent, and the parent would add them to approved requests as they leave the Sandbox.
+An operator could withdraw Git access after the Agent opens a draft pull request, then ask the Agent
+to explain the fix in the same conversation.
 
 **Opt in only when every process in this Agent may use every admitted route and credential binding.**
 The selected Box callback identifies the route a request takes but cannot identify the executable
@@ -68,7 +69,8 @@ flowchart TB
    it can run Agent code. A child that fails here may never become ready. Compute authenticates its
    status while the Pod is unready so the Worker can report a sanitized terminal failure. Before
    signing a release, Compute verifies containment, the launcher's acknowledgment for this child,
-   and current policy and credential versions on the target and every applicable serving copy.
+   and current policy and credential versions on the target and every instance that can serve
+   protected requests (a serving copy).
    The parent verifies the release against the child's fresh challenge. A replacement needs its own
    release. Compute activates the revision only after authenticated serving status and the normal
    readiness, transport, and routing checks.
@@ -88,14 +90,15 @@ flowchart TB
 
 ### APIs
 
-No changes to public HTTP endpoints. The v1 push-admission owners must agree on public
+No changes to public HTTP endpoints. The owners of v1 credential-push admission must agree on public
 startup, status, and release fields before implementation selects names.
 
 ### IAM
 
-An authorized administrator must delegate the route at Agent scope. Injection also needs reviewed
-consumer authority at that scope. Admission must refuse mixed subjects and any executable, port,
-or other restriction the selected Driver cannot enforce. The [Agent-wide policy](strands-box-agent-policy.md)
+An authorized administrator must delegate the route at Agent scope. Injection also needs separate,
+reviewed authority for the Agent to use the credential at that scope. Admission must refuse grants
+that mix Agent-wide and executable-specific subjects, and any executable, port, or other restriction
+the selected Driver cannot enforce. The [Agent-wide policy](strands-box-agent-policy.md)
 defines these checks under the existing RFC-0023 protection levels.
 
 ### Database entities
@@ -113,7 +116,9 @@ would authenticate a held startup through the selected Sandbox and verify delive
 
 ## Simplifications
 
-Try a native Box parent that creates its child directly in the same Pod container. This avoids
+Keeping the existing execution path does not add protected Box execution. Giving the child a token
+would be simpler, but would let code inside the Sandbox retrieve it. Instead, try a native Box
+parent that creates its child directly in the same Pod container. This avoids
 transferring a descriptor to an independently launched receiver, which would require authenticating
 both endpoints. The cost is proving isolation inside the container. Kubernetes NetworkPolicy covers
 the whole Pod, so the native boundary must prevent the child from reading the parent's vault or
