@@ -116,6 +116,10 @@ If you find a start without a completion, the result is unknown. These
 events omit prompts and model responses. OCC checks the revision identity
 for each write.
 
+If the Gateway restarts in the same Pod, it tries again to send pending
+observations. Deleting the Pod removes any observations that only that Pod
+held. Records already in PostgreSQL stay available through the API.
+
 The private listener serves Gateways in the control cluster. A dedicated
 OpenClaw worker reports its model calls through its Gateway.
 OpenClaw records each dispatch to a model and each retry that the runtime

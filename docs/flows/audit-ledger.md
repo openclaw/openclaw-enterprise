@@ -266,6 +266,17 @@ returns success and keeps one row. A retry with different values fails.
 The Agent audit API returns the approved runtime fields with the same grant
 and disclosure check as other Agent events.
 
+Before it sends an observation, the managed Gateway saves its JSON in
+`$OPENCLAW_STATE_DIR/pending-runtime-audit/observations.sqlite`. When OCC
+confirms the write, the Gateway removes the local copy. If the Gateway
+process restarts in the same Pod, it can send the same event ID again.
+It checks the credential fingerprint, event source, and destination before
+each recovery. The file holds at most 256 pending observations. It contains
+no credential. Kubernetes removes it when it deletes the Pod.
+
+The Gateway must receive confirmation for a required admission before
+work starts. Sending a saved observation never starts or resumes a turn.
+
 ## Debugging and Verification
 
 - The [audit guide](../guides/topics/audit-log.md#read-an-agents-audit-events)
