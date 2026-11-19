@@ -158,6 +158,14 @@ proof remains an explicit gap. This document changes no runtime behavior.
 The [Milestone 2 runtime audit proposal](runtime-audit-producers.md) defines
 the proposed Compute Driver behavior for sessions, turns, and model calls.
 
+The [Milestone 3 network proposal](network-audit-producer.md) defines how
+the Sandbox Driver registers the source of network decisions. For tool calls,
+extend the enrolled runtime's reporting role to cover requests, local policy
+decisions, approval requests and resolutions, and attempt admissions and results.
+The executor must wait for durable admission before dispatch. The repository
+and egress services should link their own receipt when they authorize a send.
+Use each service's verified identifiers for correlation.
+
 ## Rationale and alternatives
 
 Extending the existing contract reuses its producers, ownership and persistence.
