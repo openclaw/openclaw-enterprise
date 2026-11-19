@@ -69,6 +69,7 @@ export async function gitExpiryGateway(
     onGitInstall = (_value) => {},
     modelSourceId = "",
     gatewayVersion = "",
+    registerSandbox = false,
     supervisor = /** @type {Record<string, any> | undefined} */ (undefined),
     configure = (_methods, _world) => {},
     gatewayTls = /** @type {{ key: string, cert: string, rootCertificatePath: string, tokenPath: string } | undefined} */ (
@@ -147,7 +148,14 @@ export async function gitExpiryGateway(
       },
     },
   };
-  if (supervisor) {
+  if (registerSandbox) {
+    profiles[model] = {
+      ...profiles.inference,
+      id: model,
+      endpoints: [{ host: "model.example.test", port: 443 }],
+    };
+  }
+  if (supervisor && !registerSandbox) {
     // Stock attaches an endpointless runtime-files profile as well as the model.
     // Keep it observable after Git detach; an absent provider must fail retention.
     profiles["oce-codex-runtime"] = {
@@ -352,20 +360,24 @@ export async function gitExpiryGateway(
       profiles[profile.id] = { ...profile, resource_version: "1" };
       return { imported: true };
     },
-    CreateProvider: ({ provider: { metadata, type, profile_workspace } }) => {
+    CreateProvider: ({ provider: { metadata, type, profile_workspace, config } }) => {
       world.providerCreates.push(metadata.name);
-      gitName = metadata.name;
+      const runtimeFiles = registerSandbox && type === "oce-codex-runtime";
+      if (!runtimeFiles) {
+        gitName = metadata.name;
+      }
       const provider = {
         metadata: {
           ...metadata,
           workspace,
-          id: repositoryGitRecipient.providerId,
+          id: runtimeFiles ? "runtime-files-id" : repositoryGitRecipient.providerId,
           resource_version: "1",
         },
         type,
         profile_workspace,
+        ...(runtimeFiles && { config }),
       };
-      providers[gitName] = provider;
+      providers[metadata.name] = provider;
       return { provider };
     },
     UpdateProvider: ({ provider: { metadata, credentials }, credential_expiration_times }) => {
@@ -446,6 +458,35 @@ export async function gitExpiryGateway(
       }),
     });
   }
+  let createPolicy;
+  let registered;
+  let creates = 0;
+  const serviceUrl = "https://harness.example.test/";
+  if (registerSandbox) {
+    Object.assign(methods, {
+      CreateSandbox({ name, workspace_scope, labels, annotations, spec, service_exposures }) {
+        assert.equal(workspace_scope.workspace, workspace);
+        assert.equal(service_exposures.length, 1);
+        creates++;
+        createPolicy = structuredClone(spec.policy);
+        registered = {
+          metadata: { id: "registered-sandbox", name, workspace, labels, annotations },
+          spec,
+          status: { phase: "SANDBOX_PHASE_READY" },
+        };
+        return { sandbox: registered, service_urls: { "": serviceUrl } };
+      },
+      GetSandbox: () => registered && { sandbox: registered },
+      GetService: ({ sandbox }) => ({
+        endpoint: {
+          sandbox,
+          target_port: 8080,
+          authorization_mode: "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH",
+        },
+        url: serviceUrl,
+      }),
+    });
+  }
   configure(methods, world);
   const server = new grpc.Server();
   server.addService(
@@ -499,5 +540,16 @@ export async function gitExpiryGateway(
     client.close();
     server.forceShutdown();
   });
-  return { client, world };
+  return {
+    client,
+    world,
+    registration: {
+      creates: () => creates,
+      createPolicy: () => createPolicy,
+      clearEncodedSlash() {
+        delete registered.spec.policy.network_policies["codex-artifacts"].endpoints[1]
+          .allow_encoded_slash;
+      },
+    },
+  };
 }
