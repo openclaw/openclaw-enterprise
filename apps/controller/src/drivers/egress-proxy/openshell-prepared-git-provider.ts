@@ -12,6 +12,7 @@ import {
   openShellProfileEndpoint,
   type OpenShellGatewayClient,
   type OpenShellProviderProfile,
+  type OpenShellProviderProfileEndpoint,
   type OpenShellProviderResponse,
   type OpenShellSandboxProviderStatus,
 } from "../sandbox/openshell-gateway-client.ts";
@@ -32,6 +33,10 @@ export type OpenShellPreparedGitScope = OpenShellPreparedGitDelivery & {
   readonly gitOrigin: string;
   readonly apiOrigin: string;
   readonly binaries: readonly string[];
+  readonly repositoryNetworkPolicy?: readonly {
+    readonly repository: string;
+    readonly access: "read" | "write";
+  }[];
 };
 
 /** Only the credential worker supplies this value; no App signing key or OAuth material. */
@@ -162,6 +167,58 @@ function origin(value: string): URL {
   return url;
 }
 
+function snapshotRepositoryNetworkPolicy(
+  policy: NonNullable<OpenShellPreparedGitScope["repositoryNetworkPolicy"]>,
+) {
+  if (!Array.isArray(policy) || policy.length === 0) {
+    refuse();
+  }
+  const grants = new Map<string, "read" | "write">();
+  for (const grant of policy) {
+    if (grant == null || typeof grant.repository !== "string") {
+      refuse();
+    }
+    const { repository, access } = grant;
+    if (
+      repository !== repository.trim() ||
+      !/^[a-z0-9_-]+\/[a-z0-9_.-]+$/.test(repository) ||
+      repository.endsWith("/.") ||
+      repository.endsWith("/..") ||
+      repository.endsWith(".git") ||
+      (access !== "read" && access !== "write") ||
+      grants.has(repository)
+    ) {
+      refuse();
+    }
+    grants.set(repository, access);
+  }
+  return Object.freeze(
+    [...grants.entries()]
+      .sort(([left], [right]) => left.localeCompare(right, "en"))
+      .map(([repository, access]) => Object.freeze({ repository, access })),
+  );
+}
+
+function repositoryNetworkRules(
+  policy: NonNullable<OpenShellPreparedGitScope["repositoryNetworkPolicy"]>,
+): NonNullable<OpenShellProviderProfileEndpoint["rules"]> {
+  return policy.flatMap(({ repository, access }) => {
+    const root = `/${repository}.git`;
+    const services =
+      access === "write" ? ["git-upload-pack", "git-receive-pack"] : ["git-upload-pack"];
+    return services.flatMap((service) => [
+      {
+        allow: {
+          method: "GET",
+          path: `${root}/info/refs`,
+          query: { service: { glob: service } },
+        },
+      },
+      { allow: { method: "POST", path: `${root}/${service}` } },
+    ]);
+  });
+}
+
 /**
  * Private operator-plane provisioning, prior to Sandbox attachment/admission. The supplied
  * client must use the installation's authenticated gateway connection; never expose it to
@@ -204,8 +261,18 @@ export class OpenShellPreparedGitProvider {
     }
     const git = origin(scope.gitOrigin);
     const api = origin(scope.apiOrigin);
+    const { repositoryNetworkPolicy: requestedPolicy, ...deliveryScope } = scope;
+    const repositoryNetworkPolicy =
+      requestedPolicy === undefined ? undefined : snapshotRepositoryNetworkPolicy(requestedPolicy);
+    if (repositoryNetworkPolicy !== undefined && scope.installationId === undefined) {
+      refuse();
+    }
     this.client = client;
-    this.scope = Object.freeze({ ...scope, binaries: Object.freeze([...scope.binaries]) });
+    this.scope = Object.freeze({
+      ...deliveryScope,
+      binaries: Object.freeze([...scope.binaries]),
+      ...(repositoryNetworkPolicy === undefined ? {} : { repositoryNetworkPolicy }),
+    });
     this.fingerprint = createHash("sha256")
       .update(
         JSON.stringify([
@@ -216,7 +283,10 @@ export class OpenShellPreparedGitProvider {
           scope.installationId ? ["github-installation", scope.installationId] : scope.repository,
           git.origin,
           api.origin,
-          scope.binaries,
+          this.scope.binaries,
+          ...(repositoryNetworkPolicy === undefined
+            ? []
+            : [["repository-network-policy", repositoryNetworkPolicy]]),
         ]),
       )
       .digest("hex")
@@ -225,6 +295,10 @@ export class OpenShellPreparedGitProvider {
       ? openShellInstallationGitProviderPrefix
       : REPOSITORY_PROVIDER_PREFIX;
     this.provider = prefix + this.fingerprint.slice(0, 32);
+    const repositoryRules =
+      repositoryNetworkPolicy === undefined
+        ? undefined
+        : repositoryNetworkRules(repositoryNetworkPolicy);
     this.profile = {
       id: this.provider,
       displayName: "Prepared Git installation token",
@@ -247,25 +321,29 @@ export class OpenShellPreparedGitProvider {
               host: git.hostname,
               port: 443,
               protocol: "rest",
-              rules: [
+              rules: repositoryRules ?? [
                 { allow: { method: "GET", path: "/**/info/refs" } },
                 { allow: { method: "POST", path: "/**/git-upload-pack" } },
                 { allow: { method: "POST", path: "/**/git-receive-pack" } },
               ],
             },
-            {
-              host: api.hostname,
-              port: 443,
-              protocol: "rest",
-              access: "NETWORK_ACCESS_PRESET_FULL",
-            },
-            {
-              host: api.hostname,
-              port: 443,
-              protocol: "graphql",
-              path: "/graphql",
-              access: "NETWORK_ACCESS_PRESET_FULL",
-            },
+            ...(repositoryRules === undefined
+              ? ([
+                  {
+                    host: api.hostname,
+                    port: 443,
+                    protocol: "rest",
+                    access: "NETWORK_ACCESS_PRESET_FULL",
+                  },
+                  {
+                    host: api.hostname,
+                    port: 443,
+                    protocol: "graphql",
+                    path: "/graphql",
+                    access: "NETWORK_ACCESS_PRESET_FULL",
+                  },
+                ] as const)
+              : []),
           ]
         : [
             {

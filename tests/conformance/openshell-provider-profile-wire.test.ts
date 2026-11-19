@@ -10,6 +10,146 @@ import {
   checkOpenShellGitProviders,
   OpenShellGitRouteError,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts";
+import {
+  OpenShellPreparedGitProvider,
+  OpenShellPreparedGitProviderError,
+  type OpenShellPreparedGitScope,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
+
+test("prepared Git provider binds repository read and write rules to its wire profile", async (t) => {
+  const commonScope = {
+    workspace: "profile-acl",
+    workspaceId: "workspace-id",
+    sandbox: "sandbox",
+    executionId: "revision-1",
+    gitOrigin: "https://github.com",
+    apiOrigin: "https://api.github.com",
+    binaries: ["/usr/bin/git"],
+  };
+  const scope = { ...commonScope, installationId: "42" } satisfies OpenShellPreparedGitScope;
+  const { client }: { client: GrpcOpenShellGatewayClient } = await gitExpiryGateway(t, {
+    model: "model",
+    workspace: scope.workspace,
+    sandbox: scope.sandbox,
+    revisionId: scope.executionId,
+    deadline: "2030-01-01T00:00:00Z",
+    platformProfile: false,
+  });
+  const signal = AbortSignal.timeout(10_000);
+  const a = { repository: "fixture/a", access: "read" } as const;
+  const b = { repository: "fixture/b", access: "write" } as const;
+  const readGrant: { repository: string; access: "read" | "write" } = { ...a };
+  const policy = [{ ...b }, readGrant];
+  const scoped = new OpenShellPreparedGitProvider(client, {
+    ...scope,
+    repositoryNetworkPolicy: policy,
+  });
+
+  // Edits to the original grant objects or array cannot change the prepared profile.
+  readGrant.access = "write";
+  policy.push({ repository: "fixture/c", access: "read" });
+  const binding = await scoped.bootstrap(signal);
+  const stored = await client.getProviderProfile(scope.workspace, binding.profile, signal);
+  assert.deepEqual(stored?.definition?.endpoints, [
+    {
+      host: "github.com",
+      port: 443,
+      protocol: "rest",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      rules: [
+        {
+          allow: {
+            method: "GET",
+            path: "/fixture/a.git/info/refs",
+            query: { service: { glob: "git-upload-pack" } },
+          },
+        },
+        { allow: { method: "POST", path: "/fixture/a.git/git-upload-pack" } },
+        {
+          allow: {
+            method: "GET",
+            path: "/fixture/b.git/info/refs",
+            query: { service: { glob: "git-upload-pack" } },
+          },
+        },
+        { allow: { method: "POST", path: "/fixture/b.git/git-upload-pack" } },
+        {
+          allow: {
+            method: "GET",
+            path: "/fixture/b.git/info/refs",
+            query: { service: { glob: "git-receive-pack" } },
+          },
+        },
+        { allow: { method: "POST", path: "/fixture/b.git/git-receive-pack" } },
+      ],
+    },
+  ]);
+
+  function providerId(
+    repositoryNetworkPolicy: NonNullable<OpenShellPreparedGitScope["repositoryNetworkPolicy"]>,
+  ) {
+    return new OpenShellPreparedGitProvider(client, { ...scope, repositoryNetworkPolicy }).restore(
+      binding,
+    ).profile;
+  }
+  assert.equal(providerId([a, b]), binding.profile);
+  assert.notEqual(providerId([{ ...a, access: "write" }, b]), binding.profile);
+  assert.notEqual(providerId([a, { ...b, repository: "fixture/c" }]), binding.profile);
+
+  const legacy = await new OpenShellPreparedGitProvider(client, scope).bootstrap(signal);
+  assert.equal(legacy.profile, "oce-github-installation-f941504fe8c04d629f0fcd8569984de1");
+  const legacyStored = await client.getProviderProfile(scope.workspace, legacy.profile, signal);
+  assert.deepEqual(legacyStored?.definition?.endpoints, [
+    {
+      host: "github.com",
+      port: 443,
+      protocol: "rest",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      rules: [
+        { allow: { method: "GET", path: "/**/info/refs" } },
+        { allow: { method: "POST", path: "/**/git-upload-pack" } },
+        { allow: { method: "POST", path: "/**/git-receive-pack" } },
+      ],
+    },
+    {
+      host: "api.github.com",
+      port: 443,
+      protocol: "rest",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      access: "NETWORK_ACCESS_PRESET_FULL",
+    },
+    {
+      host: "api.github.com",
+      port: 443,
+      protocol: "graphql",
+      path: "/graphql",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      access: "NETWORK_ACCESS_PRESET_FULL",
+    },
+  ]);
+
+  for (const invalid of [
+    [],
+    [a, { ...a, access: "write" as const }],
+    [{ ...a, repository: "Fixture/a" }],
+    [{ ...a, repository: "fixture/a.git" }],
+    [{ ...a, repository: "fixture/.." }],
+    [{ ...a, repository: "fixture/a\n" }],
+    [{ ...a, repository: "fixture/a*" }],
+    [{ ...a, repository: "fixture/a%2Fb" }],
+  ]) {
+    assert.throws(() => providerId(invalid), OpenShellPreparedGitProviderError);
+  }
+  assert.throws(
+    () =>
+      new OpenShellPreparedGitProvider(client, {
+        ...commonScope,
+        repository: "fixture/a",
+        repositoryNetworkPolicy: [a],
+      }),
+    OpenShellPreparedGitProviderError,
+  );
+});
 
 test("provider profile wire defaults preserve Git overlap enforcement", async (t) => {
   const workspace = "profile-wire";
