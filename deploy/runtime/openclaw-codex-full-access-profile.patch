@@ -249,36 +249,3 @@ diff --git a/extensions/codex/src/app-server/side-question.ts b/extensions/codex
                    model: modelSelection.model,
                    ...(usesSupervisionConnection
                      ? {}
-diff --git a/extensions/codex/src/app-server/thread-lifecycle.test.ts b/extensions/codex/src/app-server/thread-lifecycle.test.ts
---- a/extensions/codex/src/app-server/thread-lifecycle.test.ts
-+++ b/extensions/codex/src/app-server/thread-lifecycle.test.ts
-@@ -766,15 +766,27 @@
-     },
-   );
-
--  it("uses the explicit undefined sandbox override ahead of network-proxy permissions", async () => {
-+  it("keeps the network-proxy permissions when the sandbox override is undefined", async () => {
-     const request = await buildTurnStartParams(createAttemptParams({ provider: "openai" }), {
-       threadId: "thread-1",
-       cwd: "/repo",
-       appServer: { ...createNetworkProxyAppServerOptions(), start: excludedTmpStart } as never,
-       sandboxPolicy: undefined,
-     });
-+    expect(request.permissions).toBe("mock-proxy");
-+    expect(request).not.toHaveProperty("sandboxPolicy");
-+  });
-+
-+  it("uses a concrete sandbox policy ahead of network-proxy permissions", async () => {
-+    const sandboxPolicy = { type: "readOnly", networkAccess: false } as const;
-+    const request = await buildTurnStartParams(createAttemptParams({ provider: "openai" }), {
-+      threadId: "thread-1",
-+      cwd: "/repo",
-+      appServer: createNetworkProxyAppServerOptions() as never,
-+      sandboxPolicy,
-+    });
-+    expect(request.sandboxPolicy).toEqual(sandboxPolicy);
-     expect(request).not.toHaveProperty("permissions");
--    expect(request).not.toHaveProperty("sandboxPolicy");
-   });
-
-   it("replaces malformed inline images before turn/start", async () => {

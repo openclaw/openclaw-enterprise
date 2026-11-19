@@ -6,6 +6,7 @@ import type { AgentAuditPage } from "@openclaw-enterprise/contracts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, withPool } from "../helpers/postgres-database.mjs";
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.ts";
@@ -207,9 +208,15 @@ test(
 
     // A reader's exact Agent grant excludes a peer in the same Namespace,
     // including the peer's revision records.
+    const configuration = await inject("POST", `/namespaces/${namespace.id}/configurations`, {
+      kind: "agent",
+      values: createHarnessConfiguration("codex", "gpt-4.1"),
+    });
+    assert.equal(configuration.statusCode, 201, configuration.body);
     const peer = await inject("POST", `/namespaces/${namespace.id}/agents`, {
       name: "Audit peer",
-      configurationId: agent.configurationId,
+      configurationId: configuration.json().data.id,
+      executionMode: "dedicated",
       harnessAuth: { method: "api_key", source: secretRef },
     });
     assert.equal(peer.statusCode, 201, peer.body);
@@ -282,6 +289,11 @@ test(
     }
 
     await t.test("the Gateway can write only for its registered Agent revision", async (child) => {
+      const peerGrant = await inject("POST", `${iamPath}/access-bindings`, {
+        ...binding,
+        resourceId: peerAgent.id,
+      });
+      assert.equal(peerGrant.statusCode, 201, peerGrant.body);
       await checkGatewayAudit(child, {
         app,
         pool,
@@ -289,9 +301,13 @@ test(
         migrationUrl,
         revision,
         other: other.revision,
+        codex: peerDeployment.json().data,
         replacementId: deploymentId,
-        readPage: async () => {
-          const response = await inject("GET", auditPath);
+        readPage: async (agentId) => {
+          const response = await inject(
+            "GET",
+            `/namespaces/${namespace.id}/agents/${agentId}/audit-events`,
+          );
           assert.equal(response.statusCode, 200, response.body);
           return response.json().data;
         },

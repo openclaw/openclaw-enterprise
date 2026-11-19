@@ -67,13 +67,13 @@ async function startListener(t: TestContext, app: App) {
     });
 }
 
-function credential(revision: AgentRevision) {
+function credential(revision: AgentRevision, runtimeSource: "openclaw" | "codex" = "openclaw") {
   const token = randomBytes(32).toString("base64url");
   const grant = {
     namespaceId: revision.namespaceId,
     agentId: revision.agentId,
     agentRevisionId: revision.id,
-    runtimeSource: "openclaw",
+    runtimeSource,
     tokenDigest: createHash("sha256").update(token).digest("hex"),
   } as const;
   return { token, grant };
@@ -88,8 +88,9 @@ export async function checkGatewayAudit(
     migrationUrl: string;
     revision: AgentRevision;
     other: AgentRevision;
+    codex: AgentRevision;
     replacementId: string;
-    readPage: () => Promise<AgentAuditPage>;
+    readPage: (agentId: string) => Promise<AgentAuditPage>;
   },
 ) {
   const { app, state, pool, migrationUrl, revision, replacementId } = input;
@@ -101,10 +102,10 @@ export async function checkGatewayAudit(
   const turn = { ...session, turnId: randomUUID(), messageId: randomUUID() };
   const attempt = { ...turn, modelCallId: randomUUID(), provider: "openai", model: "gpt-4.1" };
   const envelope = () => ({ eventId: randomUUID(), occurredAt: new Date().toISOString() });
-  const admitted = { ...envelope(), action: "openclaw.runtime.turn.admitted", ...turn };
+  const started = { ...envelope(), action: "openclaw.runtime.turn.started", ...turn };
 
   // A retry after worker restart can reuse the credential for this revision only.
-  assert.equal(await post(admitted, token), 401);
+  assert.equal(await post(started, token), 401);
   await assert.rejects(
     state.registerGatewayRuntimeGrant({ ...grant, runtimeSource: "codex" }),
     ScopeViolationError,
@@ -119,7 +120,7 @@ export async function checkGatewayAudit(
   );
   await state.registerGatewayRuntimeGrant(replacement.grant);
   await state.registerGatewayRuntimeGrant(other.grant);
-  assert.equal(await post(admitted, token, "codex"), 403);
+  assert.equal(await post(started, token, "codex"), 403);
 
   // Keep the private write endpoint and the public read endpoint separate.
   const auditPath = `/namespaces/${revision.namespaceId}/agents/${revision.agentId}/audit-events`;
@@ -128,41 +129,67 @@ export async function checkGatewayAudit(
     "x-openclaw-runtime-audit-source": "openclaw",
   };
   assert.equal(
-    (await app.inject({ method: "POST", url: route, headers, payload: admitted })).statusCode,
+    (await app.inject({ method: "POST", url: route, headers, payload: started })).statusCode,
     404,
   );
   assert.equal((await app.inject({ method: "GET", url: auditPath, headers })).statusCode, 401);
-  assert.equal(await post(admitted, token, "openclaw", auditPath), 404);
-  assert.equal(await post({ ...admitted, agentRevisionId: replacementId }, token), 400);
-  assert.equal(await post({ ...admitted, prompt: "private input" }, token), 400);
-  assert.equal(await post({ ...admitted, action: "openclaw.agents.create" }, token), 400);
+  assert.equal(await post(started, token, "openclaw", auditPath), 404);
+  assert.equal(await post({ ...started, agentRevisionId: replacementId }, token), 400);
+  assert.equal(await post({ ...started, prompt: "private input" }, token), 400);
+  assert.equal(await post({ ...started, action: "openclaw.agents.create" }, token), 400);
   assert.equal(
     await post(
-      { ...admitted, ...attempt, turnId: undefined, action: "openclaw.runtime.model_call.started" },
+      { ...started, ...attempt, turnId: undefined, action: "openclaw.runtime.model_call.started" },
       token,
     ),
     400,
   );
 
-  // A failed admission write is retryable. Concurrent copies create exactly one record.
+  // A failed observation write is retryable. Concurrent copies create exactly one record.
   await withPool(migrationUrl, async (migrator) => {
     await migrator.query(`ALTER TABLE occ.audit_events ADD CONSTRAINT reject_runtime_audit
       CHECK (kind <> 'runtime_activity') NOT VALID`);
     try {
-      assert.equal(await post(admitted, token), 503);
+      assert.equal(await post(started, token), 503);
     } finally {
       await migrator.query("ALTER TABLE occ.audit_events DROP CONSTRAINT reject_runtime_audit");
     }
   });
-  assert.deepEqual(await Promise.all([post(admitted, token), post(admitted, token)]), [204, 204]);
-  assert.equal(await post({ ...admitted, turnId: randomUUID() }, token), 409);
-  assert.equal(await post(admitted, other.token), 204);
+  assert.deepEqual(await Promise.all([post(started, token), post(started, token)]), [204, 204]);
+  assert.equal(await post({ ...started, turnId: randomUUID() }, token), 409);
+  assert.equal(await post(started, other.token), 204);
   const completed = {
     ...envelope(),
     action: "openclaw.runtime.model_call.completed",
     ...attempt,
     outcome: "cancelled",
   };
+
+  // Each grant can report only the model events its runtime observes.
+  const codex = credential(input.codex, "codex");
+  await state.registerGatewayRuntimeGrant(codex.grant);
+  const details = {
+    sessionId: randomUUID(),
+    turnId: randomUUID(),
+    provider: "codex",
+    model: "gpt-4.1",
+    responseIdHash: "sha256:4ee3d95d9f2d7b7b",
+  };
+  const observed = {
+    ...envelope(),
+    action: "openclaw.runtime.model_response.observed",
+    ...details,
+  };
+  assert.equal(await post(completed, codex.token, "codex"), 403);
+  assert.equal(await post(observed, token), 403);
+  assert.equal(await post(observed, codex.token, "codex"), 204);
+  const codexPage = await input.readPage(input.codex.agentId);
+  assert.deepEqual(
+    codexPage.events
+      .filter((entry) => entry.event === "runtime_activity")
+      .map((entry) => [entry.action, entry.details]),
+    [[observed.action, { ...details, agentRevisionId: input.codex.id, runtimeSource: "codex" }]],
+  );
 
   // A revocation waits for an append that has already authenticated on this credential.
   await withPool(migrationUrl, async (migrator) => {
@@ -190,7 +217,7 @@ export async function checkGatewayAudit(
     assert.equal(await pending, 204);
     await revoked;
   });
-  assert.equal(await post(admitted, token), 401);
+  assert.equal(await post(started, token), 401);
   assert.equal(await state.hasGatewayRuntimeGrant(grant), false);
   assert.equal(
     await post(
@@ -201,7 +228,7 @@ export async function checkGatewayAudit(
   );
 
   // The reader can trace both revisions of this Agent. The peer's event is private.
-  const page = await input.readPage();
+  const page = await input.readPage(revision.agentId);
   const events = page.events.filter((entry) => entry.event === "runtime_activity");
   assert.deepEqual(
     events.map((entry) => [entry.action, entry.details]),
@@ -220,7 +247,7 @@ export async function checkGatewayAudit(
         },
       ],
       [
-        "openclaw.runtime.turn.admitted",
+        "openclaw.runtime.turn.started",
         { ...turn, agentRevisionId: revision.id, runtimeSource: "openclaw" },
       ],
     ],

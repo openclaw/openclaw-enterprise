@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { defaultAgentModel } from "../../../apps/controller/src/console/agents/starter-model.mts";
 import type { AgentAuditPage } from "../../../packages/contracts/src/index.ts";
 import { createHarnessConfiguration } from "../../../tests/helpers/harness-configuration.mjs";
+import { mountsGatewayRevision } from "../../first-agent-model.ts";
 import {
   log,
   minute,
@@ -24,7 +25,7 @@ import {
   podList,
   signInConsole,
   wireField,
-  withRefusedTurnAdmission,
+  interruptRefusedObservation,
   type LocalSetup,
   type SmokeStack,
   type Pod,
@@ -145,13 +146,10 @@ export async function readyGateway(
   revisionId: string,
 ): Promise<GatewayPod> {
   const pods = await agentPods(stack, agentId);
-  // Same revision match as scripts/first-agent-model.ts: the gateway Pod
-  // mounts its revision's configuration ConfigMap.
-  const configMap = `gateway-${idHash(agentId)}-rev-${idHash(revisionId)}`;
   const gateways = pods.filter(
     (pod) =>
       pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway" &&
-      pod.spec?.volumes?.some((volume) => volume.configMap?.name === configMap) &&
+      mountsGatewayRevision(pod, agentId, revisionId) &&
       pod.status?.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
   );
   assert.equal(
@@ -242,26 +240,7 @@ export async function chatTurn(stack: SmokeStack, agent: SmokeAgent, revisionId:
   assertChatReply(result, nonce, agent.label);
   const transport = await assertModelAnswered(nonce, agent.label);
   log(`${agent.label}: chat turn on ${revisionId} answered over ${transport}`);
-}
-
-export async function proveRefusedTurnAdmission(
-  stack: SmokeStack,
-  agent: SmokeAgent,
-  revisionId: string,
-) {
-  const gateway = await readyGateway(stack, agent.id, revisionId);
-  const nonce = `OCE_SMOKE_${randomUUID()}`;
-  const result = await withRefusedTurnAdmission(stack, revisionId, () =>
-    gatewayChat(stack, gateway, `Reply with exactly this nonce and no other text: ${nonce}`),
-  );
-  assert.ok(wireField(result, "status"), `${agent.label}: Gateway returned no HTTP response`);
-  // The non-streaming chat has settled. Check arrivals even if the provider
-  // disconnected before it could send a reply.
-  const arrivals = (await modelEvents()).filter(
-    ({ event, text }) => event === "request" && text === nonce,
-  );
-  assert.equal(arrivals.length, 0, `${agent.label}: the refused turn reached the provider`);
-  log(`${agent.label}: PostgreSQL refused admission on ${revisionId} before a model request`);
+  return nonce;
 }
 
 export async function allowAgentAuditRead(
@@ -311,16 +290,18 @@ export async function assertAgentTurnAudit(
     revisionId,
     runtimeSource,
     sessionId,
+    turnId,
     model,
-    minimumModelCalls = 1,
+    responseIdHash,
     previousIds,
   }: {
     label: string;
     revisionId: string;
     runtimeSource: "openclaw" | "codex";
     sessionId?: string;
+    turnId?: string;
     model?: string;
-    minimumModelCalls?: number;
+    responseIdHash?: string;
     previousIds?: ReadonlySet<string>;
   },
 ) {
@@ -338,18 +319,7 @@ export async function assertAgentTurnAudit(
             (sessionId === undefined ||
               ("sessionId" in event.details && event.details.sessionId === sessionId)),
         );
-      const sessions = page.events
-        .filter((event) => event.event === "runtime_activity")
-        .filter(
-          (event) =>
-            event.action === "openclaw.runtime.session.started" &&
-            (sessionId !== undefined || event.details.agentRevisionId === revisionId) &&
-            event.details.runtimeSource === runtimeSource,
-        );
       const starts = events.filter((event) => event.action === "openclaw.runtime.turn.started");
-      const admissions = events.filter(
-        (event) => event.action === "openclaw.runtime.turn.admitted",
-      );
       const completes = events.filter(
         (event) => event.action === "openclaw.runtime.turn.completed",
       );
@@ -364,21 +334,27 @@ export async function assertAgentTurnAudit(
           const started = starts.some(
             ({ details }) => details.sessionId === turn.sessionId && details.turnId === turn.turnId,
           );
-          const admitted = admissions.some(
-            ({ details }) => details.sessionId === turn.sessionId && details.turnId === turn.turnId,
-          );
           if (
-            !sessions.some(({ details }) => details.sessionId === turn.sessionId) ||
-            !admitted ||
             !started ||
-            turn.outcome !== "succeeded"
+            turn.outcome !== "succeeded" ||
+            (turnId !== undefined && turn.turnId !== turnId)
           ) {
             return false;
+          }
+          if (responseIdHash !== undefined) {
+            return events.some(
+              (event) =>
+                event.action === "openclaw.runtime.model_response.observed" &&
+                event.details.sessionId === turn.sessionId &&
+                event.details.turnId === turn.turnId &&
+                event.details.model === model &&
+                event.details.responseIdHash === responseIdHash,
+            );
           }
           if (model === undefined) {
             return true;
           }
-          const linkedCalls = modelResults.filter(({ details: result }) => {
+          return modelResults.some(({ details: result }) => {
             if (
               result.outcome !== "succeeded" ||
               result.model !== model ||
@@ -396,9 +372,6 @@ export async function assertAgentTurnAudit(
                 start.provider === result.provider,
             );
           });
-          return (
-            new Set(linkedCalls.map(({ details }) => details.modelCallId)).size >= minimumModelCalls
-          );
         }),
         state: { actions: events.map(({ action }) => action) },
       };
@@ -406,6 +379,13 @@ export async function assertAgentTurnAudit(
     minute,
   );
   log(`${label}: stored matching turn start and successful completion on ${revisionId}`);
+}
+
+function fixtureResponseIdHash(nonce: string) {
+  const hash = createHash("sha256")
+    .update(`openclaw:codex:response-id:v1\0resp_${nonce}`)
+    .digest("hex");
+  return `sha256:${hash.slice(0, 16)}`;
 }
 
 export async function chatWithAudit(
@@ -416,15 +396,15 @@ export async function chatWithAudit(
   runtimeSource: "codex" | "openclaw",
 ) {
   const previousIds = new Set((await readAudit()).events.map(({ id }) => id));
-  await chatTurn(stack, agent, revisionId);
+  const nonce = await chatTurn(stack, agent, revisionId);
   await assertAgentTurnAudit(readAudit, {
     label: agent.label,
     revisionId,
     runtimeSource,
     model: defaultAgentModel,
+    ...(runtimeSource === "codex" && { responseIdHash: fixtureResponseIdHash(nonce) }),
     previousIds,
   });
-  log(`${agent.label}: stored the linked model call and successful result on ${revisionId}`);
 }
 
 export function chatCodexWithAudit(
@@ -470,10 +450,7 @@ export async function proveCodexAuditInterruptions(
   async function start(fault: "retry" | "cancel" | "restart") {
     const sessionKey = `agent:main:audit-${randomUUID()}`;
     const nonce = `OCE_SMOKE_${fault}-${randomUUID()}`;
-    await rpc("sessions.create", { key: sessionKey, agentId: "main" });
-    const history = await rpc("chat.history", { sessionKey, limit: 10 });
-    const sessionId = wireField(history, "sessionId");
-    assert.ok(typeof sessionId === "string" && sessionId.length > 0);
+    // A chat on a fresh key emits the native session-start hook.
     const admitted = await rpc("chat.send", {
       sessionKey,
       idempotencyKey: randomUUID(),
@@ -481,6 +458,19 @@ export async function proveCodexAuditInterruptions(
     });
     const runId = wireField(admitted, "runId");
     assert.ok(typeof runId === "string" && runId.length > 0);
+    await waitFor(
+      `the ${fault} provider request`,
+      async () => ({
+        done: (await modelEvents()).some(
+          ({ event, caller, text }) =>
+            event === `audit-provider-${fault}` && caller === agent.label && text === nonce,
+        ),
+      }),
+      minute,
+    );
+    const history = await rpc("chat.history", { sessionKey, limit: 10 });
+    const sessionId = wireField(history, "sessionId");
+    assert.ok(typeof sessionId === "string" && sessionId.length > 0);
     const events = async () =>
       (await readAudit()).events
         .filter((event) => event.event === "runtime_activity")
@@ -491,77 +481,37 @@ export async function proveCodexAuditInterruptions(
             "sessionId" in details &&
             details.sessionId === sessionId,
         );
-    const starts = await waitFor(
-      `the ${fault} provider request and its audit start`,
-      async () => {
-        const [provider, audit] = await Promise.all([modelEvents(), events()]);
-        const reached = provider.some(
-          ({ event, caller, text }) =>
-            event === `audit-provider-${fault}` && caller === agent.label && text === nonce,
-        );
-        const model = audit.find((event) => event.action === "openclaw.runtime.model_call.started");
-        const turn = audit
-          .filter((event) => event.action === "openclaw.runtime.turn.started")
-          .find(({ details }) => details.turnId === model?.details.turnId);
-        return {
-          done: reached && model !== undefined && turn !== undefined,
-          value: { model, turn },
-        };
-      },
-      minute,
-    );
-    assert.ok(starts?.model && starts.turn);
-    return { sessionId, sessionKey, nonce, runId, events, model: starts.model, turn: starts.turn };
+    return { sessionId, sessionKey, nonce, runId, events };
   }
 
-  // The provider fails an actual Responses request once. Codex must recover within
-  // the same turn and report separate attempt IDs, including the failed attempt.
+  // A failed request followed by a successful response belongs to the same turn.
   const retried = await start("retry");
   await assertAgentTurnAudit(readAudit, {
     label: agent.label,
     revisionId,
     runtimeSource: "codex",
     sessionId: retried.sessionId,
+    turnId: retried.runId,
     model: defaultAgentModel,
+    responseIdHash: fixtureResponseIdHash(retried.nonce),
   });
   await assertModelAnswered(retried.nonce, agent.label);
-  const retryRecords = await retried.events();
-  const results = retryRecords.filter(
-    (event) => event.action === "openclaw.runtime.model_call.completed",
-  );
-  const failure = results.find(({ details }) => details.outcome === "failed");
-  assert.ok(failure, "the retried turn has no failed provider attempt");
-  assert.ok(
-    retryRecords.some(
-      (event) =>
-        event.action === "openclaw.runtime.model_call.started" &&
-        event.details.modelCallId === failure.details.modelCallId &&
-        event.details.turnId === failure.details.turnId,
-    ),
-    "the failed provider attempt has no matching start",
-  );
-  assert.ok(
-    results.some(
-      ({ details }) =>
-        details.outcome === "succeeded" &&
-        details.turnId === failure.details.turnId &&
-        details.modelCallId !== failure.details.modelCallId,
-    ),
-    "the provider retry must have a distinct model attempt ID in the same turn",
-  );
-  log(`${agent.label}: stored separate failed and successful attempts for one retried turn`);
 
-  // The Gateway owns session deletion. Its end record must match the Codex
-  // session start by the session ID that chat.history returns.
+  // Match both explicit session hooks to the ID returned by chat.history.
   await rpc("sessions.delete", { key: retried.sessionKey, expectedSessionId: retried.sessionId });
-  const lifecycle = await retried.events();
-  for (const action of ["openclaw.runtime.session.started", "openclaw.runtime.session.ended"]) {
-    assert.equal(
-      lifecycle.filter((event) => event.action === action).length,
-      1,
-      `expected one ${action} for the deleted Codex session`,
-    );
-  }
+  await waitFor(
+    "the session lifecycle of the deleted Codex session",
+    async () => {
+      const actions = (await retried.events()).map(({ action }) => action);
+      return {
+        done:
+          actions.includes("openclaw.runtime.session.started") &&
+          actions.includes("openclaw.runtime.session.ended"),
+        state: { actions },
+      };
+    },
+    minute,
+  );
 
   // Cancellation uses the active run's native RPC while the provider is still held.
   const cancel = await start("cancel");
@@ -572,30 +522,28 @@ export async function proveCodexAuditInterruptions(
   });
   assert.equal(wireField(aborted, "aborted"), true);
   await waitFor(
-    "the explicitly cancelled provider attempt and turn",
+    "the explicitly cancelled turn",
     async () => {
       const audit = await cancel.events();
-      const { turnId, modelCallId } = cancel.model.details;
       return {
         done:
           audit.some(
             (event) =>
-              event.action === "openclaw.runtime.turn.completed" &&
-              event.details.turnId === turnId &&
-              event.details.outcome === "cancelled",
+              event.action === "openclaw.runtime.turn.started" &&
+              event.details.turnId === cancel.runId,
           ) &&
           audit.some(
             (event) =>
-              event.action === "openclaw.runtime.model_call.completed" &&
-              event.details.modelCallId === modelCallId &&
-              event.details.turnId === turnId &&
+              event.action === "openclaw.runtime.turn.completed" &&
+              event.details.turnId === cancel.runId &&
               event.details.outcome === "cancelled",
           ),
+        state: { actions: audit.map(({ action }) => action) },
       };
     },
     minute,
   );
-  log(`${agent.label}: stored cancellation of the active provider attempt and turn`);
+  log(`${agent.label}: stored cancellation of the active turn`);
 
   const connectedNodeIds = async () => {
     const nodes = wireField(await rpc("node.list", {}), "nodes");
@@ -611,33 +559,33 @@ export async function proveCodexAuditInterruptions(
 
   // Interrupt only the native Gateway lock-holder in this revision's test Pod.
   // Its wrapper reaps the process, then kubelet restarts the Gateway container.
-  const interrupted = await start("restart");
-  const ownedPod = async () =>
-    (await agentPods(stack, agent.id)).find(
-      ({ metadata }) => metadata.name === gateway.pod && metadata.namespace === gateway.namespace,
-    );
-  const container = (pod: Pod | undefined) =>
-    pod?.status?.containerStatuses?.find(({ name }) => name === "gateway");
-  const before = await ownedPod();
-  const previous = container(before);
-  assert.ok(before?.metadata.uid && previous?.containerID);
-  await kubectl(
-    stack,
-    [
-      "exec",
-      "-i",
-      "-n",
-      gateway.namespace,
-      gateway.pod,
-      "-c",
-      "gateway",
-      "--",
-      "node",
-      "--input-type=module",
-      "-",
-    ],
-    {
-      input: `
+  const restart = async () => {
+    const ownedPod = async () =>
+      (await agentPods(stack, agent.id)).find(
+        ({ metadata }) => metadata.name === gateway.pod && metadata.namespace === gateway.namespace,
+      );
+    const container = (pod: Pod | undefined) =>
+      pod?.status?.containerStatuses?.find(({ name }) => name === "gateway");
+    const before = await ownedPod();
+    const previous = container(before);
+    assert.ok(before?.metadata.uid && previous?.containerID);
+    await kubectl(
+      stack,
+      [
+        "exec",
+        "-i",
+        "-n",
+        gateway.namespace,
+        gateway.pod,
+        "-c",
+        "gateway",
+        "--",
+        "node",
+        "--input-type=module",
+        "-",
+      ],
+      {
+        input: `
       import assert from "node:assert/strict";
       import { spawn } from "node:child_process";
       import { readFileSync } from "node:fs";
@@ -646,23 +594,32 @@ export async function proveCodexAuditInterruptions(
       spawn(process.execPath, ["-e", "setTimeout(() => process.kill(Number(process.argv[1]), 'SIGKILL'), 500)", String(pid)],
         { detached: true, stdio: "ignore" }).unref();
     `,
-    },
-  );
-  await waitFor(
-    "the same revision Gateway to restart",
-    async () => {
-      const pod = await ownedPod();
-      const running = container(pod);
-      return {
-        done:
-          pod?.metadata.uid === before.metadata.uid &&
-          running?.containerID !== undefined &&
-          running.containerID !== previous.containerID &&
-          running.restartCount > previous.restartCount &&
-          pod.status?.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
-      };
-    },
-    3 * minute,
+      },
+    );
+    await waitFor(
+      "the same revision Gateway to restart",
+      async () => {
+        const pod = await ownedPod();
+        const running = container(pod);
+        return {
+          done:
+            pod?.metadata.uid === before.metadata.uid &&
+            running?.containerID !== undefined &&
+            running.containerID !== previous.containerID &&
+            running.restartCount > previous.restartCount &&
+            pod.status?.conditions?.some(
+              ({ type, status }) => type === "Ready" && status === "True",
+            ),
+        };
+      },
+      3 * minute,
+    );
+  };
+  const { turn: interrupted, refusedId } = await interruptRefusedObservation(
+    stack,
+    revisionId,
+    () => start("restart"),
+    restart,
   );
   await waitForDeployment(stack, agent.id, revisionId, agent.label);
   // The Gateway must accept connections before its workspace node can reconnect.
@@ -673,23 +630,31 @@ export async function proveCodexAuditInterruptions(
     2 * minute,
   );
   await chatCodexWithAudit(stack, agent, revisionId, readAudit);
-  const persisted = await interrupted.events();
-  for (const start of [interrupted.turn, interrupted.model]) {
-    assert.deepEqual(
-      persisted.filter(
-        ({ action, details }) =>
-          action === start.action && "turnId" in details && details.turnId === start.details.turnId,
-      ),
-      [start],
-      "the original starts must survive the producer restart once with their original IDs",
-    );
-  }
+  const persisted = await waitFor(
+    "the original audit ID after the failed write and the Gateway restart",
+    async () => {
+      const audit = await interrupted.events();
+      return { done: audit.some(({ id }) => id === refusedId), value: audit };
+    },
+    minute,
+  );
+  assert.ok(persisted);
+  assert.deepEqual(
+    persisted
+      .filter(
+        (event) =>
+          event.action === "openclaw.runtime.turn.started" &&
+          event.details.turnId === interrupted.runId,
+      )
+      .map(({ id }) => id),
+    [refusedId],
+    "the restarted Gateway must deliver the original observation exactly once",
+  );
   assert.ok(
     !persisted.some(
       (event) =>
-        (event.action === "openclaw.runtime.model_call.completed" ||
-          event.action === "openclaw.runtime.turn.completed") &&
-        event.details.turnId === interrupted.model.details.turnId,
+        event.action === "openclaw.runtime.turn.completed" &&
+        event.details.turnId === interrupted.runId,
     ),
     "the interrupted turn must have no completion without an observed terminal result",
   );

@@ -6285,7 +6285,7 @@ List audit metadata for one Agent
 
 **Operation ID:** `listAgentAuditEvents`
 
-**Permissions:** Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API request, worker, session, turn, and model call records from the preceding 24 hours.
+**Permissions:** Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API request, worker, session, turn, model call, and model response records from the preceding 24 hours.
 
 | Action | Resource | Scope |
 | --- | --- | --- |

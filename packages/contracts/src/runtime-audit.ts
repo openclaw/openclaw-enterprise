@@ -64,7 +64,6 @@ function runtimeEvent<const Action extends string, Fields extends TProperties>(
 const schemas = [
   runtimeEvent("openclaw.runtime.session.started", session),
   runtimeEvent("openclaw.runtime.session.ended", session),
-  runtimeEvent("openclaw.runtime.turn.admitted", turn),
   runtimeEvent("openclaw.runtime.turn.started", turn),
   runtimeEvent("openclaw.runtime.turn.completed", {
     ...turn,
@@ -72,6 +71,12 @@ const schemas = [
   }),
   runtimeEvent("openclaw.runtime.model_call.started", model),
   runtimeEvent("openclaw.runtime.model_call.completed", { ...model, outcome }),
+  runtimeEvent("openclaw.runtime.model_response.observed", {
+    ...turn,
+    model: reference,
+    provider: reference,
+    responseIdHash: Type.String({ pattern: "^sha256:[0-9a-f]{16}$" }),
+  }),
 ];
 
 // TypeBox infers unions from tuples. Preserve the union of the individual

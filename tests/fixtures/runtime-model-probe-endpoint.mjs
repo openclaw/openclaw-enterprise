@@ -134,7 +134,8 @@ function auditFault(transport, model, request, caller) {
 // A minimal Responses API stream: one assistant message saying READY, or the
 // caller's echoed nonce.
 function answerEvents(model, text) {
-  const id = "resp_runtime_probe";
+  const id =
+    codexAuditFailures && text.startsWith("OCE_SMOKE_") ? `resp_${text}` : "resp_runtime_probe";
   const message = {
     type: "message",
     id: "msg_runtime_probe",

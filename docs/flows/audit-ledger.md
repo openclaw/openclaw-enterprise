@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: "2026-11-19"
-last_updated_session: "authoring-run/fe4ad3ff-b579-4d9b-a15e-622a822cd15f"
+last_updated_session: "authoring-run/4dfd652a-6550-45c4-b86a-ce9b35ec4705"
 ---
 
 # Audit ledger flow
@@ -257,9 +257,14 @@ the Secret and the service's public CA certificate. A NetworkPolicy permits
 the Gateway to reach the audit listener. Compute withdraws the grant after
 the revision stops and removes the Secret when the revision retires.
 
-The Gateway sends session, turn, and model-call records to the listener.
-A dedicated OpenClaw worker reports its model calls to the Gateway over
-the same authenticated connection that carries the turn.
+Kubernetes Compute gives the Gateway the OCE plugin in
+`deploy/runtime/managed-runtime-audit/`. Compute adds the plugin to the Gateway configuration in a read-only
+Kubernetes volume. The base revision configuration stays available in that
+volume.
+The plugin reads the notifications that OpenClaw emits. See
+[Agent runtime activity](../guides/topics/audit-log.md#agent-runtime-activity)
+for the events available in each mode. The plugin observes work as it runs.
+It cannot stop the runtime before a turn starts.
 OCC checks the token and obtains the revision scope from the grant in the
 transaction that appends the event. A retry with the same event ID and values
 returns success and keeps one row. A retry with different values fails.
@@ -267,15 +272,16 @@ The Agent audit API returns the approved runtime fields with the same grant
 and disclosure check as other Agent events.
 
 Before it sends an observation, the managed Gateway saves its JSON in
-`$OPENCLAW_STATE_DIR/pending-runtime-audit/observations.sqlite`. When OCC
+`/home/node/.openclaw/pending-runtime-audit/observations.sqlite`. When OCC
 confirms the write, the Gateway removes the local copy. If the Gateway
 process restarts in the same Pod, it can send the same event ID again.
 It checks the credential fingerprint, event source, and destination before
 each recovery. The file holds at most 256 pending observations. It contains
 no credential. Kubernetes removes it when it deletes the Pod.
 
-The Gateway must receive confirmation for a required admission before
-work starts. Sending a saved observation never starts or resumes a turn.
+If all 256 places are in use, the plugin reports a warning and omits the new
+observation. A permanent refusal from the listener also produces a warning.
+The Gateway continues to serve chat during an audit outage.
 
 ## Debugging and Verification
 
@@ -309,6 +315,8 @@ work starts. Sending a saved observation never starts or resumes a turn.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 14:28: Record runtime observations through the OCE Gateway plugin. (authoring-run/4dfd652a-6550-45c4-b86a-ce9b35ec4705 - f637b353b485f8610c0f58df801eb5feb577f291)
 
 - 2026-11-19 10:04: Trace runtime enrollment, event delivery, and reads. (authoring-run/fe4ad3ff-b579-4d9b-a15e-622a822cd15f - d517d45f0ffdce32b9b7663efe062fc3e8a997bb)
 

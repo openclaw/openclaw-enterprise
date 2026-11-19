@@ -671,8 +671,6 @@ interface GatewayConfigurationSnapshot {
   readonly revision: number;
   readonly revisionId: string;
   readonly gatewayManagedMode: boolean;
-  readonly auditSource?: "openclaw" | "codex";
-  readonly auditCodexModelAttempts?: boolean;
   readonly usesGatewayPasswordEnv: boolean;
   readonly usesWritableNativeAdminConfig: boolean;
   readonly annotations: Readonly<Record<string, string>>;
@@ -1493,7 +1491,11 @@ function observeGatewayPreparation(
   const pod = asRecord(template?.spec);
   const volumes = Array.isArray(pod?.volumes) ? pod.volumes : [];
   const volume = volumes.find((candidate) => asRecord(candidate)?.name === CONFIGURATION_VOLUME);
-  const currentConfiguration = asRecord(asRecord(volume)?.configMap)?.name;
+  const volumeSource = asRecord(volume);
+  const projections = asRecord(volumeSource?.projected)?.sources;
+  // Audit adds an overlay. The first source is still the immutable revision snapshot.
+  const revisionSource = Array.isArray(projections) ? asRecord(projections[0]) : volumeSource;
+  const currentConfiguration = asRecord(revisionSource?.configMap)?.name;
   if (typeof currentConfiguration !== "string") {
     throw new OwnershipFailure(`Refusing unconfigured Agent gateway ${gateway.metadata.name}.`);
   }
@@ -3234,6 +3236,32 @@ function requireNativeWorkerSandbox(
   if (!provisionsDedicatedOpenClaw(sandboxDriver)) {
     throw new ConfigurationFailure(DEDICATED_OPENCLAW_SANDBOX_REQUIRED);
   }
+}
+
+function gatewayAuditPluginDocument(document: string): string {
+  const config = JSON.parse(document) as OpenClawConfigurationDocument;
+  const id = "oce-runtime-audit";
+  const plugins = asRecord(config.plugins) ?? {};
+  const allow = plugins.allow;
+  const deny = plugins.deny;
+  if (
+    plugins.enabled === false ||
+    (Array.isArray(deny) &&
+      deny.some((entry) => typeof entry === "string" && entry.trim().toLowerCase() === id))
+  ) {
+    return document;
+  }
+  const load = asRecord(plugins.load) ?? {};
+  const paths = Array.isArray(load.paths) ? load.paths : [];
+  return JSON.stringify({
+    ...config,
+    plugins: {
+      ...plugins,
+      ...(Array.isArray(allow) && allow.length > 0 && { allow: [...new Set([...allow, id])] }),
+      load: { ...load, paths: [...new Set([...paths, "/app/oce-plugins/" + id])] },
+      entries: { ...asRecord(plugins.entries), [id]: { enabled: true } },
+    },
+  });
 }
 
 function gatewayConfigurationDocument(
@@ -7126,7 +7154,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     await this.prepareRevisionStage("gateway_runtime_audit", () =>
-      this.ensureGatewayRuntimeAudit(revision, gatewayNamespace),
+      this.ensureGatewayRuntimeAudit(revision, gatewayNamespace, configuration.name, document),
     );
     let launchPrepared = false;
     try {
@@ -8340,7 +8368,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       gatewayOwnership,
     );
     await this.reconcileHarnessTrust(revision, providerEndpoint, gatewayNamespace, namespace.name);
-    await this.ensureGatewayRuntimeAudit(revision, gatewayNamespace);
+    await this.ensureGatewayRuntimeAudit(revision, gatewayNamespace, configuration.name);
     await this.reconcile(
       this.deployment(
         gatewayName,
@@ -10289,6 +10317,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
     managed: GatewayRuntimeAuditTarget,
+    document: string,
   ): Promise<void> {
     const ownership = this.gatewayRuntimeAuditOwnership(revision);
     const { config, policy } = this.gatewayRuntimeAuditTransportNames(
@@ -10299,7 +10328,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
       {
         ...this.manifest("v1", "ConfigMap", config, ownership, namespace),
         immutable: true,
-        data: { [RUNTIME_AUDIT_CA_FILE]: managed.caBundle },
+        data: {
+          [CONFIGURATION_DOCUMENT]: gatewayAuditPluginDocument(document),
+          [RUNTIME_AUDIT_CA_FILE]: managed.caBundle,
+          "destination.json": JSON.stringify({
+            url: managed.endpoint,
+            source: this.gatewayRuntimeAuditScope(revision).runtimeSource,
+          }),
+        },
       },
       ownership,
       namespace,
@@ -10400,6 +10436,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private async ensureGatewayRuntimeAudit(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
+    configurationName: string,
+    document?: string,
   ): Promise<void> {
     const target = this.runtimeAuditTargetInNamespace(namespace);
     if (target === undefined || this.options.runtime === undefined) {
@@ -10447,7 +10485,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     this.operationSignal().throwIfAborted();
     const { grant } = this.readGatewayRuntimeAuditCredential(revision, namespace, secret);
-    await this.reconcileGatewayRuntimeAuditTransport(revision, namespace, target);
+    const gatewayDocument =
+      document ??
+      (
+        await this.getOwned("ConfigMap", configurationName, namespace, {
+          namespaceId: revision.namespaceId,
+          agentId: revision.agentId,
+        })
+      )?.data?.[CONFIGURATION_DOCUMENT];
+    if (gatewayDocument === undefined) {
+      throw new ConfigurationFailure("The Gateway configuration for runtime audit is missing.");
+    }
+    await this.reconcileGatewayRuntimeAuditTransport(revision, namespace, target, gatewayDocument);
     this.operationSignal().throwIfAborted();
     await enrollment.register(grant);
   }
@@ -13843,8 +13892,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       revision: revision.revision,
       revisionId: revision.id,
       gatewayManagedMode: revision.gatewayManagedMode,
-      ...(revision.harness.id === "codex" && { auditSource: "codex" as const }),
-      ...(this.usesAuditedCodexServer(revision) && { auditCodexModelAttempts: true }),
       ...(harnessNamespace === undefined ? {} : { harnessNamespace }),
       usesGatewayPasswordEnv,
       usesWritableNativeAdminConfig: this.usesWritableNativeAdminConfig(nativeConfiguration),
@@ -15294,19 +15341,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return sandbox.implementation === "openshell" ? OPENSHELL_CODEX_LAUNCH : PROXY_CODEX_LAUNCH;
   }
 
-  private usesAuditedCodexServer(revision: AgentRevision): boolean {
-    if (
-      revision.harness.id !== "codex" ||
-      revision.harness.mode !== "dedicated" ||
-      this.gatewayRuntimeAuditTarget === undefined ||
-      this.options.runtime === undefined
-    ) {
-      return false;
-    }
-    const sandbox = this.sandboxDriverForRevision(revision);
-    return sandbox?.provisionHarness === undefined && sandbox?.harnessEndpoint === undefined;
-  }
-
   private codexLaunch(revision: AgentRevision, sandbox: SandboxDriver | undefined): CodexLaunch {
     const saved = this.savedRuntimeAdmission(revision);
     const prefix = CODEX_LAUNCH_PREFIXES.find((marker) => saved?.startsWith(marker));
@@ -15318,7 +15352,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return {
       providerOwned,
       protected: this.hasProtectedCodexAdmission(revision),
-      ...(this.usesAuditedCodexServer(revision) && { auditModelAttempts: true }),
       ...(prefix === PROXY_CODEX_LAUNCH && { explicitProxy: true }),
       ...(sandbox?.implementation === "strands-box" && { strandsBox: true }),
       ...(prefix === OPENSHELL_CODEX_LAUNCH && {
@@ -17316,19 +17349,42 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         ]
       : [];
     if (configuration !== undefined) {
-      volumes.push({
-        name: CONFIGURATION_VOLUME,
-        configMap: {
-          name: configuration.name,
-          items: [
-            { key: CONFIGURATION_DOCUMENT, path: CONFIGURATION_DOCUMENT },
-            ...(this.options.executionCluster?.caBundle === undefined
-              ? []
-              : [{ key: "execution-ca.pem", path: "execution-ca.pem" }]),
-          ],
-          optional: false,
-        },
-      });
+      const snapshot = {
+        name: configuration.name,
+        items: [
+          {
+            key: CONFIGURATION_DOCUMENT,
+            path: auditTarget === undefined ? CONFIGURATION_DOCUMENT : "revision/openclaw.json",
+          },
+          ...(this.options.executionCluster?.caBundle === undefined
+            ? []
+            : [{ key: "execution-ca.pem", path: "execution-ca.pem" }]),
+        ],
+        optional: false,
+      };
+      if (auditTarget !== undefined) {
+        const { config } = this.gatewayRuntimeAuditTransportNames(
+          required(ownership.agentId, "Gateway Agent ID"),
+          configuration.revisionId,
+        );
+        // Keep the revision snapshot and expose the plugin configuration at the normal read-only path.
+        volumes.push({
+          name: CONFIGURATION_VOLUME,
+          projected: {
+            sources: [
+              { configMap: snapshot },
+              {
+                configMap: {
+                  name: config,
+                  items: [{ key: CONFIGURATION_DOCUMENT, path: CONFIGURATION_DOCUMENT }],
+                },
+              },
+            ],
+          },
+        });
+      } else {
+        volumes.push({ name: CONFIGURATION_VOLUME, configMap: snapshot });
+      }
       volumeMounts.push({
         name: CONFIGURATION_VOLUME,
         mountPath: writableConfiguration
@@ -17688,29 +17744,15 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           mountPath: RUNTIME_AUDIT_DIRECTORY,
           readOnly: true,
         });
-        variables.push(
-          { name: "OPENCLAW_RUNTIME_AUDIT_URL", value: auditTarget.endpoint },
-          {
-            name: "OPENCLAW_RUNTIME_AUDIT_SOURCE",
-            value: configuration?.auditSource ?? "openclaw",
-          },
-          {
-            name: "OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH",
-            value: `${RUNTIME_AUDIT_DIRECTORY}/${RUNTIME_AUDIT_TOKEN_KEY}`,
-          },
-        );
-        if (role === "gateway" && configuration?.nativeWorkerProfile === undefined) {
-          variables.push({
-            name: "OPENCLAW_CODEX_PROVIDER_ATTEMPT_AUDIT",
-            value: configuration?.auditCodexModelAttempts && providerUrl === undefined ? "1" : "0",
-          });
-        }
         const { config } = this.gatewayRuntimeAuditTransportNames(agentId, auditRevisionId);
         volumes.push({
           name: RUNTIME_AUDIT_CA_VOLUME,
           configMap: {
             name: config,
-            items: [{ key: RUNTIME_AUDIT_CA_FILE, path: RUNTIME_AUDIT_CA_FILE }],
+            items: [
+              { key: RUNTIME_AUDIT_CA_FILE, path: RUNTIME_AUDIT_CA_FILE },
+              { key: "destination.json", path: "destination.json" },
+            ],
             optional: false,
           },
         });
@@ -17718,10 +17760,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           name: RUNTIME_AUDIT_CA_VOLUME,
           mountPath: RUNTIME_AUDIT_CA_DIRECTORY,
           readOnly: true,
-        });
-        variables.push({
-          name: "OPENCLAW_RUNTIME_AUDIT_CA_PATH",
-          value: `${RUNTIME_AUDIT_CA_DIRECTORY}/${RUNTIME_AUDIT_CA_FILE}`,
         });
       }
       if (role === "gateway") {

@@ -1,20 +1,24 @@
 # Runtime image recipe
 
-Build the OpenClaw Enterprise (OCE) runtime image for the local quickstart and integration tests.
+The runtime image provides three entrypoints.
 
-- The OpenClaw Gateway runs `node /app/openclaw.mjs`.
-- A dedicated OpenClaw node runs `node /app/openclaw.mjs connect --target-file <private-file> --ephemeral --pair-or-reconnect`.
-- Dedicated Codex runs `codex app-server`. Kubernetes Compute uses `/opt/oce/runtime/bin/codex-audit-app-server` for audited Codex revisions.
+- OpenClaw gateway: `node /app/openclaw.mjs`.
+- Dedicated OpenClaw node: `node /app/openclaw.mjs connect --target-file <private-file> --ephemeral --pair-or-reconnect`.
+- Dedicated Codex app-server: `codex app-server`.
 
 `NPM_CONFIG_UPDATE_NOTIFIER=false` disables npm's background version check.
 Package installation and explicit network requests still use the configured
 network policy.
 
+Managed Gateways load the [OCE plugin](managed-runtime-audit/) when [runtime audit](../../docs/guides/topics/audit-log.md#agent-runtime-activity) is on.
+
 The Dockerfile uses a verified public OpenClaw archive, its pinned package
 manager, frozen lockfile, and upstream Docker assembly. A registry mirror
 requires [separate Corepack and pnpm build secrets](../../docs/guides/deploy/production-installation.md#build-through-a-package-registry-mirror).
-Verify native startup and sandbox behavior with the image's seccomp rules.
-The Codex and Slack plugins come from the same source, whose
+Both Codex entrypoints use stock Codex `0.164.0`, unpatched;
+`stock-codex-0.164.0-dependency-pin.patch` holds the lockfile there and sets
+`CODEX_APP_SERVER_VERSION` back to it while OpenClaw bundles 0.169.0. Verify native startup and
+sandbox behavior with the image's seccomp rules. Codex and Slack come from the same source, whose
 restricted workspace-node commands and persistent device identity support
 split storage. That contract requires a newer source than `2026.9.5`.
 
@@ -96,12 +100,11 @@ enrollment, containment, workspace access, or model execution.
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`)          | `0.164.0`                                                                                                         |
 | Matrix crypto native library                          | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                         |
 
-The upstream package version is `2026.11.5`. In `/opt/oce/runtime`,
-`provenance.json` records the commit, archive, patch and lockfile hashes,
-package manager, plugins, architecture, and Codex package. After normalizing
-permissions, the build lists files, modes, hashes, and symlinks from
-`/app/node_modules/openclaw` in `contents.json`. It stores that file's SHA-256
-in `provenance.json#runtimeContentsSha256`.
+The upstream package version is `2026.11.5`. Identify the custom build by
+`/opt/oce/runtime/provenance.json`. It records
+the source commit, archive, patch and lockfile hashes, package manager, plugins,
+architecture, Codex package identity, and SHA-256 of `contents.json`. That file
+lists packaged files, modes, hashes, and symlinks after permission normalization.
 
 The final stage copies the assembled directory directly into the pinned
 `node:24.22.1-bookworm-slim` base with runtime libraries, Git/SSH, GitHub CLI,
@@ -198,26 +201,31 @@ terminating a worker during synchronous CommonJS-to-ESM loading can abort the
 Gateway and interrupt active turns. Native qualification must check Gateway
 shutdown and restart.
 
-The Codex CLI and bundled plugin share [stock Codex 0.164.0](https://github.com/openai/codex/releases/tag/rust-v0.164.0).
-`stock-codex-0.164.0-dependency-pin.patch` pins the lockfile and `CODEX_APP_SERVER_VERSION`.
-The frozen npm install selects `@openai/codex-linux-x64` or `@openai/codex-linux-arm64`
-for the target architecture. The audit App Server uses the same release with
-the [provider attempt patch](codex-audit/provider-attempts.patch).
-In `provenance.json`, `codex` records the package source, version, lockfile
-integrities, platform package, binary path, and digest. `codexAuditAppServer`
-records source, patch, binary, and `bwrap` digests.
+The Dedicated command and bundled plugin both resolve the same
+[Codex 0.164.0](https://github.com/openai/codex/releases/tag/rust-v0.164.0) installation.
+For multi-architecture builds, the frozen npm install selects the stock
+`@openai/codex-linux-x64` or `@openai/codex-linux-arm64` package for the target
+architecture. The image rebuilds `/opt/oce/runtime/contents.json` from
+`/app/node_modules/openclaw` and updates
+`/opt/oce/runtime/provenance.json#runtimeContentsSha256` after final permission
+normalization. Its `codex` provenance records the stock package source, version,
+lockfile integrities, platform package, and installed binary path and digest.
 The OpenClaw bridge forwards the repository-bound Agent's stock
 `allow_local_binding = true` and `mode = "full"` settings; the
 [networking contract](../../docs/reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
 defines their scope and remaining controls.
-When you update Codex, update the dependency pin, sandbox review, and compatibility assertions.
-Before merging, [verify both architectures](#verify-both-native-architectures)
-and [check local compatibility](#verify-the-local-image).
-To verify model availability, run a turn with the selected credential.
+Update the dependency pin, sandbox review, and compatibility assertions together
+when changing that version. The alpha pin requires successful native AMD64 and
+ARM64 image verification before merge. Run the compatibility
+check below against the resulting image. Provider model availability still
+requires a real model turn with the selected credential.
 
-For production, publish the image to a registry you control. Configure the
-Kubernetes Compute Driver with immutable `@sha256:` references. See
-[Build and publish production images](../../docs/guides/deploy/production-installation.md#build-and-publish-production-images).
+Production Kubernetes installations can use this recipe as a starting point,
+but must push the resulting image to an operator-controlled registry and
+configure the Kubernetes Compute Driver with immutable `@sha256:` image
+references. Follow [Build and publish production images](../../docs/guides/deploy/production-installation.md#build-and-publish-production-images)
+for the controller and runtime build commands, registry publishing, and digest
+configuration.
 
 ## Review the managed Google plugin pin
 

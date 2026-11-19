@@ -469,36 +469,56 @@ async function queryRevision(
 const runtimeRows = `FROM occ.audit_events
   WHERE kind = 'runtime_activity' AND details->>'agentRevisionId' = :'revision_id'`;
 
-export async function withRefusedTurnAdmission(
+export async function interruptRefusedObservation<T>(
   stack: InstalledAuditStack,
   revisionId: string,
-  send: () => Promise<unknown>,
+  send: () => Promise<T>,
+  restart: () => Promise<void>,
 ) {
-  const marker = `smoke_admission_${randomUUID().replaceAll("-", "")}`;
+  const marker = `smoke_audit_${randomUUID().replaceAll("-", "")}`;
   const query = (sql: string) => queryRevision(stack, revisionId, sql);
-  // Sequence increments survive rollback. Only an admission for this revision
-  // advances the sequence and fails the check. Existing rows remain valid.
+  // The rejected transaction leaves its audit ID in the disposable database log.
+  // Compare that ID with the API record after the Gateway restarts and retries.
+  const pattern = new RegExp(`${marker} (aud_[a-f0-9-]{36})`);
   try {
     await query(`
       BEGIN;
-      CREATE SEQUENCE occ.${marker};
-      GRANT USAGE ON SEQUENCE occ.${marker} TO occ_app;
-      ALTER TABLE occ.audit_events ADD CONSTRAINT ${marker}
-        CHECK (CASE WHEN kind = 'runtime_activity'
-          AND details->>'agentRevisionId' = :'revision_id'
-          AND action = 'openclaw.runtime.turn.admitted'
-          THEN nextval('occ.${marker}') = 0 ELSE true END) NOT VALID;
+      CREATE FUNCTION occ.${marker}() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION '% %', TG_NAME, NEW.id; END;
+      $$;
+      CREATE TRIGGER ${marker} BEFORE INSERT ON occ.audit_events FOR EACH ROW
+        WHEN (NEW.kind = 'runtime_activity'
+          AND NEW.details->>'agentRevisionId' = :'revision_id'
+          AND NEW.action = 'openclaw.runtime.turn.started')
+        EXECUTE FUNCTION occ.${marker}();
       COMMIT;
     `);
-    const result = await send();
-    const called = await query(`SELECT is_called FROM occ.${marker};`);
-    assert.equal(called, "t", `PostgreSQL never refused a turn admission for ${revisionId}.`);
-    return result;
+    const turn = await send();
+    const refusedId = await waitFor(
+      `PostgreSQL to refuse the turn observation on ${revisionId}`,
+      async () => {
+        const { stdout } = await kubectl(stack, [
+          "logs",
+          "-n",
+          stack.state.platformNamespace,
+          "statefulset/postgres",
+          "-c",
+          "postgres",
+          "--since=2m",
+        ]);
+        const id = pattern.exec(stdout)?.[1];
+        return { done: id !== undefined, value: id };
+      },
+      minute,
+    );
+    assert.ok(refusedId);
+    await restart();
+    return { turn, refusedId };
   } finally {
     await query(`
       BEGIN;
-      ALTER TABLE occ.audit_events DROP CONSTRAINT IF EXISTS ${marker};
-      DROP SEQUENCE IF EXISTS occ.${marker};
+      DROP TRIGGER IF EXISTS ${marker} ON occ.audit_events;
+      DROP FUNCTION IF EXISTS occ.${marker}();
       COMMIT;
     `);
   }

@@ -1000,7 +1000,7 @@ test(
           throw error;
         }
       }
-      async function checkAudit(revisionId, proof, minimumModelCalls) {
+      async function checkAudit(revisionId, proof) {
         if (readAudit === undefined) {
           return;
         }
@@ -1009,8 +1009,7 @@ test(
           revisionId,
           runtimeSource: "openclaw",
           sessionId: proof.session.sessionId,
-          model: configuration.models.providers.openai.models[0].id,
-          minimumModelCalls,
+          turnId: proof.runId,
         });
         await expectPersistedRuntimeAudit(chartStack, revisionId, await readAudit(), chartOptions);
       }
@@ -1023,7 +1022,7 @@ test(
           `dedicated OpenClaw audits a normal chat on the ${stage} revision`,
           async () => {
             const proof = await proveNativeTurn(revisionId, { plainChat: true, expectedNodeId });
-            await checkAudit(revisionId, proof, 1);
+            await checkAudit(revisionId, proof);
           },
         );
       }
@@ -1206,7 +1205,7 @@ test(
           "The initial native model turn and exec must run in the first revision's Harness Pod",
         );
         // The tool request and the reply after its result need separate model calls.
-        await checkAudit(initialRevisionId, firstNativeProof, 2);
+        await checkAudit(initialRevisionId, firstNativeProof);
       }
       if (readAudit === undefined) {
         await checkInitialFilesAndExec();
@@ -1318,7 +1317,7 @@ test(
         firstNativeProof.sessionFile,
         "The resumed exec must read the relative file written before redeployment",
       );
-      await checkAudit(replacement.id, replacementNativeProof, 2);
+      await checkAudit(replacement.id, replacementNativeProof);
     };
     // Distinct Agents and sources share only the already-ready Namespace. Keep
     // mutation/denial checks below the join and retain each real identity proof.

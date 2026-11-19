@@ -45,7 +45,6 @@ import {
   createCodexAgent,
   deployAgent,
   proveCodexAuditInterruptions,
-  proveRefusedTurnAdmission,
   readLogs,
   runFirstAgent,
   stopAgent,
@@ -231,12 +230,12 @@ async function smoke() {
     await auditStep(
       "chat-after-start",
       async () => {
-        await proveRefusedTurnAdmission(stack, embedded.agent, embeddedRevision);
         await chatWithAudit(stack, embedded.agent, embeddedRevision, readEmbeddedAudit, "openclaw");
+        await expectPersistedRuntimeAudit(stack, embeddedRevision, await readEmbeddedAudit());
       },
       async () => {
-        await proveRefusedTurnAdmission(stack, codex.agent, codexRevision);
         await chatCodexWithAudit(stack, codex.agent, codexRevision, readCodexAudit);
+        await expectPersistedRuntimeAudit(stack, codexRevision, await readCodexAudit());
       },
     );
     assert.deepEqual(await apiProcess(stack), servingApi, "the API restarted during enrollment");

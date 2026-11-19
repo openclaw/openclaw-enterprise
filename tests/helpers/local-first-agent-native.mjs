@@ -818,6 +818,7 @@ async function nativeWorkerProof({
         assert.ok(placement.environmentId && placement.remoteWorkspaceDir);
         const verified = {
           verified: true,
+          runId: sent.runId,
           profileId: required.id,
           providerId: required.providerId,
           environmentId: placement.environmentId,

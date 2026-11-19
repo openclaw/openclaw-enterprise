@@ -833,24 +833,9 @@ test("dedicated Gateway waits for its own audit grant and reuses the winning Sec
       assert.ok(!JSON.stringify(gatewayPod).includes(winningToken));
       assert.ok(!JSON.stringify(harnessPod).includes("runtime-audit"));
       const gatewayContainer = gatewayPod.containers[0];
-      assert.equal(
-        gatewayContainer.env.find(({ name }) => name === "OPENCLAW_RUNTIME_AUDIT_SOURCE")?.value,
-        grant.runtimeSource,
-      );
-      const modelAuditSelector = "OPENCLAW_CODEX_PROVIDER_ATTEMPT_AUDIT";
-      // Only the Gateway paired with this Compute-owned Codex Harness can accept its model receipts.
-      assert.equal(
-        gatewayContainer.env.find(({ name }) => name === modelAuditSelector)?.value,
-        "1",
-      );
-      assert.ok(!harnessPod.containers[0].env.some(({ name }) => name === modelAuditSelector));
-      assert.equal(
-        gatewayContainer.env.find(({ name }) => name === "OPENCLAW_RUNTIME_AUDIT_URL")?.value,
-        target.endpoint,
-      );
-      assert.equal(
-        gatewayContainer.env.find(({ name }) => name === "OPENCLAW_RUNTIME_AUDIT_CA_PATH")?.value,
-        "/etc/openclaw-runtime-audit/ca.pem",
+      assert.deepEqual(
+        gatewayContainer.volumeMounts.find(({ name }) => name === "runtime-audit"),
+        { name: "runtime-audit", mountPath: "/var/run/openclaw-runtime-audit", readOnly: true },
       );
       assert.match(
         gatewayContainer.env.find(({ name }) => name === "NODE_EXTRA_CA_CERTS")?.value,
@@ -860,7 +845,35 @@ test("dedicated Gateway waits for its own audit grant and reuses the winning Sec
         gatewayContainer.volumeMounts.find(({ name }) => name === "runtime-audit-ca"),
         { name: "runtime-audit-ca", mountPath: "/etc/openclaw-runtime-audit", readOnly: true },
       );
-      assert.deepEqual(gateway.read("ConfigMap", `${name}-ca`).data, { "ca.pem": target.caBundle });
+      const destination = gateway.read("ConfigMap", `${name}-ca`);
+      assert.equal(destination.immutable, true);
+      assert.equal(destination.data["ca.pem"], target.caBundle);
+      assert.deepEqual(JSON.parse(destination.data["destination.json"]), {
+        url: target.endpoint,
+        source: grant.runtimeSource,
+      });
+      const plugin = "oce-runtime-audit";
+      const { plugins } = JSON.parse(destination.data["openclaw.json"]);
+      assert.equal(plugins.entries[plugin].enabled, true);
+      assert.ok(plugins.load.paths.includes(`/app/oce-plugins/${plugin}`));
+      // Keep the admitted revision intact and expose the effective configuration read-only.
+      const configVolume = "openclaw-configuration";
+      assert.equal(
+        gatewayContainer.volumeMounts.find(({ name }) => name === configVolume).readOnly,
+        true,
+      );
+      const [snapshot, effective] = gatewayPod.volumes.find(({ name }) => name === configVolume)
+        .projected.sources;
+      const original = gateway.read("ConfigMap", snapshot.configMap.name).data["openclaw.json"];
+      assert.ok(!original.includes(plugin));
+      assert.equal(
+        snapshot.configMap.items.find(({ key }) => key === "openclaw.json").path,
+        "revision/openclaw.json",
+      );
+      assert.equal(effective.configMap.name, destination.metadata.name);
+      assert.deepEqual(effective.configMap.items, [
+        { key: "openclaw.json", path: "openclaw.json" },
+      ]);
       assert.deepEqual(gateway.read("NetworkPolicy", `allow-${name}`).spec, {
         podSelector: {
           matchLabels: {

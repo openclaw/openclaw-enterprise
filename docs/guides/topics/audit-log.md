@@ -93,39 +93,38 @@ If PostgreSQL loses confirmation of a result commit, `worker.error` reports
 ### Agent runtime activity
 
 Enable [Control Plane audit](../../reference/settings/production.md#control-plane-audit)
-on a Helm installation with managed Gateway routing. Deploy a revision
-with a bundled runtime image. The worker configures audit reporting during
-deployment. Use the usual steps to deploy an Agent or send a message.
+on a Helm installation with managed Gateway routing. Deploy the Agent revision
+and send a message as usual. Compute loads the OCE plugin in the Gateway and
+gives it a credential for that revision. The Agent audit API returns the
+saved records with `event` set to `runtime_activity`. If the Gateway
+configuration disables all plugins or denies `oce-runtime-audit`, the Gateway
+starts without runtime reporting.
 
-OCC saves these events in PostgreSQL. The Agent audit API returns them with
-`event` set to `runtime_activity`.
+| Action                                     | What the Gateway observed                                                                                             |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `openclaw.runtime.session.started`         | OpenClaw sent a session-start notification. The first HTTP chat can create a session without this notification.       |
+| `openclaw.runtime.session.ended`           | OpenClaw reported that it deleted the session.                                                                        |
+| `openclaw.runtime.turn.started`            | The Gateway observed the start of a run with an identified session.                                                   |
+| `openclaw.runtime.turn.completed`          | The Gateway observed a final result for the run. Read `details.outcome`.                                              |
+| `openclaw.runtime.model_call.started`      | Embedded OpenClaw reported that it started a model call.                                                              |
+| `openclaw.runtime.model_call.completed`    | Embedded OpenClaw reported the result of the call. The same `modelCallId` links the two records.                      |
+| `openclaw.runtime.model_response.observed` | The Codex connection reported a provider response. `responseIdHash` identifies the response without storing its text. |
 
-| Action                                  | When the runtime reports it                                                                  |
-| --------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `openclaw.runtime.session.started`      | OpenClaw creates a saved session, or Codex creates a thread for a session.                   |
-| `openclaw.runtime.session.ended`        | The Gateway deletes the session.                                                             |
-| `openclaw.runtime.turn.admitted`        | The runtime accepts a turn for execution. It must save this event before it starts the work. |
-| `openclaw.runtime.turn.started`         | The runtime starts work on the turn.                                                         |
-| `openclaw.runtime.turn.completed`       | The runtime observes the turn result. Read `details.outcome`.                                |
-| `openclaw.runtime.model_call.started`   | The runtime starts a call to the model.                                                      |
-| `openclaw.runtime.model_call.completed` | The runtime observes the result of that call. Read `details.outcome`.                        |
+Use `sessionId` and `turnId` together to find records for a run. The Gateway
+supplies the run ID. OpenClaw can reuse it during recovery. A missing result
+leaves the outcome unknown. The plugin saves metadata only.
 
-Use `sessionId` to find the turns in one conversation. Use `turnId` to find
-the model calls for one turn. Each new attempt has its own `modelCallId`.
-If you find a start without a completion, the result is unknown. These
-events omit prompts and model responses. OCC checks the revision identity
-for each write.
+Dedicated OpenClaw reports the turn through its Gateway. Its worker does not
+report individual model calls on that connection. Codex can return a response
+after one or more attempts. Its response record gives no count of failed or
+retried attempts. Embedded OpenClaw reports calls that it starts. A provider
+can retry within one call.
 
-If the Gateway restarts in the same Pod, it tries again to send pending
-observations. Deleting the Pod removes any observations that only that Pod
-held. Records already in PostgreSQL stay available through the API.
-
-The private listener serves Gateways in the control cluster. A dedicated
-OpenClaw worker reports its model calls through its Gateway.
-OpenClaw records each dispatch to a model and each retry that the runtime
-starts. Retries inside a provider SDK are part of the same dispatch.
-Dedicated Codex records foreground Responses attempts from the bundled App
-Server that Compute starts.
+Audit records describe work that the Gateway observed. Chat can continue when
+PostgreSQL cannot accept an event. The Gateway can keep up to 256 pending
+events on local disk and retry after a restart in the same Pod. When the queue
+is full, the plugin warns and omits new events. Deleting the Pod removes
+pending events. The control plane keeps events it already saved in PostgreSQL.
 
 ### Agent runtime logs
 
@@ -163,9 +162,9 @@ SELECT pg_total_relation_size('occ.audit_events') AS used_bytes,
 ```
 
 If `accepts_new_events` is `false`, the API can block covered requests or
-withhold audit results. A managed revision cannot start a covered turn if it
-cannot save the admission record. OpenClaw also requires a model start record
-before it sends the request. The worker cannot claim covered jobs or save the
+withhold audit results. Agent chat can continue. Its Gateway queues runtime
+events up to the limit in [Agent runtime activity](#agent-runtime-activity).
+The control plane worker cannot claim covered jobs or save the
 results of audited attempts until space is available. It reports
 `worker.error` with code `AUDIT_CAPACITY_EXCEEDED`. Preserve the existing
 records. Monitor free disk space separately. Reserve space for other tables,

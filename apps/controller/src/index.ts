@@ -1079,7 +1079,7 @@ function permissionDescription(
   operation?: OccApiRoute,
 ): string {
   if (operation?.operationId === "listAgentAuditEvents") {
-    return "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API request, worker, session, turn, and model call records from the preceding 24 hours.";
+    return "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API request, worker, session, turn, model call, and model response records from the preceding 24 hours.";
   }
   if (operation?.operationId === "recoverAgentFirstDeployment") {
     return "Requires deploy permission on the exact Agent and read permission on the reviewed Configuration named in the request path. These current permissions are checked for both receipts and misses. Recovery performs no admission or credential preparation.";
