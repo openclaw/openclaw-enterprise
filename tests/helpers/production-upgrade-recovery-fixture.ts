@@ -678,10 +678,6 @@ export function createRecoveryFixture(tools: RecoveryTools) {
     if (candidates) {
       const candidateValues = asRecord(JSON.parse(values));
       assert.ok(candidateValues);
-      candidateValues.api = {
-        ...asRecord(candidateValues.api),
-        channelDirectoryProxyUrl: "http://198.51.100.25:3128",
-      };
       const candidateInstallation = asRecord(JSON.parse(installation));
       const drivers = asRecord(candidateInstallation?.drivers);
       assert.ok(drivers);
@@ -738,6 +734,7 @@ export function createRecoveryFixture(tools: RecoveryTools) {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       PATH: `${bin}:${process.env.PATH}`,
+      KUBERC: "off",
       OCC_URL: "https://occ.example.invalid",
       OCC_SERVICE_KEY_FILE: join(directory, "key"),
     };

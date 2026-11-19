@@ -60,7 +60,7 @@ import { withSkillPolicyRestore } from "./skill-policy-restore.mjs";
 import { waitForWorkspaceReconnect } from "./gateway-workspace-readiness.ts";
 import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
 import { defaultUsersIAM } from "./default-users-iam.mjs";
-import { installManagedSlackProxyFixture } from "./managed-slack-proxy-k3d.mjs";
+import { installManagedChannelEgressFixture } from "./managed-channel-egress-k3d.ts";
 
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
 const kubernetesContext = process.env.OCC_TEST_KUBERNETES_CONTEXT;
@@ -238,6 +238,11 @@ async function createScopedController(context, identifier, platformNamespace, ku
         op: "add",
         path: "/rules/-",
         value: { apiGroups: ["batch"], resources: ["jobs"], verbs: ["get", "create", "delete"] },
+      },
+      {
+        op: "add",
+        path: "/rules/-",
+        value: { apiGroups: ["apps"], resources: ["replicasets"], verbs: ["get", "list"] },
       },
       {
         op: "add",
@@ -491,16 +496,6 @@ async function startInClusterControllers(
       workerOptions,
       workspaceGateway,
     });
-  const channels = apiConfiguration.drivers.compute.configuration.runtime?.channels;
-  if (channels !== undefined) {
-    assert.ok(channels.managedProxy, "Slack topology requires the chart-managed proxy");
-    // Admission validates Slack credentials before deployment. The chart grants
-    // only the API this proxy route; the worker keeps its existing isolation.
-    apiContainer.env.push(
-      { name: "OCC_CHANNEL_DIRECTORY_PROXY_URL", value: channels.proxyUrl },
-      { name: "OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST", value: channels.managedProxy.hostname },
-    );
-  }
   if (oidc !== undefined) {
     await configureInClusterOidc({
       oidc,
@@ -564,12 +559,13 @@ async function startInClusterControllers(
   let logError;
   let logStderr = "";
   let stopping = false;
+  let observationStopped = false;
   logs.once("error", (error) => {
     logError = error;
   });
   const logExit = new Promise((resolve) =>
     logs.once("close", (code) => {
-      if (!stopping) {
+      if (!stopping && !observationStopped) {
         logError ??= new Error(`Worker log stream exited unexpectedly (${code}): ${logStderr}`);
       }
       resolve();
@@ -586,12 +582,23 @@ async function startInClusterControllers(
         events.push(event);
       }
     } catch {
-      if (!stopping) {
+      if (!stopping && !observationStopped) {
         logError ??= new Error("Worker emitted an invalid structured log record.");
       }
     }
   });
   const worker = {
+    async stopObservation() {
+      if (logError !== undefined) {
+        throw logError;
+      }
+      if (!observationStopped) {
+        observationStopped = true;
+        logs.kill("SIGTERM");
+        await logExit;
+        lines.close();
+      }
+    },
     assertHealthy() {
       if (logError !== undefined) {
         throw logError;
@@ -721,6 +728,7 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
     "limits.cpu": "8",
     // Two embedded Agents plus one replacement Gateway may coexist during cutover.
     "limits.memory": `${3 * productionGatewayMemoryLimitGi}Gi`,
+    ...options.namespaceQuota,
   };
   configuration.drivers.compute.configuration.servicePrincipalCredentials.expirationSeconds = 3_600;
   if (options.gatewayRouting !== undefined) {
@@ -728,10 +736,7 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
     delete configuration.drivers.compute.configuration.network.gatewayClients;
   }
   if (slack !== undefined) {
-    configuration.drivers.compute.configuration.runtime.channels = {
-      proxyUrl: slack.proxyUrl,
-      managedProxy: slack.managedProxy,
-    };
+    configuration.drivers.compute.configuration.runtime.channelEgress = slack.channelEgress;
   }
   return configuration;
 }
@@ -1358,7 +1363,11 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     assert.ok(workspaceGateway, "Slack topology requires the production Gateway");
     Object.assign(
       slack,
-      await installManagedSlackProxyFixture({
+      await installManagedChannelEgressFixture({
+        ...(options.channelEgressCapacity === undefined
+          ? {}
+          : { listenerCapacity: options.channelEgressCapacity }),
+        controller,
         namespace: platformNamespace,
         controllerImage,
         workspaceGateway,
@@ -1378,6 +1387,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     workspaceGateway === undefined
       ? {}
       : {
+          namespaceQuota: options.namespaceQuota,
           gatewayRouting: workspaceGateway.routing,
           gatewayTrustedProxyCidrs: workspaceGateway.nativeOptions.gatewayAuth.trustedProxies,
         },
@@ -2402,6 +2412,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     adminRequest: (...args) => adminRequest(...args),
     request: (...args) => request(...args),
     restartControllerApi,
+    stopWorkerObservation: () => inClusterWorker?.stopObservation(),
     events,
     agent: topologyAgent,
     persistedAgent,

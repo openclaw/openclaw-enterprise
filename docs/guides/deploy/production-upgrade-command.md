@@ -1,17 +1,18 @@
 # Run production image upgrades with the CLI
 
-Run from the reviewed release checkout root so relative paths keep their meaning.
-Use `occ installation upgrade` to reuse the
-same target, image selection, and rendered installation files across planning,
-preflight, upgrade, and recovery. Complete the [production upgrade prerequisites](production-upgrade.md#prepare-the-release)
-first. The CLI uses the private profile adapter for `scripts/upgrade-production-images`; it keeps that
-command's authorization, compatibility, locking, evidence, and recovery checks.
-It upgrades selected images; the canonical command still refuses protected settings changes.
+Use `plan` to review the target and `apply` to deploy selected images. Run both
+from the reviewed release checkout root after completing the
+[production upgrade prerequisites](production-upgrade.md#prepare-the-release).
+Use the [chart procedure](production-upgrade.md#apply-other-installation-changes)
+for protected Installation settings.
 
-Create an owner-only JSON file outside the checkout. `installationDirectory`
-points to the protected directory containing the current `values.yaml` and
-`installation.yaml`, such as the output from the [installation profile renderer](installation-profiles.md#render-files).
-Relative file paths resolve from the operator profile's directory.
+Create an owner-only JSON profile outside the checkout. Set `context` to the
+name of a kubeconfig context whose cluster has an HTTPS `server` URL. Keep
+the kubeconfig in an owner-only regular file under a directory protected
+from other writers. Set `installationDirectory` to the protected directory that contains `values.yaml` and `installation.yaml`
+from the [installation profile renderer](installation-profiles.md#render-files).
+Relative paths inside the profile resolve from the profile's directory.
+Relative expert paths resolve from the release checkout.
 
 ```bash
 umask 077
@@ -31,88 +32,182 @@ cat > /secure/occ/upgrade.json <<'JSON'
 JSON
 ```
 
-Select one or more `controller`, `broker`, or `runtime` images. Keep credentials
-out of the profile. Set `OCC_URL`, `OCC_SERVICE_KEY_FILE`, and, if needed,
-`OCC_CA_BUNDLE` as described in the [upgrade guide](production-upgrade.md#prepare-the-release).
-The optional `occ` field names the matching CLI file; omit it to use `occ` on
-`PATH`.
+Select one or more `controller`, `broker`, or `runtime` images by digest. Keep
+credentials outside the profile. For image upgrades, set `OCC_URL`,
+`OCC_SERVICE_KEY_FILE`, and, if needed, `OCC_CA_BUNDLE` as described in the
+[upgrade guide](production-upgrade.md#prepare-the-release). The optional `occ`
+field selects the matching CLI file. Omit it to use `occ` on `PATH`.
 
-Review the offline plan. It validates the private profile, requires an image selection, and checks that the selected source revision matches the checkout. It shows the target and rendered directory without contacting the cluster or writing state. Image references, rendered files, credentials, and cluster access remain unverified.
+## Run the image upgrade
+
+`plan` checks `HELM_DRIVER` offline and requires it to be unset or `secret`.
+Apply, preflight, migration check, and resume read Helm release history from
+Kubernetes Secrets in the selected cluster. If your release uses SQL or
+ConfigMaps, stop here and keep the existing store. `status` reads local evidence.
+Preflight cleanup uses Kubernetes directly.
+
+Review the selected kubeconfig, context, release, and image digests:
 
 ```bash
 occ installation upgrade plan --profile /secure/occ/upgrade.json
 ```
 
-Before the first preflight, [bind the Installation Secret](production-upgrade.md#bind-the-installation-once)
-so it carries the required Installation ID annotation.
+The offline preview uses local `kubectl` to decode the kubeconfig. It checks
+the profile, local inputs, image digests, and checkout commit. It reports whether
+the selected context uses a CA file, an inline CA, or system roots. Profiled
+operations warn before dispatch if the context disables server certificate
+verification.
+
+Profiled operations refuse an `auth-provider` entry on the selected user.
+For live operations, including cleanup, use a token or client certificate
+when kubectl preferences are enabled, even if no kuberc file exists. The helper
+allows exec credential plugins only when your approved environment already
+disables preferences. If the helper refuses active kubectl preferences, follow
+your approved upgrade procedure and credential policy.
+
+When you select candidate files or other expert options, pass the same options
+after `--` to `plan` and `apply`. Review the deployment effects and image digests
+before you approve. Plan, apply, and preflight refuse changes to protected
+settings that they can detect in local files. Current cluster state and
+migration history remain unknown until the upgrade checks the cluster.
+
+Before the first `apply` or `preflight`,
+[bind the Installation Secret](production-upgrade.md#bind-the-installation-once).
+For an optional advance rehearsal, run:
 
 ```bash
-occ installation upgrade preflight --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/preflight-1
+occ installation upgrade preflight --profile /secure/occ/upgrade.json
 ```
 
-The canonical `--preflight-only` flag maps to the `preflight` operation. Change
-the operation, remove only `--preflight-only`, and retain every other original
-expert option after `--` so preflight checks the same candidate. When preflight
-tells you to omit that flag to deploy, use `upgrade` with fresh evidence and the
-same expert options.
-
-Check that preflight confirms candidate checks and cleanup. If it exits 1 and
-reports that the original worker is required, follow the
-[maintenance handoff](production-upgrade.md#rehearse-before-the-maintenance-window)
-to resolve that blocker before upgrading. Compare the candidate manifests, then
-enter the maintenance window. Freeze Helm changes and scaling automation, stop
-independent database writers, and settle Agent deployments.
-Keep reviewed optional arguments, such as candidate-file flags, identical for the upgrade.
+Confirm that preflight checks and cleanup succeeded. Preflight leaves writers
+running. If it reports that retained Agent revisions require their original
+worker and exits 1, resolve the blocker through the
+[maintenance handoff](production-upgrade.md#rehearse-before-the-maintenance-window).
+Follow that handoff before applying. Use fresh evidence and the same reviewed
+inputs and expert options for `apply`:
 
 ```bash
-occ installation upgrade --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/upgrade-1
+occ installation upgrade apply --profile /secure/occ/upgrade.json
 ```
 
-Use fresh evidence directories for preflight and upgrade. To inspect an attempt
-without contacting the cluster, use its original private evidence directory:
+`apply` reads the current profile and displays its plan again. When input and
+output are attached to a terminal, type `yes` to approve the upgrade. For
+automation or redirected output, pass `--auto-approve`. The upgrade checks
+startup and migration compatibility and confirms preflight cleanup before it
+stops writers.
+Profiled commands use a private kubeconfig copy for Kubernetes requests.
+Apply and resume recheck the kubeconfig and any explicit CA after approval.
+The CLI embeds the checked bytes from a CA file in the copy. Client credential
+references and commands use their original locations. Resume and cleanup bind
+the recorded kubeconfig and explicit CA bytes. When the context uses system roots,
+changes to the host trust store can affect later recovery commands.
+
+For each fresh `apply`, `preflight`, or `migration check`, the CLI prints
+`Evidence: PATH` and an `Inspect:` command before starting the operation.
+By default the CLI reserves a private directory beside the profile.
+The profile directory must be outside the checkout, belong to the current
+user, and allow writes only by that user. To choose a location, pass a fresh
+`--evidence-dir` under an existing writable directory you own outside the
+checkout. Keep the evidence and any sibling dispatch journal at their original
+paths. After completion, [verify the release](production-upgrade.md#verify-the-release).
+
+### Continue after a separate database migration
+
+If `apply` reports a separate database migration pause and exits with status
+**3**, the API and worker are stopped. Helm submission waits for verified
+migration history. Keep the maintenance window active, other writers and
+autoscalers fenced, and the original evidence in place.
+
+[Deploy and verify the database](separate-database-upgrade.md#deploy-the-database)
+with the selected controller image and the dedicated migrator credential.
+Require a successful `--require-current` check that reports `migration.checked`
+with history `completed`. After the Jobs and their Pods are gone, use
+[the original run to resume](#recover-an-interrupted-run). Repeat the original
+expert options after `--` and add `--migration-history-checked`.
+
+## Check database migration compatibility
+
+Use the profile's controller digest to check the installed database against
+reviewed Helm values, including values for a chart-owned configuration change.
 
 ```bash
-occ installation upgrade status --evidence-dir /secure/occ/upgrade-1
+occ installation upgrade migration check \
+  --profile /secure/occ/upgrade.json \
+  -- --candidate-values /secure/occ/candidate-values.yaml
 ```
 
-Status reports historical observations from two passes over the same markers.
-If the observations differ, run `status` again. For standalone preflight, it
-reports recorded candidate checks and any original-worker blocker. Use the
-[maintenance handoff](production-upgrade.md#rehearse-before-the-maintenance-window) to resolve it
-and run the upgrade with fresh evidence. Standalone preflight provides no
-authority to stop writers or resume.
+Omit `--candidate-values` to render the profile's `values.yaml`. The command
+reads the deployed Helm revision, creates and deletes one migration Job, and
+reads its Pod and logs using Kubernetes access. It needs no OCC service key or
+`installation.yaml`. The candidate must preserve the deployed initializer's
+migrator Secret reference, mounted CA, and connection settings.
+The Job uses the installed NetworkPolicy; it does not validate candidate egress rules.
 
-After an interruption, reconcile the original operation and preserve its
-evidence and dispatch journal. Helm intent and lock markers require independent
-confirmation of the Helm outcome and whether a process is running. Use the same
-profile, checkout, and upgrade evidence directory to resume:
+Hold Helm and database credential changes while the check runs.
+`Migration check passed` reports the recognized history after the Job and Pod
+are gone. To apply SQL during maintenance, follow the
+[separate migration procedure](separate-database-upgrade.md). If the Job create
+outcome is unknown, preserve the original evidence and reconcile the create
+before starting another check. Use the [preflight cleanup procedure](production-preflight-cleanup.md)
+for recorded resources.
+
+## Recover an interrupted run
+
+Run the printed `Inspect:` command or substitute the path from `Evidence:`
+to inspect the recorded state without contacting the cluster:
 
 ```bash
-occ installation upgrade resume --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/upgrade-1
+occ installation upgrade status /path/to/original/evidence
 ```
 
-If the original upgrade used expert options after `--`, repeat all of them unchanged
-on resume. When translating a canonical `--resume` instruction, change the operation
-to `resume`, remove only `--resume`, and retain every other option and applicable
-recovery attestation. If the command requests `--migration-history-checked`, finish
-its migration-history check first. The example below assumes the original upgrade
-had no expert options; otherwise include them after `--` before the attestation:
+Status compares two reads of local markers. Run it again if the markers changed
+during inspection. For standalone preflight, it reports recorded startup checks
+and any original-worker blocker. A startup marker alone leaves the final
+preflight outcome unknown. Standalone preflight exits without preparing an
+upgrade. Resolve any blocker and use fresh evidence for `apply`.
+
+Treat missing evidence and unresolved Helm intent as uncertain outcomes. A lock
+marker can outlive its process. Check the original process and reconcile its
+submitted requests before another write. Resume requires the original prepared
+upgrade evidence. Use the same checkout, profile, and evidence path:
 
 ```bash
-occ installation upgrade resume --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/upgrade-1 -- --migration-history-checked
+occ installation upgrade resume /path/to/original/evidence --profile /secure/occ/upgrade.json
 ```
 
-For interrupted preflight cleanup, follow the [cleanup procedure](production-preflight-cleanup.md)
-and supply its attestations explicitly:
+Resume previews the selected trust mode and the writes that may still occur.
+It can write the recorded local `installation.yaml`, replace data in the live
+mutable Installation Secret, or switch the Helm release to the recorded
+immutable Installation Secret. Treat those effects as possible even when the
+local files already match the candidate.
+
+Resume asks for `yes` at a terminal. In automation, pass `--auto-approve`.
+Append the original expert options and required attestations after `--`.
+If the native diagnostic suggests `--resume`, use the `resume` subcommand.
+Complete the required checks before passing `--recover-helm`,
+`--recovery-reviewed`, or `--migration-history-checked` after `--`.
+`apply` refuses those options before prompting or creating evidence.
+
+Follow the [preflight cleanup procedure](production-preflight-cleanup.md) to
+clean up resources from an interrupted preflight:
 
 ```bash
-occ installation upgrade cleanup-preflight --profile /secure/occ/upgrade.json --evidence-dir /secure/occ/preflight-1 -- --previous-process-settled --evidence-unrestored
+occ installation upgrade cleanup-preflight /path/to/original/evidence \
+  --profile /secure/occ/upgrade.json \
+  -- --previous-process-settled --evidence-unrestored
 ```
 
-Pass other canonical options after `--`, for example `-- --timeout-seconds 1200`.
-Those options cannot replace the profile's target, source, image selection, or
-operation. For an unprofiled invocation or all supported options, run
-`scripts/upgrade-production-images --help`. A successful preflight does not
-authorize a resume or prove a live workload works; complete the [release verification](production-upgrade.md#verify-the-release).
+Pass expert options after `--`, such as `-- --timeout-seconds 1200`. These
+options cannot override the profile's target, source, or image selection or
+change the selected operation. Run `scripts/upgrade-production-images --help`
+for the native script's options.
 
-Protected Installation configuration is a separate [chart-owned operation](production-upgrade.md#apply-other-installation-changes). `occ installation upgrade config apply` and `config rollback` direct you there and exit without writes. A failed Helm operation can leave an earlier Secret change in effect; inspect recorded effects and use the chart operation to restore the original configuration. Before returning to an earlier controller, check compatibility with committed database and authentication state. Use [stopped authentication maintenance](auth-maintenance.md) for authentication changes.
+Protected Installation configuration uses the
+[chart operation](production-upgrade.md#apply-other-installation-changes).
+`occ installation upgrade config apply` and `config rollback` direct you to
+that procedure. A failed or interrupted Helm operation can leave an earlier
+Installation Secret change in effect. Inspect the recorded effects before
+recovery. Before returning to an earlier controller, check its compatibility
+with committed database and authentication state.
+Follow [stopped authentication maintenance](auth-maintenance.md) for
+authentication changes.

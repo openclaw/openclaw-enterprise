@@ -12,15 +12,22 @@
     "postgres": true,
     "k3d": true,
     "requiresPreparedStateForFile": true,
-    "selfProvisionedFiles": ["tests/integration/staged-signin-cleanup-real.test.ts"]
+    "selfProvisionedFiles": [
+      "tests/integration/staged-signin-cleanup-real.test.ts",
+      "tests/integration/production-upgrade-command.test.ts"
+    ]
   },
   "fileConcurrency": 2,
   "parallelFiles": [
     "tests/integration/kubernetes-compute-real.test.ts",
     "tests/integration/kubernetes-plugin-status-real.test.ts",
-    "tests/integration/installation-handoff-k3d-real.test.ts"
+    "tests/integration/installation-handoff-k3d-real.test.ts",
+    "tests/integration/production-upgrade-command.test.ts"
   ],
   "files": [
+    {
+      "path": "tests/integration/production-upgrade-command.test.ts"
+    },
     {
       "path": "tests/integration/kubernetes-plugin-status-real.test.ts",
       "expectedTests": [

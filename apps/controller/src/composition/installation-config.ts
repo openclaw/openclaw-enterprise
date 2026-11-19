@@ -1,3 +1,5 @@
+import type { ChannelProviderDriver } from "../drivers/channel/routing.ts";
+import { SlackChannelDriver } from "../drivers/channel/slack.ts";
 import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
 import type { NamespaceLifecycleBinding } from "@openclaw-enterprise/occ";
 import {
@@ -231,6 +233,7 @@ export type ServiceAccountDriverFactory = (
 ) => void;
 
 export interface InstallationRuntimeDrivers {
+  readonly channelDrivers?: readonly ChannelProviderDriver[];
   readonly defaultPresets?: readonly PresetDraftDefinition[];
   /** Bundled defaults replaced by a same-named `presets.files` entry; startup warns once each. */
   readonly shadowedDefaultPresets?: readonly ShadowedDefaultPreset[];
@@ -1591,6 +1594,24 @@ async function composeInstallationConfiguration(
   // This check admits an implementation to try installation. Compute still verifies its
   // actual recipient and enforcement before release or the first eligible material read.
   repositoryGitDriver?.requireRepositoryGitTransport();
+  const channelOptions = (compute.configuration as unknown as KubernetesComputeDriverOptions)
+    .runtime?.channelEgress;
+  const channelHost =
+    channelOptions === undefined
+      ? undefined
+      : `${channelOptions.serviceName}.${channelOptions.envoyNamespace}.svc`;
+  const channelDrivers: readonly ChannelProviderDriver[] = Object.freeze([
+    {
+      provider: "slack",
+      driver: new SlackChannelDriver(
+        globalThis.fetch,
+        channelOptions === undefined
+          ? undefined
+          : `http://${channelHost}:${channelOptions.occListenerPort}`,
+        { expectProxy: true, managedProxyHosts: channelHost === undefined ? [] : [channelHost] },
+      ),
+    },
+  ]);
   let computeDriver: ComputeDriver;
   if (computePackage !== undefined) {
     computeDriver = createExternalDriver(
@@ -1614,6 +1635,7 @@ async function composeInstallationConfiguration(
         id: compute.id,
         implementation: compute.implementation,
         lifecycleDrivers: [configurationDriver],
+        channelDrivers,
         ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
         ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
         // Both built-ins above received this exact Backend; injected and package Sandboxes opt out.
@@ -1673,6 +1695,7 @@ async function composeInstallationConfiguration(
   }
   const { repositoryPolicy: _repositoryPolicy, ...repositoryServices } = repositoryRuntime ?? {};
   return Object.freeze({
+    channelDrivers,
     defaultPresets: Object.freeze(defaultPresets),
     shadowedDefaultPresets: Object.freeze(shadowedDefaultPresets),
     bundledPresetVersions,
