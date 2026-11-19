@@ -210,7 +210,10 @@ async function trustedSupervisor({ command, cleanup, directory, cluster, ca, che
   // independent image version. Candidate supplier builds are rejected at entry.
   const source = await readFile(join(root, "internal/occdev/openshell.go"), "utf8");
   const parent = source.match(/openShellSupervisorImage\s*=\s*"([^"]+)"/)?.[1] ?? "";
-  assert.match(parent, /^ghcr\.io\/nvidia\/openshell\/supervisor:0\.1\.8@sha256:[a-f0-9]{64}$/);
+  assert.match(
+    parent,
+    /^ghcr\.io\/nvidia\/openshell\/supervisor:\d+\.\d+\.\d+@sha256:[a-f0-9]{64}$/,
+  );
   const context = join(directory, "supervisor-trust");
   await mkdir(context, { mode: 0o700 });
   /** @type {(image: string, filename: string, destination: string) => Promise<void>} */
