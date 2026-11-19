@@ -103,7 +103,8 @@ defines these checks under the existing RFC-0023 protection levels.
 
 ### Database entities
 
-No changes.
+The Worker and State owners still need to agree how to persist and recover the identity of a held
+startup. This proposal leaves the storage representation open.
 
 ### Driver contracts
 
