@@ -7,6 +7,7 @@ import { setTimeout } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { isOpenShellInstallerFile } from "../../scripts/ci/openshell-full-integration.ts";
 import {
   createRunnerFixture,
   laneArgs,
@@ -291,6 +292,34 @@ test(
     assert.ifError(green.error);
     assert.equal(green.status, 0, green.stderr);
     assert.deepEqual(commands(green.stderr), []);
+
+    // Reuse the released failing file after all installers: the split moves it to policy slot 1.
+    const canonical = JSON.parse(
+      await readFile(
+        new URL("../../scripts/ci/test-suites/openshell.json", import.meta.url),
+        "utf8",
+      ),
+    ) as { files: { path: string }[] };
+    const installers = canonical.files
+      .filter(({ path }) => isOpenShellInstallerFile(path))
+      .map(({ path }) => ({ path }));
+    await writeRunnerManifest(root, {
+      lanes: { openshell: { files: [...installers, { path: first }] } },
+      groups: { full: ["openshell"] },
+    });
+    const splitResults = join(root, "results/split.json");
+    const split = await runRunnerAsync(
+      laneArgs(root, "openshell-policy", "state/split.jsonl", splitResults),
+      { ...env, OCC_CI_SUITE_VIEW: "full-integration" },
+    );
+    assert.ifError(split.error);
+    assert.equal(split.status, 1, split.stderr);
+    const splitSummary = await readSummary(splitResults);
+    assert.equal(splitSummary.counts.failed, 1);
+    const failedPolicy = onlyFile(splitSummary);
+    assert.equal(failedPolicy.path, first);
+    assert.equal(failedPolicy.cleanup.status, "passed");
+    assert.deepEqual(commands(split.stderr), [failureCommand, `${ordinalHint} UNKNOWN.`]);
   },
 );
 
