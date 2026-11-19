@@ -211,16 +211,24 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
   await assert.rejects(createRevision(newestRevision), ScopeViolationError);
   const admittedDenyAll = admitRepositoryNetworkPolicy([], []);
   assert.ok(admittedDenyAll);
-  await createRevision({
+
+  // Matching grants and identity still require the current saved policy version.
+  const staleVersionRevision = {
     ...newestRevision,
     sandboxPolicy: {
       ...baseSnapshot,
-      version: denyAll.version,
+      version: desired.version,
       repositoryNetworkPolicy: admittedDenyAll,
     },
+  };
+  await assert.rejects(createRevision(staleVersionRevision), ScopeViolationError);
+  assert.equal(await readRevision(newestRevision.id), undefined);
+
+  await createRevision({
+    ...staleVersionRevision,
+    sandboxPolicy: { ...staleVersionRevision.sandboxPolicy, version: denyAll.version },
   });
-  assert.deepEqual(
-    (await readRevision(newestRevision.id))?.sandboxPolicy?.repositoryNetworkPolicy,
-    admittedDenyAll,
-  );
+  const savedSnapshot = (await readRevision(newestRevision.id))?.sandboxPolicy;
+  assert.equal(savedSnapshot?.version, denyAll.version);
+  assert.deepEqual(savedSnapshot?.repositoryNetworkPolicy, admittedDenyAll);
 }
