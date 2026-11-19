@@ -900,15 +900,10 @@ test(
       },
     });
     const occPod = (podNamespace: string, component: string) =>
-      makePod(
-        podNamespace,
-        `openclaw-enterprise-${component}-${fixture.suffix}`,
-        component,
-        {
-          "app.kubernetes.io/name": "openclaw-enterprise",
-          "app.kubernetes.io/component": component,
-        },
-      );
+      makePod(podNamespace, `openclaw-enterprise-${component}-${fixture.suffix}`, component, {
+        "app.kubernetes.io/name": "openclaw-enterprise",
+        "app.kubernetes.io/component": component,
+      });
     const workerPod = occPod(namespace, "worker");
     const apiPod = occPod(namespace, "api");
     const forgedWorkerPod = occPod(foreignNamespace, "worker");
