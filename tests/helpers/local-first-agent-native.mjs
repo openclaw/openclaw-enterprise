@@ -302,6 +302,14 @@ export function nativeWorkerTurnObservation({ outcome, error, messages, runId, h
         "worker-transport",
         /Worker tunnel does not support worker turns|worker transport limit|Worker node.*lost|worker.*disconnected/i,
       ],
+      [
+        "worker-provider-replay",
+        /^(?:Error: )?Cloud worker could not preserve authoritative provider replay\. Stop or reclaim the cloud worker, then retry locally\./,
+      ],
+      [
+        "worker-transcript-settlement",
+        /^(?:Error: )?Cloud worker (?:result does not match its committed transcript acknowledgement \(|completed without a terminal assistant transcript message$)/,
+      ],
       ["http-unauthorized", /(?:^|\bHTTP(?: status)? )401\b/i],
       ["http-forbidden", /(?:^|\bHTTP(?: status)? )403\b/i],
       ["http-rate-limit", /(?:^|\bHTTP(?: status)? )429\b/i],
@@ -354,6 +362,46 @@ export function nativeWorkerTurnObservation({ outcome, error, messages, runId, h
   };
 }
 
+// The Gateway remaps events to the chat source's run ID. Keep only owner-published
+// facts for that run and session, and disregard retryable attempt errors.
+export function nativeWorkerTurnEventObservation(event, selectedTurn) {
+  const payload = event?.payload;
+  if (
+    !selectedTurn ||
+    !payload ||
+    payload.runId !== selectedTurn.runId ||
+    payload.sessionKey !== selectedTurn.key
+  ) {
+    return undefined;
+  }
+  if (event.event === "chat" && payload.state === "status") {
+    const phase = payload.phase;
+    return [
+      "provisioning_environment",
+      "preparing_workspace",
+      "preparing_context",
+      "starting_model",
+    ].includes(phase)
+      ? { turnStartupPhase: phase }
+      : undefined;
+  }
+  const data = payload.data;
+  if (
+    event.event !== "agent" ||
+    payload.stream !== "lifecycle" ||
+    data?.executionSettled !== true ||
+    (data.phase !== "end" && data.phase !== "error")
+  ) {
+    return undefined;
+  }
+  const terminal = nativeWorkerTurnObservation({ outcome: data });
+  return {
+    turnLifecyclePhase: data.phase,
+    turnLifecycleError: terminal.turnError,
+    providerStarted: terminal.providerStarted,
+  };
+}
+
 // Keep reads within one budget and project the current session owner when a turn moved it.
 // Like the projector, this collector is serialized into the trusted controller.
 export async function collectNativeWorkerFailure({
@@ -364,6 +412,7 @@ export async function collectNativeWorkerFailure({
   elapsedMs,
   runId,
   outcome,
+  turnEvents = {},
   error,
   placementReadResponse = false,
 }) {
@@ -453,15 +502,23 @@ export async function collectNativeWorkerFailure({
   if (history?.status === "fulfilled") {
     historyLookup = Array.isArray(history.value?.messages) ? "found" : "invalid";
   }
+  const turn = nativeWorkerTurnObservation({
+    outcome,
+    error,
+    runId,
+    messages: history?.value?.messages,
+    historyLookup,
+  });
+  // A queued observation can predate the settled lifecycle event.
+  const providerStarted =
+    outcome?.status === "pending"
+      ? (turnEvents.providerStarted ?? turn.providerStarted)
+      : (turn.providerStarted ?? turnEvents.providerStarted);
   return {
     ...worker,
-    ...nativeWorkerTurnObservation({
-      outcome,
-      error,
-      runId,
-      messages: history?.value?.messages,
-      historyLookup,
-    }),
+    ...turn,
+    ...turnEvents,
+    providerStarted,
   };
 }
 
@@ -522,7 +579,9 @@ async function nativeWorkerProof({
   let collectFailure;
   let lastPlacement;
   let runId;
+  let selectedTurn;
   let outcome;
+  const turnEvents = {};
   let historyPredicates;
   let historySignal;
   let placementReadRetries = 0;
@@ -556,6 +615,9 @@ async function nativeWorkerProof({
       edgeAuthHeaders: { "x-api-key": apiKey },
       onHelloOk: connected.resolve,
       onConnectError: connected.reject,
+      onEvent: (event) => {
+        Object.assign(turnEvents, nativeWorkerTurnEventObservation(event, selectedTurn));
+      },
     });
     const call = (method, params) => client.request(method, params, { signal, timeoutMs: 30_000 });
     helloTimer = setTimeout(() => connected.reject(new Error("Gateway hello timeout")), 15_000);
@@ -593,6 +655,7 @@ async function nativeWorkerProof({
           elapsedMs: Math.round(performance.now() - proofStarted),
           runId,
           outcome,
+          turnEvents: runId === selectedTurn?.runId ? turnEvents : undefined,
           error,
           placementReadResponse:
             stage === "required-placement-describe-rejected" && proofRpcResponse,
@@ -677,10 +740,11 @@ async function nativeWorkerProof({
     });
     const command = `node -e '${program.replaceAll("'", "'\\''")}'`;
     stage = "send";
+    selectedTurn = { key, runId: randomUUID() };
     const sent = await call("sessions.send", {
       key,
       agentId: "main",
-      idempotencyKey: randomUUID(),
+      idempotencyKey: selectedTurn.runId,
       message: `Use exec to run exactly this command: ${command}. After exec succeeds, reply with exactly ${marker}. Do not print environment values or credentials.`,
     });
     assert.ok(sent.runId);
@@ -688,7 +752,9 @@ async function nativeWorkerProof({
     assert.ok(!["error", "timeout"].includes(sent.status));
     stage = "model-and-exec";
     while (!signal.aborted) {
-      outcome = await call("agent.wait", { runId: sent.runId, timeoutMs: 3_000 });
+      const observation = await call("agent.wait", { runId, timeoutMs: 3_000 });
+      assert.equal(observation.runId, runId);
+      outcome = observation;
       if (["ok", "error"].includes(outcome.status) || outcome.endedAt !== undefined) {
         break;
       }
@@ -794,7 +860,7 @@ export async function assertNativeWorkerProofInController(
   delete safeEnvironment.OPENAI_API_KEY_FILE;
   delete safeEnvironment.CODEX_ACCESS_TOKEN;
   delete safeEnvironment.CODEX_ACCESS_TOKEN_FILE;
-  const input = `const nativePlacementReadRetryable = (${nativePlacementReadRetryable.toString()});\nconst nativeWorkerProofProgram = (${nativeWorkerProofProgram.toString()});\nconst nativeWorkerHistoryEvidence = (${nativeWorkerHistoryEvidence.toString()});\nconst nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
+  const input = `const nativePlacementReadRetryable = (${nativePlacementReadRetryable.toString()});\nconst nativeWorkerProofProgram = (${nativeWorkerProofProgram.toString()});\nconst nativeWorkerHistoryEvidence = (${nativeWorkerHistoryEvidence.toString()});\nconst nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst nativeWorkerTurnEventObservation = (${nativeWorkerTurnEventObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
   const command = state.deploymentMode === "k3d" ? "kubectl" : state.containerEngine;
   const args =
     state.deploymentMode === "k3d"

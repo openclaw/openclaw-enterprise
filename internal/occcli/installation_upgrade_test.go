@@ -133,6 +133,14 @@ func TestInstallationUpgradeCLIIntegratesProfileAndCanonicalOwner(t *testing.T) 
 	if !errors.As(err, &status) || status.Code != 1 || !strings.Contains(diagnostic, "checkout commit does not match") {
 		t.Fatalf("migration check diagnostic = %q, error = %v", diagnostic, err)
 	}
+	_, _, err = executeUpgrade("migration", "apply", "--profile", profile, "--evidence-dir", target)
+	if err == nil || !strings.Contains(err.Error(), "unknown flag: --evidence-dir") {
+		t.Fatalf("migration apply accepted a flag for the original RUN: %v", err)
+	}
+	_, diagnostic, err = executeUpgrade("migration", "apply", target, "--profile", profile, "--auto-approve")
+	if !errors.As(err, &status) || status.Code != 2 || !strings.Contains(diagnostic, "checkout commit does not match") {
+		t.Fatalf("migration apply source diagnostic = %q, error = %v", diagnostic, err)
+	}
 	_, diagnostic, err = executeUpgrade("apply", "--profile", profile, "--evidence-dir", target, "--auto-approve", "--", "--candidate-values", "private-candidate", "--preflight-only")
 	if !errors.As(err, &status) || status.Code != 2 || !strings.Contains(diagnostic, "retain every other original expert option") || strings.Contains(diagnostic, "private-candidate") {
 		t.Fatalf("expert option diagnostic = %q, error = %v", diagnostic, err)

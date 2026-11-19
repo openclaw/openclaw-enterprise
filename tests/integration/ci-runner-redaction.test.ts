@@ -410,8 +410,158 @@ test("the redactor removes structured, multi-word and short secret values", asyn
     ["secretName: occ-gateway-password", null],
     ["tokenCount: 3", null],
     ["design=compact", null],
+    ["signal: 'SIGTERM'", null],
     ["SyntaxError: Unexpected token '}'", null],
   ] satisfies [line: string, expected: string | null][]) {
     assert.equal(redactLogLine(line, secrets, 1_000), expected ?? line, line);
   }
+});
+
+test("a value the input limit cuts and a key with a suffix stay out of every surface", async () => {
+  const {
+    failureInputLimit,
+    failureSecrets,
+    redactFailure,
+    redactFailureDetail,
+    redactLogLine,
+    redactOutputLine,
+    redactOutputLines,
+  } = await import("../../scripts/ci/failure-redaction.ts");
+  const secrets = failureSecrets([{}]);
+  const marker = "[redacted credential-bearing line]";
+  // Every surface a failure's text reaches: results and the job log, the diagnostics
+  // report's message and stack and its output entries, and a container log line.
+  const surfaces = (text: string, using = secrets) =>
+    JSON.stringify([
+      redactFailure({ message: text, frame: text }, using, "/repo"),
+      redactFailureDetail({ message: text, stack: text }, using, "/repo"),
+      redactOutputLines([`diagnostic: ${text}`.slice(0, failureInputLimit)], using, "/repo", 1_000),
+      redactLogLine(text, using, failureInputLimit),
+    ]);
+  // Synthetic values only. A value is shown when any 8 characters of it are.
+  const assertAbsent = (shown: string, value: string, label: string) => {
+    for (let index = 0; index + 8 <= value.length; index += 1) {
+      const piece = value.slice(index, index + 8);
+      assert(!shown.includes(piece), `${label} shows ${piece}`);
+    }
+  };
+  const words = (length: number) =>
+    "log line ok fine\n".repeat(Math.ceil(length / 17)).slice(0, length);
+  const header = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9";
+  const payload = `eyJ${"c3ludGhldGljUGF5bG9hZA".repeat(40)}`;
+  const jwt = `${header}.${payload}.${"c3ludGhldGljU2ln".repeat(20)}`;
+  const password = "c3ludGhldGljUGFzcw".repeat(40);
+
+  // The reporter's cut at the input limit lands inside a JWT before its second dot, or
+  // inside a URL password before its "@", so no rule matches the rest, which is longer
+  // than the dropped tail.
+  for (const [value, inside] of [
+    [jwt, 300],
+    [jwt, 600],
+    [jwt, header.length + payload.length],
+    [
+      syntheticCredentialUrl({
+        protocol: "redis",
+        username: "default",
+        password,
+        host: "cache",
+        port: 6379,
+      }),
+      500,
+    ],
+    [`{"jwt":"${jwt}"}`, 700],
+  ] satisfies [string, number][]) {
+    const text = `${words(failureInputLimit - inside - 1)} ${value}`.slice(0, failureInputLimit);
+    assertAbsent(surfaces(text), value.slice(0, inside), `cut ${inside} into ${value.slice(0, 8)}`);
+  }
+  // Whole JWTs before the cut shrink the text, so the 600 and 1,000 character windows reach it.
+  const long = `${header}.eyJ${"c3ludGhldGljTG9uZw".repeat(200)}`;
+  const shrunk = `${Array.from({ length: 12 }, () => jwt).join(" ")} ${long}`;
+  assertAbsent(surfaces(shrunk.slice(0, failureInputLimit)), long.slice(0, 1_400), "after 12 JWTs");
+  // At the limit and one over (the redaction's own cut), not one under.
+  for (const length of [failureInputLimit, failureInputLimit + 1]) {
+    const line = `${words(failureInputLimit - 601)} ${jwt}`.slice(0, length);
+    assertAbsent(redactLogLine(line, secrets, 20_000), jwt.slice(0, 600), `length ${length}`);
+  }
+  const under = words(failureInputLimit - 2 - jwt.length);
+  assert.equal(redactLogLine(`${under} ${jwt}`, secrets, 20_000), `${under} [redacted]`);
+  // A cut text of ordinary words keeps what it kept: everything but the last 256 characters.
+  const plain = words(failureInputLimit);
+  assert.equal(
+    redactFailureDetail({ message: plain }, secrets, "/repo")?.message,
+    plain.slice(0, -256),
+  );
+  assert.equal(
+    redactFailure({ message: plain }, secrets, "/repo").message,
+    `${plain.slice(0, 600)}... [truncated]`,
+  );
+  // The credential-line check still sees the cut run: a secret's marker there drops the line.
+  const named = failureSecrets([{ GITHUB_APP_PRIVATE_KEY: "fixturePrivateValue0" }]);
+  const lead = words(failureInputLimit - 1_600);
+  assert.equal(
+    redactFailureDetail(
+      { message: `${lead} ${"x".repeat(500)}fixturePrivateValue0${"y".repeat(1_100)}` },
+      named,
+      "/repo",
+    )?.message,
+    `${lead.slice(0, lead.lastIndexOf("\n") + 1)}${marker}`,
+  );
+
+  // A keyword with a suffix after "_" or "-" (a kubeconfig's client-key-data).
+  const key = `Zml4dHVyZUtleURhdGE${"QUJD".repeat(60)}`;
+  for (const name of [
+    "client-key-data",
+    "client_key_data",
+    "api_key_file",
+    "secret-access-key-id",
+  ]) {
+    for (const [text, expected] of [
+      [`${name}: ${key} after`, `${name}: [redacted] after`],
+      [`${name}=${key} next=keep`, `${name}=[redacted] next=keep`],
+      [`{"${name}":"${key}","after":1}`, `{"${name}":"[redacted]","after":1}`],
+      [
+        `users:\n- name: admin\n  user:\n    ${name}: ${key}\n    after: 1`,
+        `users:\n- name: admin\n  user:\n    ${name}: [redacted]\n    after: 1`,
+      ],
+    ] satisfies [string, string][]) {
+      assert.equal(redactLogLine(text, secrets, 1_000), expected);
+      assertAbsent(surfaces(text), key, `${name} in ${text.slice(0, 20)}`);
+    }
+  }
+  assert.equal(
+    redactFailure({ message: `private-key-pem: ${key}` }, secrets, "/repo").message,
+    "private-key-pem: [redacted]",
+  );
+  // The credential-line check runs before it: a secret's marker after such a key drops the line.
+  assert.equal(
+    redactOutputLine("stdout: client-key-data: fixturePrivateValue0 rest", named, "/repo", 1_000),
+    marker,
+  );
+  // Such a value is masked after the bound, so a long one does not pull the text after
+  // it into the 600 (message), 240 (frame) or 1,000 (output entry) character window.
+  const later = "fixtureTextAfterTheBound";
+  const front = `api_key_file=${key.repeat(5)} ${later}`;
+  const windowed = redactFailure({ message: front, frame: front }, secrets, "/repo");
+  assert.equal(windowed.message, "api_key_file=[redacted]... [truncated]");
+  assert.equal(windowed.frame, "api_key_file=[redacted]... [truncated]");
+  assert.deepEqual(redactOutputLines([`diagnostic: ${front}`], secrets, "/repo", 1_000), [
+    "diagnostic: api_key_file=[redacted]... [truncated]",
+  ]);
+  // A "[redacted]" longer than the value it replaces still keeps the caller's bound
+  // (600, 240, 160 plus the marker); the cut ends before a "[redacted]" it would split.
+  const many = "token_a=b ".repeat(200);
+  const bounded = redactFailure({ message: many, frame: many }, secrets, "/repo");
+  const line = redactLogLine(many, secrets, 160);
+  assert.equal(bounded.message?.length, 612);
+  assert.equal(bounded.frame?.length, 251);
+  assert.equal(line.length, 175);
+  assert.equal(line, `${"token_a=[redacted] ".repeat(8)}token_a=... [truncated]`);
+  assert(bounded.message?.endsWith("token_a=... [truncated]"));
+
+  // A registered secret with spaces that the cut splits: dropping the last
+  // max(256, longest secret) characters removes what is left of it.
+  const spaced = Array.from({ length: 40 }, (_, index) => `Zml4${index}U3BhY2VkU2Vj`).join(" ");
+  const spacedSecrets = failureSecrets([{ FIXTURE_SPACED_SECRET: spaced }]);
+  const split = `${words(failureInputLimit - 300)} ${spaced}`.slice(0, failureInputLimit);
+  assertAbsent(surfaces(split, spacedSecrets), spaced, "a split spaced secret");
 });
