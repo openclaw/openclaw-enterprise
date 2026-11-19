@@ -46,19 +46,34 @@ containment and the installed path remain unqualified.
 ## CredentialProxy contract selection
 
 Select the deployment contract explicitly in Installation configuration with
-`drivers.credential_proxy.contract: 'deployment'`. Omitting `contract` retains the
-unchanged legacy CredentialProxy contract and its existing Git binding authority.
-Selection is generic: it does not depend on a Driver name, Sandbox name, or detected
-methods. Do not infer a contract or fall back to legacy behavior when deployment is
-selected.
+`drivers.credential_proxy.contract: 'deployment'`. For `credential_proxy` only, the
+pinned installed package manifest declares its view with
+`oce.credentialProxyContract: 'deployment'`. An absent declaration means legacy;
+omitting the operator's `contract` selector also retains the unchanged legacy
+CredentialProxy contract and its existing Git binding authority. Other Driver categories
+and unrelated manifest keys are unaffected.
+
+Before loading the package module or invoking its factory, Installation composition must
+match the effective operator selection to the declaration in the verified installed
+manifest and validate the required Sandbox/CredentialProxy pairing. Refuse malformed or
+unsupported selections or declarations, a missing required deployment declaration, and
+conflicting or incompatible pairings with zero factory calls. Do not infer a contract
+from a Driver or Sandbox name, an identifier, or detected methods, and do not fall back
+to legacy when deployment is selected.
+
+The declaration is static compatibility metadata. It does not attest to the package's
+implementation or sandbox arbitrary factory code. Only after invoking a compatible
+factory can composition validate the actual returned contract view and identifiers.
+Refuse a defective or misdeclared result before caller provisioning or credential use;
+use existing cleanup and preserve any partial or uncertain factory effects. A factory
+may itself have side effects, so this refusal cannot promise zero factory effects.
 
 The selected CredentialProxy registration must expose a typed deployment view for the
 required deployment operations. Installation composition, Compute preparation, and the
 normal Worker must use that view from the same selected CredentialProxy owner. They must
 not create a second owner or obtain deployment operations through an unchecked cast.
-Refuse an invalid selection, an unsupported contract, or an incompatible Driver pairing
-before invoking a Driver package factory or starting provisioning. The deployment view does not
-transfer TokenService issuance or legacy Git binding authority to another component.
+The deployment view does not transfer TokenService issuance or legacy Git binding
+authority to another component.
 
 ## Ownership and release
 
@@ -144,12 +159,16 @@ trusted proxy Pod is a possible later deployment, not a v1 prerequisite.
 
 ## Acceptance Criteria
 
-- **AC-0 — Contract selection (P0):** Through normal Installation composition and the
-  Worker/Compute caller, select the deployment contract and prove that the same selected
-  CredentialProxy owner supplies the typed deployment view. With `contract` omitted,
-  preserve the legacy Git success and refusal cases. Refuse invalid or unsupported
-  selections and incompatible pairings before any Driver factory or provisioning effect;
-  prove that none can fall back to legacy or select a contract by Driver identity.
+- **AC-0 — Contract selection (P0):** Through real OCC Installation setup, normal
+  composition with the default installed-package loader, and the Worker/Compute caller,
+  prove valid legacy and deployment selection and the same selected deployment owner and
+  typed view throughout. Preserve legacy Git success and refusal with `contract` omitted.
+  Prove zero module loads and factory calls for malformed or unsupported selections or
+  declarations, a missing deployment declaration, selector/declaration mismatch, and
+  incompatible pairings, including a matching-ID legacy package selected as deployment.
+  Prove no inference or fallback. For a factory that declares deployment but returns a
+  wrong view or identifier, observe one factory call, zero caller provisioning or
+  credential use, refusal, and cleanup or an accurately recorded uncertain effect.
 - **AC-1 — Held observation:** Through the normal Worker and selected Compute/Sandbox path,
   stage one contained startup whose Pod is not conventionally ready. An authorized,
   authenticated scoped read reports pending or a validated terminal failure for that

@@ -87,11 +87,17 @@ CredentialProxy registration must connect the real Box callback to that trusted
 serving recipient; it does not introduce another credential issuer or give the
 Harness source-resolution authority. The proposed
 [contract selection](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-held-launch.md#credentialproxy-contract-selection)
-requires explicit `drivers.credential_proxy.contract: 'deployment'`. Installation,
-Compute, and Worker must consume the typed deployment view from the same selected owner.
-Omission preserves the unchanged legacy contract and Git authority; invalid, unsupported,
-or incompatible selections must refuse before a Driver package factory or provisioning effect,
-without inference or fallback. This admission remains pending.
+requires explicit `drivers.credential_proxy.contract: 'deployment'` paired with
+`oce.credentialProxyContract: 'deployment'` in the pinned, verified installed package
+manifest for `credential_proxy`. An absent declaration and omitted selector mean legacy.
+Before loading the module or invoking its factory, refuse malformed or unsupported
+selection or declaration, a mismatch, or an incompatible pairing without inference or
+fallback. The declaration is compatibility metadata, not attestation or a sandbox. After
+a compatible factory runs, validate its returned view and identifiers; refuse a defective
+result before caller provisioning or credential use, clean up through the existing path,
+and record partial or uncertain factory effects. Installation, Compute, and Worker must
+consume the typed deployment view from the same selected owner. Legacy Git authority is
+unchanged. This admission remains pending.
 
 The native parent creates its child directly, so it must prove that launch
 provenance and inherited state bind only that child. If a future design transfers
@@ -111,13 +117,15 @@ RFC for human review before changing a Driver contract, including required
 behavior or configuration, and preserve every explicit hold. [RFC-0024](../rfcs/0024-sandbox-harness-mode-support.md)
 proposes OpenClaw mode reporting; it does not approve Box or Codex support.
 
-1. **Boundary and ingress.** First extend normal Installation composition and the
-   Worker/Compute preparation path to consume the selected CredentialProxy deployment
-   view. Through that real caller, verify explicit deployment selection and the same
-   owner throughout. Treat invalid or unsupported selection, incompatible pairing,
-   selection inferred from Driver identity, fallback, and any factory or provisioning
-   effect after refusal as P0 failures. Verify omitted selection preserves legacy Git
-   success and refusal cases. Then exercise the real native Box parent, trampoline,
+1. **Boundary and ingress.** First extend real OCC Installation setup, normal
+   composition with its default installed-package loader, and the Worker/Compute path to
+   consume the selected CredentialProxy deployment view from the same owner. Verify valid
+   legacy and deployment packages; preserve legacy Git success and refusal. Require zero
+   module loads and factory calls for invalid selection or declaration, missing deployment
+   declaration, mismatch, or incompatible pairing, including matching IDs with a legacy
+   package selected as deployment. Reject inference and fallback. For a lying factory,
+   verify one invocation, returned-view and identifier checks, zero caller provisioning or
+   credential use, and cleanup or recorded uncertainty. Then exercise the real native Box parent, trampoline,
    and contained child with invented sentinels. Verify an authored Policy permit,
    denial and absent-Policy refusal. In the isolated Agent-wide pilot, run the
    [same-route/binding subprocess and refusal cases](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-agent-policy.md#acceptance-criteria)
