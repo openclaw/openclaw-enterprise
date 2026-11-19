@@ -43,5 +43,5 @@
     "gatewayNodeSelector": { "oce-role": "control" },
     "transportSecretPrefix": "openclaw-agent-transport"
   },
-  "channels": { "managedSlackProxy": false }
+  "channels": { "managedEgress": false }
 }

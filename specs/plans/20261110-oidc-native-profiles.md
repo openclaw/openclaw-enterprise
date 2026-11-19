@@ -1,12 +1,12 @@
 ---
-rfc: ../rfcs/0044-oidc-native-profiles.md
+rfc: ../rfcs/20261110-oidc-native-profiles.md
 ---
 
 # Implementation plan: Native profiles for OIDC users
 
-- **ID:** RFC-0044
+- **ID:** RFC-20261110-oidc-native-profiles
 - **Delivery status:** In progress; code implemented, final qualification pending
-- **Authority:** [Native profile proposal](../rfcs/0044-oidc-native-profiles.md)
+- **Authority:** [Native profile proposal](../rfcs/20261110-oidc-native-profiles.md)
 - **Source baseline (planning):** OCE `c14307588e886e417f750dc3cd43fef1524af3ec`; native OpenClaw `513c12703ad9a9161cc123e0b8ed4ecb811aa6b3`
 
 ## Outcome and scope

@@ -142,6 +142,7 @@ test("Channel directory lookup checks the exact edit target and Secret before an
   const channelDriver: ChannelDriver = {
     id: "channel-directory-integration",
     capability: "channel",
+    enableRouting: () => [],
     implementation: "test-directory",
     async lookupDirectory(input) {
       providerCalls += 1;
