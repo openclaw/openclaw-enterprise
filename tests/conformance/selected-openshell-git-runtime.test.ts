@@ -1411,7 +1411,6 @@ test("Compute retries an unsent release after the final recipient observation ex
   const driverId = "openshell-sandbox";
   const serviceUrl = "http://held-codex.openshell.test/";
   const posts: Readonly<Record<string, unknown>>[] = [];
-  let wiring: ProxyWiring;
   let committed: EgressInstallation | undefined;
   const gateway = workspaceGatewayClient();
   gateway.getGatewayInfo = async () => ({
@@ -1510,7 +1509,7 @@ test("Compute retries an unsent release after the final recipient observation ex
     posts.push(body);
     return { status: 200, json: { enrolled: true, startupId } };
   };
-  wiring = await compute.configure(context);
+  const wiring: ProxyWiring = await compute.configure(context);
 
   const realNow = performance.now.bind(performance);
   let elapsed = 0;
