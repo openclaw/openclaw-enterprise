@@ -115,8 +115,9 @@ type PrepareOptions = HelmTarget &
     bootstrapCredentials?: "generate" | "existing";
     apiClients: readonly PodPeer[];
     channelEgress?: ChannelEgressOptions | undefined;
-    slackProxy?: { enabled: true } | undefined;
+    slackProxy?: { enabled: boolean } | undefined;
     databaseName?: string | undefined;
+    databaseUpgradeMigration?: "hook" | "separate" | undefined;
     databaseTLS?:
       | {
           caSecretName: string;
@@ -167,6 +168,7 @@ export async function prepareProductionHelmControlPlane({
   executionCluster,
   metrics,
   databaseName = "openclaw_enterprise",
+  databaseUpgradeMigration,
   databaseTLS,
   run,
   kubernetes,
@@ -432,6 +434,7 @@ export async function prepareProductionHelmControlPlane({
     agentNativeAdmin: { domain: agentNativeAdminDomain },
     bootstrap: { adminEmail, credentials: { secretName: "occ-bootstrap-credentials" } },
     database: {
+      ...(databaseUpgradeMigration ? { upgradeMigration: databaseUpgradeMigration } : {}),
       cidrs: [`${postgresIP}/32`],
       ...(databaseTLS && {
         caSecretName: databaseTLS.caSecretName,

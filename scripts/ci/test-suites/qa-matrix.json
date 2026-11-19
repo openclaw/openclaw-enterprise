@@ -65,12 +65,14 @@
     "OCC_TEST_CHANNEL_EGRESS_UPGRADE",
     "OCC_TEST_CHANNEL_EGRESS_SOURCE_CONTROLLER_IMAGE",
     "OCC_TEST_CHANNEL_EGRESS_SOURCE_CHART",
-    "OCC_TEST_CHANNEL_EGRESS_NEXT_CONTROLLER_IMAGE"
+    "OCC_TEST_CHANNEL_EGRESS_NEXT_CONTROLLER_IMAGE",
+    "OCC_TEST_CHANNEL_EGRESS_DATABASE_MODE"
   ],
   "prepare": {
     "sourceBuildFiles": [
       "tests/integration/qa-matrix-real.test.mjs",
-      "tests/integration/openshell-git-retention-real.test.ts"
+      "tests/integration/openshell-git-retention-real.test.ts",
+      "tests/integration/channel-egress-disabled-helm-real.test.ts"
     ]
   },
   "files": [

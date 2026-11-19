@@ -145,7 +145,12 @@ test(
         async () => {
           const result = await promisify(execFile)(
             process.execPath,
-            ["--test", "tests/integration/channel-egress-helm-real.test.ts"],
+            [
+              "--test",
+              "--test-concurrency=1",
+              "tests/integration/channel-egress-disabled-helm-real.test.ts",
+              "tests/integration/channel-egress-helm-real.test.ts",
+            ],
             {
               env: {
                 ...process.env,

@@ -1,21 +1,26 @@
 import assert from "node:assert/strict";
 import { createServer, request } from "node:https";
+import { request as httpRequest } from "node:http";
 
 /** Drop one genuine accepted Deploy response; the upstream mutation still commits. */
-export async function loseOneDeploymentResponse(options: {
+export async function createUpgradeResponseProxy(options: {
   upstream: string;
   key: string;
   cert: string;
-  agentPath: string;
+  agentPath?: string;
 }) {
   let deployment: Record<string, unknown> | undefined;
   let deploymentRequests = 0;
   const server = createServer({ key: options.key, cert: options.cert }, (incoming, outgoing) => {
-    const isDeploy = incoming.method === "POST" && incoming.url === `${options.agentPath}/deploy`;
+    const isDeploy =
+      options.agentPath !== undefined &&
+      incoming.method === "POST" &&
+      incoming.url === `${options.agentPath}/deploy`;
     if (isDeploy) {
       deploymentRequests++;
     }
-    const upstream = request(
+    const send = options.upstream.startsWith("https:") ? request : httpRequest;
+    const upstream = send(
       new URL(incoming.url!, options.upstream),
       {
         method: incoming.method,

@@ -159,7 +159,8 @@ and use normal image upgrades.
 
 ## Required verification
 
-All implementation proof below is **not run**. Use real enforcing Kubernetes,
+The configuration/journal checks and real Envoy prerequisite probe have passed.
+Complete upgrade/model/Slack proof remains in progress. Use real enforcing Kubernetes,
 Helm-installed OCC, PostgreSQL with separate migrator/application roles, and
 [authorized Slack test credentials](../../docs/testing/slack.md).
 
@@ -179,7 +180,11 @@ scope. Record actual results and remaining gaps here when implementation runs.
 
 ## Delivery record
 
-Implementation started against the baseline above. Required proof remains pending.
+Implementation is checkpointed at `88dbc7560`. Four focused configuration/journal
+cases and 496 shared-upgrader recovery cases passed without skips. The real pinned
+Envoy installation, patch-delivery probe, incomplete-CIDR refusal, dependency
+configuration preservation, and probe cleanup passed in a disposable cluster.
+Required complete upgrade, model, Slack and hosted-CI proof remains pending.
 The approved TASK-0054 identity and original implementation history remain in place
 under the current specification naming rules. This page keeps one complete
 transition and its recovery together.

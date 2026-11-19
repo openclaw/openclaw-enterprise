@@ -10,6 +10,7 @@ These lanes have no configured recurring GitHub runs and are excluded from
 `ci`, `full`, and Full Integration dispatch. Select a lane explicitly after
 completing its linked setup; see [lane execution and cleanup](ci/run-lanes.md#results-and-cleanup).
 
+- [`channel-egress-upgrade`](../../scripts/ci/test-suites/channel-egress-upgrade.json): requires prepared source/target controller images, the pre-PR-6529 chart, a disposable enforcing cluster, and authorized model/Slack credentials. Run both database modes through the [explicit QA scenario](ci/qa-advisory.md#one-off-channel-upgrade-proof).
 - [`egress-connected`](../../scripts/ci/test-suites/egress-connected.json) ([setup](static-egress.md#select-the-prepared-connected-lane)): select explicitly after preparing the protected controller, database, authenticated OpenShell stack, and synthetic HTTPS origin. CI runs the request preflight in `checks-baseline-2`; the generic `openshell` lane does not run this qualification.
 - [`egress-custody-installed`](../../scripts/ci/test-suites/egress-custody-installed.json) ([setup](protected-repository-custody.md)): verify repository request dispatch and protected response handling on a separately prepared controller and OpenShell pair, with an independent dispatch observer.
 - [`repository-credentials-live`](../../scripts/ci/test-suites/repository-credentials-live.json): requires an authorized disposable repository and cleanup. See [repository credentials](repository-credentials.md).

@@ -164,6 +164,17 @@ included in advisory coverage.
 
 <a id="run-it"></a>
 
+### One-off channel upgrade proof
+
+Use the explicit `channel-egress-upgrade` QA scenario with Kubernetes and Codex. Supply the Slack lane inputs plus `OCC_TEST_CHANNEL_EGRESS_SOURCE_CONTROLLER_IMAGE` and `OCC_TEST_CHANNEL_EGRESS_SOURCE_CHART` for the matching pre-PR-6529 source. Supply
+`OCC_TEST_CHANNEL_EGRESS_NEXT_CONTROLLER_IMAGE` for the subsequent ordinary image
+upgrade; that image must be built from the target source commit with a different
+image digest. This operator-selected scenario runs the actual script and regular Agent workflow; it is outside the default advisory matrix.
+
+Run the one-off scenario once with `OCC_TEST_CHANNEL_EGRESS_DATABASE_MODE=hook`
+and once with `separate`. The separate case executes the chart-selected migrator
+and its require-current check during each handoff.
+
 ## Execution
 
 To run the same coverage as the schedule, configure the

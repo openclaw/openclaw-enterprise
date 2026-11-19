@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import http.client
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -55,6 +56,37 @@ def main():
         return json.loads(run([*kube, *(["-n", ns] if ns else []), "get", kind, *([name] if name else []), "-o", "json"]))
     def wait(kind, name, condition, ns=None):
         run([*kube, *(["-n", ns] if ns else []), "wait", kind, name, f"--for=condition={condition}", f"--timeout={args.timeout_seconds}s"])
+    exclusions = egress.get("excludedCidrs", [])
+    require(isinstance(exclusions, list) and exclusions,
+            "supply explicit complete Pod, Service and node exclusions in the rendered channel values")
+    networks = [ipaddress.ip_network(value, strict=True) for value in exclusions]
+    observed = []
+    complete = True
+    for kind in ("nodes", "servicecidrs"):
+        observation = subprocess.run([*kube, "get", kind, "-o", "json"], capture_output=True, text=True, timeout=60)
+        if observation.returncode != 0:
+            complete = False
+            continue
+        items = json.loads(observation.stdout).get("items", [])
+        complete = complete and bool(items)
+        for item in items:
+            if kind == "nodes":
+                pod_cidrs = item.get("spec", {}).get("podCIDRs", [])
+                complete = complete and bool(pod_cidrs)
+                observed.extend(ipaddress.ip_network(cidr, strict=True) for cidr in pod_cidrs)
+                for address in item.get("status", {}).get("addresses", []):
+                    if address.get("type") in ("InternalIP", "ExternalIP"):
+                        ip = ipaddress.ip_address(address["address"])
+                        observed.append(ipaddress.ip_network(f"{ip}/{ip.max_prefixlen}"))
+            else:
+                cidrs = item.get("spec", {}).get("cidrs", [])
+                complete = complete and bool(cidrs)
+                observed.extend(ipaddress.ip_network(cidr, strict=True) for cidr in cidrs)
+    require(all(any(network.version == candidate.version and network.subnet_of(candidate)
+                    for candidate in networks) for network in observed),
+            "channel exclusions omit a discovered Pod, Service or node range; no dependency changes made")
+    if not complete:
+        print("Cluster range discovery is incomplete; the explicit exclusions must be independently verified by the operator.", file=sys.stderr)
     existing = run([*kube, "get", "namespace", namespace, "--ignore-not-found", "-o", "json"])
     if args.action == "install" and not existing:
         require(namespace == "envoy-gateway-system", "the pinned installer uses envoy-gateway-system; provision other namespaces externally")

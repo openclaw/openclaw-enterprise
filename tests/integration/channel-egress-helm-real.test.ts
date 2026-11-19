@@ -36,7 +36,8 @@ import {
   createProductionTuiRequest,
   ProductionTuiRequestError,
 } from "../helpers/production-tui-request.ts";
-import { loseOneDeploymentResponse } from "../helpers/channel-upgrade-response-proxy.ts";
+import { parseProductionChart } from "../helpers/production-chart.ts";
+import { createUpgradeResponseProxy } from "../helpers/channel-upgrade-response-proxy.ts";
 import { availablePort } from "../helpers/available-port.ts";
 
 function object(value: unknown): Record<string, unknown> {
@@ -73,6 +74,8 @@ test(
     const sourceController = process.env.OCC_TEST_CHANNEL_EGRESS_SOURCE_CONTROLLER_IMAGE;
     const sourceChart = process.env.OCC_TEST_CHANNEL_EGRESS_SOURCE_CHART;
     const nextController = process.env.OCC_TEST_CHANNEL_EGRESS_NEXT_CONTROLLER_IMAGE;
+    const migrationMode = process.env.OCC_TEST_CHANNEL_EGRESS_DATABASE_MODE ?? "hook";
+    assert.ok(migrationMode === "hook" || migrationMode === "separate");
     if (upgrade) {
       assert.match(sourceController ?? "", /^\S+@sha256:[a-f0-9]{64}$/);
       assert.ok(sourceChart, "select the actual pre-channel-egress chart checkout");
@@ -310,6 +313,7 @@ test(
       authBaseURL,
       agentNativeAdminDomain: "agents.oce.localhost",
       installationName: `Channel routing proof ${suffix}`,
+      ...(upgrade ? { databaseUpgradeMigration: migrationMode } : {}),
       bootstrapCredentials: "existing",
       apiClients: [{ namespace, podLabels: { app: "channel-proof-operator" } }],
       ...(upgrade
@@ -737,7 +741,7 @@ test(
         await writeFile(key, JSON.stringify({ data: { key: controlPlane.serviceKey } }), {
           mode: 0o600,
         });
-        const lost = await loseOneDeploymentResponse({
+        const lost = await createUpgradeResponseProxy({
           upstream: `https://localhost:${httpsPort}`,
           key: operatorKey,
           cert: operatorCert,
@@ -780,12 +784,89 @@ test(
           OCC_CA_BUNDLE: certPath,
           KUBERC: "off",
         };
+        const migrateSeparately = async (image: string) => {
+          const rendered = await run("helm", [
+            "template",
+            release,
+            "deploy/helm/openclaw-enterprise",
+            "--namespace",
+            namespace,
+            "--is-upgrade",
+            "--values",
+            join(candidate, "values.yaml"),
+            "--set",
+            `images.controller=${image}`,
+          ]);
+          const resources = (await parseProductionChart(rendered)).map(object);
+          const initializer = resources.find((item) => item.kind === "Job");
+          assert.ok(initializer);
+          const pod = object(object(object(initializer.spec).template).spec);
+          const migration = array(pod.initContainers).find(
+            (container) => container.name === "migration",
+          );
+          assert.ok(migration);
+          // Run the chart-selected migrator with its real limited role, first to
+          // apply pending SQL, then to require the complete selected schema.
+          for (const checkOnly of [false, true]) {
+            const name = `channel-database-${randomUUID().slice(0, 12)}`;
+            const task = structuredClone(initializer);
+            task.metadata = { name, namespace };
+            const taskPod = object(object(object(task.spec).template).spec);
+            delete taskPod.initContainers;
+            const container = structuredClone(migration);
+            const arguments_ = container.args as string[];
+            assert.equal(arguments_.at(-1), "--require-current");
+            container.args = checkOnly ? arguments_ : arguments_.slice(0, -1);
+            taskPod.containers = [container];
+            await run("kubectl", kube.kubectlArguments(["create", "-f", "-"]), {
+              input: JSON.stringify(task),
+            });
+            try {
+              await kubectl(
+                "wait",
+                `job/${name}`,
+                "--namespace",
+                namespace,
+                "--for=condition=Complete",
+                "--timeout=180s",
+              );
+            } finally {
+              await kubectl(
+                "delete",
+                `job/${name}`,
+                "--namespace",
+                namespace,
+                "--wait=true",
+                "--timeout=120s",
+              );
+            }
+          }
+        };
         const executeUpgrade = (resume: boolean) =>
-          run("scripts/upgrade-channel-egress", [...arguments_, ...(resume ? ["--resume"] : [])], {
-            env: environment,
-            timeout: 900_000,
-          });
-        await assert.rejects(executeUpgrade(false), /incomplete|unknown|failed/i);
+          run(
+            "scripts/upgrade-channel-egress",
+            [
+              ...arguments_,
+              ...(resume ? ["--resume"] : []),
+              ...(resume && migrationMode === "separate" ? ["--migration-history-checked"] : []),
+            ],
+            {
+              env: environment,
+              timeout: 900_000,
+            },
+          );
+        if (migrationMode === "separate") {
+          await assert.rejects(executeUpgrade(false), /separate database deployment/i);
+          assert.equal(
+            lost.deploymentRequests(),
+            0,
+            "separate-mode handoff must precede all Deploy requests",
+          );
+          await migrateSeparately(controller);
+          await assert.rejects(executeUpgrade(true), /incomplete|unknown|failed/i);
+        } else {
+          await assert.rejects(executeUpgrade(false), /incomplete|unknown|failed/i);
+        }
         const accepted = lost.acceptedDeployment();
         assert.ok(
           accepted,
@@ -836,36 +917,45 @@ test(
 
         // A subsequent ordinary controller image upgrade retains this new revision
         // and must not replay the release-specific Stop/Deploy sequence.
-        await run(
-          "scripts/upgrade-production-images",
-          [
-            "--kubeconfig",
-            selection.kubeconfigPath!,
-            "--context",
-            selection.kubernetesContext!,
-            "--namespace",
-            namespace,
-            "--release",
-            release,
-            "--values",
-            join(directory, "values.json"),
-            "--installation",
-            installationFile,
-            "--controller-image",
-            nextController!,
-            "--source-revision",
-            sourceRevision,
-            "--evidence-dir",
-            join(directory, "ordinary-upgrade"),
-            "--occ",
-            occ,
-            "--verify-agent",
-            agentId,
-            "--verify-agent-namespace",
-            namespaceId,
-          ],
-          { env: environment, timeout: 900_000 },
-        );
+        const ordinaryArguments = [
+          "--kubeconfig",
+          selection.kubeconfigPath!,
+          "--context",
+          selection.kubernetesContext!,
+          "--namespace",
+          namespace,
+          "--release",
+          release,
+          "--values",
+          join(directory, "values.json"),
+          "--installation",
+          installationFile,
+          "--controller-image",
+          nextController!,
+          "--source-revision",
+          sourceRevision,
+          "--evidence-dir",
+          join(directory, "ordinary-upgrade"),
+          "--occ",
+          occ,
+          "--verify-agent",
+          agentId,
+          "--verify-agent-namespace",
+          namespaceId,
+        ];
+        const ordinary = (resume: boolean) =>
+          run(
+            "scripts/upgrade-production-images",
+            [...ordinaryArguments, ...(resume ? ["--resume", "--migration-history-checked"] : [])],
+            { env: environment, timeout: 900_000 },
+          );
+        if (migrationMode === "separate") {
+          await assert.rejects(ordinary(false), /separate database deployment/i);
+          await migrateSeparately(nextController!);
+          await ordinary(true);
+        } else {
+          await ordinary(false);
+        }
         assert.equal(lost.deploymentRequests(), 1);
         assert.equal((await api("GET", agentPath)).activeRevisionId, accepted.id);
       } else {

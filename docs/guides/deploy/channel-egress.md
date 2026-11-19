@@ -20,8 +20,9 @@ scripts/setup-channel-egress install \
   --values "$INPUT_DIRECTORY/values.yaml"
 ```
 
-Use `check` instead of `install` to require preexisting dependencies. Both verify
-CRD establishment, controller readiness and version, patch-policy configuration,
+Use `check` instead of `install` to require preexisting dependencies. Both check that supplied exclusions cover discovered Pod, Service and node ranges.
+If discovery is unavailable or incomplete, the operator must verify the explicit
+list independently. Both verify CRD establishment, controller readiness and version, patch-policy configuration,
 GatewayClass acceptance, and actual Envoy patch delivery. The temporary probe
 uses a unique namespace and private ClusterIP routing. Cleanup deletes only the
 probe resources with their observed UIDs. Retain the reported probe name if
