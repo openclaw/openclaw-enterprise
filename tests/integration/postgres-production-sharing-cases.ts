@@ -9,9 +9,9 @@ import type { Permission } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
-import { composeProduction } from "../helpers/password-hasher.mjs";
-import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { composeProduction } from "../helpers/password-hasher.ts";
+import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
+import { waitFor } from "../helpers/wait-for.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -75,7 +75,7 @@ type SharingFixture = {
     password: string;
   }) => Promise<Session>;
   productionDrivers: () => Promise<ProductionConfig["drivers"]>;
-  apiLog: { logger: ProductionConfig["logger"] };
+  apiLog: { logger: NonNullable<ProductionConfig["logger"]> };
   databaseUrl: string;
   authSecret: string;
   authBaseURL: string;
@@ -393,7 +393,7 @@ export async function runSharingCases(t: TestContext, fixture: SharingFixture): 
         );
         await blocker.query("SELECT id FROM occ.namespaces WHERE id=$1 FOR UPDATE", [namespaceId]);
         pendingGrant = request("POST", `${policyPath}/access-bindings`, grant, assigning);
-        const protectedPid: unknown = await waitForLockWaiter(
+        const protectedPid = await waitForLockWaiter(
           pool,
           pid,
           "the protected sharing write waiting for the Namespace",

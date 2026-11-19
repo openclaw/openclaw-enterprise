@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { temporaryDirectory } from "./temporary-directory.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
-const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
+const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.ts");
 
 // Fixtures live under tmpdir(), which may itself sit inside an unrelated Git
 // checkout. Stop Git's repository search at tmpdir() so the runner never reads
@@ -132,6 +132,20 @@ export async function writeJson(path: string, value: unknown) {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
+export async function writeCleanupFixture(root: string, mode: "sync" | "async" = "async") {
+  const asyncKeyword = mode === "async" ? "async " : "";
+  await writeFile(
+    join(root, "scripts/ci/prepare.ts"),
+    [
+      'import { appendFile } from "node:fs/promises";',
+      `export ${asyncKeyword}function prepareFile({ file, statePath }) {`,
+      `  return { cleanup: ${asyncKeyword}() => appendFile(statePath, file.path + "\\n") };`,
+      "}",
+      "",
+    ].join("\n"),
+  );
+}
+
 interface ManifestFixture {
   lanes: Record<string, unknown>;
   groups?: Record<string, string[]>;
@@ -144,6 +158,19 @@ export function writeRunnerManifest(
   filename = "manifest.json",
 ) {
   return writeJson(join(root, filename), { version: 1, fileDurations, lanes, groups });
+}
+
+export async function writeRunnerLaneFiles(
+  root: string,
+  lane: string,
+  names: readonly string[],
+  source: string,
+) {
+  const files = names.map((name) => ({ path: `tests/integration/${name}.test.mjs` }));
+  for (const { path } of files) {
+    await writeFile(join(root, path), source);
+  }
+  await writeRunnerManifest(root, { lanes: { [lane]: { files } } });
 }
 
 export async function writeSingleFileRunnerLane(
@@ -164,15 +191,29 @@ export async function writeFirstAgentCliFixture(root: string, cliBody: string) {
     await readFile(new URL("./local-first-agent-stack.mjs", import.meta.url)),
   );
   await writeFile(
-    join(root, "tests/helpers/compose-network.mjs"),
-    await readFile(new URL("./compose-network.mjs", import.meta.url)),
+    join(root, "tests/helpers/compose-network.ts"),
+    await readFile(new URL("./compose-network.ts", import.meta.url)),
+  );
+  await mkdir(join(root, "scripts/lib"), { recursive: true });
+  await writeFile(
+    join(root, "scripts/lib/podman-compose-provider.ts"),
+    await readFile(new URL("../../scripts/lib/podman-compose-provider.ts", import.meta.url)),
   );
   await mkdir(join(root, "scripts/ci"), { recursive: true });
   await writeFile(
-    join(root, "scripts/ci/failure-redaction.mjs"),
-    await readFile(new URL("../../scripts/ci/failure-redaction.mjs", import.meta.url)),
+    join(root, "scripts/ci/failure-redaction.ts"),
+    await readFile(new URL("../../scripts/ci/failure-redaction.ts", import.meta.url)),
   );
   await writeFile(join(root, "bin/occ"), `#!${process.execPath}\n${cliBody}`, { mode: 0o700 });
+}
+
+export function requireTestResult<T extends { name: string }>(
+  results: readonly T[],
+  name: string,
+): T {
+  const result = results.find((entry) => entry.name === name);
+  assert.ok(result, `Missing test result: ${name}`);
+  return result;
 }
 
 export function runnerArtifactPaths(root: string, name: string) {

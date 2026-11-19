@@ -3,16 +3,12 @@ import {
   createKubernetesComputeDriver,
   kubernetesNamespaceName,
   type KubernetesComputeDriver,
-  type KubernetesComputeDriverOptions,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import type { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
-import {
-  digest,
-  routedOptions,
-  routedRevision,
-  tenant,
-} from "../helpers/kubernetes-routed-scenarios.mjs";
+import { options, routedOptions } from "../helpers/kubernetes-routed-options.ts";
+import { digest, routedRevision, tenant } from "../helpers/kubernetes-routed-scenarios.mjs";
+import { agent as credentialAgent } from "./kubernetes-runtime-credentials-fixture.ts";
 
 type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
 type Clients = {
@@ -49,38 +45,47 @@ function resourceKey(kind: string | undefined, namespace: string | undefined, na
   return JSON.stringify([kind, namespace, name]);
 }
 
-function retirementFixture(
-  driver: KubernetesComputeDriver,
-  namespace: string,
-  gatewayName: string,
-  nodeName: string,
+function observedResources(
+  key = resourceKey,
+  missingMessage: (kind: string | undefined, name: string) => string = () => "Not found",
 ) {
   const resources = new Map<string, ObservedResource>();
-  const deletions: Deletion[] = [];
-  let failServiceDelete = false;
 
   function observe(resource: ObservedResource) {
     const { kind, metadata } = resource;
-    resources.set(resourceKey(kind, metadata.namespace, metadata.name), structuredClone(resource));
-  }
-
-  function reset(...snapshot: ObservedResource[]) {
-    resources.clear();
-    for (const resource of snapshot) {
-      observe(resource);
-    }
+    resources.set(key(kind, metadata.namespace, metadata.name), structuredClone(resource));
   }
 
   function read(kind: string | undefined, target: string | undefined, name: string) {
-    const resource = resources.get(resourceKey(kind, target, name));
+    const resource = resources.get(key(kind, target, name));
     if (resource === undefined) {
-      throw Object.assign(new Error("Not found"), { code: 404 });
+      throw Object.assign(new Error(missingMessage(kind, name)), { code: 404 });
     }
     return structuredClone(resource);
   }
 
   function readNamespaced(kind: string) {
     return async ({ name, namespace: target }: NamespacedRead) => read(kind, target, name);
+  }
+
+  return { resources, observe, read, readNamespaced };
+}
+
+function retirementFixture(
+  driver: KubernetesComputeDriver,
+  namespace: string,
+  gatewayName: string,
+  nodeName: string,
+) {
+  const { resources, observe, read, readNamespaced } = observedResources();
+  const deletions: Deletion[] = [];
+  let failServiceDelete = false;
+
+  function reset(...snapshot: ObservedResource[]) {
+    resources.clear();
+    for (const resource of snapshot) {
+      observe(resource);
+    }
   }
 
   function nodeResources() {
@@ -122,6 +127,19 @@ function retirementFixture(
           deletions.push(["PersistentVolumeClaim", request]);
         },
         readNamespacedService: readNamespaced("Service"),
+        async patchNamespacedService({
+          name,
+          body,
+        }: Parameters<Clients["core"]["patchNamespacedService"]>[0]) {
+          const service = body as ObservedResource;
+          assert.equal(service.kind, "Service");
+          assert.equal(service.metadata.name, name);
+          assert.equal(service.metadata.namespace, namespace);
+          observe({
+            ...service,
+            metadata: { ...service.metadata, uid: name + "-service-uid", resourceVersion: "1" },
+          });
+        },
         async deleteNamespacedService(request: NamespacedDelete["Service"]) {
           deletions.push(["Service", request]);
           if (failServiceDelete) {
@@ -148,7 +166,18 @@ function retirementFixture(
           if (kind === "SecurityPolicy") {
             assert.equal(metadata.name, nodeName);
           } else {
-            assert.ok(metadata.name === gatewayName || metadata.name === nodeName);
+            assert.ok(
+              metadata.name === gatewayName ||
+                metadata.name === nodeName ||
+                /^chat-[a-f0-9]{12}-rev-[a-f0-9]{12}$/.test(metadata.name),
+            );
+          }
+          let uid = kind + "-node-uid";
+          if (metadata.name === gatewayName) {
+            uid = "route-uid";
+          }
+          if (metadata.name.startsWith("chat-")) {
+            uid = metadata.name + "-route-uid";
           }
           observe({
             ...body,
@@ -156,7 +185,7 @@ function retirementFixture(
             metadata: {
               ...metadata,
               name: metadata.name,
-              uid: metadata.name === gatewayName ? "route-uid" : kind + "-node-uid",
+              uid,
               resourceVersion: "1",
             },
           });
@@ -190,7 +219,7 @@ export async function checkGatewayRetirement() {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
       },
-    }) as KubernetesComputeDriverOptions,
+    }),
   );
   const agentId = "agent-revision-storage";
   const ownership = { namespaceId: tenant.id, agentId };
@@ -351,6 +380,25 @@ export async function checkGatewayRetirement() {
     });
   }
 
+  function expectChatRetirement(revision: AgentRevision) {
+    const name = `chat-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
+    assert.deepEqual(deletions, [
+      [
+        "HTTPRoute",
+        {
+          spec: {
+            apiVersion: "gateway.networking.k8s.io/v1",
+            kind: "HTTPRoute",
+            metadata: { name, namespace },
+          },
+          body: { preconditions: { uid: name + "-route-uid", resourceVersion: "1" } },
+        },
+      ],
+      ["Service", { name, namespace, body: { preconditions: { uid: name + "-service-uid" } } }],
+    ]);
+    deletions.length = 0;
+  }
+
   // Preparation can run while the previous Gateway still serves requests. A
   // failed candidate must not acquire and then delete that Gateway's node route.
   observeGateway(active);
@@ -367,7 +415,7 @@ export async function checkGatewayRetirement() {
   await driver["reconcileGatewayRoute"](candidate, ownership, target);
   assert.deepEqual(fixture.nodeResources(), activeNodeResources);
   await driver["removeRetiredGateway"](candidate, target);
-  assert.equal(deletions.length, 0);
+  expectChatRetirement(candidate);
 
   // Once activation replaces the Gateway, the same endpoint belongs to the new
   // revision. Retiring the predecessor must leave it usable by the new node.
@@ -378,7 +426,7 @@ export async function checkGatewayRetirement() {
     assert.equal(resource.metadata.annotations?.["openclaw.dev/agent-revision-id"], candidate.id);
   }
   await driver["removeRetiredGateway"](active, target);
-  assert.equal(deletions.length, 0);
+  expectChatRetirement(active);
   await driver["removeRetiredGateway"](candidate, target);
   assert.deepEqual(deletions.slice(0, 2), [
     [
@@ -428,4 +476,211 @@ export async function checkGatewayRetirement() {
     message: "Refusing unowned Kubernetes HTTPRoute " + nodeName + ".",
   });
   assert.equal(deletions.length, 0);
+}
+
+export async function checkEmbeddedGatewayRetirement() {
+  const driver = createKubernetesComputeDriver(
+    options({
+      runtime: {
+        transportSecretPrefix: "transport",
+        gatewayStorageClassName: "local-path",
+        channels: { proxyUrl: "http://192.0.2.10:3128" },
+      },
+    }),
+  );
+  const revision: AgentRevision = routedRevision(driver, {
+    id: "revision-embedded-deletion",
+    agentId: "agent-embedded-deletion",
+    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+    configuration: {
+      agents: { defaults: { model: "openai/gpt-5" } },
+      gateway: { controlUi: { enabled: false } },
+    },
+    plugins: {
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      plugins: { "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "none" } } },
+    },
+  });
+  const namespace = kubernetesNamespaceName(revision.namespaceId);
+  const target = { name: namespace, plane: "execution" } as const;
+  const gatewayName = `gateway-${digest(revision.agentId)}`;
+  const agentName = `agent-${digest(revision.agentId)}`;
+  const gatewayOwnership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
+  const agentOwnership = {
+    ...gatewayOwnership,
+    servicePrincipalId: revision.servicePrincipalId,
+  };
+  const revisionOwnership = { ...agentOwnership, revisionId: revision.id };
+  const configurationName = `${gatewayName}-rev-${digest(revision.id)}`;
+  const pluginName = `plugin-runtime-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
+  const key = (kind: string | undefined, name: string) => `${kind}:${name}`;
+  const { resources, observe, read, readNamespaced } = observedResources(
+    (kind, _namespace, name) => key(kind, name),
+    (kind, name) => `${kind} ${name} not found`,
+  );
+  function save<T extends ObservedResource>(object: T) {
+    object.metadata.uid ??= `${object.metadata.name}-uid`;
+    observe(object);
+  }
+
+  save({
+    ...driver["manifest"]("v1", "Namespace", namespace, { namespaceId: revision.namespaceId }),
+    status: { phase: "Active" },
+  });
+  const gateway = driver["manifest"](
+    "apps/v1",
+    "Deployment",
+    gatewayName,
+    gatewayOwnership,
+    target,
+  );
+  assert.ok(gateway.metadata.annotations);
+  gateway.metadata.annotations["openclaw.dev/agent-revision-id"] = revision.id;
+  save(gateway);
+  save(
+    driver["service"](gatewayName, gatewayOwnership, target, {
+      "app.kubernetes.io/name": gatewayName,
+    }),
+  );
+  save(driver["manifest"]("v1", "ServiceAccount", agentName, agentOwnership, target));
+  save(driver["gatewayPrivateStateClaim"](revision.agentId, gatewayOwnership, target));
+  save(driver["manifest"]("v1", "ConfigMap", configurationName, gatewayOwnership, target));
+  save(driver["manifest"]("v1", "ConfigMap", pluginName, revisionOwnership, target));
+  const agentPolicies: { resource: ObservedResource }[] = driver["agentNetworkPolicies"](
+    revision,
+    target,
+  );
+  const policies: ObservedResource[] = [
+    ...agentPolicies.map(({ resource }) => resource),
+    driver["channelNetworkPolicy"](revision, [], target),
+  ];
+  for (const policy of policies) {
+    save(policy);
+  }
+  const sibling = driver["manifest"](
+    "v1",
+    "ConfigMap",
+    "sibling-agent-artifact",
+    { namespaceId: revision.namespaceId, agentId: "agent-sibling" },
+    target,
+  );
+  save(sibling);
+
+  const terminatingPod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: {
+      name: "terminating-embedded-gateway",
+      namespace,
+      labels: {
+        "openclaw.dev/namespace": revision.namespaceId,
+        "openclaw.dev/agent": revision.agentId,
+        "openclaw.dev/revision": revision.id,
+        "openclaw.dev/workload-role": "gateway",
+      },
+    },
+  };
+  const deletions: { kind: string; name: string }[] = [];
+  let podObservations = 0;
+  const removeArtifact =
+    (kind: string) => async (request: Pick<NamespacedDelete["Deployment"], "name" | "body">) => {
+      const current = read(kind, namespace, request.name);
+      assert.equal(request.body?.preconditions?.uid, current.metadata.uid);
+      deletions.push({ kind, name: request.name });
+      resources.delete(key(kind, request.name));
+      return {};
+    };
+  Object.assign(driver, {
+    apiClients: Promise.resolve({
+      core: {
+        async listNamespace() {
+          return { apiVersion: "v1", kind: "NamespaceList", items: [] };
+        },
+        async readNamespace({ name }: Parameters<Clients["core"]["readNamespace"]>[0]) {
+          return read("Namespace", undefined, name);
+        },
+        async listNamespacedPod({
+          namespace: requestedNamespace,
+          labelSelector,
+        }: Parameters<Clients["core"]["listNamespacedPod"]>[0]) {
+          assert.equal(requestedNamespace, namespace);
+          assert.ok(labelSelector);
+          assert.match(labelSelector, /openclaw\.dev\/workload-role=gateway/);
+          podObservations += 1;
+          deletions.push({ kind: "PodList", name: revision.id });
+          return {
+            apiVersion: "v1",
+            kind: "PodList",
+            items: podObservations === 1 ? [terminatingPod] : [],
+          };
+        },
+        readNamespacedSecret: readNamespaced("Secret"),
+        readNamespacedConfigMap: readNamespaced("ConfigMap"),
+        deleteNamespacedConfigMap: removeArtifact("ConfigMap"),
+        readNamespacedServiceAccount: readNamespaced("ServiceAccount"),
+        deleteNamespacedServiceAccount: removeArtifact("ServiceAccount"),
+        readNamespacedService: readNamespaced("Service"),
+        deleteNamespacedService: removeArtifact("Service"),
+        readNamespacedPersistentVolumeClaim: readNamespaced("PersistentVolumeClaim"),
+        deleteNamespacedPersistentVolumeClaim: removeArtifact("PersistentVolumeClaim"),
+      },
+      apps: {
+        readNamespacedDeployment: readNamespaced("Deployment"),
+        deleteNamespacedDeployment: removeArtifact("Deployment"),
+      },
+      networking: {
+        readNamespacedNetworkPolicy: readNamespaced("NetworkPolicy"),
+        deleteNamespacedNetworkPolicy: removeArtifact("NetworkPolicy"),
+      },
+      objects: {
+        async read({ metadata }: Parameters<Clients["objects"]["read"]>[0]) {
+          return read("HTTPRoute", namespace, metadata.name);
+        },
+      },
+    }),
+  });
+
+  await driver.retireRevision(revision);
+
+  assert.equal(podObservations, 2);
+  const claimName = driver["gatewayPrivateStateClaimName"](revision.agentId);
+  const podWait = deletions.findIndex(({ kind }) => kind === "PodList");
+  assert.ok(podWait > deletions.findIndex(({ kind }) => kind === "Deployment"));
+  assert.equal(
+    resources.has(key("PersistentVolumeClaim", claimName)),
+    true,
+    "revision retirement must preserve Agent-owned native state",
+  );
+
+  // The worker invokes final Agent cleanup only after every revision has retired.
+  await driver.deleteAgentRuntimeCredentials({
+    namespace: { ...tenant, status: "ready" },
+    agent: {
+      ...credentialAgent,
+      id: revision.agentId,
+      namespaceId: tenant.id,
+      executionMode: revision.harness.mode,
+      configurationId: revision.configurationId,
+      createdAt: revision.createdAt,
+      servicePrincipalId: revision.servicePrincipalId,
+      status: "deleting",
+    },
+  });
+  assert.ok(
+    podWait < deletions.findIndex(({ kind }) => kind === "PersistentVolumeClaim"),
+    "Agent storage cleanup must follow terminated gateway Pods",
+  );
+  const expectedRemovals: [string, string][] = [
+    ["Deployment", gatewayName],
+    ["Service", gatewayName],
+    ["ServiceAccount", agentName],
+    ["PersistentVolumeClaim", claimName],
+    ["ConfigMap", configurationName],
+    ["ConfigMap", pluginName],
+    ...policies.map((policy): [string, string] => ["NetworkPolicy", policy.metadata.name]),
+  ];
+  for (const [kind, name] of expectedRemovals) {
+    assert.equal(resources.has(key(kind, name)), false, `${kind} ${name} must be deleted`);
+  }
+  assert.deepEqual(resources.get(key("ConfigMap", sibling.metadata.name)), sibling);
 }

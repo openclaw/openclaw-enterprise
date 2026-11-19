@@ -5,10 +5,10 @@ import { Duplex } from "node:stream";
 import test from "node:test";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { createSlackProxyServer } from "../../apps/controller/src/slack-proxy.mjs";
-import { refusingPort } from "../helpers/available-port.mjs";
-import { listen as listenServer } from "../helpers/listen.mjs";
+import { refusingPort } from "../helpers/available-port.ts";
+import { listen as listenServer } from "../helpers/listen.ts";
 import { connectThroughProxy, startSlackProxy } from "../helpers/slack-proxy.mjs";
-import { within } from "../helpers/wait-for.mjs";
+import { within } from "../helpers/wait-for.ts";
 
 // The bundled Slack proxy (apps/controller/src/slack-proxy.mjs) relays CONNECT tunnels only.
 // These tests drive the real proxy process against loopback upstreams: startSlackProxy

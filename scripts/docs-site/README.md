@@ -30,7 +30,7 @@ The configured package registry did not provide the publisher's
 
 ## Ownership and verification
 
-`build.mjs` discovers the authored corpus, applies `docs/docs.json` navigation,
+`build.ts` discovers the authored corpus, applies `docs/docs.json` navigation,
 validates links and anchors, emits Enterprise HTML and local assets, and leaves
 Pagefind indexing to the root `docs:build` command. `--check` validates without
 writing output. Paths resolve against Markdown source files; README pages map to
@@ -89,14 +89,16 @@ development workflow described in [Local preview](../../docs/local-preview.md).
 renderer followed by Pagefind in a new directory. The renderer's internal
 `--output` option accepts only a fresh directory under `dist/.docs-preview-*/`;
 it never removes an existing preview directory. After both commands succeed,
-the server switches its output directory and tells `preview-client.mjs` to
-reload connected tabs. Requests still reading the previous build finish before
-its directory is removed. A failed build keeps that output and sends the error
-to the tabs. Shutdown stops the watcher and child processes and removes the
-temporary directories. The static server and standalone build do not load the
-refresh client.
+the server switches its output directory and sends the new revision to connected
+tabs. The server strips types from `preview-client.mts` and serves the client at
+`/__docs_preview/client.mjs` in watch mode. The client checks incoming state and
+reloads the current URL when the revision changes. Requests still reading the
+previous build finish before its directory is removed. A failed build keeps that
+output and displays the error in connected tabs. Shutdown stops the watcher and
+child processes and removes the temporary directories. The static server and
+standalone build do not load the refresh client.
 
-`site.mjs` owns mobile navigation, per-tab sidebar scroll restoration, local
+`site.mts` owns mobile navigation, per-tab sidebar scroll restoration, local
 Pagefind search, theme switching, code copying, heading links, Mermaid rendering,
 and Driver matrix filtering. Heading links navigate to the generated heading ID
 with native browser history and also copy the URL when clipboard access is available.
@@ -106,17 +108,17 @@ pages use custom replacement blocks around generated GitHub fallback tables:
 
 - `<!-- compute-matrix:start -->` / `<!-- compute-matrix:end -->` reads
   `docs/assets/compute-driver-matrix.json` and is regenerated with
-  `node scripts/generate-compute-matrix.mjs`.
+  `node scripts/generate-compute-matrix.ts`.
 - `<!-- plugin-matrix:start -->` / `<!-- plugin-matrix:end -->` reads
   `docs/assets/plugin-driver-matrix.json` and is regenerated with
-  `node scripts/generate-plugin-matrix.mjs`.
+  `node scripts/generate-plugin-matrix.ts`.
 
 Keep each fallback generated from the same JSON so GitHub Markdown remains
 useful without becoming a second fact owner. No assistant, community widget,
 translation pipeline, deployment command, or hosted API is included.
 
 For documentation or site presentation changes, run `pnpm docs:build` to build
-the site and its search index, `node scripts/docs-site/build.mjs --check` to
+the site and its search index, `node scripts/docs-site/build.ts --check` to
 check links and anchors without writing files, and `pnpm docs:check-length` for
 word limits. Inspect navigation and presentation in the browser. Run
 `pnpm openapi:check` with the controller workspace installed when changing the

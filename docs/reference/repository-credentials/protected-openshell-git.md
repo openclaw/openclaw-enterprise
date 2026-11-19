@@ -195,17 +195,18 @@ for profile-specific allowed/denied requests and the required model-source choic
 
 ## Use the admitted repository
 
-The Sandbox sets process-scoped `safe.directory` for its approved mount,
-allowing root-owned workspaces without trusting nested repositories or changing
-persistent Git configuration. `push.negotiate=true` reduces redundant transfers; [push request limits](../../guides/repository-credentials/openshell-enrollment.md#plan-for-request-limits) apply.
+Process-scoped `safe.directory` permits the Sandbox's root-owned mount without trusting
+nested repositories or changing persistent Git configuration. `push.negotiate=true`
+reduces transfers; [push request limits](../../guides/repository-credentials/openshell-enrollment.md#plan-for-request-limits) apply.
 
 With `github-repository`, use selected HTTPS Git URLs; API operations use token
 permissions. Both API scopes refuse runner-token and deploy-key creation.
+Both allow read-only API-root discovery for `gh auth status` under current grants.
 Selected-repository requests to `api.github.com` accept `Time-Zone: Etc/UTC`;
 GraphQL POSTs also accept `Graphql-Features: merge_queue` and bounded
 `X-GH-CACHE-TTL` hints (such as `24h0m0s`).
-Hints support `gh pr list --search`; OCE ignores their values and checks current
-authorization. Duplicate headers are refused.
+For `gh pr list --search`, OCE ignores hint values, checks current authorization
+and refuses duplicate headers.
 
 With `git-write`, use exactly
 `https://github.com/$OCE_OPENSHELL_GIT_REPOSITORY.git` for clone, fetch and push.
@@ -221,10 +222,10 @@ Removal during incomplete activation can fail deployment while retaining the ind
 verified runtime; workspace setup stays pending.
 See [withdrawal and retained supervision](../../flows/agent-repository-credentials.md#6-maintain-recover-and-retire-ownership).
 
-With `git-write`, the allowed draft POST to `api.github.com` accepts one
+With `git-write`, draft POSTs to `api.github.com` accept one
 `Time-Zone: Etc/UTC` header. `draftPullLimit: one-per-grant` allows one draft
-across Agents and versions sharing the grant. To allow more drafts from the same
-ref, set `draftPullLimit: none` in the Namespace policy and deploy a new version.
+across Agents and versions sharing the grant. For more drafts from that ref,
+set `draftPullLimit: none` in the Namespace policy and deploy a new version.
 OCE still records each draft use and checks draft status, head and base.
 
 A one-draft grant spends its allowance at authorization, before
@@ -293,24 +294,23 @@ a removed binding (`access_withdrawn`) from a rejected App key (`credential_unav
 ## Route state, restarts and recovery
 
 `REPOSITORY_GIT_ROUTE_PENDING` means unverified Sandbox, supervisor or provider
-generation, or unavailable material. `REPOSITORY_GIT_ROUTE_BLOCKED` closes Git
+generation, or unavailable material; `REPOSITORY_GIT_ROUTE_BLOCKED` closes Git
 until redeployment. Continued chat requires independent model access and verified
-Git-only removal. Identity changes, overlapping GitHub access or failed observation
-can require retirement. While Git remains attached, the worker reuses one conditional
-detach request. A moved Sandbox version or unknown Gateway outcome retires the runtime.
-An empty profile workspace selects the platform profile. Files-only profiles may omit
-endpoint and credential lists. Exact identity and Git overlap checks still apply.
+Git-only removal. Identity changes, GitHub overlap or failed observation can require
+retirement. The worker reuses one conditional detach request while Git remains attached.
+A moved Sandbox version or unknown Gateway outcome retires the runtime. Empty profile
+workspaces select the platform profile. Files-only profiles may omit endpoint and
+credential lists; identity and overlap checks still apply.
 
-Standing succession confirms the original predecessor and generation with a fresh
-`WITHHELD / CREDENTIAL_EXPIRED` report, then rechecks Sandbox readiness and main
-process identity. Observation age plus monotonic read time must stay under 15 seconds at nanosecond
-precision. Both timestamps must fall within 30 seconds of local time. An elapsed budget leaves the route pending. A contradictory witness
-cannot authorize issuance, preparation or a new route fence. New installations and
-post-detach model completion require ready credentials and independent model authorization.
+Standing succession requires a fresh `WITHHELD / CREDENTIAL_EXPIRED` report matching
+the predecessor and generation, then rechecks Sandbox readiness and main-process identity.
+Observation age plus monotonic read time must stay under 15 seconds at nanosecond precision;
+both timestamps must be within 30 seconds of local time. An elapsed budget leaves the route
+pending; contradictory evidence cannot authorize issuance, preparation or a route fence.
+New installations and post-detach model completion require ready credentials and independent model authorization.
 
-In OpenShell 0.1.6, Sandbox-wide policy reload during Git detach can interrupt
-model and workspace connections despite runtime, conversation and authorization
-retention. Inspect uncertain turn outcomes before retrying.
+OpenShell 0.1.6 policy reload during Git detach can interrupt model and workspace
+connections. Inspect uncertain turn outcomes before retrying.
 
 Transient observation failures close access until the same installation verifies
 (1–10 s retry backoff). Withdrawal preserves peers’ independent grants. Replacement workers cannot adopt held launches
@@ -319,6 +319,7 @@ Redeploy after `worker_replaced` or terminal `bootstrap_failed`.
 After verified v5 held-launch replacement, deployment detail retains history and reports `repositoryAccess.state: redeploy-required` and
 `REPOSITORY_EXECUTION_REDEPLOY_REQUIRED`. OCE verifies withdrawal and model authority. Historical v4 and installation-wide v5 cannot
 prepare, issue or renew credentials. Installation-wide issuance requires observed-hook preview.
+A different Git Driver may prepare after the disposed standing predecessor passes both bounds; custody remains unchanged.
 Replacement workers finish detach using recorded custody. Never replay uncertain writes. See [Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
 For prepared-material expiry, quarantine and retirement:
 [Token Service lifecycle](../repository-credentials.md#token-service-lifecycle) and

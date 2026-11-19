@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-11-11
-last_updated_session: authoring-run/b642b758-0314-4f01-a300-5e37962b8fb4
+updated: 2026-11-19
+last_updated_session: authoring-run/b0e8e24d-3e5e-40a1-ae3b-10e0dfe3e6a8
 ---
 
 # Credential source lifecycle Flow
@@ -16,7 +16,9 @@ See [refresh](credential-source-refresh.md) and
 [Protected sources](credential-source-egress.md) admit versioned Secret references,
 skip gateway copies and require explicit migration while unbound. Protected revisions
 refuse legacy attachments. [OpenShell-owned Codex OAuth](credential-source-refresh.md#device-authorization-and-configuration)
-uses the paired Credential Gateway and Refresh Drivers with `credential_proxy` unselected.
+retains its recorded Credential Gateway and Refresh owners, including when a Git
+Proxy is later selected. Fresh OAuth enrollment is not part of the Git-only static
+model exception. Without a selected Proxy, the existing Gateway/Refresh path remains.
 
 ## Entry Points
 
@@ -35,16 +37,20 @@ uses the paired Credential Gateway and Refresh Drivers with `credential_proxy` u
 graph TD
   A["<b>POST credential source</b><br/>API request"] --> B{"<b>Catalog and grants</b><br/>type, fields, secret:operate"}
   B -- "invalid or denied" --> X["<b>Reject</b><br/>No gateway call"]
-  B -- "valid" --> C["<b>Read Secret input</b><br/>withValue or readCredentialInput"]
+  B -- "valid" --> P0{"<b>Installed source policy</b>"}
+  P0 -- "prepared, credential-free or protected static" --> P1["<b>Admit protected source</b><br/>No Gateway copy"]
+  P0 -- "no Proxy or validated Git-only static model" --> C["<b>Read Secret input</b><br/>withValue"]
+  P0 -- "unsupported or retired" --> X
+  P1 --> R
   C --> R["<b>Commit record</b><br/>state registering"]
   R -- "Gateway copy" --> D["<b>registerSource</b><br/>Gateway stores copy"]
+  R -- "protected source" --> PR["<b>Finalize protected source</b><br/>Prepare issuer if required"]
+  PR --> E
+  PR -- "lost to DELETE" --> PX["<b>Recorded-owner cleanup</b><br/>No Gateway cleanup"]
   D -- "failed or unknown" --> Y["<b>removeSource</b><br/>Delete record, or keep it deleting"]
   D -- "ready or pending" --> E0["<b>Attempt mark ready</b><br/>Gateway registration"]
   E0 -- "marked" --> E["<b>Commit ready</b><br/>with audit"]
   E0 -- "lost to DELETE" --> Y
-  R -- "live, no refresh: no write" --> E1["<b>Attempt mark ready</b><br/>Live registration"]
-  E1 -- "marked" --> E
-  E1 -- "lost to DELETE" --> X1["<b>409 conflict</b><br/>DELETE owns cleanup"]
   E --> F["<b>Bind to Agent</b><br/>actor operate"]
   F --> G{"<b>deployAgent</b><br/>gateway, Sandbox, both grants"}
   G -- "Secret-backed method" --> Z["<b>409 conflict</b><br/>No env fallback"]
@@ -66,35 +72,42 @@ graph TD
 
 ## Execution Trace
 
-Registration and deletion reject an active or stale inherited transaction from the same controller
-instance with `ResourceConflictError` before effects. OCC commits the
-intermediate State record before calling `registerSource` or `removeSource`.
+Registration and deletion reject active or stale inherited controller transactions
+with `ResourceConflictError` before effects. OCC commits intermediate State before
+`registerSource` or `removeSource`.
 
 ### 1. Admit the registration request
 
 `apps/controller/src/http/credential-sources.ts:createCredentialSource`,
 `packages/occ/src/index.ts:createCredentialSource`
 
-The route accepts `name`, `type`, optional `config`, and lowercase-keyed `secrets`.
-One transaction authorizes `credential_source:create`, locks the Namespace,
-requires its selected source Driver and a ready Namespace, then reads the type catalog.
+The route accepts `name`, `type`, optional `config` and lowercase-keyed `secrets`.
+[TokenService source schemas](../../packages/contracts/src/api/token-service-sources.ts) are standalone OpenAPI components.
+One transaction authorizes `credential_source:create`, locks the ready Namespace,
+requires its selected source Driver, then reads the catalog.
 An unoffered type returns `CredentialSourceTypeNotOfferedError` (`409`). Unknown
 or missing catalog fields and Driver-invalid values return `400 INVALID_REQUEST`
 before Secret reads, record creation, or gateway writes. OCC checks normalized
 configuration against the catalog and stores it in the source record.
 
-`apps/controller/src/drivers/credential-source-endpoint.ts:validateOpenAiSourceBaseUrl` shares
-OpenShell's strict destination authorization decision between request validation and stored-source
-use. Requests retain field-specific `400` errors; invalid stored endpoints retain `409`
-errors. Explicit URLs are normalized; an omitted URL stays omitted. Sources require an
-exact DNS host; Compute and Proxy provider normalization keep their broader URL rules.
+`apps/controller/src/drivers/credential-source-endpoint.ts:validateOpenAiSourceBaseUrl` validates
+OpenShell destinations for requests and stored sources: field-specific `400` errors
+for requests, `409` for stored endpoints. It normalizes explicit URLs and preserves
+omission. Sources require an exact DNS host; Compute and Proxy retain broader URL rules.
 
-OpenShell's internal validator receives a lazy placement callback. Static OpenAI
-validation does not consult backend Gateway placement. OAuth2 validation resolves it
-to reject token endpoints in the Gateway's own Namespace; registration repeats that
-check with tenant placement. Source ownership and cleanup remain with the recorded Driver.
+OpenShell's lazy placement callback is unused by static OpenAI validation. OAuth2
+validation resolves it to reject token endpoints in the Gateway's Namespace;
+registration repeats this with tenant placement. The recorded Driver retains
+source ownership and cleanup.
 
-For a fresh static source, `packages/occ/src/index.ts:staticEgressProvider` selects
+New sources use protected admission when a Credential Proxy is selected. Only
+the validated bundled Git-only installation permits fresh static model sources
+through its separately selected Credential Gateway. The catalog type must declare
+Harness authentication without refresh, device authorization or OAuth token login. Plugin, refresh and
+OAuth enrollment do not receive this exception. Prepared and credential-free types use
+their Proxy owner first. Eligible static sources in other profiles use live Secret
+reads without a Gateway write; retired or unavailable providers refuse admission.
+For static admission and explicit live adoption, `packages/occ/src/index.ts:staticEgressProvider` selects
 the first catalog entry for the requested type, then resolves its exact reference.
 Duplicate registrations for that ID and generation return `409` before a Secret
 payload read. Distinct providers of the same type retain catalog order. Updates
@@ -106,14 +119,13 @@ and rechecks them, including identity uniqueness, around material resolution.
 `packages/occ/src/index.ts:readCredentialSourceSecrets`,
 `packages/occ/src/index.ts:admitStaticEgressSource`
 
-Cross-Namespace Secret references raise `SecretBindingValidationError`
-(`400 INVALID_REQUEST`). OCC then authorizes `secret:operate` and locks each Secret
-(`404` if absent). For a Gateway copy, OCC calls the Secret Driver's `withValue`
-(`503` if unsupported); values remain in memory for the authorized external call.
-The live static path requires `readCredentialInput` with `retention: "none"`.
-It validates the value without retaining it and rejects missing version evidence
-or an invalid `authoritativeObservedAt` (`503`). `withValue` alone is insufficient.
-The Kubernetes Driver verifies ownership labels, UID, and key before decoding.
+Cross-Namespace references raise `SecretBindingValidationError` (`400 INVALID_REQUEST`).
+OCC authorizes `secret:operate`, then locks each Secret (`404` if absent).
+Gateway copies use Secret Driver `withValue` (`503` if unsupported), keeping values
+in memory for the authorized call. Live static admission requires
+`readCredentialInput` with `retention: "none"`: validate without retaining; reject
+missing version evidence or invalid `authoritativeObservedAt` (`503`). `withValue`
+alone is insufficient. Kubernetes verifies ownership labels, UID and key before decoding.
 
 ### 3. Register with the gateway and commit
 
@@ -121,32 +133,22 @@ The Kubernetes Driver verifies ownership labels, UID, and key before decoding.
 `packages/occ/src/index.ts:abandonCredentialRegistration`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:registerSource`
 
-OCC commits `registering` with Secret references. For Gateway registration,
-it resolves Compute's Sandbox namespace and calls `registerSource` with a
-30-second deadline. OpenShell checks provider ownership before changing the
-source-owned profile, creates the labeled provider, and rechecks creation
-collisions. These calls are not atomic. Only the Refresh Driver receives refresh
-material.
-
-For a live versioned static OpenAI source without refresh, OCC skips placement
-and Gateway registration. The Gateway still owns the catalog and the source record.
+OCC commits `registering` with Secret references. Gateway registration resolves
+Compute's Sandbox namespace and calls `registerSource` (30-second deadline).
+OpenShell checks provider ownership before changing the source-owned profile,
+creates the labeled provider and rechecks collisions. Calls are non-atomic.
+Only Refresh receives refresh material.
 
 Codex PAT profiles include native app metadata and MCP transport; the
 [Driver reference](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
 owns the exact source-wide routes.
 
-A definitive failed/absent result triggers cleanup and record deletion; failed
-cleanup retains `deleting`. Thrown calls may still take effect, so cleanup retains
-`deleting` for another DELETE. Success commits `ready` and audit atomically. A
-failed commit leaves `registering`: binding/admission fail, deletion remains
-possible.
+Definitive failure/absence triggers cleanup and deletion; failed cleanup retains
+`deleting`. Thrown calls may take effect, so cleanup retains `deleting` for another
+DELETE. Success atomically commits `ready` and audit. Failed commits leave
+`registering`: binding/admission fail, deletion remains possible.
 
-If DELETE wins before a fresh live static source without refresh becomes ready,
-POST returns `409` without resolving placement, calling Gateway removal, or deleting
-the row. This POST wrote nothing to the Gateway or Refresh Driver. If the registration
-fence delayed DELETE, the row stays `deleting` with its Secret link until DELETE
-retries. If DELETE finished, the row is already gone.
-After a Gateway write or Refresh configuration/mint, the losing POST still
+If DELETE wins after a Gateway write or Refresh configuration/mint, POST
 compensates through the original Drivers. Prepared issuer withdrawal belongs to
 DELETE; POST does not replay configuration.
 
@@ -155,10 +157,8 @@ DELETE; POST does not replay configuration.
 `packages/occ/src/index.ts:startAgentDeviceAuthorization`,
 `pollAgentDeviceAuthorization`, `withPluginDiscoveryCredential`
 
-Device authorization registers an empty source; paired Refresh fences the private
-session. `withSourceToken` may refresh during authorized callbacks. The
-[refresh flow](credential-source-refresh.md#device-authorization-and-configuration)
-traces exchange and cancellation.
+OCC registers the source before login. The [refresh flow](credential-source-refresh.md#device-authorization-and-configuration)
+traces polling, cancellation, and source use.
 
 ### 4. Bind the source to an Agent
 
@@ -169,9 +169,9 @@ up, so callers can remove a binding after its Driver changes. For each requested
 source, OCC checks `operate`, locks the ready source in the Agent's Namespace and
 requires its recorded Gateway or Proxy. Harness authentication requires a Gateway.
 
-A missing `operate` grant returns `403` before OCC checks that the list includes
-the Harness source (`400`). PostgreSQL mirrors `agents.credential_sources` into
-`agent_credential_sources` and prevents deletion of a source still referenced.
+Missing `operate` returns `403` before checking Harness source membership (`400`).
+PostgreSQL mirrors `agents.credential_sources` into `agent_credential_sources`,
+preventing deletion of referenced sources.
 
 ### 5. Admit the deployment
 
@@ -188,27 +188,25 @@ requires dedicated Codex or native OpenClaw, paired Drivers, and
 `openai`/`chatgptAuthTokens` from an external-auth Driver. Compute renders no
 model Secret and passes the resolved source to Sandbox provisioning.
 
-`admitCredentialSources` requires a Sandbox (`409`), rechecks caller grants and
-requires the Agent principal's `operate` on each listed source. The source's
-recorded owner must still offer its type. A matching Proxy type cannot admit a
-source whose Gateway no longer offers it.
+`admitCredentialSources` requires a Sandbox (`409`) and rechecks caller and Agent
+`operate` on every source. The recorded owner must still offer its type;
+a matching Proxy type cannot replace a withdrawn Gateway type.
 The revision records `sourceId`, `sourceType` and the owner's `credentialGatewayId`
 or `credentialProxyId`. Older sources keep their Gateway owner, even when a Proxy
 with the same Driver ID enforces the revision's egress plan.
 
-Before saving a new revision, both State adapters call
+Both State adapters call
 `packages/occ/src/state/platform-state.ts:assertRevisionAuthAvailable` from
-`createRevision`. Every listed snapshot and the source-backed Harness snapshot
-must match a ready source in the same Namespace: ID, type, owner capability and
-Driver ID. An unavailable source or mismatched snapshot raises `ScopeViolationError`.
+`createRevision`. Each listed or Harness snapshot must match a ready same-Namespace source by ID,
+type, owner capability and Driver ID; otherwise, `ScopeViolationError`.
 `packages/occ/src/state/postgres-state.ts:createRevision` locks all unique source
 IDs in one ordered `SELECT FOR SHARE` and holds them through commit. Source-bearing
 insertions first take a shared Namespace lock and an Agent key-share lock, following
-OCC admission's Namespace, Agent, then source order. Both adapters copy the input
-before their first await and use that copy for validation, persistence and return.
-They compare every snapshot without reordering the saved list. Memory checks its
-transaction snapshot. These insertion checks reject stale or forged owners. Reads of historical revisions do not repeat
-this check; their saved snapshots remain readable after legitimate source deletion.
+OCC admission's Namespace, Agent, then source order. Both adapters copy input
+before awaiting, then validate, persist and return that copy without reordering
+snapshots. Memory checks its transaction snapshot. These checks reject stale or
+forged owners on insertion; historical snapshots remain readable after legitimate
+source deletion.
 
 ### 6. Resolve the source at dispatch
 
@@ -222,6 +220,11 @@ Unavailable sources return `HARNESS_AUTH_SOURCE_UNAVAILABLE` or
 `CREDENTIAL_SOURCE_UNAVAILABLE`. Withdrawn sources stay detached; Compute repeats
 snapshot checks before
 [Sandbox provisioning](openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request).
+
+Before attachment or release, Kubernetes preparation and activation recheck the
+selected Gateway catalog. On a validated Git-only installation, unprotected revisions
+without repositories require a static model source. Refresh, device authorization or `chatgptAuthTokens`
+stops release. Gateway-only installations and protected plans keep their existing rules.
 
 `apps/controller/src/composition/installation-config.ts` shares the internal
 `OpenShellCredentialAttachments` handler only with bundled Sandbox/Gateway
@@ -336,11 +339,11 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 
 ## Debugging and Verification
 
-- [OCC conformance](../../tests/conformance/credential-source-occ.test.mjs) exercises grants,
+- [OCC conformance](../../tests/conformance/credential-source-occ.test.ts) exercises grants,
   recovery and version admission with a gateway double.
 - [API integration](../../tests/integration/credential-source-api.test.mjs) covers Fastify,
   IAM, OCC and the OpenShell Driver; storage and Compute are doubles.
-- [Wire conformance](../../tests/conformance/openshell-gateway-wire.test.mjs) checks provider,
+- [Wire conformance](../../tests/conformance/openshell-gateway-wire.test.ts) checks provider,
   profile, update, detach and recheck RPCs against the `v0.1.5` fixture.
 - [Worker integration](../../tests/integration/postgres-worker-agent-revision.test.mjs)
   exercises withdrawals, retries, replays and late creates with PostgreSQL and a Compute double.
@@ -369,6 +372,20 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 03:15: Keep the flow current while moving catalog enforcement to a separate change. (authoring-run/b0e8e24d-3e5e-40a1-ae3b-10e0dfe3e6a8 - ea34779cc)
+
+- 2026-11-18 14:02: Check the selected catalog type during registration. (authoring-run/f10d3e7e-18d9-4ae8-9bdb-8004b6815fb7 - 293833c72)
+
+- 2026-11-18 12:46: Check catalog field names and report malformed config keys. (authoring-run/f10d3e7e-18d9-4ae8-9bdb-8004b6815fb7 - 4875ab0f5)
+
+- 2026-11-17 19:44: Distinguish the published TokenService schemas from the current registration handler. (01a1eb01-0dea-7f01-8613-761574377d3f - 23b54e285)
+
+- 2026-11-17 19:24: Correct session ownership. (authoring-run/a1a47d55-3248-4349-81a2-ca786027b634 - c5ddcd80cb4cfcd0b969a52ef5c4cafff552a8e8)
+
+- 2026-11-13 15:44: Recheck the Git-only model lifecycle before Kubernetes attachment and release. (authoring-run/f3a542b0-ca6b-426f-8759-3ca2500f79ce - a14ccd99)
+
+- 2026-11-11 19:04: Keep ordinary Gateway model delivery independent of Git Proxy selection. (authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb - aea0cb511)
 
 - 2026-11-11 16:45: Expose structured retry guidance for the existing registration deletion fence. (authoring-run/b642b758-0314-4f01-a300-5e37962b8fb4 - 5eed51d18d8ea86a6c9450c352e967b433fa47da)
 
@@ -401,13 +418,5 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 - 2026-10-14 01:11: Reconcile endpoint validation and provider ownership with external OAuth custody in the accompanying merge. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - c5fb4880ebf2df2aedae12f99adb1992a930ba1b)
 
 - 2026-10-13 20:07: Check provider ownership before profile updates. (authoring-run/01a136d4-3550-7042-834c-cf11f51f41f2 - 146c80ef66b5860cb9bea296d2574156468a103c)
-
-- 2026-10-12 14:00: Every source, including `openai`, owns its OpenShell profile; no profile is shared by type. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - e0bb26d84)
-
-- 2026-10-10 04:53: Reconcile credential refresh; report invalid offered-source values as field-specific 400 before effects. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 90268463bbd255c3c13a0e0bdeb437728189eb1a)
-
-- 2026-10-13 18:56: Use source-owned OpenShell profiles for Codex OAuth. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - af184d6224af7c60b81027ca307097ecfc5007cc)
-
-- 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
 
 [Credential source lifecycle documentation history](credential-source-lifecycle/history.md) preserves the older dated entries.

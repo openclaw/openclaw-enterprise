@@ -16,22 +16,28 @@ import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after } from "node:test";
 
-import { commandPath, composeConfigurationProvider } from "./compose.mjs";
+import { commandPath, composeConfigurationProvider } from "./compose.ts";
+import {
+  holdK3dCreate,
+  kubernetesLifecycleCommand,
+  parseDevUpResourceState,
+} from "./dev-up-k3d-commands.ts";
 import { bashString, commandShim, startCommandServer } from "./fixture-command-server.ts";
 import { readJsonLines as readJsonLinesFile } from "./json-lines.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 import { withoutShellStartup } from "./environment.ts";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
-const serviceKey = "sk-test-secret-value";
+// Match generated bootstrap credentials in output without injecting a fixed key.
+const serviceKey = /occ_[A-Za-z0-9_-]{43}/;
 const matchingInstallationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
-const mismatchedInstallationId = "ins_9ce0e58a-415d-485e-90c2-20c3c5572505";
 const defaultRuntimeImage = "openclaw-enterprise-runtime:quickstart";
 const bashExecutable = "/bin/bash";
 
 // Callers isolate scenario environments in fixture.env and leave the parent PATH,
 // cwd and provider executables unchanged. Reuse discovery, never scenario renders.
 let configurationProvider;
+/** @type {Promise<string> | undefined} */
 let cliBuild;
 let cliDirectory;
 after(async () => {
@@ -85,6 +91,8 @@ const forwardedEnv = [
   "DOCKER_CONTEXT",
   "DOCKER_HOST",
   "OCC_CONTAINER_ENGINE_SOCKET",
+  "OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE",
+  "OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE",
   "OCC_DEVELOPMENT_TRUSTED_FORWARDER_CIDR",
   "OCC_DEVELOPMENT_BROWSER_ORIGIN",
   "OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN",
@@ -152,7 +160,7 @@ async function runFake(io, logic) {
   }
 }
 
-function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
+function engineCommand(fake, { args, env }, { stdout, exit }) {
   const { engine, options } = fake;
   const podmanJsonConfig = options.podmanJsonConfig ?? false;
   const podmanDockerApi = options.podmanDockerApi ?? false;
@@ -170,19 +178,14 @@ function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
           OCC_CONTAINER_ENGINE_SOCKET: env.OCC_CONTAINER_ENGINE_SOCKET || "",
           OCC_DEVELOPMENT_TRUSTED_FORWARDER_CIDR: env.OCC_DEVELOPMENT_TRUSTED_FORWARDER_CIDR || "",
           CONTAINER_CONNECTION: env.CONTAINER_CONNECTION || "",
+          OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE:
+            env.OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE || "",
+          OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE: env.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE || "",
         },
       }) + "\n",
     );
   }
   const scenario = env.DEV_UP_FAKE_SCENARIO || "success";
-  const writeServiceKey = (destination, id) =>
-    writeFileSync(
-      resolve(cwd, destination),
-      JSON.stringify({
-        data: { id, key: serviceKey },
-        meta: { installationId: matchingInstallationId },
-      }),
-    );
   const composeCommandIndex = () =>
     args.findIndex(
       (arg, index) =>
@@ -295,8 +298,20 @@ function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
   if (args[0] === "build") {
     exit(0);
   }
-  if (engine === "podman" && args[0] === "cp") {
-    writeServiceKey(args[args.length - 1], "key_3033697e-6397-4cc6-9b04-8ec17af78cf1");
+  if (args[0] === "volume" && args[1] === "ls") {
+    if (scenario === "postgres-volume-exists") {
+      stdout("oce-dev-up-test_occ_postgres_data\n");
+    }
+    exit(0);
+  }
+  if (args[0] === "inspect") {
+    stdout(JSON.stringify({ image: "bootstrap-image", user: "1000:1000" }));
+    exit(0);
+  }
+  if (args[0] === "run") {
+    if (args.includes("-p")) {
+      stdout("[1000,1000]");
+    }
     exit(0);
   }
   if (args[0] !== "compose") {
@@ -323,6 +338,10 @@ function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
     exit(0);
   }
   if (command === "ps") {
+    if (args.includes("--quiet")) {
+      stdout("bootstrap-container");
+      exit(0);
+    }
     const serviceNames = ["migrate", "bootstrap", "controller", "worker"];
     const requested = serviceNames.includes(args[args.length - 1])
       ? [args[args.length - 1]]
@@ -380,10 +399,6 @@ function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
     }
     exit(0);
   }
-  if (engine === "docker" && command === "cp") {
-    writeServiceKey(args[args.length - 1], "key_3033697e-6397-4cc6-9b04-8ec17af78cf1");
-    exit(0);
-  }
   if (command === "exec") {
     exit(
       scenario === "worker-timeout" ? 42 : 0,
@@ -414,7 +429,7 @@ function projectOccCommand(fake, { args, env }, { stdout, stderr, exit }) {
   }
   stdout(
     JSON.stringify({
-      id: scenario === "api-mismatch" ? mismatchedInstallationId : matchingInstallationId,
+      id: scenario === "api-mismatch" ? undefined : matchingInstallationId,
     }) + "\n",
   );
   exit(0);
@@ -428,18 +443,10 @@ function lifecycleCommand(fake, invocation, io) {
   const { engine } = fake;
   const scenario = env.DEV_UP_LIFECYCLE_SCENARIO;
   const statePath = env.DEV_UP_RESOURCE_STATE;
-  // Hold only the external command before an observable result: the real Go launcher
-  // owns cancellation, rollback, and journal retention.
-  if (
-    scenario === "cancelled-creation" &&
-    command === "k3d" &&
-    args[0] === "cluster" &&
-    args[1] === "create"
-  ) {
-    writeFileSync(join(fake.directory, "creation-started"), "dispatched");
+  if (holdK3dCreate(invocation, fake.directory)) {
     return hold;
   }
-  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  const state = parseDevUpResourceState(readFileSync(statePath, "utf8"));
   const save = () => writeFileSync(statePath, JSON.stringify(state));
   const output = (value) => stdout(value + "\n");
   const fail = (message) => exit(77, message);
@@ -474,10 +481,6 @@ function lifecycleCommand(fake, invocation, io) {
     }
     return name.includes("/") ? "docker.io/" + name : "docker.io/library/" + name;
   };
-  const serviceKeyFile = JSON.stringify({
-    data: { id: "key_fixture", key: serviceKey },
-    meta: { installationId: matchingInstallationId },
-  });
   if (command === engine) {
     if (
       args[0] === "version" ||
@@ -571,6 +574,8 @@ function lifecycleCommand(fake, invocation, io) {
       args.includes("label=com.docker.compose.service=browser-proxy")
     ) {
       output("browser-proxy-container-id");
+    } else if (args[0] === "compose" && args.includes("--quiet") && args.at(-1) === "bootstrap") {
+      output("bootstrap-container-id");
     } else if (args[0] === "run" && args.includes("-p")) {
       output("[1000,1000]");
     } else if (args[0] === "run" && args.includes("CHOWN")) {
@@ -590,7 +595,7 @@ function lifecycleCommand(fake, invocation, io) {
         output("exited");
       } else if (args.includes("{{.State.ExitCode}}")) {
         output("0");
-      } else if (args.at(-1) === "browser-proxy-container-id") {
+      } else if (["browser-proxy-container-id", "bootstrap-container-id"].includes(args.at(-1))) {
         output(JSON.stringify({ image: "sha256:" + "a".repeat(64), user: "node" }));
       } else {
         fail("unexpected inspect: " + args.join(" "));
@@ -637,8 +642,6 @@ function lifecycleCommand(fake, invocation, io) {
             .join("\n"),
         );
       }
-    } else if (args[0] === "cp") {
-      writeFileSync(resolve(cwd, args.at(-1)), serviceKeyFile);
     } else if (args[0] === "compose") {
       if (args.includes("up")) {
         state.compose = true;
@@ -660,149 +663,15 @@ function lifecycleCommand(fake, invocation, io) {
     } else {
       fail("unexpected " + engine + ": " + args.join(" "));
     }
-  } else if (command === "k3d") {
-    if (args[0] === "cluster" && args[1] === "list") {
-      output(JSON.stringify(state.clusters.map((name) => ({ name }))));
-    } else if (args[0] === "cluster" && args[1] === "create") {
-      if (scenario === "cluster-create-rolled-back") {
-        // k3d's own rollback after a port clash: nothing of the cluster remains.
-        return fail(
-          "ERRO[0009] Failed Cluster Start: Failed to start server k3d-" +
-            args[2] +
-            "-serverlb: Bind for 127.0.0.1:3000 failed: port is already allocated\n" +
-            "FATA[0009] Cluster creation FAILED, all changes have been rolled back!",
-        );
-      }
-      state.clusters.push(args[2]);
-      save();
-      if (scenario === "cluster-create-failed") {
-        fail("partial cluster creation");
-      }
-    } else if (args[0] === "cluster" && args[1] === "delete") {
-      if (scenario === "cluster-delete-failed") {
-        fail("cluster cleanup unavailable");
-      }
-      state.clusters = state.clusters.filter((name) => name !== args[2]);
-      save();
-    } else if (args[0] === "kubeconfig" && args[1] === "get") {
-      output(
-        JSON.stringify({
-          apiVersion: "v1",
-          kind: "Config",
-          "current-context": "k3d-occ-dev-owned",
-          contexts: [
-            { name: "k3d-occ-dev-owned", context: { cluster: "k3d-occ-dev-owned", user: "admin" } },
-          ],
-          clusters: [
-            {
-              name: "k3d-occ-dev-owned",
-              cluster: {
-                server: "https://127.0.0.1:6443",
-                "certificate-authority-data": "fixture-ca",
-              },
-            },
-          ],
-          users: [{ name: "admin", user: { token: "fixture-kubernetes-token" } }],
-        }),
-      );
-    } else if (args[0] !== "image") {
-      fail("unexpected k3d: " + args.join(" "));
-    }
-  } else if (command === "kubectl") {
-    if (args.includes("get") && args.includes("--raw=/version")) {
-      // Reachable.
-    } else if (
-      args[0] === "apply" ||
-      args[0] === "rollout" ||
-      args[0] === "create" ||
-      args[0] === "patch"
-    ) {
-      // Inert.
-    } else if (args[0] === "get" && args[1] === "node" && args[2].endsWith("-server-0")) {
-      output(JSON.stringify({ spec: { podCIDR: "10.42.0.0/24" } }));
-    } else if (args[0] === "get" && args[1] === "namespace") {
-      output(JSON.stringify({ metadata: { name: args[2] } }));
-    } else if (args[0] === "-n" && args.includes("wait")) {
-      // Ready.
-    } else if (args[0] === "-n" && args.includes("rollout")) {
-      // Rolled out.
-    } else if (args[0] === "-n" && args.includes("delete")) {
-      // Deleted.
-    } else if (args[0] === "-n" && args.includes("exec")) {
-      output(serviceKeyFile);
-    } else if (
-      args[0] === "-n" &&
-      args.includes("pod") &&
-      args.includes("bootstrap-password-prepare")
-    ) {
-      output("Succeeded");
-    } else if (args[0] === "-n" && args.includes("pod") && args.includes("postgres-0")) {
-      output("10.42.0.20");
-    } else if (
-      args[0] === "-n" &&
-      args.includes("endpoints") &&
-      args.includes("kubernetes") &&
-      args.includes("jsonpath={.subsets[0].ports[0].port}")
-    ) {
-      output("6443");
-    } else if (args[0] === "-n" && args.includes("endpoints") && args.includes("kubernetes")) {
-      output("172.30.42.3");
-    } else if (args[0] === "get" && args[1] === "service" && args[2] === "kubernetes") {
-      output(JSON.stringify({ spec: { clusterIP: "10.43.0.1" } }));
-    } else if (
-      args[0] === "get" &&
-      args[1] === "service" &&
-      args[2] === "openshell-gateway" &&
-      args.includes("jsonpath={.spec.clusterIP}")
-    ) {
-      output("10.43.0.50");
-    } else if (args[0] === "get" && args[1] === "endpoints" && args[2] === "kubernetes") {
-      output(JSON.stringify({ subsets: [{ addresses: [{ ip: "172.30.41.4" }] }] }));
-    } else if (args[0] === "get" && args[1] === "namespaces") {
-      output(
-        JSON.stringify({
-          items: [
-            {
-              metadata: {
-                name: "oce-123456789012345",
-                labels: { "openclaw.dev/namespace": "namespace_fixture" },
-                annotations: { "openclaw.dev/namespace-id": "namespace_fixture" },
-              },
-            },
-          ],
-        }),
-      );
-    } else if (
-      args[0] === "get" &&
-      args[1] === "service" &&
-      args.includes("jsonpath={.spec.ports[0].nodePort}")
-    ) {
-      output("30051");
-    } else {
-      fail("unexpected kubectl: " + args.join(" "));
-    }
-  } else if (command === "helm") {
-    if ((args[0] === "show" && args[1] === "chart") || args[0] === "upgrade") {
-      // Inert.
-    } else if (args[0] === "template") {
-      output(
-        [
-          "apiVersion: v1",
-          "kind: ServiceAccount",
-          "metadata:",
-          "  name: openshell-sandbox",
-          "  namespace: openclaw-workspace-template",
-          "---",
-          "apiVersion: rbac.authorization.k8s.io/v1",
-          "kind: Role",
-          "metadata:",
-          "  name: openshell-workspace-sandbox",
-          "  namespace: openclaw-workspace-template",
-        ].join("\n"),
-      );
-    } else {
-      fail("unexpected helm: " + args.join(" "));
-    }
+  } else if (command === "k3d" || command === "kubectl" || command === "helm") {
+    return kubernetesLifecycleCommand(command, {
+      args,
+      scenario,
+      state,
+      save,
+      output,
+      fail,
+    });
   }
 }
 
@@ -854,6 +723,23 @@ async function writeFakeCommand(fake, path, command) {
   );
 }
 
+/**
+ * @typedef {"docker" | "podman"} ContainerEngine
+ * @typedef {"success" | "bootstrap-failed" | "worker-exited" | "worker-timeout" | "api-unauthorized" | "api-mismatch" | "postgres-volume-exists"} StartupScenario
+ * @typedef {{
+ *   engine?: ContainerEngine,
+ *   scenario?: StartupScenario,
+ *   dockerAlias?: boolean,
+ *   podmanDockerApi?: boolean,
+ *   podmanJsonConfig?: boolean,
+ *   dockerPlatformName?: string,
+ *   macosPodmanMachine?: "rootful" | "rootless",
+ *   containerConnection?: string,
+ *   containerHost?: string,
+ * }} FixtureOptions
+ * @param {import("node:test").TestContext} t
+ * @param {FixtureOptions} [options]
+ */
 async function createFixture(t, options = {}) {
   const directory = await realpath(await temporaryDirectory(t, "openclaw-dev-up-"));
 
@@ -991,13 +877,21 @@ exit 86
 
 // Only external engine and cluster commands are inert. Configuration rendering,
 // selection, state ownership, rollback, and authenticated HTTP use the real code.
+/**
+ * @typedef {"success" | "cancelled-creation" | "docker-stack-holds-api-port" | "node-dns-refused" |
+ *   "compose-up-failed" | "compose-down-failed" | "cluster-create-rolled-back" | "cluster-create-failed" |
+ *   "cluster-delete-failed" | "readiness-blocked" | "api-unauthorized" | "api-mismatch"} LifecycleScenario
+ * @param {Awaited<ReturnType<typeof createFixture>>} fixture
+ * @param {LifecycleScenario} [scenario]
+ * @param {{engine?: ContainerEngine}} [options]
+ */
 async function prepareLifecycleCommands(fixture, scenario = "success", options = {}) {
   const engine = options.engine ?? "docker";
   const bin = join(fixture.directory, "bin");
   // Isolate the launcher contract; real sandbox enforcement is covered by the
   // real-cluster lifecycle suite, not this external-command fixture.
   await writeFile(
-    join(fixture.fixtureRepository, "scripts", "prepare-development-codex-seccomp.mjs"),
+    join(fixture.fixtureRepository, "scripts", "prepare-development-codex-seccomp.ts"),
     'process.stdout.write(JSON.stringify({ mode: "RuntimeDefault", profileName: "" }));\n',
   );
   fixture.env.SAFETY_LOG = join(fixture.directory, "lifecycle.log");
@@ -1037,6 +931,7 @@ async function writeOverride(fixture, name, lines) {
   return path;
 }
 
+/** @param {{ directory: string }} fixture */
 async function customRuntimeOverride(fixture) {
   return writeOverride(fixture, "compose.custom-runtime.yaml", [
     "services:",
@@ -1048,6 +943,7 @@ async function customRuntimeOverride(fixture) {
   ]);
 }
 
+/** @param {{ directory: string }} fixture */
 async function perImageOverride(fixture) {
   return writeOverride(fixture, "compose.per-image.yaml", [
     "services:",
@@ -1059,6 +955,7 @@ async function perImageOverride(fixture) {
   ]);
 }
 
+/** @param {{ directory: string }} fixture */
 async function publicControllerOverride(fixture) {
   return writeOverride(fixture, "compose.public-controller.yaml", [
     "services:",
@@ -1068,6 +965,10 @@ async function publicControllerOverride(fixture) {
   ]);
 }
 
+/**
+ * @param {{ emptyEnv: string }} fixture
+ * @param {string} [overridePath]
+ */
 function composeOptions(fixture, overridePath) {
   const options = [
     "--env-file",
@@ -1086,6 +987,19 @@ function composeOptions(fixture, overridePath) {
 // Like spawnSync with encoding utf8 (status, signal, stdout, stderr, and error on a
 // failed start or timeout), but without blocking this process: its command server must
 // answer the fake commands the program runs.
+/**
+ * @typedef {{
+ *   status: number | null,
+ *   signal: NodeJS.Signals | null,
+ *   stdout: string,
+ *   stderr: string,
+ *   error: Error | undefined,
+ * }} CommandResult
+ * @param {string} command
+ * @param {string[]} args
+ * @param {{ cwd?: string | undefined, env?: NodeJS.ProcessEnv | undefined, timeout?: number }} [options]
+ * @returns {Promise<CommandResult>}
+ */
 function runCommand(command, args, { cwd, env, timeout } = {}) {
   return new Promise((resolveRun) => {
     const child = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -1113,6 +1027,10 @@ function runCommand(command, args, { cwd, env, timeout } = {}) {
   });
 }
 
+/**
+ * @param {string[]} args
+ * @param {NodeJS.ProcessEnv} env
+ */
 function runDevUp(args, env) {
   return runCommand(bashExecutable, ["scripts/dev-up", ...args], {
     cwd: env.DEV_UP_FIXTURE_REPOSITORY,
@@ -1120,6 +1038,7 @@ function runDevUp(args, env) {
   });
 }
 
+/** @param {NodeJS.ProcessEnv} env */
 function runDevDown(env) {
   return runCommand(bashExecutable, ["scripts/dev-down"], {
     cwd: env.DEV_UP_FIXTURE_REPOSITORY,
@@ -1129,10 +1048,19 @@ function runDevDown(env) {
 
 // A dev-up log the fixture may not have written yet: a missing file is no records, and blank
 // lines are skipped.
+/**
+ * @param {string} path
+ * @returns {Promise<unknown[]>}
+ */
 function readJsonLines(path) {
   return readJsonLinesFile(path, { missingOk: true, skipBlank: true });
 }
 
+/**
+ * @template {{ args: string[] }} Invocation
+ * @param {Invocation[]} logs
+ * @returns {Invocation[]}
+ */
 function composeInvocations(logs) {
   return logs.filter(
     (entry) =>
@@ -1150,7 +1078,6 @@ export {
   customRuntimeOverride,
   defaultRuntimeImage,
   matchingInstallationId,
-  mismatchedInstallationId,
   perImageOverride,
   prepareLifecycleCommands,
   publicControllerOverride,

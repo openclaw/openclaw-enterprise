@@ -12,7 +12,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   createDeviceCredentialDrivers,
@@ -36,6 +36,7 @@ interface FixtureOptions {
   approve?: () => Promise<boolean>;
   beforePoll?: () => Promise<void>;
   startError?: unknown;
+  formatExpiresAt?: (at: number) => string;
 }
 
 type DeviceGateway = CredentialGatewayDriver & {
@@ -181,21 +182,12 @@ export async function createFixture(
         ...(session === undefined ? {} : { session }),
       });
     },
-    async stored(
-      login: Pick<DeviceLogin, "session">,
-    ): Promise<Record<string, unknown> & { sourceId: string }> {
-      const secret = await controller.transact((unit) =>
-        unit.secrets.findSecret(namespace.id, login.session.id),
+    async stored(login: Pick<DeviceLogin, "session">) {
+      const record = await controller.transact((unit) =>
+        unit.authenticationStates.findDevice(namespace.id, login.session.id),
       );
-      assert.ok(secret, "the login session must have a Secret");
-      const value = secretDriver.valueFor(secret);
-      assert.ok(value, "the login Secret must have a stored value");
-      const stored = asRecord(JSON.parse(value));
-      assert.ok(
-        stored && typeof stored.sourceId === "string",
-        "the session must identify its source",
-      );
-      return { ...stored, sourceId: stored.sourceId };
+      assert.ok(record, "the login session must exist");
+      return record;
     },
   };
 }

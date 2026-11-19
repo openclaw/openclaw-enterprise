@@ -9,13 +9,14 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { Check } from "typebox/value";
 import { NamespaceId } from "../../packages/contracts/src/index.ts";
-import { createRealKubernetesFixture, kubectlArguments } from "../helpers/kubernetes-real.mjs";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { createRealKubernetesFixture, kubectlArguments } from "../helpers/kubernetes-real.ts";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { listen } from "../helpers/listen.ts";
+import { canonicalizeDumpRows } from "../helpers/postgres-dump.ts";
 import {
   installObservabilityControlPlane,
   observabilitySelection,
-} from "../helpers/production-observability-k3d.mjs";
+} from "../helpers/production-observability-k3d.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -64,8 +65,7 @@ test(
     const f = await installObservabilityControlPlane(t);
     const installation = record(await f.api("GET", "/installation"));
     const installationId = string(installation.id);
-    const kubeconfigPath = string(f.selection.kubeconfigPath);
-    const kubernetesContext = string(f.selection.kubernetesContext);
+    const { kubeconfigPath, kubernetesContext } = f.selection;
     const sql = (statement: string) =>
       f.kubectl(
         "-n",
@@ -123,19 +123,30 @@ test(
     await f.run("go", ["build", "-trimpath", "-o", occ, "./cmd/occ"]);
     const source = (await f.run("git", ["rev-parse", "HEAD"])).trim();
     const keyPath = join(f.directory, "service-key.json");
-    const key = await f.kubectl(
-      "-n",
-      f.system,
-      "exec",
-      "operator",
-      "--",
-      "cat",
-      "/bootstrap/initial-admin-service-key.json",
+    // The fixture has already removed the fresh-install credential Secret.
+    // Resolve the real administrator identity from auth storage, then issue a
+    // normal CLI key through the API instead of extracting bootstrap output.
+    const principalId = (
+      await sql("SELECT reference_id FROM occ.apikey WHERE name = 'bootstrap-admin'")
+    ).trim();
+    assert.ok(
+      principalId && !principalId.includes("\n"),
+      "one bootstrap service identity is required",
     );
-    const serviceKey = record(record(JSON.parse(key)).data);
+    const serviceKey = record(
+      await f.api(
+        "POST",
+        "/api/auth/service-keys",
+        {
+          servicePrincipalId: principalId,
+          name: "migration-preflight",
+        },
+        201,
+      ),
+    );
     const serviceKeyId = string(serviceKey.id);
     f.secrets.push(string(serviceKey.key));
-    await writeFile(keyPath, key, { mode: 0o600 });
+    await writeFile(keyPath, JSON.stringify({ data: serviceKey }), { mode: 0o600 });
     const startup = record(await f.get("secret", "occ-installation-startup"));
     const installationPath = join(f.directory, "installation.json");
     await writeFile(
@@ -173,17 +184,18 @@ test(
       { stdio: ["ignore", "pipe", "pipe"] },
     );
     t.after(() => relay.kill("SIGTERM"));
-    await new Promise((resolve, reject) => {
+    await new Promise<void>((resolve, reject: (error: unknown) => void) => {
       relay.once("error", reject);
       relay.once("exit", (code) => reject(new Error(`operator relay exited (${code})`)));
-      relay.stdout.once("data", resolve);
+      relay.stdout.once("data", () => resolve());
     });
-    const connection = await createRealKubernetesFixture({
-      ...f.selection,
-      gatewayImage: undefined,
-      codexImage: undefined,
-      databaseUrl: undefined,
-    }).startPortForwardTarget(f.system, "pod/operator", "0:3101");
+    const connection: { url: unknown; stop: () => Promise<void> } =
+      await createRealKubernetesFixture({
+        ...f.selection,
+        gatewayImage: undefined,
+        codexImage: undefined,
+        databaseUrl: undefined,
+      }).startPortForwardTarget(f.system, "pod/operator", "0:3101");
     t.after(() => connection.stop());
     // Terminate verified test-owned TLS on loopback and relay bytes to the real
     // installed API; no HTTP operation or response is replaced by this transport.
@@ -228,7 +240,7 @@ test(
           "--installation",
           installationPath,
           "--runtime-image",
-          string(f.images.node),
+          f.images.node,
           "--source-revision",
           source,
           "--evidence-dir",
@@ -245,8 +257,9 @@ test(
         },
       );
     // Keep full dumps private. Authenticating the real CLI updates exactly this
-    // key's last_request and updated_at; compare every other byte, including all
-    // other keys, and verify the two expected timestamps independently.
+    // key's last_request and updated_at. Ignore COPY row order, but retain every
+    // value, duplicate and non-COPY byte, including all other keys' timestamps.
+    // Verify the two expected timestamps independently.
     const databaseSnapshot = async (name: string) => {
       // Decode only after complete byte capture: pipe chunks can split UTF-8 characters.
       // Keep command failures generic because both streams may contain private data.
@@ -271,7 +284,7 @@ test(
       await writeFile(join(f.directory, `${name}.sql`), bytes, { mode: 0o600 });
       const dump = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
       const captured: { timestamps?: number[] } = {};
-      const normalized = dump.replace(
+      const timestampNormalized = dump.replace(
         /^COPY occ\.apikey \(([^\n]+)\) FROM stdin;\n([\s\S]*?)\n\\\.\n/m,
         (_section: string, header: string, data: string) => {
           const columns = header.split(", ");
@@ -298,8 +311,10 @@ test(
         },
       );
       assert.ok(captured.timestamps, "full dump must include the exact CLI service key");
+      const normalized = canonicalizeDumpRows(timestampNormalized);
       return {
         hash: createHash("sha256").update(normalized).digest("hex"),
+        normalized,
         timestamps: captured.timestamps,
       };
     };
@@ -308,10 +323,26 @@ test(
       name: string,
     ) => {
       const after = await databaseSnapshot(name);
+      // Report table names and ordering only; snapshot values remain private.
+      const sections = (dump: string) =>
+        new Map(
+          Array.from(dump.matchAll(/^COPY ([^\n]+) FROM stdin;\n([\s\S]*?)\n\\\.\n/gm)).map(
+            ([, header, rows]) => [header, (rows ?? "").split("\n").sort().join("\n")] as const,
+          ),
+        );
+      const previous = sections(before.normalized);
+      const current = sections(after.normalized);
+      const changed = [...new Set([...previous.keys(), ...current.keys()])].filter(
+        (header) => previous.get(header) !== current.get(header),
+      );
+      const nonCopy = (dump: string) =>
+        dump.replace(/^COPY [^\n]+ FROM stdin;\n[\s\S]*?\n\\\.\n/gm, "");
+      const orderingOnly =
+        changed.length === 0 && nonCopy(before.normalized) === nonCopy(after.normalized);
       assert.equal(
         after.hash,
         before.hash,
-        "only the CLI key's authentication timestamps may change",
+        `only the CLI key's authentication timestamps may change; COPY ordering only: ${orderingOnly}; changed COPY contents: ${changed.join("; ") || "none"}`,
       );
       after.timestamps.forEach((timestamp, index) =>
         assert.ok(timestamp >= number(before.timestamps[index])),
@@ -399,8 +430,7 @@ test(
     );
     await f.waitFor(
       "both writers stopped",
-      async () =>
-        array(await f.pods("api")).length === 0 && array(await f.pods("worker")).length === 0,
+      async () => (await f.pods("api")).length === 0 && (await f.pods("worker")).length === 0,
     );
     const stopped: Record<string, ReturnType<typeof deployment>> = {};
     for (const component of ["api", "worker"]) {
@@ -414,7 +444,7 @@ test(
     await sql("REVOKE SELECT ON occ.iam_identities FROM occ_app");
     await assert.rejects(
       f.upgrade({
-        database: { ...record(record(f.values).database), upgradeMigration: "separate" },
+        database: { ...record(f.values.database), upgradeMigration: "separate" },
       }),
       /failed pre-upgrade|BackoffLimitExceeded/,
     );
@@ -432,7 +462,7 @@ test(
       assert.equal(currentDeployment.metadata.uid, previous.metadata.uid);
       assert.equal(currentDeployment.metadata.generation, previous.metadata.generation);
       assert.equal(currentDeployment.spec.replicas, 0);
-      assert.equal(array(await f.pods(component)).length, 0);
+      assert.equal((await f.pods(component)).length, 0);
     }
 
     // Reconcile the known fault, then use the documented independent migration Job
@@ -466,7 +496,7 @@ test(
             automountServiceAccountToken: false,
             restartPolicy: "Never",
             securityContext: record(template.securityContext),
-            containers: [{ ...migration, args: ["scripts/migrate-production.mjs"] }],
+            containers: [{ ...migration, args: array(migration.args).slice(0, -1) }],
             volumes: array(template.volumes).filter((volume) =>
               mounts.has(string(record(volume).name)),
             ),

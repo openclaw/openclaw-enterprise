@@ -10,14 +10,14 @@ import {
   CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES,
   credentialSourceFieldRequired,
 } from "../helpers/refusal-text.mjs";
-import { createPreparedStore } from "../fixtures/repository-credentials/github/prepared-store.mjs";
+import { createPreparedStore } from "../fixtures/repository-credentials/github/prepared-store.ts";
 import {
   startGitHubFixture,
   fixtureRepository,
   fixtureRepositoryId,
   fixtureInstallationId,
   fixtureAppId,
-} from "../fixtures/repository-credentials/github.mjs";
+} from "../fixtures/repository-credentials/github.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
 import { createGitHubPreparationOwner } from "../../apps/controller/src/drivers/repo/github/access/prepared-owner.ts";
 import { preparationIssuerAuthority } from "../../apps/controller/src/drivers/repo/github/access/origin.ts";

@@ -16,9 +16,6 @@ export const callerDenied = (grant, target) =>
 // when the caller sent it or may read both it and the Agent, otherwise "one of its bound Secrets".
 export const agentPrincipalDenied = (agent, target, grant = "Secret operate") =>
   `${agent} cannot use ${target}: the Agent itself needs ${grant} on it. Ask an Installation administrator to give the Agent access, then deploy again.`;
-// A denial echoes the ID its request sent, so a real and an unknown ID get answers that match once
-// each answer's own ID is hidden: the text never says whether the resource exists.
-export const sentIdHidden = (text, id) => text.replaceAll(id, "<id>");
 // A create needs the collection grant, which only Roles from the Installation configuration
 // hold: an Installation administrator creates one. `kinds` is the plural, such as "Secrets".
 export const createDenied = (kind, namespaceId, kinds = `${kind}s`) =>
@@ -98,7 +95,7 @@ export const AGENT_DELETING = "The requested Agent is being deleted.";
 export const PROTECTED_SOURCE_EMBEDDED_AGENT =
   "config.agent_id names an embedded Agent, and a protected credential source serves only a dedicated Agent. Name a dedicated Agent in this Namespace.";
 export const protectedSourceTypeRefused = (type, types) =>
-  `The selected Credential Proxy cannot protect ${type} sources, and a Proxy protects every new source. Ask an Installation administrator, or create a type it protects: ${types}.`;
+  `The selected Credential Proxy cannot protect ${type} sources. Ask an Installation administrator, or create a type it protects: ${types}.`;
 export const CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES =
   "Credential source Secrets cannot cross Namespaces.";
 // Withdrawal of a source the Agent's active revision does not use (409).
@@ -304,19 +301,15 @@ export const AGENT_UPDATE_DENIED = notIncluded(
 export const AGENT_SOURCES_DENIED =
   "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, which your access does not include. Ask an Installation administrator for that access.";
 // Device login from Create Agent (Namespace-scoped) and from Agent detail (Agent-scoped): a start
-// creates a Secret and a credential source, which only an Installation administrator can create;
-// a poll or cancel checks the scope again plus operate on the login's Secret (finding 2577).
+// requires credential source create. A poll checks the Agent scope and source operate;
+// cancellation checks only the Agent scope.
 const DEVICE_LOGIN_START_REMEDY =
   "which only an Installation administrator holds: choose another authentication method, or ask one to set up this sign-in.";
-export const DEVICE_LOGIN_START_DENIED = `Your access does not include starting a device login in this Namespace. It needs Agent create, Secret create and credential source create here, ${DEVICE_LOGIN_START_REMEDY}`;
-export const AGENT_DEVICE_LOGIN_START_DENIED = `Your access does not include starting a device login for this Agent. It needs Agent read and update on it, plus Secret create and credential source create in this Namespace, ${DEVICE_LOGIN_START_REMEDY}`;
-export const AGENT_DEVICE_LOGIN_POLL_DENIED = notIncluded(
-  "finishing this device login",
-  "Agent read and update on this Agent, plus Secret operate on the login's Secret and credential source operate on its credential source",
-);
+export const DEVICE_LOGIN_START_DENIED = `Your access does not include starting a device login in this Namespace. It needs Agent create and credential source create here, ${DEVICE_LOGIN_START_REMEDY}`;
+export const AGENT_DEVICE_LOGIN_START_DENIED = `Your access does not include starting a device login for this Agent. It needs Agent read and update on it, plus credential source create in this Namespace, ${DEVICE_LOGIN_START_REMEDY}`;
 export const AGENT_DEVICE_LOGIN_CANCEL_DENIED = notIncluded(
   "cancelling this device login",
-  "Agent read and update on this Agent, plus Secret operate on the login's Secret",
+  "Agent read and update on this Agent",
 );
 
 // Kubernetes Compute refuses a Dedicated Agent the Installation cannot place (no gateway routing
@@ -638,124 +631,6 @@ export const dedicatedCodexVariableRefusal = (
 // stored order end on different entries, so the step offers only removal (finding 3095).
 export const unboundPluginSecretRefusal = (setting, name, plugin, enabledBy) =>
   `Configuration setting ${setting} references ${name} without a Configuration Secret binding: bind ${name} in secretBindings, or remove plugins.entries.${plugin}${enabledBy === null ? "" : ` or set ${enabledBy === undefined ? "its enabled" : `plugins.entries.${enabledBy}.enabled`} to false`}.`;
-// Why OpenClaw cannot read a SecretRef, as [problem, step] (packages/occ/src/environment-
-// references.ts): every refusal names one next step (finding 3067). `alias` is the default alias
-// of the ref's source (secrets.defaults.<source>, else "default"). `substitutedAlias`: that alias
-// holds an environment reference, which only the runtime resolves. `provider`: a provider
-// secrets.providers does not configure for the source; `defaultAlias`: provider default while
-// secrets.defaults.<source> names `alias`; `providerAlias`: a provider outside the alias grammar;
-// `id`: an env id outside the grammar, with the `example` the step offers, if any. A null `alias`
-// is one too long to offer by name.
-const useDefaultAlias = (alias, source = "env") =>
-  alias === null ? `use the secrets.defaults.${source} alias` : `use provider ${alias}`;
-const UNREADABLE_SECRET_REFS = {
-  providerless: (source = "env", alias = "default") => [
-    "is a SecretRef without a provider",
-    ["env", "store"].includes(source)
-      ? `add provider ${alias}`
-      : `add a provider that secrets.providers configures for ${source}`,
-  ],
-  substitutedAlias: (source = "env") => [
-    "is a SecretRef without a provider",
-    `add the provider secrets.defaults.${source} names`,
-  ],
-  provider: (provider, source = "env", alias = "default") => [
-    `uses secret provider ${provider}, not configured for ${source}`,
-    `${["env", "store"].includes(source) ? `${useDefaultAlias(alias, source)}, or ` : ""}add it to secrets.providers`,
-  ],
-  defaultAlias: (alias, source = "env", offered = alias) => [
-    `uses secret provider default, but secrets.defaults.${source} names ${alias}`,
-    `use ${offered === null ? "that provider" : `provider ${offered}`}`,
-  ],
-  providerAlias: (provider, alias = "default") => [
-    `uses secret provider ${provider}, not a provider alias OpenClaw reads`,
-    useDefaultAlias(alias),
-  ],
-  id: (id, example) => [
-    `references ${id}, not an env id OpenClaw reads`,
-    `use ${example ?? "A-Z, 0-9 and _, from a letter"}`,
-  ],
-  // A long provider shows quoted and cut, as a key in brackets.
-  allowlist: (id, provider = "default") => [
-    `references ${id}, which secrets.providers${provider.startsWith('"') ? `[${provider}]` : `.${provider}`}.allowlist omits`,
-    "add it to that allowlist",
-  ],
-};
-// The problem alone, as SSH Compute states it for the reference it renders.
-export const unreadableSecretRefProblem = (held, ...shown) =>
-  UNREADABLE_SECRET_REFS[held](...shown)[0];
-// The plugin secret input rule's refusal of a reference OpenClaw cannot read, which stops the
-// Gateway at startup whatever the bindings (finding 3056).
-export const unreadablePluginSecretRefusal = (setting, plugin, held, ...shown) => {
-  const [problem, step] = UNREADABLE_SECRET_REFS[held](...shown);
-  return `Configuration setting ${setting} ${problem}: ${step}, or remove plugins.entries.${plugin} or set its enabled to false.`;
-};
-// The same refusal of a whole `${NAME}` at an input with a runtime owner (beam, imap): OpenClaw
-// reads it as a SecretRef only while NAME is unset, so deployment refuses it while unbound.
-// Binding NAME is the step it names.
-export const unboundUnreadablePluginSecretRefusal = (setting, plugin, name, held, ...shown) =>
-  `Configuration setting ${setting} ${unreadableSecretRefProblem(held, ...shown)}: bind ${name} in secretBindings, or remove plugins.entries.${plugin} or set its enabled to false.`;
-// The same refusal of a whole `${APP_SERVER_*}` there on an embedded or Dedicated OpenClaw Agent
-// (`agent`: "an embedded" or "a Dedicated OpenClaw"), which never sets it (finding 3060).
-export const appServerUnreadablePluginSecretRefusal = (setting, plugin, agent, held, ...shown) =>
-  `Configuration setting ${setting} ${unreadableSecretRefProblem(held, ...shown)}, and it is never set on ${agent} Agent: remove plugins.entries.${plugin} or set its enabled to false.`;
-// The refusal of a gateway.auth.password object OpenClaw cannot read, which stops every start on
-// every Compute (findings 3057, 3061, 3062): Configuration save, Agent save and deployment
-// (packages/occ/src/configuration-settings.ts), and Kubernetes and Docker Compute admission and
-// preparation, from one reader (`gatewayPasswordRequirement`). `keys`: an object with other keys;
-// `shape`: an object OpenClaw does not read as a SecretRef, offering the generated reference on the
-// default env alias.
-const UNREADABLE_GATEWAY_PASSWORDS = {
-  ...UNREADABLE_SECRET_REFS,
-  keys: () => [
-    "holds keys other than source, provider and id, which OpenClaw refuses",
-    "remove them",
-  ],
-  shape: (alias = "default") => [
-    "is not a SecretRef OpenClaw reads",
-    `use {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}`,
-  ],
-};
-export const unreadableGatewayPasswordRefusal = (held, ...shown) =>
-  `Configuration setting gateway.auth.password ${UNREADABLE_GATEWAY_PASSWORDS[held](...shown).join(": ")}.`;
-// The refusal of a secrets.defaults OpenClaw's configuration check refuses, which stops the
-// Gateway at every start on every Compute (finding 3064): Configuration save, Agent save and
-// deployment (`secretProviderDefaultsProblem`) and the console. `alias`: an alias outside the
-// grammar on `source` (`shown` as the message shows it, absent for one that is not text; `fixed`:
-// the alias the step offers, if any); `key`: a key other than a source; `shape`: secrets.defaults
-// that is not an object.
-const INVALID_SECRET_PROVIDER_DEFAULTS = {
-  alias: (source, shown, fixed) => [
-    `secrets.defaults.${source}`,
-    `${shown === undefined ? "is " : `is ${shown}, `}not a provider alias OpenClaw reads (a-z, 0-9, _ and -, from a lowercase letter, at most 64 characters): ${fixed === undefined ? "" : `use ${fixed}, or `}remove it`,
-  ],
-  key: (shown) => [
-    "secrets.defaults",
-    `holds ${shown}, which OpenClaw refuses: name only env, file, exec or store`,
-  ],
-  shape: () => [
-    "secrets.defaults",
-    "must be an object that names a provider alias for env, file, exec or store",
-  ],
-};
-export const invalidSecretProviderDefaultsRefusal = (held, ...shown) => {
-  const [setting, requirement] = INVALID_SECRET_PROVIDER_DEFAULTS[held](...shown);
-  return `Configuration setting ${setting} ${requirement}.`;
-};
-// SSH Compute's refusals of a gateway.auth.password it cannot deliver (finding 3065): `reference`,
-// a password other than the expression or an env SecretRef to the generated password, offering it
-// on the default env alias; `rendered`, an unset password or the expression in password mode when
-// the default-provider reference SSH Compute renders then is unreadable (`requirement` says why),
-// offering the reference on the default env alias; `unoffered`, the same when OpenClaw cannot read
-// that reference either, so no reference is offered.
-export const sshGatewayPasswordRefusal = {
-  unoffered: (requirement) =>
-    `Configuration setting gateway.auth.password must be set to an env SecretRef to OPENCLAW_GATEWAY_PASSWORD that OpenClaw reads: SSH Compute's default reference ${requirement}.`,
-  reference: (alias = "default") =>
-    `Configuration setting gateway.auth.password must be "\${OPENCLAW_GATEWAY_PASSWORD}" or the environment SecretRef {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value SSH Compute generates.`,
-  rendered: (alias, requirement) =>
-    `Configuration setting gateway.auth.password must be set to {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}: SSH Compute's default reference ${requirement}.`,
-};
 const USE_UPPERCASE =
   "use an uppercase ${NAME} bound to a Secret in secretBindings, or escape literal text as $${NAME}";
 export const unsubstitutedReferenceRefusal = (setting, shown) =>
@@ -953,18 +828,6 @@ export const AGENT_PAGE_READ_DENIED = notIncluded(
   "Agent read, AgentRevision read and Configuration read on them",
 );
 
-// API answers that are not permission refusals name their cause and next step (finding D762),
-// and who-to-ask text says "Installation administrator" (D763). The 401 for a missing, expired
-// or revoked credential gives header advice only to a request that sent an Authorization header.
-export const CREDENTIAL_REQUIRED =
-  "A valid session cookie or service API key is required: the credential sent is missing, invalid, expired, or revoked. Sign in again, or use a current service API key.";
-export const AUTHORIZATION_HEADER_REFUSED =
-  "The API does not accept an Authorization header. Send a service API key in the x-api-key header, or sign in for a session cookie.";
-export const BODY_NOT_JSON = "The request body is not valid JSON.";
-// A Namespace-scoped service key outside its Namespace: the text names only the key's own
-// Namespace, never the requested one.
-export const serviceKeyOutsideNamespace = (namespaceId) =>
-  `This service key works only in Namespace ${namespaceId}; this request is outside it. Ask an Installation administrator to run it.`;
 // `source` is the requested log source, or "such" when none is known.
 export const runtimeLogSourceUnavailable = (source) =>
   `This Agent version has no ${source} log source. Every version has gateway; only a Dedicated Agent has agent, and only a version deployed with a Sandbox Driver has sandbox.`;
@@ -995,9 +858,6 @@ export const currentHarnessAuthDenied = (grant, target) =>
 // off: the grant alone would not open it (finding D762).
 export const nativeAdminOffDenied = (target) =>
   `${callerDenied("Agent operate", target)} Native admin is also off on this Installation, so the grant alone would not open it.`;
-// A request path no route has (finding D764): a trailing slash says so; any other names no route.
-export const ROUTE_TRAILING_SLASH = "No API route has this path: remove the trailing slash.";
-export const ROUTE_NOT_FOUND = "No API route has this path. Check it against the API reference.";
 // Credential Gateway refusals that name the Installation setting and who changes it (D763).
 export const CREDENTIAL_GATEWAY_NOT_CONFIGURED =
   "This Installation has no Credential Gateway, so credential sources are unavailable. An Installation administrator must select the OpenShell Credential Gateway Driver; see https://docs-enterprise.openclaw.org/reference/credential-sources/";

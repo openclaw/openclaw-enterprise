@@ -52,11 +52,10 @@ as the reason Dedicated OpenClaw is disabled.
    Reselect unlisted IDs when you return.
 4. Check Installation, credential, and runtime model support. Primary and
    fallback models must share a supported provider and Harness. Model changes keep
-   unrelated JSON edits. **Advanced settings** → **Reset template** replaces them.
+   unrelated JSON and authored `plugins.allow`/`plugins.deny`. **Advanced settings** → **Reset template** replaces them.
    If a malformed provider list, malformed Codex `plugins.allow`, or a number
    outside JavaScript's finite range blocks a JSON rewrite, the form keeps the draft
-   and focuses **Configuration JSON**. Fix or remove the malformed field, or replace
-   a number such as `1e400` with a value closer to zero. Then retry.
+   and focuses **Configuration JSON**. Fix or remove the malformed field, or replace `1e400` with a finite value; retry.
    Provider lists take model objects with string `id` values in an array.
    `plugins.allow` takes a string array.
 5. Under **Repository access**, optionally select up to 16 approved repositories
@@ -169,8 +168,6 @@ If the configuration check times out, your entries stay in the form. Select
 **Create Agent** again to repeat the check and continue.
 If a create response is missing or identifies a different resource, the write may still
 have succeeded. Check the displayed IDs and the Agents list before starting again.
-For an uncertain Credential Source, select **Check credential registration** to look up
-that registration without creating another. Give your operator the request ID if the outcome is unclear.
 
 If the Console cannot confirm a ChatGPT OAuth sign-in started, it blocks another
 start in that form. Without the session reference it cannot poll or cancel the
@@ -184,8 +181,11 @@ resends the original request. A refused retry of a confirmed failure names the
 reason when available; **Create Agent** then starts a new request. Saved
 Secrets are reused, never deleted automatically. After a lost Secret save, check
 existing Namespace Secrets before starting again.
-**Check credential registration** recovers an uncertain source. If absent,
-**Create Agent** retries its name/references; uniqueness fences late commits. **Remove failed credential registration** deletes a source left
+**Check credential registration** looks up the source without retrying writes.
+An empty result preserves any known refusal and the saved Secret. Resolve the refusal,
+then select **Create Agent** to retry the same name/references; uniqueness fences late commits.
+Give your operator the request ID if the outcome is unclear.
+**Remove failed credential registration** deletes a source left
 `registering`/`deleting`, requiring source `delete`. Retry removal after the gateway's
 registration safety window if needed. See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
 

@@ -8,6 +8,7 @@ import {
   laneArgs,
   runnerArtifactPaths,
   runRunnerAsync,
+  writeRunnerLaneFiles,
   writeRunnerManifest,
   writeSingleFileRunnerLane,
 } from "../helpers/ci-runner-fixture.ts";
@@ -181,7 +182,7 @@ describe("tests that wait out real runner limits, side by side", { concurrency: 
     const marker = join(root, "state/started");
     // The preparation returns half a second before the deadline.
     await writeFile(
-      join(root, "scripts/ci/prepare.mjs"),
+      join(root, "scripts/ci/prepare.ts"),
       [
         "export async function prepareFile() {",
         "  const left = Number(process.env.CI_RUNNER_DEADLINE_MS) - Date.now();",
@@ -277,7 +278,7 @@ describe("tests that wait out real runner limits, side by side", { concurrency: 
     const { statePath, resultsPath } = runnerArtifactPaths(root, "hung-prepare");
     const preparing = join(root, "state/preparing");
     await writeFile(
-      join(root, "scripts/ci/prepare.mjs"),
+      join(root, "scripts/ci/prepare.ts"),
       [
         'import { writeFileSync } from "node:fs";',
         "export async function prepareFile({ file }) {",
@@ -291,11 +292,7 @@ describe("tests that wait out real runner limits, side by side", { concurrency: 
       ].join("\n"),
     );
     const source = 'import test from "node:test";\ntest("runs", () => {});\n';
-    const files = ["hung", "later"].map((name) => ({ path: `tests/integration/${name}.test.mjs` }));
-    for (const { path } of files) {
-      await writeFile(join(root, path), source);
-    }
-    await writeRunnerManifest(root, { lanes: { prepare: { files } } });
+    await writeRunnerLaneFiles(root, "prepare", ["hung", "later"], source);
 
     // The runner's clock stands still from the start until the preparation has started, so the
     // deadline comes three seconds after that however long the host takes to get there.

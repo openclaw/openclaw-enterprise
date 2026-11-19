@@ -121,6 +121,44 @@ git() { command git -C "$OCE_DIAGNOSTIC_SOURCE" "$@"; }
 );
 
 test(
+  "quickstart browser recall publishes a source location without the private state path",
+  { skip: process.platform !== "linux" },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-quickstart-browser-diagnostics-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const credentials = join(directory, "oce-credentials");
+    const run = join(directory, "run");
+    await Promise.all([mkdir(credentials), mkdir(run)]);
+    // Supply the launcher's active-revision lookup so the real browser command
+    // fails on missing installed state before it creates a Chromium profile.
+    await writeFile(
+      join(run, "session.sh"),
+      [
+        "namespace=ns_00000000-0000-4000-8000-000000000001",
+        "agent=agt_00000000-0000-4000-8000-000000000001",
+        'base="/namespaces/$namespace"',
+        "CONSOLE_ORIGIN=https://console.fixture.oce.localhost",
+        'request() { printf \'%s\\n\' \'{"data":{"activeRevisionId":"rev_00000000-0000-4000-8000-000000000001"}}\'; }',
+        "",
+      ].join("\n"),
+      { mode: 0o600 },
+    );
+    const result = spawnSync("bash", [wrapper, "browser-recall"], {
+      cwd: new URL("../../", import.meta.url),
+      env: { ...process.env, RUNNER_TEMP: directory, RUN_DIR: run },
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 1);
+    const published = result.stdout + result.stderr;
+    assert.match(published, /^Control UI verification failed during initialize\.$/m);
+    assert.match(published, /^quickstart-location browser\.ts:[0-9]{1,5}$/m);
+    assert.ok(!published.includes(directory));
+  },
+);
+
+test(
   "quickstart Linear failures keep malformed evidence and diagnostic errors private",
   { skip: process.platform !== "linux" },
   async (t) => {

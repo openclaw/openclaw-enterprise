@@ -27,7 +27,7 @@ Namespace control. Check each story at 1440, 1101, 1100, 1024 and 390 px.
    While the access check runs, Open draft is held with the page, and
    focus returns to it.
 5. Open **Pages / Agent detail / Copy Agent ID without clipboard access**. The
-   ID is selected and no "Copied" status shows.
+   entire Agent ID is selected and "Copy selection" appears.
 6. Open **Pages / Create Agent / Choose a starting point** and **Pages / Settings / Account**.
    Create Agent has ← Agents and the Namespace control under its title. Its
    card heading, **Your next teammate**, is a step smaller than the page title

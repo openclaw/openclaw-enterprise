@@ -1,22 +1,21 @@
 ---
 created: "2026-10-14"
-updated: 2026-11-11
-last_updated_session: authoring-run/789515e7-d00d-4e5c-bf44-04a1275c340d
+updated: 2026-11-19
+last_updated_session: authoring-run/176872aa-dcf6-4c9b-9f11-31d19a4c5dcf
 ---
 
 # Protected credential request flow
 
 ## Overview
 
-The supervisor holds an Agent's GitHub identity reply until OpenClaw Control Plane
-(OCC) permits release. See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
+OpenClaw Control Plane (OCC) authorizes the supervisor to release GitHub identity replies. See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
 and [threat model](../reference/security/credential-proxy.md).
 
 ## Entry Points
 
 - Deployment establishes a [source route](../reference/credential-sources.md#bind-a-source-to-an-agent);
   current enforcement evidence is required.
-- The authenticated supervisor opens one TLS stream,
+- The supervisor opens
   `HttpInstallationExchange.Exchange`, for credential resolution, send
   authorization and response release
   (`apps/controller/src/drivers/egress-proxy/openshell-authority.ts:createOpenShellEgressAuthority`).
@@ -67,14 +66,17 @@ reads; deployment refusal precedes counterpart probes. Retained revisions keep
 their provider, authorization, withdrawal and cleanup under the
 [current Sandbox contract](../reference/credential-sources/protected-inference.md#bundled-openshell-admission).
 
-OCC checks source and Secret permissions; existing sources need opt-in. Version 3
-binds Sandbox and Proxy to one registered Driver.
-The plan records its digest, execution, source generation, grant, and routes;
-empty routes deny all. `admitProxyPlan` derives routes from saved Harness settings
-and source consent. `checkEgressUseIn` rechecks before delivery and send authorization.
-Console `apps/controller/src/console/agents/detail.mts:requestedHarnessOverrides`
-captures the controls at submission. OCC owns normalized input before awaiting
-admission, which resolves settings and checks both caller and Agent grants.
+Static admission hides incompatible types from capabilities. Creation and adoption
+return 409 on mismatch; refused adoption preserves the Gateway copy.
+`admitStaticEgressSource` rechecks both declarations before reading and injecting material.
+
+OCC checks source and Secret grants; adoption requires consent. Version 3 binds
+Sandbox and Proxy to one Driver. `admitProxyPlan` derives routes from saved Harness
+settings and consent; empty routes deny all. Plans retain execution, digest, grant
+and source generation. `checkEgressUseIn` rechecks delivery and send authorization;
+`createCredentialProxy` rechecks ownership after metadata lookup, before Secret reads.
+`apps/controller/src/console/agents/detail.mts:requestedHarnessOverrides` captures
+submitted settings for OCC normalization and grant checks.
 
 For credential-free metadata, `packages/occ/src/index.ts:admitProxyPlan` rejects
 a Driver grant that differs from the source. Equivalent grants have the same
@@ -82,9 +84,9 @@ digest across property orders. Unprotected revisions remain v2. Only the bundled
 Driver recognizes historical protected plans by original capability IDs for stored
 release or custody settlement.
 
-Compute rechecks admission with the worker before launch. PostgreSQL rejects
-unknown decisions and mixed v2/v3 fields. Older workers refuse v3. Upgrade
-all writers before admitting it.
+Compute's `validateExecutionAdmission` requires pairing only for protected
+revisions. Workers recheck before launch. PostgreSQL rejects unknown decisions
+and mixed v2/v3 fields. Upgrade all writers before admitting v3.
 
 For each route, `apps/controller/src/drivers/compute/kubernetes/index.ts:preparedEgressReady`
 selects the issuer, projects the admitted source and checks readiness. Compute has
@@ -93,8 +95,12 @@ owners refuse release; cold sources remain pending.
 
 Deploy returns `409` for missing Git delivery profiles
 (`REPOSITORY_GIT_PROFILE_UNSUPPORTED`), bundled `git-write`
-(`REPOSITORY_GIT_SENDER_UNQUALIFIED`), unadmitted bindings, Agents without Git on
-a Git-only Proxy, and Installation limits. Preparation repeats both Git refusals.
+(`REPOSITORY_GIT_SENDER_UNQUALIFIED`), unadmitted bindings, and Installation limits.
+Agents with ordinary Gateway sources and no protected sources or Git bindings
+need no Proxy plan. Agents with no sources retain selected Proxy admission.
+`packages/occ/src/index.ts:admitProxyPlan` checks availability before saving an
+empty protected plan; Kubernetes uses it for runtime-authenticated Dedicated
+Codex without inference access. Preparation repeats both Git refusals.
 [Protected repository Git](../reference/drivers/selection.md#select-a-protected-sender)
 uses a separate worker binding and requires proof of the recipient before release.
 
@@ -243,7 +249,12 @@ Limits: five minutes idle, fifteen minutes total, 4 MiB and 16,384 events.
 response-only null local-tool metadata and the optional effective image policy.
 Invalid or unknown fields withhold all bytes. Protection scans SDK snapshots,
 joined assistant text and completed/streamed Codex Plans; ambiguous order or indexes
-refuse. Function arguments parse once as bounded JSON. The
+refuse. A reasoning summary part opens only at the next index; an unopened or
+skipped summary delta withholds the response. Reasoning text has no part event:
+its next content index opens on the first delta, not a completion; a gap still withholds it.
+Each index is scanned alone, so material split across one part is withheld when
+another part's delta arrives between the halves.
+Function arguments parse once as bounded JSON. The
 [supported profile](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
 preserves safe bytes. The origin already received the credential.
 
@@ -340,28 +351,17 @@ None.
 
 ## Changelog
 
+- 2026-11-19 09:31: Check static source lifecycles. (authoring-run/176872aa-dcf6-4c9b-9f11-31d19a4c5dcf - d3749595bd)
+- 2026-11-19 02:07: Fence static material reads. (authoring-run/5de05faa-098d-4671-b34e-4148f7a14d08 - cea7d46c69)
+
+- 2026-11-18 11:53: Require a delta to open a reasoning-text index; consolidate exchange regression coverage. (authoring-run/cd2d6ae9-eb3b-4896-b64b-ae7ecc119b99 - fe38bb0cb)
+
+- 2026-11-12 19:08: Preserve source-free Proxy admission while bypassing it for ordinary Gateway sources. (authoring-run/9928fd4c-05a8-4ce6-b0d6-5322a30b0fe8 - 988124f27)
+
+- 2026-11-12 10:58: Separate Gateway delivery and unprotected admission from Git. (authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb - aea0cb511)
+
 - 2026-11-11 18:22: Shorten the flow without changing its boundaries. (authoring-run/789515e7-d00d-4e5c-bf44-04a1275c340d - 81097025d513c9faac0b0c75c7fda61835369ad6)
 
 - 2026-11-11 11:51: Qualify audit-only diagnostics and model eligibility. (authoring-run/bae8dfee-ecba-461e-ac6d-fe124241f6aa - 6ffb2a4f4b5b4018af06247e6aba5c5061a7066a)
-
-- 2026-11-11 11:04: Admit null content on replayed reasoning input. (authoring-run/64fa6d5d-af12-40d5-8bf3-b3d4af980236 - 81803134a1cc408ef727528e47f00ea36563f092)
-- 2026-11-11 09:40: Record bounded provider rules with pinned request attribution. (authoring-run/2a39c130-861a-4051-b73e-56c1a20b8fee - d3482937ffe662b48e36afafe044c96b5a4474e3)
-- 2026-11-11 09:39: Validate compaction metadata. (authoring-run/919c1d90-32b8-4d2c-8a66-238508a3c061 - 6905a20332abd7ffcfe2fd431c5ae6888a17dff5)
-- 2026-11-11 08:40: Distinguish native telemetry effort from Responses request effort. (authoring-run/89ba83c7-7553-45e6-a3b5-a8e067da1d65 - 6b4e85174966c1a172f2ecd25a3ea1238fe6f0d7)
-
-- 2026-11-11 06:02: Admit native agent messages. (authoring-run/4a7d8e1a-0c95-4f57-8628-ea2d59fbe9b2 - 82078dad5edc334f21d3feaed447db6601fa5d31)
-- 2026-11-10 14:47: Encode whole-execution inference in managed OpenShell policy. (authoring-run/50874573-f481-4b68-a77f-07f75f066719 - 98a139592e6808a64aa886d240153ff403608a70)
-
-- 2026-11-10 08:22: Accept empty metadata on replayed assistant output text. (authoring-run/098bcc8c-9e1b-4318-aff3-06c464edb33e - 33c820f6daf4ba6a1559680911ab2d509ee4a131)
-
-- 2026-11-10 07:15: Admit bounded Codex Git workspace metadata and passive MCP attribution on Responses requests. (authoring-run/13d2e44f-b996-453e-8cbc-db80b8f8e3e2 - f06bf60299ad29444685d70fb2708f3f0558a5ad)
-
-- 2026-11-06 02:38: Refuse historical Git issuance and session renewal while preserving original detach recovery. (authoring-run/96255fab-cb34-45d9-b940-d3055029e29f - 37b81d16bbbb3f0c864fc652060075c06eb4dc52)
-
-- 2026-11-06 02:36: Preserve request-time token resolution and held-probe diagnostics when merging the current flow. (authoring-run/c13df234-5a0d-4e3c-b254-cc806ee046e7 - 585e7ac2c6673611ec29a3c76ca507e61308fa6f)
-
-- 2026-11-06 01:25: Pin credential destinations. (authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0 - 37144f62101a9e99b066f1abbbf75ede787d26dd)
-
-- 2026-11-05 23:21: Trace request-time token resolution and the permission check before releasing a credential header. (codex/01a19e60-87d0-71d0-8c9a-e3e3b33b1676 - 614169814)
 
 [Protected credential request documentation history](credential-source-egress/history.md) preserves the older dated entries.

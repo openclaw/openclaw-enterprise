@@ -3,8 +3,8 @@ import type { TestContext } from "node:test";
 import { randomBytes } from "node:crypto";
 import { access } from "node:fs/promises";
 import { join } from "node:path";
-import { repositoryRoot } from "./runtime.mjs";
-import { run } from "./process.mjs";
+import { repositoryRoot } from "./runtime.ts";
+import { run } from "./process.ts";
 
 // All controlled peers share this container. It verifies composition and client
 // routing; a separate service/Agent runtime is required to prove isolation.

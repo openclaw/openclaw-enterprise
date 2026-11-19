@@ -6,19 +6,23 @@ import {
   type OpenShellSandboxDriverSelection,
 } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { buildSandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
+import { completeOpenShellGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 
 export function backendFor(
-  gatewayClient: OpenShellGatewayClient,
+  gatewayClient: Partial<OpenShellGatewayClient>,
 ): OpenShellSandboxDriverSelection["backend"] {
   return {
     id: "openshell",
     drivers: { sandbox: "openshell-sandbox", credential_gateway: "openshell-credentials" },
-    client: new OpenShellGateway({ serviceName: "openshell-gateway" }, { gatewayClient }),
+    client: new OpenShellGateway(
+      { serviceName: "openshell-gateway" },
+      { gatewayClient: completeOpenShellGatewayClient(gatewayClient) },
+    ),
   };
 }
 
 export function openShellDriver(
-  gatewayClient: OpenShellGatewayClient,
+  gatewayClient: Partial<OpenShellGatewayClient>,
   configuration?: OpenShellSandboxDriverOptions | null,
 ): OpenShellSandboxDriver {
   return new OpenShellSandboxDriver(

@@ -158,7 +158,7 @@ SOURCE_SHA="$expected_sha" GITHUB_WORKFLOW_SHA="$workflow_sha" \
 GITHUB_RUN_ID="$run_id" GITHUB_RUN_ATTEMPT="$attempt" \
 CI_RUN_ID='' CI_ATTEMPT='' NODE_BASE_IMAGE="$pinned_node_base" \
 IMAGE=runtime PLATFORM=linux/arm64 IMAGE_DIGEST="$build_digest" \
-node scripts/ci/container-release.mjs verify-platform "$extracted_layout"
+node scripts/ci/container-release.ts verify-platform "$extracted_layout"
 ```
 
 For a manual **CI** run that requests native images, use that CI run’s own ID
@@ -180,10 +180,13 @@ use their own evidence. For local use, follow the
    preparation. If main moved, select the new SHA and its own completed CI run.
 3. To publish, dispatch with `publish` true after reviewing the SHA, CI run,
    and [package setup](#confirm-package-linkage). Leave `image_tag` blank to
-   update `latest` for both images, or enter a custom tag to update that tag
-   instead. The tag can contain up to 128 ASCII letters, digits, underscores,
-   periods, and hyphens; it must start with a letter, digit, or underscore.
+   update `latest` for both images, or enter a custom alias such as `candidate`.
+   The alias can contain up to 128 ASCII letters, digits, underscores, periods,
+   and hyphens. It must start with a letter, digit, or underscore.
    Tags beginning with `sha-` or `bootstrap-` are reserved, case-insensitively.
+   Release version tags, including prerelease versions, are also reserved. If
+   the workflow reports `Release version tags are reserved.`, choose a different
+   alias or leave `image_tag` blank.
    The selected alias is mutable and an existing tag can be replaced.
    Each platform builds natively; runtime smoke loads that export on a fresh
    native runner, while controller smoke remains with its build.
@@ -257,8 +260,7 @@ on `main` with:
 - `source_sha`: the original image source SHA.
 - `preparation_run_id` and `preparation_attempt`: the original **Enterprise
   Containers** run. Validation, all four native preparation jobs, both runtime
-  smoke jobs, and both image assembly jobs must succeed. For older runs that assembled each image
-  in its preparation job, validation and both image jobs must succeed.
+  smoke jobs, and both image assembly jobs must succeed.
 - `workflow_ci_run_id`: successful main-push CI for the selected recovery workflow
   commit. This is separate from the original image's CI evidence in its seal.
 
@@ -305,7 +307,7 @@ against its smoke receipt before including it in the final archive. Skopeo prese
 digests during publication. These are not provider, cluster, or registry
 end-to-end tests.
 
-Local gate and recovery tests: `node --test tests/integration/container-{release,resume,promote}.test.mjs`.
+Local gate and recovery tests: `node --test tests/integration/container-{release.test.mjs,resume.test.ts,promote.test.ts}`.
 Recovery tests use HTTP and transport fixtures; they prove gate ordering, original
 identity, conflict rejection, unchanged existing images, and receipt behavior.
 The [registry integration](../testing/docker.md#container-publication-registry-proof)

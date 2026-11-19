@@ -3,7 +3,7 @@ import {
   FakeNamespaceCoreV1Api,
   injectedFailure,
   stallUntilAborted,
-} from "./kubernetes-core-api.mjs";
+} from "./kubernetes-core-api.ts";
 
 export class FakeSecretCoreV1Api extends FakeNamespaceCoreV1Api {
   secretUid = undefined;

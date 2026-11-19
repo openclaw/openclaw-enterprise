@@ -3,7 +3,7 @@ import type { TestContext } from "node:test";
 import type { Pool } from "pg";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
 import { testPool } from "../helpers/postgres-database.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 import type { BarrierFixture } from "./postgres-native-iam-policy-barrier-fixture.ts";
 
 interface BackendSettings {

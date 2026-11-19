@@ -1,4 +1,4 @@
-import type { CredentialPolicyReductionState } from "./platform-state.ts";
+import type { CredentialPolicyReductionState, PredecessorReplacement } from "./platform-state.ts";
 import type {
   InitialWorkspaceFiles,
   ProtectedEgressSource,
@@ -287,6 +287,7 @@ export const agents = occSchema.table(
     ),
     credentialSources: jsonb("credential_sources").$type<readonly AgentCredentialSourceBinding[]>(),
     activeRevisionId: text("active_revision_id"),
+    predecessorReplacement: jsonb("predecessor_replacement").$type<PredecessorReplacement>(),
     desiredRuntimeState: text("desired_runtime_state")
       .$type<AgentDesiredRuntimeState>()
       .notNull()
@@ -305,6 +306,15 @@ export const agents = occSchema.table(
     check("agents_id_format", sql`${table.id} ~ ${identifierPatterns.agent}`),
     check("agents_name_length", sql`char_length(${table.name}) BETWEEN 1 AND 200`),
     check("agents_execution_mode_valid", sql`${table.executionMode} IN ('embedded', 'dedicated')`),
+    check(
+      "agents_predecessor_replacement_valid",
+      sql`${table.predecessorReplacement} IS NULL OR (
+      jsonb_typeof(${table.predecessorReplacement}) = 'object'
+      AND ${table.predecessorReplacement} ?& ARRAY['predecessorRevisionId', 'candidateRevisionId', 'phase', 'startedAt']
+      AND ${table.predecessorReplacement}->>'phase' IN ('pre-stop', 'stopping')
+      AND (${table.predecessorReplacement}->>'phase' <> 'stopping' OR ${table.predecessorReplacement} ? 'stoppingAt')
+    ) IS TRUE`,
+    ),
     check(
       "agents_desired_runtime_state_valid",
       sql`${table.desiredRuntimeState} IN ('running', 'stopped')`,
@@ -764,7 +774,7 @@ export const agentRevisions = occSchema.table(
           - 'draft_spec' - 'harness' - 'compute' - 'sandbox_driver_id' - 'sandbox_policy'
           - 'secret_driver_id' - 'secret_bindings' - 'harness_auth' - 'credential_sources' - 'plugins'
           - 'plugin_approvers' - 'repository_credentials' - 'egress_plan' - 'execution_admission') = '{}'::jsonb
-        AND jsonb_typeof(${table.admittedSpec}->'configuration_id') = 'string'
+    AND jsonb_typeof(${table.admittedSpec}->'configuration_id') = 'string'
         AND (${table.admittedSpec}->>'configuration_id') ~ ${identifierPatterns.configuration}
         AND jsonb_typeof(${table.admittedSpec}->'configuration_kind') = 'string'
         AND (${table.admittedSpec}->>'configuration_kind') = 'agent'
@@ -786,7 +796,7 @@ export const agentRevisions = occSchema.table(
         AND (${table.admittedSpec} #>> '{harness,mode}') IN ('embedded', 'dedicated')
         AND jsonb_typeof(${table.admittedSpec}->'compute') = 'object'
         AND ((${table.admittedSpec}->'compute') ?& ARRAY['id', 'implementation'])
-        AND ((${table.admittedSpec}->'compute') - 'id' - 'implementation' - 'admission') = '{}'::jsonb
+        AND ((${table.admittedSpec}->'compute') - 'id' - 'implementation' - 'admission' - 'runtimeInputs') = '{}'::jsonb
         AND jsonb_typeof(${table.admittedSpec} #> '{compute,id}') = 'string'
         AND COALESCE(btrim(${table.admittedSpec} #>> '{compute,id}'), '') <> ''
         AND jsonb_typeof(${table.admittedSpec} #> '{compute,implementation}') = 'string'
@@ -796,6 +806,12 @@ export const agentRevisions = occSchema.table(
           OR (jsonb_typeof(${table.admittedSpec} #> '{compute,admission}') = 'string'
               AND char_length(${table.admittedSpec} #>> '{compute,admission}') BETWEEN 1 AND 1024
               AND (${table.admittedSpec} #>> '{compute,admission}') ~ '^[ -~]+$')
+        )
+        AND (
+          NOT ((${table.admittedSpec}->'compute') ? 'runtimeInputs')
+          OR (jsonb_typeof(${table.admittedSpec} #> '{compute,runtimeInputs}') = 'string'
+              AND char_length(${table.admittedSpec} #>> '{compute,runtimeInputs}') BETWEEN 1 AND 4096
+              AND (${table.admittedSpec} #>> '{compute,runtimeInputs}') ~ '^[ -~]+$')
         )
         AND (
           NOT (${table.admittedSpec} ? 'sandbox_driver_id')
@@ -1196,7 +1212,7 @@ export const iamRestrictions = occSchema.table(
   (table) => [
     check(
       "iam_restrictions_action_valid",
-      sql`${table.action} IN ('create', 'read', 'update', 'delete', 'deploy', 'operate', 'administer', 'read_logs', 'manage_policy')`,
+      sql`${table.action} IN ('create', 'read', 'update', 'delete', 'deploy', 'operate', 'administer', 'read_logs', 'manage_policy', 'read_audit')`,
     ),
     check(
       "iam_restrictions_resource_kind_valid",
@@ -1230,6 +1246,22 @@ export const auditEvents = occSchema.table(
       .where(
         sql`${table.kind} = 'mutation' AND ${table.action} = 'reconcile' AND ${table.resourceKind} = 'agent_revision'`,
       ),
+    index("audit_events_agent_page_idx")
+      .on(
+        table.namespaceId,
+        sql`(CASE WHEN ${table.resourceKind} = 'agent' THEN ${table.resourceId} ELSE ${table.details}->>'agentId' END)`,
+        table.occurredAt.desc(),
+        table.id.desc(),
+      )
+      .where(
+        sql`(${table.resourceKind} = 'agent' AND ${table.kind} = 'api_request'
+          AND ${table.action} = 'openclaw.api.request.result' AND ${table.outcome} = 'success')
+        OR (${table.resourceKind} IN ('agent','agent_revision') AND ${table.kind} = 'mutation'
+          AND ${table.details}->>'agentId' IS NOT NULL
+          AND (${table.action} IN ('openclaw.controller_work.queued','openclaw.controller_work.claimed')
+            OR (${table.action} IN ('reconcile','openclaw.controller_work.deferred','openclaw.controller_work.completed')
+              AND ${table.details}->>'attemptId' IS NOT NULL)))`,
+      ),
     check("audit_events_id_format", sql`${table.id} ~ ${identifierPatterns.audit}`),
     check("audit_events_outcome_valid", sql`${table.outcome} IN ('success', 'denied', 'failure')`),
     check(
@@ -1256,6 +1288,7 @@ export const controllerWork = occSchema.table(
     availableAt: timestamp("available_at", { withTimezone: true }).notNull(),
     attemptCount: integer("attempt_count").notNull().default(0),
     claimToken: uuid("claim_token"),
+    auditAttemptId: uuid("audit_attempt_id"),
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     reasonCode: text("reason_code"),
@@ -2622,38 +2655,35 @@ export const savedConnections = occSchema.table(
   ],
 );
 
-export const connectionSessions = occSchema.table(
-  "connection_sessions",
+export const authenticationStates = occSchema.table(
+  "authentication_states",
   {
-    stateHash: text("state_hash").primaryKey(),
+    id: text("id").primaryKey(),
+    kind: text("kind").notNull(),
     namespaceId: text("namespace_id").notNull(),
-    credentialSourceId: text("credential_source_id").notNull(),
-    pkceVerifier: text("pkce_verifier").notNull(),
-    selectedScopes: text("selected_scopes").array().notNull(),
-    issuerRequired: boolean("issuer_required").notNull(),
-    sessionId: text("session_id").notNull(),
-    redirectUri: text("redirect_uri").notNull(),
     actorId: text("actor_id").notNull(),
-    connectionTemplateId: text("connection_template_id").notNull(),
-    connectionTemplateVersion: integer("connection_template_version").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    credentialSourceId: text("credential_source_id"),
+    connectionTemplateId: text("connection_template_id"),
+    connectionTemplateVersion: integer("connection_template_version"),
+    createdAt: timestamp("created_at", { withTimezone: true }),
+    binding: jsonb("binding").notNull(),
+    phase: text("phase"),
+    nextPollAt: timestamp("next_poll_at", { withTimezone: true }),
+    encryptedChallenge: text("encrypted_challenge"),
+    privateState: text("private_state"),
+    version: integer("version"),
   },
   (table) => [
-    check("connection_sessions_state_hash_format", sql`${table.stateHash} ~ '^[0-9a-f]{64}$'`),
-    check(
-      "connection_sessions_expiry_after_creation",
-      sql`${table.expiresAt} > ${table.createdAt}`,
-    ),
     foreignKey({
-      name: "connection_sessions_source_owner",
+      name: "authentication_states_source_owner",
       columns: [table.namespaceId, table.credentialSourceId],
       foreignColumns: [credentialSources.namespaceId, credentialSources.id],
     })
       .onDelete("cascade")
       .onUpdate("restrict"),
     foreignKey({
-      name: "connection_sessions_template_version",
+      name: "authentication_states_template_version",
       columns: [table.connectionTemplateId, table.connectionTemplateVersion],
       foreignColumns: [
         oauthConnectionTemplateVersions.templateId,
@@ -2662,11 +2692,59 @@ export const connectionSessions = occSchema.table(
     })
       .onDelete("restrict")
       .onUpdate("restrict"),
+    foreignKey({
+      name: "authentication_states_namespace",
+      columns: [table.namespaceId],
+      foreignColumns: [namespaces.id],
+    }).onDelete("cascade"),
     check(
-      "connection_sessions_selected_scopes_valid",
-      sql`array_position(${table.selectedScopes},NULL) IS NULL`,
+      "authentication_states_kind",
+      sql`${table.kind} IN ('oauth_connection','device_authorization')`,
     ),
-    index("connection_sessions_expiry_idx").on(table.expiresAt),
+    check(
+      "authentication_states_oauth_shape",
+      sql`${table.kind} <> 'oauth_connection' OR ((
+      ${table.id} ~ '^[0-9a-f]{64}$' AND ${table.credentialSourceId} IS NOT NULL
+      AND ${table.connectionTemplateId} IS NOT NULL AND ${table.connectionTemplateVersion} IS NOT NULL
+      AND ${table.createdAt} IS NOT NULL AND ${table.expiresAt} > ${table.createdAt}
+      AND ${table.phase} IS NULL AND ${table.nextPollAt} IS NULL AND ${table.encryptedChallenge} IS NULL
+      AND ${table.privateState} IS NULL AND ${table.version} IS NULL
+      AND jsonb_typeof(${table.binding}) = 'object'
+      AND ${table.binding} ?& ARRAY['pkceVerifier','selectedScopes','issuerRequired','sessionId','redirectUri']
+      AND ${table.binding} - ARRAY['pkceVerifier','selectedScopes','issuerRequired','sessionId','redirectUri'] = '{}'::jsonb
+      AND jsonb_typeof(${table.binding}->'pkceVerifier') = 'string' AND jsonb_typeof(${table.binding}->'sessionId') = 'string'
+      AND jsonb_typeof(${table.binding}->'redirectUri') = 'string' AND jsonb_typeof(${table.binding}->'issuerRequired') = 'boolean'
+      AND jsonb_typeof(${table.binding}->'selectedScopes') = 'array'
+      AND NOT jsonb_path_exists(${table.binding}, '$.selectedScopes[*] ? (@.type() != "string")')
+    ) IS TRUE)`,
+    ),
+    check(
+      "authentication_states_device_shape",
+      sql`${table.kind} <> 'device_authorization' OR ((
+      ${table.id} ~ ${identifierPatterns.secret}
+      AND ${table.credentialSourceId} IS NULL AND ${table.connectionTemplateId} IS NULL
+      AND ${table.connectionTemplateVersion} IS NULL AND ${table.createdAt} IS NULL AND ${table.version} > 0
+      AND jsonb_typeof(${table.binding}) = 'object'
+      AND ${table.binding} ?& ARRAY['harnessId','credentialGatewayId','credentialRefreshId','sourceId','intervalSeconds']
+      AND ${table.binding} - ARRAY['agentId','harnessId','credentialGatewayId','credentialRefreshId','sourceId','intervalSeconds'] = '{}'::jsonb
+      AND (NOT (${table.binding} ? 'agentId') OR jsonb_typeof(${table.binding}->'agentId') = 'string')
+      AND jsonb_typeof(${table.binding}->'harnessId') = 'string' AND jsonb_typeof(${table.binding}->'credentialGatewayId') = 'string'
+      AND jsonb_typeof(${table.binding}->'credentialRefreshId') = 'string' AND jsonb_typeof(${table.binding}->'sourceId') = 'string'
+      AND CASE WHEN jsonb_typeof(${table.binding}->'intervalSeconds') = 'number' THEN
+        (${table.binding}->>'intervalSeconds')::numeric BETWEEN 1 AND 2147483647
+        AND trunc((${table.binding}->>'intervalSeconds')::numeric) = (${table.binding}->>'intervalSeconds')::numeric ELSE false END
+      AND ${table.phase} IS NOT NULL AND ${table.phase} IN ('pending','polling','cancelled','ready')
+      AND ${table.nextPollAt} IS NOT NULL
+      AND ((${table.phase} IN ('pending','polling')) = (${table.privateState} IS NOT NULL))
+      AND ((${table.phase} <> 'cancelled') = (${table.encryptedChallenge} IS NOT NULL))
+    ) IS TRUE)`,
+    ),
+    index("authentication_states_oauth_expiry")
+      .on(table.expiresAt, table.id)
+      .where(sql`${table.kind} = 'oauth_connection'`),
+    index("authentication_states_device_expiry")
+      .on(table.expiresAt, table.id)
+      .where(sql`${table.kind} = 'device_authorization' AND ${table.phase} <> 'cancelled'`),
   ],
 );
 

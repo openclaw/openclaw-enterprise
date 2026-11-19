@@ -15,6 +15,7 @@ import {
   assertDeniedConnection,
   assertEmbeddedCreatesNoHarnessWorkspaceClaim,
   assertGatewayPodContinuity,
+  assertInterruptedGatewayTurnResumes,
   assertGatewayPrivateResources,
   assertNativeReferenceNegativeControl,
   assertPrivateStateInitContainer,
@@ -34,7 +35,7 @@ import {
   resources,
   secretRotationProbe,
 } from "../helpers/harness-topology-k3d-real.mjs";
-import { boundedTeardown } from "../helpers/kubernetes-real.mjs";
+import { boundedTeardown } from "../helpers/bounded-teardown.ts";
 
 // The runner hands the capability to this file, not to other cases or descendants.
 const case2ReceiptBinding = process.env.OCC_TEST_K3D_CASE2_PHASE_FILE;
@@ -195,6 +196,7 @@ test(
     const { context } = topologyTeardown(testContext);
     const topology = await arrangeProductionTopology(context, "dedicated", undefined, {
       gatewayPassword: true,
+      nativeAdmin: { enabled: true },
     });
     assert.ok(topology.harnessPod, "dedicated production must start a real separate Codex Pod");
     assert.notEqual(topology.gatewayPod.metadata.uid, topology.harnessPod.metadata.uid);
@@ -283,6 +285,8 @@ test(
     );
     process.stderr.write("k3d dedicated: topology ready; running a real model turn.\n");
     await assertActualModelTurn(topology);
+    process.stderr.write("k3d dedicated: testing automatic interrupted-turn recovery.\n");
+    await assertInterruptedGatewayTurnResumes(context, topology);
     process.stderr.write("k3d dedicated: model turn passed; testing normal workspace flows.\n");
     await assertDedicatedAgentsInstructionsInFreshSession(topology);
     await context.test("native child returns its own exact answer", async () => {
