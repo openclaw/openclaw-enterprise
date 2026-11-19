@@ -182,6 +182,7 @@
     {
       "path": "tests/integration/postgres-worker-agent-revision-teardown.test.ts",
       "expectedTests": [
+        "a stopped first deployment keeps reporting repository disposal after replacement activates",
         "repository service outage during Agent stop still stops Compute and retains durable closing work",
         "worker restart resumes repository maintenance and repairs only Compute's exact missing subset once"
       ]
