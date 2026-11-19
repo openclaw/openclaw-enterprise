@@ -4,6 +4,7 @@ import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createSecureContext } from "node:tls";
+import type { AgentAuditPage } from "../../../packages/contracts/src/index.ts";
 import { configureModelProviderDNS } from "../../../tests/helpers/runtime-model-provider.mjs";
 import {
   minute,
@@ -401,7 +402,14 @@ export function setLocalSetupAudit(
   );
 }
 
-export async function expectNoRuntimeAuditRows(stack: LocalSetup, revisionId: string) {
+type InstalledAuditStack = Pick<LocalSetup, "kubeconfig" | "context" | "state">;
+
+async function queryRevision(
+  stack: InstalledAuditStack,
+  revisionId: string,
+  query: string,
+  options?: RunOptions,
+) {
   const { stdout } = await kubectl(
     stack,
     [
@@ -427,13 +435,44 @@ export async function expectNoRuntimeAuditRows(stack: LocalSetup, revisionId: st
       "--dbname",
       "openclaw_enterprise",
     ],
-    {
-      // Inspect the disposable stack's ledger even when the audit API is off.
-      input: `SELECT count(*) FROM occ.audit_events
-      WHERE kind = 'runtime_activity' AND details->>'agentRevisionId' = :'revision_id';`,
-    },
+    { ...options, input: query },
   );
-  assert.equal(stdout.trim(), "0", "the disabled audit switch allowed a runtime write");
+  return stdout.trim();
+}
+
+const runtimeRows = `FROM occ.audit_events
+  WHERE kind = 'runtime_activity' AND details->>'agentRevisionId' = :'revision_id'`;
+
+export async function expectPersistedRuntimeAudit(
+  stack: InstalledAuditStack,
+  revisionId: string,
+  page: AgentAuditPage,
+  options?: RunOptions,
+) {
+  const events = page.events.filter(
+    (event) => event.event === "runtime_activity" && event.details.agentRevisionId === revisionId,
+  );
+  assert.ok(events.length > 0, `The audit API returned no runtime events for ${revisionId}.`);
+  // Read from the installed database after the API read. Later arrivals can add rows.
+  const rows = await queryRevision(stack, revisionId, `SELECT id ${runtimeRows};`, options);
+  const persisted = new Set(rows.split("\n"));
+  for (const { id } of events) {
+    assert.ok(persisted.has(id), `PostgreSQL has no runtime event ${id} for ${revisionId}.`);
+  }
+}
+
+export async function expectNoRuntimeAuditGrant(stack: InstalledAuditStack, revisionId: string) {
+  const count = await queryRevision(
+    stack,
+    revisionId,
+    "SELECT count(*) FROM occ.gateway_runtime_audit_grants WHERE revision_id = :'revision_id';",
+  );
+  assert.equal(count, "0", `The stopped revision ${revisionId} still has an audit credential.`);
+}
+
+export async function expectNoRuntimeAuditRows(stack: LocalSetup, revisionId: string) {
+  const count = await queryRevision(stack, revisionId, `SELECT count(*) ${runtimeRows};`);
+  assert.equal(count, "0", "the disabled audit switch allowed a runtime write");
 }
 
 export async function apiProcess(

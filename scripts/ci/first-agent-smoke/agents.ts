@@ -285,6 +285,7 @@ export async function assertAgentTurnAudit(
     runtimeSource,
     sessionId,
     model,
+    minimumModelCalls = 1,
     previousIds,
   }: {
     label: string;
@@ -292,6 +293,7 @@ export async function assertAgentTurnAudit(
     runtimeSource: "openclaw" | "codex";
     sessionId?: string;
     model?: string;
+    minimumModelCalls?: number;
     previousIds?: ReadonlySet<string>;
   },
 ) {
@@ -318,6 +320,9 @@ export async function assertAgentTurnAudit(
             event.details.runtimeSource === runtimeSource,
         );
       const starts = events.filter((event) => event.action === "openclaw.runtime.turn.started");
+      const admissions = events.filter(
+        (event) => event.action === "openclaw.runtime.turn.admitted",
+      );
       const completes = events.filter(
         (event) => event.action === "openclaw.runtime.turn.completed",
       );
@@ -332,8 +337,12 @@ export async function assertAgentTurnAudit(
           const started = starts.some(
             ({ details }) => details.sessionId === turn.sessionId && details.turnId === turn.turnId,
           );
+          const admitted = admissions.some(
+            ({ details }) => details.sessionId === turn.sessionId && details.turnId === turn.turnId,
+          );
           if (
             !sessions.some(({ details }) => details.sessionId === turn.sessionId) ||
+            !admitted ||
             !started ||
             turn.outcome !== "succeeded"
           ) {
@@ -342,7 +351,7 @@ export async function assertAgentTurnAudit(
           if (model === undefined) {
             return true;
           }
-          return modelResults.some(({ details: result }) => {
+          const linkedCalls = modelResults.filter(({ details: result }) => {
             if (
               result.outcome !== "succeeded" ||
               result.model !== model ||
@@ -360,6 +369,9 @@ export async function assertAgentTurnAudit(
                 start.provider === result.provider,
             );
           });
+          return (
+            new Set(linkedCalls.map(({ details }) => details.modelCallId)).size >= minimumModelCalls
+          );
         }),
         state: { actions: events.map(({ action }) => action) },
       };

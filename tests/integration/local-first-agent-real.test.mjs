@@ -13,7 +13,11 @@ import {
   allowAgentAuditRead,
   assertAgentTurnAudit,
 } from "../../scripts/ci/first-agent-smoke/agents.ts";
-import { apiProcess, setLocalSetupAudit } from "../../scripts/ci/first-agent-smoke/setup.ts";
+import {
+  apiProcess,
+  expectPersistedRuntimeAudit,
+  setLocalSetupAudit,
+} from "../../scripts/ci/first-agent-smoke/setup.ts";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -1137,7 +1141,15 @@ test(
           runtimeSource: "openclaw",
           sessionId: firstNativeProof.session.sessionId,
           model: configuration.models.providers.openai.models[0].id,
+          // The tool request and the reply after its result need separate model calls.
+          minimumModelCalls: 2,
         });
+        await expectPersistedRuntimeAudit(
+          chartStack,
+          initialRevisionId,
+          await readAudit(),
+          chartOptions,
+        );
       }
 
       // Keep the genuine Gateway expiry. The successor must reuse the saved device
@@ -1236,7 +1248,14 @@ test(
           runtimeSource: "openclaw",
           sessionId: replacementNativeProof.session.sessionId,
           model: configuration.models.providers.openai.models[0].id,
+          minimumModelCalls: 2,
         });
+        await expectPersistedRuntimeAudit(
+          chartStack,
+          replacement.id,
+          await readAudit(),
+          chartOptions,
+        );
         assert.deepEqual(
           await apiProcess(chartStack, chartOptions),
           servingApi,

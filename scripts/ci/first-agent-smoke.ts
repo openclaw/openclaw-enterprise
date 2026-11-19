@@ -25,7 +25,9 @@ import { buildImages, writeReleaseSelection } from "./first-agent-smoke/images.t
 import { createStepRecorder, log, workDirectory } from "./first-agent-smoke/process.ts";
 import {
   apiProcess,
+  expectNoRuntimeAuditGrant,
   expectNoRuntimeAuditRows,
+  expectPersistedRuntimeAudit,
   clusterName,
   routeModelProvider,
   setLocalSetupAudit,
@@ -170,6 +172,7 @@ async function smoke() {
     const readCodexAudit = await smokeStep("codex-chat", async () => {
       const readAudit = await allowAgentAuditRead(stack, codex.agent, adminPassword);
       await chatCodexWithAudit(stack, codex.agent, codex.revisionId, readAudit);
+      await expectPersistedRuntimeAudit(stack, codex.revisionId, await readAudit());
       return readAudit;
     });
     const readEmbeddedAudit = await smokeStep("embedded-audit", async () => {
@@ -180,6 +183,7 @@ async function smoke() {
         runtimeSource: "openclaw",
         model: defaultAgentModel,
       });
+      await expectPersistedRuntimeAudit(stack, embedded.revisionId, await readAudit());
       return readAudit;
     });
     await smokeStep("public-read", () => publicReadTurn(stack, codex, reader));
@@ -191,9 +195,12 @@ async function smoke() {
       await readLogs(stack, codex.agent, "gateway");
       await readLogs(stack, codex.agent, "agent");
     });
-    await smokeStep("stop-agents", () =>
-      Promise.all([stopAgent(stack, embedded.agent), stopAgent(stack, codex.agent)]),
-    );
+    await smokeStep("stop-agents", async () => {
+      await Promise.all([stopAgent(stack, embedded.agent), stopAgent(stack, codex.agent)]);
+      for (const revisionId of [embedded.revisionId, codex.revisionId, retiredRevision]) {
+        await expectNoRuntimeAuditGrant(stack, revisionId);
+      }
+    });
     const [embeddedRevision, codexRevision] = await smokeStep("start-agents", () =>
       Promise.all([deployAgent(stack, embedded.agent), deployAgent(stack, codex.agent)]),
     );
