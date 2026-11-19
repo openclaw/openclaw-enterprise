@@ -24,12 +24,14 @@ trusted Box parent, and the parent would add them to approved requests as they l
 An operator could withdraw Git access after the Agent opens a draft pull request, then ask the Agent
 to explain the fix in the same conversation.
 
-**Opt in only when every process in this Agent may use every admitted route and credential binding.**
-The selected Box callback identifies the route a request takes but cannot identify the executable
-that sent it. In the initial isolated pilot, the operator explicitly selects one authenticated
-execution of one Agent revision as the principal. A shell and a tool can both push to the same
-permitted ref. A compromised tool can make that push even though it cannot retrieve the token.
-Use separate Agents when the processes need different rights.
+**Choosing Box grants no access.** Explicit, authorized grants to the Agent determine which
+routes and credentials its processes may use. No separate operator opt-in is required. The
+initial isolated pilot limits where we qualify this behavior, not what the Agent may do.
+
+The Box callback identifies the route, not the executable. Grant access to the Agent only if
+every process in its Sandbox may use it. A compromised tool can push to the same permitted ref
+as the shell even though neither can retrieve the token. Use separate Agents when processes
+need different rights.
 
 ## Goals
 
@@ -112,12 +114,12 @@ pending agreement by the owners of v1 credential-push admission; this RFC does n
 
 ### IAM
 
-An authorized administrator must delegate the route at Agent scope. Injection also needs separate,
-reviewed authority for the Agent to use the credential at that scope; the authority choice remains
-pending. Admission must refuse grants that mix Agent-wide and executable-specific subjects, and any
-executable, port, or other restriction
-the selected Driver cannot enforce. The [Agent-wide policy](strands-box-agent-policy.md)
-defines these checks under the existing RFC-0023 protection levels.
+An authorized administrator must explicitly grant the Agent the route. Injection also requires
+authority to use that credential at Agent scope; who may grant that use remains open. Each binding
+applies only to one authenticated current execution of the Agent revision. Before provisioning,
+[admission](strands-box-agent-policy.md#decision) must
+refuse mixed subjects and any restriction the Driver cannot enforce. Never reinterpret legacy,
+ambiguous, or executable-specific grants as Agent-wide.
 
 ### Database entities
 
@@ -147,8 +149,8 @@ No infrastructure simplifications.
 
 ## Acceptance Criteria
 
-Shared preconditions: an authorized operator selects one authenticated execution of an Agent revision,
-delegates its Agent-wide routes, and grants credential use through the reviewed authority. Use the
+For positive credential cases, start with authorized Agent grants for the route and credential
+use. Bind them to the authenticated execution of that revision. Use the
 normal Worker deployment, paired Drivers, and the
 [companion criteria](strands-box-held-launch.md#acceptance-criteria). Use a real Box parent and child
 for cases that launch a child. Use invented credentials for
@@ -182,10 +184,12 @@ or reproducible manual evidence from its real dependencies.
 <a id="ac-4"></a>
 
 - **AC-4 — Admitted scope** ([Enforceable scope](#goal-scope)): In the
-  [isolated pilot](strands-box-agent-policy.md#acceptance-criteria), have two real subprocesses use the
-  same route and binding. Observe both injections at a trusted origin and verify neither process can
-  retrieve the test credential. Independently deny the operation in Box Policy and revoke the binding
-  in OCE; either must prevent a fresh protected request from reaching the provider.
+  [isolated pilot](strands-box-agent-policy.md#acceptance-criteria), give the Agent both grants
+  without a separate opt-in. Have two real subprocesses use the same route and binding. Verify
+  both injections at a trusted origin and that neither process can retrieve the credential.
+  With Box selected but neither grant, require no access to that route or credential. Independently
+  deny the operation in Box Policy and revoke the binding in OCE; either must stop a fresh
+  protected request before injection or forwarding.
 
 <a id="ac-5"></a>
 

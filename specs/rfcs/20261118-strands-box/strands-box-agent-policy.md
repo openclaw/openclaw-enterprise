@@ -7,29 +7,35 @@ rfc: index.md
 Companion to [RFC-20261118-strands-box](index.md).
 
 At Box commit `956764b58f2c5ccb12bb7048fd1ced3d8ca1b5d4`, the callback identifies a route within a
-Box but cannot identify the calling executable. **Agent-wide Box policy** would let an operator
-select one authenticated Agent Sandbox as the principal for routes and injections, initially only in
-an isolated pilot. Implementation and qualification are pending.
+Box but cannot identify the calling executable. We propose to qualify explicit grants to the Agent
+in an isolated pilot. Implementation and qualification are pending.
 
 ## Decision
 
-Select this capability only if **every process may use every admitted route and credential binding**
-in that Sandbox. A compromised shell, tool, or Model Context Protocol (MCP) server could push an
-allowed ref, spend model quota, or send data over an allowed route without learning the credential.
-Use separate Agents with distinct Sandbox identities and policies when their trust or access
-differs.
+**The grant names the principal.** Choosing Box or participating in the pilot grants no access.
+An authorized administrator must explicitly delegate the route to the Agent. Credential injection
+also needs separate, reviewed authority for the Agent to use that credential. No extra operator
+selection is required. The [choice of credential-use authority](index.md#iam) is pending.
 
-Before provisioning, admission must check the complete effective policy.
+Grant access at Agent scope only if **every process in the Sandbox may use it**. A compromised
+shell, tool, or Model Context Protocol (MCP) server could push an allowed ref, spend model quota,
+or send data over an allowed route without learning the credential. Use separate Agents with
+distinct Sandbox identities and policies when their trust or access differs.
 
-| Question                    | Required decision                                                                                                                                                                                                                                                 |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Who can share access?       | Require explicit operator selection, support from the selected Sandbox Driver, and exactly one authenticated Agent revision and execution incarnation per Sandbox. Omission retains existing requirements.                                                        |
-| Who grants access?          | An authorized administrator must delegate the route at Agent scope. Injection also requires reviewed consumer authority at that scope. Combining executable grants cannot confer Agent-wide authority.                                                            |
-| Which restrictions overlap? | Treat an Agent-wide grant as overlapping every executable restriction on the route. Refuse mixed subjects in the pilot. Enforce each asserted executable, port, or other bound or refuse admission. Executable-specific enforcement needs separate qualification. |
+Before provisioning, check the complete effective policy against the selected Sandbox Driver:
 
-The capability selects the principal. RFC-0023 still determines the protection level. Preserve the
-admission, connection, dispatch, authorization, and evidence requirements of the selected level,
-including exact dispatch or online request authorization.
+- Never widen legacy, ambiguous, or executable-specific grants to Agent scope, even in combination.
+  Preserve existing scope where enforceable; refuse ambiguous subjects.
+- Treat an Agent-wide grant as overlapping every executable restriction on the route. Refuse mixed
+  subjects in the pilot. Refuse any executable, port, or other restriction the Driver cannot enforce.
+  Executable-specific enforcement needs separate qualification.
+- Require Driver support for the granted scope and the selected RFC-0023 protection level.
+  Preserve that level's admission, connection, dispatch, authorization, and evidence requirements,
+  including exact dispatch or online request authorization.
+
+At startup, bind access to exactly one authenticated current execution of the Agent revision per
+Sandbox. A replacement needs its own binding even for the same revision. The grants do not override
+expiry, withdrawal, or either permission below.
 
 ## Policy and credential boundary
 
@@ -91,20 +97,23 @@ a provider that does not maliciously encode or reflect the credential.
 Apply the [release and withdrawal rules](strands-box-held-launch.md#ownership-and-release) and
 [containment requirements](strands-box-held-launch.md#trust-boundary). An Agent-wide grant confers
 no release authority. Attribute admission, use, denial, version changes, and withdrawal to the Agent
-execution and selected capability. Omit secrets and executable attribution from audit records.
+execution and granted scope. Omit secrets and executable attribution from audit records.
 
 ## Acceptance criteria
 
 Broader release requires qualification through the normal deployed Agent, actual Box callback, and
-trusted injector. Use an invented sentinel for one binding. In one contained execution, run two
+trusted injector. Grant the Agent the route and credential use without a separate opt-in. Use an
+invented sentinel for one binding. In one contained execution, run two
 distinct real subprocesses against the **same route and binding**. An independently observed trusted
 origin must distinguish and accept both requests. Independently verify injection of the sentinel on
 each. Both processes must be unable to read or retrieve it.
 
 | Exercise                                                                                                                                                                            | Required observation                                                                                                                                                                                 |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Present executable-only grants, overlapping restrictions, mixed subjects, an unsupported capability, or an unenforceable assertion.                                                 | Enforce the [admission decisions](#decision) before provisioning. Preserve the existing exact-dispatch and online-authorization cases.                                                               |
-| Try another Agent, the previous incarnation after replacement, or the wrong route, destination, port, method, or path.                                                              | Refuse each request at the enforcing layer.                                                                                                                                                          |
+| Select Box in the same pilot with neither grant for the test route and credential. Separately omit each grant.                                                                      | No route grant: deny the route. No credential-use grant: no binding or injection, even if Box Policy permits the route. With neither, verify both refusals.                                          |
+| Present legacy, ambiguous, and executable-only grants separately, then combine executable grants.                                                                                   | None confers Agent-wide access. Preserve enforceable legacy scope, exact dispatch, and online authorization.                                                                                         |
+| Try an ambiguous subject, mixed subjects (including overlapping grants), an unsupported scope, and an unenforceable executable or port restriction separately.                      | Refuse each before provisioning; verify zero provisioning calls.                                                                                                                                     |
+| Replace the execution of the same revision and try the old binding. Separately try another Agent or the wrong route, destination, port, method, or path.                            | Refuse each request at the enforcing layer. Only a fresh binding for the replacement permits its authorized request; the previous execution remains denied.                                          |
 | Keep Box Policy permissive and revoke the binding. Separately withdraw credential policy and read back its effective version from every serving copy. Separately remove Box Policy. | Refuse a fresh request in each case. Stale or missing delivery readback keeps startup held.                                                                                                          |
 | Deny an application request on a permitted proxy connection.                                                                                                                        | Record TCP establishment separately. At the enforcing proxy, verify zero denied application-request bytes forwarded toward the origin. Require zero unauthorized injections and provider operations. |
 | Try a forbidden destination or port, then direct egress.                                                                                                                            | Require zero connections to the forbidden destination or port and zero direct connections.                                                                                                           |

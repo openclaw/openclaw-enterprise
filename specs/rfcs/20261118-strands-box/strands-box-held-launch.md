@@ -138,8 +138,8 @@ Qualify the native boundary before protected use.
 
 Apply
 [Box Policy and independent OCE credential authorization](strands-box-agent-policy.md#policy-and-credential-boundary).
-The [Agent-wide pilot](strands-box-agent-policy.md#decision) requires separate admission. Enforce
-any asserted executable or port restriction or refuse the policy.
+Apply [grant admission](strands-box-agent-policy.md#decision) before provisioning. Release lets
+this child run; it does not grant route access or credential use.
 
 ## Acceptance Criteria
 
