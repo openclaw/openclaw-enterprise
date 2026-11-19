@@ -40,9 +40,9 @@ const unverifiableHolderWaitMs = 95_000;
 // when maintenance is pending. "stop" sends SIGTERM to the container's PID 1, as the
 // kubelet does when the Pod is deleted. "pause" stops (SIGSTOP) the process the lock
 // names, so the lock stays held by a live process: that is native setup's CLI, which
-// retitles itself, not the launcher that started it. It says so only while that process
-// still holds the lock. "report" only says that the lock is taken, for the test to kill
-// the whole container.
+// retitles itself, not the launcher that started it. It says SETUP_PAUSED only once that
+// process is stopped and the lock still names it. "report" only says that the lock is
+// taken, for the test to kill the whole container.
 const watcher = String.raw`
 const fs = require("node:fs");
 const [lock, action, limit] = process.argv.slice(1);
@@ -51,23 +51,37 @@ const holder = () => {
   try { return JSON.parse(fs.readFileSync(lock, "utf8")).pid; }
   catch { return undefined; }
 };
+const stopped = (pid) => {
+  try {
+    const stat = fs.readFileSync("/proc/" + pid + "/stat", "utf8");
+    return stat[stat.lastIndexOf(")") + 2] === "T";
+  } catch { return false; }
+};
+const pause = (pid) => {
+  try { process.kill(pid, "SIGSTOP"); }
+  catch { return console.error("SETUP_RELEASED " + pid); }
+  const until = Date.now() + 500;
+  const check = setInterval(() => {
+    if (!stopped(pid) && Date.now() < until) return;
+    clearInterval(check);
+    const held = stopped(pid) && holder() === pid;
+    console.error((held ? "SETUP_PAUSED " : "SETUP_RELEASED ") + pid);
+  }, 1);
+};
 const timer = setInterval(() => {
-  if (!fs.existsSync(lock)) {
+  const pid = holder();
+  if (action === "pause" ? pid === undefined : !fs.existsSync(lock)) {
     if (Date.now() > deadline) {
       clearInterval(timer);
       console.error("WATCHER_TIMEOUT");
     }
     return;
   }
+  clearInterval(timer);
   if (action === "pause") {
-    const pid = holder();
-    if (pid === undefined) return;
-    clearInterval(timer);
-    try { process.kill(pid, "SIGSTOP"); } catch {}
-    console.error((holder() === pid ? "SETUP_PAUSED " : "SETUP_RELEASED ") + pid);
+    pause(pid);
     return;
   }
-  clearInterval(timer);
   if (action === "report") {
     console.error("LOCK_TAKEN");
     return;
