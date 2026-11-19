@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-19"
-last_updated_session: "authoring-run/2cbf1f13-9f6c-407a-be4f-453fd3ed04f6"
+last_updated_session: "authoring-run/16714b20-9501-44e3-8b3a-41b43ee3949f"
 ---
 
 # Agent sandbox policy flow
@@ -45,32 +45,30 @@ The solid arrows trace source paths, not a claim that all providers are verified
 
 ### 1. Admit and persist desired additions
 
-`internal/occcli/agent_policy.go:agentPolicyCommand` declares JSON and YAML
-output for each policy subcommand. `internal/occcli/cli.go:validateOptions` selects JSON only when `--output` is
-omitted and refuses unsupported explicit formats before any request. It then
-prints the acknowledged result through
-`internal/occcli/output.go:printStructured`. A successful mutation therefore
-returns its result without a later table-format error.
+The CLI policy commands print JSON or YAML through
+`internal/occcli/output.go:printStructured`. `validateOptions` defaults to JSON
+and rejects unsupported output formats before sending a request.
 
-`OpenClawController.discoverConfigurations` filters registry contributions by the
-server-selected Driver, scope, and resource-owner read authority. Installation
-inspection exposes [Driver-projected startup values](driver-plugin-loading.md#4-load-current-policy-and-hand-off-lifecycle-ownership).
-Agent discovery and policy GET
-use the same descriptor with owner-generated facet action URLs and current
-availability. The registry never selects a Driver from submitted additions.
+`OpenClawController.discoverConfigurations` filters contributions by Driver,
+scope, and owner read permission. Discovery and GET return the same descriptor
+with URLs for the available facet actions. See
+[Installation inspection](driver-plugin-loading.md#4-load-current-policy-and-hand-off-lifecycle-ownership).
 
-`validateAgentSandboxPolicy` authorizes the exact Agent and policy, checks the
-current editing flag, expected version, and pending application, then runs shared
-schema/semantic validation, the Driver contribution (which can only narrow it), and
-current ceiling/provider admission. An empty or reversed port range is never inside
-the ceiling. It returns a configuration result without entering a mutation
-transaction. Schema and semantic refusals carry safe `error.details`; stale or
-unauthorized requests retain their resource errors. Every later mutation repeats
-these checks. Ceiling refusal keeps its Installation-delegation cause; unsupported
-wildcard/range refusal names the Driver capability limit. Both retain field details.
-`internal/occclient/transport.go:APIError.Error` prints up to 32 public detail
-records as escaped JSON and omits records with Unicode control characters, so
-CLI callers retain the same field and cause without terminal controls.
+`loadInstallationConfiguration` validates the YAML
+[repository ceiling](../reference/configuration.md). Agent and SandboxPolicy
+read permission allow GET to return the saved grants, the Installation ceiling
+and whether the state adapter can save explicit grants. An authorized PUT
+checks the requested grants against the ceiling and stores them with the next
+policy version. An unsupported adapter refuses an explicit list with
+`409 RESOURCE_CONFLICT`. An empty list saves deny-all. Omission keeps the saved
+grants and leaves them out of the PUT response.
+
+`validateAgentSandboxPolicy` checks authorization, editing, version, pending
+application, the shared schema, ceiling and Driver admission without writing.
+Empty or reversed port ranges fail admission. Mutations repeat these checks.
+Refusals identify the field and cause, including a ceiling or Driver
+capability limit. `internal/occclient/transport.go:APIError.Error` prints up to 32 safe
+details as escaped JSON and excludes records with Unicode control characters.
 
 `packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
 Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
@@ -268,6 +266,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 04:07: Trace repository grant readback, ceiling admission, and versioned saves through the Agent API. (authoring-run/16714b20-9501-44e3-8b3a-41b43ee3949f - ef779de40b885811dcc40e6eadaa8f185d4bb34d)
 
 - 2026-11-19 02:49: Refuse Driver-supplied repository access lists on ordinary deployment. (authoring-run/2cbf1f13-9f6c-407a-be4f-453fd3ed04f6 - 8b711ab7bef82b4db58547655aef785c8e74092b)
 

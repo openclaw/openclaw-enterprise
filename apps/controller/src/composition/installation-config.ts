@@ -29,11 +29,16 @@ import {
 } from "@openclaw-enterprise/contracts";
 import {
   isSupportedPermission,
+  parseRepositoryNetworkPolicyCeiling,
   PERMISSION_ACTIONS,
+  RepositoryNetworkPolicyAdmissionError,
   RESOURCE_KINDS,
   validateSandboxNetworkGrants,
 } from "@openclaw-enterprise/contracts";
-import type { SandboxNetworkGrant } from "@openclaw-enterprise/contracts";
+import type {
+  RepositoryNetworkPolicyCeiling,
+  SandboxNetworkGrant,
+} from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
 import { readFile } from "node:fs/promises";
 import { createHash, X509Certificate } from "node:crypto";
@@ -147,6 +152,7 @@ export interface SelectedDriverConfiguration<T = ConfigurationRecord> {
 export interface InstallationStartupConfiguration {
   readonly repository?: SelectedDriverConfiguration;
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
+  readonly repositoryNetworkPolicyCeiling?: RepositoryNetworkPolicyCeiling;
   /** RFC-0026 configured Roles, Groups, and Group bindings; see the configuration reference. */
   readonly iam?: InstallationIAMConfiguration;
   readonly occ: { readonly cluster: string };
@@ -208,6 +214,7 @@ export function installationControllerOptions(
   ControllerOptions,
   | "driverConfigurations"
   | "sandboxNetworkPolicyCeiling"
+  | "repositoryNetworkPolicyCeiling"
   | "iamConfiguration"
   | "nativeWorkerSupport"
   | "credentialProxyCapacity"
@@ -215,6 +222,7 @@ export function installationControllerOptions(
   return {
     driverConfigurations: installationDriverConfigurations(installation),
     sandboxNetworkPolicyCeiling: installation?.sandboxNetworkPolicyCeiling ?? [],
+    repositoryNetworkPolicyCeiling: installation?.repositoryNetworkPolicyCeiling ?? [],
     ...(installation?.iam === undefined ? {} : { iamConfiguration: installation.iam }),
     ...(installation?.runtime === undefined
       ? {}
@@ -877,7 +885,8 @@ async function composeInstallationConfiguration(
     configuration.occ === undefined &&
     configuration.drivers === undefined &&
     configuration.backend === undefined &&
-    configuration.presets === undefined
+    configuration.presets === undefined &&
+    configuration.repositoryNetworkPolicyCeiling === undefined
   ) {
     return undefined;
   }
@@ -889,6 +898,21 @@ async function composeInstallationConfiguration(
   const sandboxNetworkPolicyCeiling = configuration.sandboxNetworkPolicyCeiling;
   if (sandboxNetworkPolicyCeiling !== undefined) {
     validateSandboxNetworkGrants(sandboxNetworkPolicyCeiling, "/sandboxNetworkPolicyCeiling");
+  }
+  let repositoryNetworkPolicyCeiling: RepositoryNetworkPolicyCeiling | undefined;
+  if (configuration.repositoryNetworkPolicyCeiling !== undefined) {
+    try {
+      repositoryNetworkPolicyCeiling = parseRepositoryNetworkPolicyCeiling(
+        configuration.repositoryNetworkPolicyCeiling,
+      );
+    } catch (error) {
+      if (!(error instanceof RepositoryNetworkPolicyAdmissionError)) {
+        throw error;
+      }
+      throw new InstallationFieldError([
+        { path: error.path, code: "INVALID_VALUE", message: error.message },
+      ]);
+    }
   }
   const observability = observabilityConfiguration(configuration.observability);
   const iamSettings = iamConfiguration(configuration.iam);
@@ -1351,6 +1375,7 @@ async function composeInstallationConfiguration(
   const installation = Object.freeze({
     occ: Object.freeze({ cluster }),
     ...(sandboxNetworkPolicyCeiling === undefined ? {} : { sandboxNetworkPolicyCeiling }),
+    ...(repositoryNetworkPolicyCeiling === undefined ? {} : { repositoryNetworkPolicyCeiling }),
     ...(iamSettings === undefined ? {} : { iam: iamSettings }),
     presets: Object.freeze({ includeDefaults }),
     logging,

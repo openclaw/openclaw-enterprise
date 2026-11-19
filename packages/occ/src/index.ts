@@ -122,6 +122,8 @@ import {
   type ErrorDetail,
 } from "@openclaw-enterprise/contracts";
 import type {
+  RepositoryNetworkGrant,
+  RepositoryNetworkPolicyCeiling,
   SandboxPolicy,
   SandboxFacet,
   SandboxNetworkGrant,
@@ -129,6 +131,9 @@ import type {
   SandboxPolicyRecommendations,
 } from "@openclaw-enterprise/contracts";
 import {
+  admitRepositoryNetworkPolicy,
+  parseRepositoryNetworkPolicyCeiling,
+  RepositoryNetworkPolicyAdmissionError,
   validateSandboxNetworkGrants,
   sandboxNetworkGrantsWithinCeiling,
 } from "@openclaw-enterprise/contracts";
@@ -825,6 +830,7 @@ export interface ControllerOptions {
   readonly preparedTokens?: TokenService | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
+  readonly repositoryNetworkPolicyCeiling?: RepositoryNetworkPolicyCeiling;
   /** Installation configuration `iam`; `applyIAMConfiguration` writes it to IAM policy. */
   readonly iamConfiguration?: InstallationIAMConfiguration;
   readonly authorize?: (
@@ -2274,6 +2280,7 @@ export class OpenClawController {
   private readonly configurations = new DriverConfigurationRegistry();
 
   private readonly sandboxNetworkPolicyCeiling: readonly SandboxNetworkGrant[];
+  private readonly repositoryNetworkPolicyCeiling: RepositoryNetworkPolicyCeiling;
   private readonly iamConfiguration?: InstallationIAMConfiguration;
   private readonly authorization?: ControllerOptions["authorize"];
   private readonly deviceLoginCipher: ReturnType<typeof deviceAuthorizationCipher> | undefined;
@@ -2329,6 +2336,9 @@ export class OpenClawController {
       "/sandboxNetworkPolicyCeiling",
     );
     this.sandboxNetworkPolicyCeiling = immutableCopy(options.sandboxNetworkPolicyCeiling ?? []);
+    this.repositoryNetworkPolicyCeiling = parseRepositoryNetworkPolicyCeiling(
+      options.repositoryNetworkPolicyCeiling ?? [],
+    );
     if (options.iamConfiguration !== undefined) {
       this.iamConfiguration = options.iamConfiguration;
     }
@@ -11627,6 +11637,9 @@ export class OpenClawController {
         capability: this.sandboxDriver()?.networkPolicy ?? null,
         ...(unavailableReason === undefined ? {} : { unavailableReason }),
         ceiling: this.sandboxNetworkPolicyCeiling,
+        repositoryNetworkPolicyCeiling: this.repositoryNetworkPolicyCeiling,
+        repositoryNetworkPolicySaveSupported:
+          state.sandboxPolicies.supportsRepositoryNetworkPolicy === true,
         defaults,
         // A fresh deploy carries the saved version into its Sandbox; no application is
         // requested for it (D773).
@@ -11884,6 +11897,7 @@ export class OpenClawController {
     facet: SandboxFacet,
     expectedVersion: number,
     additions: readonly SandboxNetworkGrant[],
+    repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[],
   ): Promise<Readonly<SandboxPolicy>> {
     this.requireNetworkPolicyFacet(facet);
     await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
@@ -11892,9 +11906,18 @@ export class OpenClawController {
       id: `sbp_${agentId.slice(4)}`,
       namespaceId,
     });
-    // The cause comes before the editing setting and version checks it would otherwise hide (D774).
-    this.requireNetworkPolicyAvailable();
     return this.mutate(async (state) => {
+      if (
+        repositoryNetworkPolicy !== undefined &&
+        state.sandboxPolicies.supportsRepositoryNetworkPolicy !== true
+      ) {
+        throw new ResourceStateConflictError(
+          "Saving a repository network policy requires an Installation version that supports storing Agent repository grants.",
+          [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
+        );
+      }
+      // The cause comes before the editing setting and version checks it would otherwise hide (D774).
+      this.requireNetworkPolicyAvailable();
       await this.lockNamespace(state, namespaceId);
       const agent = await state.agents.lockAgent(namespaceId, agentId);
       const previous = await state.sandboxPolicies.find(namespaceId, agentId);
@@ -11909,6 +11932,26 @@ export class OpenClawController {
         throw new ResourceStateConflictError(
           "The policy changed or an application is still pending. Reload before editing.",
         );
+      }
+      let repositoryGrants = previous.repositoryNetworkPolicy;
+      if (repositoryNetworkPolicy !== undefined) {
+        try {
+          repositoryGrants = admitRepositoryNetworkPolicy(
+            repositoryNetworkPolicy,
+            this.repositoryNetworkPolicyCeiling,
+          )!.grants;
+        } catch (error) {
+          if (!(error instanceof RepositoryNetworkPolicyAdmissionError)) {
+            throw error;
+          }
+          throw new ResourceStateConflictError(error.message, [
+            {
+              path: error.path,
+              code: error.code === "UNSUPPORTED_POLICY" ? "INVALID_VALUE" : error.code,
+              message: error.message,
+            },
+          ]);
+        }
       }
       if (additions.length > 0) {
         const active =
@@ -11929,12 +11972,18 @@ export class OpenClawController {
           agentId,
           version: expectedVersion + 1,
           additions: admitted.additions,
+          ...(repositoryGrants === undefined ? {} : { repositoryNetworkPolicy: repositoryGrants }),
           ...(previous.applied === undefined ? {} : { applied: previous.applied }),
         },
         expectedVersion,
       );
       if (updated === undefined) {
         throw new ResourceStateConflictError("The policy changed.");
+      }
+      if (repositoryNetworkPolicy === undefined && updated.repositoryNetworkPolicy !== undefined) {
+        // An additions-only writer must not receive repository grants from an earlier save.
+        const { repositoryNetworkPolicy: _savedRepositoryGrants, ...additionsOnly } = updated;
+        return Object.freeze(additionsOnly);
       }
       return updated;
     });

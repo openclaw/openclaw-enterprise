@@ -33,22 +33,14 @@ or Agent configuration.
 
 ## Installation startup configuration
 
-Set `OCC_CONFIG_PATH` to the absolute path of a trusted YAML file. Production
-requires this setting; development can omit it to retain its existing local
-defaults. When provided, both API and worker processes must read the same file.
-The [production Kubernetes deployment guide](../guides/deploy/production-installation.md#configure-the-installation)
-owns the complete bundled-Driver Installation example, including immutable
-images, workload isolation, and projected ServiceAccount credentials. The
-[Driver package installation guide](drivers/selection.md#select-the-installed-driver)
-owns the installed IAM, Compute, and Configuration selection contract. The
-[Backend reference](backends.md) defines the optional `backend` array and its
-required related Driver membership. Backend configuration never enters native
-Agent Configuration documents. The optional `presets.includeDefaults` boolean
-adds bundled Agent Presets to Namespaces; it defaults to `false`. A
-`presets.files` entry named like a bundled default replaces that default with a
-startup warning. See
-[Preset initialization](presets.md#installation-defaults) for permissions,
-restart behavior, and preservation of existing copies.
+Set `OCC_CONFIG_PATH` to an absolute trusted YAML path. Production requires it.
+Development can use its defaults. Supply the same file to the API and worker.
+See the [production example](../guides/deploy/production-installation.md#configure-the-installation),
+[Driver selection](drivers/selection.md#select-the-installed-driver), and
+[Backend configuration](backends.md). Backend settings stay outside Agent
+Configuration documents. Set `presets.includeDefaults` to add bundled Presets.
+A same-named `presets.files` entry replaces a bundled default and emits a warning.
+See [Preset initialization](presets.md#installation-defaults).
 
 OCC resolves its persisted singleton Installation internally; Configuration and
 Secret Driver operations do not include Installation management. Installed
@@ -60,6 +52,17 @@ network additions. It grants no default access; an absent or empty array delegat
 none. See
 [Sandbox policies](sandbox-policies.md#authority-and-admission) for
 its grant schema and authorization boundaries.
+
+Use `repositoryNetworkPolicyCeiling` to allow delegation of up to 32 unique
+repositories. Use lowercase `owner/name` without `.git` and set `access` to
+`read` or `write`. Startup rejects invalid entries. An absent or empty ceiling
+delegates no repositories. The ceiling alone grants no Sandbox access.
+
+```yaml
+repositoryNetworkPolicyCeiling:
+  - repository: example/docs
+    access: read
+```
 
 The optional `iam` block declares the
 [Default users](authorization/default-users.md#installation-iam-configuration)

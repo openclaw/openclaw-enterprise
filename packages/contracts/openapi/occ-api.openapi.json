@@ -31968,7 +31968,9 @@
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                           "version": 1
                         },
-                        "protectedExecution": false
+                        "protectedExecution": false,
+                        "repositoryNetworkPolicyCeiling": [],
+                        "repositoryNetworkPolicySaveSupported": true
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
@@ -32321,6 +32323,30 @@
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
+                            "repositoryNetworkPolicy": {
+                              "description": "Saved repository grants. An empty array denies all repositories.",
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "access": {
+                                    "anyOf": [
+                                      { "const": "read", "type": "string" },
+                                      { "const": "write", "type": "string" }
+                                    ]
+                                  },
+                                  "repository": {
+                                    "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                                    "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                                    "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["repository", "access"],
+                                "type": "object"
+                              },
+                              "maxItems": 32,
+                              "type": "array"
+                            },
                             "version": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
                           },
                           "required": ["id", "namespaceId", "agentId", "version", "additions"],
@@ -32328,6 +32354,34 @@
                         },
                         "protectedExecution": {
                           "description": "True while the active revision or the next deploy runs under protected execution. Saving network policy additions is then refused with SANDBOX_POLICY_PROTECTED_EXECUTION; saving an empty policy stays allowed.",
+                          "type": "boolean"
+                        },
+                        "repositoryNetworkPolicyCeiling": {
+                          "description": "Installation repository grants available for delegation to this Agent.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "access": {
+                                "anyOf": [
+                                  { "const": "read", "type": "string" },
+                                  { "const": "write", "type": "string" }
+                                ]
+                              },
+                              "repository": {
+                                "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                                "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                                "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["repository", "access"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "repositoryNetworkPolicySaveSupported": {
+                          "description": "Whether this Installation can save an explicit Agent repository policy.",
                           "type": "boolean"
                         },
                         "unavailableReason": {
@@ -32340,6 +32394,8 @@
                         "editingEnabled",
                         "protectedExecution",
                         "ceiling",
+                        "repositoryNetworkPolicyCeiling",
+                        "repositoryNetworkPolicySaveSupported",
                         "defaults",
                         "capability"
                       ],
@@ -32560,7 +32616,31 @@
                     "title": "Network rules",
                     "type": "array"
                   },
-                  "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
+                  "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" },
+                  "repositoryNetworkPolicy": {
+                    "description": "Desired repository grants. Omit to preserve the saved grants. An empty array requests deny-all. Saving an explicit list requires repository policy persistence.",
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "access": {
+                          "anyOf": [
+                            { "const": "read", "type": "string" },
+                            { "const": "write", "type": "string" }
+                          ]
+                        },
+                        "repository": {
+                          "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                          "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                          "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["repository", "access"],
+                      "type": "object"
+                    },
+                    "maxItems": 32,
+                    "type": "array"
+                  }
                 },
                 "required": ["expectedVersion", "additions"],
                 "type": "object"
@@ -32718,6 +32798,30 @@
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
+                        },
+                        "repositoryNetworkPolicy": {
+                          "description": "Saved repository grants. An empty array denies all repositories.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "access": {
+                                "anyOf": [
+                                  { "const": "read", "type": "string" },
+                                  { "const": "write", "type": "string" }
+                                ]
+                              },
+                              "repository": {
+                                "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                                "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                                "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["repository", "access"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
                         },
                         "version": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
                       },
@@ -33136,6 +33240,30 @@
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
+                        },
+                        "repositoryNetworkPolicy": {
+                          "description": "Saved repository grants. An empty array denies all repositories.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "access": {
+                                "anyOf": [
+                                  { "const": "read", "type": "string" },
+                                  { "const": "write", "type": "string" }
+                                ]
+                              },
+                              "repository": {
+                                "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                                "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                                "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["repository", "access"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
                         },
                         "version": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
                       },

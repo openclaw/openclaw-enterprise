@@ -1,5 +1,6 @@
 import { RuntimeLogLimiter } from "./runtime-logs.ts";
 import type {
+  RepositoryNetworkGrant,
   SandboxNetworkGrant,
   SandboxPolicy,
   SandboxFacet,
@@ -16,6 +17,9 @@ function policyBody(policy: Readonly<SandboxPolicy>) {
     agentId: policy.agentId,
     version: policy.version,
     additions: policy.additions,
+    ...(policy.repositoryNetworkPolicy === undefined
+      ? {}
+      : { repositoryNetworkPolicy: policy.repositoryNetworkPolicy }),
     ...(policy.applied === undefined ? {} : { applied: policy.applied }),
     ...(application === undefined
       ? {}
@@ -136,6 +140,7 @@ export const sandboxPolicyHandlers = {
         params.facet as SandboxFacet,
         body!.expectedVersion as number,
         body!.additions as readonly SandboxNetworkGrant[],
+        body!.repositoryNetworkPolicy as readonly RepositoryNetworkGrant[] | undefined,
       );
       await unit.audit.append(
         mutationEvent(
@@ -144,6 +149,9 @@ export const sandboxPolicyHandlers = {
             policyVersion: updated.version,
             agentId: updated.agentId,
             additions: updated.additions,
+            ...(body!.repositoryNetworkPolicy === undefined
+              ? {}
+              : { repositoryGrantCount: updated.repositoryNetworkPolicy?.length }),
           },
         ),
       );

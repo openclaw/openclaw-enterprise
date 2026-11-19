@@ -163,6 +163,7 @@ export type {
 } from "./repository-network-policy.ts";
 export {
   admitRepositoryNetworkPolicy,
+  parseRepositoryNetworkPolicyCeiling,
   RepositoryNetworkPolicyAdmissionError,
 } from "./repository-network-policy.ts";
 
