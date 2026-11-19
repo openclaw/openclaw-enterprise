@@ -44,7 +44,7 @@ import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/man
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
-import { conformanceKubeconfig } from "../helpers/kubernetes-compute.mjs";
+import { conformanceKubeconfig } from "../helpers/kubernetes-compute.ts";
 import {
   DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
   EMBEDDED_API_KEY_REQUIRED,
@@ -5797,6 +5797,26 @@ async function exerciseEmbeddedReplacement(scenario) {
     servicePrincipalId: "service-principal-embedded-recovery",
     createdAt: tenant.createdAt,
   };
+  const gatewaySettings = () => ({
+    logging: {
+      level: "info",
+      consoleLevel: "info",
+      consoleStyle: "json",
+    },
+    diagnostics: { otel: { logs: false } },
+    gateway: {
+      trustedProxies: ["10.42.0.0/16"],
+      allowRealIpFallback: true,
+      auth: {
+        mode: "trusted-proxy",
+        trustedProxy: {
+          userHeader: "x-occ-identity",
+          allowUsers: ["occ-workspace-files"],
+        },
+        identityScopes: { "occ-workspace-files": ["operator.admin"] },
+      },
+    },
+  });
   const oldRevision = {
     ...base,
     id: "revision-embedded-recovery-bad",
@@ -5804,24 +5824,7 @@ async function exerciseEmbeddedReplacement(scenario) {
     gatewayManagedMode: predecessorManagedMode,
     configuration: {
       agents: { defaults: { model: modelRef } },
-      logging: {
-        level: "info",
-        consoleLevel: "info",
-        consoleStyle: "json",
-      },
-      diagnostics: { otel: { logs: false } },
-      gateway: {
-        trustedProxies: ["10.42.0.0/16"],
-        allowRealIpFallback: true,
-        auth: {
-          mode: "trusted-proxy",
-          trustedProxy: {
-            userHeader: "x-occ-identity",
-            allowUsers: ["occ-workspace-files"],
-          },
-          identityScopes: { "occ-workspace-files": ["operator.admin"] },
-        },
-      },
+      ...gatewaySettings(),
     },
   };
   const replacement = {
@@ -5846,26 +5849,13 @@ async function exerciseEmbeddedReplacement(scenario) {
         },
       },
       channels: { slack: { enabled: false, botToken: "${SLACK_BOT_TOKEN}" } },
-      logging: {
-        level: "info",
-        consoleLevel: "info",
-        consoleStyle: "json",
-      },
-      diagnostics: { otel: { logs: false } },
-      gateway: {
-        trustedProxies: ["10.42.0.0/16"],
-        allowRealIpFallback: true,
-        auth: {
-          mode: "trusted-proxy",
-          trustedProxy: {
-            userHeader: "x-occ-identity",
-            allowUsers: ["occ-workspace-files"],
-          },
-          identityScopes: { "occ-workspace-files": ["operator.admin"] },
-        },
-      },
+      ...gatewaySettings(),
     },
   };
+  // Snapshot the declared provider before the driver can mutate the revision.
+  const { apiKey: _alias, ...expectedProvider } = structuredClone(
+    replacement.configuration.models.providers[providerId],
+  );
   const tenantOwnership = { namespaceId: tenant.id };
   const gatewayOwnership = { namespaceId: tenant.id, agentId };
   const agentOwnership = {
@@ -5877,6 +5867,7 @@ async function exerciseEmbeddedReplacement(scenario) {
   const agentName = `agent-${suffix}`;
   const { objects, key, save, patches, readyDeployments, clients } =
     createEmbeddedReplacementKubernetesFixture(tenant.id, gatewayName);
+  const gatewayDeploymentKey = key("Deployment", gatewayName);
 
   save({
     ...driver.manifest("v1", "Namespace", namespace, tenantOwnership),
@@ -5895,50 +5886,30 @@ async function exerciseEmbeddedReplacement(scenario) {
     }),
     automountServiceAccountToken: false,
   });
-  save({
-    ...driver.deployment(
-      gatewayName,
-      gatewayOwnership,
-      { name: namespace, plane: "execution" },
-      {
-        runtime: "openclaw-enterprise/gateway-fixture:local",
-        workspaceSetup: driver.options.images.gateway,
-      },
-      agentName,
-      "gateway",
-      {},
-      driver.gatewayConfiguration(oldRevision).loggingLevel,
-      driver.gatewayConfiguration(oldRevision),
-      true,
-      oldRevision.servicePrincipalId,
-      driver.harnessAuthForRevision(oldRevision, authContext(oldRevision), {
-        name: kubernetesNamespaceName(tenant.id),
-        plane: "control",
-      }),
-    ),
-    metadata: {
-      ...driver.deployment(
-        gatewayName,
-        gatewayOwnership,
-        { name: namespace, plane: "execution" },
-        {
-          runtime: "openclaw-enterprise/gateway-fixture:local",
-          workspaceSetup: driver.options.images.gateway,
-        },
-        agentName,
-        "gateway",
-        {},
-        driver.gatewayConfiguration(oldRevision).loggingLevel,
-        driver.gatewayConfiguration(oldRevision),
-        true,
-        oldRevision.servicePrincipalId,
-        driver.harnessAuthForRevision(oldRevision, authContext(oldRevision), {
-          name: kubernetesNamespaceName(tenant.id),
-          plane: "control",
-        }),
-      ).metadata,
-      generation: 2,
+  const predecessorConfiguration = driver.gatewayConfiguration(oldRevision);
+  const predecessorDeployment = driver.deployment(
+    gatewayName,
+    gatewayOwnership,
+    { name: namespace, plane: "execution" },
+    {
+      runtime: "openclaw-enterprise/gateway-fixture:local",
+      workspaceSetup: driver.options.images.gateway,
     },
+    agentName,
+    "gateway",
+    {},
+    predecessorConfiguration.loggingLevel,
+    predecessorConfiguration,
+    true,
+    oldRevision.servicePrincipalId,
+    driver.harnessAuthForRevision(oldRevision, authContext(oldRevision), {
+      name: kubernetesNamespaceName(tenant.id),
+      plane: "control",
+    }),
+  );
+  save({
+    ...predecessorDeployment,
+    metadata: { ...predecessorDeployment.metadata, generation: 2 },
     status: { observedGeneration: 2, readyReplicas: 0 },
   });
   const gatewayService = driver.service(
@@ -5959,7 +5930,7 @@ async function exerciseEmbeddedReplacement(scenario) {
   );
   activeRoute.metadata.uid = "route-uid";
   save(activeRoute);
-  const predecessor = structuredClone(objects.get(key("Deployment", gatewayName)));
+  const predecessor = structuredClone(objects.get(gatewayDeploymentKey));
 
   driver.apiClients = Promise.resolve(clients);
 
@@ -5971,7 +5942,7 @@ async function exerciseEmbeddedReplacement(scenario) {
     ...expected,
     ready: true,
   });
-  assert.deepEqual(objects.get(key("Deployment", gatewayName)), predecessor);
+  assert.deepEqual(objects.get(gatewayDeploymentKey), predecessor);
   assert.deepEqual(objects.get(key("HTTPRoute", gatewayName)), activeRoute);
   assert.equal(
     patches.some(({ kind }) => kind === "Deployment"),
@@ -6015,7 +5986,7 @@ async function exerciseEmbeddedReplacement(scenario) {
   for (const artifact of revisionArtifacts(replacement)) {
     assert.ok(objects.has(artifact), `${artifact} is kept for the activating revision`);
   }
-  const replaced = objects.get(key("Deployment", gatewayName));
+  const replaced = structuredClone(objects.get(gatewayDeploymentKey));
   assert.equal(replaced.metadata.annotations["openclaw.dev/agent-revision-id"], replacement.id);
   assert.equal(replaced.spec.strategy.type, "Recreate");
   for (const [deployment, managed] of [
@@ -6067,8 +6038,6 @@ async function exerciseEmbeddedReplacement(scenario) {
       agentRuntime: { id: "openclaw" },
     },
   });
-  const { apiKey: _alias, ...expectedProvider } =
-    replacement.configuration.models.providers[providerId];
   assert.deepEqual(probeConfiguration.models.providers[providerId], expectedProvider);
   for (const section of ["gateway", "channels", "plugins", "auth", "env", "secrets"]) {
     assert.equal(
@@ -6085,27 +6054,29 @@ async function exerciseEmbeddedReplacement(scenario) {
   );
   assert.ok(egressWrite >= 0 && egressWrite < gatewayWrite);
 
-  // Reconciliation observes readiness without replacing the Pod or retrying the
-  // native model call; explicit deployment/restart owns recovery from bad auth.
+  // Readiness reconciliation can reapply the Deployment. The stored replacement
+  // must stay unchanged through retries, activation, and stale activation refusal.
   assert.deepEqual(await driver.prepareRevision(replacement, authContext(replacement)), {
     ...expected,
     ready: false,
   });
+  assert.deepStrictEqual(objects.get(gatewayDeploymentKey), replaced);
   await assert.rejects(
     driver.activateRevision(replacement, authContext(replacement)),
     /gateway is not ready/i,
   );
-  assert.deepEqual(objects.get(key("Deployment", gatewayName)), replaced);
+  assert.deepStrictEqual(objects.get(gatewayDeploymentKey), replaced);
 
   readyDeployments.add(gatewayName);
   assert.equal((await driver.prepareRevision(replacement, authContext(replacement))).ready, true);
+  assert.deepStrictEqual(objects.get(gatewayDeploymentKey), replaced);
   await driver.activateRevision(replacement, authContext(replacement));
-  assert.deepEqual(objects.get(key("Deployment", gatewayName)), replaced);
+  assert.deepStrictEqual(objects.get(gatewayDeploymentKey), replaced);
   await assert.rejects(
     driver.activateRevision(oldRevision, authContext(oldRevision)),
     /stale AgentRevision gateway activation/i,
   );
-  assert.deepEqual(objects.get(key("Deployment", gatewayName)), replaced);
+  assert.deepStrictEqual(objects.get(gatewayDeploymentKey), replaced);
 
   const initial = {
     ...replacement,
@@ -6116,10 +6087,17 @@ async function exerciseEmbeddedReplacement(scenario) {
   assert.equal((await driver.prepareRevision(initial, authContext(initial))).ready, false);
   const initialGateway = objects.get(key("Deployment", `gateway-${digest(initial.agentId)}`));
   assert.ok(initialGateway);
+  const initialContainer = initialGateway.spec.template.spec.containers[0];
+  const replacementContainer = replaced.spec.template.spec.containers[0];
+  assert.deepEqual(initialContainer.command, replacementContainer.command);
+  const initialProbe = initialContainer.env.find(
+    ({ name }) => name === "OPENCLAW_HARNESS_PROBE_CONFIG",
+  )?.value;
+  assert.ok(initialProbe);
   assert.deepEqual(
-    initialGateway.spec.template.spec.containers[0].command,
-    replaced.spec.template.spec.containers[0].command,
-    "initial and replacement gateways execute the same native startup validation",
+    JSON.parse(initialProbe),
+    probeConfiguration,
+    "initial and replacement gateways validate the same model configuration",
   );
 }
 
