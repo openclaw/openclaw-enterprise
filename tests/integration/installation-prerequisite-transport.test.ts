@@ -142,9 +142,8 @@ test(
     await mkdir(scratch, { mode: 0o700 });
     const operatorHome = join(directory, "operator");
     await mkdir(join(operatorHome, ".kube"), { recursive: true, mode: 0o700 });
-    const ca = await certificateAuthority(source, {
-      caName: "prerequisite transport test CA",
-    });
+    const caName = "prerequisite transport test CA";
+    const ca = await certificateAuthority(source, { caName });
     const server = await signedLeaf(source, ca, {
       name: "server",
       commonName: dnsName,
@@ -287,37 +286,43 @@ test(
         );
       }
     });
-    const verifiedPort = await listen(
-      t,
-      createTlsServer(
-        {
-          cert: server.cert,
-          key: server.key,
-          ca: caBundle,
-          requestCert: true,
-          rejectUnauthorized: false,
-        },
-        (request, response) => {
-          if (request.url !== "/identity/token") {
-            verifiedApi(request, response);
-            return;
-          }
-          // Read the actual form before deciding whether to consume the token.
-          let body = "";
-          request.setEncoding("utf8").on("data", (chunk: string) => {
-            body += chunk;
-          });
-          request.once("end", () => {
-            refreshRequest = { method: request.method, form: new URLSearchParams(body) };
-            verifiedApi(request, response);
-          });
-        },
-      ),
+    const serverIdentity = { cert: server.cert, key: server.key };
+    const mutualTls = createTlsServer(
+      { ...serverIdentity, ca: caBundle, requestCert: true, rejectUnauthorized: true },
+      verifiedApi,
     );
-    const oidcIssuer = `https://127.0.0.1:${verifiedPort}/identity`;
+    let rejectedHandshakes = 0;
+    mutualTls.on("tlsClientError", () => {
+      rejectedHandshakes++;
+    });
+    const verifiedPort = await listen(t, mutualTls);
+    // Exec and OIDC use an HTTPS endpoint with server authentication and bearer credentials.
+    const bearerPort = await listen(
+      t,
+      createTlsServer(serverIdentity, (request, response) => {
+        if (request.url !== "/identity/token") {
+          verifiedApi(request, response);
+          return;
+        }
+        // Read the actual form before deciding whether to consume the token.
+        let body = "";
+        request.setEncoding("utf8").on("data", (chunk: string) => {
+          body += chunk;
+        });
+        request.once("end", () => {
+          refreshRequest = { method: request.method, form: new URLSearchParams(body) };
+          verifiedApi(request, response);
+        });
+      }),
+    );
+    const oidcIssuer = `https://127.0.0.1:${bearerPort}/identity`;
     const endpoint = {
       verified: {
         server: `https://127.0.0.1:${verifiedPort}`,
+        "certificate-authority": basename(ca.caPath),
+      },
+      bearer: {
+        server: `https://127.0.0.1:${bearerPort}`,
         "certificate-authority": basename(ca.caPath),
       },
       plaintext: { server: `http://127.0.0.1:${plaintextPort}` },
@@ -435,6 +440,42 @@ test(
       return new Map(checks.map((check) => [check.id, check]));
     }
 
+    await t.test("mutual TLS refuses missing or untrusted client certificates", async () => {
+      const untrustedDirectory = join(source, "untrusted");
+      await mkdir(untrustedDirectory, { mode: 0o700 });
+      // Use the trusted issuer's name on an unrelated CA. A matching name
+      // does not establish trust in the client's certificate signature.
+      const untrustedCa = await certificateAuthority(untrustedDirectory, { caName });
+      const untrustedClient = await signedLeaf(untrustedDirectory, untrustedCa, {
+        name: "client",
+        usage: "clientAuth",
+      });
+
+      for (const user of [
+        { tokenFile: relativeFiles.tokenFile },
+        {
+          ...relativeFiles,
+          "client-certificate": untrustedClient.certPath,
+          "client-key": untrustedClient.keyPath,
+        },
+      ]) {
+        rejectedHandshakes = 0;
+        const checks = await observations(config("verified", user), 2);
+        assert.equal(checks.get("kubernetes-api")?.status, "unknown");
+        assert.ok(rejectedHandshakes > 0, "the TLS handshake failed");
+        assert.equal(httpsRequests.length, 0, "the rejected client sent no API request");
+      }
+
+      const checks = await observations(
+        config("verified", relativeFiles, {
+          ...endpoint.verified,
+          "certificate-authority": untrustedCa.caPath,
+        }),
+        2,
+      );
+      assert.equal(checks.get("kubernetes-api")?.status, "unknown");
+      assert.equal(httpsRequests.length, 0, "kubectl refused the untrusted server certificate");
+    });
     await t.test("replacing the selected context and CA cannot redirect a Secret GET", async () => {
       firstServiceRead = () => {
         // Change the context and user, revoke the on-disk CA, and rotate the token
@@ -513,7 +554,7 @@ test(
         }
       },
     );
-    const execConfig = config("verified", {
+    const execConfig = config("bearer", {
       exec: {
         apiVersion: plugin.apiVersion,
         command: "./credential-plugin",
@@ -595,7 +636,7 @@ fi
       assert.match(checks.get("service-tls")?.action ?? "", /Resolve kubernetes-api/u);
     });
     await t.test("built-in OIDC is refused before refreshing the original credential", async () => {
-      const original = config("verified", {
+      const original = config("bearer", {
         "auth-provider": {
           name: "oidc",
           config: {
