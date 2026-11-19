@@ -372,6 +372,5 @@ implementation; they do not change the private workspace ingress fleet.
 ## Installation follow-up
 
 [TASK-0054](../plans/0054-channel-egress-installation-upgrade.md) covers managed defaults
-and the one-off upgrade. It keeps disabled channels off and patches only channel
-settings. Stop then Deploy uses current saved drafts. Uncertain submissions require operator inspection. Ordinary
+and the one-off upgrade. Disabled channels stay off; only channel settings change. Stop then Deploy uses current saved drafts. Uncertain submissions require operator inspection. Ordinary
 upgrades do not replay the transition.
