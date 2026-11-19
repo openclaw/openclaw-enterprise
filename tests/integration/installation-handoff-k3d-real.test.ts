@@ -736,10 +736,14 @@ if (args.includes("get") && args.includes("deployments.apps") && args.includes($
   };
 }
 if (args.includes("get") && args.includes("secret") && args.includes(${JSON.stringify(clientSecret)})) {
+  const templatePath = args.find((arg) => arg.startsWith("go-template-file="))
+    ?.slice("go-template-file=".length);
   observation = {
     secret: true,
     unrelatedSecretData: [${JSON.stringify(unrelatedSecretKey)}, ${JSON.stringify(unrelatedSecretValue)}]
       .some((value) => result.stdout?.includes(value)),
+    templatePath,
+    templateMode: templatePath === undefined ? undefined : statSync(templatePath).mode & 0o777,
   };
 }
 appendFileSync(${JSON.stringify(commandLog)}, JSON.stringify(observation) + "\n");
@@ -798,7 +802,11 @@ process.exit(result.status ?? 1);
       .split("\n")
       .map((line) => JSON.parse(line));
     const secretOutput = observations.filter(({ secret }) => secret);
-    assert.deepEqual(secretOutput, [{ secret: true, unrelatedSecretData: false }]);
+    assert.equal(secretOutput.length, 1);
+    const [secretProjection] = secretOutput;
+    assert.equal(secretProjection.unrelatedSecretData, false);
+    assert.equal(secretProjection.templateMode, 0o600);
+    await assert.rejects(stat(secretProjection.templatePath), { code: "ENOENT" });
     const workloadOutput = observations.filter(({ workload }) => workload);
     assert.deepEqual(workloadOutput, [
       {
@@ -1086,10 +1094,16 @@ process.exit(result.status ?? 1);
       assert.deepEqual(result?.resources, [await identity("StatefulSet", "statefulset", name)]);
     }
 
-    // The same companion entry blocks a required volume and is skipped in an
-    // optional volume. The selected public leaf remains required in both cases.
     const companionItems = [publicItem, { key: "companion", path: "companion.txt" }];
     async function updateClientVolume(secret: typeof clientVolume.secret & { optional?: boolean }) {
+      const patchPath = join(dir, "client-volume-patch.json");
+      await writeFile(
+        patchPath,
+        JSON.stringify([
+          { op: "replace", path: "/spec/template/spec/volumes/0/secret", value: secret },
+        ]),
+        { mode: 0o600 },
+      );
       await kubectl(
         "-n",
         namespace,
@@ -1097,13 +1111,47 @@ process.exit(result.status ?? 1);
         "deployment",
         clientName,
         "--type=json",
-        "-p",
-        JSON.stringify([
-          { op: "replace", path: "/spec/template/spec/volumes/0/secret", value: secret },
-        ]),
+        "--patch-file",
+        patchPath,
       );
     }
+    // The large mapping fits in a Kubernetes object. The check must handle it
+    // and accept a required key with an empty value.
+    const largeItems = Array.from({ length: 500 }, (_, index) => ({
+      key: `mapping-${String(index).padStart(3, "0")}-${"x".repeat(241)}`,
+      path: `mapped-${index}.txt`,
+    }));
+    const data = Object.fromEntries(largeItems.map(({ key }) => [key, ""]));
+    const secretPatch = join(dir, "client-secret-patch.json");
+    await writeFile(secretPatch, JSON.stringify({ data: { ...data, companion: "" } }), {
+      mode: 0o600,
+    });
+    await kubectl(
+      "-n",
+      namespace,
+      "patch",
+      "secret",
+      clientSecret,
+      "--type=merge",
+      "--patch-file",
+      secretPatch,
+    );
+    await updateClientVolume({ ...clientVolume.secret, items: [...companionItems, ...largeItems] });
+    assert.equal((await clientCheck())?.status, "passed");
+
+    // Once removed, the same companion key blocks a required volume and is
+    // skipped in an optional volume. Both still need the selected public leaf.
     await updateClientVolume({ ...clientVolume.secret, items: companionItems });
+    await kubectl(
+      "-n",
+      namespace,
+      "patch",
+      "secret",
+      clientSecret,
+      "--type=merge",
+      "-p",
+      JSON.stringify({ data: { companion: null } }),
+    );
     const requiredCompanion = await clientCheck();
     assert.equal(requiredCompanion?.status, "failed");
     assert.match(requiredCompanion?.summary ?? "", /maps a required key that the Secret lacks/u);

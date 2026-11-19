@@ -1225,6 +1225,7 @@ async function diagnose(
     kind: string,
     { namespace, name }: DeploymentSelection,
     projection: string,
+    format: "go-template" | "go-template-file" = "go-template",
   ) =>
     kubectl(
       [
@@ -1236,7 +1237,7 @@ async function diagnose(
         "--ignore-not-found",
         "--v=0",
         "-o",
-        `go-template=${projection}`,
+        `${format}=${projection}`,
       ],
       "discard",
     );
@@ -1244,17 +1245,24 @@ async function diagnose(
     selection: DeploymentSelection,
     serverName?: string,
     requiredKeys: string[] = [],
-  ) =>
-    inspectCertificate(
-      selection,
-      await projectNamed(
-        "secret",
-        selection,
-        `${tlsSecretFields}${requiredSecretKeysProjection(requiredKeys)}}`,
-      ),
-      serverName,
-      requiredKeys,
-    );
+  ) => {
+    const template = `${tlsSecretFields}${requiredSecretKeysProjection(requiredKeys)}}`;
+    if (requiredKeys.length === 0) {
+      const output = await projectNamed("secret", selection, template);
+      return inspectCertificate(selection, output, serverName);
+    }
+    // Large required mappings can exceed the OS argument limit. Keep their key
+    // names in a private file for the lifetime of the named read.
+    const templateDirectory = await mkdtemp(join(tmpdir(), "occ-secret-check-"));
+    try {
+      const templatePath = join(templateDirectory, "secret.gotmpl");
+      await writeFile(templatePath, template, { flag: "wx", mode: 0o600 });
+      const output = await projectNamed("secret", selection, templatePath, "go-template-file");
+      return inspectCertificate(selection, output, serverName, requiredKeys);
+    } finally {
+      await rm(templateDirectory, { recursive: true, force: true });
+    }
+  };
   async function check(
     id: string,
     action: string,
