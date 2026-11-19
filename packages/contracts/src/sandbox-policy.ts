@@ -85,41 +85,38 @@ export function admitSandboxRepositoryNetworkPolicy(
   if (policy === undefined) {
     return network;
   }
-  if (
-    typeof driver?.admitRepositoryNetworkPolicy !== "function" ||
-    driver.id !== network.driverId ||
-    driver.implementation !== network.implementation
-  ) {
-    throw new RepositoryNetworkPolicyAdmissionError(
-      "UNSUPPORTED_POLICY",
-      "/repositoryNetworkPolicy",
-      "Select a Sandbox Driver that supports repository network policy.",
-    );
-  }
-
-  let defaults: SandboxPolicySnapshot["defaults"] | undefined;
+  let result: SandboxPolicySnapshot["defaults"] | undefined;
+  let message = "The Sandbox Driver must return an effective repository network policy document.";
   try {
-    const result = driver.admitRepositoryNetworkPolicy(policy, network);
-    if (result instanceof Promise) {
-      // Admission is synchronous. Handle a rejected Promise without exposing its reason.
-      void result.catch(() => undefined);
+    const admit = driver?.admitRepositoryNetworkPolicy;
+    if (
+      driver === undefined ||
+      typeof admit !== "function" ||
+      driver.id !== network.driverId ||
+      driver.implementation !== network.implementation
+    ) {
+      message = "Select a Sandbox Driver that supports repository network policy.";
     } else {
-      defaults = immutableCopy(result);
+      result = Reflect.apply(admit, driver, [policy, network]);
+      const defaults = immutableCopy(result);
+      if (
+        defaults !== undefined &&
+        validateConfiguration(EffectiveRepositoryPolicySchema, defaults).success
+      ) {
+        return Object.freeze({ ...network, defaults, repositoryNetworkPolicy: policy });
+      }
     }
   } catch {
-    // Driver and copy diagnostics are private. Use the same error as for an invalid result.
+    // A rejected Promise cannot be cloned. Handle its rejection even across realms.
+    void Promise.resolve()
+      .then(() => result)
+      .catch(() => undefined);
   }
-  if (
-    defaults === undefined ||
-    !validateConfiguration(EffectiveRepositoryPolicySchema, defaults).success
-  ) {
-    throw new RepositoryNetworkPolicyAdmissionError(
-      "UNSUPPORTED_POLICY",
-      "/repositoryNetworkPolicy",
-      "The Sandbox Driver must return an effective repository network policy document.",
-    );
-  }
-  return Object.freeze({ ...network, defaults, repositoryNetworkPolicy: policy });
+  throw new RepositoryNetworkPolicyAdmissionError(
+    "UNSUPPORTED_POLICY",
+    "/repositoryNetworkPolicy",
+    message,
+  );
 }
 
 /** Explicit, nonsecret acknowledgement; only its validated snapshot is persisted. */

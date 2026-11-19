@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 
 import {
   inferenceKeyDestination,
@@ -344,24 +345,13 @@ test("Sandbox repository policy admission rejects invalid Driver defaults for an
   }
 });
 
-test("Sandbox repository policy admission returns a safe contract error for Driver failures", () => {
+test("Sandbox repository policy admission returns a safe contract error for Driver failures", async (t) => {
   const privateDiagnostic = new Error("Sandbox provider diagnostic");
-  const invalidAdmissions: readonly (() => unknown)[] = [
-    () => {
-      throw privateDiagnostic;
-    },
-    () => ({ uncloneable: () => undefined }),
-    async () => {
-      throw privateDiagnostic;
-    },
-  ];
-  for (const admit of invalidAdmissions) {
+  function assertSafeError(
+    driver: NonNullable<Parameters<typeof admitSandboxRepositoryNetworkPolicy>[3]>,
+  ) {
     assert.throws(
-      () =>
-        admitSandboxRepositoryNetworkPolicy(baseRepositoryPolicySnapshot, [], [], {
-          ...sandboxDriverWithoutRepositoryPolicy,
-          admitRepositoryNetworkPolicy: () => admit() as SandboxPolicySnapshot["defaults"],
-        }),
+      () => admitSandboxRepositoryNetworkPolicy(baseRepositoryPolicySnapshot, [], [], driver),
       (error: unknown) => {
         assert.ok(error instanceof RepositoryNetworkPolicyAdmissionError);
         assert.equal(error.code, "UNSUPPORTED_POLICY");
@@ -375,6 +365,32 @@ test("Sandbox repository policy admission returns a safe contract error for Driv
       },
     );
   }
+  await t.test("throwing capability getter", () => {
+    assertSafeError({
+      ...sandboxDriverWithoutRepositoryPolicy,
+      get admitRepositoryNetworkPolicy(): never {
+        throw privateDiagnostic;
+      },
+    });
+  });
+
+  const invalidAdmissions: Readonly<Record<string, () => unknown>> = {
+    "throwing capability method": () => {
+      throw privateDiagnostic;
+    },
+    "uncloneable defaults": () => ({ uncloneable: () => undefined }),
+    "rejected Promise": () => Promise.reject(privateDiagnostic),
+    "rejected Promise from another realm": () =>
+      runInNewContext("Promise.reject(privateDiagnostic)", { privateDiagnostic }),
+  };
+  for (const [name, admit] of Object.entries(invalidAdmissions)) {
+    await t.test(name, () => {
+      assertSafeError({
+        ...sandboxDriverWithoutRepositoryPolicy,
+        admitRepositoryNetworkPolicy: () => admit() as SandboxPolicySnapshot["defaults"],
+      });
+    });
+  }
 });
 
 test("Sandbox repository policy admission requires the selected Driver and preserves its result", () => {
@@ -385,13 +401,18 @@ test("Sandbox repository policy admission requires the selected Driver and prese
     { name: "RepositoryNetworkPolicyAdmissionError", code: "UNSUPPORTED_POLICY" },
   );
   const effective = { evaluated: { version: 1 } };
+  let capabilityReads = 0;
   let calls = 0;
   const driver = {
     id: snapshot.driverId,
     implementation: snapshot.implementation,
-    admitRepositoryNetworkPolicy: () => {
-      calls += 1;
-      return effective;
+    get admitRepositoryNetworkPolicy() {
+      capabilityReads += 1;
+      return function (this: unknown) {
+        assert.equal(this, driver);
+        calls += 1;
+        return effective;
+      };
     },
   };
   assert.throws(
@@ -399,7 +420,9 @@ test("Sandbox repository policy admission requires the selected Driver and prese
     { name: "RepositoryNetworkPolicyAdmissionError", code: "UNSUPPORTED_POLICY" },
   );
   assert.equal(calls, 0);
+  capabilityReads = 0;
   const admitted = admitSandboxRepositoryNetworkPolicy(snapshot, [], [], driver);
+  assert.equal(capabilityReads, 1);
   assert.equal(calls, 1);
   assert.deepEqual(admitted.repositoryNetworkPolicy?.grants, []);
   effective.evaluated.version = 2;
