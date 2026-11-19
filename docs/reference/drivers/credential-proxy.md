@@ -35,7 +35,7 @@ these operations:
 | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `sourceControl`                             | Admission and preparation use its Backend, sender, resolver and provider identities. `assertAvailable(signal, profile?)` checks the configured counterpart.             | Required property, not a method. Discovery alone is not installed enforcement evidence.                  |
 | `bindExchange(createCredentialProxy)`       | API composition supplies a factory. Call it once with the transport's `EgressExchangeOwner`; receive only the five exchange methods. Return a binding with `close()`.   | Optional on the base interface; required to connect a request-time exchange transport.                   |
-| `bindRepositoryGit(authority, requests)`    | Worker composition supplies `ProtectedRepositoryGitAuthority` and OCE's GitHub request decisions; return a binding with `close()`.                                      | Optional; required for selected protected repository delivery, together with Sandbox `repositoryAccess`. |
+| `bindRepositoryGit(authority, requests)`    | Worker composition supplies `ProtectedRepositoryGitAuthority` and `requests` (below); return a binding with `close()`.                                                  | Optional; required for selected protected repository delivery, together with Sandbox `repositoryAccess`. |
 | `configureRevision(context)`                | Compute preparation supplies Namespace, revision, admitted plan and cancellation signal. Return `ProxyWiring` with that exact plan and nonsecret Sandbox configuration. | Required. Cannot broaden the admitted plan.                                                              |
 | `wiringStatus(context, prepared)`           | Compute observes the prepared installation. Return authenticated `EgressInstallation` evidence or `undefined`.                                                          | Required. An accepted configuration request is not sufficient evidence.                                  |
 | `verifyInstallation(context, installation)` | Compute rechecks the counterpart before release, including after recording custody. Return whether the exact evidence remains valid.                                    | Required. A stored receipt is not a readiness lease.                                                     |
@@ -190,29 +190,29 @@ Neither decision proves delivery or the provider outcome.
 
 ### GitHub request decisions
 
-Use `requests` (`RepositoryGitRequests`) instead of GitHub rules of your own.
+Use `requests` (`RepositoryGitRequests`), not GitHub rules of your own.
 `requests.authorize({ route, profile, request, signal })` reads the
 material for `route`, classifies the request with the bundled route's code (smart HTTP
-and its pushed refs, GitHub REST and GraphQL, the draft pull request create), records
+with pushed refs, REST, GraphQL, draft pull request creation), records
 one use and returns `allow` or `refused`. Malformed input is refused.
 
-- **Precondition (current rule).** OCE allows a use only after `recipients.beginInstall`
-  and `confirmInstall` for that exact material version, once per version and again after
-  each renewal. Pass the route `confirmInstall` returned. An injector that asks per
-  request holds no value, so its confirmation means "ready to ask per request". A
-  per-request release mode may replace this rule (RFC-0043).
-- **Request.** What a supervisor-style hook sends before injection: the TLS-verified
+- **Precondition (current rule).** OCE allows use only after `recipients.beginInstall`
+  and `confirmInstall` for that exact material version, again after each renewal. Pass
+  the route `confirmInstall` returned. For an injector that asks per request,
+  confirmation means "ready to ask". A per-request release mode may replace this rule
+  (RFC-0043).
+- **Request.** What a hook sends before injection: the TLS-verified
   target (never the `Host` header), lowercase headers without credential, routing or
   framing headers, and the buffered body up to 4 MiB. Give each execution credential its
-  own `route`. The caller owns the time budget and bounds its calls in flight.
+  own `route`. The caller owns the time budget and the in-flight bound.
 - **Allow.** Place `credential` on exactly the classified bytes (Git: Basic
   `username:token`; API: `Bearer token`) and send them once before `sendBy` (Worker
   clock); an injector need not forward. `exchangeId` names OCE's use record. Never resend
-  with that credential: a client may retry a `route_not_ready` refusal as a new request.
+  with it; a client may retry a `route_not_ready` refusal as a new request.
   Show the Agent `reasonCode`.
-- **Accepted gap.** `credential` is the grant's installation token, which GitHub accepts
-  for anything its permissions cover until it expires. The ref and draft rules bind only a
-  caller that keeps this contract. Do not assume the same credential across calls.
+- **Accepted gap.** `credential` is the grant's installation token, valid at GitHub for
+  anything its permissions cover until expiry. The ref and draft rules bind only a
+  compliant caller. Do not assume one credential across calls.
 
 ### Cancellation, retries and uncertainty
 
