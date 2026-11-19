@@ -8106,7 +8106,8 @@ export class OpenClawController {
     });
   }
 
-  private staticEgressProvider(type: string, previous?: EgressRef) {
+  private staticEgressProvider(gatewayType: CredentialSourceType, previous?: EgressRef) {
+    const type = gatewayType.type;
     const driver = this.selectedDriver("credential_proxy");
     const owner = this.selections.get("credential_proxy")?.owner;
     const control = driver.sourceControl;
@@ -8126,6 +8127,9 @@ export class OpenClawController {
       return undefined;
     }
     const ref = immutableCopy(provider.ref);
+    // Catalog entries may be retained by their Drivers across asynchronous admission.
+    const admittedGatewayType = immutableCopy(gatewayType);
+    const admittedProviderType = immutableCopy(provider.sourceType);
     const { inject, normalizeConfig } = provider;
     const assertCurrent = () => {
       if (
@@ -8134,6 +8138,8 @@ export class OpenClawController {
         (owner !== undefined && owner.require("credential_proxy") !== driver) ||
         driver.sourceControl !== control ||
         resolve() !== provider ||
+        !isDeepStrictEqual(gatewayType, admittedGatewayType) ||
+        !isDeepStrictEqual(provider.sourceType, admittedProviderType) ||
         !isDeepStrictEqual(provider.ref, ref) ||
         provider.inject !== inject ||
         provider.normalizeConfig !== normalizeConfig
@@ -8144,7 +8150,7 @@ export class OpenClawController {
       }
       owner?.assertNewStaticProviderUse(ref);
     };
-    return { provider, ref, inject, normalizeConfig, assertCurrent };
+    return { provider, ref, inject, normalizeConfig, assertCurrent, gatewayType };
   }
 
   private async admitStaticEgressSource(
@@ -8156,13 +8162,14 @@ export class OpenClawController {
     config: Readonly<Record<string, string>>,
     references: Readonly<Record<string, SecretReference>>,
     generation: number,
-    selection = this.staticEgressProvider(type),
+    selection: ReturnType<OpenClawController["staticEgressProvider"]>,
   ): Promise<StaticEgressSource> {
     const control = this.selectedDriver("credential_proxy").sourceControl;
     if (
       !selection ||
+      selection.gatewayType.type !== type ||
       selection.provider.sourceType.type !== type ||
-      selection.provider.sourceType.rotation === "refresh" ||
+      !this.staticSourceLifecycleMatches(selection.gatewayType, selection.provider.sourceType) ||
       selection.provider.sourceType.secrets.length !== 1
     ) {
       // An Installation property about the type the request sent (finding 2536). The who comes
@@ -8476,9 +8483,7 @@ export class OpenClawController {
       }
       const requiresStaticAdmission =
         !protectedType && !this.ordinaryCredentialGatewayAllowed(type);
-      const staticSelection = requiresStaticAdmission
-        ? this.staticEgressProvider(type.type)
-        : undefined;
+      const staticSelection = requiresStaticAdmission ? this.staticEgressProvider(type) : undefined;
       if (
         requiresStaticAdmission &&
         !this.staticSourceLifecycleMatches(type, staticSelection?.provider.sourceType)
@@ -8526,7 +8531,7 @@ export class OpenClawController {
             principalId,
             locked.id,
             sourceId,
-            type.type,
+            input.type,
             config,
             secretRefs,
             1,
@@ -8797,7 +8802,7 @@ export class OpenClawController {
         const previous = source.egress?.key.provider;
         const admitted =
           previous && this.selections.has("credential_proxy")
-            ? this.staticEgressProvider(source.type, previous)
+            ? this.staticEgressProvider(type, previous)
             : undefined;
         if (!admitted && !(input.adoption === "live" && input.authorityScope === "execution")) {
           throw new ResourceStateConflictError(
@@ -8821,7 +8826,7 @@ export class OpenClawController {
           source.config,
           secretRefs,
           (source.egress?.key.source.generation ?? 0) + 1,
-          admitted,
+          admitted ?? this.staticEgressProvider(type),
         );
         if (input.secrets !== undefined) {
           await state.credentialSources.replaceCredentialSourceSecrets(
@@ -17232,17 +17237,16 @@ export class OpenClawController {
     provider?: CredentialSourceType,
   ): boolean {
     // Externally rotated static inputs still use explicit Secret updates, not Refresh.
-    return (
-      type.rotation !== "refresh" &&
-      type.deviceAuthorization === undefined &&
-      type.harnessAuth?.loginMode !== "chatgptAuthTokens" &&
-      (provider === undefined || provider.rotation !== "refresh")
-    );
+    const isStatic = (candidate: CredentialSourceType) =>
+      candidate.rotation !== "refresh" &&
+      candidate.deviceAuthorization === undefined &&
+      candidate.harnessAuth?.loginMode !== "chatgptAuthTokens";
+    return isStatic(type) && (provider === undefined || isStatic(provider));
   }
 
   private staticSourceTypeAvailable(type: CredentialSourceType): boolean {
     try {
-      const selection = this.staticEgressProvider(type.type);
+      const selection = this.staticEgressProvider(type);
       if (
         !selection ||
         !this.staticSourceLifecycleMatches(type, selection.provider.sourceType) ||
