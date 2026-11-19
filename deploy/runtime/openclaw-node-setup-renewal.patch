@@ -4479,6 +4479,19 @@ index 511f6b4ff23..62aa3623f98 100644
          if (opts.sessionHost) {
            await mutateConfigFileWithRetry({
              writeOptions: {
+diff --git a/src/cli/node-cli/daemon.test.ts b/src/cli/node-cli/daemon.test.ts
+index 1fae81675ab..6e5c68c2da0 100644
+--- a/src/cli/node-cli/daemon.test.ts
++++ b/src/cli/node-cli/daemon.test.ts
+@@ -1,7 +1,7 @@
+ import path from "node:path";
+ import { Command } from "commander";
+ import type { DaemonRuntimePinSnapshot } from "../../daemon/runtime-pin-types.js";
+-import { resolveNodeGatewayOptions } from "./gateway-options.js";
++import { resolveNodeGatewayOptions } from "../../node-host/gateway-options.js";
+ const pinSnapshotMock = vi.hoisted(() =>
+   vi.fn<() => DaemonRuntimePinSnapshot>(() => ({ revision: "empty", stored: false })),
+ );
 diff --git a/src/cli/node-cli/daemon.ts b/src/cli/node-cli/daemon.ts
 index 95a7cd88e95..92f8722846e 100644
 --- a/src/cli/node-cli/daemon.ts
