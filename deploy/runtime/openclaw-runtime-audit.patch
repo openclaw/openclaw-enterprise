@@ -1786,3 +1786,196 @@ index 7996cb3..ed22635 100644
            admitTurn: hello.protocolFeatures.includes(WORKER_TURN_ADMISSION_PROTOCOL_FEATURE)
              ? async (event) => {
                  const response = await connection.rpc.request(
+diff --git a/src/worker/worker-runtime-native-inference.suite.ts b/src/worker/worker-runtime-native-inference.suite.ts
+index 1baaf1b..42c9bbe 100644
+--- a/src/worker/worker-runtime-native-inference.suite.ts
++++ b/src/worker/worker-runtime-native-inference.suite.ts
+@@ -10,6 +10,7 @@ type NativeInferenceFixture = {
+   setup: () => Promise<{
+     gateway: {
+       disconnectClients(): void;
++      modelObservations: { modelCallId: string; stage: string; runEpoch: number }[];
+       liveEventRequests: WorkerLiveEventParams[];
+     };
+     workspaceDir: string;
+@@ -18,62 +19,86 @@ type NativeInferenceFixture = {
+ };
+
+ export function registerWorkerNativeInferenceTests({ setup }: NativeInferenceFixture): void {
+-  it("revokes an active native provider request when Gateway admission is lost", async () => {
+-    const requestStarted = createDeferred();
+-    const requestClosed = createDeferred();
+-    let providerRequests = 0;
+-    const provider = createServer((request, response) => {
+-      providerRequests += 1;
+-      expect(request.headers.authorization).toBe("Bearer worker-native-provider-credential");
+-      response.once("close", () => requestClosed.resolve());
+-      requestStarted.resolve();
+-    });
+-    provider.listen(0, "127.0.0.1");
+-    await once(provider, "listening");
+-    const address = provider.address();
+-    if (!address || typeof address === "string") {
+-      throw new Error("native provider fixture did not allocate a TCP port");
+-    }
+-
+-    try {
+-      const { gateway, workspaceDir, launch } = await setup();
+-      launch.assignment.inference = "runtime-local";
+-      launch.assignment.modelRef = { provider: "fixture", model: "fixture-model" };
+-      const result = runWorkerDescriptor(launch, {
+-        nativeInference: {
+-          config: {
+-            workspace: workspaceDir,
+-            models: [
+-              {
+-                provider: "fixture",
+-                id: "fixture-model",
+-                api: "openai-completions",
+-                baseUrl: `http://127.0.0.1:${address.port}/v1`,
+-                contextWindow: 8_192,
+-                maxTokens: 256,
+-                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+-              },
+-            ],
+-          },
+-          credentials: { "fixture/fixture-model": "worker-native-provider-credential" },
+-        },
++  it.each(["connection loss", "cancellation"] as const)(
++    "revokes an active native provider request on %s",
++    async (interruption) => {
++      const requestStarted = createDeferred();
++      const requestClosed = createDeferred();
++      let providerRequests = 0;
++      const provider = createServer((request, response) => {
++        providerRequests += 1;
++        expect(request.headers.authorization).toBe("Bearer worker-native-provider-credential");
++        response.once("close", () => requestClosed.resolve());
++        requestStarted.resolve();
+       });
+-      await requestStarted.promise;
++      provider.listen(0, "127.0.0.1");
++      await once(provider, "listening");
++      const address = provider.address();
++      if (!address || typeof address === "string") {
++        throw new Error("native provider fixture did not allocate a TCP port");
++      }
+
+-      gateway.disconnectClients();
++      try {
++        const { gateway, workspaceDir, launch } = await setup();
++        launch.assignment.inference = "runtime-local";
++        launch.assignment.reportModelCalls = true;
++        const controller = new AbortController();
++        launch.assignment.modelRef = { provider: "fixture", model: "fixture-model" };
++        const result = runWorkerDescriptor(launch, {
++          signal: controller.signal,
++          nativeInference: {
++            config: {
++              workspace: workspaceDir,
++              models: [
++                {
++                  provider: "fixture",
++                  id: "fixture-model",
++                  api: "openai-completions",
++                  baseUrl: `http://127.0.0.1:${address.port}/v1`,
++                  contextWindow: 8_192,
++                  maxTokens: 256,
++                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
++                },
++              ],
++            },
++            credentials: { "fixture/fixture-model": "worker-native-provider-credential" },
++          },
++        });
++        await requestStarted.promise;
+
+-      await expect(result).resolves.toMatchObject({ status: "failed", reason: "node-lost" });
+-      await requestClosed.promise;
+-      expect(providerRequests).toBe(1);
+-      expect(gateway.liveEventRequests.at(-1)?.event).toMatchObject({
+-        kind: "lifecycle",
+-        payload: { phase: "finishing", stopReason: "aborted" },
+-      });
+-    } finally {
+-      provider.closeAllConnections();
+-      await new Promise<void>((resolve, reject) => {
+-        provider.close((error) => (error ? reject(error) : resolve()));
+-      });
+-    }
+-  });
++        // The provider accepted the request only after the worker sent its start.
++        expect(gateway.modelObservations).toEqual([
++          {
++            modelCallId: expect.any(String),
++            stage: "started",
++            runEpoch: launch.admission.ownerEpoch,
++          },
++        ]);
++        if (interruption === "connection loss") {
++          gateway.disconnectClients();
++          await expect(result).resolves.toMatchObject({ status: "failed", reason: "node-lost" });
++          // The unresolved start is the only evidence when the sender loses its connection.
++          expect(gateway.modelObservations).toHaveLength(1);
++        } else {
++          controller.abort(new Error("cancelled by caller"));
++          await expect(result).rejects.toThrow("cancelled by caller");
++          expect(gateway.modelObservations[1]).toEqual({
++            ...gateway.modelObservations[0],
++            stage: "cancelled",
++          });
++        }
++        await requestClosed.promise;
++        expect(providerRequests).toBe(1);
++        expect(gateway.liveEventRequests.at(-1)?.event).toMatchObject({
++          kind: "lifecycle",
++          payload: { phase: "finishing", stopReason: "aborted" },
++        });
++      } finally {
++        provider.closeAllConnections();
++        await new Promise<void>((resolve, reject) => {
++          provider.close((error) => (error ? reject(error) : resolve()));
++        });
++      }
++    },
++  );
+ }
+diff --git a/src/worker/worker.runtime.test.ts b/src/worker/worker.runtime.test.ts
+index a799cd7..3205a5c 100644
+--- a/src/worker/worker.runtime.test.ts
++++ b/src/worker/worker.runtime.test.ts
+@@ -42,6 +42,11 @@ import {
+   type WorkerInferenceTerminalFrame,
+   type WorkerInferenceTerminalOutcome,
+ } from "../../packages/gateway-protocol/src/schema/worker-inference.js";
++import {
++  WORKER_MODEL_OBSERVATION_METHOD,
++  validateWorkerModelObservation,
++  type WorkerModelObservation,
++} from "../../packages/gateway-protocol/src/schema/worker-model-observation.js";
+ import * as workerTurnAdmission from "../../packages/gateway-protocol/src/schema/worker-turn-admission.js";
+ import {
+   fixtureReceiptClientSource,
+@@ -261,6 +266,7 @@ class FakeWorkerGateway extends WorkerExecApprovalFixture {
+   readonly acceptedTranscriptRequests: WorkerTranscriptCommitParams[] = [];
+   readonly liveEventRequests: WorkerLiveEventParams[] = [];
+   readonly inferenceRequests: WorkerInferenceStartParams[] = [];
++  readonly modelObservations: WorkerModelObservation[] = [];
+   readonly turnAdmissionRequests: workerTurnAdmission.WorkerTurnAdmissionParams[] = [];
+   readonly gatewayToolRequests: WorkerGatewayToolInvokeParams[] = [];
+   readonly computerRequests: WorkerComputerParams[] = [];
+@@ -342,6 +348,14 @@ class FakeWorkerGateway extends WorkerExecApprovalFixture {
+       return this.handleInferenceCancel(socket, parsed);
+     }
+     if (Value.Check(RequestFrameSchema, parsed)) {
++      if (
++        parsed.method === WORKER_MODEL_OBSERVATION_METHOD &&
++        validateWorkerModelObservation(parsed.params)
++      ) {
++        this.modelObservations.push(parsed.params);
++        this.reply(socket, parsed.id, { recorded: true });
++        return;
++      }
+       if (
+         parsed.method === workerTurnAdmission.WORKER_TURN_ADMISSION_METHOD &&
+         workerTurnAdmission.validateWorkerTurnAdmissionParams(parsed.params)

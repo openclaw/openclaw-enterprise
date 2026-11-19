@@ -272,7 +272,7 @@ RUN echo '402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15  /tmp
 
 # Record runtime audit observations at the OpenClaw and Codex Gateway owners.
 COPY deploy/runtime/openclaw-runtime-audit.patch /tmp/openclaw-runtime-audit.patch
-RUN echo 'c1395bbcc5d29e80a6532531d0630d7ad6b96382ce9569fed33bb89f65aca5d1  /tmp/openclaw-runtime-audit.patch' | sha256sum --check --strict \
+RUN echo '141258adb28cfcbe33bc0cc0c50ddae6d12d63e79a2643a5595d520243ce214e  /tmp/openclaw-runtime-audit.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-runtime-audit.patch
 
 COPY deploy/runtime/openclaw-codex-runtime-audit.patch /tmp/openclaw-codex-runtime-audit.patch
@@ -338,6 +338,9 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/cli/gateway-cli/run-loop.test.ts \
     -t "keeps the fenced process alive until the supervisor sends SIGTERM" \
+    && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
+    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/worker/worker.runtime.test.ts \
+    -t "revokes an active native provider" \
     && rm -rf .artifacts
 # Type-check production and the native/UI test graphs touched by the bridges.
 # The upstream runner generates database types and compiler cache under .artifacts.
