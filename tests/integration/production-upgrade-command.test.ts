@@ -227,13 +227,18 @@ test("status treats candidate checks as historical and rejects invalid preflight
   const blocker = join(f.evidence, "preflight-blocked-original-worker");
   const candidatePassed = /Candidate startup checks passed/u;
 
-  // An older evidence directory can establish these checks without recording an upgrade outcome.
+  // A startup marker alone can come from a resume or an attempt without a final result.
   await writeFile(startup, "", { mode: 0o600 });
   const historical = status();
   assert.equal(historical.status, 0, historical.stderr);
   assert.match(historical.stdout, candidatePassed);
-  assert.match(historical.stdout, /No deployment preparation marker was observed/u);
-  assert.doesNotMatch(historical.stdout, /original worker/u);
+  assert.doesNotMatch(historical.stdout, /fresh evidence|original worker/u);
+  assert.match(historical.stdout, /final preflight outcome is unknown/u);
+  assert.match(historical.stdout, /Preserve the original attempt's top-level evidence/u);
+  assert.match(
+    historical.stdout,
+    /Reconcile the command result and current inventory before any further write/u,
+  );
 
   for (const [marker, outcome] of [
     ["prepared", /No completion was recorded/u],
@@ -267,6 +272,17 @@ test("status treats candidate checks as historical and rejects invalid preflight
   assert.equal(nonempty.status, 2);
   assert.match(nonempty.stderr, /invalid or nonprivate status marker/u);
   await writeFile(blocker, "", { mode: 0o600 });
+  const blocked = status();
+  assert.equal(blocked.status, 0, blocked.stderr);
+  assert.match(
+    blocked.stdout,
+    /blocked because retained Agent revisions require their original worker/u,
+  );
+  assert.match(
+    blocked.stdout,
+    /Resolve the blocker.*then recheck inventory with fresh upgrade evidence/u,
+  );
+
   await rm(startup);
   const inconsistent = status();
   assert.equal(inconsistent.status, 2);
