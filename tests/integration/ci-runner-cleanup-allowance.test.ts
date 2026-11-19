@@ -9,6 +9,7 @@ import {
   procStat,
   runnerArtifactPaths,
   runRunnerAsync,
+  writeRunnerLaneFiles,
   writeRunnerManifest,
 } from "../helpers/ci-runner-fixture.ts";
 
@@ -122,11 +123,7 @@ describe("runner cleanup allowances", { concurrency: true }, () => {
         "",
       ].join("\n"),
     );
-    const files = ["hung", "later"].map((name) => ({ path: `tests/integration/${name}.test.mjs` }));
-    for (const { path } of files) {
-      await writeFile(join(root, path), passingLaneFixture);
-    }
-    await writeRunnerManifest(root, { lanes: { cleanup: { files } } });
+    await writeRunnerLaneFiles(root, "cleanup", ["hung", "later"], passingLaneFixture);
 
     // The runner's clock stands still from the start until the command and its descendant are on
     // record, so the cleanup's allowance ends two seconds after that however long the host takes
