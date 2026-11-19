@@ -4,6 +4,7 @@ import {
 } from "../../../gateway/workspace-node-observation.ts";
 import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/contracts";
 import type { OpenShellCredentialAttachments } from "../../sandbox/openshell-credential-attachments.ts";
+import { OpenShellSandboxConfigurationFailure } from "../../sandbox/openshell-sandbox-errors.ts";
 import { networkPolicySpecToJson, resolverEgress } from "../../kubernetes/network-policy.ts";
 import {
   KubernetesRequestTimeout,
@@ -806,6 +807,13 @@ function diagnosticMessage(message: string): boolean {
 function preparationFailureDiagnostic(error: unknown): ComputePrepareRevisionFailureDiagnostic {
   const failure = preparationFailure(error);
   const cause = privateWriteEvidence(failure.error) ?? failure.error;
+  if (cause instanceof OpenShellSandboxConfigurationFailure && cause.diagnosticCode !== undefined) {
+    return {
+      code: cause.diagnosticCode,
+      stage: failure.stage,
+      errorClass: "OpenShellSandboxConfigurationFailure",
+    };
+  }
   const status = numericErrorStatus(cause);
   if (nonKubernetesTransientFailure(cause)) {
     // The code names the dependency (AGENT_GATEWAY_UNAVAILABLE); the message is the

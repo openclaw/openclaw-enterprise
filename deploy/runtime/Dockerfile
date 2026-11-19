@@ -168,7 +168,7 @@ RUN echo 'a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7  /tmp
 # Keep the reviewed Codex 0.164.0 (seccomp profile and artifact rules) until OCE moves to the
 # Codex the pinned OpenClaw bundles. Remove this pin with that upgrade.
 COPY deploy/runtime/stock-codex-0.164.0-dependency-pin.patch /tmp/stock-codex-0.164.0-dependency-pin.patch
-RUN echo 'ddce55b7cd701ae7f5db3c2932d7ddd760077592a8c96376ac7363609227c3be  /tmp/stock-codex-0.164.0-dependency-pin.patch' | sha256sum --check --strict \
+RUN echo 'cb1ff6b003dbe385fc2938b6cc46ba7fc0f91d4954eaad5b591ff29384df0197  /tmp/stock-codex-0.164.0-dependency-pin.patch' | sha256sum --check --strict \
     && git apply /tmp/stock-codex-0.164.0-dependency-pin.patch
 COPY scripts/build-runtime-assets.ts /tmp/build-runtime-assets.ts
 RUN node /tmp/build-runtime-assets.ts inputs /source /inputs \

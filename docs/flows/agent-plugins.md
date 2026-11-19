@@ -211,9 +211,9 @@ before startup.
 Dedicated launchers capture the [Gateway tool policy](../reference/configuration.md#gateway-tool-policy)
 from the saved Agent revision before plugin grants. Startup and peer respawn
 enforce it; failures keep the Gateway unready. Changes require deployment replacement
-after affected old work ends. Human permissions stay unchanged. The default adds
+after affected work ends. Human permissions stay unchanged. The default adds
 Gateway-side read-only `skills_search` and `skills_read`; dedicated Codex reads
-pinned Skill Library skills through `skills_read`.
+pinned Skill Library skills by name through `skills_read`, without Gateway paths.
 Embedded Gateways apply a Configuration-set policy without this composition; Compute checks
 it at Configuration save and deployment admission with the same rules
 (`gateway-tool-policy.ts:validateGatewayToolPolicy`), not on maintenance passes.
@@ -261,8 +261,8 @@ approval-only or MCP-policy-only entries inherit the verified plugin default-off
 setting. Source/account-disabled plugins remain disabled.
 
 `runtime-entrypoints.ts:startAuthenticatedCodex` passes the admitted Harness model,
-without its provider prefix, after the authentication probe succeeds, so startup
-policy validation reads back that model.
+without its provider prefix, after the authentication probe succeeds; startup
+policy validation reads it back.
 
 `runtime-entrypoints.ts:verifyCodexReviewerConfiguration` checks app/link reviewers
 and `configRequirements/read`. Forbidden reviewers, incompatible automatic-review

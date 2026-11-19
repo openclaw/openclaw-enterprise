@@ -403,6 +403,8 @@ For `CreateSandbox`, `worker.completed` reports `grpcStatus` and
 - **13, `RESOURCE_METADATA_FORBIDDEN`**: Kubernetes denied a metadata read (HTTP 403). Verify the Gateway ServiceAccount's read permission for the claim or cluster-scoped class.
 - **`UNKNOWN`**: The status alone does not identify the cause. Inspect the request configuration and Gateway diagnostics.
 
+See [Sandbox startup refusal codes](openshell-sandbox/harness-providers.md#sandbox-startup-refusals).
+
 ## Related documentation
 
 - [Development and production deployment](../../guides/deploy.md)
