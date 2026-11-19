@@ -103,7 +103,7 @@ export async function probePackagedCodex(
         }
       : {
           "stock-codex-0.164.0-dependency-pin.patch":
-            "ddce55b7cd701ae7f5db3c2932d7ddd760077592a8c96376ac7363609227c3be",
+            "cb1ff6b003dbe385fc2938b6cc46ba7fc0f91d4954eaad5b591ff29384df0197",
           "openclaw-control-ui-browser-reconnect.patch":
             "292609ff7adffb4962c5ff29f46f9179530f052d7a4fd303f5c18e5faafa77c6",
           "openclaw-terminated-gateway-namespace.patch":
