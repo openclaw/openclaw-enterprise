@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: "2026-11-19"
-last_updated_session: "authoring-run/3c318cd8-e481-47d2-9b58-d22f1fd3b01e"
+last_updated_session: "authoring-run/ef34d03a-a5ac-42de-817b-c59c88ec98fb"
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -323,51 +323,52 @@ On process-group `EPERM`, the supervisor signals the process directly.
 
 ### 5. Observe readiness or clean up
 
-`apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
+`apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision` verifies
+Namespace/Agent/ServicePrincipal/revision IDs. Codex `harnessEndpoint` supplies
+`APP_SERVER_URL`, `OPENCLAW_REMOTE_WORKSPACE_ROOT` and
+`OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE`; owned k3d pins provider host.
+`gatewayConfigurationDocument` maps `/home/node/workspace` to Sandbox root
+without Harness mounts; `gatewayNativeHookRelayConfiguration` uses `harnessHome`,
+Compute-owned relay URL/auth. Egress: provider peer/port only; direct Agent
+Service requires a Harness route. Dedicated replacements stop prior runtimes.
+Without `harnessEndpoint`, Codex uses Kubernetes transport and `/home/node/workspace`;
+Native OpenClaw enrolls outbound into admitted workspace.
 
-Compute verifies Namespace, Agent, ServicePrincipal and revision IDs.
-Codex `harnessEndpoint` sets `APP_SERVER_URL`, `OPENCLAW_REMOTE_WORKSPACE_ROOT`
-and `OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE`; owned k3d pins the provider host.
-`gatewayConfigurationDocument` maps `/home/node/workspace` to the Sandbox root
-without Harness storage mounts. `gatewayNativeHookRelayConfiguration` uses
-`harnessHome` and Compute-owned relay URL/auth. Egress permits only the provider
-peer/port; the direct Agent Service stays inactive without a Harness route.
-For dedicated replacements the worker stops earlier runtimes before preparing the candidate.
-`apps/controller/src/worker.ts:finalizeRevision` publishes the active selection before
-activation rechecks the Harness. Permanent activation refusal fails deployment without
-reverting that selection, replacing the Gateway or retiring the predecessor.
-Without `harnessEndpoint`, Codex uses Kubernetes transport and `/home/node/workspace`.
-Native OpenClaw enrolls outbound into its admitted workspace.
+Preparing, `reconcileHarnessTrust` snapshots the resolved provider endpoint's
+public CA plus configured execution-cluster CA in an immutable candidate revision
+ConfigMap despite predecessor-owned shared Gateway; absent without private CA.
+`apps/controller/src/worker.ts:finalizeRevision` publishes selection before activation.
+Read-only `verifyPreparedHarnessTrust` precedes authenticated Harness status/Gateway replacement:
+require revision ownership, immutability, sole exact CA file/bundle, no binary data;
+without private CA, absence. Missing, foreign, changed
+or unexpected trust refuses activation without creation/repair. CA drift requires another
+revision. Permanent refusal fails deployment; selection, Gateway and predecessor remain.
 
-Activation requires the Harness Pod and enrolled Secret node. Each retry rereads
-provider setup, retaining valid values during projection outages. The Codex
-supervisor restarts workspace-node one second after every exit until shutdown.
+Activation requires Harness Pod and enrolled Secret node; retries reread setup, retaining
+valid provider values during projection outages. Codex restarts workspace-node 1s after
+each exit until shutdown.
 
 `apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts:previewPolicyAndRecipient`
 checks policy, recipient and launcher proof. Strict grants require `PRE_CREDENTIALS`;
-legacy preview accepts absent binding fields.
-
+legacy permits absent binding fields.
 `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:observeHeldPreview`
 arms one-use denial: `git-write` probes
-`/<owner>/<repo>.git/oce-observe-request/<nonce>.git/info/refs`;
-installation-shaped providers, including `github-repository`, probe
-`/oce-observe-request/<nonce>.git/info/refs`. Both use `service=git-upload-pack`.
-The HTTPS launcher sends no credentials. The authority sends every request under either
-probe prefix to the denial handler before binding lookup. Only the exact challenge qualifies.
-Observation alone cannot release the Harness.
+`/<owner>/<repo>.git/oce-observe-request/<nonce>.git/info/refs`; installation-shaped
+providers, including `github-repository`, probe `/oce-observe-request/<nonce>.git/info/refs`.
+Both use `service=git-upload-pack`; HTTPS launcher sends no credentials. Authority
+denies all prefix requests before binding lookup; only exact challenge qualifies.
+Observation cannot release the Harness.
 
 `attachmentStatus`/`GetSandboxProviderStatus` retries pending/missing status;
-`failed`, `withheld`, `revoked` or `absent` fails preparation. Version `cleanup`
-calls `GetSandbox`, `DeleteSandbox`, then deletes runtime and Git providers/profile.
-Absence requires `GetWorkspace` and another `GetSandbox`. `cleanupNativeWorkspace`
-retires interrupted preparers without a Sandbox, refusing foreign/replaced resources.
-
-Namespace `cleanup` verifies Workspace ownership, removes owned runtime/Git
-providers and profiles, sends idempotent `DeleteWorkspace`, then removes chart
-resources/NetworkPolicies in reverse order. Lost responses retry terminating
-Workspaces. Managed gateways with no ready Pod or an unavailable transport proceed
-to owned-resource cleanup; provider and authorization refusals still block it.
-Compute deletes the Kubernetes namespace only after cleanup succeeds.
+`failed`, `withheld`, `revoked` or `absent` fails preparation. Version `cleanup`:
+`GetSandbox`, `DeleteSandbox`, delete runtime/Git providers/profile; absence requires
+`GetWorkspace`, then `GetSandbox` again. `cleanupNativeWorkspace` retires interrupted
+preparers without Sandbox; refuses foreign/replaced resources. Namespace `cleanup`
+verifies Workspace ownership, removes owned runtime/Git providers/profiles, idempotently
+sends `DeleteWorkspace`, then removes chart resources/NetworkPolicies in reverse.
+Lost responses retry terminating Workspaces. Managed gateways lacking ready Pod/transport
+continue owned cleanup; provider/authorization refusals block it.
+Compute deletes Kubernetes namespace only after cleanup succeeds.
 
 ### 6. Withdraw Git without retiring the execution
 
@@ -419,6 +420,8 @@ setup, retry and restart under setgid parents.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 18:05: Trust. (authoring-run/ef34d03a-a5ac-42de-817b-c59c88ec98fb - b63dda0b529b4bf73f5591be89886f66133b3dc9)
 
 - 2026-11-19 10:42: Trace Sandbox startup refusal diagnostics. (authoring-run/3c318cd8-e481-47d2-9b58-d22f1fd3b01e - 6ff25175b2158ca12e49137cb980295af001a98c)
 
