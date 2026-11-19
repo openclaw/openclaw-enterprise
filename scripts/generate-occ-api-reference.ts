@@ -315,6 +315,8 @@ const permissionScopeQualifiers: Record<string, string> = {
   gateway_managed_mode_changed: " (when the request changes `gatewayManagedMode`)",
   saved_sandbox_policy_for_deployment:
     " (when saved network policy additions or an explicit repository network policy list exist, including an empty list)",
+  explicit_repository_network_policy:
+    " (when an explicit repository network policy list exists, including an empty list)",
   saved_sandbox_policy_additions: " (when saved network policy additions exist)",
 };
 

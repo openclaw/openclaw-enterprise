@@ -44,7 +44,15 @@ import {
   type SecretBinding,
   type SecretBindings,
 } from "../../packages/contracts/src/index.ts";
-import { OpenClawController, type PlatformStateStore } from "../../packages/occ/src/index.ts";
+import {
+  OpenClawController,
+  ResourceStateConflictError,
+  type PlatformStateStore,
+} from "../../packages/occ/src/index.ts";
+import {
+  SandboxPolicyResponse,
+  SandboxPolicyViewResponse,
+} from "../../packages/contracts/src/api/sandbox-policy.ts";
 import {
   AgentCallerPermissionsResponse,
   AgentSecretPermissionsResponse,
@@ -2205,6 +2213,8 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   const providerDefaults = { repositoryAccess: { state: "deny-all" } };
   let repositoryAdmissions = 0;
   let runtimeCredentialChecks = 0;
+  let runtimeCredentialsConfigured = true;
+  let runtimeCredentialProvisions = 0;
   const sandbox: SandboxDriver = {
     id: "repository-policy-test-sandbox",
     implementation: "test",
@@ -2321,23 +2331,22 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   assert.ok(controller);
   const compute = controller.selectedDriver("compute");
   Object.assign(compute, {
+    validateProtectedRepositoryNetworkPolicy() {},
     requiresAgentRuntimeCredentials: true,
     async getAgentRuntimeCredentialStatus() {
       runtimeCredentialChecks++;
-      return { transportConfigured: true };
+      return { transportConfigured: runtimeCredentialsConfigured };
     },
     async provisionAgentRuntimeCredentials() {
-      assert.fail("configured runtime credentials must be reused");
+      runtimeCredentialProvisions++;
+      return { transportConfigured: true };
     },
   });
   const namespace = await fixture.createNamespace("Repository policy admission", { ready: true });
-  const createAgent = (namespaceId: string) =>
-    fixture.createAgent(
-      namespaceId,
-      "Policy admission Agent",
-      createHarnessConfiguration("openclaw", "gpt-4.1"),
-      { executionMode: "dedicated" },
-    );
+  const createAgent = (namespaceId: string, name = "Policy admission Agent") =>
+    fixture.createAgent(namespaceId, name, createHarnessConfiguration("openclaw", "gpt-4.1"), {
+      executionMode: "dedicated",
+    });
   const agent = await createAgent(namespace.id);
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const policyPath = `${path}/sandbox-policy/networking`;
@@ -2376,9 +2385,26 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   assert.equal(unapprovedPolicy.status, 200);
   assert.deepEqual(unapprovedPolicy.data.repositoryNetworkPolicyCeiling, []);
 
-  const approvedPolicy = await fixture.request("GET", policyPath);
-  assert.equal(approvedPolicy.status, 200);
-  assert.deepEqual(approvedPolicy.data.repositoryNetworkPolicyCeiling, requested);
+  const readPolicy = async (url: string) =>
+    checkedResponse(fixture, await fixture.request("GET", url), SandboxPolicyViewResponse).data;
+  const savePolicy = async (
+    url: string,
+    expectedVersion: number,
+    repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[],
+  ) =>
+    checkedResponse(
+      fixture,
+      await fixture.request("PUT", url, {
+        body: {
+          expectedVersion,
+          additions: [],
+          ...(repositoryNetworkPolicy === undefined ? {} : { repositoryNetworkPolicy }),
+        },
+      }),
+      SandboxPolicyResponse,
+    ).data;
+  const approvedPolicy = await readPolicy(policyPath);
+  assert.deepEqual(approvedPolicy.repositoryNetworkPolicyCeiling, requested);
 
   // A formerly valid saved policy can survive a change in Namespace approval.
   // Recheck it during deployment before persisting a revision or invoking the Driver.
@@ -2407,7 +2433,7 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   assert.equal(runtimeCredentialChecks, 1);
   assert.equal((await readRevisions()).length, 1);
 
-  const desired = await setDesiredRepositoryPolicy(controller, namespace.id, agent.id, []);
+  const desired = await savePolicy(policyPath, approvedPolicy.policy.version, []);
   const deniedRead = restrict(fixture.policy, "read", "sandbox_policy", {
     namespaceId: namespace.id,
     resourceId: desired.id,
@@ -2449,8 +2475,10 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   assert.equal(runtimeCredentialChecks, 2);
 
   await fixture.activateRevision(namespace.id, agent.id, deployed.id, previous.revision.id);
-  const approved = await setDesiredRepositoryPolicy(controller, namespace.id, agent.id, requested);
-  // A live host update cannot turn the deployed deny-all policy into repository access.
+  const retained = await savePolicy(policyPath, desired.version);
+  assert.deepEqual((await readPolicy(policyPath)).policy.repositoryNetworkPolicy, []);
+  const approved = await savePolicy(policyPath, retained.version, requested);
+  // Omission keeps the desired list; both the desired and deployed lists are explicit here.
   const activeApply = await apply(deployed.id, approved.version);
   assertApiError(activeApply, 409, "RESOURCE_CONFLICT");
   assert.match(
@@ -2483,6 +2511,74 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   });
   assert.equal(repositoryAdmissions, 2);
   assert.equal(runtimeCredentialChecks, 3);
+  assert.equal(runtimeCredentialProvisions, 0);
+
+  const freshAgent = await createAgent(namespace.id, "Fresh policy admission Agent");
+  const freshPath = `/namespaces/${namespace.id}/agents/${freshAgent.id}`;
+  const freshPolicyPath = `${freshPath}/sandbox-policy/networking`;
+  const freshEnabled = await fixture.request("PATCH", `${freshPolicyPath}/editing`, {
+    body: { enabled: true },
+  });
+  assert.equal(freshEnabled.status, 200);
+  const freshPolicy = await readPolicy(freshPolicyPath);
+  const freshSaved = await savePolicy(freshPolicyPath, freshPolicy.policy.version, requested);
+  const deployFresh = (guarded = false) =>
+    guarded
+      ? fixture.request("POST", `${freshPath}/deploy-first`, {
+          body: {
+            key: "repository-policy-review",
+            expectedConfigurationId: freshAgent.configurationId,
+            expectedGeneration: 1,
+          },
+        })
+      : fixture.request("POST", `${freshPath}/deploy`);
+  const assertNoFreshEffects = async () => {
+    assert.equal(runtimeCredentialChecks, 3);
+    assert.equal(runtimeCredentialProvisions, 0);
+    assert.deepEqual(
+      await controller.transact((unit) =>
+        unit.revisions.listRevisions(namespace.id, freshAgent.id),
+      ),
+      [],
+    );
+  };
+  runtimeCredentialsConfigured = false;
+  // Each revocation is independent. Read and ordinary deployment authority remain granted.
+  for (const [action, kind, resourceId, guarded, message] of [
+    ["manage_policy", "agent", freshAgent.id, false, /Agent manage_policy/],
+    ["update", "sandbox_policy", freshSaved.id, true, /SandboxPolicy update/],
+  ] as const) {
+    const revocation = restrict(fixture.policy, action, kind, {
+      namespaceId: namespace.id,
+      resourceId,
+    });
+    const refused = await deployFresh(guarded);
+    assertApiError(refused, 403, "FORBIDDEN");
+    assert.match(JSON.stringify(refused.body), message);
+    assert.equal(repositoryAdmissions, 2);
+    await assertNoFreshEffects();
+    liftRestriction(fixture.policy, revocation);
+  }
+
+  // The supporting Sandbox admits the exact list, but Compute must also admit this topology.
+  Object.assign(compute, { validateProtectedRepositoryNetworkPolicy: undefined });
+  const unsupportedCompute = await deployFresh();
+  assertApiError(unsupportedCompute, 409, "RESOURCE_CONFLICT");
+  assert.match(JSON.stringify(unsupportedCompute.body), /Compute Driver cannot enforce/);
+  assert.equal(repositoryAdmissions, 3);
+  await assertNoFreshEffects();
+
+  Object.assign(compute, {
+    validateProtectedRepositoryNetworkPolicy() {},
+    admitRevision() {
+      throw new ResourceStateConflictError("Compute refused the candidate revision.");
+    },
+  });
+  const incompatibleRevision = await deployFresh(true);
+  assertApiError(incompatibleRevision, 409, "RESOURCE_CONFLICT");
+  assert.match(JSON.stringify(incompatibleRevision.body), /Compute refused the candidate revision/);
+  assert.equal(repositoryAdmissions, 4);
+  await assertNoFreshEffects();
 });
 
 test("deploy refuses an explicit repository policy without a supported Sandbox Driver or delegation", async (t) => {

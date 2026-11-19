@@ -23,6 +23,19 @@ import type {
   SandboxPolicySnapshot,
 } from "../../sandbox-policy.ts";
 
+export type ProtectedRepositoryNetworkPolicyContext = Readonly<
+  Pick<
+    AgentRevision,
+    | "namespaceId"
+    | "executionAdmission"
+    | "egressPlan"
+    | "repositoryCredentials"
+    | "harness"
+    | "harnessAuth"
+    | "credentialSources"
+  >
+>;
+
 export type KubernetesNamespacedResource = Readonly<Record<string, unknown>>;
 
 export interface SandboxWorkspaceMount {

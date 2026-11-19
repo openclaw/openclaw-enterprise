@@ -31,11 +31,12 @@ when protected execution applies. You can still clear ordinary additions by
 sending an empty additions list and omitting the repository field.
 
 Saving advances the desired policy version. Deploy a new Agent revision to
-apply an explicit list. Deployment requires SandboxPolicy `read` and rechecks
-each grant against the current Installation ceiling and Namespace approval.
-Protected execution refuses explicit lists. With a supporting Sandbox Driver,
-ordinary deployment saves the list, its identity, and the effective policy in
-the Agent revision. Live application refuses an explicit list in the desired
+apply an explicit list. Deployment rechecks edit authority and each grant
+against the current Installation ceiling and Namespace approval. Protected
+execution refuses explicit lists. For ordinary execution, both the selected
+Sandbox and Compute Drivers must admit the policy and execution topology before
+runtime credential preparation. A successful deployment saves the list, its
+identity, and the effective policy in the Agent revision. Live application refuses an explicit list in the desired
 policy or active revision, including deny-all.
 
 The selected Driver's `admitRepositoryNetworkPolicy` method receives the
@@ -74,7 +75,8 @@ User editing is disabled by default. Enabling or disabling
 SandboxPolicy `read` because it admits and returns the saved additions. Ordinary
 deployment and fresh first deployment need SandboxPolicy `read` for saved
 network policy additions or an explicit repository network policy list, even an
-empty list. An Agent update that leaves repository bindings still needs
+empty list. Deploying an explicit list also requires exact-Agent `manage_policy`
+and exact-SandboxPolicy `update`. An Agent update that leaves repository bindings still needs
 SandboxPolicy `read` when saved network policy additions exist. Reads require
 `read` on both resources. Ordinary Agent `update` does not authorize these operations.
 The editing switch is temporary until the platform Guardrails primitive owns

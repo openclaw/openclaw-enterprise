@@ -12071,6 +12071,7 @@ export class OpenClawController {
       }
       const driver = this.sandboxDriver();
       const revision = await state.revisions.findRevision(namespaceId, agentId, revisionId);
+      // Defensively protect the running revision even if desired storage lacks its explicit list.
       if (
         policy.repositoryNetworkPolicy !== undefined ||
         revision?.sandboxPolicy?.repositoryNetworkPolicy !== undefined
@@ -13883,11 +13884,16 @@ export class OpenClawController {
         policy !== undefined &&
         (policy.additions.length > 0 || policy.repositoryNetworkPolicy !== undefined)
       ) {
-        await this.authorize(principalId, "read", {
+        const sandboxPolicyRef = {
           kind: "sandbox_policy",
           id: policy.id,
           namespaceId: namespace.id,
-        });
+        } as const;
+        await this.authorize(principalId, "read", sandboxPolicyRef);
+        if (policy.repositoryNetworkPolicy !== undefined) {
+          await this.authorize(principalId, "manage_policy", target);
+          await this.authorize(principalId, "update", sandboxPolicyRef);
+        }
         if (protectedExecution) {
           if (policy.repositoryNetworkPolicy !== undefined) {
             throw new ResourceStateConflictError(
@@ -13977,6 +13983,77 @@ export class OpenClawController {
           ]);
         }
       }
+      const revisionDraft: AgentRevision = {
+        id: revisionId,
+        ...execution,
+        namespaceId: namespace.id,
+        agentId: lockedAgent.id,
+        revision: previous.length + 1,
+        backendId,
+        configurationId: configuration.id,
+        configurationKind: configuration.kind,
+        configurationGeneration: configuration.generation,
+        // Admission checked the Configuration as written; a refusal names only its own settings.
+        // The name then becomes the served Agent's OpenClaw display name.
+        configuration: frozenValues(withAgentIdentityName(admittedConfiguration, lockedAgent.name)),
+        gatewayManagedMode: lockedAgent.gatewayManagedMode,
+        harness: revisionHarness,
+        compute: { id: compute.id, implementation: compute.implementation },
+        ...(sandbox === undefined ? {} : { sandboxDriverId: sandbox.id }),
+        ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
+        ...(secretDriver === undefined ? {} : { secretDriverId: secretDriver.id, secretBindings }),
+        ...(pluginState === undefined ? {} : { plugins: pluginState }),
+        ...(lockedAgent.pluginApprovers === undefined
+          ? {}
+          : { pluginApprovers: lockedAgent.pluginApprovers }),
+        ...(repositoryCredentials === undefined ? {} : { repositoryCredentials }),
+        harnessAuth,
+        ...(credentialSources.length === 0 ? {} : { credentialSources }),
+        servicePrincipalId: lockedAgent.servicePrincipalId,
+        createdAt,
+      };
+      const admitComputeRevision = () => {
+        if (
+          revisionDraft.gatewayManagedMode === true &&
+          compute.supportsGatewayManagedMode !== true
+        ) {
+          throw new ConfigurationHarnessError(GATEWAY_MANAGED_MODE_UNSUPPORTED);
+        }
+        const draft = freezeAgentRevision(revisionDraft);
+        const computeAdmission = compute.admitRevision?.(draft);
+        const admittedDraft = freezeAgentRevision({
+          ...draft,
+          compute: {
+            ...draft.compute,
+            ...(computeAdmission === undefined ? {} : { admission: computeAdmission }),
+          },
+        });
+        const runtimeInputs = compute.snapshotRuntimeInputs?.(admittedDraft);
+        return freezeAgentRevision({
+          ...admittedDraft,
+          compute: {
+            ...admittedDraft.compute,
+            ...(runtimeInputs === undefined ? {} : { runtimeInputs }),
+          },
+        });
+      };
+      let admittedRevision: Readonly<AgentRevision> | undefined;
+      if (sandboxPolicy?.repositoryNetworkPolicy !== undefined) {
+        const unsupportedCompute = () =>
+          new ResourceStateConflictError(
+            "The selected Compute Driver cannot enforce this Agent's repository network policy with the selected Sandbox Driver and Harness.",
+            [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
+          );
+        if (compute.validateProtectedRepositoryNetworkPolicy === undefined) {
+          throw unsupportedCompute();
+        }
+        try {
+          compute.validateProtectedRepositoryNetworkPolicy(freezeAgentRevision(revisionDraft));
+        } catch {
+          throw unsupportedCompute();
+        }
+        admittedRevision = admitComputeRevision();
+      }
       if (compute.requiresAgentRuntimeCredentials === true) {
         if (
           compute.getAgentRuntimeCredentialStatus === undefined ||
@@ -14018,64 +14095,12 @@ export class OpenClawController {
           }
         }
       }
-      const revisionDraft: AgentRevision = {
-        id: revisionId,
-        ...execution,
-        namespaceId: namespace.id,
-        agentId: lockedAgent.id,
-        revision: previous.length + 1,
-        backendId,
-        configurationId: configuration.id,
-        configurationKind: configuration.kind,
-        configurationGeneration: configuration.generation,
-        // Admission checked the Configuration as written; a refusal names only its own settings.
-        // The name then becomes the served Agent's OpenClaw display name.
-        configuration: frozenValues(withAgentIdentityName(admittedConfiguration, lockedAgent.name)),
-        gatewayManagedMode: lockedAgent.gatewayManagedMode,
-        harness: revisionHarness,
-        compute: { id: compute.id, implementation: compute.implementation },
-        ...(sandbox === undefined ? {} : { sandboxDriverId: sandbox.id }),
-        ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
-        ...(secretDriver === undefined ? {} : { secretDriverId: secretDriver.id, secretBindings }),
-        ...(pluginState === undefined ? {} : { plugins: pluginState }),
-        ...(lockedAgent.pluginApprovers === undefined
-          ? {}
-          : { pluginApprovers: lockedAgent.pluginApprovers }),
-        ...(repositoryCredentials === undefined ? {} : { repositoryCredentials }),
-        harnessAuth,
-        ...(credentialSources.length === 0 ? {} : { credentialSources }),
-        servicePrincipalId: lockedAgent.servicePrincipalId,
-        createdAt,
-      };
-      if (
-        revisionDraft.gatewayManagedMode === true &&
-        compute.supportsGatewayManagedMode !== true
-      ) {
-        throw new ConfigurationHarnessError(GATEWAY_MANAGED_MODE_UNSUPPORTED);
-      }
-      const computeAdmission = compute.admitRevision?.(freezeAgentRevision(revisionDraft));
-      const admittedDraft = freezeAgentRevision({
-        ...revisionDraft,
-        compute: {
-          ...revisionDraft.compute,
-          ...(computeAdmission === undefined ? {} : { admission: computeAdmission }),
-        },
-      });
-      const runtimeInputs = compute.snapshotRuntimeInputs?.(admittedDraft);
+      admittedRevision ??= admitComputeRevision();
       // Database locks do not freeze process-local selections across awaited Driver calls.
       if (prepared !== undefined) {
         this.assertPreparedDeploymentDrivers(prepared);
       }
-      const revision = await state.revisions.createRevision(
-        freezeAgentRevision({
-          ...admittedDraft,
-          compute: {
-            ...admittedDraft.compute,
-            ...(runtimeInputs === undefined ? {} : { runtimeInputs }),
-          },
-        }),
-        first?.digest,
-      );
+      const revision = await state.revisions.createRevision(admittedRevision, first?.digest);
       if (
         lockedAgent.activeRevisionId &&
         (lockedAgent.desiredRuntimeState === "stopped" ||

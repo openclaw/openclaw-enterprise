@@ -1552,6 +1552,7 @@ export type {
 export type {
   HarnessExecutionModeSupport,
   SandboxDriver,
+  ProtectedRepositoryNetworkPolicyContext,
   SandboxRepositoryAccess,
   KubernetesNamespacedResource,
   SandboxWorkspaceMount,

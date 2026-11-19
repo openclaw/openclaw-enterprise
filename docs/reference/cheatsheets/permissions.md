@@ -43,7 +43,9 @@ SandboxPolicy reads and discovery require Agent `read`. Preview, save, and live
 application require Agent `manage_policy` and enabled editing. Live application also
 requires SandboxPolicy `read`. Ordinary deployment and fresh first deployment
 require SandboxPolicy `read` for saved network policy additions or an explicit
-repository network policy list, even an empty list. An Agent update that leaves
+repository network policy list, even an empty list. Deploying an explicit list
+also requires Agent `manage_policy` and SandboxPolicy `update` on the exact
+resources. An Agent update that leaves
 repository bindings requires SandboxPolicy `read` when saved additions exist.
 
 Namespace, Preset, Agent, ServiceAccount, AgentRevision, Secret, and credential

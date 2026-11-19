@@ -273,6 +273,7 @@ interface RequiredPermission {
     | "bound_credential_source"
     | "unless_consent_owner"
     | "saved_sandbox_policy_for_deployment"
+    | "explicit_repository_network_policy"
     | "saved_sandbox_policy_additions";
 }
 
@@ -950,6 +951,22 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
             },
           ]
         : []),
+      ...(operation.operationId === "deployAgent"
+        ? ([
+            {
+              action: "manage_policy",
+              resourceKind: "agent",
+              scope: "requested",
+              condition: "explicit_repository_network_policy",
+            },
+            {
+              action: "update",
+              resourceKind: "sandbox_policy",
+              scope: "requested",
+              condition: "explicit_repository_network_policy",
+            },
+          ] as const)
+        : []),
     ];
   }
 
@@ -1173,6 +1190,9 @@ function permissionDescription(
       }
       if (condition === "saved_sandbox_policy_for_deployment") {
         return `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions or an explicit repository network policy list, including an empty list.`;
+      }
+      if (condition === "explicit_repository_network_policy") {
+        return `Requires ${action} permission on the exact ${name} when the Agent has an explicit repository network policy list, including an empty list.`;
       }
       if (condition === "saved_sandbox_policy_additions") {
         return `Requires ${action} permission on the Agent's ${name} when it has saved network policy additions and the Agent has repository bindings after the update.`;

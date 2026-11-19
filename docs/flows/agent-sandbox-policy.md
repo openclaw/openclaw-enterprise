@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-19"
-last_updated_session: "authoring-run/0d379c0d-2a2a-474f-b271-f03647d508ca"
+last_updated_session: "authoring-run/38c216a8-92d9-43c3-8a5b-78b59abce9b4"
 ---
 
 # Agent sandbox policy flow
@@ -123,22 +123,28 @@ cleans its exact IAM access.
 `packages/occ/src/index.ts:admitAgentDeployment` reads the desired policy under
 the Namespace and Agent locks. Saved host additions or an explicit repository
 list, including an empty list, require SandboxPolicy `read` before policy
-admission. Protected execution refuses an explicit repository list.
+admission. An explicit list also requires current Agent `manage_policy` and
+SandboxPolicy `update` for ordinary deployment or fresh first deployment.
+Protected execution refuses an explicit repository list.
 
 For ordinary execution, OCC checks the list against the Installation ceiling.
 A nonempty list also requires approval for each grant from the Installation's
 repository policy owner for this Namespace.
 `packages/contracts/src/sandbox-policy.ts:admitSandboxRepositoryNetworkPolicy`
 requires the selected Driver to return an effective policy from the checked base
-snapshot, including for an empty list. OCC stores that document and the canonical list identity in
-`AgentRevision.sandboxPolicy` before the worker can act. A refusal leaves no
-revision or queued deployment. Omission uses the ordinary Driver snapshot.
+snapshot, including for an empty list. The selected Compute Driver must validate
+the execution topology and pass its revision admission checks before OCC
+checks or provisions runtime credentials. OCC stores the effective policy and
+the canonical list identity in `AgentRevision.sandboxPolicy`. A refusal leaves
+no revision or queued deployment. Omission uses the ordinary Driver snapshot.
 
 `applyAgentSandboxPolicy` authorizes Agent `manage_policy` and SandboxPolicy
 `update` and `read` before inspecting the saved policy. Both live apply request
 shapes return `409 RESOURCE_CONFLICT` before saving or queuing work if the
 desired policy or the active revision has an explicit repository list, including
-deny-all. For host additions, live application requires the exact active
+deny-all. A supported save preserves an existing list when the request omits
+the field. The active-revision check also protects the deployed policy if desired
+storage lacks the list. For host additions, live application requires the exact active
 revision and a supporting Driver. With reviewed additions, one transaction
 saves the policy version, records its pending application and queues Agent-target
 work. Omission retains the saved version. The worker confirms provider enforcement.
@@ -247,6 +253,8 @@ hides denial counts and controls.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 05:16: Recheck edit authority and Compute compatibility before preparing runtime credentials for deployment. (authoring-run/38c216a8-92d9-43c3-8a5b-78b59abce9b4 - ca5be28e834019f067505fc23788560604633211)
 
 - 2026-11-19 04:52: Join Namespace-scoped policy saves and reads to deployment and live-application admission. (authoring-run/0d379c0d-2a2a-474f-b271-f03647d508ca - 993169eb2861cf538f6bcd26f1ec2d5123503561)
 
