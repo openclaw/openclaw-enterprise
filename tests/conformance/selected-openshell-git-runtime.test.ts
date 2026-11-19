@@ -707,13 +707,8 @@ test("fresh repository Git v5 holds and releases one verified launch", async (t)
       signal: t.signal,
     });
   assert.match((await recipient()) ?? "", /^[a-f0-9]{64}$/);
-  // Hold the admitted Sandbox source and policy hash fixed while changing effective policy.
-  for (const endpoints of [
-    [npm, strictMirror],
-    [npm, { ...mirror, allow_encoded_slash: false }],
-    [{ ...npm, allow_encoded_slash: true }, mirror],
-    [{ ...npm, allow_encoded_slash: true }, strictMirror],
-  ]) {
+  // Hold the admitted Sandbox source and policy hash fixed while changing one effective rule.
+  const replaceEffectiveRule = (rule: { name: string; endpoints: readonly unknown[] }) => {
     client.getSandboxConfig = async (...args) => {
       const config = await getConfig(...args);
       const policy = asRecord(config.policy);
@@ -721,12 +716,17 @@ test("fresh repository Git v5 holds and releases one verified launch", async (t)
       assert.ok(policy && rules);
       return {
         ...config,
-        policy: {
-          ...policy,
-          network_policies: { ...rules, [artifact.name]: { ...artifact, endpoints } },
-        },
+        policy: { ...policy, network_policies: { ...rules, [rule.name]: rule } },
       };
     };
+  };
+  for (const endpoints of [
+    [npm, strictMirror],
+    [npm, { ...mirror, allow_encoded_slash: false }],
+    [{ ...npm, allow_encoded_slash: true }, mirror],
+    [{ ...npm, allow_encoded_slash: true }, strictMirror],
+  ]) {
+    replaceEffectiveRule({ ...artifact, endpoints });
     assert.equal(await recipient(), undefined);
   }
   // The profile can expand only the effective map, even with an exact artifact source.
@@ -737,19 +737,7 @@ test("fresh repository Git v5 holds and releases one verified launch", async (t)
     path: "/v1/**",
     allow_encoded_slash: false,
   };
-  client.getSandboxConfig = async (...args) => {
-    const config = await getConfig(...args);
-    const policy = asRecord(config.policy);
-    const rules = asRecord(policy?.network_policies);
-    assert.ok(policy && rules);
-    return {
-      ...config,
-      policy: {
-        ...policy,
-        network_policies: { ...rules, [model]: { name: model, endpoints: [modelEndpoint] } },
-      },
-    };
-  };
+  replaceEffectiveRule({ name: model, endpoints: [modelEndpoint] });
   assert.match((await recipient()) ?? "", /^[a-f0-9]{64}$/);
   modelEndpoint.allow_encoded_slash = true;
   assert.equal(await recipient(), undefined, "the effective model route must parse strictly");

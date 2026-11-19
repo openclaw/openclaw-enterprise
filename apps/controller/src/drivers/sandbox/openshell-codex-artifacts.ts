@@ -216,11 +216,23 @@ export function openShellEncodedSlashArtifactHosts(rules: unknown): ReadonlySet<
   return hosts;
 }
 
-export function openShellEndpointsAllowEncodedSlash(endpoints: unknown): boolean {
-  return (
+/** Apply the same restriction to the attached profile and its generated effective rule. */
+export function openShellArtifactProviderConflict(
+  hosts: ReadonlySet<string>,
+  endpoints: unknown,
+): string | undefined {
+  if (hosts.size === 0) {
+    return;
+  }
+  if (
     Array.isArray(endpoints) &&
     endpoints.some((endpoint) => asRecord(endpoint)?.allow_encoded_slash === true)
-  );
+  ) {
+    return "OpenShell credential provider endpoints cannot enable allow_encoded_slash. Remove it from the attached provider profile.";
+  }
+  if (openShellArtifactRouteOverlap(hosts, endpoints)) {
+    return "OpenShell requires encoded-slash artifact endpoints to be separate from credential provider routes. Choose a separate artifact endpoint or remove protectedArtifactAllowEncodedSlash.";
+  }
 }
 
 /** Compare the destinations supplied by the provider or enrollment owner. A route

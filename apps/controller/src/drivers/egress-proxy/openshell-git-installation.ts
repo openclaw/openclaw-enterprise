@@ -6,9 +6,8 @@ import {
   TransientDependencyError,
 } from "@openclaw-enterprise/occ";
 import {
-  openShellArtifactRouteOverlap,
+  openShellArtifactProviderConflict,
   openShellEncodedSlashArtifactHosts,
-  openShellEndpointsAllowEncodedSlash,
 } from "../sandbox/openshell-codex-artifacts.ts";
 import type {
   OpenShellGatewayClient,
@@ -229,7 +228,7 @@ export async function checkOpenShellGitProviders(
   client: OpenShellGatewayClient,
   workspace: string,
   providers: readonly string[],
-  revision: Readonly<AgentRevision>,
+  revision: Pick<AgentRevision, "sandboxPolicy">,
   signal: AbortSignal,
 ): Promise<void> {
   const artifactHosts = openShellEncodedSlashArtifactHosts(revision.sandboxPolicy?.defaults);
@@ -254,18 +253,10 @@ export async function checkOpenShellGitProviders(
     const definition = profile?.definition;
     const endpoints = definition?.endpoints;
     const credentials = definition?.credentials;
-    if (artifactHosts.size > 0 && Array.isArray(endpoints) && Array.isArray(credentials)) {
-      if (openShellEndpointsAllowEncodedSlash(endpoints)) {
-        throw new OpenShellGitRouteError(
-          "provider_overlap",
-          "OpenShell credential provider endpoints cannot enable allow_encoded_slash. Remove it from the attached provider profile.",
-        );
-      }
-      if (openShellArtifactRouteOverlap(artifactHosts, endpoints)) {
-        throw new OpenShellGitRouteError(
-          "provider_overlap",
-          "OpenShell requires encoded-slash artifact endpoints to be separate from credential provider routes. Choose a separate artifact endpoint or remove protectedArtifactAllowEncodedSlash.",
-        );
+    if (Array.isArray(endpoints) && Array.isArray(credentials)) {
+      const conflict = openShellArtifactProviderConflict(artifactHosts, endpoints);
+      if (conflict !== undefined) {
+        throw new OpenShellGitRouteError("provider_overlap", conflict);
       }
     }
     if (

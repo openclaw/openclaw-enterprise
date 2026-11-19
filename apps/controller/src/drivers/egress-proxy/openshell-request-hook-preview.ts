@@ -7,9 +7,9 @@ import type {
   RepositoryGitRecipient,
 } from "@openclaw-enterprise/contracts";
 import {
+  openShellArtifactProviderConflict,
   openShellArtifactRouteOverlap,
   openShellEncodedSlashArtifactHosts,
-  openShellEndpointsAllowEncodedSlash,
 } from "../sandbox/openshell-codex-artifacts.ts";
 import type {
   OpenShellGatewayClient,
@@ -70,11 +70,9 @@ function expectedPolicy(
     return false;
   }
   const artifactHosts = openShellEncodedSlashArtifactHosts(desired);
-  const modelEndpoints = asRecord(model)?.endpoints;
   const enrollment = asRecord(sourceRules["workspace-node-enrollment"]);
   if (
-    (artifactHosts.size > 0 && openShellEndpointsAllowEncodedSlash(modelEndpoints)) ||
-    openShellArtifactRouteOverlap(artifactHosts, modelEndpoints) ||
+    openShellArtifactProviderConflict(artifactHosts, asRecord(model)?.endpoints) !== undefined ||
     (enrollment && openShellArtifactRouteOverlap(artifactHosts, enrollment.endpoints))
   ) {
     return false;

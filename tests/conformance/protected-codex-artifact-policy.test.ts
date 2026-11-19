@@ -220,15 +220,15 @@ test("Installation rejects invalid, unselected or conflicting artifact endpoint 
   };
   const driver = sandbox(t, [optedIn, otherArchitecture], [rule.name, sibling.name]);
   const snapshot = driver.admitProtectedCodexArtifactPolicy(1).snapshot;
-  const { [sibling.name]: saved, ...remaining } = snapshot.defaults;
-  const savedRule = saved as { endpoints: [{ allow_encoded_slash?: boolean }] };
-  const [{ allow_encoded_slash: _flag, ...strict }] = savedRule.endpoints;
+  // Replay two valid wire rules that disagree only about parsing on this destination.
+  const strict = driver.admitNetworkPolicy([], 1).defaults[sibling.name];
+  assert.ok(strict);
   assert.throws(
     () =>
       openShellProtectedCodexArtifacts(
         protectedRevision({
           ...snapshot,
-          defaults: { ...remaining, [sibling.name]: { ...savedRule, endpoints: [strict] } },
+          defaults: { ...snapshot.defaults, [sibling.name]: strict },
         }),
       ),
     ConfigurationValidationError,
