@@ -133,10 +133,7 @@ export interface CredentialInjectionCapabilities {
   readonly supportsBindingRequest: (
     binding: DeploymentCredentialBinding,
     match: DeploymentRequestMatch,
-    deployment: Pick<
-      CredentialPolicyAdmission,
-      "networkAccessPolicy" | "injectionPolicies" | "bindings"
-    >,
+    deployment: DeploymentPolicy,
   ) => boolean;
 }
 
@@ -190,7 +187,7 @@ function invalid(path: string, message: string): ErrorDetail {
 }
 
 function sourceCoversRequest(
-  destinations: BindingAuthority["destinations"],
+  destinations: CredentialBindingAuthority["destinations"],
   rule: DeploymentRequestMatch,
 ): boolean {
   // A transport-only grant can reach any path. An exact source host and all requested
@@ -222,7 +219,7 @@ const reviewedPresentations = {
   readonly DeploymentCredentialBinding["projection"]["presentation"][]
 >;
 
-interface BindingAuthority {
+export interface CredentialBindingAuthority {
   /** Preserve each static destination's HTTP method. Use null only for source endpoints without a method restriction. */
   readonly destinations: readonly (ConnectionEndpoint & { readonly method: string | null })[];
   /** Reviewed requests for the named Plugin connection or admitted model/repository profile. */
@@ -230,31 +227,42 @@ interface BindingAuthority {
   readonly projection: DeploymentCredentialBinding["projection"];
 }
 
-export interface CredentialPolicyAdmission {
+/** The proposed network and credential configuration for one deployment. */
+export interface DeploymentPolicy {
   readonly networkAccessPolicy: NetworkAccessPolicy;
+  /** One authorized source binding and reviewed projection for each consumer. */
+  readonly bindings: readonly DeploymentCredentialBinding[];
+  readonly injectionPolicies: readonly CredentialInjectionPolicy[];
+}
+
+/** Trusted inputs used to validate a proposed deployment policy. */
+export interface DeploymentPolicyAdmissionInput extends DeploymentPolicy {
   readonly ceiling: readonly SandboxNetworkGrant[];
   readonly sandbox: NetworkPolicyCapabilities;
-  /** OCC authorizes source use; each consumer supplies its reviewed projection and request rules.
-   * Plugin input must use the named connection's networkRequirementIds, not all rules on that host. */
-  readonly bindings: readonly DeploymentCredentialBinding[];
-  /** OCC resolves independent source and consumer authority for this identity at revision admission. */
+  /** OCC resolves source and consumer authority. Plugin authority includes only the named connection's reviewed request rules. */
   readonly authorityForBinding?: (
     identity: Pick<
       DeploymentCredentialBinding,
       "bindingRef" | "sourceRef" | "driverId" | "consumer"
     >,
-  ) => BindingAuthority | undefined;
-  readonly injectionPolicies: readonly CredentialInjectionPolicy[];
+  ) => CredentialBindingAuthority | undefined;
   /** False only for a target known to have no issued placeholders. Retain the guard through withdrawal. */
   readonly targetMayHoldPlaceholders: boolean;
   readonly proxy?: CredentialInjectionCapabilities;
 }
 
-export function deploymentPolicyAdmissionDetails(input: CredentialPolicyAdmission): ErrorDetail[] {
+export function deploymentPolicyAdmissionDetails(
+  input: DeploymentPolicyAdmissionInput,
+): ErrorDetail[] {
   const { networkAccessPolicy, proxy } = input;
+  const deployment: DeploymentPolicy = {
+    networkAccessPolicy,
+    bindings: input.bindings,
+    injectionPolicies: input.injectionPolicies,
+  };
   const bindings = new Map<
     string,
-    { binding: DeploymentCredentialBinding; authority: BindingAuthority }
+    { binding: DeploymentCredentialBinding; authority: CredentialBindingAuthority }
   >();
   const environments = new Set<string>();
   for (const [index, binding] of input.bindings.entries()) {
@@ -292,7 +300,7 @@ export function deploymentPolicyAdmissionDetails(input: CredentialPolicyAdmissio
       ];
     }
     const { bindingRef, sourceRef, driverId } = binding;
-    let authority: BindingAuthority | undefined;
+    let authority: CredentialBindingAuthority | undefined;
     try {
       authority = input.authorityForBinding?.({ bindingRef, sourceRef, driverId, consumer });
     } catch {
@@ -381,7 +389,7 @@ export function deploymentPolicyAdmissionDetails(input: CredentialPolicyAdmissio
         ];
       }
       if (
-        !supported(() => proxy.supportsBindingRequest(binding, rule, input)) ||
+        !supported(() => proxy.supportsBindingRequest(binding, rule, deployment)) ||
         !safelyComposed(rule, allowedRequests, networkAccessPolicy, proxy)
       ) {
         return [

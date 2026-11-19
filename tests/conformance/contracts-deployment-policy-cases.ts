@@ -3,7 +3,8 @@ import test from "node:test";
 import {
   credentialProxyRoutingDetails,
   deploymentPolicyAdmissionDetails,
-  type CredentialPolicyAdmission,
+  type DeploymentPolicyAdmissionInput,
+  type DeploymentPolicy,
   type DeploymentRequestMatch,
   type DeploymentRequestPolicy,
 } from "../../packages/contracts/src/index.ts";
@@ -52,11 +53,11 @@ function credentialPolicyFixture<Policy extends DeploymentRequestPolicy>(
       rejectsStaleAndMisplacedPlaceholders: true,
       supportsBindingRequest: (binding) => binding.projection.presentation === "bearer",
     },
-  } satisfies CredentialPolicyAdmission;
+  } satisfies DeploymentPolicyAdmissionInput;
   return { input, request, binding, authority };
 }
 
-function policyRefusals(input: CredentialPolicyAdmission) {
+function policyRefusals(input: DeploymentPolicyAdmissionInput) {
   return deploymentPolicyAdmissionDetails(input).map(({ path, code }) => [path, code]);
 }
 
@@ -85,6 +86,24 @@ export function registerDeploymentPolicyCases(): void {
         [["/injectionPolicies/0/allowedRequests/0", "INVALID_VALUE"]],
       );
     }
+  });
+
+  test("a proxy qualifies the proposed deployment policy without admission authority", () => {
+    const { input } = credentialPolicyFixture({ type: "http", method: "GET", path: "/events" });
+    let observed: DeploymentPolicy | undefined;
+    const proxy: NonNullable<DeploymentPolicyAdmissionInput["proxy"]> = {
+      ...input.proxy,
+      supportsBindingRequest(_binding, _request, deployment) {
+        observed = deployment;
+        return true;
+      },
+    };
+    assert.deepEqual(policyRefusals({ ...input, proxy }), []);
+    assert.deepEqual(observed, {
+      networkAccessPolicy: input.networkAccessPolicy,
+      bindings: input.bindings,
+      injectionPolicies: input.injectionPolicies,
+    });
   });
 
   test("a source subtree includes its base and descendants while same-host discovery stays credentialless", () => {
@@ -360,42 +379,56 @@ export function registerDeploymentPolicyCases(): void {
     );
   });
 
-  test("credential policies identify each account binding and its supported presentation", () => {
+  test("consumer bindings sharing a source keep separate policies and presentations", () => {
     const { input, binding, request, authority } = credentialPolicyFixture({
       type: "http",
       method: "GET",
       path: "/calendar/**",
     });
-    const personal = calendarAccount("personal", "PERSONAL_TOKEN");
+    const events = {
+      ...calendarAccount("events", "EVENTS_TOKEN"),
+      sourceRef: binding.sourceRef,
+      consumer: {
+        kind: "plugin",
+        pluginId: "events",
+        requirement: "account",
+        connection: "events",
+      },
+    } as const;
     const other = {
       ...request,
       requestPolicy: { ...request.requestPolicy, path: "/calendar/events" },
     };
-    const personalAuthority = {
+    const eventsAuthority = {
       ...authority,
-      projection: { environment: "PERSONAL_TOKEN", presentation: "bearer" } as const,
-      destinations: [
-        { host: request.host, port: 443, path: other.requestPolicy.path, method: null },
-      ],
+      projection: { environment: "EVENTS_TOKEN", presentation: "bearer" } as const,
       allowedRequests: [other],
     };
+    const eventsPolicy = { bindingRef: events.bindingRef, allowedRequests: [other] };
     const policy = {
       ...input,
       networkAccessPolicy: { allowed: [request, other] },
-      bindings: [binding, personal],
+      bindings: [binding, events],
       authorityForBinding: (id) =>
-        id.sourceRef.id === "cs_personal" &&
+        id.bindingRef === events.bindingRef &&
+        id.sourceRef.id === binding.sourceRef.id &&
         id.consumer.kind === "plugin" &&
-        id.consumer.connection === "personal"
-          ? personalAuthority
+        id.consumer.pluginId === "events" &&
+        id.consumer.connection === "events"
+          ? eventsAuthority
           : input.authorityForBinding(id),
-      injectionPolicies: [
-        ...input.injectionPolicies,
-        { bindingRef: personal.bindingRef, allowedRequests: [other] },
-      ],
-    } satisfies CredentialPolicyAdmission;
-    // Both accounts can reach events. Each placeholder retains its own injection policy.
+      injectionPolicies: [...input.injectionPolicies, eventsPolicy],
+    } satisfies DeploymentPolicyAdmissionInput;
+    // Two consumers share the source but keep distinct placeholders and reviewed request policies.
     assert.deepEqual(policyRefusals(policy), []);
+    assert.deepEqual(
+      policyRefusals({
+        ...policy,
+        bindings: [events],
+        injectionPolicies: [eventsPolicy],
+      }),
+      [],
+    );
     assert.deepEqual(
       policyRefusals({ ...policy, networkAccessPolicy: { allowed: [other, request] } }),
       [],
@@ -419,7 +452,7 @@ export function registerDeploymentPolicyCases(): void {
         ...policy,
         injectionPolicies: [
           ...input.injectionPolicies,
-          { bindingRef: personal.bindingRef, allowedRequests: [request] },
+          { bindingRef: events.bindingRef, allowedRequests: [request] },
         ],
       }),
       [["/injectionPolicies/1/allowedRequests/0", "INVALID_VALUE"]],
@@ -433,7 +466,7 @@ export function registerDeploymentPolicyCases(): void {
     assert.deepEqual(
       policyRefusals({
         ...policy,
-        bindings: [binding, { ...personal, projection: binding.projection }],
+        bindings: [binding, { ...events, projection: binding.projection }],
       }),
       [["/bindings/1", "INVALID_VALUE"]],
     );
@@ -513,12 +546,9 @@ export function registerDeploymentPolicyCases(): void {
       ...authority,
       projection: { environment: "MODEL_KEY", presentation: "x-api-key" } as const,
     };
-    const authorityForBinding: NonNullable<CredentialPolicyAdmission["authorityForBinding"]> = ({
-      bindingRef,
-      sourceRef,
-      consumer,
-      driverId,
-    }) =>
+    const authorityForBinding: NonNullable<
+      DeploymentPolicyAdmissionInput["authorityForBinding"]
+    > = ({ bindingRef, sourceRef, consumer, driverId }) =>
       bindingRef === binding.bindingRef &&
       driverId === "occ" &&
       sourceRef.namespaceId === binding.sourceRef.namespaceId &&

@@ -1694,8 +1694,10 @@ export {
   sandboxNetworkGrantsWithinCeiling,
 } from "./deployment-policy.ts";
 export type {
+  CredentialBindingAuthority,
   CredentialInjectionCapabilities,
-  CredentialPolicyAdmission,
+  DeploymentPolicy,
+  DeploymentPolicyAdmissionInput,
   NetworkPolicyCapabilities,
 } from "./deployment-policy.ts";
 

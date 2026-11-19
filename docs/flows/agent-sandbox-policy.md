@@ -70,11 +70,10 @@ Stale and unauthorized requests retain their resource errors.
 `internal/occclient/transport.go:APIError.Error` prints up to 32 escaped details,
 omitting records with Unicode control characters.
 
-Staged `deploymentPolicyAdmissionDetails` checks source destinations, reviewed requests,
-environment and presentation. Static destinations bind HTTP method, host, port and path together.
-Only method-unrestricted endpoints use an explicit `null` method.
-The Sandbox qualifies complete HTTP rules together. MCP matches encoded UTF-8 paths literally.
-Discovery can remain credentialless. Revision admission still needs OCC's binding authority.
+Staged `deploymentPolicyAdmissionDetails` checks source approval, reviewed requests and projection
+per binding. Static approvals match method, host, port and path; unrestricted methods require
+`null`. The Sandbox qualifies complete HTTP rules and exact MCP paths. Discovery can remain
+credentialless. The proxy receives policies and bindings; OCC supplies authority separately.
 The provider enforces OAuth scopes.
 
 `packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
