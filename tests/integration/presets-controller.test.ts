@@ -50,6 +50,7 @@ import {
 import { assertApiError } from "../helpers/api-error.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { presetVariableTemplate } from "../helpers/configuration-preset-template.ts";
 import { bindRole, grantRole, restrict } from "../helpers/iam-grants.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
@@ -896,12 +897,9 @@ describe("Presets", { concurrency: 2 }, () => {
       { agent: { name: "{{ vars.undeclared }}" } },
       { configuration: { secretBindings: { SLACK_BOT_TOKEN: { source: wrongSecret.ref } } } },
       { configuration: { values: { models: { providers: { openai: { apiKey: sentinel } } } } } },
-      {
-        variables: { key: { type: "string", default: sentinel } },
-        configuration: {
-          values: { models: { providers: { openai: { apiKey: "{{ vars.key }}" } } } },
-        },
-      },
+      presetVariableTemplate("key", {
+        models: { providers: { openai: { apiKey: "{{ vars.key }}" } } },
+      })({ type: "string", default: sentinel }),
     ];
     for (const template of unsafeTemplates) {
       const rejected = await fixture.request("POST", collection(alpha.id), {

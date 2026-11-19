@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-11-16
-last_updated_session: authoring-run/a92d5e93-e5c6-44c1-acf1-b4d08ee54a70
+updated: 2026-11-19
+last_updated_session: authoring-run/64d7828e-4701-4e9c-8c92-0b3617945c7a
 ---
 
 # Installation Profile Rendering Flow
@@ -186,10 +186,13 @@ already checked in step 3 with the API's `parseCidr` rules
 IPv4-mapped address, and no range that covers every IPv4 peer. Like the chart,
 preflight also refuses a zone ID, which the API accepts.
 
-When `channels.managedSlackProxy` is true, the values also enable the
-chart-managed Slack proxy Service. The chart allows that proxy public IPv4 HTTPS
-egress, excluding private and reserved ranges, and the proxy authorizes Slack
-hostnames. Repository values render only when the input explicitly sets
+When `channels.managedEgress` is true, the renderer writes matching
+`channelEgress` Helm values and `runtime.channelEgress` Compute configuration.
+The operator supplies installation address exclusions. OCC derives its reserved
+listener from that configuration; Compute assigns each enabled Agent its own
+listener. See [channel egress](channel-egress.md).
+
+Repository values render only when the input explicitly sets
 `repository.enabled: true`. Repository provider CIDRs pass through unchanged,
 so operators can keep their existing GitHub ranges without DNS snapshots. The
 renderer copies `repository.serviceName` only when the input sets it, and only
@@ -321,6 +324,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 05:13: Replace the shared channel proxy setting with managed channel egress inputs. (authoring-run/64d7828e-4701-4e9c-8c92-0b3617945c7a - fc683cdfe9b73215d0503cdfaf7917f54be7f17e)
 
 - 2026-11-18: Render `presets.includeDefaults` from site input, defaulting to `true`. (accompanying change)
 

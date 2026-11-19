@@ -87,13 +87,10 @@ Use an Installation-scoped OCC service key with Installation `read` and
 Agents with a selected revision and no pending deployment also require Agent
 `deploy` and selected AgentRevision `read`.
 
-Before shutdown, controller-only upgrades require readable saved Harness settings
-from `occ agent revision` and an accepted
-[repository restart disposition](../../reference/repository-credentials/worker-replacement.md)
-for each retained running Agent. Missing assessments, including from older
-controllers, block retention. Stop and settle affected Agents under an authorized
-interruption or plan normal runtime replacement. If the pre-stop inventory
-changes, prepare again. Check
+Before shutdown, controller-only upgrades require each retained running Agent's
+readable Harness settings (`occ agent revision`) and an accepted
+[restart assessment](../../reference/repository-credentials/worker-replacement.md).
+Missing assessments block retention. Prepare again if inventory changes. Check
 [Git session continuity](upgrade-checklist.md#record-the-starting-state) and
 [apply the release in order](upgrade-checklist.md#apply-the-release-in-dependency-order).
 
@@ -217,19 +214,21 @@ Never overwrite a different ID; reconcile cluster and bootstrap records.
 ## Rehearse before the maintenance window
 
 Add `--preflight-only --evidence-dir "${UPGRADE_EVIDENCE}-preflight"` to either
-upgrade command. With writers active, it checks inputs, repository image pairs,
-Helm's server dry run, rendered Certificate admission, then startup and migration
-compatibility in temporary Jobs.
-The migration Job runs the candidate image's migration entry with `--check` and
-the initializer's migrator credential and CA. Recognized pending history
-is allowed; migrations are not applied. The Helm hook rechecks history; separate
-migrations require completion with `--require-current`.
+upgrade command. Preflight checks inputs, image pairs, Helm server dry run,
+Certificate admission, startup and migration compatibility while writers run.
+The migration Job uses the candidate migration entry with `--check` and the
+initializer's credential and CA. It allows recognized pending history. The Helm
+hook rechecks history. Separate migrations require `--require-current`.
+Pods retain chart security and NetworkPolicy labels. Cleanup confirms Jobs and
+Pods disappear before Secrets and NetworkPolicies.
 
-Pods retain chart security and NetworkPolicy labels. Upgrade waits for Jobs and
-Pods to disappear, then Secrets and NetworkPolicies.
+After checks and cleanup, control-plane preflight exits 1 if a retained
+revision requires its original worker. The upgrade remains blocked.
+Stop and settle affected Agents in an authorized interruption or plan a revision
+replacement. With `--verify-agent`, preflight observes the workload before the upgrade.
 
-With an immutable Installation Secret, keep the live configuration or
-[stage an immutable successor](immutable-installation-upgrade.md) before preflight.
+Keep the live immutable Installation Secret or
+[stage a successor](immutable-installation-upgrade.md) before preflight.
 
 After [preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources), begin the maintenance window.
 Freeze other Helm changes and disable automation that restarts or scales OCC

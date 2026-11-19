@@ -250,10 +250,10 @@ The proxy blocks service-worker scripts, adds CSP `worker-src 'none'`, rewrites
 same-upstream redirects to the Agent origin, and strips upstream `Set-Cookie`
 and `Clear-Site-Data`.
 
-An upstream transfer failure stops the request. Before sending response headers,
-the proxy returns `503`; afterwards it aborts the response. An avatar `502`
-becomes an empty `404` for the initials fallback, and the proxy cancels its
-upstream body.
+A transfer failure, or the route proxy's `503` for an unreachable Gateway, before
+response headers gives `503` (a page load: **Agent not responding**); afterwards
+the proxy aborts the response. An avatar `502` becomes an empty `404` (initials
+fallback).
 
 ### 7. OCC proxies native WebSocket upgrades
 

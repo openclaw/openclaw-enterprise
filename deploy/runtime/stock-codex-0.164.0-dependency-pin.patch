@@ -22,19 +22,6 @@ index 5649308748b..801e8507a67 100644
  /** Inclusive runtime compatibility floor for external app-server binaries. */
  export const MIN_SUPPORTED_CODEX_APP_SERVER_VERSION = "0.149.0";
  export const MANAGED_CODEX_APP_SERVER_PACKAGE = "@openai/codex";
-diff --git a/extensions/openai/codex-client-version.ts b/extensions/openai/codex-client-version.ts
-index 4cabc895a7d..970e252f798 100644
---- a/extensions/openai/codex-client-version.ts
-+++ b/extensions/openai/codex-client-version.ts
-@@ -7,7 +7,7 @@ import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
- 
- // Bundled @openai/codex pin: the floor when the registry cannot be read. The
- // client-version contract test keeps it equal to extensions/codex's exact dependency.
--const OPENAI_CODEX_CLIENT_VERSION_FLOOR = "0.169.0";
-+const OPENAI_CODEX_CLIENT_VERSION_FLOOR = "0.164.0";
- 
- const CODEX_LATEST_VERSION_URL = "https://registry.npmjs.org/@openai/codex/latest";
- // npm publishes a Codex release at most a few times a day; a launch needs one refresh.
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
 index cd804aaff9a..67aa3391ff3 100644
 --- a/pnpm-lock.yaml

@@ -83,8 +83,11 @@ results are excluded. `progress.nextAttemptAt` is the earliest queued
 eligibility, not a promised start; null while claimed. Terminal `progress`
 is null. Results describe recorded checks, not runtime health.
 
-Nullable `cleanup` reports retirement’s `status` (same meanings) and queued
-`nextAttemptAt`.
+`cleanup` reports recorded retirement and nonserving session disposal, not
+Git expiry or finite removal. Precedence: failed, running, queued, succeeded;
+`nextAttemptAt`: earliest queued eligibility, null when terminal. No applicable
+record: null. Requeued disposal reports queued. Success is not clearance to replace the worker.
+
 Deployment failure remains terminal. Terminal preparation errors retain
 `error.data.preparation` under schema limits (identities, reasons, scheduling, exits, timestamps),
 excluding raw output and credentials.
@@ -282,6 +285,18 @@ Compute, a turn cut by stop [does not resume](agents/interrupted-turns.md); SSH 
 Docker Compute have limits. To resume the Agent,
 deploy a new version; old versions cannot be restarted. See
 [stop and resume](agents/deployment.md#stop-and-resume).
+
+To avoid stopping a successor:
+
+```sh
+occ --namespace NAMESPACE_ID agent stop AGENT_ID --if-active-revision REVISION_ID
+```
+
+The optional `expectedActiveRevisionId` query requires running intent and the
+exact active, newest, successfully deployed revision under lock. Mismatch: `409`;
+unsupported query: `400`; admitted, not yet stopped: `202`. Never retry unguarded.
+If uncertain, inspect `agent get AGENT_ID` and `agent deployment-status AGENT_ID REVISION_ID`;
+these show state, not which request caused it.
 
 ## Deletion
 
