@@ -39,7 +39,8 @@ func TestInstallationUpgradeCLIIntegratesProfileAndCanonicalOwner(t *testing.T) 
 		"kubeconfig": "kubeconfig", "context": "reviewed-context", "namespace": "openclaw-system",
 		"release": "oce", "installationDirectory": "rendered", "sourceRevision": revision, "images": images,
 	}
-	if err := os.WriteFile(filepath.Join(directory, "kubeconfig"), []byte("apiVersion: v1\n"), 0o600); err != nil {
+	kubeconfig := `{"apiVersion":"v1","kind":"Config","clusters":[{"name":"local","cluster":{"server":"https://127.0.0.1:9"}}],"contexts":[{"name":"reviewed-context","context":{"cluster":"local","user":"operator"}}],"users":[{"name":"operator","user":{}}]}`
+	if err := os.WriteFile(filepath.Join(directory, "kubeconfig"), []byte(kubeconfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	rendered := filepath.Join(directory, "rendered")

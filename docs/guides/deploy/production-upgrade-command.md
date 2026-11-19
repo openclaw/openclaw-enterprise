@@ -75,8 +75,11 @@ output are attached to a terminal, type `yes` to approve the upgrade. For
 automation or redirected output, pass `--auto-approve`. The upgrade checks
 startup and migration compatibility and confirms preflight cleanup before it
 stops writers.
-Apply and resume use a private copy of the approved kubeconfig for cluster access.
-The copy keeps relative credential and certificate references tied to their original location.
+Apply and resume use a private copy of the approved kubeconfig. If the selected
+context uses a CA file, the command checks its bytes before approval and embeds
+the verified CA in the private copy. Changes to those inputs require a new
+review. Client credential references and credential commands still use their
+original locations. Resume uses the original run's approved CA when recorded.
 
 For each fresh `apply`, `preflight`, or `migration check`, the CLI prints
 `Evidence: PATH` and an `Inspect:` command before starting the operation.

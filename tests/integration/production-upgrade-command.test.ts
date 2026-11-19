@@ -24,6 +24,29 @@ import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const command = join(repository, "scripts/upgrade-production");
 
+function kubeconfigFor(context: string, selected: Record<string, string | boolean> = {}) {
+  return {
+    apiVersion: "v1",
+    kind: "Config",
+    clusters: [
+      { name: "selected", cluster: { server: "https://127.0.0.1:9", ...selected } },
+      {
+        name: "unused",
+        cluster: {
+          server: "https://127.0.0.1:10",
+          "certificate-authority": "unused-ca.pem",
+        },
+      },
+    ],
+    contexts: [
+      { name: context, context: { cluster: "selected", user: "operator" } },
+      { name: "unused", context: { cluster: "unused", user: "operator" } },
+    ],
+    users: [{ name: "operator", user: {} }],
+    "current-context": "unused",
+  };
+}
+
 async function fixture(t: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), "oce-upgrade-command-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -38,7 +61,9 @@ async function fixture(t: TestContext) {
     images: { controller: "registry.example/controller@sha256:" + "a".repeat(64) },
   };
   await writeFile(profile, JSON.stringify(input), { mode: 0o600 });
-  await writeFile(join(directory, input.kubeconfig), "apiVersion: v1\n", { mode: 0o600 });
+  await writeFile(join(directory, input.kubeconfig), JSON.stringify(kubeconfigFor(input.context)), {
+    mode: 0o600,
+  });
   const rendered = join(directory, input.installationDirectory);
   await mkdir(rendered, { mode: 0o700 });
   for (const filename of ["values.yaml", "installation.yaml"]) {
@@ -538,4 +563,121 @@ test("explicit evidence uses the physical parent behind a trusted macOS system a
   assert.equal(result.status, 1);
   assert.ok(result.stderr.includes("OCC_URL must use HTTPS"));
   assert.ok(result.stdout.includes(`Evidence: ${join(physical, "alias-evidence")}`));
+});
+
+test("approval binds only the selected context's referenced CA and refuses changes while waiting", async (t) => {
+  const f = await fixture(t);
+  const profile = await selectCheckout(f);
+  const configDirectory = join(f.directory, "contexts");
+  const trustDirectory = join(f.directory, "trust");
+  const config = join(configDirectory, "kubeconfig");
+  const ca = join(trustDirectory, "original.pem");
+  await mkdir(configDirectory, { mode: 0o700 });
+  await mkdir(trustDirectory, { mode: 0o700 });
+  await symlink("original.pem", join(trustDirectory, "active.pem"));
+  await writeFile(f.profile, JSON.stringify({ ...profile, kubeconfig: "contexts/kubeconfig" }));
+  const original = randomBytes(32).toString("hex");
+  const replacement = randomBytes(32).toString("hex");
+  const external = { "certificate-authority": "../trust/active.pem" };
+  const inline = { "certificate-authority-data": Buffer.from(original).toString("base64") };
+  const writeConfig = (selected: Record<string, string | boolean>) =>
+    writeFile(config, JSON.stringify(kubeconfigFor(profile.context, selected)), { mode: 0o600 });
+
+  await writeConfig(external);
+  await writeFile(ca, original, { mode: 0o644 });
+  // Production inputs may be readable in an operator-owned read-only directory.
+  // The CA reference is read from the selected named context, not current-context.
+  await chmod(configDirectory, 0o500);
+  try {
+    const plan = run("plan", f);
+    assert.equal(plan.status, 0, plan.stderr);
+    assert.match(plan.stdout, /verified CA from the selected kubeconfig context/);
+    const privateDigest = createHash("sha256").update(original).digest("hex");
+    const before = (await readdir(f.directory)).sort();
+
+    // Change or remove the actual file after the real adapter produces its prompt.
+    // The native owner's non-HTTPS guard prevents any cluster contact if dispatch regresses.
+    const terminal = (action: "replace" | "remove") =>
+      spawnSync(
+        "python3",
+        [
+          "-c",
+          String.raw`
+import os, pty, sys
+from pathlib import Path
+observed = bytearray()
+changed = False
+def at_confirmation(fd):
+    global changed
+    chunk = os.read(fd, 4096)
+    observed.extend(chunk)
+    if not changed and b"Type yes to continue:" in observed:
+        changed = True
+        if sys.argv[1] == "replace":
+            Path(sys.argv[2]).write_text(sys.argv[3])
+        else:
+            Path(sys.argv[2]).unlink()
+        os.write(fd, b"yes\n")
+    return chunk
+sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[4:], master_read=at_confirmation)))
+`,
+          action,
+          ca,
+          replacement,
+          command,
+          "apply",
+          "--profile",
+          f.profile,
+        ],
+        {
+          cwd: repository,
+          encoding: "utf8",
+          timeout: 30_000,
+          env: { PATH: process.env.PATH, OCC_URL: "http://127.0.0.1:9" },
+        },
+      );
+    for (const action of ["replace", "remove"] as const) {
+      await writeFile(ca, original, { mode: 0o644 });
+      const result = terminal(action);
+      assert.equal(result.status, 2, result.stdout + result.stderr);
+      assert.match(result.stdout, /Type yes to continue/);
+      if (action === "replace") {
+        assert.match(result.stdout, /kubeconfig server CA changed after the preview/);
+        assert.equal(await readFile(ca, "utf8"), replacement);
+      } else {
+        assert.match(result.stdout, /cannot read the selected kubeconfig server CA file/);
+      }
+      assert.doesNotMatch(result.stdout, /^Evidence:/m);
+      assert.deepEqual((await readdir(f.directory)).sort(), before);
+      for (const withheld of [original, replacement, privateDigest]) {
+        assert.ok(!(plan.stdout + plan.stderr + result.stdout + result.stderr).includes(withheld));
+      }
+    }
+    const missing = run("plan", f);
+    assert.equal(missing.status, 2);
+    assert.match(missing.stderr, /cannot read the selected kubeconfig server CA file/);
+    assert.equal(missing.stdout, "");
+  } finally {
+    await chmod(configDirectory, 0o700);
+  }
+
+  await writeConfig(inline);
+  const inlinePlan = run("plan", f);
+  assert.equal(inlinePlan.status, 0, inlinePlan.stderr);
+  assert.doesNotMatch(inlinePlan.stdout, /verified CA from the selected kubeconfig context/);
+  assert.ok(!inlinePlan.stdout.includes(inline["certificate-authority-data"]));
+  await writeConfig(external);
+  await writeFile(ca, "", { mode: 0o644 });
+  const empty = run("plan", f);
+  assert.equal(empty.status, 0, empty.stderr);
+  assert.match(empty.stdout, /empty.*system trust store/);
+
+  await writeConfig({ ...external, ...inline });
+  const conflict = run("plan", f);
+  assert.equal(conflict.status, 2);
+  assert.match(conflict.stderr, /specifies both an inline CA and a CA file/);
+  await writeConfig({ ...external, "insecure-skip-tls-verify": true });
+  const insecure = run("plan", f);
+  assert.equal(insecure.status, 2);
+  assert.match(insecure.stderr, /specifies both a CA and insecure TLS/);
 });

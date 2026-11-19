@@ -85,8 +85,8 @@ graph TD
 ### 1. Prepare the candidate
 
 `internal/occcli/installation_upgrade.go:installationUpgradeCommand` calls
-`scripts/upgrade-production:main`. Plan previews candidates and image digests.
-Apply binds approval to native copies. New runs print status paths before dispatch.
+`scripts/upgrade-production:main`. Plan previews candidate effects.
+Apply binds inputs and selected server CA to approval. New runs print status paths before dispatch.
 
 `scripts/upgrade-production-images:prepare_upgrade`
 
@@ -375,7 +375,7 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 
 ## Changelog
 
-- 2026-11-19 05:13: Trace upgrade approval and evidence. (authoring-run/def34421-d123-4fd1-bde1-e8d966d6bcad - 8bc5fe2fc916765024493c981308179a04a0e716)
+- 2026-11-19 05:13: Trace upgrade approval, trust, and evidence. (authoring-run/def34421-d123-4fd1-bde1-e8d966d6bcad - 8bc5fe2fc916765024493c981308179a04a0e716)
 
 - 2026-11-18 19:45: Tighten the upgrade trace. (authoring-run/9b947cd8-0275-4e7f-ac7f-5dce4b0f8965 - aed2f7edd530ab336bbd6cb8c7389b24cb83e397)
 

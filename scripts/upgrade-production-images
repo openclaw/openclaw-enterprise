@@ -124,7 +124,8 @@ require_private_file() {
 
 # A sibling preserves the relative path base used by Kubernetes client configuration.
 pin_approved_kubeconfig() {
-  python3 - "$1" "$2" 3<<<"$approved_upgrade_inputs" <<'PYTHON'
+  python3 - "$1" "$2" "$3" 3<<<"$approved_upgrade_inputs" <<'PYTHON'
+import base64
 import errno
 import hashlib
 import json
@@ -137,49 +138,94 @@ import tempfile
 import uuid
 
 
-def relocated_config(content, parent, evidence):
-    # The Kubernetes loader parses the private captured bytes without resolving
-    # paths when --merge=false is selected. Rebase only its file references.
-    directory = Path(tempfile.mkdtemp(prefix=".kubeconfig-pin.", dir=evidence))
-    raw = directory / "approved"
-    execution = directory / "kubeconfig"
-    try:
+def load_kubeconfig(content, evidence):
+    # Use the same decoder as our Kubernetes clients. Without merging, local
+    # config view does not resolve filenames against the temporary directory.
+    with tempfile.TemporaryDirectory(prefix=".kubeconfig-input.", dir=evidence) as directory:
+        raw = Path(directory) / "approved"
         raw.touch(mode=0o600, exist_ok=False)
         raw.write_bytes(content)
-        config = json.loads(subprocess.check_output(
+        return json.loads(subprocess.check_output(
             ["kubectl", "--kubeconfig", str(raw), "config", "view", "--merge=false", "--raw", "-o", "json"],
+            stdin=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         ))
-        def rebase(section, key, *, path_command=False):
-            value = section.get(key)
-            if value and not os.path.isabs(value) and (not path_command or "/" in value):
-                section[key] = os.path.normpath(parent / value)
-        for entry in config.get("clusters") or []:
-            rebase(entry["cluster"], "certificate-authority")
-        for entry in config.get("users") or []:
-            user = entry["user"]
-            for key in ("client-certificate", "client-key", "tokenFile"):
-                rebase(user, key)
-            if user.get("exec"):
-                rebase(user["exec"], "command", path_command=True)
-        encoded = json.dumps(config).encode()
+
+
+def selected_config_entry(entries, name, field):
+    matches = [entry[field] for entry in entries or [] if entry["name"] == name]
+    if len(matches) != 1:
+        raise ValueError("the selected Kubernetes context or cluster is missing or ambiguous")
+    return matches[0]
+
+
+def pin_selected_server_ca(config, context_name, parent, approved_ca):
+    context = selected_config_entry(config.get("contexts"), context_name, "context")
+    cluster = selected_config_entry(config.get("clusters"), context["cluster"], "cluster")
+    ca_path = cluster.get("certificate-authority")
+    ca_data = cluster.get("certificate-authority-data")
+    if ca_path and ca_data:
+        raise ValueError("the selected cluster cannot use both a certificate-authority file and inline CA data")
+    if (ca_path or ca_data) and cluster.get("insecure-skip-tls-verify"):
+        raise ValueError("the selected cluster cannot combine CA material and insecure TLS verification")
+    if not ca_path:
+        if approved_ca is not None:
+            raise ValueError("the approved external server CA does not match the selected cluster")
+        return False
+    if approved_ca is None:
+        raise ValueError("the selected cluster's external server CA was not approved")
+
+    # Follow a configured CA symlink just as Kubernetes does. The bytes from
+    # this single open are checked and then embedded, so no client reopens it.
+    path = ca_path if os.path.isabs(ca_path) else os.path.normpath(parent / ca_path)
+    try:
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NONBLOCK), "rb") as source:
+            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                raise ValueError("the selected external server CA must be a readable regular file")
+            content = source.read()
+    except FileNotFoundError:
+        raise ValueError("the selected external server CA changed after approval (file is missing)") from None
+    if hashlib.sha256(content).hexdigest() != approved_ca:
+        raise ValueError("the selected external server CA changed after approval")
+    cluster["certificate-authority-data"] = base64.b64encode(content).decode("ascii")
+    del cluster["certificate-authority"]
+    return True
+
+
+def relocated_config(config, parent, evidence):
+    def rebase(section, key, *, path_command=False):
+        value = section.get(key)
+        if value and not os.path.isabs(value) and (not path_command or "/" in value):
+            section[key] = os.path.normpath(parent / value)
+
+    for entry in config.get("clusters") or []:
+        rebase(entry["cluster"], "certificate-authority")
+    for entry in config.get("users") or []:
+        user = entry["user"]
+        for key in ("client-certificate", "client-key", "tokenFile"):
+            rebase(user, key)
+        if user.get("exec"):
+            rebase(user["exec"], "command", path_command=True)
+    encoded = json.dumps(config).encode()
+    directory = Path(tempfile.mkdtemp(prefix=".kubeconfig-pin.", dir=evidence))
+    execution = directory / "kubeconfig"
+    try:
         with execution.open("xb") as output:
             output.write(encoded)
             output.flush()
             os.fchmod(output.fileno(), 0o400)
             os.fsync(output.fileno())
-        raw.unlink()
         return execution, encoded, directory
     except BaseException:
-        raw.unlink(missing_ok=True)
         execution.unlink(missing_ok=True)
         directory.rmdir()
         raise
 
-
 try:
-    with os.fdopen(3, encoding="utf-8") as approval:
-        expected = json.load(approval)["kubeconfig"]
+    with os.fdopen(3, encoding="utf-8") as approval_file:
+        approval = json.load(approval_file)
+    expected = approval["kubeconfig"]
+    evidence, context = sys.argv[2:]
     original = Path(os.path.abspath(sys.argv[1]))
     parent = original.parent
     uid = os.geteuid()
@@ -210,8 +256,10 @@ try:
         if hashlib.sha256(content).hexdigest() != expected:
             raise ValueError("kubeconfig changed after approval")
 
+        config = load_kubeconfig(content, evidence)
+        has_external_ca = pin_selected_server_ca(config, context, parent, approval.get("kubeconfig server CA"))
         fd = None
-        if can_create_sibling:
+        if can_create_sibling and not has_external_ca:
             name = ".occ-upgrade-kubeconfig." + uuid.uuid4().hex
             try:
                 fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
@@ -231,7 +279,7 @@ try:
                 os.unlink(name, dir_fd=directory)
                 raise
         else:
-            execution, encoded, private_parent = relocated_config(content, parent, sys.argv[2])
+            execution, encoded, private_parent = relocated_config(config, parent, evidence)
         print(json.dumps({"path": str(execution), "sha256": hashlib.sha256(encoded).hexdigest(),
                           "directory": str(private_parent) if private_parent else None}))
     finally:
@@ -984,46 +1032,85 @@ trap 'interrupted_upgrade 143' TERM
 # Kubeconfig bytes bind the context to the same cluster if the file is replaced.
 approved_upgrade_inputs=${OCC_UPGRADE_APPROVED_INPUTS:-}
 unset OCC_UPGRADE_APPROVED_INPUTS
+original_parameters=
+if ((resume)); then
+  require_private_file "$evidence_dir/parameters.json"
+  original_parameters=$(python3 - "$evidence_dir/parameters.json" "$evidence_dir" <<'PYTHON'
+import json
+import os
+import re
+import stat
+import sys
+
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, encoding="utf-8") as source:
+        info = os.fstat(source.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            raise ValueError
+        values = json.load(source)
+    evidence = os.fstat(8)
+    identity = {"path": os.path.realpath(sys.argv[2]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}
+    if values["evidenceDirectory"] != identity:
+        raise ValueError
+    if "kubeconfigServerCaSha256" in values:
+        for key in ("kubeconfigSha256", "kubeconfigServerCaSha256"):
+            if re.fullmatch(r"[0-9a-f]{64}", values[key]) is None:
+                raise ValueError
+except (KeyError, OSError, TypeError, ValueError):
+    sys.exit("Cannot read original private parameters for this evidence directory.")
+values.pop("pairEvidence", None)
+values.pop("preparedEvidence", None)
+values.pop("dispatchJournal", None)
+print(json.dumps(values, sort_keys=True))
+PYTHON
+  ) || die "resume evidence directory or private parameters changed; use the original evidence directory."
+  if [[ -z "$approved_upgrade_inputs" ]] &&
+    jq -e 'has("kubeconfigServerCaSha256")' <<<"$original_parameters" >/dev/null; then
+    # Raw resume of a profiled run must use the original approved trust anchor.
+    approved_upgrade_inputs=$(jq -c \
+      '{kubeconfig: .kubeconfigSha256, "kubeconfig server CA": .kubeconfigServerCaSha256}' <<<"$original_parameters")
+  fi
+fi
 if [[ -n "$approved_upgrade_inputs" ]]; then
-  kubeconfig_snapshot_binding=$(pin_approved_kubeconfig "$kubeconfig" "$upgrade_evidence_dir")
+  kubeconfig_snapshot_binding=$(pin_approved_kubeconfig "$kubeconfig" "$upgrade_evidence_dir" "$context")
   execution_kubeconfig=$(jq -er '.path' <<<"$kubeconfig_snapshot_binding")
   kubeconfig_snapshot_directory=$(jq -r '.directory // ""' <<<"$kubeconfig_snapshot_binding")
   # Retain the locator privately if interrupted children may still use the snapshot.
   kubeconfig_snapshot_receipt=$(mktemp "$upgrade_evidence_dir/kubeconfig-snapshot.XXXXXXXX")
   printf '%s\n' "$execution_kubeconfig" >"$kubeconfig_snapshot_receipt"
 fi
-parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$occ_url" "$occ" "$occ_ca" "$requested_values" "$requested_installation" "$broker_image" "$evidence_dir" "$chart_sha256" "$verify_agent_namespace" "$verify_agent" "$controller_compatibility_results" "$execution_kubeconfig" 3<<<"$approved_upgrade_inputs" 4<<<"$kubeconfig_snapshot_binding" <<'PYTHON'
+parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$occ_url" "$occ" "$occ_ca" "$requested_values" "$requested_installation" "$broker_image" "$evidence_dir" "$chart_sha256" "$verify_agent_namespace" "$verify_agent" "$controller_compatibility_results" "$execution_kubeconfig" 3<<<"$approved_upgrade_inputs" 4<<<"$kubeconfig_snapshot_binding" 5<<<"$original_parameters" <<'PYTHON'
 import hashlib, json, os, sys
 def digest(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
 with os.fdopen(3, encoding="utf-8") as approval_file:
     approval = approval_file.read().strip()
+with os.fdopen(5, encoding="utf-8") as original_file:
+    original_parameters = original_file.read().strip()
+approved = json.loads(approval) if approval else None
+original = json.loads(original_parameters) if original_parameters else None
 kubeconfig_sha = digest(sys.argv[21])
-if approval:
+if approved:
     with os.fdopen(4, encoding="utf-8") as binding:
         snapshot = json.load(binding)
     if sys.argv[21] != snapshot["path"] or kubeconfig_sha != snapshot["sha256"]:
         sys.exit("The approved kubeconfig snapshot changed. Review a fresh plan.")
     # Resume and cleanup continue to bind the original input bytes, even if
     # the execution copy rebased relative file references.
-    kubeconfig_sha = json.loads(approval)["kubeconfig"]
+    kubeconfig_sha = approved["kubeconfig"]
 evidence = os.stat(sys.argv[16])
-print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": kubeconfig_sha, "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.ts"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.ts"), "selectedImageMigrationSha256": digest("scripts/lib/selected-image-migration.ts"), "selectedImageMigrationProgramSha256": digest("deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs"), "preflightStateSha256": digest("scripts/upgrade-preflight-state.py"), "preflightCleanupSha256": digest("scripts/lib/upgrade-preflight-cleanup.sh"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.ts"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "helmStateSha256": digest("scripts/upgrade-helm-state.py"), "resourceQuantitiesSha256": digest("apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
+parameters = {"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": kubeconfig_sha, "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.ts"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.ts"), "selectedImageMigrationSha256": digest("scripts/lib/selected-image-migration.ts"), "selectedImageMigrationProgramSha256": digest("deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs"), "preflightStateSha256": digest("scripts/upgrade-preflight-state.py"), "preflightCleanupSha256": digest("scripts/lib/upgrade-preflight-cleanup.sh"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.ts"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "helmStateSha256": digest("scripts/upgrade-helm-state.py"), "resourceQuantitiesSha256": digest("apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}
+if approved and approved.get("kubeconfig server CA") is not None:
+    # Older raw-owned evidence did not bind an external CA. A profiled resume
+    # still checks the newly approved bytes, while preserving that receipt.
+    if original is None or "kubeconfigServerCaSha256" in original:
+        parameters["kubeconfigServerCaSha256"] = approved["kubeconfig server CA"]
+print(json.dumps(parameters, sort_keys=True))
 PYTHON
 )
 if ((resume)); then
-  require_private_file "$evidence_dir/parameters.json"
-  original_parameters=$(python3 - "$evidence_dir/parameters.json" <<'PYTHON'
-import json, sys
-with open(sys.argv[1], encoding="utf-8") as source:
-    values = json.load(source)
-values.pop("pairEvidence", None)
-values.pop("preparedEvidence", None)
-values.pop("dispatchJournal", None)
-print(json.dumps(values, sort_keys=True))
-PYTHON
-  )
   [[ "$parameters" == "$original_parameters" ]] || die "resume evidence directory, inputs, kubeconfig, CA, scripts, image rule, chart, or flow changed; use the original evidence directory and investigate before continuing."
   [[ ! -e "$evidence_dir/completed" && ! -L "$evidence_dir/completed" ]] ||
     die "a completion marker exists; this upgrade cannot be resumed. Preserve its evidence and investigate if completion was unexpected."

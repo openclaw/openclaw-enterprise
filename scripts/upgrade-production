@@ -2,6 +2,7 @@
 """Translate a private operator profile into the coordinated upgrade command."""
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -230,16 +231,28 @@ def expert_options(parser, operation, arguments):
     return options
 
 
-def preview_file(parser, name, filename, *, private=True):
+KUBECONFIG_SERVER_CA = "kubeconfig server CA"
+COMPATIBILITY_RECEIPT = "controller compatibility receipt"
+
+
+def preview_file(parser, name, filename):
+    private = name not in (KUBECONFIG_SERVER_CA, COMPATIBILITY_RECEIPT)
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK
+    # client-go follows certificate paths, including common system CA symlinks.
+    # Bind the bytes from one regular file opened through the reference.
+    if name != KUBECONFIG_SERVER_CA:
+        flags |= os.O_NOFOLLOW
     try:
-        fd = os.open(filename, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = os.open(filename, flags)
         with os.fdopen(fd, "rb") as stream:
             info = os.fstat(stream.fileno())
             if not stat.S_ISREG(info.st_mode) or (private and info.st_mode & 0o077):
                 parser.error(f"{name} must be a private readable regular file" if private else
                              f"{name} must be a readable regular file")
             return stream.read()
-    except OSError:
+    except (OSError, ValueError):
+        if name == KUBECONFIG_SERVER_CA:
+            parser.error("cannot read the selected kubeconfig server CA file")
         parser.error(f"cannot read {name}; use a regular file without a symbolic link")
 
 
@@ -258,6 +271,44 @@ def preview_mapping(parser, name, content):
     except (OSError, subprocess.CalledProcessError, ValueError):
         pass
     parser.error(f"{name} must contain one readable YAML mapping; check that yq is installed")
+
+
+def named_kubeconfig_entry(parser, configuration, field, name):
+    entries = configuration.get(f"{field}s")
+    if isinstance(entries, list):
+        matches = [entry.get(field) for entry in entries
+                   if isinstance(entry, dict) and entry.get("name") == name]
+        if len(matches) == 1 and isinstance(matches[0], dict):
+            return matches[0]
+    parser.error(f"kubeconfig must identify one selected {field}")
+
+
+def selected_kubeconfig_ca(parser, filename, content, context_name):
+    configuration = preview_mapping(parser, "kubeconfig", content)
+    context = named_kubeconfig_entry(parser, configuration, "context", context_name)
+    cluster_name = context.get("cluster")
+    if not isinstance(cluster_name, str) or not cluster_name:
+        parser.error("the selected kubeconfig context must name a cluster")
+    cluster = named_kubeconfig_entry(parser, configuration, "cluster", cluster_name)
+    ca_path = cluster.get("certificate-authority")
+    inline = cluster.get("certificate-authority-data")
+    if any(value is not None and not isinstance(value, str) for value in (ca_path, inline)):
+        parser.error("the selected kubeconfig cluster has invalid CA fields")
+    try:
+        # Go's base64 decoder accepts CR and LF within an encoded value.
+        has_inline = bool(base64.b64decode((inline or "").replace("\r", "").replace("\n", ""), validate=True))
+    except ValueError:
+        parser.error("the selected kubeconfig cluster has invalid inline CA data")
+    if ca_path and has_inline:
+        parser.error("the selected kubeconfig cluster specifies both an inline CA and a CA file")
+    if (ca_path or has_inline) and cluster.get("insecure-skip-tls-verify") is True:
+        parser.error("the selected kubeconfig cluster specifies both a CA and insecure TLS")
+    if not ca_path:
+        return None
+    if os.path.isabs(ca_path):
+        return ca_path
+    # client-go resolves paths relative to the declared kubeconfig's location.
+    return os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(filename)), ca_path))
 
 
 def setting(mapping, *path):
@@ -291,26 +342,30 @@ def changed_categories(before, after, categories, prefix=()):
     return {categories.get(prefix, "other settings")}
 
 
-def preview_inputs(parser, kubeconfig, directory, profile_images, options):
+def preview_inputs(parser, profile, resolve_path, options):
+    kubeconfig = resolve_path(profile["kubeconfig"])
+    directory = Path(resolve_path(profile["installationDirectory"]))
+    kubeconfig_bytes = preview_file(parser, "kubeconfig", kubeconfig)
+    ca = selected_kubeconfig_ca(parser, kubeconfig, kubeconfig_bytes, profile["context"])
     paths = {
-        "kubeconfig": kubeconfig,
         "baseline Helm values": str(directory / "values.yaml"),
         "baseline Installation": str(directory / "installation.yaml"),
     }
+    if ca is not None:
+        paths[KUBECONFIG_SERVER_CA] = ca
     for flag, role in (
         ("--candidate-values", "candidate Helm values"),
         ("--candidate-installation", "candidate Installation"),
-        ("--controller-compatibility-results", "controller compatibility receipt"),
+        ("--controller-compatibility-results", COMPATIBILITY_RECEIPT),
     ):
         if flag in options:
             paths[role] = options[flag]
-    digests = {}
+    digests = {"kubeconfig": hashlib.sha256(kubeconfig_bytes).hexdigest()}
     mappings = {}
     for role, filename in paths.items():
-        receipt = role == "controller compatibility receipt"
-        content = preview_file(parser, role, filename, private=not receipt)
+        content = preview_file(parser, role, filename)
         digests[role] = hashlib.sha256(content).hexdigest()
-        if role not in ("kubeconfig", "controller compatibility receipt"):
+        if role not in (KUBECONFIG_SERVER_CA, COMPATIBILITY_RECEIPT):
             mappings[role] = preview_mapping(parser, role, content)
     before_values = mappings["baseline Helm values"]
     values = mappings.get("candidate Helm values", before_values)
@@ -345,7 +400,7 @@ def preview_inputs(parser, kubeconfig, directory, profile_images, options):
         ("drivers", "plugin"): "Plugin Driver registration",
     })
     effects.extend(f"Installation change: {name}" for name in sorted(installation_changes))
-    if installation_changes or "runtime" in profile_images or "Installation Secret reference" in values_changes:
+    if installation_changes or "runtime" in profile.get("images", {}) or "Installation Secret reference" in values_changes:
         effects.append("A changed Installation can overwrite the local installation.yaml.")
         effects.append(
             "If the live mutable Installation Secret remains selected, the upgrade can replace its data."
@@ -368,12 +423,17 @@ def preview_inputs(parser, kubeconfig, directory, profile_images, options):
         if flag in options:
             number = int(options[flag])
             effects.append(f"{role}: {number}")
-    return paths, digests, effects
+    if ca is not None:
+        if digests[KUBECONFIG_SERVER_CA] == hashlib.sha256(b"").hexdigest():
+            effects.append("The selected CA file is empty. The run uses the system trust store.")
+        else:
+            effects.append("The run will use the verified CA from the selected kubeconfig context.")
+    return {"kubeconfig": kubeconfig, **paths}, digests, effects
 
 
 def check_preview_inputs(parser, paths, digests):
     for role, path in paths.items():
-        content = preview_file(parser, role, path, private=role != "controller compatibility receipt")
+        content = preview_file(parser, role, path)
         if hashlib.sha256(content).hexdigest() != digests[role]:
             parser.error(f"{role} changed after the preview; review a fresh plan")
 
@@ -412,7 +472,7 @@ def show_plan(parser, profile, profile_relative_path, input_names, effects, resu
     else:
         print("  Agents: keep current revisions")
     for name in input_names:
-        if name not in ("kubeconfig", "baseline Helm values", "baseline Installation"):
+        if name not in ("kubeconfig", KUBECONFIG_SERVER_CA, "baseline Helm values", "baseline Installation"):
             print(f"  {name}: supplied")
     for effect in effects:
         print(f"  {effect}")
@@ -594,10 +654,7 @@ def main():
     if args.operation in ("plan", "apply", "resume"):
         check_revision(parser, checkout, profile["sourceRevision"])
         resume_run = args.evidence_dir if args.operation == "resume" else None
-        directory = Path(path(profile["installationDirectory"]))
-        paths, digests, effects = preview_inputs(
-            parser, path(profile["kubeconfig"]), directory, profile.get("images", {}), options
-        )
+        paths, digests, effects = preview_inputs(parser, profile, path, options)
         show_plan(parser, profile, path, paths, effects, resume_run)
         if args.operation == "plan":
             return
