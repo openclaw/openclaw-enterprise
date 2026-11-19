@@ -56,7 +56,6 @@ export async function standInChart(
   );
   const key = yqRaw(yqOr(optionalField(installation, "key"), "installation.yaml"));
   const image = yqRaw(optionalField(optionalField(values, "images"), "controller"));
-  const channelDirectoryProxyUrl = optionalField(field(values, "api"), "channelDirectoryProxyUrl");
   const deployment = (component: "api" | "worker", placement: "containers" | "initContainers") => ({
     apiVersion: "apps/v1",
     kind: "Deployment",
@@ -81,14 +80,6 @@ export async function standInChart(
                   name: "OCC_CONFIG_PATH",
                   value: "/etc/openclaw/installation/installation.yaml",
                 },
-                ...(component === "api" && channelDirectoryProxyUrl
-                  ? [
-                      {
-                        name: "OCC_CHANNEL_DIRECTORY_PROXY_URL",
-                        value: channelDirectoryProxyUrl,
-                      },
-                    ]
-                  : []),
               ],
               volumeMounts: [
                 {

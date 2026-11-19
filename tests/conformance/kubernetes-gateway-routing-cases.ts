@@ -41,7 +41,7 @@ import {
   routedOptions,
   routedRevision,
 } from "../helpers/kubernetes-routed-scenarios.mjs";
-import { conformanceKubeconfig } from "../helpers/kubernetes-compute.mjs";
+import { conformanceKubeconfig } from "../helpers/kubernetes-compute.ts";
 import type { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import { asRecord } from "../../packages/utils/src/objects.ts";
 import { unexpectedNodeEnrollment } from "./kubernetes-namespace-placement-cases.ts";
