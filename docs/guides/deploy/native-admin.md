@@ -315,8 +315,8 @@ it checks your access again and returns you to that Agent’s detail page. Selec
 **Open Agent UI** to continue. With an older runtime, open the Agent root
 or its console page to start the same recovery.
 
-If the Agent host returns `503 DEPENDENCY_UNAVAILABLE`, check the controller and
-session store and retry after they recover.
+If the Agent host returns `503 DEPENDENCY_UNAVAILABLE` outside a deployment, check
+the controller and session store and retry after they recover.
 
 If expiry coincides with controller restarts, check persistent session storage
 and whether the configured auth secret changed. In-memory sessions disappear
