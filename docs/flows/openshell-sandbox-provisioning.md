@@ -329,10 +329,10 @@ and `OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE`; owned k3d pins the provider ho
 without Harness storage mounts. `gatewayNativeHookRelayConfiguration` uses
 `harnessHome` and Compute-owned relay URL/auth. Egress permits only the provider
 peer/port; the direct Agent Service stays inactive without a Harness route.
-For dedicated replacements the worker stops earlier runtimes before preparing the candidate.
+On dedicated replacement, the worker stops earlier runtimes before preparation.
 `apps/controller/src/worker.ts:finalizeRevision` publishes the active selection before
-activation rechecks the Harness. Permanent activation refusal fails deployment without
-reverting that selection, replacing the Gateway or retiring the predecessor.
+activation rechecks the Harness. Permanent activation refusal fails deployment
+and preserves the selection, Gateway, and predecessor.
 Without `harnessEndpoint`, Codex uses Kubernetes transport and `/home/node/workspace`.
 Native OpenClaw enrolls outbound into its admitted workspace.
 
@@ -345,30 +345,28 @@ checks policy, recipient and launcher proof. Strict grants require `PRE_CREDENTI
 legacy preview accepts absent binding fields.
 
 `apps/controller/src/drivers/sandbox/openshell.ts:admitRepositoryNetworkPolicy`
-requires qualified protected defaults, a nonempty grant list and no Agent
-additions. The selected-repository token stays unchanged. Each grant must
-fit its repository scope and contents permission.
+requires qualified protected defaults, one or more grants within repository
+scope and contents permissions, and no Agent additions. The selected-repository
+token stays unchanged.
 
 `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:observeHeldPreview`
-reads the loaded bootstrap policy, then sends upload-pack discovery for the
-first canonical grant with a fresh nonce and no credentials. Compute binds the
-path to enrollment and release. The exact denial permits installation. The
-supervisor's 15-second lease covers recipient reads, material selection, Provider
-writes, and release. Immediately before the release POST, the runtime also checks
-the installed Git credential's expiry and the Agent revision's Git authorization
-deadline. When final verification fails before sending, Compute can retry with a
-fresh observation. A lost acknowledgment after sending blocks the route.
-Disabled TLS inspection or uninspected credentials block qualification.
+checks the loaded bootstrap policy and probes upload-pack discovery for the first
+canonical grant with a fresh nonce and no credentials. Compute binds the path to
+enrollment and release. The exact denial permits installation. The supervisor's
+15-second lease covers recipient reads, material selection, Provider writes, and
+release. Before sending the release POST, the runtime rechecks the Git credential
+and revision authorization deadlines. Compute can retry an unsent release with a
+fresh observation. A lost POST acknowledgment blocks the route. Qualification
+requires TLS inspection and forbids uninspected credentials.
 See [credential egress](credential-source-egress.md).
 
-For existing profiles without explicit grants, the runtime arms a one-use denial.
-`git-write` probes
-`/<owner>/<repo>.git/oce-observe-request/<nonce>.git/info/refs`;
-installation-shaped providers, including `github-repository`, probe
-`/oce-observe-request/<nonce>.git/info/refs`. Both use `service=git-upload-pack`.
-The HTTPS launcher sends no credentials. The authority sends every request under either
-probe prefix to the denial handler before binding lookup. Only the exact challenge qualifies.
-Observation alone cannot release the Harness.
+Without explicit grants, the runtime arms a one-use denial.
+`git-write` probes `/<owner>/<repo>.git/oce-observe-request/<nonce>.git/info/refs`;
+installation profiles, including `github-repository`, probe
+`/oce-observe-request/<nonce>.git/info/refs`. The HTTPS launcher sends
+`service=git-upload-pack` without credentials. The authority routes both prefixes
+to the denial handler before binding lookup. The exact challenge qualifies
+installation. Compute checks release separately.
 
 `attachmentStatus`/`GetSandboxProviderStatus` retries pending/missing status;
 `failed`, `withheld`, `revoked` or `absent` fails preparation. Version `cleanup`
