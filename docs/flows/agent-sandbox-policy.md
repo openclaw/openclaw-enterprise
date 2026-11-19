@@ -54,16 +54,13 @@ scope, and owner read permission. Discovery and GET return the same descriptor
 with URLs for the available facet actions. See
 [Installation inspection](driver-plugin-loading.md#4-load-current-policy-and-hand-off-lifecycle-ownership).
 
-`loadInstallationConfiguration` validates the YAML
-[repository ceiling](../reference/configuration.md). Agent and SandboxPolicy
-read permission allow GET to return the saved grants, the Namespace's delegation
-ceiling, and whether the state adapter can store explicit grants. The ceiling
-includes only Installation grants the bound repository policy owner allows for
-that Namespace. A write limit becomes read when the owner allows read alone.
-An authorized PUT checks the same ceiling and stores valid grants with the next
-policy version. An unsupported adapter refuses an explicit list with
-`409 RESOURCE_CONFLICT`. An empty list saves deny-all. Omission keeps the saved
-grants and leaves them out of the PUT response.
+Startup validates the YAML [repository ceiling](../reference/configuration.md).
+GET requires Agent and SandboxPolicy read. It returns the saved grants, storage
+support, and the Namespace ceiling. The bound repository policy owner limits
+which Installation grants appear and can reduce write to read. PUT uses the
+same ceiling. An unsupported adapter returns `409 RESOURCE_CONFLICT` for
+explicit lists. An empty list saves deny-all. Omission keeps the saved list
+and excludes it from the PUT response.
 
 `validateAgentSandboxPolicy` checks authorization, editing, version, pending
 application, the shared schema, ceiling and Driver admission without writing.
@@ -72,16 +69,14 @@ Refusals identify the field and cause, including a ceiling or Driver
 capability limit. `internal/occclient/transport.go:APIError.Error` prints up to 32 safe
 details as escaped JSON and excludes records with Unicode control characters.
 
-`packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
-Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
-and checks editing, expected version, pending work, complete ceiling coverage,
-and registry-resolved Driver admission. The saved additions come from the
-admitted snapshot. While the active or next revision runs under protected
-execution, PUT refuses additions and any explicit repository policy, including
-deny-all, with `409 SANDBOX_POLICY_PROTECTED_EXECUTION`. To clear ordinary
-additions, send an empty additions list and omit the repository field. Protected
-execution also refuses live application and deployment with ordinary additions. Protected, dedicated Codex
-repository admission can carry the Sandbox Driver's explicitly acknowledged
+`packages/occ/src/index.ts:updateAgentSandboxPolicy` authorizes Agent
+`manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent, and
+checks editing, expected version, pending work, delegation, and Driver admission.
+Protected execution returns `409 SANDBOX_POLICY_PROTECTED_EXECUTION` for ordinary
+additions and explicit repository lists, including deny-all. An empty additions
+list with the repository field omitted clears ordinary additions. Protected
+execution also refuses live application and deployments with ordinary additions.
+Protected, dedicated Codex repository admission can carry the Sandbox Driver's explicitly acknowledged
 [artifact subset](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
 `checkedProtectedCodexArtifactPolicy` verifies its purpose, declared keys, Driver
 identity, version and empty additions before runtime credential provisioning.
