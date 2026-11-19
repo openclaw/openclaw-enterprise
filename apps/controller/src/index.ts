@@ -19,6 +19,8 @@ import {
   RegisterTokenServiceSourceBody,
   UpdateTokenServiceSourceBody,
   TokenServiceSourceMetadata,
+  PushAgentCredentialsBody,
+  PushAgentCredentialsResponse,
   ErrorDetail as ErrorDetailSchema,
   ErrorResponse,
   isSecretHarnessAuth,
@@ -1426,6 +1428,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.addSchema(RegisterTokenServiceSourceBody);
   app.addSchema(UpdateTokenServiceSourceBody);
   app.addSchema(TokenServiceSourceMetadata);
+  app.addSchema(PushAgentCredentialsBody);
+  app.addSchema(PushAgentCredentialsResponse);
   void app.register(swagger, {
     convertConstToEnum: false,
     refResolver: {
@@ -1437,6 +1441,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             case "RegisterTokenServiceSourceBody":
             case "UpdateTokenServiceSourceBody":
             case "TokenServiceSourceMetadata":
+            case "PushAgentCredentialsBody":
+            case "PushAgentCredentialsResponse":
               return schema.$id;
           }
         }
