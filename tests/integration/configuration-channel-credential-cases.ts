@@ -267,6 +267,10 @@ export function registerConfigurationChannelCredentialCases(
         unsupportedChannelRefusal("channels.discord"),
       ],
       [
+        { ...valid, channels: { msteams: { enabled: true } } },
+        unsupportedChannelRefusal("channels.msteams"),
+      ],
+      [
         {
           ...valid,
           auth: { profiles: { "openai:default": { provider: "openai", mode: "api_key" } } },
@@ -714,10 +718,10 @@ export function registerConfigurationChannelCredentialCases(
 
   // The bundled Kubernetes Compute has two implementations: the Installation default
   // (`occ/kubernetes`) and the Driver's own default (`kubernetes-local`). Under either, OCC checks
-  // every enabled channel, not only the first, and Agent provisioning checks the bindings it
+  // every enabled channel account, not only the default, and Agent provisioning checks the bindings it
   // creates the Configuration with, none when the request sends none (finding 2319).
   for (const computeImplementation of ["occ/kubernetes", "kubernetes-local"]) {
-    test(`Configuration create and Agent provisioning check every channel's credential references on ${computeImplementation}`, async () => {
+    test(`Configuration create and Agent provisioning check every Slack account's credential references on ${computeImplementation}`, async () => {
       const backend = createConfigurationBackend();
       const context = await fixture({
         // Agent provisioning requires exact create and inspect; the refusal comes first.
@@ -754,21 +758,27 @@ export function registerConfigurationChannelCredentialCases(
             mode: "socket",
             appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
             botToken: "${SLACK_BOT_TOKEN}",
+            accounts: {
+              alt: {
+                enabled: true,
+                appToken: "${SLACK_ALT_APP}",
+                botToken: "${SLACK_BOT_TOKEN}",
+              },
+            },
           },
-          msteams: { enabled: true, appPassword: "${MSTEAMS_APP_PASSWORD}" },
         },
       };
       const create = (secretBindings: SecretBindings) =>
         context.request("POST", context.collection, { kind: "agent", values, secretBindings });
 
-      // The first channel's references are bound; the second channel's is not.
+      // The default account's references are bound; the secondary account's is not.
       assertRefused(
         await create(slackBindings),
-        unboundReferenceRefusal("channels.msteams.appPassword", "MSTEAMS_APP_PASSWORD"),
+        unboundReferenceRefusal("channels.slack.accounts.alt.appToken", "SLACK_ALT_APP"),
       );
       const allBindings = {
         ...slackBindings,
-        MSTEAMS_APP_PASSWORD: await createEnvSecretBinding(context, "msteams-password"),
+        SLACK_ALT_APP: await createEnvSecretBinding(context, "slack-alt-app"),
       };
       const saved = await create(allBindings);
       assert.equal(saved.status, 201, JSON.stringify(saved.body));
@@ -778,72 +788,77 @@ export function registerConfigurationChannelCredentialCases(
       // unbound name is never set, so the fallback (here empty) would replace it. Each needs a
       // binding, and the first unbound one is named (finding 2475). `$${NAME}` is the runtime's
       // escape for literal text, not a reference.
-      const withAppPassword = (appPassword: string) => ({
+      const withAppToken = (appToken: string) => ({
         ...values,
-        channels: { ...values.channels, msteams: { enabled: true, appPassword } },
+        channels: {
+          slack: {
+            ...values.channels.slack,
+            accounts: { alt: { ...values.channels.slack.accounts.alt, appToken } },
+          },
+        },
       });
       // In this secret-input field the runtime also reads a whole `$NAME` as an environment
       // SecretRef (finding 2476).
-      for (const appPassword of [
-        "secret-${MSTEAMS_TENANT_SECRET}",
-        "${MSTEAMS_TENANT_SECRET:-}",
-        "${MSTEAMS_APP_PASSWORD}-${MSTEAMS_TENANT_SECRET:-fallback}",
-        "$MSTEAMS_TENANT_SECRET",
+      for (const appToken of [
+        "secret-${SLACK_ALT_SECRET}",
+        "${SLACK_ALT_SECRET:-}",
+        "${SLACK_ALT_APP}-${SLACK_ALT_SECRET:-fallback}",
+        "$SLACK_ALT_SECRET",
       ]) {
         assertRefused(
           await context.request("PATCH", `${context.collection}/${savedId}`, {
-            values: withAppPassword(appPassword),
+            values: withAppToken(appToken),
             secretBindings: allBindings,
           }),
-          unboundReferenceRefusal("channels.msteams.appPassword", "MSTEAMS_TENANT_SECRET"),
-          { label: appPassword },
+          unboundReferenceRefusal("channels.slack.accounts.alt.appToken", "SLACK_ALT_SECRET"),
+          { label: appToken },
         );
       }
       // A `${` the runtime does not substitute (a lowercase name, `-` without `:`) would reach
-      // Teams as written, so it is refused even with every binding (finding 2477). That text may be
-      // the password itself: the message shows only a lowercase `${name}` or the name before `-`,
+      // Slack as written, so it is refused even with every binding (finding 2477). That text may be
+      // the token itself: the message shows only a lowercase `${name}` or the name before `-`,
       // and never the rest of the value.
       const secretText = "9f3c2a7b1d8e4f60a5b6c7d8e9f01234";
-      for (const [appPassword, message] of [
+      for (const [appToken, message] of [
         [
-          "${msteams_password}",
-          unsubstitutedReferenceRefusal("channels.msteams.appPassword", "${msteams_password}"),
+          "${slack_token}",
+          unsubstitutedReferenceRefusal("channels.slack.accounts.alt.appToken", "${slack_token}"),
         ],
-        [`\${${secretText}}`, unsubstitutedReferenceRefusal("channels.msteams.appPassword")],
         [
-          `${secretText}\${MSTEAMS_APP_PASSWORD-${secretText}}`,
-          unsubstitutedFallbackRefusal("channels.msteams.appPassword", "MSTEAMS_APP_PASSWORD"),
+          `\${${secretText}}`,
+          unsubstitutedReferenceRefusal("channels.slack.accounts.alt.appToken"),
+        ],
+        [
+          `${secretText}\${SLACK_ALT_APP-${secretText}}`,
+          unsubstitutedFallbackRefusal("channels.slack.accounts.alt.appToken", "SLACK_ALT_APP"),
         ],
       ] as const) {
         assertRefused(
           await context.request("PATCH", `${context.collection}/${savedId}`, {
-            values: withAppPassword(appPassword),
+            values: withAppToken(appToken),
             secretBindings: allBindings,
           }),
           message,
-          { label: appPassword, sentinel: secretText },
+          { label: appToken, sentinel: secretText },
         );
       }
       // A token shaped like a name is shown only when it is lowercase, as a mistyped name is: a
-      // mixed-case one may be the password (finding 2485).
+      // mixed-case one may be the token (finding 2485).
       const identifierToken = "Zr9kq2LmP4xT7vB1nW3c";
       assertRefused(
         await context.request("PATCH", `${context.collection}/${savedId}`, {
-          values: withAppPassword(`\${${identifierToken}}`),
+          values: withAppToken(`\${${identifierToken}}`),
           secretBindings: allBindings,
         }),
-        unsubstitutedReferenceRefusal("channels.msteams.appPassword"),
+        unsubstitutedReferenceRefusal("channels.slack.accounts.alt.appToken"),
         { label: identifierToken, sentinel: identifierToken },
       );
-      for (const appPassword of [
-        "${MSTEAMS_APP_PASSWORD}$${MSTEAMS_TENANT_SECRET}",
-        "$MSTEAMS_APP_PASSWORD",
-      ]) {
+      for (const appToken of ["${SLACK_ALT_APP}$${SLACK_ALT_SECRET}", "$SLACK_ALT_APP"]) {
         const accepted = await context.request("PATCH", `${context.collection}/${savedId}`, {
-          values: withAppPassword(appPassword),
+          values: withAppToken(appToken),
           secretBindings: allBindings,
         });
-        assert.equal(accepted.status, 200, `${appPassword}: ${JSON.stringify(accepted.body)}`);
+        assert.equal(accepted.status, 200, `${appToken}: ${JSON.stringify(accepted.body)}`);
       }
       // A Preset carries no Secret bindings, so its defaults are not checked against any: the
       // Configuration created from it is checked with its own bindings.
