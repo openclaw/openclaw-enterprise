@@ -22,6 +22,7 @@ import {
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import test from "node:test";
+import { containerProgram } from "./kubernetes-workload-program-cases.ts";
 import {
   WORKSPACE_DEFAULTS_ID,
   admitLoggingConfiguration,
@@ -84,6 +85,18 @@ async function preparedEndpoint(fixture = providerEndpointFixture(), context) {
 }
 
 const openAiStaticProvider = createOpenAiStaticProvider();
+
+test("the Box provisioner receives the launcher for a mounted private hook directory", async () => {
+  const fixture = providerEndpointFixture();
+  fixture.sandbox.implementation = "strands-box";
+  fixture.revision.compute.admission = fixture.driver.admitRevision(fixture.revision);
+  await preparedEndpoint(fixture);
+  const command = fixture.provisions.at(-1).requirements.command;
+  const evaluation = command.lastIndexOf("-e");
+  assert.ok(evaluation >= 0);
+  const launcher = containerProgram({ args: command.slice(evaluation + 1) });
+  assert.match(launcher, /Native hook storage must be private/u);
+});
 
 test("provider Harness endpoint bootstraps Gateway before provisioning and requests node setup", async () => {
   const fixture = providerEndpointFixture({

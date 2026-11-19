@@ -15063,6 +15063,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       providerOwned,
       protected: this.hasProtectedCodexAdmission(revision),
       ...(prefix === PROXY_CODEX_LAUNCH && { explicitProxy: true }),
+      ...(sandbox?.implementation === "strands-box" && { mountedHookDirectory: true }),
       ...(prefix === OPENSHELL_CODEX_LAUNCH && {
         openShellProgram:
           revision.executionAdmission.mode === "unprotected" &&
