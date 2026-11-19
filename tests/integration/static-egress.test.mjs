@@ -1773,10 +1773,19 @@ test("protected Responses forwards inline raster images from users and local too
     image_url:
       "data:image/webp;base64,UklGRjwAAABXRUJQVlA4IDAAAADQAQCdASoBAAEAAUAmJaACdLoB+AADsAD+8ut//NgVzXPv9//S4P0uD9Lg/9KQAAA=",
   };
+  // Two 1x1 lossless frames, red then blue, encoded and decoded with Pillow.
+  const animatedWebp = Buffer.from(
+    "UklGRoQAAABXRUJQVlA4WAoAAAACAAAAAAAAAAAAQU5JTQYAAAAAAAAAAABBTk1GKAAAAAAAAAAAAAAAAAAAAGQAAAJWUDhMDwAAAC8AAAAABxD9j/4HIqL/AQBBTk1GKAAAAAAAAAAAAAAAAAAAAGQAAABWUDhMDwAAAC8AAAAABxDR//4HIqL/AQA=",
+    "base64",
+  );
+  const webpPart = (bytes) => ({
+    ...webp,
+    image_url: "data:image/webp;base64," + bytes.toString("base64"),
+  });
   const user = {
     type: "message",
     role: "user",
-    content: [{ type: "input_text", text: "look" }, image, jpeg],
+    content: [{ type: "input_text", text: "look" }, image, jpeg, webpPart(animatedWebp)],
   };
   const functionCall = {
     type: "function_call",
@@ -1851,11 +1860,43 @@ test("protected Responses forwards inline raster images from users and local too
       "Mg4QAMAAAAKAAAAAsBNLKA==",
     "base64",
   );
-  const malformedAvif = Buffer.from(avif);
-  malformedAvif[4] |= 0x80;
+  const webpBytes = Buffer.from(webp.image_url.split(",")[1], "base64");
+  const webpWithChunks = (...chunks) => {
+    const bytes = Buffer.concat([webpBytes.subarray(0, 12), ...chunks]);
+    bytes.writeUInt32LE(bytes.length - 8, 4);
+    return bytes;
+  };
+  // The first bad frame must fail even if a later frame contains valid image data.
+  // Change only the nested VP8L length, leaving the enclosing RIFF and ANMF intact.
+  const invalidFrames = [
+    { label: "invalid first WebP frame", lengthOffset: 72 },
+    { label: "invalid last WebP frame", lengthOffset: 120 },
+  ].map(({ label, lengthOffset }) => {
+    const bytes = Buffer.from(animatedWebp);
+    bytes.writeUInt32LE(animatedWebp.length, lengthOffset);
+    return { mime: "webp", label, bytes };
+  });
+  // Reuse the static VP8 and the first frame's VP8L data as healthy siblings.
+  const invalidChunks = [
+    { label: "VP8", chunk: webpBytes.subarray(12), signatureOffset: 11 },
+    { label: "VP8L", chunk: animatedWebp.subarray(68, 92), signatureOffset: 8 },
+  ].flatMap(({ label, chunk, signatureOffset }) => {
+    const invalid = Buffer.from(chunk);
+    invalid[signatureOffset] ^= 0x80;
+    return [
+      {
+        mime: "webp",
+        label: `invalid first ${label} chunk`,
+        bytes: webpWithChunks(invalid, chunk),
+      },
+      { mime: "webp", label: `invalid last ${label} chunk`, bytes: webpWithChunks(chunk, invalid) },
+    ];
+  });
   // Change only a marker byte and keep the PNG checksum valid so the refusal
   // depends on the marker, even when ASCII decoding would mask the high bit.
-  const markerCases = [
+  const rasterCases = [
+    ...invalidFrames,
+    ...invalidChunks,
     ...[
       { label: "high-bit IHDR", offset: 8 },
       { label: "high-bit IDAT", offset: 33 },
@@ -1872,18 +1913,18 @@ test("protected Responses forwards inline raster images from users and local too
       { label: "high-bit WEBP", offset: 8 },
       { label: "high-bit VP8", offset: 12 },
     ].map(({ label, offset }) => {
-      const bytes = Buffer.from(webp.image_url.split(",")[1], "base64");
+      const bytes = Buffer.from(webpBytes);
       bytes[offset] |= 0x80;
       return { mime: "webp", label, bytes };
     }),
     // AVIF is outside the MIME allowlist regardless of its container bytes.
     { mime: "avif", label: "valid AVIF", bytes: avif },
-    { mime: "avif", label: "high-bit ftyp", bytes: malformedAvif },
   ];
-  for (const { mime, label, bytes } of markerCases) {
+  for (const { mime, label, bytes } of rasterCases) {
     const part = { ...image, image_url: `data:image/${mime};base64,${bytes.toString("base64")}` };
     assert.ok((await f.resolve(f.capture(withPart(part)))).refused, label);
     assert.equal(f.secretReads, reads, `${label} must be refused before reading credentials`);
+    assert.equal(f.providerRequests.length, sends, `${label} cannot reach the provider`);
   }
 
   const rasterWith = (mime, hex) => ({

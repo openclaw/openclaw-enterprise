@@ -347,17 +347,27 @@ function webpChunks(bytes: Buffer, start: number, end: number, animation: boolea
     }
     if (type === "VP8 ") {
       const partition = length >= 3 ? bytes.readUIntLE(data, 3) >>> 5 : 0;
-      imageData ||=
-        length > 10 &&
-        partition > 0 &&
-        partition < length - 10 &&
-        bytes.toString("hex", data + 3, data + 6) === "9d012a" &&
-        (bytes.readUInt16LE(data + 6) & 0x3fff) > 0 &&
-        (bytes.readUInt16LE(data + 8) & 0x3fff) > 0;
+      if (
+        length <= 10 ||
+        partition === 0 ||
+        partition >= length - 10 ||
+        bytes.toString("hex", data + 3, data + 6) !== "9d012a" ||
+        (bytes.readUInt16LE(data + 6) & 0x3fff) === 0 ||
+        (bytes.readUInt16LE(data + 8) & 0x3fff) === 0
+      ) {
+        return false;
+      }
+      imageData = true;
     } else if (type === "VP8L") {
-      imageData ||= length > 5 && bytes[data] === 0x2f;
-    } else if (type === "ANMF" && animation && length >= 24) {
-      imageData ||= webpChunks(bytes, data + 16, data + length, false);
+      if (length <= 5 || bytes[data] !== 0x2f) {
+        return false;
+      }
+      imageData = true;
+    } else if (type === "ANMF") {
+      if (!animation || length < 24 || !webpChunks(bytes, data + 16, data + length, false)) {
+        return false;
+      }
+      imageData = true;
     }
     offset = data + length + (length & 1);
   }
