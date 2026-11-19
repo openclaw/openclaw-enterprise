@@ -27,13 +27,32 @@ test("prepared Git provider binds repository read and write rules to its wire pr
     binaries: ["/usr/bin/git"],
   };
   const scope = { ...commonScope, installationId: "42" } satisfies OpenShellPreparedGitScope;
-  const { client } = await gitExpiryGateway(t, {
+  const providerReads: unknown[] = [];
+  const { client, world } = await gitExpiryGateway(t, {
     model: "model",
     workspace: scope.workspace,
     sandbox: scope.sandbox,
     revisionId: scope.executionId,
     deadline: "2030-01-01T00:00:00Z",
     platformProfile: false,
+    configure(methods: {
+      CreateProvider: (request: Record<string, unknown>) => {
+        provider: { metadata: { id: string; name: string } };
+      };
+      GetProvider: (request: Record<string, unknown>) => unknown;
+    }) {
+      const { CreateProvider: createProvider, GetProvider: getProvider } = methods;
+      methods.CreateProvider = (request) => {
+        const response = createProvider(request);
+        // The fixture normally gives every provider the same ID.
+        response.provider.metadata.id = response.provider.metadata.name + "-id";
+        return response;
+      };
+      methods.GetProvider = (request) => {
+        providerReads.push(request.name);
+        return getProvider(request);
+      };
+    },
   });
   const signal = AbortSignal.timeout(10_000);
   const read = { repository: "fixture/a", access: "read" } as const;
@@ -104,6 +123,45 @@ test("prepared Git provider binds repository read and write rules to its wire pr
   const punctuationProfile = "oce-github-installation-3cb27d015493c84eeba6d445f69af0cc";
   assert.equal(profileIdForPolicy([punctuationWrite, punctuationRead]), punctuationProfile);
   assert.equal(profileIdForPolicy([punctuationRead, punctuationWrite]), punctuationProfile);
+
+  let releaseCalls = 0;
+  async function release() {
+    releaseCalls++;
+    return undefined;
+  }
+
+  assert.equal(await scoped.rotate(binding, release, signal), undefined);
+  assert.equal(releaseCalls, 1);
+  assert.equal(world.writes, 0);
+  releaseCalls = 0;
+
+  const changed = new OpenShellPreparedGitProvider(client, {
+    ...scope,
+    repositoryNetworkPolicy: [{ ...read, access: "write" }, write],
+  });
+  const changedBinding = await changed.bootstrap(signal);
+  assert.notEqual(changedBinding.profile, binding.profile);
+  assert.equal(changedBinding.profileVersion, binding.profileVersion);
+  assert.notEqual(changedBinding.providerId, binding.providerId);
+  providerReads.length = 0;
+
+  const refused = (error: unknown) =>
+    error instanceof OpenShellPreparedGitProviderError &&
+    error.outcome === "refused" &&
+    error.readFailure === undefined;
+
+  await assert.rejects(changed.rotate(binding, release, signal), refused);
+  assert.equal(releaseCalls, 0);
+  assert.deepEqual(providerReads, []);
+
+  // Restore uses the changed policy's profile but retains the old provider generation.
+  const restored = changed.restore(binding);
+  assert.equal(restored.profile, changedBinding.profile);
+  assert.equal(restored.providerId, binding.providerId);
+  await assert.rejects(changed.rotate(restored, release, signal), refused);
+  assert.equal(releaseCalls, 0);
+  assert.deepEqual(providerReads, [changedBinding.provider]);
+  assert.equal(world.writes, 0);
 
   const legacy = await new OpenShellPreparedGitProvider(client, scope).bootstrap(signal);
   assert.equal(legacy.profile, "oce-github-installation-f941504fe8c04d629f0fcd8569984de1");
