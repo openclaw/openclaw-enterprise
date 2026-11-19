@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -714,6 +715,22 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
           );
         }
         save();
+        if (fault === "migration-apply-ack-staging") {
+          // The API has accepted the Job and its child before local receipt publication fails.
+          const attempt = join(root, "evidence", "migration-deploy-apply");
+          assert.equal(
+            realpathSync(source),
+            realpathSync(join(attempt, "preflight-migration-job.json")),
+          );
+          assert.equal(kind, "job.batch");
+          assert.equal(fileArg("-o"), "jsonpath={.metadata.uid}");
+          writeFileSync(join(attempt, ".preflight-migration-identity.json.tmp"), uid + "\n", {
+            flag: "wx",
+            mode: 0o600,
+          });
+          out(uid);
+          return io.exit(0);
+        }
         if (fault === "lost") {
           out(uid);
           return fail(9, "create acknowledgement lost: private-response-marker");
@@ -732,6 +749,8 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         const raw = args.find((arg) => arg.startsWith("--raw="));
         let named = resource;
         let uid: unknown;
+        let options: unknown;
+        let propagationPolicy: unknown;
         if (raw) {
           const match =
             /^--raw=\/(api\/v1|apis\/networking\.k8s\.io\/v1|apis\/batch\/v1)\/namespaces\/system\/(pods|secrets|networkpolicies|jobs)\/([a-z0-9.-]+)$/.exec(
@@ -750,20 +769,23 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
           assert.equal(fileArg("-f"), "-");
           // An empty raw body is a real unguarded DELETE, not a fixture rejection.
           const body = await io.readInput();
-          const options: unknown = body ? JSON.parse(body) : {};
+          options = body ? JSON.parse(body) : {};
           uid = optionalField(field(options, "preconditions"), "uid");
-          if (uid) {
-            assert.equal(field(options, "apiVersion"), "v1");
-            assert.equal(field(options, "kind"), "DeleteOptions");
-            assert.equal(
-              field(options, "propagationPolicy"),
-              plural === "jobs" ? "Foreground" : "Background",
-            );
-          }
+          propagationPolicy = field(options, "propagationPolicy");
           named = `${resourceType.kind}/${name}`;
         }
         assert.ok(named, "delete must identify a preflight resource");
+        // Record requests before applying faults, including refused and already-absent deletes.
+        appendFileSync(
+          join(root, "delete-requests.jsonl"),
+          JSON.stringify({ resource: named, uid, propagationPolicy }) + "\n",
+        );
         const { kind, name } = resourceAddress(named);
+        if (uid) {
+          assert.equal(field(options, "apiVersion"), "v1");
+          assert.equal(field(options, "kind"), "DeleteOptions");
+          assert.equal(propagationPolicy, kind === "job.batch" ? "Foreground" : "Background");
+        }
         const inventory = record(field(preflight, collections[kind]), collections[kind]);
         const target =
           kind === "job.batch"
