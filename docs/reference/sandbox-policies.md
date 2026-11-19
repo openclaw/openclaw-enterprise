@@ -25,7 +25,8 @@ Omission keeps the ordinary policy. An empty list explicitly denies access to
 all repositories. Any explicit list requires the selected Driver's
 `admitRepositoryNetworkPolicy` method. The side-effect-free method receives the
 validated list and an immutable base snapshot. It returns the effective policy
-as a JSON object.
+synchronously as a plain JSON object. Arrays within the document must have
+consecutive elements starting at index zero and may contain only those elements.
 It must require inspected HTTPS, enforce the list in addition to other rules,
 and deny ungranted repositories. It must refuse bypass paths and any weakening
 of protected execution.
