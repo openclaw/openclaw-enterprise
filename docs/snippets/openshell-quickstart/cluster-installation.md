@@ -84,9 +84,10 @@ values for `auth-secret` (OCC sessions) and `routing-key` (private routing).
 Store each value as 64 hexadecimal characters without a trailing newline.
 Keep files mode 0600 and retain the keys for redeployment.
 
-From the matching release checkout, use jq, yq v4, and Node.js matching
-`engines.node` in `package.json`. Check that the OpenShell PKI job’s
-`openshell-client-tls` Secret exists before creating the bootstrap claim and Secrets.
+From the matching release checkout, use jq, yq v4 and Node.js matching
+`engines.node` in `package.json`. The install command generates bootstrap
+credentials and their Secret. Check that the OpenShell PKI job’s
+`openshell-client-tls` Secret exists before creating the OCC inputs.
 
 ```bash
 : "${OCC_SECRET_DIR:?Set OCC_SECRET_DIR to the protected input directory}"
@@ -107,14 +108,6 @@ fi
 
 platform_kube=(kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" -n "$PLATFORM_NS")
 "${platform_kube[@]}" get secret openshell-client-tls -o name
-bootstrap_claim=$(jq -er '.bootstrap.password.claimName' "$RUN_DIR/values.json")
-bootstrap_image=$(jq -er '.images.controller' "$RUN_DIR/values.json")
-BOOTSTRAP_CLAIM="$bootstrap_claim" yq e '
-  .metadata.namespace = strenv(PLATFORM_NS) |
-  .metadata.name = strenv(BOOTSTRAP_CLAIM) |
-  .spec.storageClassName = strenv(STORAGE_CLASS)
-' deploy/examples/production/bootstrap-pvc.yaml > "$RUN_DIR/bootstrap-pvc.yaml"
-"${platform_kube[@]}" create -f "$RUN_DIR/bootstrap-pvc.yaml"
 "${platform_kube[@]}" create secret generic occ-database \
   --from-file="application-url=$OCC_SECRET_DIR/application-url" \
   --from-file="migration-url=$OCC_SECRET_DIR/migration-url"
@@ -126,18 +119,16 @@ BOOTSTRAP_CLAIM="$bootstrap_claim" yq e '
   --from-file="occ=$OCC_SECRET_DIR/routing-key"
 ```
 
-Prepare the fresh claim on the OCC initialization Job’s `oce-role=control` pool.
-If cluster policy forbids the preparation Pod or you cannot verify its network
-isolation, skip the helper. Have the storage administrator set the same fresh
-volume’s root to UID/GID 1000 and mode 0700.
-
-```bash
-scripts/prepare-bootstrap-volume --kubeconfig "$KUBECONFIG" --context "$CONTEXT" \
-  --namespace "$PLATFORM_NS" --claim "$bootstrap_claim" --image "$bootstrap_image" \
-  --node-selector oce-role=control
-```
-
-Continue after helper success or storage administrator confirmation that the root is ready.
+The installer creates the bootstrap Secret before the pre-install hook and
+prints the protected recovery directory. It never overwrites an existing Secret;
+[existing-Secret mode](production-installation-preparation.md#optional-supply-bootstrap-credentials)
+is available for deliberately preprovisioned inputs. Only bootstrap receives the
+read-only projection on installation, not on upgrade. Retain the local inputs
+outside the checkout. The service
+key expires 30 days after registration; changing the Secret does not rotate it.
+If a create or installation attempt fails or has an unknown outcome, stop and
+[reconcile that attempt](../../reference/authentication/service-api-keys.md#recover-an-incomplete-bootstrap)
+before continuing. Do not regenerate credentials or repeat confirmed creates.
 
 ```bash
 # Allow the initialization hook to reach the DNS Service VIP.
@@ -175,6 +166,8 @@ Helm bootstraps OCC with zero workers. Reuse the session directory and kubeconfi
 
 Initialize the operator session. Its REST helper runs via Kubernetes exec in the API Pod.
 
+For a Gateway in another namespace, set `OPENSHELL_NAMESPACE` first.
+
 ```bash
 INSTALLATION_FILE="$RUN_DIR/installation.yaml"
 install -m 600 "$RUN_DIR/installation.json" "$INSTALLATION_FILE"
@@ -193,9 +186,9 @@ jq --slurpfile peers "$RUN_DIR/trusted-peers.json" \
 jq '.worker.replicaCount=1' \
   "$RUN_DIR/values.json" > "$RUN_DIR/worker.json"
 # The API registers model credentials and the worker manages workspaces through OpenShell.
-kube -n "$PLATFORM_NS" get service openshell-gateway -o json |
+kube -n "${OPENSHELL_NAMESPACE:-$PLATFORM_NS}" get service openshell-gateway -o json |
   jq -e --arg ns "$PLATFORM_NS" --arg release "$RELEASE" '
-    .spec as $svc | select($svc.type=="ClusterIP" and ($svc.selector|length)>0
+    .metadata.namespace as $gatewayNs | .spec as $svc | select($svc.type=="ClusterIP" and ($svc.selector|length)>0
       and ($svc.clusterIP|test("^[0-9]+(\\.[0-9]+){3}$"))) |
     [$svc.ports[] | select(.protocol=="TCP" and .port==8080)] | select(length==1) | first as $port |
     {apiVersion:"networking.k8s.io/v1", kind:"NetworkPolicy",
@@ -205,7 +198,8 @@ kube -n "$PLATFORM_NS" get service openshell-gateway -o json |
        {key:"app.kubernetes.io/component",operator:"In",values:["api","worker"]}]},
        policyTypes:["Egress"],egress:[
          {to:[{ipBlock:{cidr:($svc.clusterIP+"/32")}}],ports:[{protocol:"TCP",port:8080}]},
-         {to:[{podSelector:{matchLabels:$svc.selector}}],ports:[{protocol:"TCP",port:$port.targetPort}]}
+         {to:[{namespaceSelector:{matchLabels:{"kubernetes.io/metadata.name":$gatewayNs}},
+           podSelector:{matchLabels:$svc.selector}}],ports:[{protocol:"TCP",port:$port.targetPort}]}
        ]}}' > "$RUN_DIR/management-policy.json"
 kube create -f "$RUN_DIR/management-policy.json"
 cp "$RUN_DIR/installation-with-peers.json" "$INSTALLATION_FILE"
@@ -216,7 +210,7 @@ upgrade_installation
 
 Agent deployment pairs these egress rules with management ingress for the API, worker, selected tenant’s supervisors and Agent Gateway on TCP 8080. Keep both directions. Tenant callers must match the backing namespace name and its current `openclaw.dev/namespace` label. Supervisor grants apply per tenant and Gateway grants per Agent. To verify ownership-based withdrawal, inspect every grant for that namespace. For a live Agent in its verified namespace, stage the current platform helper and renderer and run `deployment_network` in its saved session to replace a name-only grant.
 
-If namespace ownership has changed or the Agent’s Gateway Service is gone, withdraw the obsolete grant directly. Inspect its source namespace, Agent or supervisor Pod selector, and destination management selector with `kube -n "$PLATFORM_NS" get networkpolicy "$policy" -o yaml`. Match them to the recorded owner. Confirm a separate restrictive ingress policy still selects the management Pods so deleting the grant keeps them isolated. Then run `kube -n "$PLATFORM_NS" delete networkpolicy "$policy"` with the verified policy name. Preserve grants for other tenants and callers.
+If namespace ownership has changed or the Agent’s Gateway Service is gone, withdraw the obsolete grant directly. Check that its source namespace, Pod selector and management selector match the recorded owner: `kube -n "${OPENSHELL_NAMESPACE:-$PLATFORM_NS}" get networkpolicy "$policy" -o yaml`. Confirm another restrictive ingress policy still selects the management Pods, so they stay isolated. Then delete it: `kube -n "${OPENSHELL_NAMESPACE:-$PLATFORM_NS}" delete networkpolicy "$policy"`. Preserve grants for other tenants and callers.
 
 After Compute creates the backing namespace, apply the [tenant bindings](production-agents.md#prepare-each-namespace). Verify restricted Pod Security and grant the ordinary worker role last.
 

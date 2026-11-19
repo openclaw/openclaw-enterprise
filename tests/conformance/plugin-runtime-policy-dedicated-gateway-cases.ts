@@ -12,6 +12,7 @@ import {
   invalidGatewayConfigurationSecret,
   openClawConfigValidationRefusal,
 } from "../helpers/openclaw-config-validation.ts";
+import { validateLockRefusal } from "../helpers/openclaw-state-lock.ts";
 import {
   GATEWAY_LOCAL_CODEX_TOOLS,
   codexGatewayConfig,
@@ -36,14 +37,6 @@ function configReadRefusal(error: string) {
 }
 const configReadPermissionDenied =
   "EACCES: permission denied, open '/home/node/.openclaw/openclaw.json'";
-// Captured from a dedicated Gateway container started again after its native Gateway was
-// killed (SIGKILL): the new PID namespace cannot verify the recorded holder (finding 2864).
-const gatewayLockNamespaceRefusal =
-  "GatewayLockNamespaceError: cannot verify Gateway ownership from this process; heartbeat age" +
-  " does not prove that the holder stopped. holder 608 at 54b9b0fe1247/pid-ns 4026536051, last" +
-  " renewed 14 s ago. Run this command inside the Gateway container or with a shared PID" +
-  " namespace; if the holder has stopped, run `openclaw gateway recover-lock` to inspect and" +
-  " explicitly recover the unchanged owner.";
 const heldStatusEnvironment = {
   OPENCLAW_RUNTIME_STATUS_PORT: "18791",
   OPENCLAW_RUNTIME_STATUS_CONTAINER: "gateway",
@@ -144,6 +137,8 @@ export function registerDedicatedGatewayCases() {
         "get_goal",
         "create_goal",
         "update_goal",
+        "skills_search",
+        "skills_read",
         "ls",
         "read",
         "write",
@@ -282,7 +277,7 @@ export function registerDedicatedGatewayCases() {
       ],
       [
         "Gateway state lock refusal",
-        { configValidationResponse: configReadRefusal(gatewayLockNamespaceRefusal) },
+        { configValidationResponse: validateLockRefusal },
         "gateway-state-lock",
       ],
       // Settings outside the tool policy are the Agent's configuration, not the policy. The hold

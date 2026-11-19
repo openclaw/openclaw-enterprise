@@ -1,3 +1,5 @@
+import type { ChannelProviderDriver } from "../drivers/channel/routing.ts";
+import { SlackChannelDriver } from "../drivers/channel/slack.ts";
 import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
 import type { NamespaceLifecycleBinding } from "@openclaw-enterprise/occ";
 import {
@@ -231,6 +233,7 @@ export type ServiceAccountDriverFactory = (
 ) => void;
 
 export interface InstallationRuntimeDrivers {
+  readonly channelDrivers?: readonly ChannelProviderDriver[];
   readonly defaultPresets?: readonly PresetDraftDefinition[];
   /** Bundled defaults replaced by a same-named `presets.files` entry; startup warns once each. */
   readonly shadowedDefaultPresets?: readonly ShadowedDefaultPreset[];
@@ -1154,8 +1157,12 @@ async function composeInstallationConfiguration(
           packageRoot,
           options.packageRoot !== undefined,
         );
+  const boxPackage =
+    sandboxSelection?.id === "strands-box-sandbox" && sandboxPackage === undefined
+      ? await import("../drivers/sandbox/strands-box.ts")
+      : undefined;
   const bundledSandboxPackage =
-    sandboxSelection !== undefined && sandboxPackage === undefined
+    sandboxSelection !== undefined && sandboxPackage === undefined && boxPackage === undefined
       ? await loadBundledOpenShellSandboxDriver()
       : undefined;
 
@@ -1264,8 +1271,8 @@ async function composeInstallationConfiguration(
       : selected(
           sandboxSelection,
           "sandbox",
-          sandboxPackage?.implementation ?? "openshell",
-          sandboxPackage?.module ?? bundledSandboxPackage!,
+          sandboxPackage?.implementation ?? (boxPackage ? "strands-box" : "openshell"),
+          sandboxPackage?.module ?? boxPackage ?? bundledSandboxPackage!,
         );
   if (sandbox?.package !== undefined && packageProxyId !== undefined) {
     // The package owns one startup configuration. Its Sandbox-only agent
@@ -1282,7 +1289,24 @@ async function composeInstallationConfiguration(
   if (sandbox !== undefined && computePackage !== undefined) {
     throw new Error("drivers.sandbox requires the bundled Kubernetes Compute Driver.");
   }
-  if (sandbox !== undefined && sandboxPackage === undefined && openShellBackend === undefined) {
+  if (
+    boxPackage &&
+    (openShellBackend ||
+      proxySelection ||
+      !kubernetesCompute ||
+      (compute.configuration as unknown as KubernetesComputeDriverOptions).executionCluster !==
+        undefined)
+  ) {
+    throw new Error(
+      "The Strands Box Pod driver requires same-cluster Kubernetes Compute and a sandbox-only installation.",
+    );
+  }
+  if (
+    sandbox !== undefined &&
+    sandboxPackage === undefined &&
+    !boxPackage &&
+    openShellBackend === undefined
+  ) {
     throw new Error(
       "The bundled OpenShell drivers.sandbox requires a backend entry with type openshell.",
     );
@@ -1470,6 +1494,23 @@ async function composeInstallationConfiguration(
         ),
       };
     }
+    if (boxPackage) {
+      const kubernetes = compute.configuration as unknown as KubernetesComputeDriverOptions;
+      if (kubernetes.executionCluster || !kubernetes.gatewayRouting) {
+        throw new Error("Strands Box requires a single cluster with Gateway routing.");
+      }
+      return {
+        sandboxDriver: new boxPackage.StrandsBoxSandboxDriver(
+          sandbox.configuration as unknown as import("../drivers/sandbox/strands-box.ts").StrandsBoxOptions,
+          {
+            id: sandbox.id,
+            authentication: kubernetes.authentication,
+            dns: kubernetes.network.dns,
+            routing: kubernetes.gatewayRouting,
+          },
+        ),
+      };
+    }
     if (sandboxPackage !== undefined) {
       if (proxySelection === undefined) {
         return {
@@ -1553,6 +1594,24 @@ async function composeInstallationConfiguration(
   // This check admits an implementation to try installation. Compute still verifies its
   // actual recipient and enforcement before release or the first eligible material read.
   repositoryGitDriver?.requireRepositoryGitTransport();
+  const channelOptions = (compute.configuration as unknown as KubernetesComputeDriverOptions)
+    .runtime?.channelEgress;
+  const channelHost =
+    channelOptions === undefined
+      ? undefined
+      : `${channelOptions.serviceName}.${channelOptions.envoyNamespace}.svc`;
+  const channelDrivers: readonly ChannelProviderDriver[] = Object.freeze([
+    {
+      provider: "slack",
+      driver: new SlackChannelDriver(
+        globalThis.fetch,
+        channelOptions === undefined
+          ? undefined
+          : `http://${channelHost}:${channelOptions.occListenerPort}`,
+        { expectProxy: true, managedProxyHosts: channelHost === undefined ? [] : [channelHost] },
+      ),
+    },
+  ]);
   let computeDriver: ComputeDriver;
   if (computePackage !== undefined) {
     computeDriver = createExternalDriver(
@@ -1576,6 +1635,7 @@ async function composeInstallationConfiguration(
         id: compute.id,
         implementation: compute.implementation,
         lifecycleDrivers: [configurationDriver],
+        channelDrivers,
         ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
         ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
         // Both built-ins above received this exact Backend; injected and package Sandboxes opt out.
@@ -1635,6 +1695,7 @@ async function composeInstallationConfiguration(
   }
   const { repositoryPolicy: _repositoryPolicy, ...repositoryServices } = repositoryRuntime ?? {};
   return Object.freeze({
+    channelDrivers,
     defaultPresets: Object.freeze(defaultPresets),
     shadowedDefaultPresets: Object.freeze(shadowedDefaultPresets),
     bundledPresetVersions,

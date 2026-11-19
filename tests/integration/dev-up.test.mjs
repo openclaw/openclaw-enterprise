@@ -12,7 +12,6 @@ import { waitUntil } from "../helpers/wait-for.ts";
 import {
   createFixture,
   matchingInstallationId,
-  mismatchedInstallationId,
   prepareLifecycleCommands,
   readJsonLines,
   runCommand,
@@ -60,10 +59,8 @@ async function installationServer(t, fixture, scenario) {
     {
       requestLog,
       tlsDirectoryFile,
-      serviceKey,
       scenario,
-      installationId:
-        scenario === "api-mismatch" ? mismatchedInstallationId : matchingInstallationId,
+      installationId: matchingInstallationId,
     },
     stopProcess,
   );

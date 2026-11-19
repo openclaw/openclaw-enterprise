@@ -23,7 +23,7 @@ import {
 } from "./first-agent-startup-lifecycle-cases.ts";
 import { listen } from "../helpers/listen.ts";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
-import { servedAs } from "../helpers/agent-identity.mjs";
+import { servedAs } from "../helpers/agent-identity.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 import { localFirstAgentStack } from "../helpers/local-first-agent-stack.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
@@ -82,6 +82,7 @@ async function fixture(t: TestContext, sandboxDriver: string) {
         dockerHost: "unix:///tmp/first-agent-startup-test.sock",
         keyPath,
         keyOwned: true,
+        installationId: "ins_test",
       })}\n`,
       { mode: 0o600 },
     ),
@@ -90,8 +91,7 @@ async function fixture(t: TestContext, sandboxDriver: string) {
     writeFile(
       keyPath,
       `${JSON.stringify({
-        data: { key: "test-service-key", servicePrincipalId: "sp_test" },
-        meta: { installationId: "ins_test" },
+        data: { key: "test-service-key" },
       })}\n`,
       { mode: 0o600 },
     ),
@@ -593,6 +593,33 @@ test("first-Agent runs psql through the k3d PostgreSQL StatefulSet", async (t) =
       `^--kubeconfig \\S+ --context ${context} -n occ-system exec -i statefulset/postgres -c postgres -- psql `,
     ),
   );
+});
+
+test("first-Agent refuses missing or mismatched confirmed Installation state", async (t) => {
+  for (const scenario of ["missing", "mismatched"]) {
+    const requests: string[] = [];
+    // A controller response must not silently rebind this helper to another Installation.
+    const { directory, engineLog, env } = await k3dFixture(t, "none", (request, response) => {
+      requests.push(request.url ?? "");
+      assert.equal(request.headers["x-api-key"], "test-service-key");
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ data: { id: "ins_00000000-0000-4000-8000-000000000099" } }));
+    });
+    if (scenario === "missing") {
+      const state = await developmentState(directory);
+      delete state.installationId;
+      await writeFile(join(directory, "state.json"), JSON.stringify(state), { mode: 0o600 });
+    }
+    const output = await runFirstAgentAsync(env);
+    assert.match(
+      output,
+      scenario === "missing"
+        ? /Local Setup has no confirmed Installation ID/
+        : /The controller Installation does not match Local Setup's administrator key/,
+    );
+    assert.deepEqual(requests, scenario === "missing" ? [] : ["/installation"]);
+    await assert.rejects(readFile(engineLog), { code: "ENOENT" });
+  }
 });
 
 registerFirstAgentLockAndRecordCases(lifecycleDependencies);

@@ -157,9 +157,18 @@ export interface OpenShellProviderProfileEndpoint {
   readonly access?: "NETWORK_ACCESS_PRESET_FULL" | "NETWORK_ACCESS_PRESET_READ_WRITE";
   readonly mcp?: { readonly strict_tool_names: boolean; readonly versions: readonly string[] };
   readonly rules?: readonly {
-    readonly allow: { readonly method: string; readonly path?: string };
+    readonly allow: {
+      readonly method: string;
+      readonly path?: string;
+      /** `L7Allow.query` uses matcher messages, not the authored-policy string shorthand. */
+      readonly query?: Readonly<Record<string, OpenShellL7QueryMatcher>>;
+    };
   }[];
 }
+
+export type OpenShellL7QueryMatcher =
+  | { readonly glob: string; readonly any?: never }
+  | { readonly any: readonly string[]; readonly glob?: never };
 
 /** Exact stock endpoint sent at import and compared when the provider is observed. */
 export function openShellProfileEndpoint(endpoint: OpenShellProviderProfileEndpoint) {
@@ -447,8 +456,6 @@ export interface OpenShellGatewayClient
     request: OpenShellSandboxDeleteRequest,
     signal: AbortSignal,
   ): Promise<OpenShellSandboxResponse | undefined>;
-  /** The exposed service's URL, or undefined when the endpoint does not exist. */
-  getServiceUrl(request: OpenShellServiceRequest, signal: AbortSignal): Promise<string | undefined>;
   getService(
     workspace: string,
     sandbox: string,
@@ -1849,30 +1856,6 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       }
       throw error;
     }
-  }
-
-  async getServiceUrl(
-    request: OpenShellServiceRequest,
-    signal: AbortSignal,
-  ): Promise<string | undefined> {
-    let response: RecordValue;
-    try {
-      response = await this.unary(
-        "GetService",
-        {
-          sandbox: request.sandbox,
-          name: request.service,
-          workspace_scope: { workspace: request.workspace },
-        },
-        signal,
-      );
-    } catch (error) {
-      if (await this.isStatus(error, "NOT_FOUND")) {
-        return undefined;
-      }
-      throw error;
-    }
-    return normalizeServiceUrl(response.url, this.options.endpoint);
   }
 
   async getService(

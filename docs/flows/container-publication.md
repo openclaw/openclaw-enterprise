@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-11-14
-last_updated_session: authoring-run/a59f5478-cdb3-4f32-8e10-534fb4fba07e
+updated: "2026-11-19 15:20"
+last_updated_session: "authoring-run/fce9aadb-9500-4a97-949d-80408d45b612"
 ---
 
 # Container publication flow
@@ -80,10 +80,8 @@ docker build -f deploy/runtime/Dockerfile \
   "${openclaw_build_args[@]}" --target openclaw-bridge-tests .
 ```
 
-`openclaw-bridge-tests` typechecks and tests bridge and CUA assembly inputs.
-Coverage includes native turn settlement, approval discovery after reconnect,
-HTTP rejection, native handoff during late writes and revision-scoped restart
-resume. Failure blocks smoke and upload. Local builds can run independently.
+`openclaw-bridge-tests` typechecks and runs only the tests that exercise a kept
+carried patch; upstream CI covers the rest. Failure blocks smoke and upload.
 
 The `resources` step checks architecture, CPU, memory and ancestor cgroup-v2 limits.
 Both stages use its Node compiler budget. ARM uses up to eight jobs, or four for
@@ -211,7 +209,7 @@ index and archive without rebuilding, then removes temporary layouts.
 `readArchivePlatforms` verifies exactly one AMD64 and one ARM64 Linux manifest
 with matching configs and digests. Assembly needs no registry access.
 
-`scripts/ci/prepare.mjs:prepareRuntimeImageSmoke` imports the verified image into
+`scripts/ci/prepare.ts:prepareRuntimeImageSmoke` imports the verified image into
 disposable k3d. It reuses the Images and Packaging lane's Codex seccomp derivation
 and sandbox probes, passing profile and ownership state to Docker tests. Smoke
 cleans up on exit. After command interruption, the workflow attempts cleanup if
@@ -314,6 +312,12 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 15:20: Bridge tests cover only kept carried patches.
+
+- 2026-11-19 08:19: Bridge tests no longer check CUA inputs; the node setup bridge carries no computer-use hunks. (authoring-run/fce9aadb-9500-4a97-949d-80408d45b612 - ebafb89344294a28044b07ef5650efa2a4939bbd)
+
+- 2026-11-18 03:26: Point preparation callers to the TypeScript command. (authoring-run/ac86eb9c-8f66-4c1a-b92a-ec70193e5fd5 - f5ac2329754d41a36a6cc47950cd3a95eae1ebfc)
 
 - 2026-11-17 23:51: Bridge tests cover revision-scoped restart resume. (finding 3347)
 

@@ -765,6 +765,40 @@ func TestDeploymentStatusReportsCurrentAgentBesideRecordedSuccess(t *testing.T) 
 	}
 }
 
+func TestDeploymentStatusTableShowsCleanupBesideRecordedSuccess(t *testing.T) {
+	agent := "GET /namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	deployment := agent + "/deployments/" + testRevision1ID
+	for _, tc := range []struct {
+		name, cleanup, cell string
+	}{
+		{"queued", `,"cleanup":{"status":"queued","nextAttemptAt":"2026-11-19T15:00:00.000Z"}`, "queued"},
+		{"absent", "", ""},
+		{"null", `,"cleanup":null`, ""},
+		{"malformed", `,"cleanup":"succeeded"`, "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			responses := map[string]string{
+				agent:      `{"desiredRuntimeState":"running","activeRevisionId":"` + testRevision2ID + `"}`,
+				deployment: `{"deploymentId":"` + testRevision1ID + `","agentId":"` + testAgentID + `","status":"succeeded"` + tc.cleanup + `}`,
+			}
+			out, requested, err := runOCC(t, responses, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID, testRevision1ID)
+			if err != nil || !slices.Equal(requested, []string{deployment, agent}) {
+				t.Fatalf("requests = %v, error = %v", requested, err)
+			}
+			header, row, _ := strings.Cut(out, "\n")
+			wantHeader := "ID AGENT STATUS ERROR WARNINGS DESIRED STATE ACTIVE REVISION"
+			wantRow := testRevision1ID + " " + testAgentID + " succeeded - - running " + testRevision2ID
+			if tc.cell != "" {
+				wantHeader += " CLEANUP"
+				wantRow += " " + tc.cell
+			}
+			if strings.Join(strings.Fields(header), " ") != wantHeader || strings.Join(strings.Fields(row), " ") != wantRow {
+				t.Fatalf("table = %q, want columns %q and row %q", out, wantHeader, wantRow)
+			}
+		})
+	}
+}
+
 func TestDeploymentStatusShowsModelProbeFailureCause(t *testing.T) {
 	// Finding 323: a failed startup model check names its classified cause.
 	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID

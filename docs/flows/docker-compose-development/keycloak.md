@@ -1,7 +1,7 @@
 ---
 created: 2026-10-07
-updated: 2026-10-08
-last_updated_session: authoring-run/e5c12029-7b1c-4214-a4b9-bde04d03ab41
+updated: 2026-11-16
+last_updated_session: authoring-run/a92d5e93-e5c6-44c1-acf1-b4d08ee54a70
 ---
 
 # Local Keycloak startup and teardown
@@ -54,6 +54,11 @@ port 10443 without opening general egress.
 ### 2. Provision the realm and its network path
 
 `internal/occdev/keycloak_k3d.go:installDevelopmentKeycloak`.
+
+`internal/occdev/bootstrap.go:prepareBootstrapCredentials` removes one optional
+LF or CRLF before saving the password, preserving spaces and rejecting remaining
+line breaks or NUL. Its private `initial-admin-password` file supplies both the
+bootstrap Secret and subsequent administrator sign-ins.
 
 The first Helm pass installs OCE with password sign-in and its gateway-routing
 CA. Startup then installs the pinned Keycloak image and shared realm in
@@ -124,6 +129,8 @@ repair access to its recorded engine and cluster before retrying cleanup.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-16 16:16: Persist the initializer's normalized password for both Keycloak setup sign-ins. (authoring-run/a92d5e93-e5c6-44c1-acf1-b4d08ee54a70 - ecbcd544cb7e6eebb97ff293676af2f437fb6444)
 
 - 2026-10-08 09:57: Documented Keycloak egress repair and manual qualification. (authoring-run/e5c12029-7b1c-4214-a4b9-bde04d03ab41 - 12719f1d366291b774eb9d4948be451c9dd7d805)
 

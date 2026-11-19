@@ -34,7 +34,7 @@ import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/sr
 import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mjs";
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
-import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "./kubernetes-compute.ts";
 import { reservePort } from "./available-port.ts";
 import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.ts";
 import { createConsoleFixtureTransport } from "./console-fixture-transport.ts";
@@ -333,12 +333,13 @@ export async function createConsoleAppFixture(t, options = {}) {
     verification: [],
     apikey: [],
   };
+  const authSecret = `console-test-secret-${randomUUID()}-${randomUUID()}`;
   const auth = createControllerAuth({
     installationId,
     mode: authMode,
     baseURL: authBaseURL,
     agentDomain: options.nativeAdmin?.domain ?? `agents.${new URL(authBaseURL).hostname}`,
-    secret: `console-test-secret-${randomUUID()}-${randomUUID()}`,
+    secret: authSecret,
     memoryDatabase,
   });
   const credentials = {
@@ -509,6 +510,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     createController(installation) {
       controller = new OpenClawController(installation, {
         state: platformState,
+        authenticationStateEncryptionSecret: authSecret,
         namespaceLifecycleBindings:
           options.namespaceLifecycleBindings ??
           (options.sandboxDriver?.ensureNamespace === undefined

@@ -2,13 +2,16 @@
 // browser credentials and conversation history on this runner.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+// Synchronous reads: a rejected fs/promises read has no caller frame for the location.
+import { readFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright";
 import type { Browser, Page } from "playwright";
 import { textFromFrame, waitForStockUi } from "../../../tests/helpers/native-ui-chat.ts";
 import { launchTrustingBrowser } from "../../../tests/helpers/trusted-chromium.ts";
+import { isRecord } from "../records.ts";
 
 // Playwright runs these calls in the stock UI's page context.
 declare const openclawControlUi: {
@@ -26,10 +29,6 @@ type BrowserHistory = {
 
 let stage = "initialize";
 let browser: Browser | undefined;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 async function openAgent(consolePage: Page, origin: string, sessionKey?: string) {
   const [page] = await Promise.all([
@@ -161,7 +160,7 @@ try {
   assert.ok(RUN_DIR && CONSOLE_ORIGIN && agent && namespace && revision);
   const stateDir = join(RUN_DIR, "k3d-state");
   const historyFile = join(RUN_DIR, "browser-conversation.json");
-  const state: unknown = JSON.parse(await readFile(join(stateDir, "state.json"), "utf8"));
+  const state: unknown = JSON.parse(readFileSync(join(stateDir, "state.json"), "utf8"));
   assert.ok(isRecord(state));
   const { browserOrigin, cluster, nativeAdminDomain } = state;
   assert.ok(typeof cluster === "string" && typeof nativeAdminDomain === "string");
@@ -193,7 +192,7 @@ try {
   assert.equal(new URL(owner.url()).origin, origin.origin);
   await owner
     .getByLabel("Password", { exact: true })
-    .fill((await readFile(join(stateDir, "initial-admin-password"), "utf8")).trim());
+    .fill(readFileSync(join(stateDir, "initial-admin-password"), "utf8").trim());
   const [login] = await Promise.all([
     owner.waitForResponse(
       (res) =>
@@ -267,7 +266,7 @@ try {
     assert.equal(await ui.send("Reply with OCE_READY.", "OCE_READY"), sessionKey);
     await ui.page.close();
   } else {
-    const saved: unknown = JSON.parse(await readFile(historyFile, "utf8"));
+    const saved: unknown = JSON.parse(readFileSync(historyFile, "utf8"));
     assert.ok(isRecord(saved));
     assert.equal(saved.agent, agent);
     assert.equal(saved.namespace, namespace);

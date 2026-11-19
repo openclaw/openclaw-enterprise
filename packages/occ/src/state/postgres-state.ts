@@ -25,6 +25,7 @@ import { bindRepository } from "../ports/repository-factory.ts";
 import { bindPlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
 import { createPlatformReadView } from "../ports/platform-read-view.ts";
 import { postgresSavedConnections } from "./postgres-saved-connections.ts";
+import { postgresAuthenticationStates } from "./postgres-authentication-states.ts";
 import { postgresConnectionTemplates } from "./postgres-connection-templates.ts";
 import { postgresRepositorySessions } from "./postgres-repository-sessions.ts";
 import { projectAgentAuditRow, SELECT_AGENT_AUDIT } from "./postgres-agent-audit.ts";
@@ -1940,6 +1941,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       "fail",
       "recoverStale",
       "findWork",
+      "findWorkByKeys",
       "findWorkAttempt",
       "hasRepositoryExecutionRedeployRequired",
       "repositoryExpiryState",
@@ -2387,6 +2389,10 @@ export class PostgresPlatformState implements PlatformStateStore {
           ).rows,
         )[0];
         if (updated !== undefined) {
+          await client.query(
+            "DELETE FROM occ.authentication_states WHERE kind = 'device_authorization' AND namespace_id = $1",
+            [namespaceId],
+          );
           return namespaceFromRow(updated);
         }
         const existing = rows(
@@ -4748,6 +4754,9 @@ export class PostgresPlatformState implements PlatformStateStore {
         this.requireInitialized(context),
       ),
       presets,
+      authenticationStates: postgresAuthenticationStates(client, () =>
+        this.requireInitialized(context),
+      ),
       secrets,
       credentialSources,
       serviceAccounts,
@@ -5724,6 +5733,10 @@ export class PostgresPlatformState implements PlatformStateStore {
           await this.requireInitialized(context);
           return queue.findWork(idempotencyKey);
         },
+        findWorkByKeys: async (idempotencyKeys) => {
+          await this.requireInitialized(context);
+          return queue.findWorkByKeys(idempotencyKeys);
+        },
         findWorkAttempt: async (idempotencyKey) => {
           await this.requireInitialized(context);
           return queue.findWorkAttempt(idempotencyKey);
@@ -5923,5 +5936,3 @@ export class PostgresPlatformState implements PlatformStateStore {
     }
   }
 }
-
-export { PostgresPlatformState as PostgresPlatformStateStore };

@@ -531,7 +531,7 @@ async function cleanupK3dCluster(
 }
 
 // The fixture lanes bind <directory>/storage into every node as local-path's storage
-// (prepare.mjs). local-path creates each claim's volume directory as root and removes it with a
+// (prepare.ts). local-path creates each claim's volume directory as root and removes it with a
 // helper Pod only after the claim is deleted, so volumes of namespaces that tests deleted without
 // waiting leave directories the runner user cannot remove. The cluster is gone by now, so nothing
 // writes there again: empty the storage as root from the cluster's own node image, which is

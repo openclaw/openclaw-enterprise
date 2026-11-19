@@ -4,7 +4,9 @@
 // Installation and runs the bundled Kubernetes Compute preflight exactly as the
 // API and worker do at startup, and checks migration compatibility against the database.
 import { readFileSync, writeFileSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import { gzipSync } from "node:zlib";
+import { migrationEntry } from "./lib/selected-image-migration.ts";
 
 // Printed before the image's own message when Compute preflight stops startup:
 // a refusal is the Driver's ConfigurationFailure (such as split-layout storage);
@@ -675,17 +677,7 @@ function connectionPlan(
   };
 }
 
-// Reuse the initialization Job's database identity and mounted CA, but run only
-// the candidate's read-only compatibility check. Never copy bootstrap or other
-// init containers into a preflight that runs while the incumbent is serving.
-function migrationJob(
-  renderedPath: string,
-  name: string,
-  namespace: string,
-  release: string,
-  image: string,
-  timeoutSeconds: number,
-): JobManifest {
+function migrationInitializer(renderedPath: string, release: string) {
   const jobs = documents(renderedPath).filter((document) => {
     const labels = object(object(document.metadata)?.labels);
     return (
@@ -702,7 +694,107 @@ function migrationJob(
   const spec = podSpec(template);
   const matches = namedReferences(spec.initContainers).filter(({ name }) => name === "migration");
   const [migration] = matches;
-  if (!migration || matches.length !== 1 || migration.image !== image) {
+  if (!migration || matches.length !== 1) {
+    fail("the initialization Job must contain exactly one migration container.");
+  }
+  return { job, template, spec, initializer: preflightContainer(migration) };
+}
+
+// A Helm revision identifies the intended migrator inputs by reference. Match
+// the complete connection inputs without reading the database Secret.
+function migrationConnection(renderedPath: string, release: string, namespace: string) {
+  const { job, spec, initializer } = migrationInitializer(renderedPath, release);
+  const metadata = object(job.metadata);
+  const env = initializer.env ?? [];
+  const mode = env.find(({ name }) => name === "NODE_ENV");
+  const url = env.find(({ name }) => name === "OCC_MIGRATION_DATABASE_URL");
+  const ref = object(object(url?.valueFrom)?.secretKeyRef);
+  if (
+    job.apiVersion !== "batch/v1" ||
+    (metadata?.namespace !== undefined && metadata.namespace !== namespace) ||
+    env.length !== 2 ||
+    !isDeepStrictEqual(mode, { name: "NODE_ENV", value: "production" }) ||
+    !ref ||
+    typeof ref.name !== "string" ||
+    ref.name.length === 0 ||
+    typeof ref.key !== "string" ||
+    ref.key.length === 0 ||
+    (ref.optional !== undefined && ref.optional !== false) ||
+    !isDeepStrictEqual(url, {
+      name: "OCC_MIGRATION_DATABASE_URL",
+      valueFrom: { secretKeyRef: ref },
+    }) ||
+    Object.keys(ref).some((key) => !["name", "key", "optional"].includes(key)) ||
+    (initializer.envFrom?.length ?? 0) !== 0
+  ) {
+    fail("the initialization Job lacks an unambiguous migrator database Secret reference.");
+  }
+  const mounts = initializer.volumeMounts ?? [];
+  const volumes = mountedVolumes(
+    namedReferences(spec.volumes),
+    new Set(mounts.map(({ name }) => name)),
+  );
+  const [mount] = mounts;
+  const [volume] = volumes;
+  const ca = volume?.secret;
+  if (
+    mounts.length > 1 ||
+    volumes.length !== mounts.length ||
+    (mount &&
+      (mount.readOnly !== true ||
+        !ca?.secretName ||
+        (ca.optional !== undefined && ca.optional !== false) ||
+        ca.items?.length !== 1 ||
+        typeof ca.items[0]?.key !== "string" ||
+        ca.items[0].key.length === 0))
+  ) {
+    fail("the initialization Job has an unsupported migrator CA mount.");
+  }
+  return {
+    secret: { name: ref.name, key: ref.key },
+    mounts,
+    volumes,
+    workingDir: initializer.workingDir ?? "",
+    hostAliases: spec.hostAliases ?? [],
+    hostNetwork: spec.hostNetwork ?? false,
+    hostname: spec.hostname ?? "",
+    subdomain: spec.subdomain ?? "",
+    dnsPolicy: spec.dnsPolicy ?? "ClusterFirst",
+    dnsConfig: spec.dnsConfig ?? {},
+  };
+}
+
+function migrationDatabase([installed, candidate, release, namespace]: [
+  string,
+  string,
+  string,
+  string,
+]) {
+  const original = migrationConnection(installed, release, namespace);
+  if (!isDeepStrictEqual(original, migrationConnection(candidate, release, namespace))) {
+    fail("the candidate changes the deployed release's migrator database connection inputs.");
+  }
+  const names = [original.secret.name, original.volumes[0]?.secret?.secretName].filter(isString);
+  if (names.some((name) => name.length > 253 || !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(name))) {
+    fail("the rendered chart contains an invalid migration Secret name.");
+  }
+  return [...new Set(names)].join("\n");
+}
+
+// Run only the selected image's migration program. Keep its database identity
+// and CA without copying other initialization containers.
+function migrationJob(
+  renderedPath: string,
+  name: string,
+  namespace: string,
+  release: string,
+  image: string,
+  timeoutSeconds: number,
+  mode: "check" | "check-installation" | "apply" | "verify" = "check",
+  installationId = "",
+): JobManifest {
+  const { job, template, spec, initializer } = migrationInitializer(renderedPath, release);
+  if (initializer.image !== image) {
     fail("the initialization Job must contain one migration container using the selected image.");
   }
   const jobLabels = object(job.metadata)?.labels;
@@ -717,9 +809,29 @@ function migrationJob(
   if (podLabels != null && !isLabelMap(podLabels)) {
     fail("the rendered initialization Job contains invalid Pod labels.");
   }
-  const container: Container = selectFields(preflightContainer(migration), containerFields);
+  const { command, args } = initializer;
+  if (
+    command !== undefined &&
+    (!Array.isArray(command) || command.length !== 1 || command[0] !== "node")
+  ) {
+    fail("the initialization Job contains an invalid migration command.");
+  }
+  if (!arrayOf(args, (arg: unknown): arg is string => typeof arg === "string")) {
+    fail("the initialization Job contains invalid migration arguments.");
+  }
+  const entry = migrationEntry(args);
+  if (!entry) {
+    fail("the initialization Job contains invalid migration arguments.");
+  }
+  const container: Container = selectFields(initializer, containerFields);
   container.command = ["node"];
-  container.args = ["scripts/migrate-production.mjs", "--check"];
+  const options = {
+    check: ["--check"],
+    "check-installation": ["--check-for-installation", installationId],
+    apply: ["--apply-for-installation", installationId],
+    verify: ["--require-current-for-installation", installationId],
+  };
+  container.args = [...entry, ...options[mode]];
   const mounted = new Set((container.volumeMounts ?? []).map((mount) => mount.name));
   return {
     apiVersion: "batch/v1",
@@ -1098,6 +1210,8 @@ type Command =
   | { action: "drafts"; input: Parameters<typeof drafts>[0] }
   | { action: "secret"; input: Parameters<typeof secret>[0] }
   | { action: "job" | "identity-job"; input: JobArguments }
+  | { action: "migration-database"; input: Parameters<typeof migrationDatabase>[0] }
+  | { action: "migration-job"; input: Parameters<typeof migrationJob> }
   | { action: "child"; input: Parameters<typeof child>[0] }
   | { action: "remaining"; input: Parameters<typeof remaining>[0] }
   | { action: "refusals"; input: Parameters<typeof refusals>[0] }
@@ -1144,6 +1258,22 @@ function parseCommand([action, ...input]: string[]): Command {
       return { action, input: argumentsOf(input, 6) };
     case "child":
       return { action, input: argumentsOf(input, 4) };
+    case "migration-database":
+      return { action, input: argumentsOf(input, 4) };
+    case "migration-job": {
+      const [rendered, name, namespace, release, image, timeout, mode, installationId] =
+        argumentsOf(input, 8);
+      if (
+        !installationId ||
+        (mode !== "check-installation" && mode !== "apply" && mode !== "verify")
+      ) {
+        return failUsage();
+      }
+      return {
+        action,
+        input: [rendered, name, namespace, release, image, Number(timeout), mode, installationId],
+      };
+    }
     case "remaining":
       return { action, input: argumentsOf(input, 5) };
     case "refusals":
@@ -1159,7 +1289,7 @@ function parseCommand([action, ...input]: string[]): Command {
 
 function failUsage(): never {
   return fail(
-    "expected drafts, secret, job, identity-job, child, remaining, refusals, networkpolicy, or phase with its arguments.",
+    "expected drafts, secret, job, identity-job, migration-database, migration-job, child, remaining, refusals, networkpolicy, or phase with its arguments.",
   );
 }
 
@@ -1192,6 +1322,10 @@ function run(command: Command): string | number {
       );
     case "child":
       return child(command.input);
+    case "migration-database":
+      return migrationDatabase(command.input);
+    case "migration-job":
+      return JSON.stringify(migrationJob(...command.input));
     case "remaining":
       return remaining(command.input);
     case "refusals":

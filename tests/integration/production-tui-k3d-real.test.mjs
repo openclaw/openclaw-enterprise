@@ -3,7 +3,7 @@ import { defaultAgentModel } from "../../apps/controller/src/console/agents/star
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, readdir, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, stat, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -433,7 +433,6 @@ test(
     });
     const createSecret = (name, stringData, namespace = system) =>
       apply({ apiVersion: "v1", kind: "Secret", metadata: metadata(name, namespace), stringData });
-    const protectedBootstrapFiles = ["initial-admin-password", "initial-admin-service-key.json"];
     const shellQuote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`;
     const podSecurity = {
       runAsNonRoot: true,
@@ -449,11 +448,6 @@ test(
     };
     const waitPod = (name, namespace = system) =>
       kubectl("-n", namespace, "wait", "--for=condition=Ready", `pod/${name}`, "--timeout=180s");
-    const assertProtectedBootstrapFileModes = (stats, label) => {
-      for (const file of protectedBootstrapFiles) {
-        assert.equal(stats[file]?.mode, 0o600, `${label}: ${file} must stay owner-readable only`);
-      }
-    };
 
     cleanup = async () => {
       const closureErrors = [];
@@ -645,7 +639,7 @@ test(
           imagePullPolicy === "Never" ||
           imagePullPolicy === "IfNotPresent",
       );
-      const { adminEmail } = await installProductionHelmControlPlane({
+      const { adminEmail, adminPassword, serviceKey } = await installProductionHelmControlPlane({
         selection,
         images,
         namespace: system,
@@ -655,13 +649,15 @@ test(
         configuration,
         databaseTLS: databaseTLS && { ...databaseTLS, imagePullPolicy },
         chartDirectory,
+        // Historical rehearsal charts keep their original credential contract.
+        // Current-source workflow exercises automatic preparation through the CLI.
+        bootstrapCredentials: custody ? "existing" : "generate",
         authBaseURL: signinSelected
           ? "https://console.signin-rehearsal.test"
           : `https://console.oce.localhost:${port}`,
         agentNativeAdminDomain: "agents.oce.localhost",
         installationName: `Production TUI ${suffix}`,
         apiClients: [{ namespace: system, podLabels: { app: "production-tui-proxy" } }],
-        channelDirectoryProxyUrl: returnSelected ? "http://198.51.100.25:3128" : undefined,
         metrics: rehearsal
           ? undefined
           : {
@@ -674,6 +670,8 @@ test(
         createSecretValue: secret,
         record,
       });
+
+      secrets.push(adminPassword, serviceKey);
 
       await run("openssl", [
         "req",
@@ -756,7 +754,6 @@ test(
               volumeMounts: [
                 { name: "code", mountPath: "/code", readOnly: true },
                 { name: "tls", mountPath: "/tls", readOnly: true },
-                { name: "bootstrap", mountPath: "/bootstrap", readOnly: true },
                 { name: "operator-private", mountPath: "/operator" },
               ],
               readinessProbe: { tcpSocket: { port: 8443 }, periodSeconds: 2 },
@@ -765,7 +762,6 @@ test(
           volumes: [
             { name: "code", configMap: { name: "proxy-code" } },
             { name: "tls", secret: { secretName: "proxy-tls" } },
-            { name: "bootstrap", persistentVolumeClaim: { claimName: "bootstrap-password" } },
             { name: "operator-private", emptyDir: {} },
           ],
         },
@@ -790,21 +786,6 @@ test(
           "/operator/signin-gate.bootstrap",
         );
       }
-      const bootstrapFileStats = async () =>
-        JSON.parse(
-          await kubectl(
-            "-n",
-            system,
-            "exec",
-            "operator",
-            "--",
-            "node",
-            "-e",
-            "const fs=require('node:fs');const root='/bootstrap';const result={};for(const name of ['initial-admin-password','initial-admin-service-key.json']){const s=fs.statSync(`${root}/${name}`);result[name]={uid:s.uid,gid:s.gid,mode:s.mode&0o777}}console.log(JSON.stringify(result));",
-          ),
-        );
-      const beforeRetrievalStats = await bootstrapFileStats();
-      assertProtectedBootstrapFileModes(beforeRetrievalStats, "before retrieval");
       const forwarding = spawn(
         "kubectl",
         [
@@ -839,59 +820,18 @@ test(
       });
       const ca = await readFile(join(directory, "tls.crt"));
       localServiceKeyFile = join(directory, "occ-service-key.json");
-      /** @type {string | undefined} */
-      let serviceKey;
       const externalRequest = createProductionTuiRequest({
         baseURL,
         ca,
         serviceKey: () => serviceKey,
         secrets,
       });
-      /** @type {unknown} */
-      const rawStagedServiceKey = JSON.parse(
-        await kubectl(
-          "-n",
-          system,
-          "exec",
-          "operator",
-          "--",
-          "node",
-          "-e",
-          "const fs=require('node:fs');const source='/bootstrap/initial-admin-service-key.json';const target='/operator/occ-service-key.json';const input=JSON.parse(fs.readFileSync(source,'utf8'));if(typeof input.data?.key!=='string'||input.data.key.length===0)throw new Error('missing service key');fs.writeFileSync(target,JSON.stringify(input),{mode:0o600});fs.chmodSync(target,0o600);const sourceStat=fs.statSync(source);const targetStat=fs.statSync(target);console.log(JSON.stringify({id:input.data.id,installationId:input.meta?.installationId,expiresAt:input.data.expiresAt,sourceMode:sourceStat.mode&0o777,targetMode:targetStat.mode&0o777,targetUid:targetStat.uid,targetGid:targetStat.gid}));",
-        ),
-      );
-      const stagedServiceKey = asRecord(rawStagedServiceKey);
-      assert.ok(stagedServiceKey, "Staged bootstrap service-key output must be an object");
-      assert.ok(isNonEmptyString(stagedServiceKey.id), "Staged service key requires an ID");
-      assert.ok(
-        isNonEmptyString(stagedServiceKey.installationId),
-        "Staged service key requires an Installation ID",
-      );
-      assert.equal(stagedServiceKey.sourceMode, 0o600);
-      assert.equal(stagedServiceKey.targetMode, 0o600);
-      await kubectl(
-        "-n",
-        system,
-        "cp",
-        "operator:/operator/occ-service-key.json",
-        localServiceKeyFile,
-      );
-      await chmod(localServiceKeyFile, 0o600);
-      /** @type {unknown} */
-      const localServiceKey = JSON.parse(await readFile(localServiceKeyFile, "utf8"));
-      const localKeyData = asRecord(asRecord(localServiceKey)?.data);
-      const localKey = localKeyData?.key;
-      assert.ok(typeof localKey === "string" && localKey.length > 0);
-      assert.equal(localKeyData?.id, stagedServiceKey.id);
-      assert.equal(
-        asRecord(asRecord(localServiceKey)?.meta)?.installationId,
-        stagedServiceKey.installationId,
-      );
-      serviceKey = localKey;
-      secrets.push(serviceKey);
-      const afterRetrievalStats = await bootstrapFileStats();
-      assert.deepEqual(afterRetrievalStats, beforeRetrievalStats);
-      assertProtectedBootstrapFileModes(afterRetrievalStats, "after retrieval");
+      // The CLI accepts data.key without fabricated issuance or Installation metadata.
+      await writeFile(localServiceKeyFile, JSON.stringify({ data: { key: serviceKey } }), {
+        mode: 0o600,
+        flag: "wx",
+      });
+      assert.equal((await stat(localServiceKeyFile)).mode & 0o777, 0o600);
 
       const occEnv = {
         OCC_URL: baseURL,
@@ -924,11 +864,11 @@ test(
           port,
           ca,
           adminEmail,
+          adminPassword,
           installationId: installation.data.id,
           operator: signinOperator,
         };
       }
-      assert.equal(stagedServiceKey.installationId, installation.data.id);
       const guideInstallation = await runGuideOcc(["installation", "get"]);
       assert.equal(guideInstallation.id, installation.data.id);
       // Bind the cluster and OCC identities before either image workflow can mutate the release.
@@ -953,10 +893,8 @@ test(
         },
       );
       assert.equal(externalUnauthenticatedInstallation.status, 401);
-      await record("Protected bootstrap output files remain 0600 through retrieval");
-      await record("Service-key authenticated production HTTPS Installation read", {
+      await record("Precreated service-key authenticated production HTTPS Installation read", {
         installationId: installation.data.id,
-        serviceKeyId: stagedServiceKey.id,
       });
       const api = async (method, path, body, expected = 200) => {
         const result = await request(method, path, body, expected);
@@ -1574,32 +1512,9 @@ test(
         assert.ok(!gatewayLogs.includes(value), "Gateway log leaked a credential");
       }
       await record("Worker least privilege and credential output boundaries");
-      await kubectl(
-        "-n",
-        system,
-        "exec",
-        "operator",
-        "--",
-        "rm",
-        "-f",
-        "/operator/occ-service-key.json",
-      );
       if (localServiceKeyFile) {
         await rm(localServiceKeyFile, { force: true });
       }
-      const bootstrapServiceKeyMode = JSON.parse(
-        await kubectl(
-          "-n",
-          system,
-          "exec",
-          "operator",
-          "--",
-          "node",
-          "-e",
-          "const fs=require('node:fs');const s=fs.statSync('/bootstrap/initial-admin-service-key.json');console.log(JSON.stringify({mode:s.mode&0o777}))",
-        ),
-      );
-      assert.equal(bootstrapServiceKeyMode.mode, 0o600);
       await record("Private service-key working copies removed before handoff");
       await record("No controller session required before interactive handoff");
       const attach = [
@@ -1761,7 +1676,6 @@ test(
       const candidateValues = JSON.parse(await run("yq", ["-o=json", ".", valuesPath]));
       candidateValues.api = {
         ...candidateValues.api,
-        channelDirectoryProxyUrl: "http://198.51.100.25:3128",
       };
       const candidateInstallation = JSON.parse(await run("yq", ["-o=json", ".", installationPath]));
       candidateInstallation.drivers.plugin = [
@@ -1918,8 +1832,8 @@ test(
         ({ name }) => name === "api",
       );
       assert.equal(
-        apiContainer.env.find(({ name }) => name === "OCC_CHANNEL_DIRECTORY_PROXY_URL").value,
-        "http://198.51.100.25:3128",
+        apiContainer.env.find(({ name }) => name === "OCC_CONFIG_PATH").value,
+        "/etc/openclaw/installation/installation.yaml",
       );
       const upgradedInstallation = JSON.parse(await run("yq", ["-o=json", ".", installationPath]));
       assert.equal(

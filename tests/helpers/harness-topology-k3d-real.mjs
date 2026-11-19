@@ -1,8 +1,18 @@
 import { createConsoleFixtureTransport, fetchLoopback } from "./console-fixture-transport.ts";
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
+import { prepareNativeAdminConfiguration } from "../../apps/controller/src/gateway/native-admin.ts";
+import { createNativeIngressTransport } from "./native-admin-ingress-transport.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import {
+  createHash,
+  createPublicKey,
+  generateKeyPairSync,
+  randomBytes,
+  randomUUID,
+  sign,
+} from "node:crypto";
+import { createRequire } from "node:module";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -50,7 +60,7 @@ import { withSkillPolicyRestore } from "./skill-policy-restore.mjs";
 import { waitForWorkspaceReconnect } from "./gateway-workspace-readiness.ts";
 import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
 import { defaultUsersIAM } from "./default-users-iam.mjs";
-import { installManagedSlackProxyFixture } from "./managed-slack-proxy-k3d.mjs";
+import { installManagedChannelEgressFixture } from "./managed-channel-egress-k3d.ts";
 
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
 const kubernetesContext = process.env.OCC_TEST_KUBERNETES_CONTEXT;
@@ -228,6 +238,11 @@ async function createScopedController(context, identifier, platformNamespace, ku
         op: "add",
         path: "/rules/-",
         value: { apiGroups: ["batch"], resources: ["jobs"], verbs: ["get", "create", "delete"] },
+      },
+      {
+        op: "add",
+        path: "/rules/-",
+        value: { apiGroups: ["apps"], resources: ["replicasets"], verbs: ["get", "list"] },
       },
       {
         op: "add",
@@ -481,16 +496,6 @@ async function startInClusterControllers(
       workerOptions,
       workspaceGateway,
     });
-  const channels = apiConfiguration.drivers.compute.configuration.runtime?.channels;
-  if (channels !== undefined) {
-    assert.ok(channels.managedProxy, "Slack topology requires the chart-managed proxy");
-    // Admission validates Slack credentials before deployment. The chart grants
-    // only the API this proxy route; the worker keeps its existing isolation.
-    apiContainer.env.push(
-      { name: "OCC_CHANNEL_DIRECTORY_PROXY_URL", value: channels.proxyUrl },
-      { name: "OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST", value: channels.managedProxy.hostname },
-    );
-  }
   if (oidc !== undefined) {
     await configureInClusterOidc({
       oidc,
@@ -554,12 +559,13 @@ async function startInClusterControllers(
   let logError;
   let logStderr = "";
   let stopping = false;
+  let observationStopped = false;
   logs.once("error", (error) => {
     logError = error;
   });
   const logExit = new Promise((resolve) =>
     logs.once("close", (code) => {
-      if (!stopping) {
+      if (!stopping && !observationStopped) {
         logError ??= new Error(`Worker log stream exited unexpectedly (${code}): ${logStderr}`);
       }
       resolve();
@@ -576,12 +582,23 @@ async function startInClusterControllers(
         events.push(event);
       }
     } catch {
-      if (!stopping) {
+      if (!stopping && !observationStopped) {
         logError ??= new Error("Worker emitted an invalid structured log record.");
       }
     }
   });
   const worker = {
+    async stopObservation() {
+      if (logError !== undefined) {
+        throw logError;
+      }
+      if (!observationStopped) {
+        observationStopped = true;
+        logs.kill("SIGTERM");
+        await logExit;
+        lines.close();
+      }
+    },
     assertHealthy() {
       if (logError !== undefined) {
         throw logError;
@@ -711,6 +728,7 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
     "limits.cpu": "8",
     // Two embedded Agents plus one replacement Gateway may coexist during cutover.
     "limits.memory": `${3 * productionGatewayMemoryLimitGi}Gi`,
+    ...options.namespaceQuota,
   };
   configuration.drivers.compute.configuration.servicePrincipalCredentials.expirationSeconds = 3_600;
   if (options.gatewayRouting !== undefined) {
@@ -718,10 +736,7 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
     delete configuration.drivers.compute.configuration.network.gatewayClients;
   }
   if (slack !== undefined) {
-    configuration.drivers.compute.configuration.runtime.channels = {
-      proxyUrl: slack.proxyUrl,
-      managedProxy: slack.managedProxy,
-    };
+    configuration.drivers.compute.configuration.runtime.channelEgress = slack.channelEgress;
   }
   return configuration;
 }
@@ -1348,7 +1363,11 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     assert.ok(workspaceGateway, "Slack topology requires the production Gateway");
     Object.assign(
       slack,
-      await installManagedSlackProxyFixture({
+      await installManagedChannelEgressFixture({
+        ...(options.channelEgressCapacity === undefined
+          ? {}
+          : { listenerCapacity: options.channelEgressCapacity }),
+        controller,
         namespace: platformNamespace,
         controllerImage,
         workspaceGateway,
@@ -1368,6 +1387,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     workspaceGateway === undefined
       ? {}
       : {
+          namespaceQuota: options.namespaceQuota,
           gatewayRouting: workspaceGateway.routing,
           gatewayTrustedProxyCidrs: workspaceGateway.nativeOptions.gatewayAuth.trustedProxies,
         },
@@ -2392,6 +2412,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     adminRequest: (...args) => adminRequest(...args),
     request: (...args) => request(...args),
     restartControllerApi,
+    stopWorkerObservation: () => inClusterWorker?.stopObservation(),
     events,
     agent: topologyAgent,
     persistedAgent,
@@ -2403,6 +2424,8 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     loggingObservationStartedAt,
     gatewayPassword,
     controllerUrl,
+    controllerAuthBaseURL,
+    nativeAdmin,
     credentials,
     directory,
     gatewayUrl: forwarding?.url,
@@ -2570,7 +2593,7 @@ async function assertActualModelTurn(topology) {
       // A Gateway turn, unlike a direct app-server call, exercises OpenClaw's
       // model resolver. Native records must retain the endpoint provider and full ID.
       /** @type {unknown} */
-      const rollouts = await codexRollouts(topology);
+      const rollouts = await codexRollouts(topology, nonce);
       assert.ok(Array.isArray(rollouts), "Native Codex rollouts must be an array");
       /** @type {readonly unknown[]} */
       const nativeRollouts = rollouts;
@@ -3155,6 +3178,7 @@ const gatewayPrivatePaths = [
   ["media", "/home/node/.openclaw/media"],
   ["worktrees", "/home/node/.openclaw/worktrees"],
   ["worktree-sources", "/home/node/.openclaw/worktree-sources"],
+  ["skill-library", "/home/node/.openclaw/skill-library"],
 ];
 
 async function assertGatewayPrivateResources(topology) {
@@ -3387,23 +3411,29 @@ function assertNativeToolSucceeded(history, marker, expectedText) {
   }
 }
 
+async function readAvailableGatewayHistory(topology, sessionKey, limit = 30) {
+  try {
+    return await gatewayCall(topology, "chat.history", { sessionKey, limit });
+  } catch (error) {
+    const failure = error.cause;
+    if (
+      failure?.type === "gateway_request_error" &&
+      failure.code === "UNAVAILABLE" &&
+      failure.retryable === true &&
+      failure.details?.method === "chat.history"
+    ) {
+      // Startup can still be preparing history after the Pod becomes ready.
+      return undefined;
+    }
+    throw error;
+  }
+}
+
 async function waitForGatewayHistory(topology, sessionKey, description, select) {
   return waitFor(description, async () => {
-    let history;
-    try {
-      history = await gatewayCall(topology, "chat.history", { sessionKey, limit: 30 });
-    } catch (error) {
-      const failure = error.cause;
-      if (
-        failure?.type === "gateway_request_error" &&
-        failure.code === "UNAVAILABLE" &&
-        failure.retryable === true &&
-        failure.details?.method === "chat.history"
-      ) {
-        // Pinned runtime requests 250 ms; waitFor polls every 750 ms within its deadline.
-        return undefined;
-      }
-      throw error;
+    const history = await readAvailableGatewayHistory(topology, sessionKey);
+    if (history === undefined) {
+      return undefined;
     }
     assert.equal(
       history.messages.some(
@@ -3626,6 +3656,642 @@ function hasReadyCondition(pod) {
   return pod.status.conditions?.some(({ type, status }) => type === "Ready" && status === "True");
 }
 
+async function assertInterruptedGatewayTurnResumes(context, topology) {
+  assert.ok(topology.harnessPod, "restart continuation requires the dedicated Codex topology");
+  const configurationPath = `/namespaces/${topology.namespaceId}/configurations/${topology.agent.configurationId}`;
+  async function deployReplacement(beforeCompletion) {
+    const previousGatewayUid = topology.gatewayPod.metadata.uid;
+    const previousHarnessUid = topology.harnessPod.metadata.uid;
+    const deployed = await topology.request(
+      "POST",
+      `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/deploy`,
+    );
+    assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
+    if (beforeCompletion) {
+      // Native startup can finish while OCC still waits for its service profile.
+      // Observe the actual replacement before restoring that profile's authority.
+      topology.revision = deployed.data;
+      topology.harnessPod = await waitForReadyAgentPod(
+        topology,
+        deployed.data.id,
+        previousHarnessUid,
+      );
+      topology.gatewayPod = await waitForReadyGatewayPod(
+        topology,
+        deployed.data.id,
+        previousGatewayUid,
+      );
+      await beforeCompletion();
+    }
+    try {
+      await waitFor("replacement Agent deployment", () =>
+        topology.events.find(
+          (event) =>
+            event.event === "worker.completed" &&
+            event.revisionId === deployed.data.id &&
+            event.outcome === "success",
+        ),
+      );
+    } catch (error) {
+      context.diagnostic(
+        `Replacement deployment status: ${JSON.stringify(await deploymentStatus(topology, deployed.data.id))}`,
+      );
+      throw error;
+    }
+    topology.revision = deployed.data;
+    topology.harnessPod = await waitForReadyAgentPod(
+      topology,
+      deployed.data.id,
+      previousHarnessUid,
+    );
+    topology.gatewayPod = await waitForReadyGatewayPod(
+      topology,
+      deployed.data.id,
+      previousGatewayUid,
+    );
+  }
+  // Named roles let the real Gateway revalidate a session owner's current authority.
+  const configuration = await topology.request("GET", configurationPath);
+  assert.equal(configuration.status, 200);
+  const recoveryValues = structuredClone(
+    prepareNativeAdminConfiguration(configuration.data.values, {
+      agent: topology.agent,
+      installationId: topology.installation.id,
+      publicOrigin: topology.controllerAuthBaseURL,
+      domain: topology.nativeAdmin.domain,
+    }),
+  );
+  recoveryValues.gateway.roles = {
+    default: "administrator",
+    definitions: {
+      administrator: { scopes: ["operator.admin"], agents: "*", sessions: { others: "write" } },
+      reader: { scopes: ["operator.read"], agents: "*", sessions: { others: "none" } },
+    },
+  };
+  const configured = await topology.request("PATCH", configurationPath, { values: recoveryValues });
+  assert.equal(configured.status, 200, JSON.stringify(configured.error));
+  await deployReplacement();
+  const ingress = await createNativeIngressTransport({
+    artifacts: topology.directory,
+    nativeDomain: topology.nativeAdmin.domain,
+    publicHost: new URL(topology.controllerAuthBaseURL).hostname,
+  });
+  ingress.setUpstream(topology.controllerUrl);
+  context.after(async () => {
+    for (const socket of ingress.sockets) {
+      socket.destroy();
+    }
+    await new Promise((resolve) => ingress.server.close(resolve));
+  });
+  await new Promise((resolve, reject) => {
+    ingress.server.once("error", reject);
+    ingress.server.listen(0, "127.0.0.1", resolve);
+  });
+  const ingressAddress = ingress.server.address();
+  assert.ok(ingressAddress && typeof ingressAddress === "object");
+  const completedKey = `agent:main:completed-${randomUUID()}`;
+  const completedNonce = `COMPLETED-${randomUUID()}`;
+  await gatewayCall(topology, "chat.send", {
+    sessionKey: completedKey,
+    idempotencyKey: randomUUID(),
+    message: `Reply with exactly ${completedNonce}. Do not use tools.`,
+  });
+  const completed = await assertConversation(topology, completedKey, completedNonce);
+
+  async function startInterruptedWork(label) {
+    // A Gateway crash leaves the remote executor alive. Its finite command must
+    // finish before native recovery can adopt the thread without taking it over.
+    const sleepSeconds = label === "gateway-process" ? 90 : 600;
+    let sessionKey = `agent:main:${label}-${randomUUID()}`;
+    let ownerProfileId;
+    let ownerRole;
+    if (["owner", "revoked-owner"].includes(label)) {
+      // OCC authenticates the person, then its native-admin proxy uses the shared
+      // service profile. This proves native profile authority, not per-human identity.
+      // Restricted HTTP chat cannot enforce model policy on a remote Codex.
+      const access = await topology.request(
+        "GET",
+        `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/native-admin`,
+      );
+      assert.equal(access.status, 200, JSON.stringify(access.error));
+      assert.equal(access.data.status, "available");
+      const transport = createConsoleFixtureTransport(
+        topology.controllerAuthBaseURL,
+        topology.controllerUrl,
+      );
+      const login = await signInWithEmailPassword({
+        origin: topology.controllerAuthBaseURL,
+        fetch: transport.fetchThroughLoopback,
+        ...topology.credentials,
+        headers: {
+          host: new URL(topology.controllerAuthBaseURL).host,
+          origin: topology.controllerAuthBaseURL,
+        },
+      });
+      const { GatewayClient } = createRequire(
+        new URL("../../apps/controller/package.json", import.meta.url),
+      )("@openclaw/gateway-client");
+      const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+      const rawPublicKey = publicKey.export({ format: "jwk" }).x;
+      let client;
+      let timeout;
+      const connected = new Promise((resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error("Native admin connection timed out")), 30_000);
+        client = new GatewayClient({
+          url: `wss://127.0.0.1:${ingressAddress.port}`,
+          tlsServerName: access.data.host,
+          tlsFingerprint: ingress.certificateFingerprint,
+          origin: access.data.origin,
+          edgeAuthHeaders: {
+            ...authenticatedHeaders(login),
+            host: new URL(access.data.origin).host,
+          },
+          clientName: "openclaw-control-ui",
+          mode: "ui",
+          role: "operator",
+          scopes: ["operator.admin"],
+          deviceIdentity: {
+            deviceId: createHash("sha256")
+              .update(Buffer.from(rawPublicKey, "base64url"))
+              .digest("hex"),
+            publicKeyPem: publicKey.export({ format: "pem", type: "spki" }).toString(),
+            privateKeyPem: privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
+          },
+          hostDeps: {
+            signDevicePayload: (pem, payload) =>
+              sign(null, Buffer.from(payload), pem).toString("base64url"),
+            publicKeyRawBase64UrlFromPem: (pem) => createPublicKey(pem).export({ format: "jwk" }).x,
+          },
+          onHelloOk: resolve,
+          onConnectError: reject,
+        });
+      });
+      try {
+        client.start();
+        await connected;
+        const { profile } = await client.request("users.self", {});
+        ownerProfileId = profile.id;
+        ownerRole = profile.role;
+        assert.notEqual(
+          ownerProfileId,
+          "gateway-owner",
+          "the shared-secret owner is not revocable",
+        );
+        await client.request("sessions.create", { key: sessionKey, agentId: "main" });
+        const ready = `OWNER-READY-${randomUUID()}`;
+        await client.request("chat.send", {
+          sessionKey,
+          idempotencyKey: randomUUID(),
+          message: `Reply with exactly ${ready}. Do not use tools.`,
+        });
+        await assertConversation(topology, sessionKey, ready);
+        const sessions = await gatewayCall(topology, "sessions.list", { limit: 100 });
+        const created = sessions.sessions.find((session) => session.key === sessionKey);
+        assert.equal(created?.createdActor?.type, "human");
+        assert.equal(created.createdActor.id, ownerProfileId);
+      } finally {
+        clearTimeout(timeout);
+        client.stop();
+        await client.stopAndWait({ timeoutMs: 1_000 });
+      }
+    }
+    const nonce = `RECOVERED-${randomUUID()}`;
+    const ledger = `/home/node/workspace/${nonce}.txt`;
+    // The real model records an effect before blocking. Recovery must inspect that
+    // retained effect instead of blindly replaying the original command.
+    const prompt = [
+      `Use your native shell tool to inspect ${ledger}.`,
+      `If it does not exist, run: printf 'started\\n' >> ${ledger}; sleep ${sleepSeconds}`,
+      "Wait for that command to finish before replying. Do not start background work.",
+      "If execution is interrupted, inspect the file before continuing:",
+      "if it already contains started, do not append again or repeat the sleep.",
+      `After the command finishes or after recovering the existing file, reply with exactly ${nonce}.`,
+    ].join("\n");
+    const admitted = await gatewayCall(topology, "chat.send", {
+      sessionKey,
+      idempotencyKey: randomUUID(),
+      message: prompt,
+    });
+    await waitFor(`the native Harness effect for ${label}`, async () => {
+      const value = await execNode(
+        topology.placement,
+        topology.harnessPod.metadata.name,
+        `const fs = require("node:fs"); process.stdout.write(fs.existsSync(${JSON.stringify(ledger)}) ? fs.readFileSync(${JSON.stringify(ledger)}, "utf8") : "");`,
+      );
+      return value === "started\n";
+    });
+    const history = await gatewayCall(topology, "chat.history", { sessionKey, limit: 100 });
+    const { session } = await gatewayCall(topology, "sessions.describe", { key: sessionKey });
+    assert.equal(session.hasActiveRun, true, "the original turn must still own active work");
+    assert.ok(session.activeRunIds.includes(admitted.runId), "the submitted run must be active");
+    assert.equal(
+      history.messages.some(
+        (message) => message.role === "assistant" && messageText(message).trim() === nonce,
+      ),
+      false,
+      "the original turn must still be unfinished when interrupted",
+    );
+    return {
+      sessionKey,
+      nonce,
+      ledger,
+      prompt,
+      sessionId: history.sessionId,
+      ownerProfileId,
+      ownerRole,
+    };
+  }
+
+  // Explicit cancellation is intentional, so a subsequent restart must leave it stopped.
+  const cancelled = await startInterruptedWork("cancelled");
+  const stopped = await gatewayCall(topology, "chat.abort", {
+    sessionKey: cancelled.sessionKey,
+    userInitiated: true,
+  });
+  assert.equal(stopped.aborted, true, "the negative control must explicitly cancel active work");
+  await waitFor("explicit cancellation to finish", async () => {
+    const { session } = await gatewayCall(topology, "sessions.describe", {
+      key: cancelled.sessionKey,
+    });
+    return session.hasActiveRun === false;
+  });
+  const cancelledHistory = await gatewayCall(topology, "chat.history", {
+    sessionKey: cancelled.sessionKey,
+    limit: 100,
+  });
+  const finished = [
+    [completedKey, completed],
+    [cancelled.sessionKey, cancelledHistory],
+  ];
+  async function assertRefusedWork(replacement, interrupted) {
+    const probeKey = `agent:main:replacement-ready-${randomUUID()}`;
+    const probeNonce = `READY-${randomUUID()}`;
+    await gatewayCall(topology, "chat.send", {
+      sessionKey: probeKey,
+      idempotencyKey: randomUUID(),
+      message: `Reply with exactly ${probeNonce}. Do not use tools.`,
+    });
+    // A completed fresh turn proves the new revision finished startup. It does
+    // not send input to the interrupted session or manufacture its recovery.
+    await assertConversation(topology, probeKey, probeNonce);
+    const stoppedHistory = await gatewayCall(topology, "chat.history", {
+      sessionKey: interrupted.sessionKey,
+      limit: 100,
+    });
+    const { session } = await gatewayCall(topology, "sessions.describe", {
+      key: interrupted.sessionKey,
+    });
+    assert.equal(session.hasActiveRun, false);
+    assert.equal(stoppedHistory.sessionId, interrupted.sessionId);
+    assert.equal(
+      stoppedHistory.messages.some(
+        (message) => message.__openclaw?.continuation?.source === "restart",
+      ),
+      false,
+      `${replacement} must refuse continuation of the predecessor's interrupted turn`,
+    );
+    assert.equal(
+      stoppedHistory.messages.some(
+        (message) =>
+          message.role === "assistant" && messageText(message).trim() === interrupted.nonce,
+      ),
+      false,
+    );
+    assert.equal(
+      await readFileInPod(
+        topology.placement,
+        topology.harnessPod.metadata.name,
+        interrupted.ledger,
+      ),
+      "started\n",
+    );
+    return stoppedHistory;
+  }
+
+  for (const replacement of [
+    "owner",
+    "revoked-owner",
+    "configuration-change",
+    "gateway-pod",
+    "workload-pods",
+    "gateway-process",
+    "deployment",
+    "explicit-stop",
+  ]) {
+    const interrupted = await startInterruptedWork(replacement);
+    let queuedNonce;
+    if (replacement === "explicit-stop") {
+      queuedNonce = `QUEUED-${randomUUID()}`;
+      await gatewayCall(topology, "chat.send", {
+        sessionKey: interrupted.sessionKey,
+        idempotencyKey: randomUUID(),
+        queueMode: "followup",
+        message: `Reply with exactly ${queuedNonce}. Do not use tools.`,
+      });
+      const queued = await gatewayCall(topology, "chat.history", {
+        sessionKey: interrupted.sessionKey,
+        limit: 100,
+      });
+      assert.equal(
+        queued.pendingInputs.queuedCount,
+        1,
+        "the stop control must contain an accepted durable follow-up",
+      );
+    }
+    const previousUid = topology.gatewayPod.metadata.uid;
+    if (replacement === "gateway-process") {
+      const container = topology.gatewayPod.status.containerStatuses.find(
+        ({ name }) => name === "gateway",
+      );
+      assert.ok(container, "the native Gateway container must be identifiable");
+      // Kill only the native lock holder. Its live wrapper must reap it before
+      // releasing locks; this does not simulate loss of the whole PID namespace.
+      await execNode(
+        topology.gatewayPlacement,
+        topology.gatewayPod.metadata.name,
+        `
+      const fs = require("node:fs");
+      const assert = require("node:assert/strict");
+      const { spawn } = require("node:child_process");
+      const { pid } = JSON.parse(fs.readFileSync("/home/node/.openclaw/tmp/openclaw-1000/gateway.state.lock", "utf8"));
+      assert.ok(Number.isSafeInteger(pid) && pid > 1);
+      const child = spawn(process.execPath, ["-e", "setTimeout(() => process.kill(" + pid + ", 'SIGKILL'), 500)"], { detached: true, stdio: "ignore" });
+      child.unref();
+    `,
+      );
+      topology.gatewayPod = await waitFor("native Gateway crash recovery", async () => {
+        const pod = await resource(
+          "pod",
+          topology.gatewayPod.metadata.name,
+          topology.gatewayPlacement,
+        );
+        return pod.status.containerStatuses?.some(
+          ({ name, restartCount }) => name === "gateway" && restartCount > container.restartCount,
+        ) && hasReadyCondition(pod)
+          ? pod
+          : undefined;
+      });
+      assert.equal(topology.gatewayPod.metadata.uid, previousUid);
+    } else if (
+      ["owner", "deployment", "explicit-stop", "revoked-owner", "configuration-change"].includes(
+        replacement,
+      )
+    ) {
+      if (replacement === "revoked-owner") {
+        await gatewayCall(topology, "users.setRole", {
+          profileId: interrupted.ownerProfileId,
+          role: "reader",
+        });
+      }
+      if (replacement === "configuration-change") {
+        // A harmless supported settings edit retains the Harness and its saved conversation.
+        const changedValues = structuredClone(recoveryValues);
+        (changedValues.skills ??= {}).install ??= {};
+        changedValues.skills.install.allowUploadedArchives = true;
+        const changed = await topology.request("PATCH", configurationPath, {
+          values: changedValues,
+        });
+        assert.equal(changed.status, 200, JSON.stringify(changed.error));
+      }
+      if (replacement === "explicit-stop") {
+        // Deny workload deletion only for this fixture's scoped worker. A committed
+        // stop must save the desired state even when Kubernetes teardown cannot finish.
+        const role = await resource("clusterrole", topology.controllerTenantRole);
+        const blockedRules = role.rules.map((rule) => ({
+          ...rule,
+          verbs: rule.verbs.filter((verb) => verb !== "delete"),
+        }));
+        await kubectl(
+          "patch",
+          "clusterrole",
+          topology.controllerTenantRole,
+          "--type=json",
+          "--patch",
+          JSON.stringify([{ op: "replace", path: "/rules", value: blockedRules }]),
+        );
+        try {
+          const stoppedAgent = await topology.request(
+            "POST",
+            `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/stop`,
+          );
+          assert.equal(stoppedAgent.status, 202, JSON.stringify(stoppedAgent.error));
+          await waitFor("the explicit stop to encounter denied teardown", async () => {
+            const result = await topology.observerPool.query(
+              `SELECT work.state, work.attempt_count, event.details->>'reasonCode' AS reason_code
+               FROM occ.controller_work AS work
+               JOIN occ.audit_events AS event
+                 ON event.namespace_id = work.namespace_id AND event.actor_id = work.actor_id
+                 AND event.resource_kind = 'agent' AND event.resource_id = work.agent_id
+                 AND event.kind = 'mutation' AND event.action = 'reconcile'
+                 AND event.details->>'workId' = work.idempotency_key
+                 AND event.outcome = 'failure' AND event.occurred_at >= work.created_at
+               WHERE work.agent_id = $1 AND work.agent_target = 'stopped'
+               ORDER BY work.created_at DESC, event.occurred_at DESC LIMIT 1`,
+              [topology.agent.id],
+            );
+            const work = result.rows[0];
+            // Retry reasons belong to the durable attempt audit, not terminal work fields.
+            return work?.attempt_count > 0 &&
+              work.state === "queued" &&
+              work.reason_code === "DEPENDENCY_UNAVAILABLE"
+              ? work
+              : undefined;
+          });
+          const state = await topology.observerPool.query(
+            "SELECT desired_runtime_state FROM occ.agents WHERE id = $1",
+            [topology.agent.id],
+          );
+          assert.equal(state.rows[0].desired_runtime_state, "stopped");
+        } finally {
+          await kubectl(
+            "patch",
+            "clusterrole",
+            topology.controllerTenantRole,
+            "--type=json",
+            "--patch",
+            JSON.stringify([{ op: "replace", path: "/rules", value: role.rules }]),
+          );
+        }
+      }
+      let revokedHistory;
+      await deployReplacement(
+        replacement === "revoked-owner"
+          ? async () => {
+              // Revoking the native-admin session's shared profile also blocks OCC's
+              // readiness requests. Prove refusal while revoked, then restore the exact
+              // prior assignment so the deployment and later controls can complete.
+              try {
+                const { profiles } = await gatewayCall(topology, "users.list", {});
+                assert.equal(
+                  profiles.find((profile) => profile.id === interrupted.ownerProfileId)?.role,
+                  "reader",
+                );
+                revokedHistory = await assertRefusedWork(replacement, interrupted);
+              } finally {
+                await gatewayCall(topology, "users.setRole", {
+                  profileId: interrupted.ownerProfileId,
+                  role: interrupted.ownerRole ?? null,
+                });
+              }
+            }
+          : undefined,
+      );
+      if (replacement === "revoked-owner") {
+        const stoppedHistory =
+          revokedHistory ?? (await assertRefusedWork(replacement, interrupted));
+        finished.push([interrupted.sessionKey, stoppedHistory]);
+        context.diagnostic(`${replacement} left interrupted work stopped after redeployment`);
+        console.info(`k3d dedicated: ${replacement} refusal passed.`);
+        continue;
+      }
+    } else if (replacement === "workload-pods") {
+      const previousHarnessUid = topology.harnessPod.metadata.uid;
+      // Replace both Pods with the same Agent revision and retained volumes.
+      await Promise.all([
+        kubectl(
+          "delete",
+          "pod",
+          topology.gatewayPod.metadata.name,
+          "--namespace",
+          topology.gatewayPlacement,
+          "--wait=true",
+          "--timeout=120s",
+        ),
+        kubectl(
+          "delete",
+          "pod",
+          topology.harnessPod.metadata.name,
+          "--namespace",
+          topology.placement,
+          "--wait=true",
+          "--timeout=120s",
+        ),
+      ]);
+      topology.harnessPod = await waitForReadyAgentPod(
+        topology,
+        topology.revision.id,
+        previousHarnessUid,
+      );
+      topology.gatewayPod = await waitForReadyGatewayPod(
+        topology,
+        topology.revision.id,
+        previousUid,
+      );
+    } else {
+      await kubectl(
+        "delete",
+        "pod",
+        topology.gatewayPod.metadata.name,
+        "--namespace",
+        topology.gatewayPlacement,
+        "--wait=true",
+        "--timeout=120s",
+      );
+      topology.gatewayPod = await waitForReadyGatewayPod(
+        topology,
+        topology.revision.id,
+        previousUid,
+      );
+    }
+    // There is deliberately no second chat.send: only native startup recovery can
+    // admit the continuation whose final answer this observer waits for.
+    const recovered = await waitFor(
+      `automatic interrupted-turn completion after ${replacement}`,
+      async () => {
+        const history = await readAvailableGatewayHistory(topology, interrupted.sessionKey, 100);
+        if (history === undefined) {
+          return undefined;
+        }
+        const { session } = await gatewayCall(topology, "sessions.describe", {
+          key: interrupted.sessionKey,
+        });
+        return !session.hasActiveRun &&
+          history.messages.some(
+            (message) =>
+              message.role === "assistant" && messageText(message).trim() === interrupted.nonce,
+          )
+          ? history
+          : undefined;
+      },
+    );
+    assert.equal(
+      recovered.sessionId,
+      interrupted.sessionId,
+      "recovery must retain session identity",
+    );
+    assert.equal(
+      recovered.messages.filter(
+        (message) => message.role === "user" && messageText(message).trim() === interrupted.prompt,
+      ).length,
+      1,
+      "recovery must not resubmit the original user input",
+    );
+    assert.equal(
+      recovered.messages.filter((message) => message.__openclaw?.continuation?.source === "restart")
+        .length,
+      1,
+      "native startup must admit one restart continuation",
+    );
+    assert.equal(
+      recovered.messages.filter(
+        (message) =>
+          message.role === "assistant" && messageText(message).trim() === interrupted.nonce,
+      ).length,
+      1,
+      "the interrupted task must deliver one final result",
+    );
+    assert.equal(
+      await readFileInPod(
+        topology.placement,
+        topology.harnessPod.metadata.name,
+        interrupted.ledger,
+      ),
+      "started\n",
+      "continuation must inspect the retained effect without repeating it",
+    );
+    if (queuedNonce !== undefined) {
+      // Stop shuts down the workload; deployment admits eligible native continuation.
+      // The follow-up was accepted before Stop and must not require another user send.
+      await assertConversation(topology, interrupted.sessionKey, queuedNonce);
+      finished.push([
+        interrupted.sessionKey,
+        await gatewayCall(topology, "chat.history", {
+          sessionKey: interrupted.sessionKey,
+          limit: 100,
+        }),
+      ]);
+    } else {
+      finished.push([interrupted.sessionKey, recovered]);
+    }
+    context.diagnostic(`automatic interrupted-turn recovery passed: ${replacement}`);
+    console.info(`k3d dedicated: ${replacement} recovery passed.`);
+  }
+  function transcriptSnapshot(messages) {
+    const snapshot = structuredClone(messages);
+    // chat.history projects the current profile avatar at read time. Role changes
+    // refresh its cache version; retain actor identity and all transcript evidence.
+    for (const message of snapshot) {
+      const metadata = message.__openclaw;
+      if (typeof metadata?.senderProfileAvatarUrl === "string") {
+        metadata.senderProfileAvatarUrl = metadata.senderProfileAvatarUrl.replace(/\?v=\d+$/u, "");
+      }
+    }
+    return snapshot;
+  }
+  for (const [sessionKey, before] of finished) {
+    const after = await gatewayCall(topology, "chat.history", { sessionKey, limit: 100 });
+    assert.equal(after.sessionId, before.sessionId);
+    assert.deepEqual(
+      transcriptSnapshot(after.messages),
+      transcriptSnapshot(before.messages),
+      `restart must leave finished work unchanged: ${sessionKey}`,
+    );
+  }
+  context.diagnostic("dedicated interrupted turn completed automatically in its retained session");
+  // Later HTTP checks use a local tunnel, which kubectl pins to the old Pod.
+  topology.gatewayUrl = await topology.refreshGatewayUrl();
+}
+
 async function assertGatewayPodContinuity(context, topology, privateClaim) {
   const sessionKey = `agent:main:durability-${randomUUID()}`;
   const nonce = `OCE-BEFORE-${randomUUID()}`;
@@ -3700,9 +4366,7 @@ async function assertGatewayPodContinuity(context, topology, privateClaim) {
   // thread must offer no tool that would list, edit or run commands there instead of the Harness.
   // Earlier cases started other threads; this session's thread is the one holding its nonce.
   const rolloutsBefore =
-    topology.harnessPod === undefined
-      ? undefined
-      : (await codexRollouts(topology)).filter(({ text }) => text.includes(nonce));
+    topology.harnessPod === undefined ? undefined : await codexRollouts(topology, nonce);
   if (rolloutsBefore !== undefined) {
     assert.equal(rolloutsBefore.length, 1, "the session must own exactly one Codex rollout");
     assert.deepEqual(
@@ -3786,9 +4450,7 @@ async function assertGatewayPodContinuity(context, topology, privateClaim) {
     );
   }
   if (rolloutsBefore !== undefined) {
-    const rolloutsAfter = (await codexRollouts(topology)).filter(({ text }) =>
-      text.includes(afterNonce),
-    );
+    const rolloutsAfter = await codexRollouts(topology, afterNonce);
     assert.deepEqual(
       rolloutsAfter.map(({ file, threadId }) => ({ file, threadId })),
       rolloutsBefore.map(({ file, threadId }) => ({ file, threadId })),
@@ -3846,8 +4508,8 @@ function assertCustomCodexModelSelection(rollout) {
   );
 }
 
-// Every Codex rollout in the Harness, with its thread ID and the dynamic tools it was given.
-async function codexRollouts(topology) {
+// Select inside the Pod so unrelated retained threads cannot exhaust kubectl output.
+async function codexRollouts(topology, nonce) {
   const output = await execNode(
     topology.placement,
     topology.harnessPod.metadata.name,
@@ -3863,8 +4525,9 @@ async function codexRollouts(topology) {
       }
     };
     walk("/home/node/.codex/sessions");
-    process.stdout.write(JSON.stringify(files.sort().map((file) => {
+    process.stdout.write(JSON.stringify(files.sort().flatMap((file) => {
       const text = fs.readFileSync(file, "utf8");
+      if (!text.includes(${JSON.stringify(nonce)})) return [];
       const records = text.split("\\n").filter(Boolean).map((line) => JSON.parse(line));
       const meta = records[0].payload;
       const names = (meta.dynamic_tools ?? []).flatMap((tool) =>
@@ -4065,7 +4728,6 @@ async function assertDedicatedNativeChildRelay(topology) {
     topology.gatewayPod.metadata.name,
     parentThreadId,
     marker,
-    childTask,
     prompt,
   );
   assert.equal(
@@ -4107,7 +4769,6 @@ export async function readDedicatedNativeChildEvidence(
   pod,
   parentThreadId,
   marker,
-  childTask,
   prompt,
   run = execNode,
 ) {
@@ -4153,7 +4814,6 @@ export async function readDedicatedNativeChildEvidence(
       const expiresAt = Date.now() + 20_000;
       const deadline = setTimeout(() => socket.terminate(), 20_000);
       const marker = ${JSON.stringify(marker)};
-      const childTask = ${JSON.stringify(childTask)};
       const prompt = ${JSON.stringify(prompt)};
       const userTexts = (turn) => turn.items.filter((item) => item.type === "userMessage")
         .flatMap((item) => item.content.filter((block) => block.type === "text").map((block) => block.text));
@@ -4219,10 +4879,13 @@ export async function readDedicatedNativeChildEvidence(
               assert.equal(child.id, childId, "read must return the selected native child");
               observation.parentMatches = child.parentThreadId === parent.id;
               assert.ok(observation.parentMatches, "child must belong to this Gateway turn");
-              const taskTurns = child.turns.filter((turn) => userTexts(turn).includes(childTask));
-              observation.childTaskTurnCount = taskTurns.length;
-              assert.ok(taskTurns.length <= 1, "expected one child turn for the forwarded task");
-              const turn = taskTurns[0];
+              // Native child history can omit its initial userMessage. The exact
+              // parent turn's spawn and parentThreadId establish task ownership;
+              // require one child turn so an answer from later work cannot pass.
+              observation.stage = "child-completion";
+              observation.childTurnCount = child.turns.length;
+              assert.ok(child.turns.length <= 1, "expected one turn for the fresh native child");
+              const turn = child.turns[0];
               observation.childTaskCompleted = turn?.status === "completed" && turn.error == null;
               if (observation.childTaskCompleted) {
                 const messages = turn.items.filter((item) => item.type === "agentMessage");
@@ -6241,6 +6904,7 @@ export {
   assertDeniedConnection,
   assertEmbeddedCreatesNoHarnessWorkspaceClaim,
   assertGatewayPodContinuity,
+  assertInterruptedGatewayTurnResumes,
   assertGatewayWorkspaceReconnect,
   assertGatewayPrivateResources,
   assertKubernetesOtelLogs,

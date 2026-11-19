@@ -401,8 +401,8 @@ func composeDevelopmentRoutingValues(
 		"images": map[string]string{"controller": routing.reference},
 		"auth":   map[string]string{"baseUrl": state.BrowserOrigin},
 		"bootstrap": map[string]any{
-			"adminEmail": "admin@development.openclaw.invalid",
-			"password":   map[string]string{"claimName": "bootstrap-password"},
+			"adminEmail":  "admin@development.openclaw.invalid",
+			"credentials": map[string]string{"secretName": "bootstrap-credentials"},
 		},
 		"api": map[string]any{"clients": []any{map[string]any{
 			"namespace": developmentEnvoyNamespace,

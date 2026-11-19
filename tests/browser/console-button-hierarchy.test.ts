@@ -18,7 +18,7 @@ import type {
   NamespaceWire,
 } from "../../packages/contracts/src/api/resources.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
+import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.ts";
 import {
   routeFailedDeployment,
   assertControlEdge,

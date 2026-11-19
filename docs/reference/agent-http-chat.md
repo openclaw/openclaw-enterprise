@@ -68,7 +68,9 @@ connection rather than replacing it with an OCC error body.
 OCC rechecks credential validity, principal status, permission and the selected
 revision every 25 seconds and before final delivery, with a 5-second deadline. Revocation, dependency
 failure, stop, deletion, replacement or client disconnect aborts the upstream
-connection. Aborting does not prove execution stopped or undo tool effects.
+connection. Aborting does not prove execution stopped or undo tool effects. A
+request that waits behind a turn when its Gateway ends is not kept; send it again
+([interrupted turns](agents/interrupted-turns.md#http-chat-callers)).
 
 ## Kubernetes configuration and audit
 

@@ -308,8 +308,8 @@ exact-Agent `operate`. A `202` response means OCC committed `desiredRuntimeState
 Compute Driver's idempotent `stopRevision`, and clears the exact
 `activeRevisionId` only after shutdown succeeds.
 
-Stop terminates inbound routing and execution, including the current turn, which
-[stays stopped on Kubernetes](interrupted-turns.md). It retains the Agent revision, Agent
+Stop terminates inbound routing and execution. A later deployment may
+[continue eligible interrupted work](interrupted-turns.md). Stop retains the Agent revision, Agent
 credentials, gateway state, and workspace, creates no revision and calls no
 destructive version retirement. Repeated stops converge safely without
 affecting siblings.

@@ -175,6 +175,35 @@ test("bundled OpenShell startup refuses mixed static CREATE before material or r
       assert.equal(f.countSecretReads(), updateBefore.secretReads + 1);
       assert.deepEqual(f.gatewayEffects, [...updateBefore.gatewayEffects, "updateSource"]);
       assert.deepEqual(f.providerRequests, []);
+
+      // A bound source must be unbound before adoption, even without a Proxy.
+      const config = await f.createConfiguration(f.namespace.id, {
+        agents: {
+          defaults: {
+            model: { primary: "codex/fixture-model" },
+            models: { "codex/fixture-model": { agentRuntime: { id: "codex" } } },
+          },
+        },
+      });
+      const agent = await f.request("POST", `/namespaces/${f.namespace.id}/agents`, {
+        body: {
+          name: "bound-model",
+          configurationId: config.id,
+          executionMode: "dedicated",
+          harnessAuth: { method: "credential_source", sourceId: original.id },
+          credentialSources: [{ sourceId: original.id }],
+        },
+      });
+      assert.equal(agent.status, 201, JSON.stringify(agent.body));
+      const prior = await admissionSnapshot(f);
+      const bound = await f.request("PATCH", `${f.path}/${original.id}`, {
+        body: { adoption: "live", authorityScope: "execution" },
+      });
+      assert.deepEqual(
+        { status: bound.status, reason: bound.body.error?.message },
+        { status: 409, reason: "Protected source changes require an unbound source." },
+      );
+      await assertAdmissionUnchanged(f, prior);
     }
   }
 });
@@ -753,6 +782,87 @@ test("legacy approved copies survive Secret rotation and failed live adoption; o
   assert.equal((await f.request("GET", path)).data.egress, undefined);
   assert.deepEqual([...f.providers.values()], before);
   f.observed.available = true;
+  // A provider that needs managed login tokens cannot adopt a static key.
+  const proxy = f.controller.selectedDriver("credential_proxy");
+  const control = proxy.sourceControl;
+  const original = control.providers.find((entry) => entry.sourceType.type === "openai");
+  assert.ok(original);
+  const providerType = structuredClone(original.sourceType);
+  const gateway = f.controller.selectedDriver("credential_gateway");
+  const listTypes = gateway.listSourceTypes;
+  let gatewayType;
+  let changeDuringAdmission;
+  const reads = f.secretReads;
+  try {
+    // Simulate a Driver returning a retained mutable catalog entry. Keep the
+    // real catalog, peer availability check, and Secret transport.
+    gateway.listSourceTypes = async (...args) => {
+      const catalog = await listTypes.apply(gateway, args);
+      return catalog.map((entry) => {
+        if (entry.type !== "openai") {
+          return entry;
+        }
+        gatewayType ??= structuredClone(entry);
+        return gatewayType;
+      });
+    };
+    assert.ok(
+      Reflect.set(proxy, "sourceControl", {
+        ...control,
+        providers: control.providers.map((p) =>
+          p === original ? { ...p, sourceType: providerType } : p,
+        ),
+        async assertAvailable(signal) {
+          await control.assertAvailable(signal);
+          if (changeDuringAdmission) {
+            changeDuringAdmission.harnessAuth.loginMode = "chatgptAuthTokens";
+          }
+        },
+      }),
+    );
+    assert.equal(providerType.harnessAuth.loginMode, "api_key");
+    providerType.harnessAuth.loginMode = "chatgptAuthTokens";
+    const catalog = await f.request("GET", `/namespaces/${f.namespace.id}/agent-capabilities`);
+    assert.equal(catalog.status, 200);
+    const offered = catalog.data.capabilities.credentialSources.types.some(
+      (entry) => entry.type === "openai",
+    );
+    const create = await f.request("POST", f.path, {
+      body: {
+        name: "incompatible-lifecycle",
+        type: "openai",
+        config: { authorized_base_url: f.modelProvider.baseUrl },
+        secrets: { api_key: f.secret.ref },
+      },
+    });
+    const patch = await f.request("PATCH", path, { body: consent });
+    assert.deepEqual(
+      { offered, create: create.status, patch: patch.status, reads: f.secretReads - reads },
+      { offered: false, create: 409, patch: 409, reads: 0 },
+    );
+    providerType.harnessAuth.loginMode = "api_key";
+    for (const [side, type] of [
+      ["Proxy", providerType],
+      ["Gateway", gatewayType],
+    ]) {
+      // Change one declaration across the await while its counterpart stays static.
+      assert.equal(type.harnessAuth.loginMode, "api_key");
+      changeDuringAdmission = type;
+      const raced = await f.request("PATCH", path, { body: consent });
+      assert.equal(type.harnessAuth.loginMode, "chatgptAuthTokens");
+      assert.deepEqual(
+        { status: raced.status, reads: f.secretReads - reads },
+        { status: 409, reads: 0 },
+        side + " lifecycle changed before Secret access",
+      );
+      type.harnessAuth.loginMode = "api_key";
+      assert.equal((await f.request("GET", path)).data.egress, undefined);
+      assert.deepEqual([...f.providers.values()], before);
+    }
+  } finally {
+    gateway.listSourceTypes = listTypes;
+    Reflect.set(proxy, "sourceControl", control);
+  }
   const adopted = await f.request("PATCH", path, { body: consent });
   assert.equal(adopted.status, 200, JSON.stringify(adopted.body));
   assert.deepEqual(adopted.data.egress, { adoption: "live", retention: "none" });
@@ -982,6 +1092,141 @@ function responseChecks(f) {
     },
   };
 }
+
+test("shipped exchange withholds material split across one reasoning part", async (t) => {
+  const f = await staticEgressFixture(t);
+  const [prefix, suffix] = splitText(selectedMaterial);
+  const part = (index, text = "") => ({
+    type: "response.reasoning_summary_part.added",
+    item_id: "rs_exchange",
+    output_index: 0,
+    summary_index: index,
+    part: { type: "summary_text", text },
+  });
+  const summaryDelta = (index, text) => ({
+    type: "response.reasoning_summary_text.delta",
+    item_id: "rs_exchange",
+    output_index: 0,
+    summary_index: index,
+    delta: text,
+  });
+  const textDelta = (index, text) => ({
+    type: "response.reasoning_text.delta",
+    item_id: "rs_exchange",
+    output_index: 0,
+    content_index: index,
+    delta: text,
+  });
+  const textDone = (index, text) => ({
+    type: "response.reasoning_text.done",
+    item_id: "rs_exchange",
+    output_index: 0,
+    content_index: index,
+    text,
+  });
+  const stream = (inner, doneSummary) => {
+    let sequence = 0;
+    const numbered = (event) => ({ sequence_number: sequence++, ...event });
+    const reasoning = { type: "reasoning", id: "rs_exchange", summary: [] };
+    const response = (status) => ({
+      id: "resp_reasoning_exchange",
+      object: "response",
+      model: wire.request.model,
+      created_at: 1791985502,
+      status,
+      output: status === "completed" ? [{ type: "reasoning", summary: doneSummary }] : [],
+    });
+    return [
+      numbered({ type: "response.created", response: response("in_progress") }),
+      numbered({ type: "response.output_item.added", output_index: 0, item: reasoning }),
+      ...inner.map((event) => numbered(event)),
+      numbered({
+        type: "response.output_item.done",
+        output_index: 0,
+        item: { ...reasoning, summary: doneSummary },
+      }),
+      numbered({ type: "response.completed", response: response("completed") }),
+    ];
+  };
+  const redacted = [
+    { type: "summary_text", text: "redacted" },
+    { type: "summary_text", text: "aside" },
+  ];
+  const cases = [
+    {
+      label: "harmless-summary",
+      blocked: false,
+      events: stream(
+        [
+          part(0),
+          summaryDelta(0, "hello "),
+          part(1),
+          summaryDelta(1, "aside"),
+          summaryDelta(0, "world"),
+        ],
+        [
+          { type: "summary_text", text: "hello world" },
+          { type: "summary_text", text: "aside" },
+        ],
+      ),
+    },
+    {
+      label: "harmless-reasoning-text-completion",
+      blocked: false,
+      events: stream([textDelta(0, "ordinary response"), textDone(0, "ordinary response")], []),
+    },
+    {
+      label: "withheld-skipped-summary-index",
+      blocked: true,
+      // Summary parts append: skipping index zero cannot open a later part.
+      events: stream([part(1, "ok")], []),
+    },
+    {
+      label: "withheld-unopened-reasoning-text-completion",
+      blocked: true,
+      // A completion may finish an open index, but cannot open the next one.
+      events: stream([textDelta(0, "ordinary response"), textDone(1, "aside")], []),
+    },
+    {
+      label: "withheld-summary",
+      blocked: true,
+      events: stream(
+        [
+          part(0),
+          summaryDelta(0, prefix),
+          part(1),
+          summaryDelta(1, "aside"),
+          summaryDelta(0, suffix),
+        ],
+        redacted,
+      ),
+    },
+    {
+      label: "withheld-reasoning-text",
+      blocked: true,
+      events: stream([textDelta(0, prefix), textDelta(1, "aside"), textDelta(0, suffix)], redacted),
+    },
+  ];
+  for (const entry of cases) {
+    const rawBody = encode(entry.events);
+    const result = await f.exchangeResponse(
+      { status: 200, contentType: "text/event-stream", rawBody },
+      wire.request,
+    );
+    const released = result.blocked ? 0 : Buffer.byteLength(result.body ?? "");
+    console.log(
+      `exchange ${entry.label}: ${result.blocked ? "withheld" : "delivered"} released_bytes=${released}`,
+    );
+    if (entry.blocked) {
+      assert.equal(result.blocked, true, entry.label);
+      assert.equal(released, 0, entry.label);
+    } else {
+      assert.equal(result.response_complete, true, entry.label);
+      assert.equal(result.body?.toString(), rawBody, entry.label);
+      assert.equal(released, Buffer.byteLength(rawBody), entry.label);
+    }
+  }
+});
 
 test("Responses output text assembled across parts and messages cannot reveal selected material", async (t) => {
   const f = await staticEgressFixture(t);

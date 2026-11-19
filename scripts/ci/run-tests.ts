@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { sanitizeError } from "./failure-redaction.ts";
 import { startAgentNamespaceCapture } from "./k3d-diagnostics.ts";
+import { isOpenShellLane } from "./openshell-full-integration.ts";
 import { collectInstallationPhases } from "./openshell-installation-phase.ts";
 import { openShellRequiredEnv } from "./openshell-model-inputs.mjs";
 import { aggregateGroup } from "./runner-aggregate.ts";
@@ -27,7 +28,6 @@ import {
   exists,
   fileConcurrency,
   fileInputEnv,
-  isObject,
   issue,
   logIssues,
   loadRunnerManifest,
@@ -45,6 +45,7 @@ import {
   type RunnerLane,
   type RunnerManifest,
 } from "./runner-inputs.ts";
+import { isRecord } from "./records.ts";
 import { runCompleteLifecycle } from "./runner-lifecycle.ts";
 import {
   abandonedSteps,
@@ -620,6 +621,10 @@ async function runLane(
     };
     const results = new Array<ScheduledFileResult>(lane.files.length);
     let annotateFailure = process.env.GITHUB_ACTIONS === "true";
+    // Focused runs can omit files. The Full Integration view splits the OpenShell lane before selection.
+    const originalFileOrder =
+      lane.files.length === manifest.lanes.get(lane.name)?.files.length &&
+      !(process.env.OCC_CI_SUITE_VIEW === "full-integration" && isOpenShellLane(lane.name));
     const runAt = async (index: number, mode: FileMode) => {
       const file = lane.files[index];
       if (!file) {
@@ -646,8 +651,10 @@ async function runLane(
           result.counts.failed > 0 && result.cleanup?.status === "passed"
             ? "A test file reported failed tests and its cleanup passed."
             : "A test file failed.";
+        const ordinal = originalFileOrder ? index + 1 : "UNKNOWN";
         process.stderr.write(
-          `::error title=Test lane failure::${message} Final lane results will follow.\n`,
+          `::error title=Test lane failure::${message} Final lane results will follow.\n` +
+            `::notice title=Test lane first failed file hint::Original manifest file ordinal ${ordinal}.\n`,
         );
       }
       process.stderr.write(
@@ -782,7 +789,7 @@ async function completePhaseChild() {
     if (request === null || request === undefined) {
       throw new TypeError("Missing lifecycle phase request.");
     }
-    const { phase, root, lane, statePath, resultsPath, manifestPath, file, testName } = isObject(
+    const { phase, root, lane, statePath, resultsPath, manifestPath, file, testName } = isRecord(
       request,
     )
       ? request
@@ -791,8 +798,8 @@ async function completePhaseChild() {
       if (typeof root !== "string") {
         throw new Error("Invalid lifecycle phase root.");
       }
-      const owner: unknown = await import(pathToFileURL(join(root, "scripts/ci/prepare.mjs")).href);
-      if (!isObject(owner) || typeof owner.prepareLane !== "function") {
+      const owner: unknown = await import(pathToFileURL(join(root, "scripts/ci/prepare.ts")).href);
+      if (!isRecord(owner) || typeof owner.prepareLane !== "function") {
         throw new Error("Invalid lifecycle preparation owner.");
       }
       const prepared: unknown = Reflect.apply(owner.prepareLane, owner, [
@@ -805,7 +812,7 @@ async function completePhaseChild() {
         throw new Error("Invalid lifecycle phase root.");
       }
       const owner: unknown = await import(pathToFileURL(join(root, "scripts/ci/cleanup.ts")).href);
-      if (!isObject(owner) || typeof owner.cleanupState !== "function") {
+      if (!isRecord(owner) || typeof owner.cleanupState !== "function") {
         throw new Error("Invalid lifecycle cleanup owner.");
       }
       const cleaned: unknown = Reflect.apply(owner.cleanupState, owner, [statePath]);

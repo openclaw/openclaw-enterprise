@@ -44,6 +44,7 @@ Operator contracts:
 
 - [Storage and credentials](kubernetes-compute/storage-and-credentials.md): separate gateway state, Harness workspaces, and runtime Secrets.
 - [Networking and isolation](kubernetes-compute/networking-and-isolation.md): DNS, private gateway routes, and tenant namespace ownership.
+- [Managed channel egress](kubernetes-compute/channel-egress.md): per-Agent Envoy listeners, provider destinations and revocation.
 
 ## Lifecycle
 
@@ -263,9 +264,9 @@ before replacing the controller images.
 
 <a id="failure-conditions"></a>
 
-- **Namespace provisioning fails:** A `worker.completed` log for `namespace.ensure` with
-  `hintCode: KUBERNETES_TENANT_ACCESS_DENIED` means Kubernetes returned HTTP 403 while the
-  worker reconciled the tenant's quota, limits, or network policies. Check the worker's
+- **Namespace provisioning or deletion fails:** A `worker.completed` log for `namespace.ensure`
+  or `namespace.delete` with `hintCode: KUBERNETES_TENANT_ACCESS_DENIED` means Kubernetes
+  returned HTTP 403 while the worker reconciled or cleaned up the tenant's resources. Check the worker's
   [tenant-local RoleBinding](../../guides/deploy/production-agents.md#grant-tenant-rolebindings) in the affected target.
   Also verify namespace ownership labels, restricted Pod Security labels, and enforced
   NetworkPolicies in each selected tenant target. Existing
@@ -321,7 +322,7 @@ before replacing the controller images.
   [repository broker policy](kubernetes-compute/networking-and-isolation.md#networking).
 - **Approved traffic fails or denied traffic succeeds:** Verify NetworkPolicy
   enforcement, configured DNS selectors, gateway-client selectors, and any
-  configured channel proxy address.
+  assigned Envoy channel listener.
 - **Production startup fails:** Confirm the controller API and worker share the
   same `OCC_CONFIG_PATH`, image digests are immutable, Kubernetes credentials
   are valid, and required runtime Secret prefixes are configured.
