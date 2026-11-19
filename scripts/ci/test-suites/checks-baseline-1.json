@@ -87,7 +87,7 @@
     "tests/conformance/openshell-oauth-wire.test.mjs",
     "tests/conformance/openshell-codex-device.test.mjs",
     "tests/conformance/openshell-harness-status.test.mjs",
-    "tests/conformance/strands-box-status.test.mjs",
+    "tests/conformance/strands-box-status.test.ts",
     "tests/integration/secret-driver-startup.test.ts",
     "tests/conformance/kubernetes-configuration.test.ts",
     "tests/conformance/occ-read.test.ts",
@@ -369,7 +369,7 @@
       "path": "tests/conformance/openshell-harness-status.test.mjs"
     },
     {
-      "path": "tests/conformance/strands-box-status.test.mjs"
+      "path": "tests/conformance/strands-box-status.test.ts"
     },
     {
       "path": "tests/conformance/platform-state-memory.test.ts"
