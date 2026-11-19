@@ -537,10 +537,27 @@ async function serviceEgress(
     };
   }
   const spec = service.spec;
-  if (!spec || !Array.isArray(spec.ports)) {
+  if (
+    !isObject(spec) ||
+    (spec.type !== undefined &&
+      spec.type !== "ClusterIP" &&
+      spec.type !== "NodePort" &&
+      spec.type !== "LoadBalancer" &&
+      spec.type !== "ExternalName")
+  ) {
     throw new DiagnosticError("The response lacks a complete Service spec.");
   }
-  const addresses = spec.clusterIPs ?? (spec.type === "ExternalName" ? [] : [spec.clusterIP]);
+  if (spec.type === "ExternalName") {
+    return {
+      status: "failed",
+      summary: "The selected Service is an ExternalName alias and has no ClusterIP.",
+      resources,
+    };
+  }
+  if (!Array.isArray(spec.ports)) {
+    throw new DiagnosticError("The response lacks a complete Service spec.");
+  }
+  const addresses = spec.clusterIPs ?? [spec.clusterIP];
   if (
     !Array.isArray(addresses) ||
     addresses.some(
