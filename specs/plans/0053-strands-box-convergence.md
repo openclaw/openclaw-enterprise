@@ -67,8 +67,12 @@ ownership. Import only reviewed changes.
 4. **Rotate and withdraw access.** Exercise a failed delivery, a stale serving copy, a rejected
    withdrawal, expiry, and a lost reply against the
    [delivery and recovery rules](../rfcs/20261118-strands-box/strands-box-held-launch.md#ownership-and-release).
-   Verify that fresh Git use fails after withdrawal or expiry and that the Agent can continue its
-   model conversation.
+   Exercise a push whose final authorization check precedes withdrawal and whose send starts
+   after acknowledgment. Read back the ref at GitHub to establish whether the push took effect.
+   Once that result is known, attempt a fresh push of a different commit to the same ref. Require
+   an authorization denial and verify at GitHub that the ref still points to the observed commit.
+   Verify fresh Git refusal after expiry as well. In both cases, require the next model turn to
+   succeed in the same conversation.
 5. **Qualify the installation.** Install the Helm chart and Worker built from the exact reviewed
    candidate on clean ARM64. Record chart, image, and source identities. Check installer egress,
    RBAC, DNS, bootstrap, and diagnostics for held startups. Run the

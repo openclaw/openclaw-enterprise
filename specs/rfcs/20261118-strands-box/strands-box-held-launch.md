@@ -18,6 +18,13 @@ A failed startup can leave the Worker waiting until the deployment deadline. At 
 A Pod that fails while held may never pass that check. Box Sandbox support was absent at this
 baseline.
 
+At commit `aef1e7a4b082652ba76bbace63380bb36424dea9`, Kubernetes Compute already reads
+`harnessStatus` for Strands Box when the Pod readiness check fails. It can report a validated
+failure or keep the revision unready. The Sandbox contract also defines an optional `enrollHarness`
+method that accepts a Compute-owned release callback for a specific fresh startup.
+The proposed generic observation and release path still needs qualification with delivery checks
+on each serving copy.
+
 Let Compute authenticate the target and ask the selected Sandbox why startup is held **before** the
 Pod becomes ready. A scoped observation can report pending or a sanitized terminal failure. Only
 Compute can authorize release, and only for the startup whose containment and credential delivery it
@@ -99,11 +106,14 @@ flowchart TB
    before signing. Sandbox must verify the release against the full startup identity. A transport
    bearer alone confers no release authority.
 3. **Maintain protection.** Loss of authorization, revocation, expiry, replacement, companion loss,
-   or an unreadable current version blocks release and further protected use. CredentialProxy
-   acknowledges a push, policy change, rotation, or withdrawal only after every applicable serving
-   copy reports the effective version and can enforce it. Missing, stale, foreign, or ambiguous
-   readback leaves delivery unconfirmed. A failed push leaves the committed source version
-   authoritative. A rejected withdrawal is incomplete.
+   or an unreadable current version blocks release and protected use at the next authorization
+   check. CredentialProxy acknowledges a credential push, policy change, rotation, or withdrawal
+   only after every applicable serving copy reports the effective version and can enforce it.
+   Missing, stale, foreign, or ambiguous readback leaves delivery unconfirmed. A failed credential
+   push leaves the committed source version authoritative. A rejected withdrawal is incomplete. Under the
+   [RFC-0023 withdrawal protocol](../0023-egress-proxy-credential-lifecycle/protocol.md#withdraw-and-recover),
+   a send that passed its final check before withdrawal can start after acknowledgment. For a Git
+   push with an uncertain result, read back the ref at GitHub before deciding whether it took effect.
 4. **Recover.** After Worker loss or a lost reply, observe the current incarnation and delivery
    state before adoption or release. Never replay an operation with an unknown effect or fall back
    to direct egress.
