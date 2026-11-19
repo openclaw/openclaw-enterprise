@@ -916,7 +916,7 @@ test(
     // CRI records already exist when the Collector starts. The foreign Pods
     // copy every OCC classification label, but cannot choose their namespace.
     const pods = join(fixture.directory, "pods");
-    for (const pod of podMetadata) {
+    for (const [index, pod] of podMetadata.entries()) {
       const [containerSpec] = pod.spec.containers;
       assert.ok(containerSpec);
       const container = containerSpec.name;
@@ -935,9 +935,12 @@ test(
               "service.instance.id": workerPod.metadata.uid,
             };
       await mkdir(logDirectory, { recursive: true });
+      // filelog tracks content fingerprints. The trusted and forged OCC pairs
+      // must stay distinct even when their CRI timestamps share a millisecond.
+      const criBody = JSON.stringify({ fixtureRecord: index, ...record });
       await writeFile(
         join(logDirectory, "0.log"),
-        `${new Date().toISOString()} stdout F ${JSON.stringify(record)}\n`,
+        `${new Date().toISOString()} stdout F ${criBody}\n`,
       );
     }
     const namespaceFile = join(fixture.directory, "namespace");
@@ -1022,22 +1025,39 @@ test(
     // Wait until filelog has consumed every input, then stop the owned Collector
     // to drain its batch. Otherwise a missing forged record could be a read race.
     const metricsAddress = await fixture.port(8888);
-    await waitFor(
-      "every CRI record after Pod metadata syncs",
-      async () => {
-        const response = await fetch(`http://${metricsAddress}/metrics`);
-        assert.equal(response.status, 200);
-        const metrics = await response.text();
-        const accepted = metrics.split("\n").reduce((total, line) => {
-          const sample = line.match(
-            /^otelcol_receiver_accepted_log_records(?:_total)?\{[^}]*receiver="filelog"[^}]*\}\s+(\d+(?:\.\d+)?)/,
-          );
-          return total + Number(sample?.[1] ?? 0);
-        }, 0);
-        return accepted >= podMetadata.length;
-      },
-      fixture,
-    );
+    let acceptedRecords: number | null = null;
+    try {
+      await waitFor(
+        "every CRI record after Pod metadata syncs",
+        async () => {
+          const response = await fetch(`http://${metricsAddress}/metrics`);
+          assert.equal(response.status, 200);
+          const metrics = await response.text();
+          const samples = metrics.split("\n").flatMap((line) => {
+            const sample = line.match(
+              /^otelcol_receiver_accepted_log_records(?:_total)?\{[^}]*receiver="filelog"[^}]*\}\s+(\d+(?:\.\d+)?)/,
+            );
+            return sample ? [Number(sample[1])] : [];
+          });
+          acceptedRecords =
+            samples.length > 0 ? samples.reduce((total, count) => total + count, 0) : null;
+          return (acceptedRecords ?? 0) >= podMetadata.length;
+        },
+        fixture,
+      );
+    } catch (error) {
+      const exportedCount = await records()
+        .then((exported) => exported.length)
+        .catch(() => null);
+      t.diagnostic(
+        `Last CRI progress (null means unavailable): ${JSON.stringify({
+          accepted: acceptedRecords,
+          expected: podMetadata.length,
+          exported: exportedCount,
+        })}`,
+      );
+      throw error;
+    }
     await docker(["stop", "--time", "10", fixture.collector]);
     assert.equal(
       await docker(["inspect", "--format", "{{.State.ExitCode}}", fixture.collector]),
