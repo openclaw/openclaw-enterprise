@@ -875,7 +875,7 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
       const accepted = lost.acceptedDeployment();
       assert.ok(
         accepted,
-        "the real API must have accepted the deployment before its response was lost",
+        `the real API must have accepted the deployment before its response was lost: ${JSON.stringify(lost.deploymentResponses())}`,
       );
       assert.equal(lost.deploymentRequests(), 1);
       await assert.rejects(executeUpgrade(true), /incomplete|unknown|failed/i);

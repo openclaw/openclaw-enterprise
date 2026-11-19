@@ -15,6 +15,7 @@ export async function createUpgradeResponseProxy(options: {
   const send = upstreamUrl.protocol === "https:" ? request : httpRequest;
   let deployment: Record<string, unknown> | undefined;
   let deploymentRequests = 0;
+  const deploymentResponses: { status: number | undefined; code?: string }[] = [];
   let allDeploymentRequests = 0;
   let stopRequests = 0;
   const server = createServer({ key: options.key, cert: options.cert }, (incoming, outgoing) => {
@@ -52,6 +53,24 @@ export async function createUpgradeResponseProxy(options: {
         ca: options.cert,
       },
       (response) => {
+        if (incoming.method === "POST" && incoming.url?.endsWith("/deploy")) {
+          const observed: { status: number | undefined; code?: string } = {
+            status: response.statusCode,
+          };
+          deploymentResponses.push(observed);
+          const errorChunks: Buffer[] = [];
+          response.on("data", (chunk: Buffer) => errorChunks.push(chunk));
+          response.on("end", () => {
+            try {
+              const body = JSON.parse(Buffer.concat(errorChunks).toString());
+              if (typeof body.error?.code === "string") {
+                observed.code = body.error.code;
+              }
+            } catch {
+              // A non-JSON response is still identified by its HTTP status.
+            }
+          });
+        }
         if (isDeploy && deployment === undefined && response.statusCode === 202) {
           const chunks: Buffer[] = [];
           response.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -74,6 +93,7 @@ export async function createUpgradeResponseProxy(options: {
   return {
     url: `https://localhost:${address.port}`,
     acceptedDeployment: () => deployment,
+    deploymentResponses: () => deploymentResponses,
     deploymentRequests: () => deploymentRequests,
     allDeploymentRequests: () => allDeploymentRequests,
     stopRequests: () => stopRequests,
