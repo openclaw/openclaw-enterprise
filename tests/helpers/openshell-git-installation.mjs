@@ -201,12 +201,14 @@ async function certificates(command, directory, originHost, authorityHost) {
 /** Installs the supported model + selected-repository path in its own k3d cluster. */
 export function createOpenShellGitInstallation(
   t,
-  { witnessIssuedGit = false, allowStandingApprovals = false } = {},
+  { witnessIssuedGit = false, allowStandingApprovals = false, networkAcl = false } = {},
 ) {
-  return ownFirstAgentWork(t)(installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals }));
+  return ownFirstAgentWork(t)(
+    installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals, networkAcl }),
+  );
 }
 
-async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals }) {
+async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals, networkAcl }) {
   const eventually = (description, operation, timeout = 120_000) =>
     waitUntil(description, operation, timeout, t.signal);
   let tearingDown = false;
@@ -355,6 +357,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     host: bridge,
     advertisedHost: originHost,
     witnessIssuedGit,
+    ...(networkAcl && { networkAcl: true, repository: "fixture/a" }),
     tls: { ...tls.origin, ca: tls.ca },
   });
   cleanup.push(() => origin.close());
@@ -1463,6 +1466,8 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     modelSource,
     repositoryRef: origin.repositoryRef,
     origin,
+    sandboxImage: installation.drivers.compute.configuration.images.agent,
+    originBridge: bridge,
     kube,
     gatewayBackend,
     gatewayClient,

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { IncomingMessage } from "node:http";
 import { createServer, get as httpsGet } from "node:https";
 import { checkServerIdentity } from "node:tls";
@@ -26,6 +26,7 @@ export async function startSkipperPrivateGitOrigin({
   teamReview = false,
   seedRefs = 0,
   witnessIssuedGit = false,
+  networkAcl = false,
 } = {}) {
   if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/.test(repository)) {
     throw new Error("repository must be owner/name");
@@ -41,6 +42,12 @@ export async function startSkipperPrivateGitOrigin({
   const env = cleanEnvironment({ HOME: directory, GIT_CONFIG_GLOBAL: "/dev/null" });
   const git = (args, options = {}) => run("git", args, { env, ...options });
   const bare = join(directory, `${repository}.git`);
+  const networkRepositories = networkAcl ? [repository, "fixture/b", "fixture/c"] : [repository];
+  const broadToken = networkAcl ? randomBytes(32).toString("hex") : undefined;
+  const broadAuthorization = broadToken
+    ? `Basic ${Buffer.from(`x-access-token:${broadToken}`).toString("base64")}`
+    : undefined;
+  const networkRequests = [];
   const children = new Set();
   // HTTPS exposes a TLSSocket on the request and a net.Socket at TCP accept.
   // Their live TCP four-tuple identifies the same connection across both events.
@@ -126,6 +133,15 @@ export async function startSkipperPrivateGitOrigin({
       `#!/bin/sh\nwhile read old new ref; do\n  test "$ref" = "$FIXTURE_APPROVAL_REF" || { echo 'ref denied' >&2; exit 1; }\ndone\n`,
       { mode: 0o700 },
     );
+    if (networkAcl) {
+      for (const name of networkRepositories.slice(1)) {
+        const target = join(directory, `${name}.git`);
+        await mkdir(join(target, ".."), { recursive: true });
+        await git(["clone", "--bare", bare, target]);
+        await git(["-C", target, "config", "maintenance.auto", "false"]);
+        await git(["-C", target, "config", "http.receivepack", "true"]);
+      }
+    }
     if (!tls) {
       const keyFile = join(directory, "tls-key.pem");
       const certFile = join(directory, "tls-cert.pem");
@@ -323,19 +339,31 @@ export async function startSkipperPrivateGitOrigin({
           await createDraftPull(request, reply);
           return;
         }
+        const matchedRepository = networkRepositories.find((name) =>
+          url.pathname.startsWith(`/${name}.git/`),
+        );
+        if (networkAcl) {
+          networkRequests.push({
+            method: request.method,
+            path: url.pathname,
+            service: url.searchParams.get("service"),
+            authenticated: request.headers.authorization === broadAuthorization,
+          });
+        }
+        const requestGitPrefix = matchedRepository ? `/${matchedRepository}.git` : gitPrefix;
         const service = url.searchParams.get("service");
         const discovery =
           request.method === "GET" &&
-          url.pathname === `${gitPrefix}/info/refs` &&
+          url.pathname === `${requestGitPrefix}/info/refs` &&
           ["git-upload-pack", "git-receive-pack"].includes(service) &&
           [...url.searchParams].length === 1;
         const rpc =
           request.method === "POST" &&
           ["git-upload-pack", "git-receive-pack"].some(
-            (name) => url.pathname === `${gitPrefix}/${name}`,
+            (name) => url.pathname === `${requestGitPrefix}/${name}`,
           ) &&
           !url.search;
-        if (!discovery && !rpc) {
+        if (!matchedRepository || (!discovery && !rpc)) {
           reply(404);
           return;
         }
@@ -343,11 +371,14 @@ export async function startSkipperPrivateGitOrigin({
           ? service === "git-receive-pack"
           : url.pathname.endsWith("/git-receive-pack");
         endpoint = `${receive ? "receive" : "upload"}-${discovery ? "advertise" : "pack"}`;
-        if (!authority.authorize(request.headers.authorization, "git")) {
+        const broad = networkAcl && request.headers.authorization === broadAuthorization;
+        if (networkAcl ? !broad : !authority.authorize(request.headers.authorization, "git")) {
           reply(401);
           return;
         }
-        const permissions = authority.permissions(request.headers.authorization);
+        const permissions = broad
+          ? { contents: "write" }
+          : authority.permissions(request.headers.authorization);
         if (!permissions.contents || (receive && permissions.contents !== "write")) {
           reply(403);
           return;
@@ -503,6 +534,33 @@ export async function startSkipperPrivateGitOrigin({
         return `${input}.${sign("sha256", Buffer.from(input), privateKey).toString("base64url")}`;
       },
       snapshot,
+      ...(networkAcl && {
+        network: {
+          repositories: networkRepositories,
+          token: broadToken,
+          requests: () => networkRequests.map((entry) => ({ ...entry })),
+          async ref(name, ref) {
+            assert.ok(networkRepositories.includes(name));
+            const result = await git(
+              ["-C", join(directory, `${name}.git`), "rev-parse", "--verify", ref],
+              { allowFailure: true },
+            );
+            return result.code === 0 ? result.stdout.trim() : undefined;
+          },
+          async hasObject(name, oid) {
+            assert.ok(networkRepositories.includes(name) && /^[a-f0-9]{40}$/.test(oid));
+            const result = await git(
+              ["-C", join(directory, `${name}.git`), "cat-file", "-e", `${oid}^{commit}`],
+              { allowFailure: true },
+            );
+            return result.code === 0;
+          },
+          async clearRef(name, ref) {
+            assert.ok(networkRepositories.includes(name));
+            await git(["-C", join(directory, `${name}.git`), "update-ref", "-d", ref]);
+          },
+        },
+      }),
       observeReplacementOrigin(indexA, indexB) {
         const before = snapshot();
         const witnesses = witnessRequests;
