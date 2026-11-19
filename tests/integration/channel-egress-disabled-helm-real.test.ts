@@ -218,12 +218,21 @@ test(
     });
     t.after(() => tls.close());
     const installation = await request("/installation");
+    const installationId = installation.id;
+    if (
+      typeof installationId !== "string" ||
+      !/^ins_[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
+        installationId,
+      )
+    ) {
+      throw new Error("Expected an Installation ID before annotating the startup Secret");
+    }
     await kubectl(
       "annotate",
       "secret/occ-installation-startup",
       "--namespace",
       namespace,
-      `openclaw.dev/installation-id=${String(installation.id)}`,
+      `openclaw.dev/installation-id=${installationId}`,
     );
     const liveSecret = asRecord(await resource("secret", "occ-installation-startup", namespace))!;
     const installationFile = join(directory, "installation.json");

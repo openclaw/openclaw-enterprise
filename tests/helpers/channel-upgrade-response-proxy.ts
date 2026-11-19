@@ -9,11 +9,21 @@ export async function createUpgradeResponseProxy(options: {
   cert: string;
   agentPath?: string;
 }) {
+  const upstreamUrl = new URL(options.upstream);
+  assert.ok(["http:", "https:"].includes(upstreamUrl.protocol));
+  assert.ok(["localhost", "127.0.0.1", "[::1]"].includes(upstreamUrl.hostname));
+  const send = upstreamUrl.protocol === "https:" ? request : httpRequest;
   let deployment: Record<string, unknown> | undefined;
   let deploymentRequests = 0;
   let allDeploymentRequests = 0;
   let stopRequests = 0;
   const server = createServer({ key: options.key, cert: options.cert }, (incoming, outgoing) => {
+    // The fixture forwards paths to its selected loopback service, never URLs
+    // supplied by a client (including absolute-form and protocol-relative URLs).
+    if (!incoming.url?.startsWith("/") || incoming.url.startsWith("//")) {
+      outgoing.writeHead(400).end();
+      return;
+    }
     if (
       incoming.method === "POST" &&
       /^\/namespaces\/[^/]+\/agents\/[^/]+\/deploy$/.test(incoming.url ?? "")
@@ -33,12 +43,12 @@ export async function createUpgradeResponseProxy(options: {
     if (isDeploy) {
       deploymentRequests++;
     }
-    const send = options.upstream.startsWith("https:") ? request : httpRequest;
     const upstream = send(
-      new URL(incoming.url!, options.upstream),
+      upstreamUrl,
       {
         method: incoming.method,
-        headers: incoming.headers,
+        path: incoming.url,
+        headers: { ...incoming.headers, host: upstreamUrl.host },
         ca: options.cert,
       },
       (response) => {

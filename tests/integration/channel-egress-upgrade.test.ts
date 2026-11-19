@@ -4,6 +4,10 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
+import { createServer } from "node:http";
+import { request } from "node:https";
+import { selfSigned } from "../helpers/certificates.ts";
+import { createUpgradeResponseProxy } from "../helpers/channel-upgrade-response-proxy.ts";
 
 async function fixture(t: TestContext, enabled = true) {
   const directory = await mkdtemp(join(tmpdir(), "oce-channel-upgrade-"));
@@ -323,4 +327,39 @@ test("quiesced one-off recovery verifies recorded Stops without contacting the s
   const incomplete = run();
   assert.equal(incomplete.status, 1);
   assert.match(incomplete.stderr, /every original Stop to be complete/);
+});
+
+test("upgrade response proxy only forwards paths to its selected upstream", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "oce-upgrade-proxy-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const tls = await selfSigned(directory);
+  const paths: string[] = [];
+  const upstream = createServer((incoming, outgoing) => {
+    paths.push(incoming.url!);
+    outgoing.writeHead(200).end("fixture");
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>((resolve) => upstream.close(() => resolve())));
+  const address = upstream.address();
+  assert.ok(address && typeof address !== "string");
+  const proxy = await createUpgradeResponseProxy({
+    upstream: `http://127.0.0.1:${address.port}`,
+    key: tls.key,
+    cert: tls.cert,
+  });
+  t.after(() => proxy.close());
+  const status = (path: string) =>
+    new Promise<number>((resolve, reject) => {
+      const call = request(proxy.url, { path, ca: tls.cert }, (response) => {
+        response.resume();
+        response.on("end", () => resolve(response.statusCode!));
+      });
+      call.on("error", reject);
+      call.end();
+    });
+  assert.equal(await status("/installation?probe=true"), 200);
+  // A client cannot select another service even when it is reachable locally.
+  assert.equal(await status(`http://127.0.0.1:${address.port}/absolute`), 400);
+  assert.equal(await status(`//127.0.0.1:${address.port}/relative`), 400);
+  assert.deepEqual(paths, ["/installation?probe=true"]);
 });
