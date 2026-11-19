@@ -4,7 +4,7 @@ rfc: null
 
 # Implementation plan: [outcome]
 
-- **ID:** [RFC-NNNN or TASK-NNNN]
+- **ID:** [RFC-yyyymmdd-title or TASK-NNNN; retain existing numeric RFC IDs]
 - **Delivery status:** Planned
 - **Owner:** [responsible person or team]
 - **Authority:** [owning RFC or current architecture and reference]
