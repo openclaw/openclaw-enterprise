@@ -10,6 +10,7 @@ import type { SandboxDriver } from "./drivers/sandbox/index.ts";
 import {
   admitRepositoryNetworkPolicy,
   RepositoryNetworkPolicyAdmissionError,
+  type RepositoryNetworkGrant,
   type RepositoryNetworkPolicy,
 } from "./repository-network-policy.ts";
 import type { ErrorDetail } from "./api/common.ts";
@@ -145,6 +146,8 @@ export interface SandboxPolicy {
   readonly agentId: string;
   readonly version: number;
   readonly additions: readonly SandboxNetworkGrant[];
+  /** Omission preserves ordinary network policy. An empty list explicitly denies repository traffic. */
+  readonly repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[];
   readonly application?: SandboxPolicyApplication;
   readonly applied?: {
     readonly revisionId: string;
