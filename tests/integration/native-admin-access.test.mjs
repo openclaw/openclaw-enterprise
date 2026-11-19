@@ -802,6 +802,13 @@ test("a deployment answers an authorized probe 503, a stop shows a page, and out
         const response = await probe(cookie, path, headers);
         const { "x-request-id": requestId, date, ...rest } = response.headers;
         assert.ok(requestId);
+        // The 302 has no body, though it is labelled JSON.
+        if (
+          response.body !== "" &&
+          String(response.headers["content-type"]).startsWith("application/json")
+        ) {
+          assert.equal(response.json().meta.requestId, requestId);
+        }
         answers.push({
           path,
           status: response.statusCode,
@@ -849,7 +856,7 @@ test("a deployment answers an authorized probe 503, a stop shows a page, and out
   assert.equal(stop.status, 202);
   assert.equal((await nativeStatus(context)).data.status, "stopped");
   // A stopped Agent stays refused, so the Agent UI still offers its sign-in panel. Its link, a page
-  // load, gets a page that says the Agent is not running; probes and API reads keep the JSON 403.
+  // load, gets a page that says the Agent is unavailable; probes and API reads keep the JSON 403.
   for (const headers of [{}, navigation]) {
     const stopped = await probe(context.session.cookie, "/healthz", headers);
     assert.equal(stopped.statusCode, 403, stopped.body);
@@ -864,8 +871,11 @@ test("a deployment answers an authorized probe 503, a stop shows a page, and out
   assert.match(page.headers["content-type"], /^text\/html/);
   assert.equal(page.headers["cache-control"], "no-store");
   assert.equal(page.headers["referrer-policy"], "no-referrer");
-  assert.match(page.body, /<title>Agent not running<\/title>/);
-  assert.match(page.body, /<p>This Agent is not running\. Open it from the console\.<\/p>/);
+  assert.match(page.body, /<title>Agent unavailable<\/title>/);
+  assert.match(
+    page.body,
+    /<p>This Agent is not available right now\. Open it from the console\.<\/p>/,
+  );
   const link = `<a href="${publicOrigin}/console/#native-agent=${key}">Return to console</a>`;
   assert.ok(page.body.includes(link), page.body);
   assert.equal(page.body.includes(context.agent.id), false);

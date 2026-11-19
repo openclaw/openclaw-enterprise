@@ -1602,7 +1602,11 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       try {
         resolved = requireAvailable(availability, target);
       } catch (error) {
-        return nativeAdminProxyDenial(nativeAdminFailureReason(error), { accessEstablished: true });
+        const reason = nativeAdminFailureReason(error);
+        return nativeAdminProxyDenial(
+          reason,
+          reason === "agent_unavailable" ? { accessEstablished: true } : {},
+        );
       }
       const requestAuthority = nativeAdminAuthority(request.headers.host);
       if (requestAuthority !== new URL(resolved.target.origin).host.toLowerCase()) {
@@ -1724,7 +1728,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         );
         return true;
       }
-      // Only a caller whose Agent access was established learns that it is not running. The
+      // Only a caller whose Agent access was established learns that it is unavailable. The
       // sentence is the same whether it is stopped, being deleted or unsupported.
       const agentPage =
         admission.reason === "revision_changed"
@@ -1734,8 +1738,8 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
             }
           : admission.reason === "agent_unavailable" && admission.accessEstablished === true
             ? {
-                title: "Agent not running",
-                text: "This Agent is not running. Open it from the console.",
+                title: "Agent unavailable",
+                text: "This Agent is not available right now. Open it from the console.",
               }
             : undefined;
       if (consoleUrl !== undefined && agentPage !== undefined) {
