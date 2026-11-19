@@ -511,6 +511,12 @@ and keep the saved `images.env`, Installation Secret, database Secrets, and
 signing key across releases. When you use the dashboard or mTLS profile, pass
 their values and post-renderer to every gateway upgrade.
 
+**Known issue:** With Helm 4, `scripts/upgrade-production-images` can refuse with `the Helm release changed before submission` after it
+stops the API and worker, because Helm 4's `helm status` includes live resources. Affected versions can leave the
+Installation Secret switched with the old controller, so the console stays down until restoration. Use a Helm 3 binary first on
+`PATH` until openclaw/openclaw-enterprise#6593 lands and is synced here. To recover, first confirm with `helm history` that the release revision is unchanged (no other upgrade ran); then restore the Installation Secret from the run's
+evidence directory, then scale the API and worker back up.
+
 ## Verification
 
 ```bash
