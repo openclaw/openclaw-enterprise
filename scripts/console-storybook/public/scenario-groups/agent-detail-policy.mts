@@ -218,6 +218,11 @@ export function createAgentDetailPolicyScenarios({
                 description: "Repository network access is saved for a later deployment.",
                 steps: [
                   "Open Manage rules and check the saved repository policy and the redeploy guidance.",
+                  ...(state === "repository"
+                    ? [
+                        "Choose Edit repository access, then Done. Select the denial and choose Allow selected. Check the rule review, then go back to editing. Confirm legacy access is still saved and the deny-all proposal is still editable. Discard the repository proposal and reset the story before checking saves.",
+                      ]
+                    : []),
                   ...(state === "repositorySaveLost"
                     ? [
                         "Choose Edit repository access to propose denying all repositories.",
@@ -279,6 +284,7 @@ export function createAgentDetailPolicyScenarios({
                 steps: [
                   "Open Manage rules. The protected execution notice is visible, adding and editing are disabled, and live application is unavailable.",
                   "A rule saved before protected execution applied blocks every protected deploy. Choose Remove saved network rules, review the removal, then Save for later and confirm the saved policy is empty.",
+                  "Reopen Manage rules and choose Edit repository access. Select Read for example/application and save. Check the saved repository grant and redeploy guidance. Adding an ordinary rule and live application are still unavailable.",
                 ],
               }
             : {}),

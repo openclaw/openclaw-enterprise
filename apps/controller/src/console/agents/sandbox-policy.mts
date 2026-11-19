@@ -1087,7 +1087,7 @@ export function renderAgentSandboxPolicy(
       ? "Rules added to your proposal. Review and save to persist changes."
       : "These requests are already covered by saved or proposed rules. Check the policy status before retrying.";
     if (batch && fresh.length) {
-      policyPanel.querySelector<HTMLFormElement>("form")?.requestSubmit();
+      policyPanel.querySelector<HTMLFormElement>("#sandbox-network-policy-form")?.requestSubmit();
     }
   }
 
@@ -1437,6 +1437,8 @@ export function renderAgentSandboxPolicy(
     }
     const saved = policy.repositoryNetworkPolicy;
     const saveSupported = readableCeiling && view?.repositoryNetworkPolicySaveSupported === true;
+    const protectedAdditions = () => protectedExecution() && policy.additions.length > 0;
+    const canEditRepository = () => canEdit() && !protectedAdditions();
     const panel = element(
       "section",
       { "aria-labelledby": "sandbox-repository-policy-title" },
@@ -1482,12 +1484,13 @@ export function renderAgentSandboxPolicy(
         },
         { disabled: mutation },
       );
-    if (!saveSupported || !editable()) {
+    if (!saveSupported || !canEditRepository()) {
       let reason = "Changes require enabled editing and policy permissions.";
-      if (protectedExecution()) {
-        reason = "Repository policy editing is unavailable under protected execution.";
-      } else if (!saveSupported) {
+      if (!saveSupported) {
         reason = "This Installation cannot save repository policies yet.";
+      } else if (protectedAdditions()) {
+        reason =
+          "Remove saved network rules before saving a repository policy under protected execution.";
       }
       panel.append(element("p", { className: "hint" }, reason));
       if (repositoryDraft !== undefined) {
@@ -1585,7 +1588,7 @@ export function renderAgentSandboxPolicy(
       if (
         !current() ||
         !policyPanel.contains(form) ||
-        !editable() ||
+        !canEditRepository() ||
         view?.policy !== policy ||
         view?.repositoryNetworkPolicySaveSupported !== true ||
         save.disabled ||

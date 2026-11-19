@@ -14,11 +14,20 @@ components with simulated API state; they do not prove persistence or enforcemen
   **Review changes**. Preview does not change the saved version. Compare **Save**
   with **Save and apply to current revision**, then wait for provider confirmation.
 - **Edit repository network access:** open **Manage rules** and check the saved
-  legacy policy. Choose **Edit repository access**. Select **Read** for
+  legacy policy. Choose **Edit repository access**, then **Done**. Select the
+  denial and choose **Allow selected**. In the rule review, choose **Back to
+  editing** and check that the proposed deny-all policy and saved legacy access
+  are both visible. Reset the story, then choose **Edit repository access**.
+  Select **Read** for
   `example/application` and **Write** for `example/tooling`. Save, reopen the
   dialog, and check the grants and redeploy guidance. Then select **No access**
   for both and save. Compare the saved result with **Saved deny-all repository
   policy** and confirm that it differs from the initial legacy policy.
+- **Protected execution refuses network policy additions:** open **Manage rules**
+  and remove the saved network rules. Review the removal and choose **Save for
+  later**. Reopen **Manage rules**, choose **Edit repository access**, select
+  **Read** for `example/application`, and save. Check the repository grant and
+  redeploy guidance. Adding rules and applying the policy live are unavailable.
 - **Repository policy saving unavailable:** open **Manage rules** and check
   that you can read the saved state. The repository editor is unavailable.
 - **Discard after repository saving becomes unavailable:** open **Manage rules**

@@ -165,6 +165,7 @@ export function createNetworkPolicyFixture(
           host: `allowed-${index + 1}.example.org`,
         }));
   const repositoryCeiling: RepositoryNetworkGrant[] | undefined = [
+    "protected",
     "repository",
     "repositoryDenyAll",
     "repositoryReadOnly",

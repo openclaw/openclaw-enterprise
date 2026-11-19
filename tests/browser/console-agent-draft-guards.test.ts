@@ -1222,7 +1222,7 @@ test("Agent policy proposals preserve valid Unicode executable paths through rev
   assert.deepEqual(unchanged.additions, [grant]);
 });
 
-test("Agent policy under protected execution offers only removal of saved network rules", async (t) => {
+test("protected execution allows repository policy saves after removing ordinary network rules", async (t) => {
   const {
     fixture,
     namespace: rawNamespace,
@@ -1231,22 +1231,47 @@ test("Agent policy under protected execution offers only removal of saved networ
   }: PolicyConsoleFixture = await createPolicyConsole(t, [delegatedPolicyGrant]);
   const namespace = resource(rawNamespace);
   const agent = agentFields(rawAgent);
-  // Rules saved before protected execution applied block every protected deploy. This fixture
-  // selects no Credential Proxy, so only the view's protectedExecution flag is set on the read;
-  // the removal itself goes through real HTTP, IAM and OCC admission.
+  // This fixture has no Credential Proxy or repository policy API. Simulate their policy fields
+  // and repository save acknowledgement. The ordinary rule removal uses the real controller.
+  const repositoryGrants: RepositoryNetworkGrant[] = [
+    { repository: "example/application", access: "read" },
+  ];
   const saved = await fixture.request("PUT", base, {
     body: { expectedVersion: 1, additions: [delegatedPolicyGrant] },
   });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   const { page } = await newPage(t, fixture);
   await page.route(`${fixture.origin}${base}`, async (route) => {
-    if (route.request().method() !== "GET") {
-      await route.continue();
+    const request = route.request();
+    if (request.method() === "PUT") {
+      const posted = record(request.postDataJSON());
+      if (posted.repositoryNetworkPolicy !== undefined) {
+        const { data } = await fixture.request("GET", base);
+        const policy = record(record(data).policy);
+        await route.fulfill({
+          status: 200,
+          json: {
+            data: {
+              ...policy,
+              version: 4,
+              repositoryNetworkPolicy: repositoryGrants,
+            },
+          },
+        });
+        return;
+      }
+    }
+    if (request.method() !== "GET") {
+      await route.fallback();
       return;
     }
     const response = await route.fetch();
     const body = record(await response.json());
-    record(body.data).protectedExecution = true;
+    Object.assign(record(body.data), {
+      protectedExecution: true,
+      repositoryNetworkPolicyCeiling: repositoryGrants,
+      repositoryNetworkPolicySaveSupported: true,
+    });
     await route.fulfill({ response, json: body });
   });
   const requests = apiRequests(page, fixture.origin);
@@ -1257,7 +1282,10 @@ test("Agent policy under protected execution offers only removal of saved networ
   const readResponse = await read;
   t.diagnostic(`Policy GET status: ${readResponse.status()}`);
   assert.equal(readResponse.status(), 200);
-  await page.getByRole("button", { name: "Manage rules", exact: true }).click();
+  const manage = page.getByRole("button", { name: "Manage rules", exact: true });
+  const repository = page.getByRole("region", { name: "Repository network policy" });
+  const editRepository = repository.getByRole("button", { name: "Edit repository access" });
+  await manage.click();
   await page
     .getByText(
       "Protected execution uses Credential Proxy routes. You can remove saved network rules, but cannot add new ones. Saving does not change the running revision.",
@@ -1273,6 +1301,8 @@ test("Agent policy under protected execution offers only removal of saved networ
     await page.getByLabel("Actions for network rule 1", { exact: true }).isVisible(),
     false,
   );
+  await repository.getByText("Saved policy: Legacy repository access", { exact: true }).waitFor();
+  assert.equal(await editRepository.count(), 0);
   const preview = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" && response.url().endsWith(`${base}/validate`),
@@ -1332,6 +1362,28 @@ test("Agent policy under protected execution offers only removal of saved networ
     await page.getByRole("button", { name: "Add rule", exact: true }).isVisible(),
     false,
   );
+
+  await manage.click();
+  assert.equal(await editRepository.isVisible(), true, "empty additions allow repository editing");
+  assert.equal(await page.getByRole("button", { name: "Add rule", exact: true }).count(), 0);
+  assert.equal(
+    await page.getByRole("button", { name: "Apply saved rules", exact: true }).count(),
+    0,
+  );
+  await editRepository.click();
+  await repository.getByLabel("example/application", { exact: true }).selectOption("read");
+  const repositorySave = responseTo(page, "PUT", fixture.origin + base);
+  await repository.getByRole("button", { name: "Save repository policy", exact: true }).click();
+  assert.equal((await repositorySave).status(), 200);
+  await page.getByText("Repository policy v4 saved. Deploy a new version to use it.").waitFor();
+  assert.deepEqual(
+    pathRequests(requests, "PUT", base).map(({ body }) => body),
+    [
+      { expectedVersion: 2, additions: [] },
+      { expectedVersion: 3, additions: [], repositoryNetworkPolicy: repositoryGrants },
+    ],
+  );
+  assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 0);
 });
 
 test("Agent policy combined save preserves the original policy when the revision stops after review", async (t) => {

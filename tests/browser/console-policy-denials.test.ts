@@ -248,10 +248,41 @@ test("denial selection spans pages, keeps the inspected window, and requests app
   );
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
   await logWindow(page, fixture.origin, agentPath, revision.id, records);
+  // The repository API is a separate change. Advertise its capability on reads while the
+  // real controller still handles ordinary validation, saving, and application.
+  await page.route(fixture.origin + base, async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.fallback();
+      return;
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 200);
+    const body = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...body,
+        data: {
+          ...body.data,
+          repositoryNetworkPolicyCeiling: [{ repository: "example/application", access: "read" }],
+          repositoryNetworkPolicySaveSupported: true,
+        },
+      },
+    });
+  });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
   const tab = page.locator(".sandbox-policy");
   await tab.getByText("200 in loaded window", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Manage rules", exact: true }).click();
+  const editor = page.getByRole("dialog", { name: "Manage network rules", exact: true });
+  await editor.getByText("Saved policy: Legacy repository access", { exact: true }).waitFor();
+  await editor.getByRole("button", { name: "Edit repository access", exact: true }).click();
+  const repositoryDraft = editor.getByText("Proposed policy: Deny all repositories", {
+    exact: true,
+  });
+  await repositoryDraft.waitFor();
+  await editor.getByRole("button", { name: "Done", exact: true }).click();
   assert.equal(await tab.getByText("About this window", { exact: true }).count(), 0);
   assert.equal(await tab.locator(".sandbox-decision").count(), 5);
   // Refresh denials replaces the window, so a selection of the old records must not survive it:
@@ -292,12 +323,14 @@ test("denial selection spans pages, keeps the inspected window, and requests app
   await tab.getByText("Page 1 of 43", { exact: true }).waitFor();
 
   await tab.getByRole("button", { name: "Allow selected (6)", exact: true }).click();
+  await nextFrames(page);
+  assert.equal(pathRequests(requests, "PUT", base).length, 0, "review cannot save either policy");
+  assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 0);
   const dialog = page.getByRole("dialog", { name: "Review policy changes", exact: true });
   await dialog.waitFor();
   await dialog.getByText("6 denials selected → 2 new rules", { exact: true }).waitFor();
   await dialog.getByText("How the selection becomes rules", { exact: true }).click();
   assert.match(await dialog.locator(".sandbox-selection-breakdown").innerText(), /already covered/);
-  assert.equal(pathRequests(requests, "PUT", base).length, 0, "review cannot save or apply");
   const validations = pathRequests(requests, "POST", `${base}/validate`);
   assert.equal(validations.length, 1);
   const validationBody = validations[0]!.body;
@@ -310,6 +343,18 @@ test("denial selection spans pages, keeps the inspected window, and requests app
     "repeated denials and the saved grant must not create duplicate rules",
   );
   assert.deepEqual(proposed[0], grants[0]);
+  assert.equal(
+    await dialog
+      .getByRole("button", { name: "Save and apply to current revision", exact: true })
+      .count(),
+    0,
+  );
+  await dialog.getByRole("button", { name: "Back to editing", exact: true }).click();
+  await repositoryDraft.waitFor();
+  assert.equal(pathRequests(requests, "PUT", base).length, 0);
+  assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 0);
+  await editor.getByRole("button", { name: "Discard repository changes", exact: true }).click();
+  await editor.getByRole("button", { name: "Review changes", exact: true }).click();
   await dialog
     .getByRole("button", { name: "Save and apply to current revision", exact: true })
     .click();
