@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
-import { sandboxNetworkGrantsWithinCeiling } from "../../packages/contracts/src/index.ts";
+import {
+  CredentialSourceId,
+  NamespaceId,
+  sandboxNetworkGrantsWithinCeiling,
+} from "../../packages/contracts/src/index.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import {
   openShellProviderName,
@@ -17,6 +21,17 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
   const path = process.env.OCC_TEST_OPENSHELL_REPLACEMENT_INPUT_FILE;
   assert.ok(path, "Select the prepared managed installation input file");
   const input = JSON.parse(await readFile(path, "utf8"));
+  // Validate file-supplied path segments before reading credentials or contacting the cluster.
+  assert.ok(
+    typeof input.namespaceId === "string" &&
+      new RegExp(NamespaceId.pattern, "u").test(input.namespaceId),
+    "Invalid replacement Namespace ID",
+  );
+  assert.ok(
+    typeof input.modelSourceId === "string" &&
+      new RegExp(CredentialSourceId.pattern, "u").test(input.modelSourceId),
+    "Invalid replacement Credential Source ID",
+  );
   if (gitReplacement) {
     assert.ok(input.git?.repositoryRef, "Select an enrolled repository reference");
     assert.ok(input.git.additionalRepositoryRef, "Select a second enrolled repository reference");
