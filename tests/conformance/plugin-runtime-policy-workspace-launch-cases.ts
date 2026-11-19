@@ -203,7 +203,9 @@ export function registerWorkspaceLaunchCases() {
     withNone.models = {
       providers: {
         codex: {
-          models: [{ id: "gpt-test", compat: { supportedReasoningEfforts: ["none", "low", "high"] } }],
+          models: [
+            { id: "gpt-test", compat: { supportedReasoningEfforts: ["none", "low", "high"] } },
+          ],
         },
       },
     };
@@ -214,9 +216,10 @@ export function registerWorkspaceLaunchCases() {
       workspaceNodeId: "enrolled-node",
       console: { error: (line) => noneLogged.push(line) },
     });
-    assert.deepEqual(field(readConfig(noneResult.files), "models", "providers", "codex", "models"), [
-      { id: "gpt-test", compat: { supportedReasoningEfforts: ["none", "low", "high"] } },
-    ]);
+    assert.deepEqual(
+      field(readConfig(noneResult.files), "models", "providers", "codex", "models"),
+      [{ id: "gpt-test", compat: { supportedReasoningEfforts: ["none", "low", "high"] } }],
+    );
     assert.ok(noneLogged.every((line) => !line.includes("models[].compat")));
     // An openai row that names no transport keeps OpenClaw's default (no credential
     // in the Gateway) so Codex keeps owning its account's models; overrides still go.
