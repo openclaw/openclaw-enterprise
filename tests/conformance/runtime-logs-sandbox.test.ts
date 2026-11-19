@@ -48,6 +48,7 @@ import type {
   RuntimeLogPage,
 } from "../../packages/occ/src/runtime-logs/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
+import { assertSensitiveValuesAbsent } from "./runtime-log-security-assertions.ts";
 import { denialsDuring } from "../helpers/console-app.mjs";
 import { cpuTimeMs, cpuTimeMsAsync } from "../helpers/cpu-time.ts";
 import { callerDenied } from "../helpers/refusal-text.mjs";
@@ -460,16 +461,12 @@ test("sandbox log pages never contain planted credentials from command lines or 
 
   const auditBefore = auditSink.events.length;
   const logs = await read("source=sandbox&tailLines=1000");
+  assertSensitiveValuesAbsent(logs.text, "sandboxPage", values);
   assert.equal(logs.status, 200, logs.text);
   assert.equal(logs.headers.get("cache-control"), "no-store");
-  for (const [name, value] of Object.entries(values)) {
-    assert.equal(logs.text.includes(value), false, `canary ${name} leaked into the response`);
-  }
   const download = await read("source=sandbox&download=true");
+  assertSensitiveValuesAbsent(download.text, "sandboxDownload", values);
   assert.equal(download.status, 200, download.text);
-  for (const [name, value] of Object.entries(values)) {
-    assert.equal(download.text.includes(value), false, `canary ${name} leaked into the download`);
-  }
   assert.match(download.text, /^# agent=\S+ revision=\S+ source=sandbox sandbox=sb-[0-9a-f]+ /);
 
   // The route reached OpenShell only through the log RPC, for the revision's own Sandbox.
@@ -499,15 +496,6 @@ test("sandbox log pages never contain planted credentials from command lines or 
     lines.every((record) => record.kind === "sandbox" && record.contentClass === "activity"),
   );
   const clone = withFields(lines[0]);
-  const curl = withFields(lines[1]);
-  const http = withFields(lines[2]);
-  const denied = withFields(lines[3]);
-  const tracing = withFields(lines[4]);
-  const long = withFields(lines[5]);
-  const curlUser = withFields(lines[6]);
-  const sshpass = withFields(lines[7]);
-  assert.equal(curlUser.fields.cmd_line, "curl -u [redacted:argv] https://a.example.com");
-  assert.equal(sshpass.fields.cmd_line, "sshpass -p [redacted:argv] ssh build@host");
   assert.equal(
     clone.fields.cmd_line,
     "git clone https://[redacted:userinfo]@github.com/acme/repo.git",
@@ -516,7 +504,9 @@ test("sandbox log pages never contain planted credentials from command lines or 
   assert.equal(clone.fields.pid, "4242");
   assert.equal(clone.fields.activity, "PROC:LAUNCH");
   assert.equal(clone.message, "PROC:LAUNCH [INFO] git(4242)");
+  const curl = withFields(lines[1]);
   assert.match(stringValue(curl.fields.cmd_line), /Authorization: \[redacted:header\]/);
+  const http = withFields(lines[2]);
   assert.deepEqual(
     {
       method: http.fields.method,
@@ -537,15 +527,22 @@ test("sandbox log pages never contain planted credentials from command lines or 
     http.message,
     "HTTP:GET [INFO] ALLOWED curl(51) -> GET https://storage.example.com/obj$&?token=[redacted:query]&sig=[redacted:query] [policy:egress engine:opa]",
   );
+  const denied = withFields(lines[3]);
   assert.equal(denied.level, "warn");
   assert.equal(denied.fields.dst_host, "blocked.example.com");
   assert.equal(denied.fields.dst_port, "443");
   assert.match(stringValue(denied.fields.reason), /not in policy default/);
+  const tracing = withFields(lines[4]);
   assert.equal(tracing.level, "warn");
   assert.equal(tracing.subsystem, "openshell_supervisor::proxy");
   assert.deepEqual(Object.keys(tracing.fields).sort(), ["action", "dst_host", "source", "url"]);
+  const long = withFields(lines[5]);
   assert.ok(Buffer.byteLength(stringValue(long.fields.cmd_line)) <= 1024);
   assert.match(stringValue(long.fields.cmd_line), /…\[truncated\]$/);
+  const curlUser = withFields(lines[6]);
+  assert.equal(curlUser.fields.cmd_line, "curl -u [redacted:argv] https://a.example.com");
+  const sshpass = withFields(lines[7]);
+  assert.equal(sshpass.fields.cmd_line, "sshpass -p [redacted:argv] ssh build@host");
   assert.deepEqual(
     logs.data.records
       .filter((record) => record.type === "withheld")
@@ -1428,10 +1425,12 @@ test("sandbox sanitization masks credentials passed as command-line arguments", 
         sandboxLine(3, "exec", { level: "INFO", target: "t", fields: { cmd_line: command } }),
       ].map(openShellLogDecision),
     );
-    assert.equal(withFields(records[0]).fields.cmd_line, expected, command);
-    assert.equal(logLine(records[1]).message, `PROC:LAUNCH [INFO] x(1) ${expected}`, command);
-    assert.equal(withFields(records[2]).fields.cmd_line, expected, command);
-    assert.equal(JSON.stringify(records).includes(secret), false, command);
+    assertSensitiveValuesAbsent(JSON.stringify(records), "commandRecords", {
+      ARGUMENT_SECRET: secret,
+    });
+    assert.equal(withFields(records[0]).fields.cmd_line, expected);
+    assert.equal(logLine(records[1]).message, `PROC:LAUNCH [INFO] x(1) ${expected}`);
+    assert.equal(withFields(records[2]).fields.cmd_line, expected);
   }
 });
 

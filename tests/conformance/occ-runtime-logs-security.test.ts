@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { assertSensitiveValuesAbsent } from "./runtime-log-security-assertions.ts";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { Check } from "typebox/value";
@@ -872,26 +873,31 @@ test("runtime log failures are fixed, content-free and never read after an audit
   const auditSink = new UnavailableLogAuditSink();
   const fixture = await createSecurityFixture({ auditSink });
   const target = await fixture.deployAgent();
-  fixture.computeDriver.state.lines = [runtimeLogLine(1, "must not be returned")];
+  const refusedContent = "must not be returned";
+  fixture.computeDriver.state.lines = [runtimeLogLine(1, refusedContent)];
 
   const unaudited = await fixture.request("GET", target.logsPath());
+  assertSensitiveValuesAbsent(unaudited.text, "refusedPage", { REFUSED_CONTENT: refusedContent });
   apiError(unaudited, 503, "RUNTIME_LOGS_AUDIT_UNAVAILABLE");
-  assert.equal(unaudited.text.includes("must not be returned"), false);
   const undownloaded = await fixture.request(
     "GET",
     target.logsPath("source=gateway&download=true"),
   );
+  assertSensitiveValuesAbsent(undownloaded.text, "refusedDownload", {
+    REFUSED_CONTENT: refusedContent,
+  });
   apiError(undownloaded, 503, "RUNTIME_LOGS_AUDIT_UNAVAILABLE");
-  assert.equal(undownloaded.text.includes("must not be returned"), false);
   assert.equal(driverReads(fixture).length, 0);
   auditSink.failLogAccess = false;
 
   const marker = `private-driver-detail-${randomUUID()}`;
   fixture.computeDriver.state.readError = new Error(marker);
   const failed = await fixture.request("GET", target.logsPath());
+  assertSensitiveValuesAbsent(failed.text, "refusedPage", { DRIVER_ERROR: marker });
+  assertSensitiveValuesAbsent(JSON.stringify(fixture.auditSink.events), "audit", {
+    DRIVER_ERROR: marker,
+  });
   apiError(failed, 503, "RUNTIME_LOGS_UNAVAILABLE");
-  assert.equal(failed.text.includes(marker), false);
-  assert.equal(JSON.stringify(fixture.auditSink.events).includes(marker), false);
 
   fixture.computeDriver.state.readError = new RuntimeLogsForbiddenByClusterError();
   const rbac = await fixture.request("GET", target.logsPath());
@@ -900,8 +906,8 @@ test("runtime log failures are fixed, content-free and never read after an audit
 
   fixture.computeDriver.state.describeError = new Error(marker);
   const status = await fixture.request("GET", target.runtimePath);
+  assertSensitiveValuesAbsent(status.text, "runtimeStatus", { DRIVER_ERROR: marker });
   assert.equal(status.status, 503);
-  assert.equal(status.text.includes(marker), false);
   fixture.computeDriver.state.describeError = undefined;
 
   // Reject the entire Driver description when it contains an invalid Pod name.
