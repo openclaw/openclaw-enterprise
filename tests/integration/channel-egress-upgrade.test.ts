@@ -12,6 +12,7 @@ async function fixture(t: TestContext, enabled = true) {
     images: { controller: `registry.example/controller@sha256:${"a".repeat(64)}` },
     installation: { name: "retained-installation" },
     database: { upgradeMigration: "separate", cidrs: ["192.0.2.10/32"] },
+    metrics: { enabled: true },
     api: { clients: [{ namespace: "operators", podLabels: { app: "operator" } }] },
     slackProxy: { enabled },
     gatewayRouting: { gatewayClassName: "existing-class", envoyNamespace: "existing-envoy" },
@@ -107,28 +108,40 @@ test("one-off preparation patches actual files and preserves unrelated settings"
   assert.deepEqual(JSON.parse(await readFile(join(f.directory, "values.yaml"), "utf8")), f.values);
   values.database.upgradeMigration = "hook";
   await writeFile(join(output, "values.yaml"), JSON.stringify(values));
-  const refused = spawnSync(
-    "python3",
-    [
-      "scripts/upgrade-channel-egress",
-      "validate",
-      "--before-values",
-      join(f.directory, "values.yaml"),
-      "--before-installation",
-      join(f.directory, "installation.yaml"),
-      "--values",
-      join(output, "values.yaml"),
-      "--installation",
-      join(output, "installation.yaml"),
-      "--namespace",
-      "oce-system",
-      "--release",
-      "oce",
-    ],
-    { encoding: "utf8" },
-  );
+  const validate = () =>
+    spawnSync(
+      "python3",
+      [
+        "scripts/upgrade-channel-egress",
+        "validate",
+        "--before-values",
+        join(f.directory, "values.yaml"),
+        "--before-installation",
+        join(f.directory, "installation.yaml"),
+        "--values",
+        join(output, "values.yaml"),
+        "--installation",
+        join(output, "installation.yaml"),
+        "--namespace",
+        "oce-system",
+        "--release",
+        "oce",
+      ],
+      { encoding: "utf8" },
+    );
+  const refused = validate();
   assert.equal(refused.status, 1);
   assert.match(refused.stderr, /unrelated settings/);
+  values.database.upgradeMigration = f.values.database.upgradeMigration;
+  values.metrics.enabled = 1;
+  await writeFile(join(output, "values.yaml"), JSON.stringify(values));
+  const changedType = validate();
+  assert.equal(changedType.status, 1);
+  assert.match(
+    changedType.stderr,
+    /unrelated settings/,
+    "boolean and numeric values are distinct inputs",
+  );
 });
 
 test("disabled legacy channels only remove obsolete fields and remain off", async (t) => {
@@ -238,4 +251,76 @@ test("one-off refuses an uncertain deployment before invoking any OCC command", 
     receipt,
     "refusal must retain the uncertain receipt",
   );
+});
+
+test("quiesced one-off recovery verifies recorded Stops without contacting the stopped API", async (t) => {
+  const f = await fixture(t);
+  const inventory = join(f.directory, "inventory");
+  await mkdir(inventory);
+  const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
+  const agentId = "agt_00000000-0000-4000-8000-000000000002";
+  const originalRevisionId = "rev_00000000-0000-4000-8000-000000000003";
+  const installationId = "ins_00000000-0000-4000-8000-000000000004";
+  const before = {
+    installationId,
+    namespaces: [
+      {
+        id: namespaceId,
+        status: "ready",
+        agents: [
+          {
+            id: agentId,
+            status: "active",
+            desiredRuntimeState: "running",
+            executionMode: "dedicated",
+            activeRevisionId: originalRevisionId as string | null,
+            deploymentInProgress: false,
+            repositoryWorkerRestart: "not-applicable" as string | null,
+          },
+        ],
+      },
+    ],
+  };
+  const stopped = structuredClone(before);
+  Object.assign(stopped.namespaces[0]!.agents[0]!, {
+    desiredRuntimeState: "stopped",
+    activeRevisionId: null,
+    repositoryWorkerRestart: null,
+  });
+  await writeFile(join(inventory, "restart-preflight.json"), JSON.stringify(before), {
+    mode: 0o600,
+  });
+  await writeFile(join(inventory, "before-stop-selection.json"), JSON.stringify(stopped), {
+    mode: 0o600,
+  });
+  const journal = join(f.directory, "channel-agent-operations.json");
+  const receipt = {
+    installationId,
+    targets: [{ namespaceId, agentId, originalRevisionId, stop: "complete", deploy: "unsent" }],
+  };
+  await writeFile(journal, JSON.stringify(receipt), { mode: 0o600 });
+  const run = () =>
+    spawnSync(
+      "python3",
+      [
+        "scripts/upgrade-channel-egress",
+        "verify-stopped",
+        "--evidence-dir",
+        f.directory,
+        "--occ",
+        "/stopped-api-must-not-be-contacted",
+        "--timeout-seconds",
+        "1",
+      ],
+      { encoding: "utf8" },
+    );
+  const verified = run();
+  assert.equal(verified.status, 0, verified.stderr);
+  assert.match(verified.stdout, /pre-quiescence inventory are confirmed/);
+  // An accepted Stop is not evidence of completed cleanup, even while writers are off.
+  receipt.targets[0]!.stop = "accepted";
+  await writeFile(journal, JSON.stringify(receipt));
+  const incomplete = run();
+  assert.equal(incomplete.status, 1);
+  assert.match(incomplete.stderr, /every original Stop to be complete/);
 });

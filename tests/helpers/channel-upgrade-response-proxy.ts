@@ -11,7 +11,21 @@ export async function createUpgradeResponseProxy(options: {
 }) {
   let deployment: Record<string, unknown> | undefined;
   let deploymentRequests = 0;
+  let allDeploymentRequests = 0;
+  let stopRequests = 0;
   const server = createServer({ key: options.key, cert: options.cert }, (incoming, outgoing) => {
+    if (
+      incoming.method === "POST" &&
+      /^\/namespaces\/[^/]+\/agents\/[^/]+\/deploy$/.test(incoming.url ?? "")
+    ) {
+      allDeploymentRequests++;
+    }
+    if (
+      incoming.method === "POST" &&
+      /^\/namespaces\/[^/]+\/agents\/[^/]+\/stop$/.test(incoming.url ?? "")
+    ) {
+      stopRequests++;
+    }
     const isDeploy =
       options.agentPath !== undefined &&
       incoming.method === "POST" &&
@@ -51,6 +65,8 @@ export async function createUpgradeResponseProxy(options: {
     url: `https://localhost:${address.port}`,
     acceptedDeployment: () => deployment,
     deploymentRequests: () => deploymentRequests,
+    allDeploymentRequests: () => allDeploymentRequests,
+    stopRequests: () => stopRequests,
     close: () =>
       new Promise<void>((resolve, reject) => {
         server.closeAllConnections();

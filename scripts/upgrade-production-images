@@ -2658,9 +2658,6 @@ if ((helm_complete == 0)); then
     python3 scripts/setup-channel-egress check --kubeconfig "$execution_kubeconfig" --context "$context" \
       --namespace "$namespace" --values "$candidate_values" --timeout-seconds "$timeout_seconds" ||
       die "Envoy dependencies changed before Agent Stop."
-    python3 scripts/upgrade-channel-egress stop --evidence-dir "$evidence_dir" \
-      --occ "$occ" --timeout-seconds "$timeout_seconds" ||
-      die "Agent Stop is incomplete; preserve the original journal and inspect the recorded operations."
   fi
   progress "Checking and stopping OCC writers."
   # Stop the old database writers before the migration hook. Other writers and
@@ -2679,7 +2676,9 @@ if ((helm_complete == 0)); then
       require_private_file "$handoff"
     fi
   fi
-  # Validate both writers before stopping either one.
+  # Observe ownership before Agent operations, then refresh resource versions
+  # after potentially long Stops before constructing the writer scale patches.
+  observe_quiescence_writers() {
   for component in api worker; do
     deployment="openclaw-enterprise-$component"
     quiescence_remaining
@@ -2707,6 +2706,23 @@ if ((helm_complete == 0)); then
       {op: "replace", path: "/spec/replicas", value: 0}
     ]' "$evidence_dir/current-$component-deployment.json" >"$evidence_dir/quiescence-$component-patch.json"
   done
+  }
+  observe_quiescence_writers
+  if [[ "$channel_egress_enabled" == true ]]; then
+    if jq -e '.spec.replicas == 0' "$evidence_dir/current-api-deployment.json" >/dev/null; then
+      ((resume)) && jq -e '.spec.replicas == 0' "$evidence_dir/current-worker-deployment.json" >/dev/null ||
+        die "Restore OCC API access before resuming partial quiescence; no additional Agent or writer was changed."
+      python3 scripts/upgrade-channel-egress verify-stopped --evidence-dir "$evidence_dir" \
+        --occ "$occ" --timeout-seconds "$timeout_seconds" ||
+        die "The quiesced upgrade lacks confirmed Agent Stop evidence; inspect the original journal and inventory."
+    else
+      python3 scripts/upgrade-channel-egress stop --evidence-dir "$evidence_dir" \
+        --occ "$occ" --timeout-seconds "$timeout_seconds" ||
+        die "Agent Stop is incomplete; preserve the original journal and inspect the recorded operations."
+      deadline=$((SECONDS + timeout_seconds))
+      observe_quiescence_writers
+    fi
+  fi
   # Refresh before the first stop, including resume when the worker still runs.
   # This detects changed selections; exclusive maintenance ownership is still required.
   if jq -e '.spec.replicas == 1' "$evidence_dir/current-worker-deployment.json" >/dev/null; then
@@ -2935,6 +2951,14 @@ if [[ "$repository_enabled" == true ]]; then
 fi
 
 if [[ "$channel_egress_enabled" == true ]]; then
+  channel_gateway=$(yq -er '.drivers.compute.configuration.runtime.channelEgress.gatewayName' "$candidate_installation")
+  channel_envoy_namespace=$(yq -er '.drivers.compute.configuration.runtime.channelEgress.envoyNamespace' "$candidate_installation")
+  progress "Waiting for the installed channel fleet before Agent deployment."
+  "${kube[@]}" --namespace "$namespace" wait "gateway/$channel_gateway" \
+    --for=condition=Programmed --timeout="${timeout_seconds}s" >"$evidence_dir/channel-gateway-ready.txt"
+  "${kube[@]}" --namespace "$channel_envoy_namespace" wait pods \
+    --selector "gateway.envoyproxy.io/owning-gateway-name=$channel_gateway,gateway.envoyproxy.io/owning-gateway-namespace=$namespace" \
+    --for=condition=Ready --timeout="${timeout_seconds}s" >"$evidence_dir/channel-fleet-ready.txt"
   python3 scripts/upgrade-channel-egress deploy --evidence-dir "$evidence_dir" \
     --occ "$occ" --timeout-seconds "$timeout_seconds" ||
     die "Agent Deploy is incomplete; inspect the original journal, revision history and audit records. Do not blindly resubmit."

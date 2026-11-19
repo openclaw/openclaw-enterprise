@@ -604,33 +604,83 @@ test(
           201,
         )
       : undefined;
+    let channelFreeAgent: Record<string, unknown> | undefined;
+    if (upgrade) {
+      const freeValues = { ...structuredClone(values) };
+      delete freeValues.channels;
+      const freePlugins = object(freeValues.plugins);
+      assert.ok(Array.isArray(freePlugins.allow));
+      freePlugins.allow = freePlugins.allow.filter((id) => id !== "slack");
+      delete object(freePlugins.entries).slack;
+      const freeConfiguration = await api(
+        "POST",
+        `/namespaces/${namespaceId}/configurations`,
+        {
+          kind: "agent",
+          values: freeValues,
+        },
+        201,
+      );
+      channelFreeAgent = await api(
+        "POST",
+        `/namespaces/${namespaceId}/agents`,
+        {
+          name: `channel-free-${suffix}`,
+          configurationId: freeConfiguration.id,
+          executionMode: "dedicated",
+          harnessAuth: { method: "api_key", source: model.ref },
+        },
+        201,
+      );
+      const freePath = `/namespaces/${namespaceId}/agents/${String(channelFreeAgent.id)}`;
+      await api("POST", `${freePath}/runtime-credentials`, {});
+      const freeRevision = await api("POST", `${freePath}/deploy`, undefined, 202);
+      await waitFor(
+        "the original channel-free Agent deployment",
+        async () => {
+          const state = await api("GET", `${freePath}/deployments/${String(freeRevision.id)}`);
+          assert.notEqual(state.status, "failed", JSON.stringify(state.error));
+          return state.status === "succeeded";
+        },
+        480_000,
+      );
+    }
     const workspaceMarker = `One-off workspace continuity ${suffix}\n`;
     const agentId = string(agent.id);
     const agentPath = `/namespaces/${namespaceId}/agents/${agentId}`;
     await api("POST", `${agentPath}/runtime-credentials`, {});
-    await waitFor("OCC directory access through the Helm-installed listener", async () => {
-      const result = await request("POST", `/namespaces/${namespaceId}/channel-directory/lookup`, {
+    const verifyDirectory = async () => {
+      await waitFor("OCC provider directory access", async () => {
+        const result = await request(
+          "POST",
+          `/namespaces/${namespaceId}/channel-directory/lookup`,
+          {
+            agentId,
+            secretId: bot.id,
+            kind: "channels",
+            ids: [slack.channelId],
+          },
+        );
+        if (result.status === 503) {
+          return false;
+        }
+        assert.equal(result.status, 200);
+        const found = object(result.body.data);
+        assert.equal(found.workspaceId, targetIdentity.team_id);
+        return array(found.candidates).some((candidate) => candidate.id === slack.channelId);
+      });
+      const users = await api("POST", `/namespaces/${namespaceId}/channel-directory/lookup`, {
         agentId,
         secretId: bot.id,
-        kind: "channels",
-        ids: [slack.channelId],
+        kind: "users",
+        ids: [senderIdentity.user_id],
       });
-      if (result.status === 503) {
-        return false;
-      }
-      assert.equal(result.status, 200);
-      const found = object(result.body.data);
-      assert.equal(found.workspaceId, targetIdentity.team_id);
-      return array(found.candidates).some((candidate) => candidate.id === slack.channelId);
-    });
-    const users = await api("POST", `/namespaces/${namespaceId}/channel-directory/lookup`, {
-      agentId,
-      secretId: bot.id,
-      kind: "users",
-      ids: [senderIdentity.user_id],
-    });
-    assert.equal(users.workspaceId, targetIdentity.team_id);
-    assert.ok(array(users.candidates).some((candidate) => candidate.id === senderIdentity.user_id));
+      assert.equal(users.workspaceId, targetIdentity.team_id);
+      assert.ok(
+        array(users.candidates).some((candidate) => candidate.id === senderIdentity.user_id),
+      );
+    };
+    await verifyDirectory();
     const passwordSource = object(
       await resource("secret", `gateway-password-${kubernetesHash(agentId)}`, tenant),
     );
@@ -789,6 +839,33 @@ test(
           OCC_CA_BUNDLE: certPath,
           KUBERC: "off",
         };
+        // Missing dependencies must refuse before any Stop, even though the
+        // reviewed channel transformation itself is valid.
+        const unavailableValues = JSON.parse(
+          await readFile(join(candidate, "values.yaml"), "utf8"),
+        );
+        unavailableValues.channelEgress.gatewayClassName = `missing-${suffix}`;
+        const unavailableFile = join(directory, "unavailable-channel-values.json");
+        await writeFile(unavailableFile, JSON.stringify(unavailableValues), { mode: 0o600 });
+        const unavailableArguments = arguments_.map((value, index) => {
+          if (arguments_[index - 1] === "--candidate-values") {
+            return unavailableFile;
+          }
+          if (arguments_[index - 1] === "--evidence-dir") {
+            return join(directory, "dependency-refusal");
+          }
+          return value;
+        });
+        await assert.rejects(
+          run("scripts/upgrade-channel-egress", unavailableArguments, {
+            env: environment,
+            timeout: 900_000,
+          }),
+          /Envoy dependencies are not ready/,
+        );
+        assert.equal(lost.stopRequests(), 0);
+        assert.equal((await api("GET", agentPath)).activeRevisionId, before.activeRevisionId);
+        assert.equal((await api("GET", agentPath)).desiredRuntimeState, "running");
         const migrateSeparately = async (image: string) => {
           const rendered = await run("helm", [
             "template",
@@ -847,19 +924,25 @@ test(
             }
           }
         };
-        const executeUpgrade = (resume: boolean) =>
-          run(
-            "scripts/upgrade-channel-egress",
-            [
-              ...arguments_,
-              ...(resume ? ["--resume"] : []),
-              ...(resume && migrationMode === "separate" ? ["--migration-history-checked"] : []),
-            ],
-            {
-              env: environment,
-              timeout: 900_000,
-            },
-          );
+        const executeUpgrade = async (resume: boolean) => {
+          try {
+            return await run(
+              "scripts/upgrade-channel-egress",
+              [
+                ...arguments_,
+                ...(resume ? ["--resume"] : []),
+                ...(resume && migrationMode === "separate" ? ["--migration-history-checked"] : []),
+              ],
+              {
+                env: environment,
+                timeout: 900_000,
+              },
+            );
+          } catch (error) {
+            t.diagnostic(redact(error instanceof Error ? error.message : error));
+            throw error;
+          }
+        };
         if (migrationMode === "separate") {
           await assert.rejects(executeUpgrade(false), /separate database deployment/i);
           assert.equal(
@@ -888,10 +971,13 @@ test(
         const journal = JSON.parse(await readFile(journalPath, "utf8"));
         assert.equal(
           journal.targets.length,
-          1,
-          "the Agent has no repository and must still be inventoried",
+          2,
+          "both running Agents have no repository and must still be inventoried",
         );
-        const target = journal.targets[0];
+        const target = journal.targets.find(
+          (item: Record<string, unknown>) => item.agentId === agentId,
+        );
+        assert.ok(target);
         assert.equal(target.originalRevisionId, before.activeRevisionId);
         assert.equal(target.stop, "complete");
         assert.equal(target.deploy, "sending");
@@ -963,6 +1049,12 @@ test(
         }
         assert.equal(lost.deploymentRequests(), 1);
         assert.equal((await api("GET", agentPath)).activeRevisionId, accepted.id);
+        assert.equal(
+          lost.allDeploymentRequests(),
+          2,
+          "only the original running set is deployed, once each",
+        );
+        await verifyDirectory();
         const completedJournal = JSON.parse(await readFile(journalPath, "utf8"));
         upgradeReceipt = {
           sourceRevision,
@@ -984,6 +1076,8 @@ test(
           stoppedAgentPreserved: true,
           currentSavedDraftAdopted: true,
           subsequentUpgradeRetainedRevision: true,
+          dependencyRefusedBeforeStop: true,
+          providerDirectoryAfterUpgrade: true,
         };
       } else {
         revision = await api("POST", `${agentPath}/deploy`, undefined, 202);
@@ -1047,6 +1141,50 @@ test(
         ).status,
         200,
       );
+      assert.notEqual(
+        (await probeChannelConnect(tenant, gatewayName, proxy, "127.0.0.1")).status,
+        200,
+      );
+      if (upgrade && round === 1) {
+        const free = await api(
+          "GET",
+          `/namespaces/${namespaceId}/agents/${String(channelFreeAgent!.id)}`,
+        );
+        const freePods = await resources(
+          "pods",
+          tenant,
+          "-l",
+          `openclaw.dev/agent=${String(free.id)},openclaw.dev/revision=${String(free.activeRevisionId)}`,
+        );
+        assert.ok(freePods);
+        const freeGateway = freePods
+          .map(object)
+          .find(
+            (pod) =>
+              object(object(pod.metadata).labels)["openclaw.dev/workload-role"] === "gateway",
+          );
+        assert.ok(freeGateway);
+        const freeEnv = array(array(object(freeGateway.spec).containers)[0]!.env);
+        assert.ok(
+          !freeEnv.some((entry) =>
+            ["HTTPS_PROXY", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"].includes(string(entry.name)),
+          ),
+        );
+        assert.notEqual(
+          (
+            await probeChannelConnect(
+              tenant,
+              string(object(freeGateway.metadata).name),
+              proxy,
+              "slack.com",
+            )
+          ).status,
+          200,
+        );
+        assert.ok(upgradeReceipt);
+        upgradeReceipt.channelFreeDenied = true;
+        upgradeReceipt.privateAddressDenied = true;
+      }
       // A real public Slack address is a negative direct-connection case.
       const direct = await kubectl(
         "exec",
@@ -1081,6 +1219,17 @@ test(
     }
     assert.ok(gatewayPod);
     await verifyDelivery();
+    if (channelFreeAgent) {
+      assert.equal(
+        (
+          await request(
+            "DELETE",
+            `/namespaces/${namespaceId}/agents/${String(channelFreeAgent.id)}`,
+          )
+        ).status,
+        202,
+      );
+    }
     if (stoppedAgent) {
       assert.equal(
         (await request("DELETE", `/namespaces/${namespaceId}/agents/${String(stoppedAgent.id)}`))

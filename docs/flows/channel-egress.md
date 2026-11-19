@@ -89,9 +89,12 @@ its private journal before Stop. It records request intent and returned IDs.
 Guarded Stop requires the original revision; completion requires the Agent to
 be stopped with no active revision. Pending Stops and deletions must settle
 under the old controller. `stopped_inventory` checks only the expected selection
-changes before OCC writer shutdown.
+changes before OCC writer shutdown. After both writers are quiesced, resume
+validates the recorded stopped inventory without calling the offline API. Shared
+Deployment identity, generation and Pod-absence checks still apply.
 
-After authenticated access to the same Installation recovers, plain Deploy
+After authenticated access to the same Installation and channel fleet readiness
+recover, plain Deploy
 creates revisions from current saved drafts. Requests are sequential. Accepted
 requests are observed to completion; an uncertain `sending` state refuses
 resubmission until manual inspection resolves it. Completion and resume also check

@@ -122,7 +122,8 @@ def remainder(values, installation):
 
 def validate(before_values, before_installation, values, installation, namespace, release):
     enabled = source(before_values, before_installation, namespace, release)
-    require(remainder(before_values, before_installation) == remainder(values, installation),
+    require(json.dumps(remainder(before_values, before_installation), sort_keys=True, allow_nan=False) ==
+            json.dumps(remainder(values, installation), sort_keys=True, allow_nan=False),
             "one-off candidate changes unrelated settings; only named channel fields may change")
     require("slackProxy" not in values and "channels" not in runtime(installation) and
             "channelDirectoryProxyUrl" not in values.get("api", {}), "candidate retains obsolete channel keys")
@@ -243,6 +244,14 @@ def lifecycle(action, args):
                         if agent["status"] == "active" and agent["desiredRuntimeState"] == "running"}
     require({(item["namespaceId"], item["agentId"], item["originalRevisionId"]) for item in state["targets"]} == expected_targets and len(state["targets"]) == len(expected_targets),
             "Agent journal no longer matches the original running set")
+    if action == "verify-stopped":
+        require(all(item["stop"] == "complete" for item in state["targets"]),
+                "quiesced recovery requires every original Stop to be complete")
+        observed = directory / "inventory/before-stop-selection.json"
+        private(observed)
+        stopped_inventory(original, json.loads(observed.read_text()))
+        print("Recorded Agent Stops and the pre-quiescence inventory are confirmed.")
+        return
     for target in state["targets"]:
         ns, agent_id = target["namespaceId"], target["agentId"]
         if target[action] == "complete":
@@ -308,7 +317,7 @@ def main():
     inventory = sub.add_parser("check-stopped-inventory", help=argparse.SUPPRESS)
     inventory.add_argument("before")
     inventory.add_argument("after")
-    for action in ("stop", "deploy"):
+    for action in ("stop", "deploy", "verify-stopped"):
         step = sub.add_parser(action, help=argparse.SUPPRESS)
         step.add_argument("--evidence-dir", required=True)
         step.add_argument("--occ", required=True)

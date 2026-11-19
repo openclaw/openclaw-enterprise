@@ -118,6 +118,8 @@ Retain the original evidence and journal; do not restore an older journal from
 backup. Use the same command, checkout, inputs and evidence with `--resume` only
 after inspecting actual cluster state. Completed operations are not repeated;
 the script checks that Agents still select their recorded new revisions.
+While both OCC writers are quiesced, it validates the recorded Stop inventory
+instead of calling the offline API.
 For database mode `separate`, follow the
 [database handoff](separate-database-upgrade.md) and resume with
 `--migration-history-checked`. For an uncertain Helm outcome, use the existing
