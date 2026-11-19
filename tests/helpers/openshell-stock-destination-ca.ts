@@ -39,3 +39,36 @@ export function stockDestinationCa(namespace: string, name: string, pem: string)
     network: { additionalCaConfigMapName: name },
   };
 }
+
+/** Check cluster readback without retaining rejected ConfigMap contents in errors. */
+export function assertStockDestinationCaReadback(value: unknown, expectedPem?: string): void {
+  const map = value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const data =
+    map.data !== null && typeof map.data === "object" && !Array.isArray(map.data)
+      ? (map.data as Record<string, unknown>)
+      : undefined;
+  if (
+    !data ||
+    Object.keys(data).length !== 1 ||
+    typeof data["ca.crt"] !== "string" ||
+    (expectedPem !== undefined && data["ca.crt"] !== expectedPem) ||
+    map.binaryData !== undefined
+  ) {
+    throw new Error("destination CA ConfigMap readback does not match the certificate-only input");
+  }
+}
+
+/** The stock chart projects exactly the certificate key to the mounted subpath. */
+export function assertStockDestinationCaProjection(value: unknown): void {
+  if (!Array.isArray(value) || value.length !== 1) {
+    throw new Error("Supervisor CA volume has an unexpected key-to-path mapping");
+  }
+  const item: unknown = value[0];
+  if (item === null || typeof item !== "object" || Array.isArray(item)) {
+    throw new Error("Supervisor CA volume has an unexpected key-to-path mapping");
+  }
+  const mapping = item as Record<string, unknown>;
+  if (Object.keys(mapping).length !== 2 || mapping.key !== "ca.crt" || mapping.path !== "ca.crt") {
+    throw new Error("Supervisor CA volume has an unexpected key-to-path mapping");
+  }
+}

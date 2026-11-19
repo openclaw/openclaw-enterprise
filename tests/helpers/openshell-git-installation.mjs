@@ -25,7 +25,16 @@ import { listen } from "./listen.ts";
 import { localFirstAgentStack, ownFirstAgentWork } from "./local-first-agent-stack.mjs";
 import { localOpenShellGatewayOptions } from "./local-openshell-gateway.mjs";
 import { stopProcess } from "./stop-process.mjs";
-import { destinationCaCertificate, stockDestinationCa } from "./openshell-stock-destination-ca.ts";
+import {
+  assertStockDestinationCaProjection,
+  assertStockDestinationCaReadback,
+  destinationCaCertificate,
+  stockDestinationCa,
+} from "./openshell-stock-destination-ca.ts";
+import {
+  stockSupervisorConfig,
+  stockSupervisorManifest,
+} from "./openshell-stock-supervisor-image.ts";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { loadYaml } = await import(require.resolve("@kubernetes/client-node"));
@@ -645,13 +654,30 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
   assert.equal(image.pullPolicy, "Never");
   assert.match(image.digest, /^sha256:[a-f0-9]{64}$/);
   const reference = `${image.registry}/${image.repository}@${image.digest}`;
-  const configDigest = (
-    await command("docker", ["image", "inspect", "--format", "{{.Id}}", parent])
-  ).trim();
-  assert.match(configDigest, /^sha256:[a-f0-9]{64}$/);
+  const nodeName = `k3d-${state.cluster}-server-0`;
+  const node = JSON.parse(await kube(["get", "node", nodeName, "-o", "json"]));
+  const nodeInfo = node.status?.nodeInfo;
+  const selectedPlatform = `${nodeInfo?.operatingSystem}/${nodeInfo?.architecture}`;
+  const indexDigest = parent.split("@")[1];
+  const rawImage = (ref) => command("docker", ["buildx", "imagetools", "inspect", "--raw", ref]);
+  const descriptor = stockSupervisorManifest(await rawImage(parent), indexDigest, selectedPlatform);
+  const child = `${parent.split("@")[0]}@${descriptor.digest}`;
+  const inspected = JSON.parse(
+    await command("docker", ["image", "inspect", "--platform", selectedPlatform, parent]),
+  );
+  assert.ok(
+    Array.isArray(inspected) && inspected.length === 1,
+    "stock image inspection is invalid",
+  );
+  const configDigest = await stockSupervisorConfig(
+    descriptor,
+    await rawImage(child),
+    inspected[0],
+    selectedPlatform,
+  );
   const manifestBytes = await command("docker", [
     "exec",
-    `k3d-${state.cluster}-server-0`,
+    nodeName,
     "ctr",
     "-n",
     "k8s.io",
@@ -675,6 +701,8 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     command,
     cleanup,
     image: parent,
+    platform: selectedPlatform,
+    pullNever: true,
     filename: "/openshell-supervisor",
     destination: executable,
   });
@@ -749,7 +777,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     ]),
   );
   assert.equal(sourceCa.immutable, true);
-  assert.deepEqual(sourceCa.data, destinationCa.configMap.data);
+  assertStockDestinationCaReadback(sourceCa, destinationCa.configMap.data["ca.crt"]);
 
   const port = await availablePort();
   const forward = spawn(
@@ -878,6 +906,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     assert.ok(mount?.readOnly && mount.subPath === "ca.crt");
     const volume = pod.spec.volumes?.find((item) => item.name === mount.name);
     assert.ok(volume?.configMap?.name, "Supervisor must mount the managed CA ConfigMap");
+    assertStockDestinationCaProjection(volume.configMap.items);
     assert.equal(
       workload.spec.volumes?.some(
         (item) =>
@@ -893,7 +922,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
       await kube(["get", "configmap", volume.configMap.name, "-n", sandboxNamespace, "-o", "json"]),
     );
     assert.equal(managed.immutable, true);
-    assert.deepEqual(Object.keys(managed.data ?? {}), ["ca.crt"]);
+    assertStockDestinationCaReadback(managed);
     assert.equal(
       destinationCaCertificate(managed.data["ca.crt"]).fingerprint256,
       destinationCaCertificate(tls.ca).fingerprint256,

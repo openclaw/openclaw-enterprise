@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createServer, get } from "node:https";
 import test from "node:test";
 import { inspect } from "node:util";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.ts";
 import { listen } from "../helpers/listen.ts";
-import { stockDestinationCa } from "../helpers/openshell-stock-destination-ca.ts";
+import {
+  assertStockDestinationCaProjection,
+  assertStockDestinationCaReadback,
+  stockDestinationCa,
+} from "../helpers/openshell-stock-destination-ca.ts";
+import {
+  stockSupervisorConfig,
+  stockSupervisorManifest,
+} from "../helpers/openshell-stock-supervisor-image.ts";
 
 function request(url: string, ca?: string): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -52,5 +61,97 @@ test("OpenShell stock destination CA fixture trusts only its certificate input",
   assert.throws(
     () => stockDestinationCa("fixture-platform", "git-fixture-ca", tls.ca.toString().repeat(2)),
     { message: /exactly one certificate and no private material/u },
+  );
+});
+
+test("stock CA readback and projection refuse substituted or extra material without retaining it", () => {
+  const marker = "invented-private-readback-marker";
+  assertStockDestinationCaProjection([{ key: "ca.crt", path: "ca.crt" }]);
+  assertStockDestinationCaReadback({ data: { "ca.crt": "certificate" } }, "certificate");
+  for (const items of [
+    undefined,
+    [{ key: "other", path: "ca.crt" }],
+    [{ key: "ca.crt", path: "other" }],
+  ]) {
+    assert.throws(
+      () => assertStockDestinationCaProjection(items),
+      /unexpected key-to-path mapping/u,
+    );
+  }
+  for (const map of [
+    { data: { "ca.crt": "certificate", extra: marker } },
+    { data: { "ca.crt": `certificate${marker}` } },
+    { data: { "ca.crt": "certificate" }, binaryData: { other: marker } },
+    { data: { "ca.crt": "certificate" }, binaryData: {} },
+  ]) {
+    assert.throws(
+      () => assertStockDestinationCaReadback(map, "certificate"),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(
+          error.message,
+          "destination CA ConfigMap readback does not match the certificate-only input",
+        );
+        assert.equal(
+          inspect(error, { showHidden: true, maxStringLength: null }).includes(marker),
+          false,
+        );
+        return true;
+      },
+    );
+  }
+});
+
+test("stock Supervisor identity binds the pinned index, platform manifest and config", async () => {
+  const sha = (value: string) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
+  const config = sha("config");
+  const mediaType = "application/vnd.oci.image.manifest.v1+json";
+  const manifest = JSON.stringify({ mediaType, config: { digest: config } });
+  const descriptor = {
+    mediaType,
+    digest: sha(manifest),
+    platform: { os: "linux", architecture: "amd64" },
+  };
+  const index = JSON.stringify({
+    mediaType: "application/vnd.oci.image.index.v1+json",
+    manifests: [descriptor],
+  });
+  const selected = stockSupervisorManifest(index, sha(index), "linux/amd64");
+  const inspected = {
+    Id: descriptor.digest,
+    Descriptor: selected,
+    Os: "linux",
+    Architecture: "amd64",
+  };
+  assert.equal(await stockSupervisorConfig(selected, manifest, inspected, "linux/amd64"), config);
+  assert.equal(
+    await stockSupervisorConfig(
+      selected,
+      manifest,
+      { Id: config, Os: "linux", Architecture: "amd64" },
+      "linux/amd64",
+    ),
+    config,
+  );
+  assert.throws(
+    () => stockSupervisorManifest(index + "forged", sha(index), "linux/amd64"),
+    /does not match/u,
+  );
+  assert.throws(
+    () => stockSupervisorManifest(index, sha(index), "linux/arm64"),
+    /unique platform/u,
+  );
+  await assert.rejects(
+    stockSupervisorConfig(selected, manifest + "forged", inspected, "linux/amd64"),
+    /does not match/u,
+  );
+  await assert.rejects(
+    stockSupervisorConfig(
+      selected,
+      manifest,
+      { Id: sha("other"), Os: "linux", Architecture: "amd64" },
+      "linux/amd64",
+    ),
+    /pinned config/u,
   );
 });
