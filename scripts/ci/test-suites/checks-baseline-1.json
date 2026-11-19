@@ -161,7 +161,8 @@
     "tests/integration/protected-source-refusals.test.ts",
     "tests/integration/refusal-answers.test.ts",
     "tests/integration/namespace-deletion-console-api.test.ts",
-    "tests/integration/github-selected-repositories.test.ts"
+    "tests/integration/github-selected-repositories.test.ts",
+    "tests/integration/aws-secrets-manager.test.ts"
   ],
   "files": [
     {
@@ -1057,6 +1058,9 @@
     },
     {
       "path": "tests/integration/agent-http-chat.test.ts"
+    },
+    {
+      "path": "tests/integration/aws-secrets-manager.test.ts"
     }
   ]
 }

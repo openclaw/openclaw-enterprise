@@ -53,7 +53,7 @@ Sandbox packages in trusted YAML in either mode.
 | `channel`            | [ChannelDriver](channel.md)                                                 | Controller-selected bundled Slack directory Driver; no Installation YAML selector.                                                                       |
 | `iam`                | [IAMDriver](iam.md)                                                         | Required in Installation YAML; bundled native IAM or installed package.                                                                                  |
 | `compute`            | [ComputeDriver](compute.md)                                                 | Required in Installation YAML; bundled Kubernetes, bundled SSH, or installed package.                                                                    |
-| `secret`             | [SecretDriver](secret.md)                                                   | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                                                                           |
+| `secret`             | [SecretDriver](secret.md)                                                   | Required; Kubernetes projects workloads. [AWS draft](aws-secrets-manager.md): server-side reads.                                                         |
 | `sandbox`            | [SandboxDriver](sandbox.md)                                                 | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute.                                                     |
 | `credential_proxy`   | [CredentialProxyDriver](credential-proxy.md)                                | Optional; the selected Sandbox and Credential Proxy must come from one Driver registration, supplied by bundled OpenShell or a selected Sandbox package. |
 | `credential_gateway` | [CredentialGatewayDriver](credential-gateway.md)                            | Required with the bundled OpenShell Sandbox, otherwise omitted; bundled OpenShell Backend member only.                                                   |
@@ -304,7 +304,7 @@ Driver package. OCC does not merge package-provided defaults.
 
 IAM, Compute, Configuration, and Sandbox selections accept only `id`, optional
 `package`, and `configuration`. Omit `package` for a bundled Driver. The
-Secret selection accepts only the bundled Kubernetes implementation. The optional
+Secret selection uses Kubernetes or the proposed [AWS draft](aws-secrets-manager.md). The optional
 Repo selection accepts only the bundled GitHub implementation with its declared
 Backend member, and the optional Credential Gateway selection accepts only the
 bundled OpenShell implementation; none of these selections accepts an installed package. Installed implementation identity is

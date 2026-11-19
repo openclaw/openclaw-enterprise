@@ -14,8 +14,9 @@ requested Secret. Compute delivers workload projections. OCC returns only Secret
 metadata to API readers. Trusted server-side operations can read the current
 value through the selected Secret Driver.
 
-Trusted Installation YAML requires the bundled Kubernetes implementation,
-including when Compute is SSH; delivery to SSH hosts is unsupported. Default
+Trusted Installation YAML requires a bundled Secret Driver. Kubernetes is the qualified
+choice for workload projections. [AWS Secrets Manager](aws-secrets-manager.md) is a draft
+proposal for server-side reads. Delivery to SSH hosts is unsupported. Default
 Compose without Installation YAML selects no Secret Driver. See
 [Driver selection](selection.md) and the [Kubernetes implementation](kubernetes-secret.md).
 
@@ -151,8 +152,7 @@ model API keys go only to the Harness that executes the model.
   static requests keep credential material out of the workload.
 - Updating a Secret does not restart workloads. Redeploy consumers through OCE
   to refresh projections for the Agent revision before expecting a new environment value.
-- Kubernetes is the only selectable implementation. Arbitrary installed Secret
-  packages and SSH delivery are unsupported; selection alone does not enable them.
+- Kubernetes supports workload projections. The proposed [AWS Secrets Manager Driver](aws-secrets-manager.md) supports server-side reads only and remains a draft. Arbitrary installed Secret packages and SSH delivery are unsupported.
 
 ## Troubleshooting
 
@@ -166,6 +166,7 @@ model API keys go only to the Harness that executes the model.
 
 ## Implementations
 
+- [AWS Secrets Manager proposal](aws-secrets-manager.md): draft storage, workload IAM and trusted server-side reads.
 - [Kubernetes Secret Driver](kubernetes-secret.md): backend configuration,
   Kubernetes permissions, operator procedures, and diagnostics.
 

@@ -1,3 +1,7 @@
+import {
+  AwsSecretsManagerSecretDriver,
+  type AwsSecretsManagerOptions,
+} from "../drivers/secret/aws-secrets-manager/index.ts";
 import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
 import type { NamespaceLifecycleBinding } from "@openclaw-enterprise/occ";
 import {
@@ -1187,11 +1191,12 @@ async function composeInstallationConfiguration(
       environment,
     );
   }
+  const awsSecrets = secretSelection.id === "secret-aws-secrets-manager";
   const secret = selected(
     secretSelection,
     "secret",
-    "occ/kubernetes-secret",
-    KubernetesSecretDriver,
+    awsSecrets ? "occ/aws-secrets-manager" : "occ/kubernetes-secret",
+    awsSecrets ? AwsSecretsManagerSecretDriver : KubernetesSecretDriver,
   );
   const namespaceBinding = environment.OCC_PREPROVISIONED_NAMESPACE;
   let preprovisionedNamespace: PreprovisionedKubernetesNamespace | undefined;
@@ -1455,15 +1460,17 @@ async function composeInstallationConfiguration(
       "Protected egress requires paired Kubernetes/OpenShell Drivers and an authenticated TLS gateway endpoint.",
     );
   }
-  const secretDriver = new KubernetesSecretDriver(
-    secret.configuration as unknown as KubernetesSecretDriverOptions,
-    {
-      id: secret.id,
-      implementation: secret.implementation,
-      preprovisionedNamespace,
-      installationSecretNamespace: environment.OCC_INSTALLATION_SECRET_NAMESPACE,
-    },
-  );
+  const secretDriver = awsSecrets
+    ? new AwsSecretsManagerSecretDriver(
+        secret.configuration as unknown as AwsSecretsManagerOptions,
+        { id: secret.id },
+      )
+    : new KubernetesSecretDriver(secret.configuration as unknown as KubernetesSecretDriverOptions, {
+        id: secret.id,
+        implementation: secret.implementation,
+        preprovisionedNamespace,
+        installationSecretNamespace: environment.OCC_INSTALLATION_SECRET_NAMESPACE,
+      });
   const tokenService = new TokenService();
   let preparedGitHub: PostgresPreparedGitHubLifecycle | undefined;
   if (preparedGitHubKeyPath !== undefined) {
