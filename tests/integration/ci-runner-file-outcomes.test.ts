@@ -269,7 +269,11 @@ test(
     assert.equal(result.counts.failed, 2);
 
     const focused = await runRunnerAsync(
-      [...laneArgs(root, "sample", "state/focused.jsonl", "results/focused.json"), "--file", second],
+      [
+        ...laneArgs(root, "sample", "state/focused.jsonl", "results/focused.json"),
+        "--file",
+        second,
+      ],
       env,
     );
     assert.ifError(focused.error);
