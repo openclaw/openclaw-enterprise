@@ -755,6 +755,54 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       expect: probeFailure({ kind: "INVALID_OUTPUT", detail: "json" }),
     },
   );
+  // Category replay, NOT reconstruction of the live text: the closed receipt
+  // retained an initial item.error advisory but not its message or native phase.
+  // Existing classification only distinguishes an exact HTTPS-fallback advisory
+  // from other item.error entries. Deliberately omit the unknown message and
+  // exercise all item phases; do not invent a reassuring catalog-warning text.
+  for (const phase of ["item.started", "item.updated", "item.completed"]) {
+    for (const denial of [deniedUpgrade, detailFirstDenial]) {
+      oauthScenarios.push({
+        name:
+          "OAuth category replay with an opaque initial advisory: " +
+          phase +
+          (denial === deniedUpgrade ? " error-first" : " detail-first"),
+        loginMode: "chatgptAuthTokens",
+        openShellOAuth: true,
+        events: [
+          threadStarted,
+          { type: phase, item: { type: "error" } },
+          started,
+          ...["2/5", "3/5", "4/5", "5/5"].map((attempt) => reconnectUpgrade(denial, attempt)),
+          fallbackAdvisory(denial),
+          assistant,
+          completed,
+        ],
+        expect: ready,
+      });
+    }
+  }
+  for (const [initial, detail] of [
+    [{ type: "error" }, "error-event"],
+    [{ type: "turn.failed", error: {} }, "turn-failed"],
+    [{ type: "item.completed", item: { type: "command_execution" } }, "tool-event"],
+  ]) {
+    oauthScenarios.push({
+      name: "OAuth category replay preserves an initial fatal event: " + detail,
+      loginMode: "chatgptAuthTokens",
+      openShellOAuth: true,
+      events: [
+        threadStarted,
+        initial,
+        started,
+        reconnectUpgrade(),
+        httpsFallback,
+        assistant,
+        completed,
+      ],
+      expect: probeFailure({ kind: "PROBE_STATUS", detail }),
+    });
+  }
   for (const scenario of [...scenarios, ...oauthScenarios]) {
     await t.test(scenario.name, (t) => {
       return checkCodexStartup(t, scenario);
