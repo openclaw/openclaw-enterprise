@@ -2,7 +2,6 @@
 """Translate a private operator profile into the coordinated upgrade command."""
 
 import argparse
-import base64
 import hashlib
 import json
 import os
@@ -14,6 +13,7 @@ import sys
 import tempfile
 from copy import deepcopy
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 NEW_RUNS = ("apply", "preflight", "migration-check")
@@ -114,6 +114,43 @@ def profile_input(parser, filename):
 
 
 def report_status(parser, directory, *, allow_missing=False):
+    blocker = "preflight-blocked-original-worker"
+    startup = "startup-preflight-passed"
+    markers = (
+        # Writers take the lock before publishing markers.
+        (".upgrade-lock", True),
+        ("prepared", False),
+        ("database-migration-handoff.json", False),
+        ("migration-check-passed", False),
+        ("helm-started", False),
+        ("completed", False),
+        ("native-command-failures.tsv", False),
+        # Read the blocker before its prerequisite while preflight may still be running.
+        (blocker, False),
+        (startup, False),
+    )
+
+    def check_directory(fd):
+        info = os.fstat(fd)
+        if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            parser.error("evidence must be an owner-only directory, not a symbolic link")
+
+    def observe_markers(fd):
+        observed = {}
+        for name, is_directory in markers:
+            try:
+                item = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            except FileNotFoundError:
+                observed[name] = None
+                continue
+            expected = stat.S_ISDIR(item.st_mode) if is_directory else stat.S_ISREG(item.st_mode)
+            if not expected or item.st_uid != os.geteuid() or item.st_mode & 0o077:
+                parser.error("evidence contains an invalid or nonprivate status marker")
+            if name in (blocker, startup) and (item.st_size != 0 or not item.st_mode & stat.S_IRUSR):
+                parser.error("evidence contains an invalid or nonprivate status marker")
+            observed[name] = (item.st_dev, item.st_ino, item.st_mode, item.st_size)
+        return observed
+
     try:
         try:
             fd = os.open(Path(directory), os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_DIRECTORY)
@@ -124,47 +161,50 @@ def report_status(parser, directory, *, allow_missing=False):
             print("Verify the original path and reconcile any prior request before another write.")
             return
         try:
-            info = os.fstat(fd)
-            if info.st_uid != os.geteuid() or info.st_mode & 0o077:
-                parser.error("evidence must be an owner-only directory, not a symbolic link")
-            observed = {}
-            for name, is_directory in (
-                ("prepared", False),
-                ("database-migration-handoff.json", False),
-                ("migration-check-passed", False),
-                ("helm-started", False),
-                ("completed", False),
-                (".upgrade-lock", True),
-                ("native-command-failures.tsv", False),
-            ):
-                try:
-                    item = os.stat(name, dir_fd=fd, follow_symlinks=False)
-                except FileNotFoundError:
-                    observed[name] = False
-                    continue
-                expected = stat.S_ISDIR(item.st_mode) if is_directory else stat.S_ISREG(item.st_mode)
-                if not expected or item.st_uid != os.geteuid() or item.st_mode & 0o077:
-                    parser.error("evidence contains an invalid or nonprivate status marker")
-                observed[name] = True
+            check_directory(fd)
+            observed = observe_markers(fd)
+            repeated = observe_markers(fd)
+            check_directory(fd)
         finally:
             os.close(fd)
     except OSError:
         parser.error("cannot inspect private local evidence directory")
 
+    if observed != repeated:
+        print("Local evidence changed during this read. Run status again to inspect the attempt.")
+        return
+    if observed[blocker] and not observed[startup]:
+        parser.error("evidence contains inconsistent preflight status markers")
+
+    print("Historical local evidence observations (not current cluster health or resume authority):")
+    for name, item in observed.items():
+        print(f"  {name}: {'observed' if item else 'not observed'}")
     if observed["completed"]:
-        print("Status: completion was recorded; verify the current release and workloads separately.")
+        print("Completion was recorded; verify the current release and workloads separately.")
     elif observed["helm-started"]:
-        print("Status: Helm intent was recorded; its outcome remains uncertain without completion evidence.")
+        print("Helm intent was recorded; its outcome remains uncertain without completion evidence.")
     elif observed["database-migration-handoff.json"]:
-        print("Status: a migration pause was recorded; confirm migration history before an authorized resume.")
+        print("A migration pause was recorded; confirm migration history before an authorized resume.")
     elif observed["migration-check-passed"]:
-        print("Status: the migration compatibility check and Job cleanup were recorded. This evidence cannot resume an upgrade.")
+        print("The migration compatibility check and Job cleanup were recorded. This evidence cannot resume an upgrade.")
+    elif observed[startup] and not (
+        observed["prepared"] or observed[".upgrade-lock"] or observed["native-command-failures.tsv"]
+    ):
+        if observed[blocker]:
+            print("Candidate startup and migration checks passed and temporary resources were removed in this attempt.")
+            print("The upgrade was blocked because retained Agent revisions require their original worker.")
+            print("No deployment was prepared in the recorded preflight. Resolve the blocker through an authorized interruption or revision replacement, then recheck inventory with fresh upgrade evidence.")
+        else:
+            print("Candidate startup checks passed and temporary resources were removed in this attempt.")
+            print("The final preflight outcome is unknown from this marker alone.")
+            print(
+                "Preserve the original attempt's top-level evidence. "
+                "Reconcile the command result and current inventory before any further write."
+            )
     else:
-        print("Status: no completion was recorded; inspect the original attempt before any further write.")
-    print("Recorded markers: " + (", ".join(name for name, present in observed.items() if present) or "none"))
-    print("These are local observations, not current cluster health or resume authority.")
+        print("No completion was recorded; inspect the original attempt before any further write.")
     if observed[".upgrade-lock"]:
-        print("A lock marker exists; it does not prove whether the previous process is still running.")
+        print("A lock marker was observed. Verify separately whether the previous process is still running.")
 
 
 def check_revision(parser, checkout, revision):
@@ -284,25 +324,53 @@ def named_kubeconfig_entry(parser, configuration, field, name):
     parser.error(f"kubeconfig must identify one selected {field}")
 
 
+def uses_https_server(server):
+    if not isinstance(server, str) or not server.isprintable() or not server.lower().startswith("https://"):
+        return False
+    try:
+        target = urlsplit(server)
+        return (
+            target.hostname is not None
+            and not any(character.isspace() for character in target.netloc)
+            and (target.port is None or target.port > 0)
+        )
+    except ValueError:
+        return False
+
+
 def selected_kubeconfig_trust(parser, filename, content, context_name):
-    configuration = preview_mapping(parser, "kubeconfig", content)
+    # Decode the approved bytes as the native helper does without rereading the
+    # file or resolving references relative to the temporary input stream.
+    try:
+        configuration = json.loads(subprocess.check_output(
+            ["kubectl", "--kubeconfig", "/dev/stdin", "config", "view", "--merge=false", "--raw", "-o", "json"],
+            input=content,
+            env={"PATH": os.environ.get("PATH", os.defpath), "KUBECTL_KUBERC": "false"},
+            stderr=subprocess.DEVNULL,
+        ))
+    except OSError:
+        parser.error("cannot start kubectl to decode the kubeconfig locally")
+    except (subprocess.CalledProcessError, ValueError):
+        parser.error("cannot decode the kubeconfig with local kubectl")
     context = named_kubeconfig_entry(parser, configuration, "context", context_name)
+    user_name = context.get("user")
+    if user_name and "auth-provider" in named_kubeconfig_entry(parser, configuration, "user", user_name):
+        parser.error(
+            "the selected Kubernetes user uses a built-in auth-provider. "
+            "Use a token or client certificate"
+        )
     cluster_name = context.get("cluster")
     if not isinstance(cluster_name, str) or not cluster_name:
         parser.error("the selected kubeconfig context must name a cluster")
     cluster = named_kubeconfig_entry(parser, configuration, "cluster", cluster_name)
+    if not uses_https_server(cluster.get("server")):
+        parser.error("the selected kubeconfig cluster must use an HTTPS server URL")
+    insecure = cluster.get("insecure-skip-tls-verify", False)
     ca_path = cluster.get("certificate-authority")
-    inline = cluster.get("certificate-authority-data")
-    if any(value is not None and not isinstance(value, str) for value in (ca_path, inline)):
-        parser.error("the selected kubeconfig cluster has invalid CA fields")
-    try:
-        # Go's base64 decoder accepts CR and LF within an encoded value.
-        has_inline = bool(base64.b64decode((inline or "").replace("\r", "").replace("\n", ""), validate=True))
-    except ValueError:
-        parser.error("the selected kubeconfig cluster has invalid inline CA data")
+    has_inline = bool(cluster.get("certificate-authority-data"))
     if ca_path and has_inline:
         parser.error("the selected kubeconfig cluster specifies both an inline CA and a CA file")
-    if cluster.get("insecure-skip-tls-verify") is True:
+    if insecure:
         if ca_path or has_inline:
             parser.error("the selected kubeconfig cluster specifies both a CA and insecure TLS")
         return None, "TLS VERIFICATION DISABLED for the selected Kubernetes context."
@@ -313,7 +381,7 @@ def selected_kubeconfig_trust(parser, filename, content, context_name):
     if not os.path.isabs(ca_path):
         # client-go resolves paths relative to the declared kubeconfig's location.
         ca_path = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(filename)), ca_path))
-    return ca_path, "TLS trust: selected external CA (verified CA from the selected kubeconfig context)."
+    return ca_path, "TLS trust: selected external CA file (read and bound to this preview)."
 
 
 def setting(mapping, *path):
@@ -452,8 +520,7 @@ def preview_target(parser, profile, resolve_path):
     return paths, digests, trust
 
 
-def preview_inputs(parser, profile, resolve_path, options, *, validate_candidate):
-    paths, digests, trust = preview_target(parser, profile, resolve_path)
+def preview_inputs(parser, profile, resolve_path, options, paths, digests, *, validate_candidate):
     directory = Path(resolve_path(profile["installationDirectory"]))
     paths.update({
         "baseline Helm values": str(directory / "values.yaml"),
@@ -487,7 +554,6 @@ def preview_inputs(parser, profile, resolve_path, options, *, validate_candidate
     if migration not in ("hook", "separate"):
         parser.error("candidate Helm values must select hook or separate database.upgradeMigration")
     effects = [
-        trust,
         f"Database migration mode: {migration}",
         "The upgrade can overwrite values.yaml and submit a Helm upgrade.",
     ]
@@ -531,7 +597,7 @@ def preview_inputs(parser, profile, resolve_path, options, *, validate_candidate
         if flag in options:
             number = int(options[flag])
             effects.append(f"{role}: {number}")
-    return paths, digests, effects
+    return effects
 
 
 def check_preview_inputs(parser, paths, digests):
@@ -743,6 +809,24 @@ def main():
         report_status(parser, args.evidence_dir, allow_missing=True)
         return
 
+    custom_preferences = os.environ.get("KUBERC", "")
+    if os.environ.get("KUBECTL_KUBERC") != "false" and custom_preferences != "off":
+        try:
+            if not custom_preferences:
+                (Path(os.environ.get("HOME", "")) / ".kube" / "kuberc").lstat()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            parser.error("Cannot inspect default kubectl preferences. Follow your approved procedure and credential policy.")
+        else:
+            parser.error("Active kubectl preferences are unsupported for this upgrade. Follow your approved procedure and credential policy.")
+
+    if args.operation != "cleanup-preflight" and os.environ.get("HELM_DRIVER", "") not in ("", "secret"):
+        parser.error(
+            "unset HELM_DRIVER or set it to secret; "
+            "the upgrade requires Helm release Secrets in the selected cluster"
+        )
+
     profile = profile_input(parser, args.profile)
     profile_path = Path(args.profile).absolute()
     base = profile_path.parent
@@ -759,24 +843,25 @@ def main():
         options = expert_options(parser, args.operation, extra)
     if args.operation in ("plan", "apply", "resume"):
         check_revision(parser, checkout, profile["sourceRevision"])
+    paths, digests, trust = preview_target(parser, profile, path)
     if args.operation in ("plan", "apply", "resume", "preflight"):
-        paths, digests, effects = preview_inputs(
-            parser, profile, path, options, validate_candidate=args.operation != "resume",
+        effects = preview_inputs(
+            parser, profile, path, options, paths, digests, validate_candidate=args.operation != "resume",
         )
-    else:
-        paths, digests, _ = preview_target(parser, profile, path)
     if args.operation in ("plan", "apply", "resume"):
         resume_run = args.evidence_dir if args.operation == "resume" else None
-        show_plan(parser, profile, path, paths, effects, resume_run)
+        show_plan(parser, profile, path, paths, [trust, *effects], resume_run)
         if args.operation == "plan":
             return
         if not args.auto_approve:
             confirm(parser, args.operation)
     elif args.operation == "cleanup-preflight":
+        print(trust)
         print("Cleanup removes only the original run's recorded temporary resources. It cannot resume deployment.")
     else:
         if args.evidence_dir is None:
             check_revision(parser, checkout, profile["sourceRevision"])
+        print(trust)
         print("This check creates temporary cluster resources and confirms cleanup before reporting success.")
     check_preview_inputs(parser, paths, digests)
 

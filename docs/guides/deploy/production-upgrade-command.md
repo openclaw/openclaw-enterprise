@@ -6,10 +6,11 @@ from the reviewed release checkout root after completing the
 Use the [chart procedure](production-upgrade.md#apply-other-installation-changes)
 for protected Installation settings.
 
-Create an owner-only JSON profile outside the checkout. Set
-`installationDirectory` to the protected directory that contains `values.yaml`
-and `installation.yaml` from the
-[installation profile renderer](installation-profiles.md#render-files).
+Create an owner-only JSON profile outside the checkout. Set `context` to the
+name of a kubeconfig context whose cluster has an HTTPS `server` URL. Keep
+the kubeconfig in an owner-only regular file under a directory protected
+from other writers. Set `installationDirectory` to the protected directory that contains `values.yaml` and `installation.yaml`
+from the [installation profile renderer](installation-profiles.md#render-files).
 Relative paths inside the profile resolve from the profile's directory.
 Relative expert paths resolve from the release checkout.
 
@@ -39,16 +40,30 @@ field selects the matching CLI file. Omit it to use `occ` on `PATH`.
 
 ## Run the image upgrade
 
+`plan` checks `HELM_DRIVER` offline and requires it to be unset or `secret`.
+Apply, preflight, migration check, and resume read Helm release history from
+Kubernetes Secrets in the selected cluster. If your release uses SQL or
+ConfigMaps, stop here and keep the existing store. `status` reads local evidence.
+Preflight cleanup uses Kubernetes directly.
+
 Review the selected kubeconfig, context, release, and image digests:
 
 ```bash
 occ installation upgrade plan --profile /secure/occ/upgrade.json
 ```
 
-The offline preview checks the profile, local inputs, image digests, and
-checkout commit. It reports how the selected Kubernetes context verifies the
-server certificate: a CA file, an inline CA, or system roots. If the context
-disables verification, the preview warns you before approval.
+The offline preview uses local `kubectl` to decode the kubeconfig. It checks
+the profile, local inputs, image digests, and checkout commit. It reports whether
+the selected context uses a CA file, an inline CA, or system roots. Profiled
+operations warn before dispatch if the context disables server certificate
+verification.
+
+Profiled operations refuse an `auth-provider` entry on the selected user.
+For live operations, including cleanup, use a token or client certificate
+when kubectl preferences are enabled, even if no kuberc file exists. The helper
+allows exec credential plugins only when your approved environment already
+disables preferences. If the helper refuses active kubectl preferences, follow
+your approved upgrade procedure and credential policy.
 
 When you select candidate files or other expert options, pass the same options
 after `--` to `plan` and `apply`. Review the deployment effects and image digests
@@ -64,11 +79,12 @@ For an optional advance rehearsal, run:
 occ installation upgrade preflight --profile /secure/occ/upgrade.json
 ```
 
-Preflight checks the candidate with temporary cluster resources and leaves the
-writers running. Use the same reviewed inputs and expert options for `apply`.
-
-When the [maintenance handoff](production-upgrade.md#rehearse-before-the-maintenance-window)
-is complete, run:
+Confirm that preflight checks and cleanup succeeded. Preflight leaves writers
+running. If it reports that retained Agent revisions require their original
+worker and exits 1, resolve the blocker through the
+[maintenance handoff](production-upgrade.md#rehearse-before-the-maintenance-window).
+Follow that handoff before applying. Use fresh evidence and the same reviewed
+inputs and expert options for `apply`:
 
 ```bash
 occ installation upgrade apply --profile /secure/occ/upgrade.json
@@ -125,6 +141,7 @@ reads the deployed Helm revision, creates and deletes one migration Job, and
 reads its Pod and logs using Kubernetes access. It needs no OCC service key or
 `installation.yaml`. The candidate must preserve the deployed initializer's
 migrator Secret reference, mounted CA, and connection settings.
+The Job uses the installed NetworkPolicy; it does not validate candidate egress rules.
 
 Hold Helm and database credential changes while the check runs.
 `Migration check passed` reports the recognized history after the Job and Pod
@@ -143,11 +160,16 @@ to inspect the recorded state without contacting the cluster:
 occ installation upgrade status /path/to/original/evidence
 ```
 
-Treat the outcome as unknown if `status` reports missing evidence or an
-unresolved Helm intent. A lock marker can outlive its process. Check the
-original process and reconcile its submitted requests before another write.
-Resume requires the original upgrade evidence. Use the same checkout, profile,
-and evidence path:
+Status compares two reads of local markers. Run it again if the markers changed
+during inspection. For standalone preflight, it reports recorded startup checks
+and any original-worker blocker. A startup marker alone leaves the final
+preflight outcome unknown. Standalone preflight exits without preparing an
+upgrade. Resolve any blocker and use fresh evidence for `apply`.
+
+Treat missing evidence and unresolved Helm intent as uncertain outcomes. A lock
+marker can outlive its process. Check the original process and reconcile its
+submitted requests before another write. Resume requires the original prepared
+upgrade evidence. Use the same checkout, profile, and evidence path:
 
 ```bash
 occ installation upgrade resume /path/to/original/evidence --profile /secure/occ/upgrade.json
@@ -183,8 +205,9 @@ for the native script's options.
 Protected Installation configuration uses the
 [chart operation](production-upgrade.md#apply-other-installation-changes).
 `occ installation upgrade config apply` and `config rollback` direct you to
-that procedure. A failed Helm operation can leave an earlier Secret change in
-effect. Inspect the recorded effects before recovery, and check committed
-database and authentication state before returning to an earlier controller.
+that procedure. A failed or interrupted Helm operation can leave an earlier
+Installation Secret change in effect. Inspect the recorded effects before
+recovery. Before returning to an earlier controller, check its compatibility
+with committed database and authentication state.
 Follow [stopped authentication maintenance](auth-maintenance.md) for
 authentication changes.

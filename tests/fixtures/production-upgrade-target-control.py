@@ -1,7 +1,8 @@
 """Exercise native target binding through the real adapter and kubeconfig decoder.
 
-The recorder stops before network access. Receipt fixtures use synthetic evidence
-for an acknowledged Secret and do not simulate a completed Kubernetes upgrade.
+The request recorder normally stops before transport. Kuberc controls use loopback
+listeners that close before TLS or API effects. Synthetic receipts acknowledge a
+Secret without simulating a completed Kubernetes upgrade.
 """
 import base64
 import hashlib
@@ -10,10 +11,12 @@ import os
 import platform
 import shutil
 import signal
+import socketserver
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 MAX_DECODER_BYTES = 128 * 1024 * 1024
@@ -247,6 +250,11 @@ shim.write_text("""#!/usr/bin/env python3
 import base64,json,os,pathlib,subprocess,sys
 from pathlib import Path
 args = sys.argv[1:]
+if "CONTROL_CASE" not in os.environ:
+    # The real profile decoder receives a reduced environment. Keep its
+    # actual stdin and named context decoding without relying on test variables.
+    decoder = next(Path(sys.argv[0]).resolve().parent.parent.glob("decoder-*/kubectl"))
+    os.execv(decoder, [str(decoder), *args])
 case = Path(os.environ["CONTROL_CASE"])
 tool = Path(sys.argv[0]).name
 decoder = os.environ["CONTROL_KUBECTL"]
@@ -257,9 +265,18 @@ def swap_ca():
     replacement = ca.with_name("replace.pem")
     replacement.write_bytes(b"replacement authority for fixture")
     replacement.replace(ca)
+
+def install_late_policy():
+    late = case / "late-kuberc"
+    if late.exists():
+        target = case / ".kube/kuberc"
+        target.parent.mkdir(mode=0o700, exist_ok=True)
+        target.write_bytes(late.read_bytes())
+
 if (tool == "kubectl" and args[:1] == ["--kubeconfig"]
         and args[2:] == ["config", "view", "--merge=false", "--raw", "-o", "json"]):
     record["operation"] = "decode"
+    install_late_policy()
     mutation = os.environ.get("CHANGE_BEFORE_PIN")
     if mutation == "swap":
         swap_ca()
@@ -274,9 +291,18 @@ elif tool == "helm" and args[:2] == ["status","oce"]:
     record["operation"] = "helm-status"
 elif "delete" in args and any(a.startswith("--raw=") for a in args):
     record["operation"] = "delete"
-    record["uid"] = json.load(sys.stdin)["preconditions"]["uid"]
+    delete_options = sys.stdin.read()
+    record["uid"] = json.loads(delete_options)["preconditions"]["uid"]
 else:
     record["operation"] = "other"
+if (case / "loopback-client-control").exists() and record["operation"] in ("ready", "delete"):
+    install_late_policy()
+    # Use the genuine client, actual command, and workflow environment. The
+    # listeners record a connection and close it before TLS or any API effect.
+    request = subprocess.run([decoder, *args],
+        input=delete_options if record["operation"] == "delete" else "",
+        text=True, capture_output=True, timeout=6)
+    record["request_failed"] = request.returncode != 0
 if os.environ.get("SWAP_AT_BOUNDARY") == "yes":
     swap_ca()
 # Decode the same source and flatten relative references locally using real
@@ -331,7 +357,7 @@ def fixture(mode, image="runtime"):
         "apiVersion":"v1", "kind":"Config", "current-context":"different",
         "clusters":[{"name":"reviewed","cluster":cluster},{"name":"unselected","cluster":{"server":"https://unselected.invalid:65535"}}],
         "contexts":[{"name":"fixture","context":{"cluster":"reviewed","user":"credential"}},{"name":"different","context":{"cluster":"unselected","user":"credential"}}],
-        "users":[{"name":"credential","user":{"client-certificate":"../material/client.pem","client-key":"../material/client.key","tokenFile":"../material/token","exec":{"apiVersion":"client.authentication.k8s.io/v1beta1","command":"../material/rotate-token"}}}],
+        "users":[{"name":"credential","user":{"client-certificate":"../material/client.pem","client-key":"../material/client.key","tokenFile":"../material/token"}}],
     }).encode())
     for label in ("values.yaml", "installation.yaml", "service-key.json"):
         put(case/label, b"{}\n")
@@ -353,7 +379,11 @@ def run(case, command, *, swap=False, change_before_pin=""):
         "CONTROL_CASE": str(case), "CONTROL_KUBECTL": kubectl,
         "SWAP_AT_BOUNDARY": "yes" if swap else "no",
         "CHANGE_BEFORE_PIN": change_before_pin,
+        "HOME": str(case), "KUBECTL_KUBERC": "true",
     }
+    preferences = case / "kuberc-environment.json"
+    if preferences.exists():
+        environment.update(json.loads(preferences.read_text()))
     result = run_command(command, environment=environment)
     assert authority.decode() not in result.stdout+result.stderr
     assert replacement.decode() not in result.stdout+result.stderr
@@ -486,14 +516,14 @@ for owner in ("profile", "raw"):
         first_boundary(case, "apply", "ready")
     else:
         result, events = raw(case, "preflight-only")
-        assert result.returncode == 42 and [entry["operation"] for entry in events] == ["ready"], (result.stderr, events)
+        assert result.returncode == 42 and [entry["operation"] for entry in events] == ["decode", "ready"], (result.stderr, events)
         assert json.loads((case / "evidence/parameters.json").read_text())["profiled"] is False
-        assert events[0]["path"] == str(case / "operator/kubeconfig")
+        assert events[-1]["path"] != str(case / "operator/kubeconfig")
     record_secret(case)
     result, events = raw(case, "cleanup")
     deletes = [entry for entry in events if entry["operation"] == "delete"]
     assert len(deletes) == 1 and deletes[0]["uid"] == "fixture-secret-uid", (result.stderr, events)
-    assert (deletes[0]["path"] != str(case / "operator/kubeconfig")) == (owner == "profile"), deletes
+    assert deletes[0]["path"] != str(case / "operator/kubeconfig"), deletes
     assert deletes[0]["decoder_status"] == 0 and deletes[0]["approved_ca"], deletes
     if owner == "raw":
         result, events = profile_cleanup(case)
@@ -501,3 +531,173 @@ for owner in ("profile", "raw"):
         assert len(deletes) == 1 and deletes[0]["uid"] == "fixture-secret-uid", (result.stderr, events)
         assert deletes[0]["path"] != str(case / "operator/kubeconfig"), deletes
         assert deletes[0]["decoder_status"] == 0 and deletes[0]["approved_ca"], deletes
+
+
+# Verify actual kubectl transport selection for a fresh profiled request and
+# the native recovery of its recorded Secret. The synthetic endpoints refuse
+# every connection so even a regression cannot perform a Kubernetes operation.
+targets = []
+
+
+class ConnectRecorder(socketserver.BaseRequestHandler):
+    def handle(self):
+        targets.append(self.server.server_address[1])
+
+
+with socketserver.TCPServer(("127.0.0.1", 0), ConnectRecorder) as approved, \
+     socketserver.TCPServer(("127.0.0.1", 0), ConnectRecorder) as alternate:
+    approved_port = approved.server_address[1]
+    alternate_port = alternate.server_address[1]
+    for listener in (approved, alternate):
+        threading.Thread(target=listener.serve_forever, daemon=True).start()
+    try:
+        case = fixture("system")
+        config = case / "operator/kubeconfig"
+        selected = json.loads(config.read_bytes())
+        selected["clusters"][0]["cluster"]["server"] = f"https://127.0.0.1:{approved_port}"
+        selected["users"][0]["user"] = {"token": "synthetic-loopback-token"}
+        put(config, json.dumps(selected).encode())
+        (case / ".kube").mkdir(mode=0o700)
+        options = [{"name": "server", "default": f"https://127.0.0.1:{alternate_port}"}]
+        put(case / ".kube/kuberc", json.dumps({
+            "apiVersion": "kubectl.config.k8s.io/v1beta1", "kind": "Preference",
+            "defaults": [{"command": action, "options": options} for action in ("get", "delete")],
+        }).encode())
+        put(case / "loopback-client-control", b"")
+
+        # Same named context, direct genuine client and enabled preferences:
+        # the private kuberc is effective without the upgrade's protection.
+        control = run_command([kubectl, "--kubeconfig", str(config), "--context", "fixture",
+                               "get", "--raw=/readyz", "--request-timeout=1s"],
+                              environment={"PATH": os.environ["PATH"], "HOME": str(case), "KUBECTL_KUBERC": "true"})
+        assert control.returncode != 0 and set(targets) == {alternate_port}, (control.stderr, targets)
+        targets.clear()
+
+        result, events = profiled(case, "apply")
+        assert result.returncode == 2 and "Active kubectl preferences" in result.stderr, result.stderr
+        assert not targets and not events and not (case / "evidence").exists()
+        result, events = raw(case, "preflight-only")
+        assert result.returncode == 2 and "Active kubectl preferences" in result.stderr, result.stderr
+        assert not targets and not events and not (case / "evidence").exists()
+
+        # Hold the same refusal when the preferences come from a custom path, even
+        # if their only action is to alter a replace into a forced or dry run.
+        custom = case / "custom-preferences"
+        (case / ".kube/kuberc").rename(custom)
+        put(custom, json.dumps({
+            "apiVersion": "kubectl.config.k8s.io/v1beta1", "kind": "Preference",
+            "defaults": [{"command": "replace", "options": [
+                {"name": "force", "default": "true"}, {"name": "dry-run", "default": "client"},
+            ]}],
+        }).encode())
+        preference_env = case / "kuberc-environment.json"
+        put(preference_env, json.dumps({"KUBERC": str(custom)}).encode())
+        result, events = profiled(case, "apply")
+        assert result.returncode == 2 and "Active kubectl preferences" in result.stderr, result.stderr
+        assert str(custom) not in result.stderr and not targets and not events and not (case / "evidence").exists()
+
+        # Configured credential policy is a refusal, never stripped to enable
+        # an exec plugin. The synthetic plugin leaves a file if it starts.
+        plugin = case / "exec-credential"
+        marker = case / "plugin-started"
+        put(plugin, f"#!/bin/sh\ntouch '{marker}'\nexit 75\n".encode())
+        plugin.chmod(0o700)
+        selected["users"][0]["user"] = {"exec": {
+            "apiVersion": "client.authentication.k8s.io/v1", "command": str(plugin), "interactiveMode": "Never",
+        }}
+        put(config, json.dumps(selected).encode())
+        for policy in ("DenyAll", "Allowlist"):
+            put(custom, json.dumps({
+                "apiVersion": "kubectl.config.k8s.io/v1beta1", "kind": "Preference",
+                "credentialPluginPolicy": policy,
+                **({"credentialPluginAllowlist": [{"name": "/bin/false"}]} if policy == "Allowlist" else {}),
+            }).encode())
+            denied = run_command([kubectl, "--kubeconfig", str(config), "--context", "fixture",
+                                  "get", "--raw=/readyz", "--request-timeout=1s"],
+                                 environment={"PATH": os.environ["PATH"], "HOME": str(case), "KUBERC": str(custom)})
+            message = "not allowed" if policy == "DenyAll" else "not permitted by the credential plugin allowlist"
+            assert denied.returncode != 0 and message in denied.stderr and not marker.exists(), denied.stderr
+            result, events = profiled(case, "apply")
+            assert result.returncode == 2 and "Active kubectl preferences" in result.stderr, result.stderr
+            assert not marker.exists() and not events and not (case / "evidence").exists()
+
+        # Install policy synchronously after the native preference check. The
+        # request wrapper also installs it on the old raw path, which did not
+        # decode the original kubeconfig before invoking the genuine client.
+        for policy in ("DenyAll", "Allowlist"):
+            policy_document = {
+                "apiVersion": "kubectl.config.k8s.io/v1beta1", "kind": "Preference",
+                "credentialPluginPolicy": policy,
+                **({"credentialPluginAllowlist": [{"name": "/bin/false"}]} if policy == "Allowlist" else {}),
+            }
+            for owner in ("profile", "raw"):
+                fresh = fixture("system")
+                recovery = fixture("system")
+                for trial in (fresh, recovery):
+                    plugin = trial / "exec-credential"
+                    put(plugin, f"#!/bin/sh\ntouch '{trial / 'plugin-started'}'\nexit 75\n".encode())
+                    plugin.chmod(0o700)
+                    candidate = json.loads(json.dumps(selected))
+                    candidate["users"][0]["user"]["exec"]["command"] = str(plugin)
+                    put(trial / "operator/kubeconfig", json.dumps(candidate).encode())
+
+                # Generate genuine recovery parameters with an expressly
+                # disabled preference environment and record a synthetic UID.
+                recovery_env = recovery / "kuberc-environment.json"
+                put(recovery_env, b'{"KUBERC":"off"}')
+                if owner == "profile":
+                    first_boundary(recovery, "apply", "ready")
+                else:
+                    original, events = raw(recovery, "preflight-only")
+                    assert original.returncode == 42 and len(last_request(events)) == 1, (original.stderr, events)
+                record_secret(recovery)
+                recovery_env.unlink()
+
+                for trial, operation in (
+                    (fresh, lambda: profiled(fresh, "apply") if owner == "profile" else raw(fresh, "preflight-only")),
+                    (recovery, lambda: profile_cleanup(recovery) if owner == "profile" else raw(recovery, "cleanup")),
+                    (recovery, lambda: raw(recovery, "resume")),
+                ):
+                    (trial / ".kube/kuberc").unlink(missing_ok=True)
+                    put(trial / "loopback-client-control", b"")
+                    put(trial / "late-kuberc", json.dumps(policy_document).encode())
+                    result, events = operation()
+                    assert (trial / ".kube/kuberc").exists(), (result.stderr, events)
+                    assert not (trial / "plugin-started").exists(), (owner, policy, result.stderr, events)
+                    assert result.returncode == 1 and "exec credential plugin while kubectl preferences are enabled" in result.stderr, (result.stderr, events)
+                    assert events and not last_request(events) and not targets, events
+
+        # With preferences initially absent, a static credential can still
+        # use the approved endpoint after a late command-default override.
+        put(case / "late-kuberc", json.dumps({
+            "apiVersion": "kubectl.config.k8s.io/v1beta1", "kind": "Preference",
+            "defaults": [{"command": action, "options": options} for action in ("get", "delete")],
+        }).encode())
+        selected["users"].append({"name": "unselected-exec", "user": selected["users"][0]["user"]})
+        selected["contexts"][1]["context"]["user"] = "unselected-exec"
+        selected["users"][0]["user"] = {"token": "synthetic-loopback-token"}
+        put(config, json.dumps(selected).encode())
+        preference_env.unlink()
+        request = first_boundary(case, "apply", "ready")
+        assert request["request_failed"] and set(targets) == {approved_port}, targets
+        assert not marker.exists()
+        targets.clear()
+
+        record_secret(case)
+        put(preference_env, json.dumps({"KUBERC": str(custom)}).encode())
+        for cleanup in (lambda: raw(case, "cleanup"), lambda: profile_cleanup(case)):
+            result, events = cleanup()
+            assert result.returncode == 2 and "Active kubectl preferences" in result.stderr, result.stderr
+            assert not targets and not events
+
+        preference_env.unlink()
+        (case / ".kube/kuberc").unlink()
+        result, events = raw(case, "cleanup")
+        deletes = [entry for entry in events if entry["operation"] == "delete"]
+        assert result.returncode == 1 and len(deletes) == 1, (result.stderr, events)
+        assert deletes[0]["request_failed"] and deletes[0]["uid"] == "fixture-secret-uid", deletes
+        assert set(targets) == {approved_port}, targets
+        assert not marker.exists()
+    finally:
+        for listener in (approved, alternate):
+            listener.shutdown()

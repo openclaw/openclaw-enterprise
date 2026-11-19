@@ -17,8 +17,13 @@ custody and retirement. Provider adapters own provider-specific scope, injection
 and response rules. The proxy enforces requests and obtains eligible material;
 it does not run a credential renewal loop.
 
-Selecting Credential Proxy does not adopt ordinary sources into protected delivery.
-New and existing ordinary sources use Credential Gateway. Protected sources and
+Ordinary sources remain Gateway-owned. When static protection is required, neither
+the Gateway nor the Proxy may declare refresh, device authorization or managed
+login tokens. Capabilities omit incompatible types. If OCC detects a mismatch
+before the Secret read, creation and adoption return 409 without reading material.
+OCC checks again after the read and refuses injection if either declaration
+changed. Refused adoption preserves the prior Gateway copy.
+Protected sources and
 repository bindings require Proxy admission; an Agent with neither needs no Proxy
 plan. An unavailable Proxy never permits Gateway fallback for a protected source.
 
@@ -95,6 +100,14 @@ Material stays in the trusted resolver, sender or verified recipient. Workload
 configuration receives safe references or markers, not issuer inputs or provider
 tokens. Keep material out of logs, receipts and public status. A material read
 permits receipt or installation only; it does not authorize an upstream send.
+Static deployment and exchange require one provider registration whose ID and
+generation match the admitted reference, whose type matches the source, and whose
+lifecycle supports static credentials. Deployment checks again before invoking
+runtime credential provisioning and before calling the revision store. A later
+refusal cannot undo provisioning already started. Exchange pins the Proxy owner and source
+control before Secret metadata lookup, then rechecks them, the Backend, sender,
+resolver and provider before reading material. Another registration of the same
+source type cannot replace the admitted registration.
 
 ## Lifecycle
 

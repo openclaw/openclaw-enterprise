@@ -1,21 +1,27 @@
 import { spawn } from "node:child_process";
 import { availableParallelism } from "node:os";
 
-// Like Promise.all, but waits for every promise so no process outlives its test's
-// temporary directories, then rethrows the first failure.
+/**
+ * Waits for every operation before test fixture cleanup, then rethrows the first
+ * rejection in input order.
+ * @template T
+ * @param {Iterable<T>} promises
+ * @returns {Promise<Awaited<T>[]>}
+ */
 export async function settled(promises) {
   const results = await Promise.allSettled(promises);
-  const failed = results.find((result) => result.status === "rejected");
-  if (failed) {
-    throw failed.reason;
-  }
-  return results.map((result) => result.value);
+  return results.map((result) => {
+    if (result.status === "rejected") {
+      throw result.reason;
+    }
+    return result.value;
+  });
 }
 
 /**
- * @template T
+ * @template T, Result
  * @param {readonly T[]} items
- * @param {(item: T, index: number) => unknown} each
+ * @param {(item: T, index: number) => Result} each
  */
 export const eachSettled = (items, each) => settled(items.map(each));
 

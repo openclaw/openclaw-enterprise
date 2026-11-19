@@ -301,15 +301,15 @@ test("a final ACK rejects a conflicting staging file rather than ignoring it", (
   assert.equal(result.stdout, "");
 });
 
-test("cleanup binds startup preflight dependencies before Kubernetes actions", async (t) => {
+test("cleanup binds its native helper and startup preflight dependencies before Kubernetes actions", async (t) => {
   const parent = temporaryDirectorySync(t, "upgrade-cleanup-source-");
   const checkout = join(parent, "checkout");
   const dependencies = [
+    "scripts/upgrade-production-images",
     "scripts/lib/selected-image-migration.ts",
     "deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs",
   ];
   const sources = [
-    "scripts/upgrade-production-images",
     "scripts/upgrade-startup-preflight.ts",
     "scripts/upgrade-preflight-state.py",
     "scripts/lib/upgrade-preflight-cleanup.sh",
@@ -350,7 +350,11 @@ test("cleanup binds startup preflight dependencies before Kubernetes actions", a
         "--previous-process-settled",
         "--evidence-unrestored",
       ],
-      { cwd: checkout, env: { ...process.env, PATH: commandPath(bin) }, encoding: "utf8" },
+      {
+        cwd: checkout,
+        env: { ...process.env, PATH: commandPath(bin), KUBERC: "off" },
+        encoding: "utf8",
+      },
     );
 
   // The unchanged checkout must reach the real cleanup path and settle the
@@ -365,9 +369,10 @@ test("cleanup binds startup preflight dependencies before Kubernetes actions", a
     const path = join(checkout, source);
     const original = readFileSync(path);
     try {
+      const comment = source === "scripts/upgrade-production-images" ? "#" : "//";
       writeFileSync(
         path,
-        Buffer.concat([original, Buffer.from("\n// changed after preparation\n")]),
+        Buffer.concat([original, Buffer.from(`\n${comment} changed after preparation\n`)]),
       );
       const refused = cleanup();
       assert.equal(refused.status, 2, refused.stderr);
@@ -602,11 +607,14 @@ test("CI setup action starts without caller shell startup and reuses pinned yq",
     "utf8",
   );
   const step = action.split("\n    - name: Set up CI tools\n")[1]?.split("\n    - name: ")[0];
-  const selectedShell = step?.match(/^      shell: (\S.*)$/m)?.[1];
-  const selectedCommand = step?.match(/^      run: (\S.*)$/m)?.[1];
+  const selectedShell = step?.match(/^ {6}shell: (\S.*)$/m)?.[1];
+  const selectedCommand = step?.match(/^ {6}run: (\S.*)$/m)?.[1];
   assert.ok(selectedShell && selectedCommand, "CI tool setup action step is missing");
   const [shell, ...args] = selectedShell.split(/\s+/);
-  assert.ok(shell?.startsWith("/"), "expected an absolute action shell");
+  assert.ok(
+    typeof shell === "string" && shell.startsWith("/"),
+    "expected an absolute action shell",
+  );
   assert.equal(args.at(-1), "{0}", "expected the action runner to execute the step file");
   const stepFile = join(directory, "ci-step.sh");
   // Trace the actual inner setup too, so a regression in download_file is

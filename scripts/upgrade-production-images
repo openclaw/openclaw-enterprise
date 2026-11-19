@@ -123,8 +123,8 @@ require_private_file() {
 }
 
 # A sibling preserves the relative path base used by Kubernetes client configuration.
-pin_approved_kubeconfig() {
-  python3 - "$1" "$2" "$3" 3<<<"$approved_upgrade_inputs" <<'PYTHON'
+pin_execution_kubeconfig() {
+  python3 - "$1" "$2" "$3" "$4" 3<<<"$5" <<'PYTHON'
 import base64
 import errno
 import hashlib
@@ -138,29 +138,24 @@ import tempfile
 import uuid
 
 
-def load_kubeconfig(content, evidence):
-    # Use the same decoder as our Kubernetes clients. Without merging, local
-    # config view does not resolve filenames against the temporary directory.
-    with tempfile.TemporaryDirectory(prefix=".kubeconfig-input.", dir=evidence) as directory:
-        raw = Path(directory) / "approved"
-        raw.touch(mode=0o600, exist_ok=False)
-        raw.write_bytes(content)
-        return json.loads(subprocess.check_output(
-            ["kubectl", "--kubeconfig", str(raw), "config", "view", "--merge=false", "--raw", "-o", "json"],
-            stdin=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        ))
-
+def load_kubeconfig(content):
+    # Match the profiled preview's decoder. Without merging, local config view
+    # keeps references relative to the declared kubeconfig, which we rebase below.
+    return json.loads(subprocess.check_output(
+        ["kubectl", "--kubeconfig", "/dev/stdin", "config", "view", "--merge=false", "--raw", "-o", "json"],
+        input=content,
+        env={**os.environ, "KUBECTL_KUBERC": "false"},
+        stderr=subprocess.DEVNULL,
+    ))
 
 def selected_config_entry(entries, name, field):
     matches = [entry[field] for entry in entries or [] if entry["name"] == name]
     if len(matches) != 1:
-        raise ValueError("the selected Kubernetes context or cluster is missing or ambiguous")
+        raise ValueError(f"the selected Kubernetes {field} is missing or ambiguous")
     return matches[0]
 
 
-def pin_selected_server_ca(config, context_name, parent, approved_ca):
-    context = selected_config_entry(config.get("contexts"), context_name, "context")
+def pin_selected_server_ca(config, context, parent, approved_ca):
     cluster = selected_config_entry(config.get("clusters"), context["cluster"], "cluster")
     ca_path = cluster.get("certificate-authority")
     ca_data = cluster.get("certificate-authority-data")
@@ -242,8 +237,9 @@ def physical_parent(parent, system_owner):
 try:
     with os.fdopen(3, encoding="utf-8") as approval_file:
         approval = json.load(approval_file)
-    expected = approval["kubeconfig"]
-    evidence, context = sys.argv[2:]
+    verify_server_ca = approval.get("verifyServerCa", False)
+    expected = approval["kubeconfig"] if verify_server_ca else approval.get("kubeconfig")
+    evidence, context_name, check_exec = sys.argv[2:]
     original = Path(os.path.abspath(sys.argv[1]))
     parent = original.parent
     uid = os.geteuid()
@@ -273,11 +269,37 @@ try:
             if not stat.S_ISREG(info.st_mode) or info.st_uid != uid or info.st_mode & 0o077:
                 raise ValueError("kubeconfig must be an owner-only regular file")
             content = source.read()
-        if hashlib.sha256(content).hexdigest() != expected:
+        source_digest = hashlib.sha256(content).hexdigest()
+        if (verify_server_ca or expected is not None) and source_digest != expected:
             raise ValueError("kubeconfig changed after approval")
 
-        config = load_kubeconfig(content, evidence)
-        has_external_ca = pin_selected_server_ca(config, context, parent, approval.get("kubeconfig server CA"))
+        config = load_kubeconfig(content)
+        context = selected_config_entry(config.get("contexts"), context_name, "context")
+        user_name = context.get("user")
+        user = selected_config_entry(config.get("users"), user_name, "user") if user_name else {}
+        if check_exec == "1" and "exec" in user:
+            raise ValueError(
+                "the selected Kubernetes user uses an exec credential plugin while kubectl preferences are enabled. "
+                "Use a token or client certificate under your approved credential policy"
+            )
+        # A provider can rotate a credential that the private snapshot cannot preserve.
+        if "auth-provider" in user:
+            raise ValueError(
+                "the selected Kubernetes user uses a built-in auth-provider. "
+                "Use a token or client certificate"
+            )
+        has_external_ca = verify_server_ca and pin_selected_server_ca(
+            config, context, parent, approval.get("kubeconfig server CA")
+        )
+        if check_exec == "1":
+            # Give both clients only the checked target and its selected credentials.
+            cluster_name = context["cluster"]
+            cluster = selected_config_entry(config.get("clusters"), cluster_name, "cluster")
+            config["clusters"] = [{"name": cluster_name, "cluster": cluster}]
+            config["contexts"] = [{"name": context_name, "context": context}]
+            config["current-context"] = context_name
+            config["users"] = [{"name": user_name, "user": user}] if user_name else []
+            content = json.dumps(config).encode()
         fd = None
         if can_create_sibling and not has_external_ca:
             name = ".occ-upgrade-kubeconfig." + uuid.uuid4().hex
@@ -301,6 +323,7 @@ try:
         else:
             execution, encoded, private_parent = relocated_config(config, parent, evidence)
         print(json.dumps({"path": str(execution), "sha256": hashlib.sha256(encoded).hexdigest(),
+                          "sourceSha256": source_digest,
                           "directory": str(private_parent) if private_parent else None}))
     finally:
         os.close(directory)
@@ -369,11 +392,21 @@ select_recovery_target() {
 
 setup_execution_kubeconfig() {
   execution_kubeconfig=$kubeconfig
-  [[ -n "$approved_upgrade_inputs" ]] || return 0
-  local binding
-  binding=$(pin_approved_kubeconfig "$kubeconfig" "$upgrade_evidence_dir" "$context")
+  if [[ -z "$approved_upgrade_inputs" ]] && ((check_kubectl_exec == 0)); then
+    return 0
+  fi
+  local binding kubeconfig_binding
+  kubeconfig_binding='{}'
+  if [[ -n "$approved_upgrade_inputs" ]]; then
+    kubeconfig_binding=$(jq -ce '. + {verifyServerCa: true}' <<<"$approved_upgrade_inputs")
+  elif [[ -n "$original_parameters" ]]; then
+    kubeconfig_binding=$(jq -ce '{kubeconfig: .kubeconfigSha256}' <<<"$original_parameters")
+  fi
+  binding=$(pin_execution_kubeconfig "$kubeconfig" "$upgrade_evidence_dir" "$context" \
+    "$check_kubectl_exec" "$kubeconfig_binding")
   execution_kubeconfig=$(jq -er '.path' <<<"$binding")
   kubeconfig_snapshot_directory=$(jq -r '.directory // ""' <<<"$binding")
+  execution_kubeconfig_source_sha=$(jq -er '.sourceSha256' <<<"$binding")
   python3 - "$execution_kubeconfig" 3<<<"$binding" <<'PYTHON'
 import hashlib
 import json
@@ -833,9 +866,39 @@ while (($#)); do
   esac
 done
 
+check_kubectl_preferences() {
+  if [[ "${KUBECTL_KUBERC:-}" == false || "${KUBERC:-}" == off ]]; then
+    return
+  fi
+  python3 - <<'PYTHON' || exit 2
+import os
+from pathlib import Path
+
+try:
+    if not os.environ.get("KUBERC"):
+        (Path(os.environ.get("HOME", "")) / ".kube" / "kuberc").lstat()
+except FileNotFoundError:
+    pass
+except OSError:
+    raise SystemExit("Cannot inspect default kubectl preferences. Follow your approved procedure and credential policy.")
+else:
+    raise SystemExit("Active kubectl preferences are unsupported for this upgrade. Follow your approved procedure and credential policy.")
+PYTHON
+  # A policy can appear after this check. Only a pinned config without a
+  # runnable credential plugin may reach live clients with defaults suppressed.
+  check_kubectl_exec=1
+}
+
+admit_live_kubeconfig() {
+  setup_execution_kubeconfig
+  export KUBECTL_KUBERC=false KUBERC=off
+}
+
 approved_upgrade_inputs=${OCC_UPGRADE_APPROVED_INPUTS:-}
 unset OCC_UPGRADE_APPROVED_INPUTS
 original_parameters=
+check_kubectl_exec=0
+execution_kubeconfig_source_sha=
 execution_kubeconfig=$kubeconfig
 kubeconfig_snapshot_directory=
 kubeconfig_snapshot_receipt=
@@ -854,6 +917,7 @@ if ((cleanup_only)); then
   for command in python3 jq kubectl node mktemp; do
     require_command "$command"
   done
+  check_kubectl_preferences
   umask 077
   exec 8<"$evidence_dir" || die "cannot open the original evidence directory." 2
   python3 scripts/upgrade-preflight-state.py lock "$evidence_dir" 8 ||
@@ -884,7 +948,7 @@ if ((cleanup_only)); then
   trap 'trap - EXIT; exit 129' HUP
   trap 'trap - EXIT; exit 130' INT
   trap 'trap - EXIT; exit 143' TERM
-  setup_execution_kubeconfig
+  admit_live_kubeconfig
   kube=(kubectl --kubeconfig "$execution_kubeconfig" --context "$context")
   # Keep each cleanup's result and observations separate from original receipts.
   evidence_dir=$(mktemp -d "$evidence_dir/preflight-cleanup.XXXXXXXX")
@@ -906,6 +970,10 @@ if ((cleanup_only)); then
 fi
 ((previous_process_settled == 0 && evidence_unrestored == 0)) ||
   die "--previous-process-settled and --evidence-unrestored require --cleanup-preflight." 2
+
+# Use the same release history for preparation, upgrade, and recovery.
+[[ "${HELM_DRIVER:-secret}" == secret ]] ||
+  die "unset HELM_DRIVER or set it to secret; the upgrade requires Helm release Secrets in the selected cluster."
 
 # Helm reads these independently of --kubeconfig/--kube-context. Keep its
 # endpoint and TLS settings bound to the same selected file as kubectl.
@@ -1126,6 +1194,7 @@ fi
 for command in cmp helm jq kubectl mktemp node yq; do
   require_command "$command"
 done
+check_kubectl_preferences
 
 umask 077
 if ((resume == 0)); then
@@ -1155,8 +1224,8 @@ if ((resume)); then
     die "resume evidence directory or private parameters changed; use the original evidence directory."
   select_recovery_target
 fi
-setup_execution_kubeconfig
-parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$occ_url" "$occ" "$occ_ca" "$requested_values" "$requested_installation" "$broker_image" "$evidence_dir" "$chart_sha256" "$verify_agent_namespace" "$verify_agent" "$controller_compatibility_results" 3<<<"$approved_upgrade_inputs" 4<<<"$original_parameters" <<'PYTHON'
+admit_live_kubeconfig
+parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$occ_url" "$occ" "$occ_ca" "$requested_values" "$requested_installation" "$broker_image" "$evidence_dir" "$chart_sha256" "$verify_agent_namespace" "$verify_agent" "$controller_compatibility_results" "$execution_kubeconfig_source_sha" 3<<<"$approved_upgrade_inputs" 4<<<"$original_parameters" <<'PYTHON'
 import hashlib, json, os, sys
 def digest(path):
     with open(path, "rb") as f:
@@ -1167,7 +1236,7 @@ with os.fdopen(4, encoding="utf-8") as original_file:
     original_parameters = original_file.read().strip()
 approved = json.loads(approval) if approval else None
 original = json.loads(original_parameters) if original_parameters else None
-kubeconfig_sha = approved["kubeconfig"] if approved else digest(sys.argv[1])
+kubeconfig_sha = sys.argv[21] or digest(sys.argv[1])
 evidence = os.stat(sys.argv[16])
 parameters = {"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "agentContinuity": sys.argv[18:20], "controllerCompatibilityResults": sys.argv[20], "kubeconfigSha256": kubeconfig_sha, "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.ts"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.ts"), "selectedImageMigrationSha256": digest("scripts/lib/selected-image-migration.ts"), "selectedImageMigrationProgramSha256": digest("deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs"), "preflightStateSha256": digest("scripts/upgrade-preflight-state.py"), "preflightCleanupSha256": digest("scripts/lib/upgrade-preflight-cleanup.sh"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.ts"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "helmStateSha256": digest("scripts/upgrade-helm-state.py"), "resourceQuantitiesSha256": digest("apps/controller/src/drivers/compute/kubernetes/resource-quantities.ts"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}
 # Keep recovery's original operation mode in its parameter and dispatch identity.
@@ -1720,7 +1789,7 @@ verify_agent_continuity() {
 
 # Inventory is an authorized, complete view. Missing collections are not an empty fleet.
 read_restart_inventory() {
-  local destination=$1
+  local destination=$1 preflight_rehearsal=${2:-0}
   "${occ_json[@]}" installation deployment-inventory </dev/null >"$destination" ||
     die "cannot read the complete deployment inventory before stopping the worker. Restore access to the existing API if quiescence stopped it, then resume; no additional OCC writer was stopped."
   jq -es --arg installationId "$installation_id" '
@@ -1746,16 +1815,25 @@ read_restart_inventory() {
     die "the deployment inventory contains nonterminal Agent work; wait for it to finish before upgrading."
   fi
   if [[ -z "$runtime_image" ]]; then
-    local refusals
-    refusals=$(jq -r '
+    local assessment refusals original_worker_only
+    assessment=$(jq -c '
       [.namespaces[] as $namespace | $namespace.agents[] |
         select(.status == "active" and .desiredRuntimeState == "running" and .activeRevisionId != null) |
         select(.repositoryWorkerRestart != "reverification-supported" and .repositoryWorkerRestart != "not-applicable") |
         {namespace: $namespace.id, agent: .id, revision: .activeRevisionId,
          reason: (if .repositoryWorkerRestart == "original-worker-required" then "original-worker-required" else "unknown" end)}] |
-      .[:10][] | "  Namespace \(.namespace | .[:128] | tojson), Agent \(.agent | .[:128] | tojson), revision \(.revision | .[:128] | tojson): \(.reason)"
+      {originalWorkerOnly: all(.[]; .reason == "original-worker-required"),
+       refusals: ([.[:10][] | "  Namespace \(.namespace | .[:128] | tojson), Agent \(.agent | .[:128] | tojson), revision \(.revision | .[:128] | tojson): \(.reason)"] | join("\n"))}
     ' "$destination")
-    [[ -z "$refusals" ]] || die "retained Agent revisions cannot safely pass the repository worker-restart preflight:
+    json_fields "$assessment" refusals=refusals original_worker_only=originalWorkerOnly
+    if [[ -z "$refusals" ]]; then
+      return
+    fi
+    if ((preflight_rehearsal)) && [[ "$original_worker_only" == true ]]; then
+      retained_revision_blockers=$refusals
+      return
+    fi
+    die "retained Agent revisions cannot safely pass the repository worker-restart preflight:
 $refusals
 Stop and settle these Agents under an authorized interruption, or plan a normal revision replacement. Inspect $destination for the complete inventory. No additional OCC writer was stopped."
   fi
@@ -1971,7 +2049,8 @@ targets="$evidence_dir/targets.jsonl"
 : >"$targets"
 target_count=0
 inventory="$evidence_dir/inventory/deployment-inventory.json"
-read_restart_inventory "$inventory"
+retained_revision_blockers=
+read_restart_inventory "$inventory" "$preflight_only"
 normalize_restart_inventory "$inventory" >"$evidence_dir/inventory/restart-preflight.json"
 
 if [[ -z "$runtime_image" ]]; then
@@ -2300,6 +2379,13 @@ rendered="$evidence_dir/helm-attempts/$helm_attempt/rendered.yaml"
 preflight_startup
 if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]]; then
   verify_installation_switch
+fi
+if ((preflight_only)) && [[ -n "$retained_revision_blockers" ]]; then
+  touch "$evidence_dir/preflight-blocked-original-worker" ||
+    die "cannot record the original-worker blocker in the evidence directory."
+  die "Candidate startup and migration checks passed and temporary resources are gone. The upgrade remains blocked because retained Agent revisions require their original worker:
+$retained_revision_blockers
+Stop and settle these Agents under an authorized interruption, or plan a normal revision replacement. Inspect $inventory for the complete inventory. No OCC writer was stopped. Same-revision continuity is unverified."
 fi
 if ((preflight_only)); then
   printf 'Preflight passed; no OCC writer was stopped. Deploy during the maintenance window with the same reviewed inputs and fresh evidence.\n'
