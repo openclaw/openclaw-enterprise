@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
-updated: 2026-11-18
-last_updated_session: authoring-run/427e95c2-8e34-4624-8497-52493b5980f5
+updated: 2026-11-19
+last_updated_session: authoring-run/84dcdda6-a17a-4011-8c57-edfc23b433f6
 ---
 
 # Common Operational Logging Flow
@@ -158,10 +158,21 @@ covers enablement and Collector reuse. The
 [security reference](../reference/security.md#operational-log-collection-boundary)
 defines isolation limits.
 
-`k8sattributes` preserves identity across the batch by mapping it before
-`transform/kubernetes-resource` drops shared Pod labels. It waits for Pod cache
-sync at startup to prevent the downstream filter from dropping records without
-Pod identity while `filelog` commits their offsets.
+`deploy/logging/kubernetes.yaml:transform/kubernetes` assigns `occ-api` and
+`occ-worker` only when the Pod namespace matches the Collector's own namespace
+from `/var/run/secrets/kubernetes.io/serviceaccount/namespace`. The bundled
+DaemonSet already mounts that Kubernetes-projected file. Matching application
+and component labels in another namespace cannot create OCC service identity.
+The native Collector file provider refuses startup when the file is missing.
+An operator-managed Collector outside the control-plane namespace must use its
+own reviewed identity policy; the bundled receiver does not infer another
+namespace from workload labels. Gateway and Codex classification remains
+available across namespaces.
+
+`k8sattributes` preserves the real Pod namespace and UID across the batch by
+mapping identity before `transform/kubernetes-resource` drops shared Pod
+labels. It waits for Pod cache sync at startup to prevent the downstream filter
+from dropping records without Pod identity while `filelog` commits their offsets.
 
 `deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.quantity`
 checks basic Collector resource and volume quantity syntax.
@@ -343,6 +354,8 @@ covers credentials, supervision, queue storage and backend verification.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 05:46: Bind Kubernetes OCC service identity to the Collector namespace and preserve runtime Pod identity. (authoring-run/84dcdda6-a17a-4011-8c57-edfc23b433f6 - 6f67f5745a814fe1d4ac001c01cb3cbb93d2701f)
 
 - 2026-11-18 04:25: Name the exported authentication refusal and library events with their request ID. (authoring-run/427e95c2-8e34-4624-8497-52493b5980f5 - 0fe12954321242e9c0a0619b9f39f7e6d5431328)
 

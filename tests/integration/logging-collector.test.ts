@@ -429,6 +429,7 @@ test(
       attributes: Object.entries({
         "occ.application": "openclaw-enterprise",
         "occ.component": component,
+        "k8s.namespace.name": `system-${fixture.suffix}`,
         "k8s.pod.uid": `pod-${randomUUID()}`,
         "container.id": `containerd://${randomUUID()}`,
       }).map(([key, value]) => ({ key, value: { stringValue: value } })),
@@ -788,9 +789,9 @@ test(
   },
 );
 
-// Stands in for the API server behind k8sattributes: serves one Pod through
-// list or watch-list, and withholds every Pod response until the test releases it.
-function servePodMetadata(startServer: typeof createServer, pod: unknown) {
+// Stands in for the API server behind k8sattributes: serves Pods through list
+// or watch-list, and withholds every Pod response until the test releases it.
+function servePodMetadata(startServer: typeof createServer, pods: unknown[]) {
   const requests: string[] = [];
   const held: { url: URL; response: ServerResponse }[] = [];
   let released = false;
@@ -800,7 +801,9 @@ function servePodMetadata(startServer: typeof createServer, pod: unknown) {
     if (url.searchParams.get("watch") === "true") {
       response.writeHead(200);
       if (url.searchParams.get("sendInitialEvents") === "true") {
-        response.write(JSON.stringify({ type: "ADDED", object: pod }) + "\n");
+        for (const pod of pods) {
+          response.write(JSON.stringify({ type: "ADDED", object: pod }) + "\n");
+        }
         response.write(
           JSON.stringify({
             type: "BOOKMARK",
@@ -822,7 +825,7 @@ function servePodMetadata(startServer: typeof createServer, pod: unknown) {
         apiVersion: "v1",
         kind: "PodList",
         metadata: { resourceVersion: "10" },
-        items: [pod],
+        items: pods,
       }),
     );
   };
@@ -861,48 +864,89 @@ test(
   },
   async (t) => {
     const fixture = await collectorFixture(t, "sync");
+    t.diagnostic(`Collector image: ${fixture.image}`);
     // The fixture's cleanup removes this container with the rest of its network.
     const api = `oce-otel-sync-api-${fixture.suffix}`;
     const namespace = `system-${fixture.suffix}`;
-    const podName = `openclaw-enterprise-worker-${fixture.suffix}`;
-    const podUid = randomUUID();
-    const pod = {
+    const foreignNamespace = `tenant-${fixture.suffix}`;
+    const makePod = (
+      podNamespace: string,
+      name: string,
+      container: string,
+      labels: Record<string, string>,
+    ) => ({
       apiVersion: "v1",
       kind: "Pod",
       metadata: {
-        name: podName,
-        namespace,
-        uid: podUid,
+        name,
+        namespace: podNamespace,
+        uid: randomUUID(),
         resourceVersion: "10",
-        labels: {
-          "app.kubernetes.io/name": "openclaw-enterprise",
-          "app.kubernetes.io/component": "worker",
-        },
+        labels,
       },
-      spec: { nodeName: "fixture-node", containers: [{ name: "worker", image: "fixture" }] },
+      spec: { nodeName: "fixture-node", containers: [{ name: container, image: "fixture" }] },
       status: {
         containerStatuses: [
           {
-            name: "worker",
+            name: container,
             image: "fixture",
             imageID: `registry.example.test/controller@sha256:${"b".repeat(64)}`,
-            containerID: `containerd://${fixture.suffix}`,
+            containerID: `containerd://${randomUUID()}`,
             ready: true,
             restartCount: 0,
             state: { running: {} },
           },
         ],
       },
-    };
-    // The worker's only startup event is already on disk when the Collector
-    // starts, exactly as for a DaemonSet added to (or restarted on) a live node.
+    });
+    const occPod = (podNamespace: string, component: string) =>
+      makePod(
+        podNamespace,
+        `openclaw-enterprise-${component}-${fixture.suffix}`,
+        component,
+        {
+          "app.kubernetes.io/name": "openclaw-enterprise",
+          "app.kubernetes.io/component": component,
+        },
+      );
+    const workerPod = occPod(namespace, "worker");
+    const apiPod = occPod(namespace, "api");
+    const forgedWorkerPod = occPod(foreignNamespace, "worker");
+    const forgedApiPod = occPod(foreignNamespace, "api");
+    const gatewayPod = makePod(foreignNamespace, `gateway-${fixture.suffix}`, "gateway", {
+      "app.kubernetes.io/managed-by": "openclaw-enterprise",
+      "openclaw.dev/workload-role": "gateway",
+    });
+    const podMetadata = [workerPod, apiPod, forgedWorkerPod, forgedApiPod, gatewayPod];
+    // CRI records already exist when the Collector starts. The foreign Pods
+    // copy every OCC classification label, but cannot choose their namespace.
     const pods = join(fixture.directory, "pods");
-    const logDirectory = join(pods, `${namespace}_${podName}_${podUid}`, "worker");
-    await mkdir(logDirectory, { recursive: true });
-    await writeFile(
-      join(logDirectory, "0.log"),
-      `${new Date().toISOString()} stdout F ${JSON.stringify({ level: 30, event: "worker.started", computeDriverId: "kubernetes" })}\n`,
-    );
+    for (const pod of podMetadata) {
+      const [containerSpec] = pod.spec.containers;
+      assert.ok(containerSpec);
+      const container = containerSpec.name;
+      const logDirectory = join(
+        pods,
+        `${pod.metadata.namespace}_${pod.metadata.name}_${pod.metadata.uid}`,
+        container,
+      );
+      const record =
+        container === "gateway"
+          ? { level: "info", subsystem: "gateway", message: "namespace control" }
+          : {
+              level: 30,
+              event: container === "worker" ? "worker.started" : "listening",
+              "service.name": "occ-worker",
+              "service.instance.id": workerPod.metadata.uid,
+            };
+      await mkdir(logDirectory, { recursive: true });
+      await writeFile(
+        join(logDirectory, "0.log"),
+        `${new Date().toISOString()} stdout F ${JSON.stringify(record)}\n`,
+      );
+    }
+    const namespaceFile = join(fixture.directory, "namespace");
+    await writeFile(namespaceFile, namespace);
     await docker([
       "run",
       "--detach",
@@ -913,12 +957,12 @@ test(
       "--publish",
       "127.0.0.1::8001",
       "--env",
-      `POD=${JSON.stringify(pod)}`,
+      `PODS=${JSON.stringify(podMetadata)}`,
       nodeImage,
       "node",
       "-e",
       // Node erases the types before serializing this self-contained child program.
-      `(${servePodMetadata.toString()})(require("node:http").createServer, JSON.parse(process.env.POD));`,
+      `(${servePodMetadata.toString()})(require("node:http").createServer, JSON.parse(process.env.PODS));`,
     ]);
     const control = `http://${(await docker(["port", api, "8001/tcp"])).split("\n")[0]}/fixture`;
     const podRequests = async (): Promise<string[]> => {
@@ -953,11 +997,12 @@ test(
     );
     await fixture.startCollector({
       receiverPath: join(root, "deploy/logging/kubernetes.yaml"),
-      publish: [],
+      publish: ["127.0.0.1::8888"],
       env: ["K8S_NODE_NAME=fixture-node", "KUBECONFIG=/etc/otel-fixture/kubeconfig"],
       volumes: [
         `${pods}:/var/log/pods:ro`,
         `${join(fixture.directory, "kubeconfig")}:/etc/otel-fixture/kubeconfig:ro`,
+        `${namespaceFile}:/var/run/secrets/kubernetes.io/serviceaccount/namespace:ro`,
       ],
       configs: [join(fixture.directory, "metadata-auth.yaml")],
     });
@@ -976,20 +1021,76 @@ test(
     );
     await delay(3_000);
     assert.deepEqual(await records(), []);
-    await fetch(`${control}/release`, { method: "POST" });
+    const released = await fetch(`${control}/release`, { method: "POST" });
+    assert.equal(released.status, 200);
 
+    // Wait until filelog has consumed every input, then stop the owned Collector
+    // to drain its batch. Otherwise a missing forged record could be a read race.
+    const metricsAddress = await fixture.port(8888);
     await waitFor(
-      "the record after Pod metadata syncs",
-      async () => (await records()).length > 0,
+      "every CRI record after Pod metadata syncs",
+      async () => {
+        const response = await fetch(`http://${metricsAddress}/metrics`);
+        assert.equal(response.status, 200);
+        const metrics = await response.text();
+        const accepted = metrics.split("\n").reduce((total, line) => {
+          const sample = line.match(
+            /^otelcol_receiver_accepted_log_records(?:_total)?\{[^}]*receiver="filelog"[^}]*\}\s+(\d+(?:\.\d+)?)/,
+          );
+          return total + Number(sample?.[1] ?? 0);
+        }, 0);
+        return accepted >= podMetadata.length;
+      },
+      fixture,
+    );
+    await docker(["stop", "--time", "10", fixture.collector]);
+    assert.equal(
+      await docker(["inspect", "--format", "{{.State.ExitCode}}", fixture.collector]),
+      "0",
+    );
+    await waitFor(
+      "the allowed records after Collector drain",
+      async () => (await records()).length >= 3,
       fixture,
     );
     const exported = await records();
-    assert.equal(exported.length, 1);
-    const [entry] = exported;
-    assert.ok(entry);
-    assert.equal(entry.resource["service.name"], "occ-worker");
-    assert.equal(entry.resource["service.instance.id"], podUid);
-    assert.equal(asRecord(entry.record.body)?.stringValue, "worker.started");
-    assert.equal(entry.record.severityText, "INFO");
+    assert.equal(exported.length, 3);
+    for (const [pod, service, body] of [
+      [workerPod, "occ-worker", "worker.started"],
+      [apiPod, "occ-api", "listening"],
+      [gatewayPod, "openclaw-gateway", "gateway.operational"],
+    ] as const) {
+      const entry = exported.find(({ resource }) => resource["k8s.pod.uid"] === pod.metadata.uid);
+      assert.ok(entry, `expected ${service} from ${pod.metadata.namespace}`);
+      assert.equal(entry.resource["k8s.namespace.name"], pod.metadata.namespace);
+      assert.equal(entry.resource["service.name"], service);
+      assert.equal(entry.resource["service.instance.id"], pod.metadata.uid);
+      assert.equal(asRecord(entry.record.body)?.stringValue, body);
+      assert.equal(entry.record.severityText, "INFO");
+    }
+    // Native configuration resolution must refuse a missing trusted namespace.
+    // This does not start a Collector or contact the Kubernetes API.
+    await assert.rejects(
+      docker([
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--env",
+        "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:4318/v1/logs",
+        "--volume",
+        `${join(root, "deploy/logging/collector.yaml")}:/etc/otel/collector.yaml:ro`,
+        "--volume",
+        `${join(root, "deploy/logging/kubernetes.yaml")}:/etc/otel/receiver.yaml:ro`,
+        "--volume",
+        `${join(root, "deploy/logging/exporter.yaml")}:/etc/otel/exporter.yaml:ro`,
+        fixture.image,
+        "validate",
+        "--config=/etc/otel/collector.yaml",
+        "--config=/etc/otel/receiver.yaml",
+        "--config=/etc/otel/exporter.yaml",
+      ]),
+      /unable to read the file file:\/var\/run\/secrets\/kubernetes\.io\/serviceaccount\/namespace/,
+    );
   },
 );

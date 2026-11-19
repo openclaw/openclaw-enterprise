@@ -71,8 +71,12 @@ processors:
           - set(attributes["service.instance.id"], resource.attributes["k8s.pod.uid"])
           - set(attributes["service.version"], resource.attributes["container.image.tag"])
           - set(attributes["service.version"], resource.attributes["container.image.repo_digests"][0]) where resource.attributes["container.image.repo_digests"] != nil
-          - set(attributes["service.name"], "occ-api") where resource.attributes["occ.application"] == "openclaw-enterprise" and (resource.attributes["occ.component"] == "api" or resource.attributes["occ.component"] == "bootstrap" or resource.attributes["occ.component"] == "migrate" or resource.attributes["occ.component"] == "initialization")
-          - set(attributes["service.name"], "occ-worker") where resource.attributes["occ.application"] == "openclaw-enterprise" and resource.attributes["occ.component"] == "worker"
+          # Workload labels alone cannot identify an OCC service. The bundled
+          # Collector runs in the operator-controlled control-plane namespace;
+          # its existing ServiceAccount projection supplies that namespace.
+          # A missing projection makes native configuration resolution fail.
+          - set(attributes["service.name"], "occ-api") where resource.attributes["k8s.namespace.name"] == "${file:/var/run/secrets/kubernetes.io/serviceaccount/namespace}" and resource.attributes["occ.application"] == "openclaw-enterprise" and (resource.attributes["occ.component"] == "api" or resource.attributes["occ.component"] == "bootstrap" or resource.attributes["occ.component"] == "migrate" or resource.attributes["occ.component"] == "initialization")
+          - set(attributes["service.name"], "occ-worker") where resource.attributes["k8s.namespace.name"] == "${file:/var/run/secrets/kubernetes.io/serviceaccount/namespace}" and resource.attributes["occ.application"] == "openclaw-enterprise" and resource.attributes["occ.component"] == "worker"
           - set(attributes["service.name"], "openclaw-gateway") where resource.attributes["occ.managed_by"] == "openclaw-enterprise" and resource.attributes["occ.role"] == "gateway"
           - set(attributes["service.name"], "codex-app-server") where resource.attributes["occ.managed_by"] == "openclaw-enterprise" and resource.attributes["occ.role"] == "agent"
           - set(attributes["openclaw.namespace.id"], resource.attributes["openclaw.namespace.id"])
