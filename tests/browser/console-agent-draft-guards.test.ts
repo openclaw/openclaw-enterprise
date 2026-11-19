@@ -13,6 +13,7 @@ import type {
   SecretBindings,
   OpenClawConfigurationDocument,
   Permission,
+  RepositoryNetworkGrant,
 } from "../../packages/contracts/src/index.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
@@ -835,6 +836,122 @@ test("Agent policy proposals save separately or atomically request application t
   });
   await page.getByText("Applied to the running Agent", { exact: true }).waitFor();
   assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 1);
+  assert.equal(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`).length,
+    0,
+  );
+});
+
+test("Console saves only explicitly proposed repository grants for a later deployment", async (t) => {
+  const { fixture, namespace: rawNamespace, agent: rawAgent, base } = await createPolicyConsole(t);
+  const namespace = resource(rawNamespace);
+  const agent = agentFields(rawAgent);
+  const { revision: rawRevision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const revision = revisionFields(rawRevision);
+  const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "policy");
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const manage = page.getByRole("button", { name: "Manage rules", exact: true });
+  const region = page.getByRole("region", { name: "Repository network policy" });
+  const edit = region.getByRole("button", { name: "Edit repository access" });
+  // Supply the future repository policy fields at the HTTP boundary. The controller at this
+  // revision does not provide ACL persistence. These responses exercise the production Console.
+  const ceiling: RepositoryNetworkGrant[] = [
+    { repository: "example/application", access: "read" },
+    { repository: "example/tooling", access: "write" },
+  ];
+  const original = await fixture.request("GET", base);
+  assert.equal(original.status, 200);
+  const body = record(original.body);
+  const data = record(body.data);
+  const policy = record(data.policy);
+  let advertiseCeiling = false;
+  let saveSupported = false;
+  let acknowledged:
+    { version: number; repositoryNetworkPolicy: RepositoryNetworkGrant[] } | undefined;
+  await page.route(fixture.origin + base, async (route) => {
+    const request = route.request();
+    const method = request.method();
+    if (method !== "GET" && method !== "PUT") {
+      await route.fallback();
+      return;
+    }
+    if (method === "PUT") {
+      const posted = record(request.postDataJSON());
+      if (posted.expectedVersion === policy.version) {
+        acknowledged = { version: 2, repositoryNetworkPolicy: ceiling };
+      } else {
+        acknowledged = { version: 3, repositoryNetworkPolicy: [] };
+      }
+      await route.fulfill({ status: 200, json: { ...body, data: { ...policy, ...acknowledged } } });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      json: {
+        ...body,
+        data: {
+          ...data,
+          policy: { ...policy, ...acknowledged },
+          repositoryNetworkPolicyCeiling: advertiseCeiling ? ceiling : undefined,
+          repositoryNetworkPolicySaveSupported: advertiseCeiling ? saveSupported : undefined,
+        },
+      },
+    });
+  });
+  await login(page, fixture, url);
+  await manage.click();
+  assert.equal(await region.count(), 0, "older servers expose no repository ceiling");
+  advertiseCeiling = true;
+  await page.getByRole("button", { name: "Refresh policy", exact: true }).click();
+  await region.getByText("This Installation cannot save repository policies yet.").waitFor();
+  assert.equal(await edit.count(), 0);
+  saveSupported = true;
+  await page.getByRole("button", { name: "Refresh policy", exact: true }).click();
+  await region.getByText("Saved policy: Legacy repository access").waitFor();
+  await edit.click();
+  const application = region.getByRole("combobox", { name: "example/application" });
+  const tooling = region.getByRole("combobox", { name: "example/tooling" });
+  assert.equal(await application.locator('option[value="write"]').isDisabled(), true);
+  assert.equal(await tooling.locator('option[value="write"]').isEnabled(), true);
+  await region.getByText("Proposed policy: Deny all repositories").waitFor();
+  await region.getByRole("button", { name: "Discard repository changes" }).click();
+  assert.equal(await edit.evaluate((node) => node.ownerDocument.activeElement === node), true);
+  assert.equal(pathRequests(requests, "PUT", base).length, 0);
+  await edit.click();
+  await application.selectOption("read");
+  await tooling.selectOption("write");
+  const firstSave = responseTo(page, "PUT", fixture.origin + base);
+  await region.getByRole("button", { name: "Save repository policy" }).click();
+  assert.equal((await firstSave).status(), 200);
+  await page.getByText("Saved repository policy: Restrict repository access").waitFor();
+  await page.getByText("Repository policy v2 saved. Deploy a new version to use it.").waitFor();
+
+  await manage.click();
+  await edit.click();
+  await application.selectOption("");
+  await tooling.selectOption("");
+  const secondSave = responseTo(page, "PUT", fixture.origin + base);
+  await region.getByRole("button", { name: "Save repository policy" }).click();
+  assert.equal((await secondSave).status(), 200);
+  await page.getByText("Saved repository policy: Deny all repositories").waitFor();
+  await manage.click();
+  const refreshed = responseTo(page, "GET", fixture.origin + base);
+  await page.getByRole("button", { name: "Refresh policy", exact: true }).click();
+  assert.equal((await refreshed).status(), 200);
+  await region.getByText("Saved policy: Deny all repositories").waitFor();
+  assert.deepEqual(
+    pathRequests(requests, "PUT", base).map(({ body }) => body),
+    [
+      { expectedVersion: 1, additions: [], repositoryNetworkPolicy: ceiling },
+      { expectedVersion: 2, additions: [], repositoryNetworkPolicy: [] },
+    ],
+  );
+  assert.equal(
+    await page.getByRole("button", { name: "Apply saved rules", exact: true }).count(),
+    0,
+  );
+  assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 0);
   assert.equal(
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`).length,
     0,

@@ -37,6 +37,9 @@ type PolicyState =
   | "loading"
   | "noCredential"
   | "protected"
+  | "repository"
+  | "repositoryDenyAll"
+  | "repositoryReadOnly"
   | "withheldOne"
   | "withheldMany";
 
@@ -137,6 +140,9 @@ export function createAgentDetailPolicyScenarios({
       "Policy logs unavailable without runtime credentials",
     ],
     ["policyDenialsProtected", "protected", "Protected execution refuses network policy additions"],
+    ["policyRepositoryAccess", "repository", "Edit repository network access"],
+    ["policyRepositoryDenyAll", "repositoryDenyAll", "Saved deny-all repository policy"],
+    ["policyRepositoryReadOnly", "repositoryReadOnly", "Repository policy saving unavailable"],
     [
       "policyDenialsWithheldOne",
       "withheldOne",
@@ -198,6 +204,22 @@ export function createAgentDetailPolicyScenarios({
             "Use the Policy editing switch in the Network policy card on the page. Open Manage rules and confirm the editing toggle is absent, saved rules remain, and Add rule follows the editing setting. Close the dialog to re-enable editing. Check the empty, denied, unsupported, missing metadata, and unconfirmed stories.",
           ],
           gap: "Simulated UI proof only. These fixtures do not prove authorization, persistence, enforcement, or provider policy activation.",
+          ...(state === "repository" ||
+          state === "repositoryDenyAll" ||
+          state === "repositoryReadOnly"
+            ? {
+                description: "Repository network access is saved for a later deployment.",
+                steps: [
+                  "Open Manage rules and check the saved repository policy and the redeploy guidance.",
+                  ...(state === "repositoryReadOnly"
+                    ? ["Confirm repository policy saving is unavailable in this Installation."]
+                    : [
+                        "Choose Edit repository access. Confirm example/application offers Read and example/tooling offers Read and Write.",
+                        "Save a changed policy and reopen Manage rules. Check the saved state and confirm there is no action to apply it to the current revision.",
+                      ]),
+                ],
+              }
+            : {}),
           ...(state === "unicode"
             ? {
                 description:

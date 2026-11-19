@@ -4,6 +4,7 @@ import type {
   SandboxPolicy,
   SandboxPolicyApplication,
   OpenClawConfigurationValue,
+  RepositoryNetworkGrant,
   SandboxPolicyRecommendation,
 } from "@openclaw-enterprise/contracts";
 import networkPolicySchema from "./network-policy-schema.mts";
@@ -29,6 +30,7 @@ type FixturePolicy = {
   agentId: unknown;
   version: number;
   additions: SandboxPolicy["additions"];
+  repositoryNetworkPolicy?: RepositoryNetworkGrant[];
   applied?: {
     -readonly [K in keyof NonNullable<SandboxPolicy["applied"]>]: NonNullable<
       SandboxPolicy["applied"]
@@ -162,12 +164,23 @@ export function createNetworkPolicyFixture(
           id: `explicit-${index + 1}`,
           host: `allowed-${index + 1}.example.org`,
         }));
+  const repositoryCeiling: RepositoryNetworkGrant[] | undefined = [
+    "repository",
+    "repositoryDenyAll",
+    "repositoryReadOnly",
+  ].includes(scenario.policyState ?? "")
+    ? [
+        { repository: "example/application", access: "read" },
+        { repository: "example/tooling", access: "write" },
+      ]
+    : undefined;
   let sandboxPolicy: FixturePolicy = {
     id: "sbp_00000000-0000-4000-8000-000000000001",
     namespaceId,
     agentId: seedAgent().id,
     version: 1,
     additions: initialAdditions,
+    ...(scenario.policyState === "repositoryDenyAll" ? { repositoryNetworkPolicy: [] } : {}),
   };
   if (scenario.policyRuleCount) {
     sandboxPolicy.applied = {
@@ -349,6 +362,12 @@ export function createNetworkPolicyFixture(
         editingEnabled: policyEditing,
         protectedExecution: scenario.policyState === "protected",
         ceiling: policyCeiling,
+        ...(repositoryCeiling === undefined
+          ? {}
+          : {
+              repositoryNetworkPolicyCeiling: repositoryCeiling,
+              repositoryNetworkPolicySaveSupported: scenario.policyState !== "repositoryReadOnly",
+            }),
         defaults:
           scenario.policyState === "unsupported"
             ? null
@@ -437,6 +456,9 @@ export function createNetworkPolicyFixture(
         ...sandboxPolicy,
         version: sandboxPolicy.version + 1,
         additions: body.additions,
+        ...("repositoryNetworkPolicy" in body
+          ? { repositoryNetworkPolicy: body.repositoryNetworkPolicy as RepositoryNetworkGrant[] }
+          : {}),
       };
       delete sandboxPolicy.application;
       return response(

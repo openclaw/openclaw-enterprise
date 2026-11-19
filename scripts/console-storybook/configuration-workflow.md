@@ -13,6 +13,14 @@ components with simulated API state; they do not prove persistence or enforcemen
   **Add Network rules**, fill the schema fields, add a port range, then select
   **Review changes**. Preview does not change the saved version. Compare **Save**
   with **Save and apply to current revision**, then wait for provider confirmation.
+- **Edit repository network access:** open **Manage rules** and check the saved
+  legacy policy. Choose **Edit repository access**. Select **Read** for
+  `example/application` and **Write** for `example/tooling`. Save, reopen the
+  dialog, and check the grants and redeploy guidance. Then select **No access**
+  for both and save. Compare the saved result with **Saved deny-all repository
+  policy** and confirm that it differs from the initial legacy policy.
+- **Repository policy saving unavailable:** open **Manage rules** and check
+  that you can read the saved state. The repository editor is unavailable.
 - **Configuration preview field errors:** review a suggestion. The preview shows
   a field error and retains the proposal without saving.
 - **Configuration version conflict retains draft:** preview a proposal and check
