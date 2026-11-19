@@ -3289,12 +3289,18 @@ test("protected admission refuses an Agent's network policy additions instead of
   // The protected profile is the Sandbox's exact policy, so Agent additions cannot ride on it.
   // Admission says so at deploy time; it must not silently admit a revision without them.
   const { f, grant } = await networkPolicyFixture(t, { admitRevision: false });
-  const savePolicy = (additions) =>
+  const savePolicy = (additions, repositoryNetworkPolicy) =>
     f.controller.transact(async (unit) => {
       const policy = await unit.sandboxPolicies.find(f.namespace.id, f.agent.id);
       assert.ok(policy, "every Agent owns a sandbox policy");
+      const { repositoryNetworkPolicy: _previous, ...current } = policy;
       const saved = await unit.sandboxPolicies.save(
-        { ...policy, additions, version: policy.version + 1 },
+        {
+          ...current,
+          additions,
+          version: policy.version + 1,
+          ...(repositoryNetworkPolicy === undefined ? {} : { repositoryNetworkPolicy }),
+        },
         policy.version,
       );
       assert.ok(saved);
@@ -3314,8 +3320,22 @@ test("protected admission refuses an Agent's network policy additions instead of
     await f.controller.transact((unit) => unit.revisions.listRevisions(f.namespace.id, f.agent.id)),
     [],
   );
-  // Without additions the same Agent admits a protected revision that keeps only its
-  // protected egress policy: no Agent policy snapshot rides beside the egress plan.
+  // An explicit deny-all request must also refuse before a protected revision can be created.
+  await savePolicy([], []);
+  const deniedRepositoryPolicy = await f.request(
+    "POST",
+    `/namespaces/${f.namespace.id}/agents/${f.agent.id}/deploy`,
+  );
+  assert.equal(deniedRepositoryPolicy.status, 409, JSON.stringify(deniedRepositoryPolicy.body));
+  assert.match(
+    deniedRepositoryPolicy.body.error.message,
+    /Protected execution cannot enforce the saved repository network policy/,
+  );
+  assert.deepEqual(
+    await f.controller.transact((unit) => unit.revisions.listRevisions(f.namespace.id, f.agent.id)),
+    [],
+  );
+  // Omission permits the existing protected execution path.
   await savePolicy([]);
   const metadata = await f.deployAgent(f.namespace.id, f.agent.id);
   const revision = await f.controller.transact((unit) =>

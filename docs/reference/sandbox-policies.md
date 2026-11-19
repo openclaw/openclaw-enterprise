@@ -30,10 +30,18 @@ It must require inspected HTTPS, enforce the list in addition to other rules,
 and deny ungranted repositories. It must refuse bypass paths and any weakening
 of protected execution.
 
-Admission binds the versioned list and effective policy in an immutable
-snapshot. Ordinary deployment rejects a repository list supplied by a Driver.
-API configuration and enforcement in a deployed Sandbox require further
-integration.
+Deploy checks SandboxPolicy `read` for each saved repository list. A list that
+exceeds the current Installation ceiling is refused. Each grant also requires
+current approval from the Installation's repository policy owner for the
+Namespace. If the owner cannot verify a grant, deploy refuses the list.
+Protected execution refuses any explicit list. An unprotected deployment with
+Driver support saves the list, its identity, and the effective policy in its
+Agent revision.
+Live application is unavailable while the desired policy or active revision
+contains a repository list. Deploy a new revision to change repository access.
+
+The public policy API does not yet save repository lists. Installed Sandbox
+enforcement requires separate verification.
 
 ## Discovery and preview
 

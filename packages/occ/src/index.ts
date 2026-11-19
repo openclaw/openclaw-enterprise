@@ -122,6 +122,8 @@ import {
   type ErrorDetail,
 } from "@openclaw-enterprise/contracts";
 import type {
+  RepositoryNetworkGrant,
+  RepositoryNetworkPolicyCeiling,
   SandboxPolicy,
   SandboxFacet,
   SandboxNetworkGrant,
@@ -129,6 +131,10 @@ import type {
   SandboxPolicyRecommendations,
 } from "@openclaw-enterprise/contracts";
 import {
+  admitRepositoryNetworkPolicy,
+  admitSandboxRepositoryNetworkPolicy,
+  parseRepositoryNetworkPolicyCeiling,
+  RepositoryNetworkPolicyAdmissionError,
   validateSandboxNetworkGrants,
   sandboxNetworkGrantsWithinCeiling,
 } from "@openclaw-enterprise/contracts";
@@ -825,6 +831,7 @@ export interface ControllerOptions {
   readonly preparedTokens?: TokenService | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
+  readonly repositoryNetworkPolicyCeiling?: RepositoryNetworkPolicyCeiling;
   /** Installation configuration `iam`; `applyIAMConfiguration` writes it to IAM policy. */
   readonly iamConfiguration?: InstallationIAMConfiguration;
   readonly authorize?: (
@@ -2214,6 +2221,10 @@ type InstallationRepositoryAdmission = Readonly<{
       readonly namespaceId: string;
       readonly bindings: readonly RepositoryBindingRequest[];
     }): RepositoryCredentialResolution;
+    repositoryNetworkPolicyAllows?(input: {
+      readonly namespaceId: string;
+      readonly grant: RepositoryNetworkGrant;
+    }): boolean;
   };
   backendId: string;
 }>;
@@ -2274,6 +2285,7 @@ export class OpenClawController {
   private readonly configurations = new DriverConfigurationRegistry();
 
   private readonly sandboxNetworkPolicyCeiling: readonly SandboxNetworkGrant[];
+  private readonly repositoryNetworkPolicyCeiling: RepositoryNetworkPolicyCeiling;
   private readonly iamConfiguration?: InstallationIAMConfiguration;
   private readonly authorization?: ControllerOptions["authorize"];
   private readonly deviceLoginCipher: ReturnType<typeof deviceAuthorizationCipher> | undefined;
@@ -2329,6 +2341,9 @@ export class OpenClawController {
       "/sandboxNetworkPolicyCeiling",
     );
     this.sandboxNetworkPolicyCeiling = immutableCopy(options.sandboxNetworkPolicyCeiling ?? []);
+    this.repositoryNetworkPolicyCeiling = parseRepositoryNetworkPolicyCeiling(
+      options.repositoryNetworkPolicyCeiling ?? [],
+    );
     if (options.iamConfiguration !== undefined) {
       this.iamConfiguration = options.iamConfiguration;
     }
@@ -11453,6 +11468,8 @@ export class OpenClawController {
     const canApply =
       canSave &&
       driver.networkPolicy.live &&
+      policy.repositoryNetworkPolicy === undefined &&
+      revision?.sandboxPolicy?.repositoryNetworkPolicy === undefined &&
       agent.desiredRuntimeState === "running" &&
       this.unprotectedPolicyRevision(revision) &&
       revision?.sandboxPolicy !== undefined &&
@@ -11959,7 +11976,7 @@ export class OpenClawController {
     await this.authorize(principalId, "update", sandboxPolicy);
     // Finding 2874: apply admits the saved additions (ceiling and Driver refusals name them)
     // and returns the saved policy, so it needs SandboxPolicy read before either, even with
-    // no additions. Deploy needs read only when saved additions exist (finding 2151).
+    // no additions. Deploy requires read for saved additions or an explicit repository policy.
     await this.authorize(principalId, "read", sandboxPolicy);
     // The cause comes before the editing setting and version checks it would otherwise hide (D774).
     this.requireNetworkPolicyAvailable();
@@ -11984,6 +12001,14 @@ export class OpenClawController {
       }
       const driver = this.sandboxDriver();
       const revision = await state.revisions.findRevision(namespaceId, agentId, revisionId);
+      if (
+        policy.repositoryNetworkPolicy !== undefined ||
+        revision?.sandboxPolicy?.repositoryNetworkPolicy !== undefined
+      ) {
+        throw new ResourceStateConflictError(
+          "Repository network policy changes require a deployment. Deploy explicitly to apply the saved policy.",
+        );
+      }
       // Qualified artifact snapshots do not make protected revisions eligible for live apply.
       if (revision?.executionAdmission?.mode === "protected") {
         throw new ProtectedExecutionNetworkPolicyError("apply");
@@ -13781,19 +13806,24 @@ export class OpenClawController {
       }
       const policy = await state.sandboxPolicies.find(namespace.id, lockedAgent.id);
       const policyScope = { repositoryCredentials: repositoryCredentials !== undefined };
-      // Finding 2053: protected execution refuses Agent additions, never drops them. Only an
-      // explicitly acknowledged artifact snapshot can accompany dedicated Codex repository
-      // execution. The caller learns of saved additions only with SandboxPolicy read access.
-      // Finding 2151: every refusal below that names saved additions (protected execution, the
-      // ceiling, the Driver) comes after SandboxPolicy read, so a deployer without it learns nothing.
+      // Authorize saved policy read before reporting any policy-specific refusal. An explicit
+      // empty repository list is a policy as well: it requests deny-all repository access.
       const protectedExecution = execution.executionAdmission.mode === "protected";
-      if (policy !== undefined && policy.additions.length > 0) {
+      if (
+        policy !== undefined &&
+        (policy.additions.length > 0 || policy.repositoryNetworkPolicy !== undefined)
+      ) {
         await this.authorize(principalId, "read", {
           kind: "sandbox_policy",
           id: policy.id,
           namespaceId: namespace.id,
         });
         if (protectedExecution) {
+          if (policy.repositoryNetworkPolicy !== undefined) {
+            throw new ResourceStateConflictError(
+              "Protected execution cannot enforce the saved repository network policy. Review the policy and execution mode before deploying.",
+            );
+          }
           throw new ProtectedExecutionNetworkPolicyError("deploy");
         }
       }
@@ -13826,6 +13856,56 @@ export class OpenClawController {
         throw new ResourceStateConflictError(
           "The selected Sandbox Driver cannot enforce this Agent's network policy.",
         );
+      }
+      if (policy?.repositoryNetworkPolicy !== undefined) {
+        try {
+          const requested = admitRepositoryNetworkPolicy(
+            policy.repositoryNetworkPolicy,
+            this.repositoryNetworkPolicyCeiling,
+          );
+          if (requested !== undefined && requested.grants.length > 0) {
+            const owner = this.repositoryPermissionOwner(this.installationRepositoryAdmission);
+            const namespacePolicy = owner?.admission?.policy;
+            if (
+              !requested.grants.every(
+                (grant) =>
+                  namespacePolicy?.repositoryNetworkPolicyAllows?.({
+                    namespaceId: namespace.id,
+                    grant,
+                  }) === true,
+              ) ||
+              !owner?.unchanged()
+            ) {
+              throw new ResourceStateConflictError(
+                "Cannot verify Namespace repository network grants. Review the Installation repository policy before deploying.",
+              );
+            }
+          }
+          if (sandboxPolicy === undefined) {
+            throw new RepositoryNetworkPolicyAdmissionError(
+              "UNSUPPORTED_POLICY",
+              "/repositoryNetworkPolicy",
+              "Select a Sandbox Driver that supports repository network policy.",
+            );
+          }
+          sandboxPolicy = admitSandboxRepositoryNetworkPolicy(
+            sandboxPolicy,
+            policy.repositoryNetworkPolicy,
+            this.repositoryNetworkPolicyCeiling,
+            sandbox,
+          );
+        } catch (error) {
+          if (!(error instanceof RepositoryNetworkPolicyAdmissionError)) {
+            throw error;
+          }
+          throw new ResourceStateConflictError(error.message, [
+            {
+              path: error.path,
+              code: error.code === "UNSUPPORTED_POLICY" ? "INVALID_VALUE" : error.code,
+              message: error.message,
+            },
+          ]);
+        }
       }
       if (compute.requiresAgentRuntimeCredentials === true) {
         if (

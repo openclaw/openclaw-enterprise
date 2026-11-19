@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-19"
-last_updated_session: "authoring-run/2cbf1f13-9f6c-407a-be4f-453fd3ed04f6"
+last_updated_session: "authoring-run/db384c8e-1261-4598-92e7-3737756473eb"
 ---
 
 # Agent sandbox policy flow
@@ -125,13 +125,25 @@ cleans its exact IAM access.
 
 ### 2. Freeze deployment or enqueue live application
 
-`packages/occ/src/index.ts:deployAgent` rejects a repository access list from
-ordinary Driver admission before freezing defaults and additions into
-`AgentRevision.sandboxPolicy`. OpenShell provisions from that snapshot.
+`packages/occ/src/index.ts:admitAgentDeployment` reads the desired policy under
+the Namespace and Agent locks. Saved host additions or an explicit repository
+list, including an empty list, require SandboxPolicy `read` before policy
+admission. Protected execution refuses an explicit repository list.
+
+For ordinary execution, OCC checks the list against the Installation ceiling.
+A nonempty list also requires approval for each grant from the Installation's
+repository policy owner for this Namespace.
+`packages/contracts/src/sandbox-policy.ts:admitSandboxRepositoryNetworkPolicy`
+requires the selected Driver to return an effective policy from the checked base
+snapshot, including for an empty list. OCC stores that document and the canonical list identity in
+`AgentRevision.sandboxPolicy` before the worker can act. A refusal leaves no
+revision or queued deployment. Omission uses the ordinary Driver snapshot.
 
 `applyAgentSandboxPolicy` authorizes Agent `manage_policy` and SandboxPolicy
-`update` and `read` before naming saved additions. It requires the exact active
-revision and supporting Driver. With reviewed additions, one transaction saves
+`update` and `read` before naming saved policy. It refuses live application if
+the desired policy or the active revision contains a repository list. For host
+additions it requires the exact active revision and supporting Driver. With
+reviewed additions, one transaction saves
 the new policy version, records its pending application and queues Agent-target
 work. Omission retains the saved version. Enforcement requires worker confirmation.
 
@@ -268,6 +280,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 03:49: Check saved repository policy at deployment and refuse live application. (authoring-run/db384c8e-1261-4598-92e7-3737756473eb - ef779de40b885811dcc40e6eadaa8f185d4bb34d)
 
 - 2026-11-19 02:49: Refuse Driver-supplied repository access lists on ordinary deployment. (authoring-run/2cbf1f13-9f6c-407a-be4f-453fd3ed04f6 - 8b711ab7bef82b4db58547655aef785c8e74092b)
 

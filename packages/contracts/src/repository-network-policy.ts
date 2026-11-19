@@ -93,6 +93,15 @@ function parseGrants(value: unknown, path: string): RepositoryNetworkGrant[] {
   return grants;
 }
 
+/** Parse trusted Installation configuration without constructing an Agent policy. */
+export function parseRepositoryNetworkPolicyCeiling(
+  value: unknown,
+): RepositoryNetworkPolicyCeiling {
+  return Object.freeze(
+    parseGrants(value, "/repositoryNetworkPolicyCeiling").map((grant) => Object.freeze(grant)),
+  );
+}
+
 /** Validate and bind a requested ACL to the trusted Installation delegation limit. */
 export function admitRepositoryNetworkPolicy(
   value: unknown,

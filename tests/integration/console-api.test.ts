@@ -22,7 +22,8 @@ import {
   memberRole,
 } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { bindRole, grantRole, restrict } from "../helpers/iam-grants.ts";
+import { bindRole, grantRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
   authenticatedHeaders,
@@ -33,6 +34,9 @@ import {
 import { Check } from "typebox/value";
 import { Type, type TSchema } from "typebox";
 import {
+  SandboxNetworkPolicyConfiguration,
+  type RepositoryNetworkGrant,
+  type SandboxDriver,
   type Permission,
   type PermissionAction,
   type ResourceKind,
@@ -2173,6 +2177,228 @@ test("untrusted cookie mutations do not clean up an expired session", async (t) 
   });
   assert.equal(trusted.response.status, 401, trusted.text);
   assert.equal(fixture.memoryDatabase.session.includes(expired), false);
+});
+
+async function setDesiredRepositoryPolicy(
+  controller: OpenClawController,
+  namespaceId: string,
+  agentId: string,
+  repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[],
+) {
+  // This cut consumes State. The public save operation cannot yet create desired ACLs.
+  return controller.transact(async (unit) => {
+    await unit.namespaces.lockNamespace(namespaceId);
+    const current = await unit.sandboxPolicies.find(namespaceId, agentId);
+    assert.ok(current);
+    const { repositoryNetworkPolicy: _previous, ...policy } = current;
+    const saved = await unit.sandboxPolicies.save(
+      {
+        ...policy,
+        version: policy.version + 1,
+        ...(repositoryNetworkPolicy === undefined ? {} : { repositoryNetworkPolicy }),
+      },
+      policy.version,
+    );
+    assert.ok(saved);
+    return saved;
+  });
+}
+
+test("deploy checks policy read for explicit deny-all and freezes the selected Driver result", async (t) => {
+  const providerDefaults = { repositoryAccess: { state: "deny-all" } };
+  let repositoryAdmissions = 0;
+  let runtimeCredentialChecks = 0;
+  const sandbox: SandboxDriver = {
+    id: "repository-policy-test-sandbox",
+    implementation: "test",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    networkPolicy: { wildcards: true, portRanges: true, live: true },
+    async provisionHarness() {
+      assert.fail("HTTP admission must not provision the Sandbox");
+    },
+    async cleanup() {
+      assert.fail("HTTP admission must not clean up the Sandbox");
+    },
+    admitNetworkPolicy(additions, version) {
+      return {
+        driverId: this.id,
+        implementation: this.implementation,
+        version,
+        additions,
+        defaults: {},
+      };
+    },
+    admitRepositoryNetworkPolicy(policy, base) {
+      repositoryAdmissions++;
+      assert.deepEqual(policy.grants, []);
+      assert.ok(Object.isFrozen(policy.grants));
+      assert.ok(Object.isFrozen(base.defaults));
+      return providerDefaults;
+    },
+    async observeNetworkPolicy() {
+      assert.fail("live repository policy application must not observe provider state");
+    },
+    async applyNetworkPolicy() {
+      assert.fail("live repository policy application must not change provider state");
+    },
+  };
+  const installationLimit = [{ repository: "example/approved", access: "write" }] as const;
+  const fixture = await createConsoleAppFixture(t, {
+    sandboxDriver: sandbox,
+    nativeWorkerSupport: "custom-image",
+    repositoryNetworkPolicyCeiling: installationLimit,
+    driverConfigurations: [
+      {
+        capability: "sandbox",
+        driverId: sandbox.id,
+        implementation: sandbox.implementation,
+        definition: {
+          configurationSchema: { type: "object" },
+          configurationContributions: [SandboxNetworkPolicyConfiguration],
+          validateConfiguration: () => [],
+        },
+      },
+    ],
+  });
+  await fixture.bootstrap();
+  const controller = fixture.controller;
+  assert.ok(controller);
+  const compute = controller.selectedDriver("compute");
+  Object.assign(compute, {
+    requiresAgentRuntimeCredentials: true,
+    async getAgentRuntimeCredentialStatus() {
+      runtimeCredentialChecks++;
+      return { transportConfigured: true };
+    },
+    async provisionAgentRuntimeCredentials() {
+      assert.fail("configured runtime credentials must be reused");
+    },
+  });
+  const namespace = await fixture.createNamespace("Repository policy admission", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Policy admission Agent",
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+    { executionMode: "dedicated" },
+  );
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const policyPath = `${path}/sandbox-policy/networking`;
+  const readRevisions = () =>
+    controller.transact((unit) => unit.revisions.listRevisions(namespace.id, agent.id));
+  const previous = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  assert.equal((await readRevisions())[0]?.sandboxPolicy?.repositoryNetworkPolicy, undefined);
+  assert.equal(runtimeCredentialChecks, 1);
+  assert.equal(repositoryAdmissions, 0);
+  const enabled = await fixture.request("PATCH", `${policyPath}/editing`, {
+    body: { enabled: true },
+  });
+  assert.equal(enabled.status, 200);
+
+  // A repository within the Installation limit still needs independent Namespace authority.
+  await setDesiredRepositoryPolicy(controller, namespace.id, agent.id, installationLimit);
+  const missingNamespace = await fixture.request("POST", `${path}/deploy`);
+  assertApiError(missingNamespace, 409, "RESOURCE_CONFLICT");
+  assert.match(
+    JSON.stringify(missingNamespace.body),
+    /Cannot verify Namespace repository network grants/,
+  );
+  assert.equal(repositoryAdmissions, 0);
+  assert.equal(runtimeCredentialChecks, 1);
+  assert.equal((await readRevisions()).length, 1);
+
+  const desired = await setDesiredRepositoryPolicy(controller, namespace.id, agent.id, []);
+  const deniedRead = restrict(fixture.policy, "read", "sandbox_policy", {
+    namespaceId: namespace.id,
+    resourceId: desired.id,
+  });
+  const denied = await fixture.request("POST", `${path}/deploy`);
+  assertApiError(denied, 403, "FORBIDDEN");
+  assert.match(JSON.stringify(denied.body), /SandboxPolicy read/);
+  assert.equal(repositoryAdmissions, 0);
+  assert.equal(runtimeCredentialChecks, 1);
+  assert.equal((await readRevisions()).length, 1);
+  liftRestriction(fixture.policy, deniedRead);
+
+  const apply = (revisionId: string, expectedVersion: number) =>
+    fixture.request("POST", `${policyPath}/apply`, { body: { revisionId, expectedVersion } });
+  // The saved deny-all policy cannot be applied to the previous, ordinary revision.
+  const savedApply = await apply(previous.revision.id, desired.version);
+  assertApiError(savedApply, 409, "RESOURCE_CONFLICT");
+  assert.match(
+    JSON.stringify(savedApply.body),
+    /Repository network policy changes require a deployment/,
+  );
+
+  const deployed = await fixture.deployAgent(namespace.id, agent.id);
+  providerDefaults.repositoryAccess.state = "changed after admission";
+  const revision = (await readRevisions()).find(({ id }) => id === deployed.id);
+  assert.deepEqual(revision?.sandboxPolicy, {
+    driverId: sandbox.id,
+    implementation: sandbox.implementation,
+    version: desired.version,
+    additions: [],
+    defaults: { repositoryAccess: { state: "deny-all" } },
+    repositoryNetworkPolicy: {
+      version: 1,
+      grants: [],
+      identity: '{"version":1,"grants":[]}',
+    },
+  });
+  assert.equal(repositoryAdmissions, 1);
+  assert.equal(runtimeCredentialChecks, 2);
+
+  await fixture.activateRevision(namespace.id, agent.id, deployed.id, previous.revision.id);
+  const omitted = await setDesiredRepositoryPolicy(controller, namespace.id, agent.id);
+  // Clearing desired policy cannot turn a live host update into removal of the deployed ACL.
+  const activeApply = await apply(deployed.id, omitted.version);
+  assertApiError(activeApply, 409, "RESOURCE_CONFLICT");
+  assert.match(
+    JSON.stringify(activeApply.body),
+    /Repository network policy changes require a deployment/,
+  );
+  assert.deepEqual(
+    await controller.transact((unit) => unit.sandboxPolicies.find(namespace.id, agent.id)),
+    omitted,
+  );
+  assert.equal((await readRevisions()).length, 2);
+});
+
+test("deploy refuses an explicit repository policy without a supported Sandbox Driver or delegation", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const controller = fixture.controller;
+  assert.ok(controller);
+  const namespace = await fixture.createNamespace("Unavailable repository policy", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Unsupported policy Agent",
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  );
+  const deploy = () =>
+    fixture.request("POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`);
+  for (const { requested, code, path } of [
+    { requested: [], code: "INVALID_VALUE", path: "/repositoryNetworkPolicy" },
+    {
+      requested: [
+        { repository: "example/project", access: "read" } satisfies RepositoryNetworkGrant,
+      ],
+      code: "OUTSIDE_CEILING",
+      path: "/repositoryNetworkPolicy/0",
+    },
+  ]) {
+    await setDesiredRepositoryPolicy(controller, namespace.id, agent.id, requested);
+    const refused = await deploy();
+    assertApiError(refused, 409, "RESOURCE_CONFLICT");
+    const { error } = errorBody(JSON.stringify(refused.body));
+    assert.equal(error.details?.[0]?.code, code);
+    assert.equal(error.details?.[0]?.path, path);
+    assert.deepEqual(
+      await controller.transact((unit) => unit.revisions.listRevisions(namespace.id, agent.id)),
+      [],
+    );
+  }
 });
 
 test("public Agent revisions return the selected binding without private credential resolution metadata", async (t) => {
