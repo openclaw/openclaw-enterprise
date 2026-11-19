@@ -156,7 +156,6 @@ import type {
   AgentRevisionRead,
   InitialWorkspaceFiles,
   AgentDeploymentDiagnostics,
-  AgentRuntimeDescribeOptions,
   AgentRuntimeDescription,
   AgentRuntimeHarnessStatus,
   AgentHarnessStatusRead,
@@ -370,8 +369,6 @@ import {
   SandboxNetworkPolicyConflictError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
-  RuntimeLogsForbiddenByClusterError,
-  RuntimeLogsSandboxNotFoundError,
   ScopeViolationError,
   SecretBindingDriverError,
   ServiceAccountBackendBindingError,
@@ -392,16 +389,16 @@ import {
 import { enabledChannelEntries, requireChannelSecretBindings } from "./channel-secret-bindings.ts";
 import { validateModelProviderSettings } from "./model-provider-settings.ts";
 import {
-  readRuntimeLogPage,
-  readSandboxLogPage,
-  runtimeLogPageAtLevel,
-  RuntimeLogReadError,
-  SANDBOX_LOG_RETENTION,
-  validRuntimeDescription,
-  type RuntimeLogCursorCodec,
-  type RuntimeLogPage,
-  type RuntimeLogQuery,
-  type RuntimeLogViewAdmission,
+  describedAgentRuntime,
+  readDriverRuntimeLogs,
+  runtimeLogOperation,
+  withSandboxLogSource,
+} from "./runtime-logs/driver-read.ts";
+import type {
+  RuntimeLogCursorCodec,
+  RuntimeLogPage,
+  RuntimeLogQuery,
+  RuntimeLogViewAdmission,
 } from "./runtime-logs/index.ts";
 import {
   nativeWorkerSupportSource,
@@ -1283,8 +1280,6 @@ const CONNECTION_SESSION_TTL_MS = 10 * 60 * 1000;
 const PENDING_CONNECTION: unique symbol = Symbol("pending-connection");
 const CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES =
   "Credential source Secrets cannot cross Namespaces.";
-/** Overall deadline for one runtime status or log request, Driver calls included. */
-const RUNTIME_LOG_REQUEST_TIMEOUT_MS = 10_000;
 // Bounds the Sandbox Driver's Harness record read that runs beside Compute diagnostics.
 const HARNESS_OBSERVATION_TIMEOUT_MS = 10_000;
 const REPOSITORY_RESTART_OBSERVATION_TIMEOUT_MS = 10_000;
@@ -4538,12 +4533,14 @@ export class OpenClawController {
       "operate",
     );
     return admitRead(() =>
-      this.runtimeLogOperation(signal, async (deadline) => {
+      runtimeLogOperation(signal, async (deadline) => {
         const [described, harness] = await Promise.all([
-          this.describedAgentRuntime(driver, binding, deadline),
+          describedAgentRuntime(driver, binding, deadline),
           this.observedHarness(driver, binding, deadline),
         ]);
-        const description = this.withSandboxLogSource(described, driver, binding.revision);
+        const description = withSandboxLogSource(described, () =>
+          this.sandboxLogDriver(driver, binding.revision),
+        );
         return harness === undefined ? description : Object.freeze({ ...description, harness });
       }),
     );
@@ -4579,8 +4576,8 @@ export class OpenClawController {
       "logs",
     );
     const admitRead = requested.admitRead ?? ((read) => read());
-    return admitRead(async () => {
-      const options = {
+    return admitRead(() =>
+      readDriverRuntimeLogs(principalId, agentId, driver, binding, query, () => ({
         codec: requested.codec,
         ...(requested.signal === undefined ? {} : { signal: requested.signal }),
         admitView: async (admission: RuntimeLogViewAdmission) => {
@@ -4590,120 +4587,10 @@ export class OpenClawController {
             throw new RuntimeLogsError("RUNTIME_LOGS_AUDIT_UNAVAILABLE");
           }
         },
-      };
-      const source = query.source;
-      if (source === "sandbox") {
-        return runtimeLogPageAtLevel(
-          await this.readSandboxLogs(principalId, agentId, driver, binding, query, options),
-          query.minLevel,
-        );
-      }
-      if (typeof driver.readAgentRuntimeLogs !== "function") {
-        throw new NotImplementedError(
-          "readAgentRuntimeLogs",
-          "The selected Compute Driver does not expose runtime logs.",
-        );
-      }
-      return this.runtimeLogOperation(options.signal, async (deadline) => {
-        // Every follow poll describes the runtime again for the ownership re-check; it
-        // needs only the requested source's Pods, not their Events.
-        const description = await this.describedAgentRuntime(driver, binding, deadline, {
-          source,
-          events: false,
-        });
-        try {
-          const page = await readRuntimeLogPage({
-            description,
-            query,
-            codec: options.codec,
-            binding: {
-              principalId,
-              agentId,
-              revisionId: binding.revision.id,
-              source: query.source,
-            },
-            signal: deadline,
-            admitView: options.admitView,
-            readLogs: async (request) => {
-              try {
-                return await driver.readAgentRuntimeLogs!(binding, request);
-              } catch (error) {
-                throw this.runtimeLogDriverFailure(error, deadline);
-              }
-            },
-          });
-          return runtimeLogPageAtLevel(page, query.minLevel);
-        } catch (error) {
-          if (error instanceof RuntimeLogReadError) {
-            throw this.runtimeLogPageFailure(error, query.source);
-          }
-          throw error;
-        }
-      });
-    });
-  }
-
-  /**
-   * The revision's Sandbox log, read through the Sandbox Driver that provisioned it. The
-   * Sandbox is derived from the revision; no caller-named Sandbox reaches the Driver.
-   */
-  private async readSandboxLogs(
-    principalId: string,
-    agentId: string,
-    compute: ComputeDriver,
-    binding: ComputeAgentRevisionBinding,
-    query: RuntimeLogQuery,
-    options: {
-      readonly codec: RuntimeLogCursorCodec;
-      readonly admitView: (admission: RuntimeLogViewAdmission) => Promise<void>;
-      readonly signal?: AbortSignal;
-    },
-  ): Promise<Readonly<RuntimeLogPage>> {
-    const sandbox = this.sandboxLogDriver(compute, binding.revision);
-    if (sandbox === undefined) {
-      throw new RuntimeLogsError("RUNTIME_LOGS_SOURCE_UNAVAILABLE", undefined, "sandbox");
-    }
-    const description = this.withSandboxLogSource(
-      Object.freeze({
-        revisionId: binding.revision.id,
-        observedAt: this.clock().toISOString(),
-        pods: Object.freeze([]),
-        sources: Object.freeze([]),
-      }),
-      compute,
-      binding.revision,
+        resolveSandboxLogDriver: () => this.sandboxLogDriver(driver, binding.revision),
+        clock: () => this.clock(),
+      })),
     );
-    return this.runtimeLogOperation(options.signal, async (deadline) => {
-      try {
-        return await readSandboxLogPage({
-          description,
-          query,
-          codec: options.codec,
-          binding: { principalId, agentId, revisionId: binding.revision.id, source: "sandbox" },
-          admitView: options.admitView,
-          readLogs: async (request) => {
-            try {
-              // The Sandbox lives in Compute's placement of the Namespace, as at provisioning.
-              const namespace = await compute.resolveSandboxNamespace!.call(
-                compute,
-                binding.namespace,
-              );
-              return await sandbox.readSandboxLogs!(
-                { namespace, revision: binding.revision, signal: deadline },
-                request,
-              );
-            } catch (error) {
-              throw this.runtimeLogDriverFailure(error, deadline);
-            }
-          },
-        });
-      } catch (error) {
-        if (error instanceof RuntimeLogReadError) {
-          throw this.runtimeLogPageFailure(error, "sandbox");
-        }
-        throw error;
-      }
-    });
   }
 
   /**
@@ -4803,33 +4690,6 @@ export class OpenClawController {
     return unavailable;
   }
 
-  /** Appends the `sandbox` source when the revision's Sandbox Driver exposes its log. */
-  private withSandboxLogSource(
-    description: Readonly<AgentRuntimeDescription>,
-    compute: ComputeDriver,
-    revision: Readonly<AgentRevision>,
-  ): Readonly<AgentRuntimeDescription> {
-    if (
-      this.sandboxLogDriver(compute, revision) === undefined ||
-      description.sources.some(({ id }) => id === "sandbox")
-    ) {
-      return description;
-    }
-    return Object.freeze({
-      ...description,
-      sources: Object.freeze([
-        ...description.sources,
-        Object.freeze({
-          id: "sandbox" as const,
-          kind: "sandbox" as const,
-          pods: Object.freeze([]),
-          available: true,
-          retention: SANDBOX_LOG_RETENTION,
-        }),
-      ]),
-    });
-  }
-
   private async runtimeLogTarget(
     principalId: string,
     namespaceId: string,
@@ -4927,71 +4787,6 @@ export class OpenClawController {
       { action: "read_logs", resource: agent },
       principalId,
     );
-  }
-
-  private async runtimeLogOperation<T>(
-    signal: AbortSignal | undefined,
-    operation: (deadline: AbortSignal) => Promise<T>,
-  ): Promise<T> {
-    const timeout = AbortSignal.timeout(RUNTIME_LOG_REQUEST_TIMEOUT_MS);
-    const deadline = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
-    try {
-      return await operation(deadline);
-    } catch (error) {
-      if (timeout.aborted && !(error instanceof RuntimeLogsError)) {
-        throw new RuntimeLogsError("RUNTIME_LOGS_TIMEOUT");
-      }
-      throw error;
-    }
-  }
-
-  private async describedAgentRuntime(
-    driver: ComputeDriver,
-    binding: ComputeAgentRevisionBinding,
-    signal: AbortSignal,
-    options?: AgentRuntimeDescribeOptions,
-  ): Promise<Readonly<AgentRuntimeDescription>> {
-    let described: unknown;
-    try {
-      described = await driver.describeAgentRuntime!(binding, signal, options);
-    } catch (error) {
-      throw this.runtimeLogDriverFailure(error, signal);
-    }
-    try {
-      return validRuntimeDescription(described, binding.revision.id);
-    } catch {
-      throw new RuntimeLogsError("RUNTIME_LOGS_UNAVAILABLE");
-    }
-  }
-
-  private runtimeLogPageFailure(
-    error: RuntimeLogReadError,
-    source: RuntimeLogQuery["source"],
-  ): RuntimeLogsError {
-    switch (error.reason) {
-      case "cursor_invalid":
-        return new RuntimeLogsError("RUNTIME_LOGS_CURSOR_INVALID", undefined, source);
-      case "pod_invalid":
-        return new RuntimeLogsError("RUNTIME_LOGS_POD_INVALID", undefined, source);
-      case "source_unavailable":
-        return new RuntimeLogsError("RUNTIME_LOGS_SOURCE_UNAVAILABLE", undefined, source);
-      default:
-        return new RuntimeLogsError("RUNTIME_LOGS_UNAVAILABLE", undefined, source);
-    }
-  }
-
-  /** Driver and cluster error text can hold private runtime details; never propagate it. */
-  private runtimeLogDriverFailure(error: unknown, signal: AbortSignal): RuntimeLogsError {
-    if (error instanceof RuntimeLogsForbiddenByClusterError) {
-      return new RuntimeLogsError("RUNTIME_LOGS_CLUSTER_RBAC");
-    }
-    if (error instanceof RuntimeLogsSandboxNotFoundError) {
-      return new RuntimeLogsError("RUNTIME_LOGS_SANDBOX_NOT_FOUND");
-    }
-    if (signal.aborted) {
-      return new RuntimeLogsError("RUNTIME_LOGS_TIMEOUT");
-    }
-    return new RuntimeLogsError("RUNTIME_LOGS_UNAVAILABLE");
   }
 
   async getServiceAccount(

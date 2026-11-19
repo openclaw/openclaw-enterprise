@@ -354,8 +354,26 @@ test("an Agent-level read_logs grant covers every revision, including later depl
     { action: "read_logs", resourceKind: "agent" },
     { action: "read", resourceKind: "agent" },
   ]);
-  const first = await fixture.request("GET", target.logsPath(), { session: delegate.session });
-  assert.deepEqual(lineMessages(logPage(first).records), ["gateway output 1"]);
+  const first = await fixture.request("GET", target.logsPath("source=gateway"), {
+    session: delegate.session,
+  });
+  const firstPage = logPage(first);
+  assert.deepEqual(lineMessages(firstPage.records), ["gateway output 1"]);
+
+  // Establish that this exact cursor can continue on its own revision first.
+  const cursor = encodeURIComponent(cursorFrom(firstPage));
+  const successfulViews = () =>
+    logAuditSnapshot(fixture.auditSink, VIEW_ACTION).successfulAccesses.length;
+  const viewsAfterFirst = successfulViews();
+  fixture.computeDriver.state.lines = [runtimeLogLine(1), runtimeLogLine(2)];
+  const continued = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&cursor=${cursor}`),
+    { session: delegate.session },
+  );
+  assert.deepEqual(lineMessages(logPage(continued).records), ["gateway output 2"]);
+  assert.equal(successfulViews(), viewsAfterFirst);
+  fixture.computeDriver.state.lines = [runtimeLogLine(1)];
 
   // A new deployment creates a new revision; the same Agent grant still reads its logs.
   const redeployed = await fixture.request(
@@ -370,8 +388,20 @@ test("an Agent-level read_logs grant covers every revision, including later depl
   const revisionId = redeployed.body.data.id;
   assert.notEqual(revisionId, target.revisionId);
   const secondPath = `/namespaces/${target.namespace.id}/agents/${target.agent.id}/deployments/${revisionId}/runtime/logs?source=gateway`;
+  // The Agent grant still applies, but the proven cursor cannot cross revisions.
+  const readsBeforeReplay = driverReads(fixture).length;
+  const viewsBeforeReplay = successfulViews();
+  const replay = await fixture.request("GET", `${secondPath}&cursor=${cursor}`, {
+    session: delegate.session,
+  });
+  apiError(replay, 400, "RUNTIME_LOGS_CURSOR_INVALID", "another revision");
+  assert.equal(driverReads(fixture).length, readsBeforeReplay);
+  assert.equal(successfulViews(), viewsBeforeReplay);
+
   const second = await fixture.request("GET", secondPath, { session: delegate.session });
   assert.equal(second.status, 200, second.text);
+  assert.deepEqual(lineMessages(logPage(second).records), ["gateway output 1"]);
+  assert.equal(successfulViews(), viewsBeforeReplay + 1);
   const download = await fixture.request("GET", `${secondPath}&download=true`, {
     session: delegate.session,
   });
