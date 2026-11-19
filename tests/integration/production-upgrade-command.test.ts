@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -203,6 +212,117 @@ test("canonical operation flags direct operators to usable profiled commands", a
     /scripts\/upgrade-production preflight --profile PROFILE --evidence-dir FRESH -- ORIGINAL_EXPERT_OPTIONS/,
   );
   assert.ok(!rawPreflight.stderr.includes(privateCandidate));
+});
+
+test("status treats candidate checks as historical and rejects invalid preflight evidence", async (t) => {
+  const f = await fixture(t);
+  await mkdir(f.evidence, { mode: 0o700 });
+  const status = () =>
+    spawnSync("python3", [command, "status", "--evidence-dir", f.evidence], {
+      cwd: repository,
+      encoding: "utf8",
+      env: { PATH: process.env.PATH },
+    });
+  const startup = join(f.evidence, "startup-preflight-passed");
+  const blocker = join(f.evidence, "preflight-blocked-original-worker");
+  const candidatePassed = /Candidate startup checks passed/u;
+
+  // An older evidence directory can establish these checks without recording an upgrade outcome.
+  await writeFile(startup, "", { mode: 0o600 });
+  const historical = status();
+  assert.equal(historical.status, 0, historical.stderr);
+  assert.match(historical.stdout, candidatePassed);
+  assert.match(historical.stdout, /No deployment preparation marker was observed/u);
+  assert.doesNotMatch(historical.stdout, /original worker/u);
+
+  for (const [marker, outcome] of [
+    ["prepared", /No completion was recorded/u],
+    [".upgrade-lock", /A lock marker was observed/u],
+    ["native-command-failures.tsv", /No completion was recorded/u],
+    ["database-migration-handoff.json", /A migration pause was recorded/u],
+    ["helm-started", /Helm intent was recorded/u],
+    ["completed", /Completion was recorded/u],
+  ] as const) {
+    const path = join(f.evidence, marker);
+    if (marker === ".upgrade-lock") {
+      await mkdir(path, { mode: 0o700 });
+    } else {
+      await writeFile(path, "", { mode: 0o600 });
+    }
+    const result = status();
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, outcome);
+    assert.doesNotMatch(result.stdout, candidatePassed);
+    await rm(path, { recursive: true });
+  }
+
+  // Malformed evidence must never produce a reassuring status message.
+  await symlink(startup, blocker);
+  const linked = status();
+  assert.equal(linked.status, 2);
+  assert.match(linked.stderr, /invalid or nonprivate status marker/u);
+  await rm(blocker);
+  await writeFile(blocker, "unexpected content", { mode: 0o600 });
+  const nonempty = status();
+  assert.equal(nonempty.status, 2);
+  assert.match(nonempty.stderr, /invalid or nonprivate status marker/u);
+  await writeFile(blocker, "", { mode: 0o600 });
+  await rm(startup);
+  const inconsistent = status();
+  assert.equal(inconsistent.status, 2);
+  assert.match(inconsistent.stderr, /inconsistent preflight status markers/u);
+});
+
+test("status withholds conclusions when preparation is recorded during the scan", async (t) => {
+  const f = await fixture(t);
+  await mkdir(f.evidence, { mode: 0o700 });
+  await writeFile(join(f.evidence, "startup-preflight-passed"), "", { mode: 0o600 });
+  await mkdir(join(f.evidence, ".upgrade-lock"), { mode: 0o700 });
+
+  // Publish preparation and release the lock after the first lookup, within one timestamp interval.
+  const interleave = `
+import os
+import runpy
+import sys
+from types import SimpleNamespace
+
+stat = os.stat
+fstat = os.fstat
+
+def fstat_with_constant_times(fd):
+    item = fstat(fd)
+    return SimpleNamespace(
+        st_uid=item.st_uid, st_mode=item.st_mode, st_mtime_ns=0, st_ctime_ns=0
+    )
+
+def stat_during_upgrade(path, *args, **kwargs):
+    try:
+        return stat(path, *args, **kwargs)
+    except FileNotFoundError:
+        if path == "prepared":
+            fd = kwargs["dir_fd"]
+            os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=fd))
+            os.rmdir(".upgrade-lock", dir_fd=fd)
+        raise
+
+os.stat = stat_during_upgrade
+os.fstat = fstat_with_constant_times
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+`;
+  const result = spawnSync(
+    "python3",
+    ["-c", interleave, command, "status", "--evidence-dir", f.evidence],
+    {
+      cwd: repository,
+      encoding: "utf8",
+      env: { PATH: process.env.PATH },
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(await readFile(join(f.evidence, "prepared"), "utf8"), "");
+  assert.match(result.stdout, /evidence changed during this read.*Run status again/u);
+  assert.doesNotMatch(result.stdout, /Historical local evidence|No deployment|Candidate startup/u);
 });
 
 test("private profiles reject credentials and target overrides without disclosure", async (t) => {
