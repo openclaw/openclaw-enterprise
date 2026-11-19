@@ -470,11 +470,19 @@ function sanitizedEvent(
       }
       continue;
     }
-    if (
-      key === "message" &&
-      eventName !== "compute.preflight-warning" &&
-      eventName !== "worker.compute-prepare-failed"
-    ) {
+    if (key === "message") {
+      // Only these events keep a message. A Compute preparation diagnostic is prose a Driver
+      // wrote for the operator ("Stop Agent; wait for shutdown"), so it keeps its punctuation
+      // as one bounded line. A message that resembles a credential is left out.
+      let text: string | undefined;
+      if (typeof value === "string" && eventName === "worker.compute-prepare-failed") {
+        text = loggedErrorText(value);
+      } else if (typeof value === "string" && eventName === "compute.preflight-warning") {
+        text = safeString(value);
+      }
+      if (text !== undefined && text !== WITHHELD_ERROR_TEXT) {
+        result.message = text;
+      }
       continue;
     }
     if (
