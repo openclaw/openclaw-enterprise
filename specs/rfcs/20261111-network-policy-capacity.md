@@ -6,9 +6,9 @@ author: russellb
 
 # Proposal: Raise network policy capacity to 16,384 rules
 
-- **ID:** RFC-0045
+- **ID:** RFC-20261111-network-policy-capacity
 - **Created:** 2026-11-11
-- **Last updated:** 2026-11-18
+- **Last updated:** 2026-11-19
 - **RFC PR:** https://github.com/openclaw/openclaw-enterprise/pull/5497
 - **Related:** [Sandbox policies](../../docs/reference/sandbox-policies.md)
 
@@ -59,6 +59,24 @@ startup document from one Secret for API, worker and upgrade preflight. That
 document must fit Kubernetes' 1 MiB Secret limit; the entry count alone does not
 establish deployability. See the [supported transport limit](../../docs/reference/sandbox-policies.md). No deployed Installation changes merely because this
 proposal or its implementation is published.
+
+## Interface changes
+
+- `SandboxNetworkGrantsSchema` raises the shared finite maximum from 32 to
+  16,384. Installation configuration, Agent additions, discovery and generated API
+  schemas retain their existing owners and grant fields.
+- Existing policy preview, save and apply HTTP operations accept up to 32 MiB,
+  subject to explicit overrides, and expose the bounded 429 responses described
+  above. Route identities, authorization and policy version semantics remain.
+- PostgreSQL enforces the larger maximum through a forward migration; published
+  migration bytes and existing policy rows remain intact.
+
+## Simplifications
+
+Keep one shared count bound and the existing policy workflow. This adds no new
+platform primitive or startup transport. Compiled transport coverage replaces
+repeated ceiling scans; request-restricted coverage retains its existing matcher.
+An unlimited count would be simpler but would remove the required resource bound.
 
 ## Alternatives
 
