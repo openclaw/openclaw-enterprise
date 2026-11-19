@@ -54,7 +54,7 @@ async function observedGitRoute(
   mandatoryPolicy,
   {
     managed = false,
-    releaseCrash = false,
+    releaseFault,
     legacy = false,
     removeBinding = false,
     changedStartup = false,
@@ -524,7 +524,32 @@ async function observedGitRoute(
   f.faults.observe = false;
   await f.reconcile();
   assert.ok(f.entry.installed, "active generation completes its original launch witness");
-  if (releaseCrash) {
+  if (releaseFault === "withdrawal") {
+    const record = f.store.record.bind(f.store);
+    // Withdraw after the send intent reaches storage but before the caller receives its result.
+    f.store.record = async (...args) => {
+      f.store.record = record;
+      const committed = await record(...args);
+      await f.runtime.withdrawConfirmed(revision.id);
+      return committed;
+    };
+    let deliveries = 0;
+    await assert.rejects(
+      f.runtime.releasePreview(revision.id, startupId, async () => {
+        deliveries++;
+        return true;
+      }),
+      { message: "The preview release was not acknowledged." },
+    );
+    assert.equal(
+      deliveries,
+      0,
+      "withdrawal must prevent a pending release from reaching the launcher",
+    );
+    assert.equal(f.runtime.previewReleased(revision.id), false);
+    return;
+  }
+  if (releaseFault === "response-lost") {
     const sent = Promise.withResolvers();
     const response = Promise.withResolvers();
     const releasing = f.runtime.releasePreview(revision.id, startupId, async () => {
@@ -1317,5 +1342,9 @@ test("managed Git startup uses exact Providers and current policy after replacem
 });
 
 test("a worker cannot replay a launcher release whose response was lost", async () => {
-  await observedGitRoute(2, { releaseCrash: true });
+  await observedGitRoute(2, { releaseFault: "response-lost" });
+});
+
+test("a worker does not send a pending launcher release after withdrawal", async () => {
+  await observedGitRoute(2, { releaseFault: "withdrawal" });
 });

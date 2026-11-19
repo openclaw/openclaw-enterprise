@@ -55,7 +55,8 @@ function canonical(value: unknown): unknown {
     Object.entries(record)
       .filter(
         ([key, field]) =>
-          !key.startsWith("_") &&
+          // Optional scalar markers name an actual field. Policy map keys remain significant.
+          !(key.startsWith("_") && field === key.slice(1) && Object.hasOwn(record, field)) &&
           // grpc-js adds this discriminator to google.protobuf.Value in middleware config.
           !(
             key === "kind" &&
@@ -67,10 +68,12 @@ function canonical(value: unknown): unknown {
           field !== null &&
           field !== "" &&
           field !== 0 &&
-          field !== false &&
+          // Unset strict_tool_names defaults to true, so explicit false changes enforcement.
+          (field !== false || key === "strict_tool_names") &&
           !(Array.isArray(field) && field.length === 0) &&
           !(asRecord(field) !== undefined && Object.keys(field as object).length === 0),
       )
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       .map(([key, field]) => [key, canonical(field)]),
   );
 }
@@ -88,18 +91,7 @@ export function openShellPolicyBaselineDigest(policy: Readonly<Record<string, un
       Object.entries(network).filter(([name]) => !name.startsWith(AGENT_POLICY_PREFIX)),
     ),
   });
-  return sha256Hex(
-    JSON.stringify(baseline, (_key, value: unknown) => {
-      const record = asRecord(value);
-      return record === undefined
-        ? value
-        : Object.fromEntries(
-            Object.keys(record)
-              .sort()
-              .map((name) => [name, record[name]]),
-          );
-    }),
-  );
+  return sha256Hex(JSON.stringify(baseline));
 }
 
 /** The create-time policy carries static restrictions and generated workspace access. */

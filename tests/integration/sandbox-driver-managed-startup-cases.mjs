@@ -509,7 +509,7 @@ export function registerManagedOpenShellStartupCases() {
     configUpdateMode = "reject";
     await assert.rejects(replace(), { code: grpc.status.FAILED_PRECONDITION });
     configUpdateMode = "ignore";
-    await assert.rejects(replace(), /did not store the exact requested runtime Provider config/);
+    await assert.rejects(replace(), /without exact AgentRevision ownership and content/);
     assert.equal(attemptedUpdate, undefined);
     assert.equal(client.providers.get(runtimeProvider.name).config.oce_revision_id, revision.id);
     assert.equal(
@@ -825,8 +825,8 @@ export function registerManagedOpenShellStartupCases() {
 
     // An externally added base rule must neither report a match nor survive a live write.
     const approvedPolicy = structuredClone(policy);
-    policy.network_policies.unapproved = {
-      name: "unapproved",
+    policy.network_policies._unapproved = {
+      name: "_unapproved",
       endpoints: [{ host: "unapproved.example.org", ports: [443] }],
       binaries: [{ path: "/usr/bin/curl" }],
     };

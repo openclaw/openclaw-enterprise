@@ -1155,12 +1155,12 @@ export class OpenShellGitRuntime {
       ]);
       await this.fenced(entry, signal);
       await this.persist(entry, signal);
-      if (
-        !(await deliver()) ||
-        entry.blocked ||
-        preview.hook?.startupId !== startupId ||
-        preview.release !== "sending"
-      ) {
+      const releaseIsCurrent = () =>
+        !signal.aborted &&
+        !entry.blocked &&
+        preview.hook?.startupId === startupId &&
+        preview.release === "sending";
+      if (!releaseIsCurrent() || !(await deliver()) || !releaseIsCurrent()) {
         throw new Error("The preview release was not acknowledged.");
       }
       preview.release = "acknowledged";
@@ -2135,7 +2135,7 @@ export class OpenShellGitRuntime {
               route: {
                 revisionId: entry.revision.id,
                 fence: entry.fence,
-                observed: entry.supervisor,
+                observed,
               },
             }),
             preparationAttemptId: material.preparationAttemptId,

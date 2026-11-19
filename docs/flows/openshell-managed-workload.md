@@ -1,7 +1,7 @@
 ---
 created: "2026-10-22"
 updated: "2026-11-19"
-last_updated_session: authoring-run/f0ca6751-75e0-4de4-bcdd-df016d2b4a50
+last_updated_session: authoring-run/e1008b80-26f9-4622-91f0-e6a875bba268
 ---
 
 # Managed OpenShell workload flow
@@ -10,8 +10,7 @@ last_updated_session: authoring-run/f0ca6751-75e0-4de4-bcdd-df016d2b4a50
 
 Kubernetes Compute keeps one OpenShell Sandbox per Agent across revisions.
 Deployment prepares the Gateway and reconciles the Sandbox workload. OpenShell
-owns Harness storage; OCE manages Gateway resources in its tenant namespace.
-This trace describes implementation, not cluster qualification.
+owns Harness storage. OCE manages the Gateway in its tenant namespace.
 
 ## Entry Points
 
@@ -23,9 +22,9 @@ This trace describes implementation, not cluster qualification.
 - `apps/controller/src/drivers/sandbox/openshell/managed.ts:reconcileHarness`
   creates or updates the Agent's Sandbox through its Backend.
 
-Assumptions: one worker, dedicated Harness, managed OpenShell Workspaces and the
-upstream `SandboxUpdates.UpdateSandbox` RPC, enabled in the OpenShell gateway.
-See [configuration and limits](../reference/drivers/kubernetes-openshell-compute.md).
+The flow assumes one OCE worker, a dedicated Harness, persistent OpenShell
+Sandbox storage and an enabled `SandboxUpdates.UpdateSandbox` RPC. See
+[configuration and limits](../reference/drivers/kubernetes-openshell-compute.md).
 
 ## Flow
 
@@ -38,9 +37,9 @@ graph TD
   E -- "No" --> F["<b>Refuse replacement</b><br/>No new activation"]
   E -- "Yes" --> G["<b>Replace workload</b><br/>Version check and readback"]
   G --> H["<b>Start Sandbox</b>"]
-  D --> I["<b>Image bootstrap</b><br/>Select revision home"]
+  D --> I["<b>Image bootstrap</b><br/>Prepare private home"]
   H --> I
-  I --> J["<b>Connect workspace node</b><br/>Authenticated outbound link"]
+  I --> J["<b>Connect workspace node</b><br/>Outbound link through Envoy"]
   J --> K["<b>Verify readiness</b><br/>Activate Agent revision"]
   K --> L["<b>Stop or retire</b><br/>Retain Sandbox storage"]
   L --> B
@@ -57,95 +56,55 @@ Retries can adopt the same revision after a lost response. Failed readback preve
 
 ### 1. Prepare the Workspace and Gateway
 
-`OpenShellSandboxDriver` declares Dedicated OpenClaw available in managed mode
-without requiring `kubernetes.userNamespaces: false`. Managed reconciliation
-bypasses `prepareNativeWorkspace`; the image bootstrap prepares retained
-directories inside the Sandbox. The operator-mode availability checks still apply
-to its temporary Kubernetes preparation Deployment.
-
 `apps/controller/src/drivers/sandbox/openshell/managed.ts:ensureNamespace`
-creates or verifies the owned logical
-Workspace through OpenShell. It applies no Kubernetes resources there.
-`KubernetesComputeDriver.prepareRevision` retains Gateway and credential
-orchestration. `apps/controller/src/drivers/compute/kubernetes/harness/runtime.ts:createHarnessRuntime`
-constructs `KubernetesHarnessRuntime` for native workloads,
-`SandboxHarnessRuntime` for operator OpenShell or external provisioning Sandboxes,
-and `ManagedOpenShellHarnessRuntime` for managed OpenShell. Non-provisioning
-Sandboxes retain their cleanup hooks with Kubernetes-owned workloads.
-The Compute constructor rejects managed execution with an execution cluster,
-ServicePrincipal projection or no runtime.
-`KubernetesComputeDriver.admitRevision` records managed storage in `compute.admission`
-alongside protected-execution launch facts. `validateHarnessStorage` refuses
-preparation, activation, stop and retirement when the Installation storage mode
-differs, even with unchanged Driver IDs. Restore the original settings to resume.
-`harnessForRevision` validates the saved Sandbox ID before selecting a runtime.
-The runtime's workspace owner omits Harness PVC operations for provider storage.
+creates or verifies the logical Workspace through OpenShell.
+`KubernetesComputeDriver.prepareRevision` prepares the Gateway and credentials
+in OCE's tenant namespace. `apps/controller/src/drivers/compute/kubernetes/harness/runtime.ts:createHarnessRuntime`
+selects `ManagedOpenShellHarnessRuntime` for service mode. The Compute constructor
+requires a runtime and refuses an execution cluster or ServicePrincipal projection.
 
-`KubernetesComputeDriver.harnessLaunch` builds command, environment, identity and
-retained-directory requirements from prepared Agent inputs. `harnessLaunchWithNode`
-adds node startup and retained identity when enrollment is selected. Kubernetes
-uses this description for its container and mounts. `sandboxRequirements` passes
-logical directories and an empty `workspaceMounts` list to managed OpenShell;
-provider preparation and activation do not render a Harness Deployment.
-For dedicated OpenClaw with Google Workspace enabled, the launch environment
-includes the pinned Google release digest. Both Kubernetes Pods and OpenShell
-Sandboxes receive it through this shared description.
+`KubernetesComputeDriver.admitRevision` records the storage owner in
+`compute.admission`. `validateHarnessStorage` checks it against the Installation
+settings for preparation, activation, stop and retirement. Restore the saved
+mode if they differ. `harnessForRevision` also checks the saved Sandbox Driver ID.
 
-`ManagedOpenShellSandbox.harnessSpec` maps named directories to image-bootstrap
-inputs. Explicit directory environment bindings select workspace and node-state
-paths; an unrelated variable with the same value does not select retained state.
-The shared `OpenShellSandboxDriver.harnessSpecForLayout` adds process, network and
-Provider settings without constructing operator PVCs. The managed implementation
-supplies its own filesystem and resource configuration.
+`KubernetesComputeDriver.harnessLaunch` builds the command, environment,
+identity and retained-directory requirements. `harnessLaunchWithNode` adds
+workspace node startup settings and identity. Managed `sandboxRequirements`
+carries the logical directories and an empty `workspaceMounts` list.
+`ManagedOpenShellSandbox.harnessSpec` maps those directories to bootstrap paths
+and changes environment values with explicit directory bindings.
+`OpenShellSandboxDriver.harnessSpecForLayout` adds process, network and
+Provider settings. The image bootstrap prepares retained directories for
+dedicated OpenClaw in place of `prepareNativeWorkspace`.
 
 ### 2. Reconcile a stopped workload
 
-`ManagedOpenShellSandbox.ensureRuntimeProvider` names Providers by Agent ID.
-Replacement requires a stopped Sandbox; same-revision retries permit restricted
-setup-envelope renewal. Credential updates precede config read and version-checked write.
-The patch updates changed fields and deletes obsolete keys with empty-string
-markers. It omits unchanged empty fields, including `node_ca_pem` without a CA.
-Setting a desired field to empty is refused because OpenShell would delete it.
-Readback must match config, profile and ownership before reconciliation continues.
-Rejected or incomplete writes prevent start; retries recognize committed config
-after a lost response.
+`ManagedOpenShellSandbox.ensureRuntimeProvider` updates credentials before
+writing config with a resource-version check. It verifies config, profile and
+ownership on readback. A retry can adopt a committed config after a lost
+response. A retry for the same revision may renew its setup envelope.
 
-`reconcileHarness` verifies Namespace and Agent ownership, then requires stopped
-state before changing the revision. It rejects resource changes.
-`reconcilePolicy` reads the latest stored policy separately from the creation
-specification. Static policy and non-Git middleware bindings must remain unchanged.
-When Provider membership differs, `reconcileHarness` clears base network rules
-through `reconcilePolicy` while stopped to avoid credential-scope conflicts.
-OpenShell controls Provider-contributed policy. Each policy write checks the
-resource version; readback verifies policy, stopped Sandbox identity, workload
-and ownership. OCE does not wait for activation while stopped.
+`reconcileHarness` verifies Namespace and Agent ownership and requires a
+confirmed stop for replacement. It rejects resource changes.
+`reconcilePolicy` reads the latest policy separately from the creation
+specification and checks static policy and non-Git middleware.
+For changed attachments, it clears base rules while stopped.
+`reconcileProviders` verifies that intermediate policy, detaches obsolete
+Providers, then attaches replacements. Readback after each write verifies
+membership, ownership, stopped state and workload identity. OCE then installs
+the final policy. A rejected policy leaves the attachments in place so the
+next attempt can resume while stopped. With unchanged attachments, OCE updates
+policy directly.
 
-`reconcileProviders` ignores attachment order. It verifies the intermediate policy,
-then detaches obsolete Providers before attaching replacements to avoid credential
-key conflicts. Each mutation checks the observed resource version; readback verifies
-membership, unchanged workload/ownership and stopped Sandbox identity. Shared
-Credential Source Providers survive detachment. Failed or uncertain mutations
-prevent start. Retries reconcile stored membership and policy; after the last
-attachment, they install the final policy. A failed final policy leaves attachments
-in place without rollback or start. Unchanged membership needs only policy reconciliation.
-
-`ManagedOpenShellSandbox.gitScopeAnnotations` fingerprints the repository Driver
-and resolved bindings, excluding the session deadline. Revisions can change scope
-or enable/disable Git. Before Git preparation, `retainedGitSandbox` calls
-`verifyRetiredGit`: the predecessor must belong to the same Agent and Workspace,
-be stopped, and have no Git middleware or revision-owned Provider. Git-free
-predecessors are permitted. Preparation creates a fresh revision-owned bootstrap
-Provider and middleware binding; workload readback verifies the scope annotation.
-
-For Git-free successors, `reconcileHarness` checks retirement directly. Replacement
-removes Git environment, annotations and enrollment configuration and restores the
-ordinary policy. Retries verify stored workload before start. Re-enablement creates
-fresh authority; late predecessor cleanup preserves the successor and fetched files.
-Static policy, restart policy and non-Git middleware must remain unchanged.
-`verifyGitSandbox` checks current policy separately from creation policy, plus workload
-and ownership. Failed reads remain retryable; confirmed mismatches close the route.
-See the [repository flow](agent-repository-credentials.md) for credential installation
-and supervisor identity checks.
+`ManagedOpenShellSandbox.gitScopeAnnotations` fingerprints the repository
+Driver and bindings. `verifyRetiredGit` checks the stopped predecessor's
+ownership and the absence of Git middleware and its revision-owned Provider.
+Enabling Git creates a fresh Provider and middleware binding. Disabling Git
+removes its environment, annotations and enrollment configuration.
+`verifyGitSandbox` checks workload, ownership and live policy. Confirmed
+mismatches close the route. See the
+[repository flow](agent-repository-credentials.md) for identity checks.
 
 `OpenShellSandboxDriver.gitContinuity` checks ownership, readiness and process
 identity across two reads. Git verifies Provider receipts, network and supervisor
@@ -163,34 +122,23 @@ the binding.
 The Driver verifies the workload and live policy separately before start because
 the specification retains the creation policy.
 
-`ManagedOpenShellSandbox.observeHarness` reports running only when OpenShell reports
-the latest policy loaded and its active version matches. Kubernetes Compute's
-`SandboxHarnessRuntime.ready` uses this observation before activation. A failed
-policy load raises an error. The managed Driver records a fingerprint of the
-admitted policy in the Sandbox's revision annotations. `networkPolicyBaseline`
-checks the live policy against that fingerprint before a live edit or Git
-continuity check. The fingerprint excludes Agent grants so OCE can replace them
-independently. A Git retirement clears the stopped Sandbox's rules through a
-separate path. Replacement records the successor's fingerprint before startup.
+`ManagedOpenShellSandbox.observeHarness` reports running when OpenShell
+loads the latest policy. The Driver checks the policy fingerprint saved in
+the Sandbox annotations before live edits and Git continuity checks. Agent
+grants can change independently. Replacement saves the successor's fingerprint.
 
 `apps/controller/src/drivers/egress-proxy/openshell.ts:loadedPolicyVersion`
-requires the returned policy revision to be loaded and its version to match
-OpenShell's active version. This Sandbox counter is independent of OCE's egress-plan
-generation, which starts again for a new Agent revision. `wiringStatus` still
-compares the complete source policy with the admitted configuration. Non-Git
-enforcement evidence must report that same OpenShell version, which remains part
-of the installation fingerprint. Git retains its separate Provider and execution
-checks. A mismatched or unloaded version cannot enroll or revalidate an installation.
+checks OpenShell's loaded version against its active version. OCE's egress
+plan has a separate generation. `wiringStatus` verifies the expected policy
+and execution evidence before enrollment or revalidation.
 
-`apps/controller/src/worker.ts:retireEgressInstallation` retires the predecessor's
-enrollment after Compute confirms its stop. Failed stops leave enrollment unchanged.
-`recordEgressInstallation` then accepts the successor's verified receipt under the
-Agent lock, provided its deployment is still eligible. PostgreSQL retains one
-immutable receipt per revision and permits only one non-retired receipt per sender
-and Sandbox. Retired receipts remain available for revision cleanup, but request
-lookup excludes them. A delayed predecessor callback cannot reactivate its receipt;
-repeated cleanup names the predecessor revision and cannot retire the successor.
-Separate Sandboxes retain independent enrollments until their own retirement.
+`apps/controller/src/worker.ts:retireEgressInstallation` retires the
+predecessor's enrollment after Compute confirms its stop.
+`recordEgressInstallation` records the eligible successor under the Agent
+lock. PostgreSQL stores one immutable receipt per revision and permits one
+non-retired receipt per sender and Sandbox. Request lookup excludes retired
+receipts. Cleanup names the predecessor revision, leaving the successor eligible
+for its own enrollment.
 
 Before restarting a native OpenClaw Sandbox whose new revision has not enrolled,
 `reconcileHarness` restores a missing startup exposure through `ExposeService`.
@@ -202,36 +150,24 @@ its service for the app-server transport.
 
 ### 3. Select storage paths and connect the node
 
-`ManagedOpenShellSandbox.harnessSpec` sets the Harness home to
-`/opt/oce/managed/home` on the workload filesystem. Node initializes its compile
-cache in a sibling directory before the bootstrap runs. The home and cache are
-recreated when OpenShell replaces the workload.
+`deploy/runtime/openshell-bootstrap.cjs:prepareManaged` creates the private
+home at `/opt/oce/managed/home` and links retained workspace, generated images
+and Codex sessions from `/sandbox/oce`. The node state variable points to a real
+directory on that volume. OpenClaw checks the node state directory's ancestors
+before starting its native worker. See the
+[storage requirements](../reference/drivers/kubernetes-openshell-compute.md#lifecycle-and-retained-files).
 
-`deploy/runtime/openshell-bootstrap.cjs:prepareManaged` creates process-owned
-retained directories under `/sandbox/oce` and links the workspace, generated
-images, and Codex sessions from the private home. The node state environment
-variable points to its real retained directory. The bootstrap refuses existing
-symlink ancestors, conflicting links, and private runtime homes left on the PVC
-by earlier builds. OpenClaw checks the actual ancestry of the retained node
-state directory, so the PVC permissions still gate native worker startup.
+`KubernetesComputeDriver.prepareWorkspaceNode` supplies the
+[Envoy node URL](../reference/gateway-routing.md#native-node-endpoint).
+`networkPolicies` admits OCE's Envoy Pods in service mode.
+`deleteUnwrittenAgentPolicies` removes obsolete direct workspace-node policies
+at activation.
 
-`KubernetesComputeDriver.workspaceNodeRelay` omits direct Sandbox ingress in managed
-mode. `prepareWorkspaceNode` supplies the [Envoy node URL](../reference/gateway-routing.md#native-node-endpoint);
-`networkPolicies` admits OCE's Envoy Pods. No OpenShell namespace or Pod labels
-are resolved. Activation removes obsolete Agent policies through
-`deleteUnwrittenAgentPolicies`. OpenShell lifecycle, transport and node enrollment
-still gate activation.
-
-After reconciliation, `OpenShellSandboxDriver.provisionHarness` verifies any
-selected plugin request guard before workspace initialization.
-`OpenShellSandboxDriver.initializeWorkspace` waits for supervisor readiness,
-then verifies the setup Secret's Namespace, Agent and setup identifiers in OCE's
-tenant namespace. `ManagedOpenShellSandbox.workspaceInitializationPath` selects
-`/sandbox/oce/workspace` without requiring a PVC mount. The initializer uses the
-bootstrap's workload home at `/opt/oce/managed/home`.
-Operator mode still requires an approved PVC mount. Both paths deliver the
-payload through authenticated `ExecSandbox` stdin, including completed setup
-records on retries and later revisions. See
+`OpenShellSandboxDriver.initializeWorkspace` waits for supervisor readiness
+and verifies the setup Secret's Namespace, Agent and setup IDs. It passes the
+payload over authenticated `ExecSandbox` stdin, including completed setup
+records on retries and later revisions. `ManagedOpenShellSandbox.workspaceInitializationPath`
+selects `/sandbox/oce/workspace`. See
 [workspace initialization](workspace-files.md#2-deployment-initializes-storage-before-execution).
 
 ### 4. Retain or delete
@@ -280,6 +216,8 @@ do not establish cluster isolation or durable replacement after failures.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 22:19: Condense the managed workload trace. (authoring-run/e1008b80-26f9-4622-91f0-e6a875bba268 - 0173500d9e950c1722fb6738af08f9857e44be3d)
 
 - 2026-11-19 22:11: Isolate private homes, verify policy and fence Git recovery. (authoring-run/f0ca6751-75e0-4de4-bcdd-df016d2b4a50 - caad39a5e6b5f143628f326e5c3959b164a7caab)
 

@@ -62,17 +62,23 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
   }
   const apiUrl = new URL(input.apiUrl);
   assert.ok(!apiUrl.username && !apiUrl.password && !apiUrl.search && !apiUrl.hash);
-  const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(apiUrl.hostname);
+  const loopback = ["127.0.0.1", "localhost", "[::1]"].find((host) => host === apiUrl.hostname);
   assert.ok(apiUrl.protocol === "https:" || (loopback && apiUrl.protocol === "http:"));
-  // A fixture file alone must never select a remote recipient for the service key.
-  if (!loopback) {
-    assert.ok(input.existingCluster, "Remote API requires an explicitly selected cluster");
-    assert.equal(apiUrl.origin, process.env.OCC_TEST_OPENSHELL_REPLACEMENT_API_ORIGIN);
-  }
+  // Construct the destination from a loopback host or the operator's independent selection.
+  const scheme = apiUrl.protocol === "https:" ? "https" : "http";
+  const origin = loopback
+    ? `${scheme}://${loopback}${apiUrl.port ? ":" + Number(apiUrl.port) : ""}`
+    : process.env.OCC_TEST_OPENSHELL_REPLACEMENT_API_ORIGIN;
+  assert.ok(
+    loopback || input.existingCluster,
+    "Remote API requires an explicitly selected cluster",
+  );
+  assert.ok(origin && apiUrl.origin === origin, "Select the approved replacement API origin");
   const serviceKey = await protectedText(input.serviceKeyFile, "replacement service key");
   const api = async (method, path, body, allowMissing = false) => {
-    const destination = new URL(path, apiUrl);
-    assert.equal(destination.origin, apiUrl.origin);
+    const destination = new URL(origin);
+    destination.pathname = path;
+    assert.ok(destination.pathname.startsWith("/namespaces/"));
     const response = await fetch(destination, {
       method,
       headers: {

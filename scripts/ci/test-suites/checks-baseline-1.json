@@ -946,6 +946,7 @@
       "expectedTests": [
         "an observed Git route (2) rotates only after its challenge in the original worker",
         "an observed Git route (3) rotates only after its challenge in the original worker",
+        "a worker does not send a pending launcher release after withdrawal",
         "the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access"
       ]
     },

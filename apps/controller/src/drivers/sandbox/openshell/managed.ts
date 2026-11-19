@@ -302,10 +302,6 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     if (provider === undefined) {
       throw new Error("Managed runtime Provider disappeared during creation.");
     }
-    verifyRuntimeProvider(provider, name, profileId, labels);
-    if (isDeepStrictEqual(provider.config, desired)) {
-      return { name, created: false };
-    }
     if (provider.config.oce_revision_id === context.revision.id) {
       const renewal = runtimeProviderSetupUpdate(provider, name, profileId, labels, desired);
       if (renewal !== undefined) {
@@ -320,6 +316,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       }
       return { name, created: false };
     }
+    verifyRuntimeProvider(provider, name, profileId, labels);
     const sandbox = await client.getSandbox(
       { workspace, name: this.agentSandboxName(context.revision.agentId) },
       context.signal,
@@ -349,14 +346,10 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       credentialExpirationTimes,
     );
     const refreshed = await client.getProvider(workspace, name, context.signal);
-    if (
-      refreshed === undefined ||
-      refreshed.type !== profileId ||
-      !isDeepStrictEqual(refreshed.labels, labels) ||
-      !isDeepStrictEqual(refreshed.config, provider.config)
-    ) {
+    if (refreshed === undefined || refreshed.id !== provider.id) {
       throw new Error("Managed runtime Provider changed while replacing credentials.");
     }
+    verifyRuntimeProvider(refreshed, name, profileId, labels, provider.config);
     await client.updateProviderConfig(
       workspace,
       name,
@@ -372,15 +365,10 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       context.signal,
     );
     const updated = await client.getProvider(workspace, name, context.signal);
-    if (
-      updated === undefined ||
-      updated.name !== name ||
-      updated.type !== profileId ||
-      !isDeepStrictEqual(updated.labels, labels) ||
-      !isDeepStrictEqual(updated.config, desired)
-    ) {
-      throw new Error("OpenShell did not store the exact requested runtime Provider config.");
+    if (updated === undefined || updated.id !== provider.id) {
+      throw new Error("Managed runtime Provider changed while replacing config.");
     }
+    verifyRuntimeProvider(updated, name, profileId, labels, desired);
     return { name, created: false };
   }
 

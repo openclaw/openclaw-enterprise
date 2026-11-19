@@ -1,40 +1,31 @@
 # Managed OpenShell tests
 
-The [managed Compute selection](../reference/drivers/kubernetes-openshell-compute.md)
-requires rebuilt Harness images and the upstream OpenShell workload-update API
-specified in that reference. Its independent wire fixture records the upstream
-commit used for the lifecycle, workload-update and service-exposure messages.
-The opt-in Provider replacement scenario below covers Credential Source changes;
-it does not qualify the complete managed lifecycle.
-
-Local checks cover launch inputs through Compute preparation, Kubernetes mounts,
-OpenShell rendering and real filesystem bootstrap. The launch refactor removed
-reverse-Deployment parser checks; identity, private setup delivery and retained
-storage assertions now inspect constructed requirements or rendered resources.
-Managed startup tests select the mode through `integrationMode: service` alone,
-verify the `legacy` default, reject obsolete selectors and retain configuration and storage-owner checks.
-They exercise Compute preparation with the real managed Sandbox
-Driver and fixture transports. They check that both Harnesses keep the Envoy node
-route without a direct Sandbox ingress policy. These checks do not establish live
-managed-Workspace integration or packet delivery.
-
-Local checks:
+The local tests exercise the real Sandbox Driver with fixture transports and
+run the image bootstrap on a filesystem. They cover `service` selection, the
+`legacy` default, storage ownership, workload rendering, protobuf messages and
+the required Envoy route.
 
 ```sh
-node --test tests/conformance/openshell-managed-bootstrap.test.mjs tests/conformance/openshell-gateway-wire.test.ts tests/conformance/kubernetes-provider-harness.test.mjs tests/conformance/kubernetes-harness-workspace-volume.test.mjs tests/conformance/kubernetes-compute.test.mjs tests/integration/sandbox-driver-startup.test.ts
+node --test \
+  tests/conformance/openshell-managed-bootstrap.test.mjs \
+  tests/conformance/openshell-gateway-wire.test.ts \
+  tests/conformance/kubernetes-provider-harness.test.mjs \
+  tests/conformance/kubernetes-harness-workspace-volume.test.mjs \
+  tests/conformance/kubernetes-compute.test.mjs \
+  tests/integration/sandbox-driver-startup.test.ts
 ```
 
-Before qualification, extend the QA matrix's regular Agent workflow on a disposable
-cluster. Deny OCE access to the managed namespace. Confirm that node enrollment
-and reconnection use Envoy with no direct Sandbox ingress allowance, and that
-activation removes any previous Agent-owned workspace-node policy. Deploy, read/write an allowed
-workspace file, run a model/tool turn, replace the revision, stop/restart, then
-delete the Agent. Confirm stable Sandbox/PVC identity and retained files through
-replacement; confirm deletion only at final Agent removal. Exercise both Harnesses,
-rejected peers, failed bootstrap, unsupported updates and lost acknowledgments.
-See [stop and replacement ordering](../flows/openshell-managed-workload.md#stop-and-replacement-ordering) for the assumptions about failed stop requests.
+On a disposable cluster, verify both Harnesses with OCE denied access to the
+managed namespace. Check node enrollment and reconnection through Envoy and
+removal of obsolete direct ingress policies. Deploy an Agent, write a workspace
+file, complete a model or tool turn, then replace and restart the workload.
+Check that Sandbox and PVC identities stay stable and the file persists.
+Confirm that final Agent deletion removes the Sandbox and PVC. Exercise rejected
+peers, failed bootstrap, unsupported updates and lost acknowledgments.
+See [stop and replacement ordering](../flows/openshell-managed-workload.md#stop-and-replacement-ordering).
 
-For Git repository changes across revisions, use the [Git replacement scenario](openshell-git-replacement.md).
+The Provider and [Git replacement](openshell-git-replacement.md) scenarios
+exercise parts of that workflow.
 
 ## Provider replacement
 
@@ -61,9 +52,9 @@ sandboxNetworkPolicyCeiling:
         to: 443
 ```
 
-This ceiling permits Agent policy edits; it does not grant network access itself.
-An empty ceiling refuses the test grant. Reload both API and worker after changing
-startup configuration. See [delegation limits](../reference/sandbox-policies.md).
+Reload the API and worker after changing startup configuration. The ceiling
+authorizes policy edits and the scenario applies the grant. See
+[delegation limits](../reference/sandbox-policies.md).
 
 Set `OCC_TEST_OPENSHELL_REPLACEMENT_INPUT_FILE` to a private JSON file:
 
@@ -89,8 +80,8 @@ Set `OCC_TEST_OPENSHELL_REPLACEMENT_INPUT_FILE` to a private JSON file:
 }
 ```
 
-The service-key file contains the raw key. The OpenShell endpoint must reach the
-same gateway used by OCE. No model credential value belongs in this input file.
+Store the raw service key in a private regular file. Select the gateway used by
+OCE and supply the model Credential Source ID.
 
 ```sh
 export OCC_TEST_KUBERNETES_KUBECONFIG=/tmp/oce-test/kubeconfig
@@ -101,11 +92,9 @@ node --test tests/integration/openshell-provider-replacement-real.test.ts
 
 The test changes model sources and network grants separately, then together,
 and redeploys unchanged. It checks stable Sandbox identity, exact Provider
-membership, loaded policy, model turns, and continued peer access. Real curl
-requests must succeed after granting access and fail after removal; the peer
-must remain denied. The example.org grant does not overlap model credentials,
-so this does not reproduce the upstream inspection defect. Local tests cover
-lost-response recovery; this scenario does not inject failures.
+membership, loaded policy, model turns and continued peer access. Curl must
+succeed after grant and fail after removal, while the peer stays denied.
+The scenario covers acknowledged changes with a probe host outside model routes.
 
 Cleanup removes test-created Agents, grants and sources, preserving prepared
 resources. Missing input skips the standalone test. A selected QA run requires
