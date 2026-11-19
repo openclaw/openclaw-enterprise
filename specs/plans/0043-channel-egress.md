@@ -224,6 +224,15 @@ Real checks on the implementation candidate:
   Lint, TypeScript, workspace, OpenAPI, documentation links/length and CI test
   registration checks passed.
 
+Hosted CI identified remaining fixture assumptions after the first publication.
+The fixes add the declared dependency to cold-prepack setup, use the absent-binding
+form for channel-disabled rendering, and supply required profile exclusions.
+Credential-reference cases use a second supported Slack account; the existing API
+table checks unavailable Teams refusal. The unreachable Teams browser draft case
+was removed. The corrected packaging/conformance/profile group passed 121 cases,
+the Configuration API suite passed 286, and the credential Console suite passed
+36, all with zero skips. Production routing and validation were unchanged.
+
 An audit of Envoy source found that `config_dump` omits in-place filter-chain
 drains. Cleanup now also checks the drain gauge on every serving Pod. It requires
 old source Pods to be absent and their Deployments and ReplicaSets to have no

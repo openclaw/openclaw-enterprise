@@ -72,7 +72,8 @@ completion waiting, change new-message admission, or extend deployment timeouts.
 [its rule module](../../../apps/controller/src/drivers/compute/kubernetes/configuration-rules.ts).
 `validateConfiguration` refuses:
 
-- an enabled `channels.<provider>` other than `slack` or `msteams`;
+- an enabled `channels.<provider>` without an installed Channel Driver; the bundled
+  composition currently installs Slack only;
 - a non-empty `auth`;
 - an `env` or `env.vars` name starting `OPENAI_` or `ANTHROPIC_` in any
   case, or `CODEX_ACCESS_TOKEN`, `CODEX_CHATGPT_WORKSPACE_ID` or

@@ -58,6 +58,7 @@ function baseInput(overrides = {}) {
     },
     channels: {
       managedEgress: true,
+      excludedCidrs: ["10.0.0.0/8", "192.0.2.11/32"],
     },
     ...overrides,
   };
