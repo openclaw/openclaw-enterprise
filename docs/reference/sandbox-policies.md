@@ -39,8 +39,15 @@ runtime credential preparation. Deployment returns `409 RESOURCE_CONFLICT`
 if an admitting Driver or the repository policy owner that approved the list
 changes before runtime credential provisioning or revision creation. A successful
 deployment saves the list, its identity, and the effective policy in the Agent
-revision. Live application refuses an explicit list in the desired policy or
-active revision, including deny-all.
+revision. Before preparing a queued revision, the Worker rechecks the actor's
+Agent `manage_policy` and SandboxPolicy `read` and `update` permissions. Losing
+one of them blocks deployment with `AUTHORIZATION_DENIED`. The Worker checks
+Compute support again, including after restart. After activation-time policy
+validation, the Worker renews its work claim before calling Compute. These checks
+cover empty lists.
+Losing policy-edit permission or Compute support for a new deployment still
+allows the Worker to remove Git access from a serving revision.
+Live application refuses an explicit list in the desired policy or active revision.
 
 The selected Driver's `admitRepositoryNetworkPolicy` method receives the
 validated list and an immutable base snapshot. This side-effect-free method

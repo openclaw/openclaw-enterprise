@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-19"
-last_updated_session: "authoring-run/e9ff0fe7-18b6-41e2-a275-47d9cd003a54"
+last_updated_session: "authoring-run/738fc0a1-e73c-4f82-98af-989a7c5273cc"
 ---
 
 # Agent sandbox policy flow
@@ -142,6 +142,19 @@ OCC stores the effective policy and the canonical list identity in
 `AgentRevision.sandboxPolicy`. A refusal leaves no revision or queued
 deployment. Omission uses the ordinary Driver snapshot.
 
+Before preparing a queued revision with an explicit list, including deny-all,
+`apps/controller/src/worker.ts:ControllerWorker.authorizeRevision` rechecks
+the deploying actor's Agent `manage_policy` and SandboxPolicy `read` and `update`.
+The Worker also checks whether the current Compute Driver can enforce the
+stored policy before preparation and activation. A refusal before preparation
+keeps the previous revision active.
+`apps/controller/src/worker.ts:ControllerWorker.stagedRevision` renews the exact
+work claim after policy validation and before invoking Compute activation.
+A successor claim blocks activation even if the active pointer already names
+the candidate. If an interrupted deployment resumes to withdraw Git or stop the
+Agent, the Worker checks the authority for that operation. The Worker can remove
+Git access after the Compute Driver refuses the new policy.
+
 `applyAgentSandboxPolicy` authorizes Agent `manage_policy` and SandboxPolicy
 `update` and `read` before inspecting the saved policy. Both live apply request
 shapes return `409 RESOURCE_CONFLICT` before saving or queuing work if the
@@ -257,6 +270,10 @@ hides denial counts and controls.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 23:00: Renew the work claim after validating repository policy and before Compute activation. (authoring-run/738fc0a1-e73c-4f82-98af-989a7c5273cc - 1cd1aae973ac4677d46ff8932436d50dc4dd3413)
+
+- 2026-11-19 21:31: Recheck repository policy authority and Compute support at Worker dispatch. (authoring-run/d5be3dc4-113a-480c-8ea6-eabbac590e2e - 1cd1aae973ac4677d46ff8932436d50dc4dd3413)
 
 - 2026-11-19 11:44: Check the approving Driver identities before deployment writes. (authoring-run/e9ff0fe7-18b6-41e2-a275-47d9cd003a54 - aa54b497c52d2c338e22142dfc06bed9f2870af4)
 

@@ -50,6 +50,12 @@
         "the revision worker rejects managed ServiceAccount issuance revoked after admission before Compute",
         "the revision worker retries transient Backend binding read failures without activating",
         "a transient failure at the convergence deadline still retires an OAuth bootstrap last seen running",
+        "a restarted worker refuses explicit deny-all before preparing an ordinary revision",
+        "a successor claim prevents activation before commit before the stale signal aborts",
+        "a successor claim prevents activation after commit before the stale signal aborts",
+        "queued repository policy refuses revoked sandbox_policy read before Compute",
+        "queued repository policy refuses revoked sandbox_policy update before Compute",
+        "queued repository policy refuses revoked agent manage_policy before Compute",
         "one worker reconciles embedded OpenClaw and dedicated Codex but rejects unapproved pinned Harnesses",
         "api_key revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
         "codex_pat revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
@@ -183,7 +189,10 @@
       "path": "tests/integration/postgres-worker-agent-revision-teardown.test.ts",
       "expectedTests": [
         "repository service outage during Agent stop still stops Compute and retains durable closing work",
-        "worker restart resumes repository maintenance and repairs only Compute's exact missing subset once"
+        "worker restart resumes repository maintenance and repairs only Compute's exact missing subset once",
+        "finite Git removal survives a restarted Compute refusing the stored repository policy",
+        "the original deployment withdraws finite Git after losing policy-edit authority",
+        "the original deployment handles Stop after losing policy-edit authority"
       ]
     },
     {
