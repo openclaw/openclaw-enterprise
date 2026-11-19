@@ -157,6 +157,36 @@ Removing access retains profiles and prior attribution. Closing a connection
 does not cancel already accepted work. IdP disablement retains the existing OCE
 session policy; this feature adds no IdP revocation deadline.
 
+## Interface changes
+
+### APIs
+
+No new or removed public OpenClaw Enterprise (OCE) endpoint. The existing native
+browser route selects the caller’s own native profile instead of the shared
+machine profile. Delegated browser connections do not issue device tokens.
+
+### IAM
+
+No changes. The existing exact-Agent `operate` and `administer` grants apply.
+
+### Database entities
+
+No changes to OCE database entities. The native Gateway stores the unique
+external identity binding with its profile.
+
+### Driver contracts
+
+The optional Compute method `getGatewayBrowserRequest` replaces
+`getGatewayChatEndpoint`. It returns private transport for the authorized
+Principal, access mode, and Agent revision. Machine and HTTP completion
+endpoints are unchanged.
+
+## Simplifications
+
+Changing only the identity header would not enforce admission or scope. Reusing
+OCE grants and native profiles avoids a second login, a copied access roster,
+and an alias-management workflow. No other infrastructure simplifications.
+
 ## Acceptance Criteria
 
 The [verification plan](../plans/20261110-oidc-native-profiles.md#verification) pairs
