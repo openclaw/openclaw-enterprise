@@ -12,8 +12,10 @@ qualified, and requires human review.
 
 ## Decision
 
-An operator may explicitly select Agent-wide Box policy when all processes in
-one Agent Sandbox may use the same admitted routes and credential injections.
+For the initial qualification, an operator may explicitly select Agent-wide Box
+policy only in an isolated pilot deployment, when all processes in one Agent
+Sandbox may use the same admitted routes and credential injections. Broader
+release depends on qualification through the real Agent workflow below.
 The Sandbox must contain exactly one authenticated Agent revision and execution
 incarnation. Every process in that Sandbox, including a shell, tool, Model Context Protocol (MCP)
 server, or compromised subprocess, can use the routes and injections admitted
@@ -95,26 +97,37 @@ claiming executable attribution that Box cannot establish.
 
 ## Acceptance criteria
 
-Qualification must use the normal deployed Agent path and the actual Box
+The isolated pilot must use the normal deployed Agent path and the actual Box
 callback and trusted injector, with invented credential sentinels and an
-independently observed upstream:
+independently observed trusted origin:
 
-- Start one authenticated Agent in one contained Box. From two distinct
-  subprocesses in that Agent, perform admitted requests and verify that both
-  reach the intended upstream with the sentinel injected by the trusted side.
-  Neither process may read or retrieve the sentinel.
-- From a different Agent, and for a wrong route, destination, port, method, or
-  path, verify refusal with no sentinel injection and no upstream effect.
+- Start one authenticated Agent revision and execution incarnation in one
+  contained Box. Run two distinct real subprocesses in that same incarnation.
+  Both must use the **same admitted route and credential binding**. Have the
+  trusted origin distinguish and accept both requests, and independently verify
+  that the trusted injector supplied the binding's sentinel for each request.
+  Neither subprocess may read or retrieve the sentinel.
+- Refuse use by another Agent. Replace the Sandbox and refuse authority from
+  the previous execution incarnation. Also refuse a wrong route, destination,
+  port, method, or path.
 - With Box Policy still permitting the route, revoke its credential binding and
-  verify that a fresh request has no injection or upstream effect. Separately
-  withdraw the admitted credential policy, read back its effective version from
-  every serving copy, and verify the same refusal.
-- Remove Box Policy and verify that requests have no injection or upstream
-  effect. With stale or missing delivery readback, verify that startup remains
-  held and no protected request reaches upstream.
-- Attempt direct egress and access to trusted control or release interfaces
-  from the workload. Verify no direct upstream effect, protected-material
-  disclosure, control mutation, or unauthorized release.
+  refuse a fresh request. Separately withdraw the admitted credential policy,
+  read back its effective version from every serving copy, and refuse a fresh
+  request. Remove Box Policy and verify refusal. With stale or missing delivery
+  readback, verify that startup remains held.
+- Measure each refusal at the layer that enforces it. For a denied application
+  request on an otherwise permitted proxy connection, require zero denied
+  application-request bytes forwarded to the origin, zero unauthorized
+  credential injections, and zero provider operations. Observe and record TCP
+  establishment separately; an allowed TCP connection alone is not an accepted
+  application request. For a forbidden destination or port, require no
+  connection to that destination or port. Attempt direct egress and require no
+  direct connection.
+- Attempt access to trusted control and release interfaces from the workload.
+  Across all refusal cases, require zero protected-material disclosure, control
+  mutation, and unauthorized release. Preserve any stronger connection, dispatch,
+  authorization, or evidence requirement of the admitted RFC-0023 protection
+  level; the application-layer criterion does not relax it.
 - Verify that an executable-only grant cannot authorize Agent-wide access, that
   overlapping restrictions are not weakened, and that the Box pilot refuses
   mixed subjects or unsupported capability before provisioning. Request an

@@ -87,7 +87,8 @@ grant a Box operation. Refuse policy that cannot be represented without widening
 
 Every process in one Box can use its routes, and the current callback cannot identify
 the originating executable. The proposed [Agent-wide Box policy capability](strands-box-agent-policy.md)
-allows this sharing only when explicitly admitted for one authenticated Agent Sandbox.
+allows this sharing only when explicitly admitted for one authenticated Agent Sandbox,
+initially in an isolated pilot deployment.
 It cannot satisfy an executable-specific assertion. Sandbox must enforce any asserted
 executable or port restriction or refuse the policy, as the
 [credential ownership amendment](installation-credential-ownership.md) requires.

@@ -12,7 +12,7 @@ This proposal requires human review and merge.
 
 The proposed [Installation credential ownership amendment](installation-credential-ownership.md) revises the v1 custody, delivery and deployment decisions below.
 The proposed [held-start amendment](strands-box-held-launch.md) defines exact startup observation and release, including an unqualified direct-parent Box experiment. If a privileged descriptor is transferred to an independently launched receiver, both exact endpoints must authenticate before transfer.
-The proposed [Agent-wide Box policy amendment](strands-box-agent-policy.md) separately admits one authenticated Agent Sandbox as the principal for shared routes and injections. It does not satisfy executable-specific policy.
+The proposed [Agent-wide Box policy amendment](strands-box-agent-policy.md) separately admits one authenticated Agent Sandbox as the principal for shared routes and injections, initially in an isolated pilot. It does not satisfy executable-specific policy.
 
 ## Decision
 

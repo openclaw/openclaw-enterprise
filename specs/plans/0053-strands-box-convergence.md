@@ -39,7 +39,8 @@ current OCE authorization; it cannot grant a Box operation.
 Box routes are available to every process in the same Box, and the current
 callback cannot identify the executable that originated a request. The proposed
 [Agent-wide Box policy capability](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-agent-policy.md)
-must be explicitly admitted for one authenticated Agent Sandbox. It cannot satisfy an
+requires explicit admission for one authenticated Agent Sandbox in the initial
+isolated pilot. It cannot satisfy an
 executable-specific assertion. Sandbox must enforce an asserted executable or port
 restriction or refuse the policy, as required by the
 [credential ownership amendment](../rfcs/0023-egress-proxy-credential-lifecycle/installation-credential-ownership.md).
@@ -108,8 +109,8 @@ proposes OpenClaw mode reporting; it does not approve Box or Codex support.
 
 1. **Boundary and ingress.** First exercise the real native Box parent, trampoline,
    and contained child with invented sentinels. Verify an authored Policy permit,
-   denial and absent-Policy refusal. For the explicitly admitted Agent-wide capability,
-   run the [two-subprocess sentinel and zero-effect refusal cases](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-agent-policy.md#acceptance-criteria)
+   denial and absent-Policy refusal. In the isolated Agent-wide pilot, run the
+   [same-route/binding subprocess and refusal cases](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-agent-policy.md#acceptance-criteria)
    through the real Agent. Verify executable/port enforcement or policy refusal,
    native isolation, exact child and challenge
    binding, unintended descriptor inheritance refusal, live authored-source
