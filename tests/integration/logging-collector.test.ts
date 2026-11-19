@@ -1026,6 +1026,45 @@ test(
     // to drain its batch. Otherwise a missing forged record could be a read race.
     const metricsAddress = await fixture.port(8888);
     let acceptedRecords: number | null = null;
+    const pipelineCounts: Record<string, number | null> = {
+      refused: null,
+      filtered: null,
+      sent: null,
+      sendFailed: null,
+      queued: null,
+    };
+    const reportProgress = async (stage: string) => {
+      const observed = await records()
+        .then((exported) => ({
+          exported: exported.length,
+          present: {
+            worker: exported.some(
+              ({ resource }) => resource["k8s.pod.uid"] === workerPod.metadata.uid,
+            ),
+            api: exported.some(({ resource }) => resource["k8s.pod.uid"] === apiPod.metadata.uid),
+            forgedWorker: exported.some(
+              ({ resource }) => resource["k8s.pod.uid"] === forgedWorkerPod.metadata.uid,
+            ),
+            forgedApi: exported.some(
+              ({ resource }) => resource["k8s.pod.uid"] === forgedApiPod.metadata.uid,
+            ),
+            gateway: exported.some(
+              ({ resource }) => resource["k8s.pod.uid"] === gatewayPod.metadata.uid,
+            ),
+          },
+        }))
+        .catch(() => null);
+      // Only counts and membership of the five invented Pods are diagnostic.
+      // Do not print exported bodies, arbitrary attributes, or metric labels.
+      t.diagnostic(
+        `CRI progress ${stage} (null means unavailable): ${JSON.stringify({
+          accepted: acceptedRecords,
+          expected: podMetadata.length,
+          pipelineCounts,
+          observed,
+        })}`,
+      );
+    };
     try {
       await waitFor(
         "every CRI record after Pod metadata syncs",
@@ -1041,33 +1080,54 @@ test(
           });
           acceptedRecords =
             samples.length > 0 ? samples.reduce((total, count) => total + count, 0) : null;
+          // The last receiver scrape also locates a loss before the Collector stops.
+          for (const [field, name, label] of [
+            ["refused", "otelcol_receiver_refused_log_records", 'receiver="filelog"'],
+            [
+              "filtered",
+              "otelcol_processor_filter_logs_filtered",
+              'processor="filter/operational"',
+            ],
+            ["sent", "otelcol_exporter_sent_log_records", 'exporter="otlp_http"'],
+            ["sendFailed", "otelcol_exporter_send_failed_log_records", 'exporter="otlp_http"'],
+            ["queued", "otelcol_exporter_queue_size", 'exporter="otlp_http"'],
+          ] as const) {
+            const values = [
+              ...metrics.matchAll(
+                new RegExp(`^${name}(?:_total)?\\{([^\\n]*)\\} ([^\\s]+)$`, "gm"),
+              ),
+            ]
+              .flatMap(([, labels, value]) =>
+                labels?.split(",").includes(label) ? [Number(value)] : [],
+              )
+              .filter(Number.isFinite);
+            pipelineCounts[field] = values.length
+              ? values.reduce((total, count) => total + count, 0)
+              : null;
+          }
           return (acceptedRecords ?? 0) >= podMetadata.length;
         },
         fixture,
       );
     } catch (error) {
-      const exportedCount = await records()
-        .then((exported) => exported.length)
-        .catch(() => null);
-      t.diagnostic(
-        `Last CRI progress (null means unavailable): ${JSON.stringify({
-          accepted: acceptedRecords,
-          expected: podMetadata.length,
-          exported: exportedCount,
-        })}`,
-      );
+      await reportProgress("while waiting for intake");
       throw error;
     }
+    await reportProgress("before drain");
     await docker(["stop", "--time", "10", fixture.collector]);
     assert.equal(
       await docker(["inspect", "--format", "{{.State.ExitCode}}", fixture.collector]),
       "0",
     );
-    await waitFor(
-      "the allowed records after Collector drain",
-      async () => (await records()).length >= 3,
-      fixture,
-    );
+    try {
+      await waitFor(
+        "the allowed records after Collector drain",
+        async () => (await records()).length >= 3,
+        fixture,
+      );
+    } finally {
+      await reportProgress("after drain");
+    }
     const exported = await records();
     assert.equal(exported.length, 3);
     for (const [pod, service, body] of [
