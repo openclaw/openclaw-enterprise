@@ -211,12 +211,12 @@ Compute records inference launch settings in new protected Codex revisions. The 
 native connection retries, avoiding indefinite reconnects. Stored revisions retain
 original retry settings.
 
-For new dedicated Codex revisions on provider-owned Sandboxes other than OpenShell,
-Kubernetes Compute records the probe command. Both probe commands inherit the
-Harness's nonempty `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY`, as the
-serving Codex process does. Codex decides how to use them; the Sandbox enforces
-egress. Earlier revisions retain their original command on retry. Deploy a new
-revision to use the fix.
+For a new dedicated Codex revision on a provider-owned Sandbox other than OpenShell,
+Kubernetes Compute also records which probe command to use. That probe inherits the
+Harness's nonempty `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY` settings in either case, just
+as the serving Codex process already did. Codex decides how to use them; the Sandbox
+still enforces egress. Retrying a revision admitted before this change reuses its
+original command. Deploy a new revision to pick up the fix.
 
 For custom endpoints, `gatewayConfigurationDocument` uses
 `apps/controller/src/drivers/compute/codex-model-configuration.ts:codexGatewayModelConfiguration`
@@ -354,13 +354,11 @@ removal.
 
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 
+- 2026-11-18 23:57: Reconcile native recovery provenance and retain both documentation histories. (authoring-run/76004d26-dfcf-4339-b9ec-d3d033885f65 - 414362a39100d4556a82672223b9a1bd07c7f22f)
+
 - 2026-11-18 22:54: Move older entries to the existing documentation history. (authoring-run/4305c3cc-b3b5-4f82-9eaa-9237672fbf4d - 12d5ea4858a3257c1cec84d21142f705a15faa92)
 - 2026-11-18 22:35: Retain native scope policy (authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1 - 3f273a16a)
 
 - 2026-11-18 20:10: Remove the recovery-generation boundary; later Gateway startup uses native eligibility (authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1 - 11cef2cb9)
-
-- 2026-11-18 03:53: Preserve the merged proxy-probe trace and both source histories. (authoring-run/01a1d81a-bdb0-7923-8615-bed6678f74d4 - b3a67847915ca3d9884bc0b4b14bd7f63f79ff1e)
-
-- 2026-11-18 03:05: Refresh restart-resume source provenance. (authoring-run/01a1d81a-bdb0-7923-8615-bed6678f74d4 - f98453d0adf83a53c549c5198c3c388a5ca7fc95)
 
 [Harness execution topology documentation history](harness-execution-topology/history.md) preserves the older dated entries.
