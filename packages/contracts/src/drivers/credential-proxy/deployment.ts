@@ -12,6 +12,12 @@ import type {
 import type { CredentialSourceReference } from "../../index.ts";
 import type { ResolvedCredential } from "../token-service/index.ts";
 
+/** Material-free change event; a missing version does not prevent delivery. */
+export interface CredentialUpdateNotification {
+  readonly sourceRef: CredentialSourceReference;
+  readonly version?: string;
+}
+
 export interface CredentialProxyDeploymentContract {
   deployProxy(
     input: {
@@ -23,17 +29,25 @@ export interface CredentialProxyDeploymentContract {
   ): Promise<{ readonly proxyRouting?: CredentialProxyRouting }>;
   configureDeployment(
     input: CredentialDeploymentConfiguration & {
-      readonly bindings: readonly DeploymentCredentialBinding[];
+      readonly bindings: readonly {
+        readonly binding: DeploymentCredentialBinding;
+        /** Authorized only for binding.sourceRef; use for first-use transfer, never shared-provider attachment. */
+        readonly resolveCredential: () => Promise<ResolvedCredential>;
+        /** Nonsecret provider locator for an implementation that owns both services. */
+        readonly sharedProviderRef?: Readonly<Record<string, string>>;
+      }[];
       readonly injectionPolicies: readonly CredentialInjectionPolicy[];
     },
     signal: AbortSignal,
   ): Promise<{ readonly credentialProjections: readonly CredentialProjection[] }>;
-  /** Reject a missing version. Update the existing resource, then observe that every serving copy
-   * for this source can use the pushed version before acknowledging. If no resource exists,
-   * succeed without creating one. */
-  pushCredentials(
-    sourceRef: CredentialSourceReference,
-    credential: ResolvedCredential,
+  /** Handle a source update according to the proxy binding. The resolver is authorized for only
+   * this source; do not call it when no material transfer is needed. With no delivery resource,
+   * succeed without resolving or creating one. A push requires a version on the resolved material
+   * and acknowledges only after every serving copy can use it. Concurrent updates must not restore
+   * an older delivered version. */
+  notifyCredentialUpdated(
+    notification: CredentialUpdateNotification,
+    resolveCredential: () => Promise<ResolvedCredential>,
     signal: AbortSignal,
   ): Promise<void>;
   removeDeployment(
@@ -43,9 +57,9 @@ export interface CredentialProxyDeploymentContract {
       | { readonly unboundDeployment: CredentialDeploymentRef },
     signal: AbortSignal,
   ): Promise<void>;
-  /** Observe without reload, repair or upstream user operations. Each pushed binding needs a
-   * serving copy, and every copy serving it on this target must have the expected delivery version.
-   * For native delivery, verify provider readiness for the current effective policy. Both require
+  /** Observe without reload, repair or upstream user operations. Each binding using pushed material
+   * needs a serving copy on this target, and every copy serving that binding must have the expected
+   * version. A shared provider instead needs readiness for the current effective policy. Both need
    * the expected configuration. */
   getDeploymentStatus(
     expected: CredentialDeploymentConfiguration,
