@@ -1103,18 +1103,13 @@ function boundTlsSecretProjection(
       {{- $requiredKeysPresent = false -}}
     {{- end -}}
   {{- end -}}
-  {{/* exists treats null as absent. Check explicit null only after a required lookup missed. */}}
+  {{/* exists treats null as absent. A null-bearing map makes a missed required lookup inconclusive. */}}
   {{- if and $valid $dataIsMap (not $requiredKeysPresent) -}}
-    {{- range $key, $value := $data -}}
+    {{- range $value := $data -}}
       {{- if eq (printf "%T" $value) "<nil>" -}}
-        {{- range $item := $mapping.items -}}
-          {{- if eq $key $item.key -}}
-            {{- $valid = false -}}
-            {{- break -}}
-          {{- end -}}
-        {{- end -}}
+        {{- $valid = false -}}
+        {{- break -}}
       {{- end -}}
-      {{- if not $valid -}}{{- break -}}{{- end -}}
     {{- end -}}
   {{- end -}}
 {{- end -}}
