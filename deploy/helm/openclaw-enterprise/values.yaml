@@ -125,6 +125,8 @@ agentRuntimeLogs:
 # configures a private receiver for audit events from managed Agent runtimes.
 controlPlaneAudit:
   enabled: false
+  # Optional OpenShell OCSF exporter credential, stored in the headers key.
+  openShellExporterSecret: ""
 
 bootstrap:
   adminEmail: ""

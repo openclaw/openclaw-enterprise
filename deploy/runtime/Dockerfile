@@ -256,13 +256,13 @@ COPY deploy/runtime/openclaw-planned-completion.patch /tmp/openclaw-planned-comp
 RUN echo '402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15  /tmp/openclaw-planned-completion.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-planned-completion.patch
 
-# Record runtime audit observations at the OpenClaw and Codex Gateway owners.
+# Record managed runtime evidence at the OpenClaw and Codex execution owners.
 COPY deploy/runtime/openclaw-runtime-audit.patch /tmp/openclaw-runtime-audit.patch
-RUN echo 'ca9c9faee8cbde1134ebe4be43bcb0f9603552859807c210976652974530a314  /tmp/openclaw-runtime-audit.patch' | sha256sum --check --strict \
+RUN echo '497d5dfe283186212d82512b47f6fb1c118b73f7fe519e2a25e1c5dcfc53dd5a  /tmp/openclaw-runtime-audit.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-runtime-audit.patch
 
 COPY deploy/runtime/openclaw-codex-runtime-audit.patch /tmp/openclaw-codex-runtime-audit.patch
-RUN echo '750e43b6f73aa0164402e72ed914b0d65285aa0dc0c3d19c78fa6b9b07820ccd  /tmp/openclaw-codex-runtime-audit.patch' | sha256sum --check --strict \
+RUN echo '606f8b7c6fb0f87ad35058a602efcc56cca675f289f5e5fbb36b3063459f378f  /tmp/openclaw-codex-runtime-audit.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-runtime-audit.patch
 
 # Broad source verification is an explicit target, separate from image assembly.
@@ -316,6 +316,8 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     test/node-host-launcher.test.ts \
     src/daemon/program-args.test.ts \
     src/gateway/server-methods/sessions-lifecycle-dormant.test.ts src/infra/openclaw-runtime-audit.test.ts \
+    src/agents/agent-tools.workspace-outside.test.ts src/gateway/node-invoke-plugin-policy.test.ts \
+    src/worker/worker-local-mcp.test.ts \
     src/gateway/worker-environments/inference-runtime.model.test.ts \
     src/gateway/worker-environments/worker-turn-admission.test.ts \
     extensions/codex/src/app-server/run-attempt-runtime-audit.test.ts \

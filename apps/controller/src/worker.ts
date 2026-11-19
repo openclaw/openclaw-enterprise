@@ -1348,6 +1348,7 @@ export class ControllerWorker {
       controlPlaneAuditEnabled: options.controlPlaneAuditEnabled ?? this.mode === "development",
     };
     this.state = new PostgresPlatformState(options.pool, {
+      auditReceiptAuthorizations: this.queueOptions.controlPlaneAuditEnabled === true,
       workQueue: this.queueOptions,
       preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
     });

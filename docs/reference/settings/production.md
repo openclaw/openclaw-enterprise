@@ -126,6 +126,8 @@ before enablement. Rejected requests can fill the ledger.
 
 With Helm-managed Gateway routing, the switch also enables
 [Agent runtime audit](../../guides/topics/audit-log.md#agent-runtime-activity).
+Set `controlPlaneAudit.openShellExporterSecret` to receive
+[OpenShell network decisions](../../guides/topics/openshell-audit.md).
 
 ### External sign-in and trusted proxies
 

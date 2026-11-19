@@ -251,6 +251,95 @@ function publicReadEvents(model, request) {
   ];
 }
 
+// The reply must contain a marker seeded in the workspace by the runner. The
+// provider learns it only from the installed read tool's result.
+function fileAuditEvents(model, request, caller, nonce) {
+  if (!publicReadJourney || caller !== "embedded") {
+    return undefined;
+  }
+  const initialId = /^OCE_SMOKE_tool-read-([0-9a-f-]{36})$/u.exec(nonce)?.[1];
+  let input;
+  try {
+    input = JSON.parse(request)?.input;
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(input)) {
+    return undefined;
+  }
+  // Incremental Responses requests may include tool results and omit the prompt.
+  const resultId = input
+    .find(
+      (item) =>
+        item?.type === "function_call_output" &&
+        /^file-audit-(?:allowed|denied)-[0-9a-f-]{36}$/u.test(item.call_id),
+    )
+    ?.call_id.slice(-36);
+  const id = initialId ?? resultId;
+  if (!id) {
+    return undefined;
+  }
+  const allowedCall = `file-audit-allowed-${id}`;
+  const deniedCall = `file-audit-denied-${id}`;
+  const output = (callId) =>
+    input.find((item) => item?.type === "function_call_output" && item.call_id === callId);
+  const allowed = output(allowedCall);
+  const denied = output(deniedCall);
+  if (allowed || denied) {
+    const marker = JSON.stringify(allowed?.output ?? "").match(
+      /AUDIT_TOOL_ALLOWED_[0-9a-f-]{36}/u,
+    )?.[0];
+    const escaped = JSON.stringify(denied?.output ?? "").includes("AUDIT_TOOL_DENIED_");
+    return answerEvents(
+      model,
+      allowed && denied && marker && !escaped ? marker : "FILE_TOOL_PROBE_FAILED",
+    );
+  }
+  const base = {
+    id: `resp_file_audit_${id}`,
+    object: "response",
+    model,
+    created_at: Math.floor(Date.now() / 1000),
+  };
+  const outputs = [
+    { call_id: allowedCall, path: `audit-probe-${id}.txt` },
+    { call_id: deniedCall, path: `/tmp/audit-probe-${id}.txt` },
+  ].map(({ call_id, path: file }) => ({
+    type: "function_call",
+    id: `fc_${call_id}`,
+    call_id,
+    name: "read",
+    arguments: JSON.stringify({ path: file }),
+    status: "completed",
+  }));
+  return [
+    { type: "response.created", response: { ...base, status: "in_progress", output: [] } },
+    ...outputs.flatMap((item, output_index) => [
+      {
+        type: "response.output_item.added",
+        output_index,
+        item: { ...item, status: "in_progress", arguments: "" },
+      },
+      {
+        type: "response.function_call_arguments.delta",
+        item_id: item.id,
+        output_index,
+        delta: item.arguments,
+      },
+      { type: "response.output_item.done", output_index, item },
+    ]),
+    {
+      type: "response.completed",
+      response: {
+        ...base,
+        status: "completed",
+        output: outputs,
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      },
+    },
+  ];
+}
+
 // Answer one model turn after the configured delay, unless the caller left.
 function turn(transport, model, request, respond, closed, caller) {
   const text = answerText(request);
@@ -273,6 +362,7 @@ function turn(transport, model, request, respond, closed, caller) {
     respond(
       skipperFixture?.({ model, request, answerEvents, emit }) ??
         publicReadEvents(model, request) ??
+        fileAuditEvents(model, request, caller, text) ??
         answerEvents(model, text),
     );
     emit({ event: "turn-answered", transport, status: 200, ...evidence });

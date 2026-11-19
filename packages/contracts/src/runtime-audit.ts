@@ -22,11 +22,27 @@ const model = {
   provider: reference,
 };
 const outcome = Type.Enum(["succeeded", "failed", "cancelled", "unknown"]);
+const tool = {
+  ...turn,
+  invocationId: reference,
+  toolName: Type.String({ pattern: "^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,255}$" }),
+};
+const approval = { ...tool, approvalId: reference };
+const attempt = { ...tool, attemptId: reference };
+const toolPolicy = Type.Enum([
+  "tool_policy",
+  "file_policy",
+  "exec_policy",
+  "managed_mcp_policy",
+  "codex_policy",
+  "codex_guardian",
+]);
 
-function runtimeEvent<const Action extends string, Fields extends TProperties>(
-  action: Action,
-  fields: Fields,
-) {
+function runtimeEvent<
+  const Action extends string,
+  Fields extends TProperties,
+  Source extends TSchema = typeof source,
+>(action: Action, fields: Fields, producer?: Source) {
   const closed = { additionalProperties: false };
   const observation = Type.Object(
     {
@@ -40,7 +56,7 @@ function runtimeEvent<const Action extends string, Fields extends TProperties>(
     closed,
   );
   const details = Type.Object(
-    { agentRevisionId: RevisionId, runtimeSource: source, ...fields },
+    { agentRevisionId: RevisionId, runtimeSource: (producer ?? source) as Source, ...fields },
     closed,
   );
   const projection = Type.Object(
@@ -61,7 +77,7 @@ function runtimeEvent<const Action extends string, Fields extends TProperties>(
   };
 }
 
-const schemas = [
+const gatewaySchemas = [
   runtimeEvent("openclaw.runtime.session.started", session),
   runtimeEvent("openclaw.runtime.session.ended", session),
   runtimeEvent("openclaw.runtime.turn.admitted", turn),
@@ -72,7 +88,69 @@ const schemas = [
   }),
   runtimeEvent("openclaw.runtime.model_call.started", model),
   runtimeEvent("openclaw.runtime.model_call.completed", { ...model, outcome }),
+  runtimeEvent("openclaw.runtime.tool_call.requested", tool),
+  runtimeEvent("openclaw.runtime.policy.decided", {
+    ...tool,
+    policy: toolPolicy,
+    decision: Type.Enum(["allow", "deny", "require_approval"]),
+    attemptId: Type.Optional(reference),
+  }),
+  runtimeEvent("openclaw.runtime.approval.requested", approval),
+  runtimeEvent("openclaw.runtime.approval.resolved", {
+    ...approval,
+    decision: Type.Enum([
+      "allow-once",
+      "allow-always",
+      "allow-session",
+      "deny",
+      "expired",
+      "cancelled",
+      "unavailable",
+    ]),
+  }),
+  runtimeEvent("openclaw.runtime.tool_attempt.admitted", {
+    ...attempt,
+    approvalId: Type.Optional(reference),
+  }),
+  runtimeEvent("openclaw.runtime.tool_attempt.completed", {
+    ...attempt,
+    outcome: Type.Union([outcome, Type.Literal("blocked")]),
+  }),
 ];
+
+const network = runtimeEvent(
+  "openclaw.runtime.policy.decided",
+  {
+    policy: Type.Literal("network_policy"),
+    decision: Type.Enum(["allow", "deny"]),
+    sandboxId: reference,
+  },
+  Type.Literal("openshell"),
+);
+const repository = runtimeEvent(
+  "openclaw.runtime.policy.decided",
+  {
+    policy: Type.Literal("repository_send"),
+    decision: Type.Literal("allow"),
+    receiptId: reference,
+    operationId: Type.Optional(reference),
+  },
+  Type.Literal("occ"),
+);
+const egress = runtimeEvent(
+  "openclaw.runtime.policy.decided",
+  {
+    policy: Type.Literal("egress_send"),
+    decision: Type.Literal("allow"),
+    senderId: reference,
+    senderGeneration: Type.Integer({ minimum: 1 }),
+    instanceId: reference,
+    useId: reference,
+    attemptId: reference,
+  },
+  Type.Literal("occ"),
+);
+const schemas = [...gatewaySchemas, network, repository, egress];
 
 // TypeBox infers unions from tuples. Preserve the union of the individual
 // schemas when the variants come from a mapped array.
@@ -80,34 +158,39 @@ function schemaUnion<Schema extends TSchema>(variants: Schema[]) {
   return Type.Unsafe<Static<Schema>>(Type.Union(variants));
 }
 
-export const RUNTIME_AUDIT_ACTIONS = Object.freeze(schemas.map((schema) => schema.action));
+export const RUNTIME_AUDIT_ACTIONS = Object.freeze([
+  ...new Set(schemas.map((schema) => schema.action)),
+]);
 export const RuntimeAuditObservationSchema = schemaUnion(
-  schemas.map((schema) => schema.observation),
+  gatewaySchemas.map((schema) => schema.observation),
 );
-export type RuntimeAuditObservation = Static<typeof RuntimeAuditObservationSchema>;
-export type RuntimeAuditSource = Static<typeof source>;
+export type RuntimeAuditObservation =
+  Static<typeof RuntimeAuditObservationSchema> | Static<typeof network.observation>;
+export type RuntimeAuditSource = Static<typeof source> | "openshell";
 
 export function runtimeAuditPageEntry<Common extends TProperties>(common: Common) {
   return schemaUnion(schemas.map((schema) => schema.pageEntry(common)));
 }
 
 export function projectRuntimeAgentAuditDetails(action: unknown, details: unknown) {
-  const schema = schemas.find((item) => item.action === action);
-  if (
-    schema === undefined ||
-    details === null ||
-    typeof details !== "object" ||
-    Array.isArray(details)
-  ) {
+  if (details === null || typeof details !== "object" || Array.isArray(details)) {
     return undefined;
   }
-  const fields = schema.projection.properties.details.properties;
-  const projection = {
-    event: "runtime_activity",
-    action,
-    details: Object.fromEntries(
-      Object.entries(details).filter(([key]) => Object.hasOwn(fields, key)),
-    ),
-  };
-  return Check(schema.projection, projection) ? projection : undefined;
+  for (const schema of schemas) {
+    if (schema.action !== action) {
+      continue;
+    }
+    const fields = schema.projection.properties.details.properties;
+    const projection = {
+      event: "runtime_activity",
+      action,
+      details: Object.fromEntries(
+        Object.entries(details).filter(([key]) => Object.hasOwn(fields, key)),
+      ),
+    };
+    if (Check(schema.projection, projection)) {
+      return projection;
+    }
+  }
+  return undefined;
 }

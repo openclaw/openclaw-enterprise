@@ -1,22 +1,22 @@
 ---
 created: "2026-09-26"
 updated: "2026-11-19"
-last_updated_session: "authoring-run/fe4ad3ff-b579-4d9b-a15e-622a822cd15f"
+last_updated_session: "authoring-run/b27b9b49-3582-4508-b240-99f8b49e047d"
 ---
 
 # Audit ledger flow
 
 ## Overview
 
-OpenClaw Control Plane (OCC) records audit evidence as controller requests and
-reconciliation work run. This flow follows PostgreSQL event append, commit,
-the internal State repository's list operation, and the Agent audit API. See the
+OpenClaw Control Plane (OCC) records audit evidence from controller requests,
+reconciliation, and managed Agent execution. This flow follows PostgreSQL append
+and commit, the internal State list operation, and the Agent audit API. See the
 [audit guide](../guides/topics/audit-log.md) for the operator boundary.
 
 ## Entry Points
 
-- Trigger: the API admits or answers a resource request, a controller operation
-  appends an event, or internal code lists events in a State unit of work.
+- Trigger: a controller operation or managed runtime reports audit evidence,
+  or internal code lists events in a State unit of work.
 - Source: `apps/controller/src/index.ts:appendRequestAudit`
 - Source: `packages/occ/src/state/postgres-state.ts:PostgresPlatformState`
 - Source: `packages/occ/src/state/postgres-work-queue.ts:INSERT_EVIDENCE_CTE_SQL`
@@ -51,6 +51,12 @@ graph TD
   Encode -->|reserved key or insert error| Reject
   Queue["Claim or transition work"] --> QueueSQL["Write work change and evidence"]
   QueueSQL --> Pending
+  Runtime["Gateway tool and runtime events"] --> RuntimeScope{"Current revision grant?"}
+  Sandbox["OpenShell network decision"] --> RuntimeScope
+  RuntimeScope -->|Verified| Pending
+  RuntimeScope -->|Invalid or retired| Reject
+  Receipt["Covered send receipt"] --> ReceiptSQL["Commit authorization and evidence together"]
+  ReceiptSQL --> Pending
   DirectQueue["Pool-backed stale-work recovery"] --> DirectSQL["Run two SQL statements<br/>with transition evidence"]
   DirectSQL -->|each may commit| Ledger
   DirectSQL -->|later statement fails| Partial["Earlier statement may<br/>already be committed"]
@@ -95,42 +101,32 @@ The event action is
 This includes rejections from request validation and authentication before the
 handler starts.
 
-The result hook also covers the registered account, service-key, sign-in,
-recovery, and native administration routes. Routes can record only a result
-when they use a separate check or recorder for the operation. A resource API
-request that returns `405` records a `methodNotAllowed` result. Google
-and OIDC sign-in callbacks use their own authentication recorder. Runtime
-log views and downloads use their own disclosure recorder.
+Registered account, service-key, sign-in, recovery, and native administration
+routes also record results. Routes with a separate admission check can record
+just results. HTTP `405` records `methodNotAllowed`. Google and OIDC callbacks
+use their authentication recorder. Runtime log access uses its disclosure recorder.
 
-Both records carry the API-generated request ID, registered operation,
-HTTP method, and Installation ID. The result adds the HTTP status. The hook
-uses the authenticated actor when identity resolution succeeded. A result
-describes the response OCC prepared. If its append fails, the hook logs
-`http.audit_append_failed` and sends the selected response. The resource
-handler still owns its own permission checks and any audit record for a change.
-If a separate authorization-denial record fails to save on a covered route,
-the API logs the write failure and usually sends the selected refusal.
-A [device login scope denial](credential-source-refresh.md) requires its own
-record and returns HTTP `503` if that write fails. A permission denial that
-uses HTTP `404` to conceal a resource still records outcome `denied`.
+The request ID, operation, method, Installation ID, and resolved actor
+identify both records. The result adds the HTTP status. A failed result append
+logs `http.audit_append_failed` and sends the prepared response. The handler
+owns permission checks and mutation evidence. Failed authorization-denial
+appends typically log the failure and send the refusal. A
+[device login scope denial](credential-source-refresh.md) requires its evidence
+and returns HTTP `503` if the append fails. HTTP `404` can record `denied`.
 
-For example, the `getAgent` handler checks read permission and loads the Agent
-from its Namespace. For an HTTP `200` result from `GET` or `HEAD`, the hook uses
-the IDs from the loaded Agent. State saves its ID in `resource_id`, its
-Namespace ID in `namespace_id`, and `agent` in `resource_kind`. The
-[audit guide](../guides/topics/audit-log.md#api-requests) lists the other
+After a permitted `GET` or `HEAD` returns `200`, `getAgent` uses the loaded
+Agent's ID, Namespace ID, and kind. The
+[audit guide](../guides/topics/audit-log.md#api-requests) lists other
 exact-resource reads. Admission and unsuccessful results identify the Installation.
 
 ### 2. A caller constructs resource evidence
 
 `apps/controller/src/index.ts:event` and `packages/audit/src/index.ts:AuditEventFactory.create`
 
-For example, the controller creates an event for a Namespace mutation and
-appends it in the mutation's transaction. The factory supplies an ID, timestamp,
-kind and outcome defaults, validates required fields and matching Namespace
-scope, sanitizes details and actor fields, and freezes the event. The PostgreSQL
-repository does not invoke the factory or sanitize an event passed directly to
-append; callers of that repository must supply appropriate evidence.
+The controller appends a Namespace mutation event in the mutation transaction.
+The factory sets ID, timestamp, kind, and outcome defaults. It validates required
+fields and Namespace scope, sanitizes details and actor fields, and freezes the
+event. Direct PostgreSQL append callers own evidence construction and sanitization.
 
 ### 3. State appends a row in the caller's transaction
 
@@ -158,50 +154,37 @@ For service API keys, `apps/controller/src/auth/service-keys.ts` commits the
 key change and audit record together. Issuance uses the Better Auth adapter on
 State's PostgreSQL connection. Revocation deletes the current key in State.
 
-Separately, the work queue commits queue
-and claim events with the corresponding change. The queue event records the API
-request ID when a request started the work. The claim event carries a distinct
-attempt ID. That ID also identifies later evidence for the same claim. A claim
-insert failure leaves the job available.
-Repository cleanup and maintenance recovery save a queue record when they create
-or reopen follow-up work. The queue change and its audit record belong to the
-same SQL statement.
+The work queue commits queue and claim records with the change. Queue records
+include the originating API request ID when present. Claims carry an attempt ID
+shared with later evidence. A failed claim append leaves the job available.
+Repository cleanup and maintenance recovery create or reopen follow-up work and
+record evidence in the same SQL statement.
 
-The worker uses `transactWithQueue` for some transitions. It also calls pool-backed
-stale-work recovery, which issues two separate SQL statements. Each statement is
-atomic, but a later failure does not undo an earlier committed statement. A queue
-using a caller-supplied client follows that client's transaction boundary. The
-queue's `reasonCode`, `attemptCount` and `final` (set only when the transition leaves the
-work `failed_permanent`) are ordinary details, not reserved metadata.
+The worker uses `transactWithQueue` for some transitions. A caller-supplied
+client owns its transaction. Pool-backed stale-work recovery uses two atomic
+statements. The first may commit before the second fails. Queue details include
+`reasonCode`, `attemptCount`, and `final` for `failed_permanent` transitions.
 
 ### 4. The transaction owner finishes or fails
 
 `packages/occ/src/state/postgres-state.ts:PostgresPlatformState` and
 `packages/occ/src/ports/transaction.ts:RepositoryTransactionLifetime`
 
-After the callback returns, State closes admission to repository operations and
-waits for already admitted operations to settle before committing. On failure it
-attempts rollback if the transaction remains marked started, COMMIT is not
-uncertain, and no client error has been observed. It closes the lifetime and
-releases or discards the client.
-An acknowledged COMMIT persists the transaction, but the unit returns only
-after client cleanup. A lost or ambiguous COMMIT response can leave the outcome
-unknown: the transaction may have committed or rolled back. A cleanup failure
-after acknowledged COMMIT is also reported as unknown, not proof of rollback.
-Neither case authorizes an automatic replay. An append or list result within a
-unit does not by itself prove that the transaction committed.
-For a covered API operation, OCC logs `http.commit_outcome_unknown` and attempts
-to save the response with reason code `COMMIT_OUTCOME_UNKNOWN`.
+State closes admission when the callback returns and waits for admitted queries
+before it commits. On failure, it attempts rollback while the transaction is
+marked started, the commit outcome is certain, and the client has reported no
+error. State closes the lifetime and releases or discards the client.
 
-When the checked-out client reports a transport error before callback admission,
-State refuses to start the callback. It refuses further repository queries and
-their results after an observed error, and requests client discard when that
-error is known before release. A transaction that fails on an observed client
-error reports the persistence dependency as unavailable, whatever code the error
-carries. If an error is observed during cleanup after an
-acknowledged COMMIT, State reports an unknown outcome. A caller that catches a
-repository error can still perform its own external effects; this guard does not
-control those effects or establish the outcome of an unobserved transport failure.
+An acknowledged COMMIT persists the transaction. The unit returns after client
+cleanup. A lost COMMIT response or cleanup failure reports an unknown outcome.
+An append or list result inside the unit precedes commit evidence. OCC logs
+`http.commit_outcome_unknown` for covered API operations and attempts to record
+`COMMIT_OUTCOME_UNKNOWN`. Inspect the owning operation's evidence before replay.
+
+An observed transport error before admission prevents callback start. State
+refuses later queries and results, discards a client if it knows of the error
+before release, and reports the persistence dependency as unavailable. The
+callback owner controls external effects after a caught repository error.
 
 ### 5. Internal list decodes the ledger
 
@@ -257,25 +240,76 @@ the Secret and the service's public CA certificate. A NetworkPolicy permits
 the Gateway to reach the audit listener. Compute withdraws the grant after
 the revision stops and removes the Secret when the revision retires.
 
-The Gateway sends session, turn, and model-call records to the listener.
-A dedicated OpenClaw worker reports its model calls to the Gateway over
-the same authenticated connection that carries the turn.
+The Gateway sends session, turn, model-call, tool, and approval records to the
+listener. A dedicated OpenClaw worker reports tool activity over its authenticated
+turn connection. The Gateway checks the current turn and its admitted tool
+surface before it attaches the turn IDs. A worker disconnect can prevent a late
+result from reaching the Gateway. The bundled dedicated Codex App Server uses
+its own connection to the Gateway for native execution evidence.
 OCC checks the token and obtains the revision scope from the grant in the
 transaction that appends the event. A retry with the same event ID and values
 returns success and keeps one row. A retry with different values fails.
 The Agent audit API returns the approved runtime fields with the same grant
 and disclosure check as other Agent events.
 
-Before it sends an observation, the managed Gateway saves its JSON in
-`$OPENCLAW_STATE_DIR/pending-runtime-audit/observations.sqlite`. When OCC
-confirms the write, the Gateway removes the local copy. If the Gateway
-process restarts in the same Pod, it can send the same event ID again.
-It checks the credential fingerprint, event source, and destination before
-each recovery. The file holds at most 256 pending observations. It contains
-no credential. Kubernetes removes it when it deletes the Pod.
+The managed Gateway writes replayable observations to
+`$OPENCLAW_STATE_DIR/pending-runtime-audit/observations.sqlite` before sending.
+Tool results, policy denials, and approval results that grant no permission
+can be replayed. Positive admission and approval checks belong to the waiting
+execution. When OCC confirms a replayable write, the Gateway removes the local
+copy. A Gateway process restart in the same Pod can send the same event ID
+again. The Gateway checks the credential fingerprint, source, and destination
+before each recovery. The file holds at most 256 pending observations. It
+contains no credential. Kubernetes removes it when it deletes the Pod.
 
 The Gateway must receive confirmation for a required admission before
 work starts. Sending a saved observation never starts or resumes a turn.
+
+### 8. The tool owner admits an attempt and observes its result
+
+`deploy/runtime/openclaw-runtime-audit.patch:withOpenClawRuntimeToolAudit` and
+`deploy/runtime/openclaw-codex-runtime-audit.patch`
+
+The invocation owns one ID across its admission and approval path. OpenClaw
+checks the actual tool gate. A workspace guard records its decision before
+filesystem access. The Gateway records managed MCP approval through the approval
+manager and admits the attempt before node dispatch. The bundled Codex App
+Server waits for the Gateway to confirm native attempt admission before it
+executes covered native tools. A native sandbox retry receives a new attempt ID.
+The Gateway saves admission at final argument validation for Codex host tools.
+
+An approval request and verdict share an approval ID. The executor awaits
+the admission write before dispatch. It rechecks live execution authority
+after the wait. Once the attempt runs, completion reports the observed result.
+A denied request can have policy and approval evidence without an admitted
+attempt. A dropped reply can leave an unknown result. These records contain
+execution metadata only. See [tool audit](../guides/topics/audit-log.md#tools-approvals-and-policy)
+for the Agent audit fields.
+
+### 9. OpenShell enrolls a Sandbox for network observations
+
+`apps/controller/src/drivers/sandbox/openshell.ts:OpenShellSandboxDriver` and
+`apps/controller/src/http/openshell-runtime-audit.ts:registerOpenShellRuntimeAudit`
+
+When the optional exporter is configured, the Sandbox Driver binds the owned
+Sandbox ID to the revision's audit grant. Cleanup revokes the binding. The
+supervisor exports its supported network decisions after enforcement. The
+private HTTPS listener authenticates the exporter, checks the reported Sandbox
+identity, and derives Agent and revision scope from the enrollment. OCC
+acknowledges the batch after its ledger write. The record keeps the Sandbox ID,
+decision, and source time. The exporter can miss decisions during an outage.
+See [OpenShell audit setup](../guides/topics/openshell-audit.md).
+
+### 10. A receipt owner authorizes a covered send
+
+`packages/occ/src/state/postgres-state.ts:appendReceiptAuthorization` and
+`apps/controller/src/drivers/repo/github/access/prepared-repository-git.ts`
+
+OCC appends `repository_send` or `egress_send` authorization in the transaction
+that prepares the existing send receipt. A failed append prevents issuance of
+the send permission. The event refers to the receipt and the verified revision.
+The receipt owner retains authority over dispatch and outcome. An upstream
+response establishes only the facts that the receipt owner observed.
 
 ## Debugging and Verification
 
@@ -292,6 +326,10 @@ work starts. Sending a saved observation never starts or resumes a turn.
 - `tests/integration/postgres-agent-audit-read.test.ts` exercises the Agent
   route with real PostgreSQL, grant revocation, a refused disclosure insert,
   and a lost commit acknowledgement.
+- The [First Agent Smoke checks](../testing/ci/first-agent-smoke.md) look for
+  a linked tool result and a containment denial after a real installed turn.
+  The pinned runtime tests also check refusal before mutation and approval
+  before dispatch.
 - `tests/integration/postgres-repository-transactions.test.ts` contains
   PostgreSQL append, metadata decoding, rejection, and rollback cases. Those
   cases require the [PostgreSQL test setup](../testing/postgresql.md); their
@@ -309,6 +347,8 @@ work starts. Sending a saved observation never starts or resumes a turn.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 13:59: Trace managed tool dispatch, network observations, and send receipt authorization. (authoring-run/b27b9b49-3582-4508-b240-99f8b49e047d - 0a07df5f47c4f46422e79d3bf1a7127e6c20cc9a)
 
 - 2026-11-19 10:04: Trace runtime enrollment, event delivery, and reads. (authoring-run/fe4ad3ff-b579-4d9b-a15e-622a822cd15f - d517d45f0ffdce32b9b7663efe062fc3e8a997bb)
 

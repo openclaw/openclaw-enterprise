@@ -16,8 +16,8 @@ import {
 import {
   apiProcess,
   expectPersistedRuntimeAudit,
-  setLocalSetupAudit,
 } from "../../scripts/ci/first-agent-smoke/setup.ts";
+import { enableOpenShellAudit } from "../helpers/local-openshell-audit.ts";
 import {
   RUNTIME_AUDIT_ACTIONS,
   WORKSPACE_DEFAULTS,
@@ -759,7 +759,7 @@ test(
     if (auditAdministratorPassword !== undefined) {
       assert.equal(recorded.deploymentMode, "k3d");
       sensitiveValues.add(auditAdministratorPassword);
-      await setLocalSetupAudit(chartStack, true, chartOptions);
+      await enableOpenShellAudit(chartStack, chartOptions);
       servingApi = await apiProcess(chartStack, chartOptions);
     }
     const keyFile = await stat(recorded.keyPath);
@@ -1176,6 +1176,26 @@ test(
         "The initial native model turn and exec must run in the first revision's Harness Pod",
       );
       if (readAudit !== undefined) {
+        // The real model turn crosses the paired supervisor. Its OTLP decision
+        // identifies the live Sandbox, independently of the Gateway's turn events.
+        const sandboxId = initialProvider.pod.metadata.labels["openshell.ai/boundary-pair"];
+        assert.ok(sandboxId);
+        const deadline = Date.now() + 30_000;
+        while (
+          !(await readAudit()).events.some(
+            ({ action, details, outcome }) =>
+              action === "openclaw.runtime.policy.decided" &&
+              details.runtimeSource === "openshell" &&
+              details.sandboxId === sandboxId &&
+              details.agentRevisionId === initialRevisionId &&
+              details.policy === "network_policy" &&
+              details.decision === "allow" &&
+              outcome === "success",
+          )
+        ) {
+          assert.ok(Date.now() < deadline, "expected an OpenShell allow for the active Sandbox");
+          await delay(500, undefined, { signal: nativeContext.signal });
+        }
         await assertAgentTurnAudit(readAudit, {
           label: "Dedicated OpenClaw",
           revisionId: initialRevisionId,
@@ -1184,6 +1204,7 @@ test(
           model: configuration.models.providers.openai.models[0].id,
           // The tool request and the reply after its result need separate model calls.
           minimumModelCalls: 2,
+          toolName: "exec",
         });
         await expectPersistedRuntimeAudit(
           chartStack,
@@ -1289,6 +1310,7 @@ test(
           sessionId: replacementNativeProof.session.sessionId,
           model: configuration.models.providers.openai.models[0].id,
           minimumModelCalls: 2,
+          toolName: "exec",
         });
         await expectPersistedRuntimeAudit(
           chartStack,

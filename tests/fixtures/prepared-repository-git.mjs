@@ -6,6 +6,7 @@ import { get } from "node:https";
 import { join } from "node:path";
 import pg from "pg";
 import {
+  appendReceiptAuthorization,
   PostgresPlatformState,
   repositoryApprovalFingerprint,
 } from "../../packages/occ/src/index.ts";
@@ -275,6 +276,7 @@ export async function fixture(
     });
   await admit(sessionId, attempt.admissionId);
   const ownerOptions = {
+    auditAuthorization: appendReceiptAuthorization,
     repositoryGitCustody: { kind: "native-broker" },
     pool,
     controlSocket: join(directory, "control.sock"),

@@ -19,6 +19,7 @@ import type {
   RepositoryGitSendDecision,
 } from "@openclaw-enterprise/contracts";
 import {
+  type appendReceiptAuthorization,
   CredentialDeliveries,
   type PostgresClient,
   type PostgresPool,
@@ -379,6 +380,7 @@ export interface PreparedRepositoryGitForeignRetirement {
 }
 
 export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
+  private readonly auditAuthorization: typeof appendReceiptAuthorization | undefined;
   private readonly deliveryWorker = randomUUID();
   private readonly authority: string;
   private readonly policy: Policy;
@@ -391,6 +393,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     authority: string,
     policy: Policy,
     custody: RepositoryGitCustody,
+    auditAuthorization?: typeof appendReceiptAuthorization,
   ) {
     if (custody === undefined) {
       throw new Error("REPOSITORY_GIT_CUSTODY_REQUIRED");
@@ -418,6 +421,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       ...(driver && { driver }),
     });
     this.proxy = proxy;
+    this.auditAuthorization = auditAuthorization;
     this.adoption = adoption;
     this.authority = authority;
     this.policy = policy;
@@ -1134,6 +1138,16 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         decisionBy,
         installation ? installed!.route!.fence : null,
       ],
+    );
+    const { namespaceId, agentId, revisionId } = current.session;
+    await this.auditAuthorization?.(
+      c,
+      { namespaceId, agentId, revisionId, installationId: grant.installationId },
+      {
+        policy: "repository_send",
+        receiptId: exchangeId,
+        ...(scope && { operationId: scope.operationId }),
+      },
     );
     if (!valid(until)) {
       return fail();

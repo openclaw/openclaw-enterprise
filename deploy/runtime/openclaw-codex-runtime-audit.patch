@@ -1,3 +1,119 @@
+diff --git a/extensions/codex/src/app-server/dynamic-tool-execution.ts b/extensions/codex/src/app-server/dynamic-tool-execution.ts
+index 2adc35e..5140038 100644
+--- a/extensions/codex/src/app-server/dynamic-tool-execution.ts
++++ b/extensions/codex/src/app-server/dynamic-tool-execution.ts
+@@ -32,6 +32,7 @@ import {
+   type CodexDynamicToolDiagnosticTerminalReason,
+   type JsonValue,
+ } from "./protocol.js";
++import type { CodexHostToolAudit } from "./run-attempt-turn-state.js";
+ import { resolveCodexToolAbortTerminalReason } from "./tool-abort-terminal-reason.js";
+
+ const CODEX_DYNAMIC_TOOL_TIMEOUT_MS = 90_000;
+@@ -148,6 +149,7 @@ type DynamicToolCallExecutionParams = {
+   /** Null retains an admitted unlimited parent wait, still subject to cancellation. */
+   timeoutMs: number | null;
+   toolMeta?: string;
++  toolAudit?: CodexHostToolAudit;
+   toolCallOrdinal?: number;
+   onAgentToolResult?: EmbeddedRunAttemptParams["onAgentToolResult"];
+   onFallbackSelected?: () => void;
+@@ -326,6 +328,7 @@ export async function handleDynamicToolCallWithTimeout(
+           onAgentToolResult: notifyAgentToolResult,
+           toolCallOrdinal: params.toolCallOrdinal,
+           retainExecutionSnapshot: true,
++          toolAudit: params.toolAudit,
+         }),
+         cancellation.promise,
+       ]);
+@@ -336,9 +339,19 @@ export async function handleDynamicToolCallWithTimeout(
+         );
+       }
+       const terminal = finalizeTerminal(response);
++      await params.toolAudit?.complete(
++        conservativeRaceResponses.has(response) || terminal.asyncStarted
++          ? "unknown"
++          : terminal.success
++            ? "succeeded"
++            : terminal.diagnosticTerminalType === "blocked"
++              ? "blocked"
++              : "failed",
++      );
+       completedSuccessfully = terminal.success;
+       return terminal;
+     } catch (error) {
++      await params.toolAudit?.complete("unknown");
+       const terminalReason = params.signal.aborted
+         ? resolveCodexToolAbortTerminalReason(params.signal)
+         : resolveToolExecutionErrorKind(error);
+diff --git a/extensions/codex/src/app-server/dynamic-tools.ts b/extensions/codex/src/app-server/dynamic-tools.ts
+index 2afce46..8dd229d 100644
+--- a/extensions/codex/src/app-server/dynamic-tools.ts
++++ b/extensions/codex/src/app-server/dynamic-tools.ts
+@@ -88,6 +88,7 @@ import {
+   prepareCodexRemoteWorkspaceMessageMedia,
+   resolveCodexMediaSourceUrls,
+ } from "./remote-workspace-media.js";
++import type { CodexHostToolAudit } from "./run-attempt-turn-state.js";
+ import { resolveCodexToolAbortTerminalReason } from "./tool-abort-terminal-reason.js";
+
+ type CodexDynamicToolHookContext = CodexDynamicToolHookContextBase & {
+@@ -127,6 +128,7 @@ export type CodexDynamicToolBridge = {
+       onAgentToolResult?: EmbeddedRunAttemptParams["onAgentToolResult"];
+       toolCallOrdinal?: number;
+       retainExecutionSnapshot?: boolean;
++      toolAudit?: CodexHostToolAudit;
+     },
+   ) => Promise<CodexDynamicToolRuntimeResponse>;
+   /** Consume exact boundary evidence retained while post-execution processing is incomplete. */
+@@ -334,6 +336,8 @@ export function createCodexDynamicToolBridge(params: {
+         });
+       }
+       const { tool, name: toolName } = toolEntry;
++      const audit = options?.toolAudit;
++      await audit?.requested(toolName);
+       const rawArguments =
+         toolName === "automations" ? resolveAutomationsToolsAllow(call.arguments) : call.arguments;
+       const args = asNonArrayRecord(rawArguments);
+@@ -401,16 +405,29 @@ export function createCodexDynamicToolBridge(params: {
+               : undefined,
+           };
+         },
+-        validateArguments: (value) => {
+-          toolEntry.assertGatewayToolPolicy(value);
+-          if (getPluginToolMeta(tool)?.mcp?.operation === "tool") {
+-            return;
++        validateArguments: async (value) => {
++          try {
++            toolEntry.assertGatewayToolPolicy(value);
++          } catch (error) {
++            await audit?.deny();
++            throw error;
+           }
+-          assertCodexDynamicToolInputMatchesSchema({
+-            toolName,
+-            schema: toolEntry.inputSchema,
+-            value,
+-          });
++          if (getPluginToolMeta(tool)?.mcp?.operation !== "tool") {
++            assertCodexDynamicToolInputMatchesSchema({
++              toolName,
++              schema: toolEntry.inputSchema,
++              value,
++            });
++          }
++          await audit?.admit();
++          signal.throwIfAborted();
++        },
++        onExecutionResult: ({ rawResult, rawFailureKind }) => {
++          audit?.noteExecutionOutcome(
++            isAsyncStartedToolResult(rawResult) || rawFailureKind === "timed_out"
++              ? "unknown"
++              : (rawFailureKind ?? "succeeded"),
++          );
+         },
+         beforeSnapshotResult: ({ rawResult, rawIsError, executedArguments: executedArgs }) => {
+           rawIsErrorForPresentation = rawIsError;
 diff --git a/extensions/codex/src/app-server/run-attempt-notification-controller.ts b/extensions/codex/src/app-server/run-attempt-notification-controller.ts
 index 3369c94..e4591e7 100644
 --- a/extensions/codex/src/app-server/run-attempt-notification-controller.ts
@@ -14,7 +130,7 @@ index 3369c94..e4591e7 100644
 @@ -20,6 +20,17 @@ import { waitForPromiseOrAbort } from "./timeout.js";
  import { CODEX_APP_SERVER_NATIVE_TURN_WAIT_TIMEOUT_MS } from "./turn-router.js";
  import type { CodexThreadRouteScope } from "./turn-router.js";
- 
+
 +const MODEL_CALL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 +
 +function isAuditModelReference(value: unknown): value is string {
@@ -199,6 +315,66 @@ index 0000000..41f4ec5
 +    [{ ...call, stage: "failed" }, receivedAtMs],
 +  ]);
 +});
+diff --git a/extensions/codex/src/app-server/run-attempt-server-requests.ts b/extensions/codex/src/app-server/run-attempt-server-requests.ts
+index 2677d2a..4681f97 100644
+--- a/extensions/codex/src/app-server/run-attempt-server-requests.ts
++++ b/extensions/codex/src/app-server/run-attempt-server-requests.ts
+@@ -19,7 +19,7 @@ import { recordCodexDynamicToolResult } from "./dynamic-tool-result-projection.j
+ import { routeCodexAppServerElicitationRequest } from "./elicitation-bridge.js";
+ import { shouldEmitTranscriptToolProgress } from "./event-projector-tool-progress.js";
+ import { readCodexDynamicToolCallParams } from "./protocol-validators.js";
+-import type { JsonValue } from "./protocol.js";
++import { isJsonObject, type JsonValue } from "./protocol.js";
+ import type { CodexAttemptLifecycleController } from "./run-attempt-lifecycle-controller.js";
+ import { emitCodexAppServerEvent } from "./run-attempt-lifecycle.js";
+ import type { CodexAttemptNotificationController } from "./run-attempt-notification-controller.js";
+@@ -122,6 +122,21 @@ export function createCodexAttemptServerRequestController(
+       if (!turnId) {
+         return undefined;
+       }
++      if (request.method === "codex/runtimeToolAudit") {
++        const audit = state.auditTurn;
++        if (
++          !audit ||
++          audit.nativeTurnId !== turnId ||
++          scope.turnId !== turnId ||
++          scope.threadId !== resourceState.thread.threadId ||
++          !isJsonObject(request.params)
++        ) {
++          return { acknowledged: false };
++        }
++        markCurrentTurnRequestProgress();
++        const acknowledged = await audit.receipt.nativeTool(request.params.observation);
++        return { acknowledged: acknowledged && !signal.aborted };
++      }
+       if (request.method === "mcpServer/elicitation/request") {
+         if (!scope.turnId || scope.turnId === turnId) {
+           markCurrentTurnRequestProgress();
+@@ -175,6 +190,16 @@ export function createCodexAttemptServerRequestController(
+       if (!call || call.threadId !== resourceState.thread.threadId || call.turnId !== turnId) {
+         return undefined;
+       }
++      const auditTurn = state.auditTurn;
++      const auditReceipt = auditTurn?.nativeTurnId === turnId ? auditTurn.receipt : undefined;
++      if (params.hostCapabilities?.codexRuntimeAudit && !auditReceipt) {
++        return {
++          success: false,
++          contentItems: [
++            { type: "inputText", text: "Runtime audit could not confirm this tool turn." },
++          ],
++        };
++      }
+       const replayedExecution = openClawDynamicToolExecutions.get(call);
+       if (replayedExecution) {
+         if (call.tool === "autoreview") {
+@@ -280,6 +305,7 @@ export function createCodexAttemptServerRequestController(
+             timeoutMs: dynamicToolTimeoutMs,
+             toolMeta,
+             toolCallOrdinal,
++            toolAudit: auditReceipt?.hostTool(call.callId),
+             onAgentToolResult: params.onAgentToolResult,
+             observeToolTerminal: params.observeToolTerminal,
+             onFallbackSelected: () => {
 diff --git a/extensions/codex/src/app-server/run-attempt-turn-request.ts b/extensions/codex/src/app-server/run-attempt-turn-request.ts
 index c31889f..c1564bc 100644
 --- a/extensions/codex/src/app-server/run-attempt-turn-request.ts
@@ -240,7 +416,7 @@ index c31889f..c1564bc 100644
        resources.nativeProcessAuthority?.bindTurn(turnClient, threadId, acceptedTurnId);
        assertTurnCurrent();
 diff --git a/extensions/codex/src/app-server/run-attempt-turn-state.ts b/extensions/codex/src/app-server/run-attempt-turn-state.ts
-index 280cd7d..1822022 100644
+index 280cd7d..bdb1662 100644
 --- a/extensions/codex/src/app-server/run-attempt-turn-state.ts
 +++ b/extensions/codex/src/app-server/run-attempt-turn-state.ts
 @@ -2,7 +2,10 @@ import {
@@ -255,12 +431,16 @@ index 280cd7d..1822022 100644
  import { createAgentHarnessToolExecutionRegistry } from "openclaw/plugin-sdk/agent-harness-tool-runtime";
  import { emitTrustedDiagnosticEvent } from "openclaw/plugin-sdk/diagnostic-runtime";
  import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-@@ -24,7 +27,15 @@ import { createCodexUserInputBridge } from "./user-input-bridge.js";
- 
+@@ -24,7 +27,19 @@ import { createCodexUserInputBridge } from "./user-input-bridge.js";
+
  const CODEX_NATIVE_HOOK_RELAY_RENEW_INTERVAL_MS = 60_000;
- 
+
 +type CodexAuditCapability = NonNullable<
 +  EmbeddedRunAttemptParamsV2["hostCapabilities"]["codexRuntimeAudit"]
++>;
++
++export type CodexHostToolAudit = ReturnType<
++  Awaited<ReturnType<CodexAuditCapability["admitTurn"]>>["hostTool"]
 +>;
 +
  class CodexAttemptState {
@@ -284,10 +464,10 @@ index 6fac2b3..7ab1867 100644
    const provisionalAppIds = pluginThreadConfig?.provisionalAppIds;
    const rejectUncommittedThread = async (cause: unknown): Promise<never> => {
 diff --git a/extensions/codex/src/app-server/thread-lifecycle.test.ts b/extensions/codex/src/app-server/thread-lifecycle.test.ts
-index d360e0f..fe3b5a7 100644
+index fe3218e..37a2fbb 100644
 --- a/extensions/codex/src/app-server/thread-lifecycle.test.ts
 +++ b/extensions/codex/src/app-server/thread-lifecycle.test.ts
-@@ -952,6 +952,16 @@ describe("Codex plugin binding recovery", () => {
+@@ -940,6 +940,16 @@ describe("Codex plugin binding recovery", () => {
    it("applies a settled plugin denial before resume without replacing the native binding", async () => {
      const sessionFile = path.join(tempDir, "session.jsonl");
      const params = createThreadLifecycleParams(sessionFile, workspaceDir);
@@ -304,20 +484,21 @@ index d360e0f..fe3b5a7 100644
      const respond = createLifecycleRequest(async (method: string) => {
        if (method === "thread/start" || method === "thread/resume") {
          return threadStartResult("thread-settled-transition");
-@@ -1021,6 +1031,7 @@ describe("Codex plugin binding recovery", () => {
+@@ -1009,6 +1019,7 @@ describe("Codex plugin binding recovery", () => {
      await fixture.endTurn("thread-settled-transition");
      await startOrResumeThread({ ...common, pluginThreadConfig: settledProvider });
- 
+
 +    expect(sessionStarted.mock.calls).toEqual([["thread-settled-transition"]]);
      for (const [, resumeParams] of request.mock.calls.filter(
        ([method]) => method === "thread/resume",
      )) {
 diff --git a/src/agents/harness/codex-runtime-audit.test.ts b/src/agents/harness/codex-runtime-audit.test.ts
 new file mode 100644
-index 0000000..7eff8bd
+index 0000000..5803a17
 --- /dev/null
 +++ b/src/agents/harness/codex-runtime-audit.test.ts
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,218 @@
++import { randomUUID } from "node:crypto";
 +import { once } from "node:events";
 +import { createServer } from "node:http";
 +import { expect, it, vi } from "vitest";
@@ -334,6 +515,7 @@ index 0000000..7eff8bd
 +  const second = { ...first, modelCallId: "06819eb6-d731-41c6-96f1-70454d8e8cfc" };
 +  const missingStart = { ...first, modelCallId: "de6e8676-5e42-4c96-a4a9-0bdbb83d0db4" };
 +  const firstStartDeliveries: string[] = [];
++  let refuseToolAdmission = false;
 +  const events: Array<Record<string, unknown>> = [];
 +  const headers: Array<{ authorization?: string; source?: string | string[] }> = [];
 +  const server = createServer(async (request, response) => {
@@ -356,6 +538,10 @@ index 0000000..7eff8bd
 +        response.writeHead(503).end();
 +        return;
 +      }
++    }
++    if (refuseToolAdmission && event.action === "openclaw.runtime.tool_attempt.admitted") {
++      response.writeHead(400).end();
++      return;
 +    }
 +    events.push(event);
 +    response.writeHead(204).end();
@@ -447,6 +633,82 @@ index 0000000..7eff8bd
 +        { ...call, action: "openclaw.runtime.model_call.completed", outcome },
 +      ]);
 +    }
++
++    const toolTurn = await bindAuditCapability().admitTurn();
++    await toolTurn.started(Date.now());
++    const native = {
++      occurredAtMs: Date.now(),
++      invocationId: "native-command-1",
++      toolName: "exec_command",
++    };
++    expect(
++      await toolTurn.nativeTool({
++        ...native,
++        eventId: randomUUID(),
++        action: "tool_call.requested",
++      }),
++    ).toBe(true);
++    const admission = {
++      ...native,
++      eventId: randomUUID(),
++      action: "tool_attempt.admitted",
++      attemptId: randomUUID(),
++    };
++    refuseToolAdmission = true;
++    await expect(toolTurn.nativeTool(admission)).rejects.toThrow(/audit/i);
++    refuseToolAdmission = false;
++    expect(await toolTurn.nativeTool(admission)).toBe(true);
++    const completion = {
++      ...native,
++      eventId: randomUUID(),
++      action: "tool_attempt.completed",
++      attemptId: admission.attemptId,
++      outcome: "succeeded",
++    };
++    expect(
++      await toolTurn.nativeTool({
++        ...completion,
++        arguments: { command: "private fixture command" },
++      }),
++    ).toBe(false);
++    expect(await toolTurn.nativeTool(completion)).toBe(true);
++    const nativeRecords = events.filter((event) => event.toolName === native.toolName);
++    expect(nativeRecords.map((event) => event.action)).toEqual([
++      "openclaw.runtime.tool_call.requested",
++      "openclaw.runtime.tool_attempt.admitted",
++      "openclaw.runtime.tool_attempt.completed",
++    ]);
++    expect(nativeRecords.at(1)).toMatchObject({
++      eventId: admission.eventId,
++      attemptId: admission.attemptId,
++    });
++    expect(nativeRecords.at(2)).toMatchObject({
++      attemptId: admission.attemptId,
++      outcome: "succeeded",
++    });
++    expect(JSON.stringify(nativeRecords)).not.toContain("private fixture command");
++    expect(JSON.stringify(nativeRecords)).not.toContain(native.invocationId);
++    expect(new Set(nativeRecords.map(({ invocationId }) => invocationId)).size).toBe(1);
++
++    const hostTool = toolTurn.hostTool("gateway-tool-1");
++    await hostTool.requested("sessions_list");
++    await hostTool.admit();
++    hostTool.noteExecutionOutcome("succeeded");
++    // Result presentation may report that the raw result was blocked.
++    await hostTool.complete("blocked");
++    const hostRecords = events.filter((event) => event.toolName === "sessions_list");
++    expect(hostRecords.map((event) => event.action)).toEqual([
++      "openclaw.runtime.tool_call.requested",
++      "openclaw.runtime.policy.decided",
++      "openclaw.runtime.tool_attempt.admitted",
++      "openclaw.runtime.tool_attempt.completed",
++    ]);
++    expect(JSON.stringify(hostRecords)).not.toContain("gateway-tool-1");
++    expect(new Set(hostRecords.map(({ invocationId }) => invocationId)).size).toBe(1);
++    expect(hostRecords.at(3)).toMatchObject({
++      attemptId: hostRecords.at(2)?.attemptId,
++      outcome: "succeeded",
++    });
 +  } finally {
 +    vi.unstubAllEnvs();
 +    await new Promise<void>((resolve, reject) => {
@@ -456,11 +718,11 @@ index 0000000..7eff8bd
 +});
 diff --git a/src/agents/harness/codex-runtime-audit.ts b/src/agents/harness/codex-runtime-audit.ts
 new file mode 100644
-index 0000000..f00067a
+index 0000000..48dc94b
 --- /dev/null
 +++ b/src/agents/harness/codex-runtime-audit.ts
-@@ -0,0 +1,143 @@
-+import { randomUUID } from "node:crypto";
+@@ -0,0 +1,371 @@
++import { createHmac, randomBytes, randomUUID } from "node:crypto";
 +import {
 +  hasOpenClawRuntimeAudit,
 +  recordObservedOpenClawRuntimeAudit,
@@ -481,6 +743,197 @@ index 0000000..f00067a
 +  stage: "started" | "succeeded" | "failed" | "cancelled";
 +}>;
 +
++const AUDIT_ID = /^[^\s\p{Cc}]{1,256}$/u;
++const AUDIT_EVENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
++const AUDIT_TOOL_NAME = /^[a-zA-Z0-9_][a-zA-Z0-9_.:-]{0,255}$/;
++
++type ToolAttemptOutcome = "succeeded" | "failed" | "cancelled" | "unknown" | "blocked";
++type ToolAuditIdentity = { sessionId: string; turnId: string; messageId?: string };
++
++type CodexHostToolAudit = Readonly<{
++  requested: (toolName: string) => Promise<void>;
++  deny: () => Promise<void>;
++  admit: () => Promise<void>;
++  noteExecutionOutcome: (outcome: ToolAttemptOutcome) => void;
++  complete: (outcome: ToolAttemptOutcome) => Promise<void>;
++}>;
++
++const NATIVE_AUDIT_BASE_FIELDS = new Set([
++  "action",
++  "eventId",
++  "invocationId",
++  "toolName",
++  "occurredAtMs",
++]);
++const NATIVE_AUDIT_ACTION_FIELDS: Readonly<Record<string, ReadonlySet<string>>> = {
++  "tool_call.requested": new Set(),
++  "tool_attempt.admitted": new Set(["attemptId", "approvalId"]),
++  "tool_attempt.completed": new Set(["attemptId", "outcome"]),
++  "policy.decided": new Set(["policy", "decision"]),
++  "approval.requested": new Set(["approvalId"]),
++  "approval.resolved": new Set(["approvalId", "decision"]),
++};
++
++function readNativeToolAudit(
++  value: unknown,
++  turn: ToolAuditIdentity,
++  auditInvocationId: (nativeId: string) => string,
++): OpenClawRuntimeAuditEvent | undefined {
++  if (!value || typeof value !== "object" || Array.isArray(value)) {
++    return;
++  }
++  const data = value as Record<string, unknown>;
++  const { action } = data;
++  if (typeof action !== "string" || !Object.hasOwn(NATIVE_AUDIT_ACTION_FIELDS, action)) {
++    return;
++  }
++  const actionFields = NATIVE_AUDIT_ACTION_FIELDS[action];
++  if (
++    Object.keys(data).some((key) => !NATIVE_AUDIT_BASE_FIELDS.has(key) && !actionFields?.has(key))
++  ) {
++    return;
++  }
++  const { eventId, invocationId, toolName, occurredAtMs, attemptId, approvalId, decision } = data;
++  if (
++    typeof eventId !== "string" ||
++    !AUDIT_EVENT_ID.test(eventId) ||
++    typeof invocationId !== "string" ||
++    !AUDIT_ID.test(invocationId) ||
++    typeof toolName !== "string" ||
++    !AUDIT_TOOL_NAME.test(toolName) ||
++    typeof occurredAtMs !== "number" ||
++    !Number.isSafeInteger(occurredAtMs) ||
++    occurredAtMs < 0 ||
++    occurredAtMs > Date.now() + 60_000
++  ) {
++    return;
++  }
++  const fields = {
++    ...turn,
++    eventId,
++    invocationId: auditInvocationId(invocationId),
++    toolName,
++    occurredAt: new Date(occurredAtMs).toISOString(),
++  };
++  const validAttempt = typeof attemptId === "string" && AUDIT_EVENT_ID.test(attemptId);
++  const validApproval = typeof approvalId === "string" && AUDIT_EVENT_ID.test(approvalId);
++  switch (data.action) {
++    case "tool_call.requested":
++      return { action: "openclaw.runtime.tool_call.requested", ...fields };
++    case "tool_attempt.admitted":
++      if (validAttempt && (approvalId === undefined || validApproval)) {
++        return {
++          action: "openclaw.runtime.tool_attempt.admitted",
++          ...fields,
++          attemptId,
++          ...(validApproval ? { approvalId } : {}),
++        };
++      }
++      break;
++    case "tool_attempt.completed": {
++      const { outcome } = data;
++      if (
++        validAttempt &&
++        (outcome === "succeeded" ||
++          outcome === "failed" ||
++          outcome === "cancelled" ||
++          outcome === "unknown" ||
++          outcome === "blocked")
++      ) {
++        return { action: "openclaw.runtime.tool_attempt.completed", ...fields, attemptId, outcome };
++      }
++      break;
++    }
++    case "policy.decided": {
++      const { policy } = data;
++      if (
++        (policy === "codex_policy" || policy === "codex_guardian") &&
++        (decision === "allow" || decision === "deny" || decision === "require_approval")
++      ) {
++        return { action: "openclaw.runtime.policy.decided", ...fields, policy, decision };
++      }
++      break;
++    }
++    case "approval.requested":
++      if (validApproval) {
++        return { action: "openclaw.runtime.approval.requested", ...fields, approvalId };
++      }
++      break;
++    case "approval.resolved":
++      if (
++        validApproval &&
++        (decision === "allow-once" ||
++          decision === "allow-session" ||
++          decision === "allow-always" ||
++          decision === "deny" ||
++          decision === "expired" ||
++          decision === "cancelled" ||
++          decision === "unavailable")
++      ) {
++        return { action: "openclaw.runtime.approval.resolved", ...fields, approvalId, decision };
++      }
++      break;
++  }
++  return undefined;
++}
++
++function bindHostToolAudit(
++  turn: ToolAuditIdentity,
++  nativeId: string,
++  auditInvocationId: () => string,
++): CodexHostToolAudit {
++  const attemptId = randomUUID();
++  let fields: (ToolAuditIdentity & { invocationId: string; toolName: string }) | undefined;
++  let admitted = false;
++  let executionOutcome: ToolAttemptOutcome | undefined;
++  return {
++    async requested(toolName) {
++      if (!AUDIT_ID.test(nativeId) || !AUDIT_TOOL_NAME.test(toolName)) {
++        throw new Error("Invalid Codex tool audit identity");
++      }
++      fields = { ...turn, invocationId: auditInvocationId(), toolName };
++      await record({ action: "openclaw.runtime.tool_call.requested", ...fields });
++    },
++    async deny() {
++      if (fields) {
++        await observe({
++          action: "openclaw.runtime.policy.decided",
++          ...fields,
++          policy: "tool_policy",
++          decision: "deny",
++        });
++      }
++    },
++    async admit() {
++      if (!fields) {
++        throw new Error("Codex tool audit is missing the tool request");
++      }
++      await record({
++        action: "openclaw.runtime.policy.decided",
++        ...fields,
++        policy: "tool_policy",
++        decision: "allow",
++      });
++      await record({ action: "openclaw.runtime.tool_attempt.admitted", ...fields, attemptId });
++      admitted = true;
++    },
++    noteExecutionOutcome(outcome) {
++      executionOutcome ??= outcome;
++    },
++    async complete(outcome) {
++      if (fields && admitted) {
++        admitted = false;
++        await observe({
++          action: "openclaw.runtime.tool_attempt.completed",
++          ...fields,
++          attemptId,
++          outcome: executionOutcome ?? outcome,
++        });
++      }
++    },
++  };
++}
++
 +export type CodexRuntimeAuditCapability = Readonly<{
 +  sessionStarted: (nativeSessionId: string) => Promise<void>;
 +  admitTurn: () => Promise<CodexRuntimeAuditTurn>;
@@ -489,6 +942,8 @@ index 0000000..f00067a
 +export type CodexRuntimeAuditTurn = Readonly<{
 +  started: (receivedAtMs: number) => Promise<void>;
 +  completed: (status: NativeTurnStatus, receivedAtMs: number) => Promise<void>;
++  nativeTool: (observation: unknown) => Promise<boolean>;
++  hostTool: (invocationId: string) => CodexHostToolAudit;
 +  observeNativeModel: (attempt: NativeModelAttempt, receivedAtMs: number) => Promise<void>;
 +}>;
 +
@@ -527,6 +982,13 @@ index 0000000..f00067a
 +        ...(admission?.sessionId === sessionId ? { messageId: admission.entryId } : {}),
 +      };
 +      await record({ action: "openclaw.runtime.turn.admitted", ...identity });
++      // Provider item IDs may contain arbitrary text. Use them only to correlate
++      // events for this accepted turn, without copying their bytes into the ledger.
++      const invocationKey = randomBytes(32);
++      const auditInvocationId = (owner: "native" | "host", nativeId: string) =>
++        createHmac("sha256", invocationKey)
++          .update(JSON.stringify([owner, nativeId]))
++          .digest("hex");
 +      let started: Promise<void> | undefined;
 +      let completed: Promise<void> | undefined;
 +      const modelCalls = new Map<
@@ -557,6 +1019,34 @@ index 0000000..f00067a
 +                    : "failed",
 +            }),
 +          )),
++        nativeTool: async (observation: unknown) => {
++          if (!auditProviderAttempts || completed) {
++            return false;
++          }
++          assertActive();
++          const event = readNativeToolAudit(observation, identity, (id) =>
++            auditInvocationId("native", id),
++          );
++          if (!event) {
++            return false;
++          }
++          await started;
++          if (
++            event.action === "openclaw.runtime.tool_attempt.completed" ||
++            (event.action === "openclaw.runtime.policy.decided" && event.decision === "deny") ||
++            (event.action === "openclaw.runtime.approval.resolved" &&
++              event.decision !== "allow-once" &&
++              event.decision !== "allow-session" &&
++              event.decision !== "allow-always")
++          ) {
++            await observe(event);
++          } else {
++            await record(event);
++          }
++          return true;
++        },
++        hostTool: (nativeId: string) =>
++          bindHostToolAudit(identity, nativeId, () => auditInvocationId("host", nativeId)),
 +        observeNativeModel: async (
 +          { modelCallId, model, provider, stage }: NativeModelAttempt,
 +          receivedAtMs: number,
@@ -612,7 +1102,7 @@ index 48bec79..5e38adc 100644
  import type { ImageContent } from "../../../packages/llm-core/src/types.js";
  import type { AnyAgentTool } from "../tools/common.js";
 +import type { CodexRuntimeAuditCapability } from "./codex-runtime-audit.js";
- 
+
  export type AgentHarnessContextMedia = {
    text?: string;
 @@ -65,6 +66,8 @@ export type AgentHarnessHostCapabilities = Readonly<{
@@ -670,7 +1160,7 @@ index d3202dd..bc7986c 100644
 @@ -104,10 +104,7 @@ export function resolveAgentHarnessOwnerPluginId(harness: AgentHarness): string
    return registration.ownerPluginId ?? "core";
  }
- 
+
 -/** Bundled sinks migrate with this host; external sinks retain the shipped question projection. */
 -export function resolveAgentHarnessQueueInputAdapter(
 -  harness: AgentHarness,
@@ -703,7 +1193,7 @@ index d3202dd..bc7986c 100644
 +    ? "human-and-question-permission"
 +    : "legacy-question-category";
  }
- 
+
  /** Resolves the private Codex compaction bridge from exact registry-owned capability state. */
 diff --git a/src/agents/harness/selection.ts b/src/agents/harness/selection.ts
 index c149cd0..f2fba37 100644

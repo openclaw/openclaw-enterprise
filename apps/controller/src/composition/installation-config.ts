@@ -838,6 +838,7 @@ export async function loadInstallationConfiguration(options: {
   readonly gatewayRuntimeAudit?: NonNullable<
     ConstructorParameters<typeof KubernetesComputeDriver>[1]
   >["gatewayRuntimeAudit"];
+  readonly sandboxRuntimeAudit?: OpenShellSandboxDriverSelection["runtimeAudit"];
   /** Real-runtime tests replace the transport or the Driver; never a production path. */
   readonly createOpenShellBackend?: (
     definition: OpenShellBackendDefinition,
@@ -1545,7 +1546,10 @@ async function composeInstallationConfiguration(
       backend: openShell!,
       operatorOwnedKubernetesResources: preprovisionedNamespace !== undefined,
       createSandbox: (configuration, selection) =>
-        new bundledSandboxPackage!.OpenShellSandboxDriver(configuration, selection),
+        new bundledSandboxPackage!.OpenShellSandboxDriver(configuration, {
+          ...selection,
+          ...(options.sandboxRuntimeAudit && { runtimeAudit: options.sandboxRuntimeAudit }),
+        }),
       ...(proxySelection === undefined
         ? {}
         : {

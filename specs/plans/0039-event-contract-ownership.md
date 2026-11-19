@@ -71,10 +71,38 @@ defines the producer scope, delivery rules, and acceptance checks.
 4. Exercise each runtime and two revisions through the installed workflow.
    Check the API response, request retries, cancellation, and restart.
 
+## Milestone 3
+
+Record tool invocations, policy decisions, approval verdicts, and attempts in
+the existing audit ledger and Agent audit API. Use metadata scoped to the
+revision and turn. Keep tool arguments, outputs, and reviewer rationale
+outside the audit projection.
+
+1. Extend the closed [runtime event schemas](../../packages/contracts/src/runtime-audit.ts).
+   Require a durable attempt admission at the owning executor. Keep the same
+   invocation ID across related policy, approval, and attempt observations.
+2. Record execution from embedded and dedicated OpenClaw and bundled dedicated
+   Codex. Relay dedicated worker observations through the authenticated turn
+   connection. Record file and approval checks where the runtime enforces them.
+3. Enroll an owned OpenShell Sandbox and authenticate its security exporter
+   using the [network producer proposal](../rfcs/0039-event-contract-ownership/network-audit-producer.md).
+   Use revision scope when the supervisor supplies no turn identity.
+4. Append authorization evidence alongside the covered repository or egress
+   send receipt. Verify later effect evidence through the receipt owner.
+
+| Required outcome                                                              | Verification                                                                                                                                                                                                                                             |
+| ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OpenClaw stores a linked tool result and keeps a denied tool from dispatching | Pinned runtime tests passed for native file allow, containment denial, refused audit admission before a write, and managed MCP approval allow and deny. The installed check follows a model-driven file tool through the Agent audit API and PostgreSQL. |
+| Dedicated runtime evidence reaches the same ledger                            | First Agent Smoke checks the existing Codex command journey. The guided OpenShell test checks actual exec on two dedicated OpenClaw revisions. These installed checks still need a run on the Milestone 3 candidate.                                     |
+| The OpenShell observation belongs to its enrolled Sandbox                     | Check authenticated OTLP ingest, mismatched IDs, duplicate delivery, unenrolled or withdrawn Sandbox IDs, and a live allowed and denied decision through the Agent audit API. Live deployment proof is pending.                                          |
+| The receipt owner and audit ledger agree on the permission to send            | PostgreSQL refused an audit insert. The draft claim rolled back and the provider received zero requests. After recovery, the same operation succeeded. Lost provider and egress replies preserved the original receipt and one audit decision on retry.  |
+
 ## Manual Notes
 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 13:59: Add Milestone 3 delivery and verification. (authoring-run/b27b9b49-3582-4508-b240-99f8b49e047d - 0a07df5f47c4f46422e79d3bf1a7127e6c20cc9a)
 
 - 2026-11-18 17:36: Refocus the draft on control-plane audit. (authoring-run/612e8009-6fb8-4bb3-8bca-d93dd03873a9 - cea7d46c6956c59ba9604a710022159930eb5aa4)

@@ -202,7 +202,12 @@ The Codex CLI and bundled plugin share [stock Codex 0.164.0](https://github.com/
 `stock-codex-0.164.0-dependency-pin.patch` pins the lockfile and `CODEX_APP_SERVER_VERSION`.
 The frozen npm install selects `@openai/codex-linux-x64` or `@openai/codex-linux-arm64`
 for the target architecture. The audit App Server uses the same release with
-the [provider attempt patch](codex-audit/provider-attempts.patch).
+the [Codex audit patch](codex-audit/provider-attempts.patch). It reports provider
+attempts, tool attempts, and approval decisions for managed foreground turns.
+It waits for the Gateway to acknowledge the saved admission record before it
+dispatches a covered tool. The Gateway saves admission for tools it executes
+directly. See the [audit guide](../../docs/guides/topics/audit-log.md#agent-runtime-activity).
+
 In `provenance.json`, `codex` records the package source, version, lockfile
 integrities, platform package, binary path, and digest. `codexAuditAppServer`
 records source, patch, binary, and `bwrap` digests.

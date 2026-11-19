@@ -16,6 +16,7 @@ import { privateBootstrapDirectory } from "../helpers/bootstrap-installation.mjs
 import { selfSigned } from "../helpers/certificates.ts";
 import { withPool } from "../helpers/postgres-database.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
+import { checkSandboxAudit } from "./postgres-agent-audit-sandbox-case.ts";
 
 type App = Parameters<typeof startGatewayRuntimeAuditListener>[0];
 const route = "/internal/runtime-audit";
@@ -51,7 +52,7 @@ async function startListener(t: TestContext, app: App) {
           agent,
           method: "POST",
           headers: {
-            "content-type": "application/json",
+            "content-type": Buffer.isBuffer(event) ? "application/x-protobuf" : "application/json",
             "x-openclaw-runtime-audit-source": source,
             authorization: `Bearer ${token}`,
           },
@@ -63,7 +64,7 @@ async function startListener(t: TestContext, app: App) {
         },
       );
       request.once("error", reject);
-      request.end(JSON.stringify(event));
+      request.end(Buffer.isBuffer(event) ? event : JSON.stringify(event));
     });
 }
 
@@ -232,5 +233,81 @@ export async function checkGatewayAudit(
   assert.deepEqual(
     persisted.rows.map((row) => row.id),
     events.map((entry) => entry.id),
+  );
+
+  // Two calls to the same tool in one turn. The first received approval, but
+  // its sender lost the result. The second was denied before dispatch.
+  const call = { ...turn, toolName: "slack_send_message", invocationId: randomUUID() };
+  const approval = { ...call, approvalId: randomUUID() };
+  const execution = { ...call, attemptId: randomUUID() };
+  const denied = { ...call, invocationId: randomUUID() };
+  const records = [
+    ["tool_call.requested", call, "success"],
+    [
+      "policy.decided",
+      { ...call, policy: "managed_mcp_policy", decision: "require_approval" },
+      "success",
+    ],
+    ["approval.requested", approval, "success"],
+    ["approval.resolved", { ...approval, decision: "allow-once" }, "success"],
+    ["tool_attempt.admitted", { ...execution, approvalId: approval.approvalId }, "success"],
+    ["tool_attempt.completed", { ...execution, outcome: "unknown" }, "failure"],
+    ["tool_call.requested", denied, "success"],
+    ["policy.decided", { ...denied, policy: "managed_mcp_policy", decision: "deny" }, "denied"],
+  ] as const;
+  const send = (event: unknown) => post(event, replacement.token);
+  for (const [action, fields] of records) {
+    const observation = { ...envelope(), action: `openclaw.runtime.${action}`, ...fields };
+    assert.equal(await send(observation), 204);
+    if (action === "tool_attempt.completed") {
+      assert.equal(await send(observation), 204);
+      assert.equal(await send({ ...observation, outcome: "succeeded" }), 409);
+      assert.equal(await send({ ...observation, ...envelope(), output: "private output" }), 400);
+      assert.equal(await send({ ...observation, ...envelope(), attemptId: undefined }), 400);
+    }
+    if (action === "policy.decided") {
+      assert.equal(await send({ ...observation, ...envelope(), rationale: "private input" }), 400);
+      assert.equal(await send({ ...observation, ...envelope(), policy: "network_policy" }), 400);
+      assert.equal(await send({ ...observation, ...envelope(), policy: "codex_guardian" }), 403);
+      assert.equal(
+        await send({
+          ...envelope(),
+          action: observation.action,
+          policy: "repository_send",
+          decision: "allow",
+          receiptId: randomUUID(),
+        }),
+        400,
+      );
+    }
+  }
+  const toolPage = (await input.readPage()).events.filter(
+    (row) => row.event === "runtime_activity" && "invocationId" in row.details,
+  );
+  const stored = await pool.query(
+    "SELECT id, action, outcome, details - '__occAuditMetadata' AS details FROM occ.audit_events WHERE resource_id = $1 AND details ? 'invocationId'",
+    [revision.agentId],
+  );
+  assert.equal(toolPage.length, records.length);
+  assert.equal(stored.rowCount, records.length);
+  for (const [suffix, fields, outcome] of records) {
+    const action = `openclaw.runtime.${suffix}`;
+    const row = stored.rows.find(
+      (r) => r.action === action && r.details.invocationId === fields.invocationId,
+    );
+    assert.ok(row, suffix);
+    const details = { ...fields, agentRevisionId: replacementId, runtimeSource: "openclaw" };
+    assert.deepEqual(row.details, details);
+    assert.equal(row.outcome, outcome);
+    const entry = toolPage.find(({ id }) => id === row.id);
+    assert.ok(entry?.event === "runtime_activity");
+    assert.deepEqual([entry.action, entry.outcome, entry.details], [action, outcome, details]);
+  }
+  await checkSandboxAudit(
+    state,
+    { ...revision, id: replacementId },
+    replacement,
+    post,
+    input.readPage,
   );
 }

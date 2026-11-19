@@ -262,6 +262,10 @@ export interface OpenShellSandboxDriverOptions {
 }
 
 export interface OpenShellSandboxDriverSelection {
+  readonly runtimeAudit?: {
+    bind(revision: Readonly<AgentRevision>, sandboxId: string): Promise<void>;
+    unbind(revision: Readonly<AgentRevision>): Promise<void>;
+  };
   readonly openShellGit?: OpenShellGitRuntime;
   readonly operatorOwnedKubernetesResources?: boolean;
   readonly id?: string;
@@ -3035,6 +3039,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   static readonly configurationContributions = configurationContributions;
   readonly networkPolicy = Object.freeze({ wildcards: true, portRanges: true, live: true });
   private readonly options: OpenShellSandboxDriverOptions;
+  private readonly runtimeAudit: OpenShellSandboxDriverSelection["runtimeAudit"];
   private readonly backend: Backend<OpenShellGateway>;
   private readonly operatorOwnedKubernetesResources: boolean;
   private readonly openShellGit: OpenShellGitRuntime | undefined;
@@ -3047,6 +3052,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   }
 
   constructor(options: OpenShellSandboxDriverOptions, selection: OpenShellSandboxDriverSelection) {
+    this.runtimeAudit = selection.runtimeAudit;
     requireConfiguration(OpenShellSandboxDriver, options);
     this.id = nonempty(selection.id ?? "sandbox-openshell-local", "OpenShell Sandbox Driver ID");
     this.implementation = nonempty(
@@ -3465,6 +3471,20 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "OpenShell Git cannot share the protected execution proxy profile.",
       );
     }
+    const enrollForAudit = async (live: OpenShellSandboxResponse) => {
+      if (this.runtimeAudit === undefined) {
+        return;
+      }
+      if (
+        live.id === undefined ||
+        live.annotations["openclaw.dev/revision-id"] !== context.revision.id
+      ) {
+        throw new OpenShellSandboxConfigurationFailure(
+          "OpenShell returned no revision-owned Sandbox ID for audit.",
+        );
+      }
+      await this.runtimeAudit.bind(context.revision, live.id);
+    };
     const checkEffectivePolicy = async () => {
       const config =
         plugin || mcpPolicies.length
@@ -3695,6 +3715,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           await delay(this.options.startupDelayMs, undefined, { signal: context.signal });
         }
         await checkEffectivePolicy();
+        await enrollForAudit(created);
         await this.initializeWorkspace(context, sandbox, client);
         return result;
       }
@@ -3784,6 +3805,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       validateHarnessServiceUrl(service.url);
     }
     await checkEffectivePolicy();
+    await enrollForAudit(existing);
     await this.initializeWorkspace(context, sandbox, client);
     return result;
   }
@@ -4397,6 +4419,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         );
       }
       const sandbox = this.sandboxRef({ namespace: context.namespace, revision: context.revision });
+      await this.runtimeAudit?.unbind(context.revision);
       if (
         context.revision.harness.mode === "dedicated" &&
         context.revision.harness.id === "openclaw"

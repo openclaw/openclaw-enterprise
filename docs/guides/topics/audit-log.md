@@ -121,11 +121,62 @@ observations. Deleting the Pod removes any observations that only that Pod
 held. Records already in PostgreSQL stay available through the API.
 
 The private listener serves Gateways in the control cluster. A dedicated
-OpenClaw worker reports its model calls through its Gateway.
+OpenClaw worker reports its model calls and tool activity through its Gateway.
 OpenClaw records each dispatch to a model and each retry that the runtime
 starts. Retries inside a provider SDK are part of the same dispatch.
 Dedicated Codex records foreground Responses attempts from the bundled App
 Server that Compute starts.
+
+#### Tools, approvals, and policy
+
+Use `turnId` and `invocationId` to follow a tool call in the Agent audit API
+and `attemptId` to match an admission to its result. A retry that starts new
+work has a separate attempt ID. A denied request can end before any attempt
+is admitted. A missing result leaves the outcome unknown.
+
+For example, an approved tool call can produce this sequence. The table uses
+the action names after their common `openclaw.runtime.` prefix.
+
+| Action                   | What the record shows                                                                                |
+| ------------------------ | ---------------------------------------------------------------------------------------------------- |
+| `tool_call.requested`    | The runtime received a request for the registered tool.                                              |
+| `policy.decided`         | The policy owner required approval.                                                                  |
+| `approval.requested`     | The runtime requested review with an `approvalId`.                                                   |
+| `approval.resolved`      | The approval owner returned a verdict for that ID.                                                   |
+| `tool_attempt.admitted`  | The runtime saved evidence before it dispatched the attempt. The record can include the approval ID. |
+| `tool_attempt.completed` | The runtime reported the result of that attempt in `details.outcome`.                                |
+
+The audit response includes registered tool names, identifiers, policy codes, and
+outcomes. These fields exclude tool arguments and results, filenames, commands,
+and reviewer rationale. Multiple enforcement checks can produce policy records
+for the same invocation. If OCC cannot save required admission, the runtime
+withholds the tool dispatch.
+
+OpenClaw records tool dispatch through the managed runtime, including workspace
+guards, exec approvals, and Gateway-dispatched managed MCP approvals. The
+bundled Codex App Server records foreground native tool requests and results,
+with attempt admission for `exec_command` and `apply_patch`. It records policy
+reviews and Guardian verdicts when those owners return a decision. A tool
+that is still running when the runtime returns can have an unknown outcome.
+For Codex host tools, coverage ends at the Gateway policy check and dispatch
+boundary. A nested file or MCP check can run without its own audit record. Native
+background and subagent threads, low-level Sandbox OS network approvals, and
+direct MCP calls from scripts remain outside these producer boundaries.
+
+#### Network decisions and external sends
+
+An administrator can configure the [OpenShell security event exporter](openshell-audit.md).
+The Agent audit API shows supported allow and deny decisions with the Sandbox ID
+and revision. These records describe enforcement that the supervisor observed
+after the policy check. A supervisor can report without knowing the originating
+Agent turn. Exporter outages can leave gaps.
+
+OCC records authorization for covered repository and egress sends with the
+existing receipt identity. Use the repository `receiptId` or the egress sender,
+generation, instance, use, and attempt IDs to find the owner's receipt. Send
+authorization confirms permission to dispatch. Check the receipt owner for
+subsequent evidence of the effect. If dispatch may have occurred and the result
+is unknown, inspect the receipt before repeating the operation.
 
 ### Agent runtime logs
 
@@ -164,9 +215,10 @@ SELECT pg_total_relation_size('occ.audit_events') AS used_bytes,
 
 If `accepts_new_events` is `false`, the API can block covered requests or
 withhold audit results. A managed revision cannot start a covered turn if it
-cannot save the admission record. OpenClaw also requires a model start record
-before it sends the request. The worker cannot claim covered jobs or save the
-results of audited attempts until space is available. It reports
+cannot save the admission record. Covered tool dispatches also require saved
+admission. OpenClaw requires a model start record before it sends the request.
+The worker cannot claim covered jobs or save the results of audited attempts
+until space is available. It reports
 `worker.error` with code `AUDIT_CAPACITY_EXCEEDED`. Preserve the existing
 records. Monitor free disk space separately. Reserve space for other tables,
 transaction logs, and backups. A database administrator can provision

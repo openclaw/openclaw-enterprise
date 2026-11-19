@@ -6318,7 +6318,7 @@ List audit metadata for one Agent
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
-| `data.events` | `array<object or object or object or object or object or object or object or object or object>` | Yes | max items: 100 |
+| `data.events` | `array<object or object or object or object or object or object or object or object or object or object or object or object or object or object or object or object or object or object>` | Yes | max items: 100 |
 | `data.nextCursor` | `string or null` | Yes | — |
 | `data.projectionVersion` | `3` | Yes | — |
 | `data.window` | `object` | Yes | — |

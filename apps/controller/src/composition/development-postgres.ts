@@ -72,6 +72,7 @@ export interface PostgresDevelopmentConfig {
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
   readonly gatewayApiKeyPath?: string;
   readonly privateGatewayRuntimeAudit?: boolean;
+  readonly openShellAuditHeaders?: string;
   readonly nativeAdmin?: NativeAdminAccessConfig;
   /** Default: enabled. `false` makes both runtime routes answer 501. */
   readonly agentRuntimeLogsEnabled?: boolean;
@@ -123,6 +124,7 @@ export async function composePostgresDevelopment(
     closeResources(exchange, drivers?.protectedDriver, drivers?.preparedGitHub, database);
   try {
     const state = new PostgresPlatformState(pool, {
+      auditReceiptAuthorizations: auditEnabled,
       preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
       ...(auditEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
     });
@@ -346,6 +348,9 @@ export async function composePostgresDevelopment(
             durableRequestAuditSink: state.auditSink,
             agentAuditCursorSecret: config.authSecret,
             ...(config.privateGatewayRuntimeAudit ? { gatewayRuntimeAuditWriter: state } : {}),
+            ...(config.privateGatewayRuntimeAudit && config.openShellAuditHeaders !== undefined
+              ? { openShellRuntimeAudit: { writer: state, headers: config.openShellAuditHeaders } }
+              : {}),
           }
         : {}),
       ...(drivers === undefined

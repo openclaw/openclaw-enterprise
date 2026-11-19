@@ -40,10 +40,11 @@ import {
   allowAgentAuditRead,
   chatCodexWithAudit,
   assertAgentTurnAudit,
-  chatWithAudit,
   chatTurn,
   createCodexAgent,
   deployAgent,
+  enableEmbeddedFileAuditTool,
+  proveEmbeddedFileToolAudit,
   proveCodexAuditInterruptions,
   proveRefusedTurnAdmission,
   readLogs,
@@ -208,7 +209,20 @@ async function smoke() {
         await expectPersistedRuntimeAudit(stack, embedded.revisionId, await readEmbeddedAudit());
       }),
     ]);
-    await smokeStep("public-read", () => publicReadTurn(stack, codex, reader));
+    await auditStep("public-read", async () => {
+      const previousIds = new Set((await readCodexAudit()).events.map(({ id }) => id));
+      await publicReadTurn(stack, codex, reader);
+      await assertAgentTurnAudit(readCodexAudit, {
+        label: codex.agent.label,
+        revisionId: codex.revisionId,
+        runtimeSource: "codex",
+        model: defaultAgentModel,
+        minimumModelCalls: 2,
+        toolName: "exec_command",
+        previousIds,
+      });
+      await expectPersistedRuntimeAudit(stack, codex.revisionId, await readCodexAudit());
+    });
     const retiredRevision = await smokeStep("reader-retirement", () =>
       proveRetirement(stack, codex, control, reader, proofResults),
     );
@@ -223,16 +237,23 @@ async function smoke() {
         await expectNoRuntimeAuditGrant(stack, revisionId);
       }
     });
-    const [embeddedRevision, codexRevision] = await smokeStep("start-agents", () =>
-      Promise.all([deployAgent(stack, embedded.agent), deployAgent(stack, codex.agent)]),
-    );
+    const [embeddedRevision, codexRevision] = await smokeStep("start-agents", async () => {
+      await enableEmbeddedFileAuditTool(stack, embedded.agent);
+      return Promise.all([deployAgent(stack, embedded.agent), deployAgent(stack, codex.agent)]);
+    });
     assert.notEqual(embeddedRevision, embedded.revisionId, "start must admit a new revision");
     assert.notEqual(codexRevision, retiredRevision, "start must admit a new revision");
     await auditStep(
       "chat-after-start",
       async () => {
         await proveRefusedTurnAdmission(stack, embedded.agent, embeddedRevision);
-        await chatWithAudit(stack, embedded.agent, embeddedRevision, readEmbeddedAudit, "openclaw");
+        await proveEmbeddedFileToolAudit(
+          stack,
+          embedded.agent,
+          embeddedRevision,
+          readEmbeddedAudit,
+        );
+        await expectPersistedRuntimeAudit(stack, embeddedRevision, await readEmbeddedAudit());
       },
       async () => {
         await proveRefusedTurnAdmission(stack, codex.agent, codexRevision);

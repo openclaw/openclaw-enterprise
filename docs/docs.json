@@ -358,6 +358,7 @@
               }
             ],
             "hidden": [
+              "guides/topics/openshell-audit",
               "reference/console/debug-fields",
               "reference/console/theming",
               "reference/console/agent-sharing",

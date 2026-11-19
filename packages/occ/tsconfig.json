@@ -6,5 +6,10 @@
     "tsBuildInfoFile": "./dist/tsconfig.tsbuildinfo"
   },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../utils" }, { "path": "../contracts" }, { "path": "../iam" }]
+  "references": [
+    { "path": "../utils" },
+    { "path": "../contracts" },
+    { "path": "../iam" },
+    { "path": "../audit" }
+  ]
 }

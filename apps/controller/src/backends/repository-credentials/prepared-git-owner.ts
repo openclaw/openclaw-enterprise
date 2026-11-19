@@ -9,7 +9,7 @@ import type {
   PreparedGitHubRepositoryUseRequest,
   PreparedGitHubPullResult,
 } from "@openclaw-enterprise/contracts";
-import type { PostgresPool } from "@openclaw-enterprise/occ";
+import type { appendReceiptAuthorization, PostgresPool } from "@openclaw-enterprise/occ";
 import type { Clock } from "../../drivers/repo/access/backend-contracts.ts";
 import { createSystemClock } from "../../drivers/repo/access/clock.ts";
 import {
@@ -44,6 +44,7 @@ export interface PreparedRepositoryGitConfiguration {
 }
 
 interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath"> {
+  auditAuthorization?: typeof appendReceiptAuthorization;
   ca?: Uint8Array;
   pool: PostgresPool;
   /** Only the native or previously admitted trial owner has a broker control socket. */
@@ -322,6 +323,7 @@ export async function startPreparedGitHubGitOwner(
       };
     },
     custodySelection,
+    options.auditAuthorization,
   );
   const stop = new AbortController();
   const use = (input: unknown, signal = stop.signal) =>

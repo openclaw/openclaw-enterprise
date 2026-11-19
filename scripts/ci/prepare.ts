@@ -2268,6 +2268,9 @@ async function prepareFileWithState({
     if (relativeFile === "tests/integration/postgres-agent-audit-read.test.ts") {
       env.OCC_TEST_AGENT_AUDIT_READ_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
+    if (relativeFile === "tests/integration/postgres-prepared-repository-git-broker.test.ts") {
+      env.OCC_TEST_REPOSITORY_AUDIT_MIGRATION_DATABASE_URL = database.migrationUrl;
+    }
     if (relativeFile === "tests/integration/postgres-worker-audit.test.ts") {
       env.OCC_TEST_WORKER_AUDIT_MIGRATION_DATABASE_URL = database.migrationUrl;
     }

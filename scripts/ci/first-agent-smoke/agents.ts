@@ -313,6 +313,8 @@ export async function assertAgentTurnAudit(
     sessionId,
     model,
     minimumModelCalls = 1,
+    toolName,
+    verifyFileDenial = false,
     previousIds,
   }: {
     label: string;
@@ -321,6 +323,8 @@ export async function assertAgentTurnAudit(
     sessionId?: string;
     model?: string;
     minimumModelCalls?: number;
+    toolName?: string;
+    verifyFileDenial?: boolean;
     previousIds?: ReadonlySet<string>;
   },
 ) {
@@ -339,10 +343,13 @@ export async function assertAgentTurnAudit(
               ("sessionId" in event.details && event.details.sessionId === sessionId)),
         );
       const sessions = page.events
-        .filter((event) => event.event === "runtime_activity")
         .filter(
           (event) =>
-            event.action === "openclaw.runtime.session.started" &&
+            event.event === "runtime_activity" &&
+            event.action === "openclaw.runtime.session.started",
+        )
+        .filter(
+          (event) =>
             (sessionId !== undefined || event.details.agentRevisionId === revisionId) &&
             event.details.runtimeSource === runtimeSource,
         );
@@ -359,6 +366,20 @@ export async function assertAgentTurnAudit(
       const modelResults = events.filter(
         (event) => event.action === "openclaw.runtime.model_call.completed",
       );
+      const toolRequests = events.filter(
+        (event) => event.action === "openclaw.runtime.tool_call.requested",
+      );
+      const toolAdmissions = events.filter(
+        (event) => event.action === "openclaw.runtime.tool_attempt.admitted",
+      );
+      const toolResults = events.filter(
+        (event) => event.action === "openclaw.runtime.tool_attempt.completed",
+      );
+      const fileDenials = events
+        .filter((event) => event.action === "openclaw.runtime.policy.decided")
+        .flatMap(({ details }) =>
+          details.policy === "file_policy" && details.decision === "deny" ? [details] : [],
+        );
       return {
         done: completes.some(({ details: turn }) => {
           const started = starts.some(
@@ -374,6 +395,47 @@ export async function assertAgentTurnAudit(
             turn.outcome !== "succeeded"
           ) {
             return false;
+          }
+          if (toolName !== undefined) {
+            const turnTools = toolRequests.filter(
+              ({ details }) =>
+                details.toolName === toolName &&
+                details.sessionId === turn.sessionId &&
+                details.turnId === turn.turnId,
+            );
+            const successful = turnTools.some(({ details: request }) =>
+              toolAdmissions.some(
+                ({ details: attempt }) =>
+                  attempt.invocationId === request.invocationId &&
+                  attempt.sessionId === request.sessionId &&
+                  attempt.turnId === request.turnId &&
+                  attempt.toolName === request.toolName &&
+                  toolResults.some(
+                    ({ details: result }) =>
+                      result.invocationId === attempt.invocationId &&
+                      result.attemptId === attempt.attemptId &&
+                      result.sessionId === attempt.sessionId &&
+                      result.turnId === attempt.turnId &&
+                      result.toolName === attempt.toolName &&
+                      result.outcome === "succeeded",
+                  ),
+              ),
+            );
+            const blocked = turnTools.some(
+              ({ details: request }) =>
+                fileDenials.some(
+                  ({ invocationId, sessionId, turnId }) =>
+                    invocationId === request.invocationId &&
+                    sessionId === request.sessionId &&
+                    turnId === request.turnId,
+                ) &&
+                !toolAdmissions.some(
+                  ({ details }) => details.invocationId === request.invocationId,
+                ),
+            );
+            if (!successful || (verifyFileDenial && !blocked)) {
+              return false;
+            }
           }
           if (model === undefined) {
             return true;
@@ -406,6 +468,108 @@ export async function assertAgentTurnAudit(
     minute,
   );
   log(`${label}: stored matching turn start and successful completion on ${revisionId}`);
+  if (toolName !== undefined) {
+    log(`${label}: linked the successful ${toolName} attempt to its invocation and turn`);
+  }
+}
+
+export async function enableEmbeddedFileAuditTool(stack: SmokeStack, agent: SmokeAgent) {
+  const base = `/namespaces/${stack.namespaceId}`;
+  const current = await stack.api("GET", `${base}/agents/${agent.id}`);
+  const configurationId = wireField(current, "configurationId");
+  assert.ok(typeof configurationId === "string" && configurationId.startsWith("cfg_"));
+  const route = `${base}/configurations/${configurationId}`;
+  const configuration = await stack.api("GET", route);
+  const values = wireField(configuration, "values");
+  const expectedGeneration = wireField(configuration, "generation");
+  assert.ok(values && typeof values === "object" && !Array.isArray(values));
+  assert.ok(typeof expectedGeneration === "number");
+  // Keep the initial First Agent's zero-tool configuration. The successor exposes
+  // only the native read tool, with its existing workspace-path guard active.
+  await stack.api("PATCH", route, {
+    expectedGeneration,
+    values: {
+      ...values,
+      tools: { allow: ["read"], fs: { workspaceOnly: true } },
+    },
+  });
+}
+
+export async function proveEmbeddedFileToolAudit(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  revisionId: string,
+  readAudit: () => Promise<AgentAuditPage>,
+) {
+  const gateway = await readyGateway(stack, agent.id, revisionId);
+  const id = randomUUID();
+  const nonce = `OCE_SMOKE_tool-read-${id}`;
+  const allowed = `audit-probe-${id}.txt`;
+  const denied = `/tmp/audit-probe-${id}.txt`;
+  const marker = `AUDIT_TOOL_ALLOWED_${randomUUID()}`;
+  const outsideMarker = `AUDIT_TOOL_DENIED_${randomUUID()}`;
+  const fixture = (remove: boolean) =>
+    kubectl(
+      stack,
+      [
+        "exec",
+        "-i",
+        "-n",
+        gateway.namespace,
+        gateway.pod,
+        "-c",
+        "gateway",
+        "--",
+        "node",
+        "--input-type=module",
+        "-",
+      ],
+      {
+        input: `
+        import assert from "node:assert/strict";
+        import { readFile, rm, writeFile } from "node:fs/promises";
+        import { isAbsolute, join } from "node:path";
+        const configuration = JSON.parse(await readFile(process.env.OPENCLAW_CONFIG_PATH, "utf8"));
+        const workspace = configuration.agents?.defaults?.workspace ?? "/home/node/.openclaw/workspace";
+        assert.ok(isAbsolute(workspace));
+        const files = [
+          [join(workspace, ${JSON.stringify(allowed)}), ${JSON.stringify(marker)}],
+          [${JSON.stringify(denied)}, ${JSON.stringify(outsideMarker)}],
+        ];
+        for (const [path, contents] of files) {
+          if (${remove}) {
+            await rm(path, { force: true });
+          } else {
+            await writeFile(path, contents, { flag: "wx" });
+          }
+        }
+      `,
+        timeout: minute,
+      },
+    );
+  const previousIds = new Set((await readAudit()).events.map(({ id }) => id));
+  try {
+    await fixture(false);
+    const reply = await gatewayChat(stack, gateway, `Read both test files for this case: ${nonce}`);
+    assertChatReply(reply, marker, agent.label);
+    await assertAgentTurnAudit(readAudit, {
+      label: agent.label,
+      revisionId,
+      runtimeSource: "openclaw",
+      model: defaultAgentModel,
+      minimumModelCalls: 2,
+      toolName: "read",
+      verifyFileDenial: true,
+      previousIds,
+    });
+    const newRows = (await readAudit()).events.filter(({ id }) => !previousIds.has(id));
+    const visible = JSON.stringify(newRows);
+    for (const privateValue of [nonce, allowed, denied, marker, outsideMarker]) {
+      assert.ok(!visible.includes(privateValue), "file-tool audit disclosed private turn content");
+    }
+  } finally {
+    await fixture(true);
+  }
 }
 
 export async function chatWithAudit(

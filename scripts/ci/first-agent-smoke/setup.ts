@@ -383,6 +383,7 @@ export async function setLocalSetupAudit(
   stack: Pick<LocalSetup, "directory" | "context" | "kubeconfig" | "state">,
   enabled: boolean,
   options?: RunOptions,
+  openShellExporterSecret?: string,
 ) {
   await run(
     "helm",
@@ -400,6 +401,9 @@ export async function setLocalSetupAudit(
       join(stack.directory, "helm-values.json"),
       "--set",
       `controlPlaneAudit.enabled=${enabled}`,
+      ...(openShellExporterSecret
+        ? ["--set-string", `controlPlaneAudit.openShellExporterSecret=${openShellExporterSecret}`]
+        : []),
       "--wait",
       "--timeout",
       "5m",
