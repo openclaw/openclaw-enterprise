@@ -2382,7 +2382,8 @@ export const sandboxPolicies = occSchema.table(
       .onUpdate("restrict"),
     check(
       "sandbox_policies_document_valid",
-      sql`occ.sandbox_policy_is_valid(${table.document}, ${table.id}, ${table.namespaceId}, ${table.agentId}, ${table.version})`,
+      sql`occ.sandbox_policy_is_valid(${table.document} - 'repositoryNetworkPolicy', ${table.id}, ${table.namespaceId}, ${table.agentId}, ${table.version})
+        AND (NOT (${table.document} ? 'repositoryNetworkPolicy') OR occ.sandbox_repository_grants_are_valid(${table.document}->'repositoryNetworkPolicy'))`,
     ),
   ],
 );
