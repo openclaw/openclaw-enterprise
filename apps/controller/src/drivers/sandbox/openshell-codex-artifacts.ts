@@ -4,6 +4,7 @@ import { ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import type { AgentRevision, OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
 
+import { exactDnsName } from "../credential-source-endpoint.ts";
 import { AGENT_POLICY_PREFIX } from "./openshell-policy.ts";
 
 // These are the two native entrypoints shipped by the qualified bundled Codex release.
@@ -12,16 +13,16 @@ const CODEX_BINARIES = new Set([
   "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
 ]);
 
-const NPM_REGISTRY = "registry.npmjs.org";
 const ENDPOINT_KEYS = ["host", "ports", "protocol", "enforcement", "access"];
 
-function refuse(): never {
+function refuse(
+  message = "Protected Codex artifacts require the exact declared credential-free, inspected, read-only rules.",
+): never {
   throw new ConfigurationValidationError([
     {
       path: "/policy/codexArtifactRuleNames",
       code: "INVALID_VALUE",
-      message:
-        "Protected Codex artifacts require the exact declared credential-free, inspected, read-only rules.",
+      message,
     },
   ]);
 }
@@ -81,15 +82,12 @@ function literalArtifactHost(value: unknown): value is string {
 }
 
 /** Validate the complete closed wire form, including data rehydrated from persistence. */
-function qualifiedMap(
-  value: unknown,
-  source: "installation" | "snapshot",
-): Readonly<OpenClawConfigurationDocument> {
+function qualifiedMap(value: unknown): Readonly<OpenClawConfigurationDocument> {
   const map = asRecord(value);
   if (!map) {
     refuse();
   }
-  const qualified = { ...map };
+  const syntaxByHost = new Map<string, boolean>();
   for (const [name, value] of Object.entries(map)) {
     if (!ruleName(name)) {
       refuse();
@@ -117,7 +115,6 @@ function qualifiedMap(
       paths.add(binary.path);
     }
     const hosts = new Set<string>();
-    const endpoints: Record<string, unknown>[] = [];
     for (const value of rule.endpoints) {
       // Stock 0.1.6 REST uses verified auto TLS inspection when tls is omitted;
       // explicit terminate is unsupported, and skip would remove inspection.
@@ -136,26 +133,21 @@ function qualifiedMap(
         endpoint.protocol !== "rest" ||
         endpoint.enforcement !== "NETWORK_ENFORCEMENT_MODE_ENFORCE" ||
         endpoint.access !== "NETWORK_ACCESS_PRESET_READ_ONLY" ||
-        (hasEncodedSlash &&
-          (source !== "snapshot" ||
-            endpoint.host !== NPM_REGISTRY ||
-            endpoint.allow_encoded_slash !== true))
+        (hasEncodedSlash && endpoint.allow_encoded_slash !== true)
       ) {
         refuse();
       }
       hosts.add(endpoint.host);
-      // pnpm requests scoped metadata with an encoded slash in one path segment.
-      endpoints.push(
-        source === "installation" && endpoint.host === NPM_REGISTRY
-          ? { ...endpoint, allow_encoded_slash: true }
-          : endpoint,
-      );
-    }
-    if (source === "installation") {
-      qualified[name] = { ...rule, endpoints };
+      const previous = syntaxByHost.get(endpoint.host);
+      if (previous !== undefined && previous !== hasEncodedSlash) {
+        refuse(
+          "Artifact endpoints for the same HTTPS destination must agree on protectedArtifactAllowEncodedSlash.",
+        );
+      }
+      syntaxByHost.set(endpoint.host, hasEncodedSlash);
     }
   }
-  return immutableCopy(qualified as OpenClawConfigurationDocument);
+  return immutableCopy(map as OpenClawConfigurationDocument);
 }
 
 /** Sandbox selects only explicitly declared Installation rules; ambient defaults stay outside. */
@@ -172,10 +164,7 @@ export function qualifyOpenShellCodexArtifactRules(
   ) {
     refuse();
   }
-  return qualifiedMap(
-    Object.fromEntries(names.map((name) => [name, defaults[name]!])),
-    "installation",
-  );
+  return qualifiedMap(Object.fromEntries(names.map((name) => [name, defaults[name]!])));
 }
 
 /** Both paired compilers consume immutable admission, never current Installation defaults. */
@@ -207,5 +196,65 @@ export function openShellProtectedCodexArtifacts(
   ) {
     refuse();
   }
-  return qualifiedMap(snapshot.defaults, "snapshot");
+  return qualifiedMap(snapshot.defaults);
+}
+
+/** Read only from a qualified artifact map or the exact source policy that contains it. */
+export function openShellEncodedSlashArtifactHosts(rules: unknown): ReadonlySet<string> {
+  const hosts = new Set<string>();
+  for (const rule of Object.values(asRecord(rules) ?? {})) {
+    const endpoints = asRecord(rule)?.endpoints;
+    if (Array.isArray(endpoints)) {
+      for (const raw of endpoints) {
+        const endpoint = asRecord(raw);
+        if (endpoint?.allow_encoded_slash === true && typeof endpoint.host === "string") {
+          hosts.add(endpoint.host);
+        }
+      }
+    }
+  }
+  return hosts;
+}
+
+export function openShellEndpointsAllowEncodedSlash(endpoints: unknown): boolean {
+  return (
+    Array.isArray(endpoints) &&
+    endpoints.some((endpoint) => asRecord(endpoint)?.allow_encoded_slash === true)
+  );
+}
+
+/** Compare the destinations supplied by the provider or enrollment owner. A route
+ * that may reach port 443 needs a verifiable literal DNS host. */
+export function openShellArtifactRouteOverlap(
+  hosts: ReadonlySet<string>,
+  endpoints: unknown,
+): boolean {
+  if (hosts.size === 0) {
+    return false;
+  }
+  if (!Array.isArray(endpoints)) {
+    return true;
+  }
+  return endpoints.some((raw) => {
+    const endpoint = asRecord(raw);
+    if (!endpoint || (endpoint.ports !== undefined && !Array.isArray(endpoint.ports))) {
+      return true;
+    }
+    // OpenShell uses ports when nonempty and otherwise normalizes the singular port.
+    const ports: readonly unknown[] =
+      Array.isArray(endpoint.ports) && endpoint.ports.length > 0 ? endpoint.ports : [endpoint.port];
+    if (
+      ports.some(
+        (port) => typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535,
+      )
+    ) {
+      return true;
+    }
+    if (!ports.includes(443)) {
+      return false;
+    }
+    const host =
+      typeof endpoint.host === "string" ? endpoint.host.toLowerCase().replace(/\.$/, "") : "";
+    return !exactDnsName(host) || hosts.has(host);
+  });
 }

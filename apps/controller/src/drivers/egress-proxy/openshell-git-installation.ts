@@ -5,6 +5,11 @@ import {
   SandboxGatewayUnavailableError,
   TransientDependencyError,
 } from "@openclaw-enterprise/occ";
+import {
+  openShellArtifactRouteOverlap,
+  openShellEncodedSlashArtifactHosts,
+  openShellEndpointsAllowEncodedSlash,
+} from "../sandbox/openshell-codex-artifacts.ts";
 import type {
   OpenShellGatewayClient,
   OpenShellSandboxResponse,
@@ -217,16 +222,17 @@ export function overlapsOpenShellGitHost(host: string): boolean {
 }
 
 /**
- * Provider endpoints keep the name check only: an IP-addressed endpoint, such as a self-hosted
- * model server, is common there, and this check is against a provider that names the Git hosts
- * or carries a GitHub token.
+ * Read the actual profiles of the attached providers. Ordinary Git isolation allows
+ * IP endpoints. An encoded-slash artifact opt-in requires separate, strict provider routes.
  */
 export async function checkOpenShellGitProviders(
   client: OpenShellGatewayClient,
   workspace: string,
   providers: readonly string[],
+  revision: Readonly<AgentRevision>,
   signal: AbortSignal,
 ): Promise<void> {
+  const artifactHosts = openShellEncodedSlashArtifactHosts(revision.sandboxPolicy?.defaults);
   for (const name of providers) {
     const provider = await client.getProvider(workspace, name, signal);
     if (!provider) {
@@ -248,8 +254,21 @@ export async function checkOpenShellGitProviders(
     const definition = profile?.definition;
     const endpoints = definition?.endpoints;
     const credentials = definition?.credentials;
+    if (artifactHosts.size > 0 && Array.isArray(endpoints) && Array.isArray(credentials)) {
+      if (openShellEndpointsAllowEncodedSlash(endpoints)) {
+        throw new OpenShellGitRouteError(
+          "provider_overlap",
+          "OpenShell credential provider endpoints cannot enable allow_encoded_slash. Remove it from the attached provider profile.",
+        );
+      }
+      if (openShellArtifactRouteOverlap(artifactHosts, endpoints)) {
+        throw new OpenShellGitRouteError(
+          "provider_overlap",
+          "OpenShell requires encoded-slash artifact endpoints to be separate from credential provider routes. Choose a separate artifact endpoint or remove protectedArtifactAllowEncodedSlash.",
+        );
+      }
+    }
     if (
-      !definition ||
       !Array.isArray(endpoints) ||
       !Array.isArray(credentials) ||
       endpoints.some((value) =>
@@ -293,6 +312,7 @@ export async function observeOpenShellGitInstallation(
         entry.client,
         entry.binding.workspace,
         entry.otherProviders,
+        entry.revision,
         signal,
       ),
     signal,

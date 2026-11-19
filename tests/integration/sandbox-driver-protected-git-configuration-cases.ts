@@ -104,6 +104,9 @@ async function configureProtectedOpenShellGit(t: TestContext) {
               protocol: "rest",
               enforcement: "enforce",
               access: "read_only",
+              ...(host === "artifacts.example.test" && {
+                protectedArtifactAllowEncodedSlash: true as const,
+              }),
             }),
           ),
         },

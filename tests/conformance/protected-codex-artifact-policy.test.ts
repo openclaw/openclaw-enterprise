@@ -129,6 +129,7 @@ test("artifact qualification refuses routes that widen destination, process, wri
   const npm = { ...endpoint, host: "registry.npmjs.org" };
   const nativeFlag = { ...npm, allow_encoded_slash: true };
   const camelCaseFlag = { ...npm, allowEncodedSlash: true };
+  const flagged = { ...endpoint, protectedArtifactAllowEncodedSlash: true as const };
   const namedBinary = { path: native, name: "unexpected" };
   const extraRuleField = { ...original, provider: "unexpected" };
   const cases: Array<[string, OpenShellNetworkPolicyRule]> = [
@@ -148,13 +149,17 @@ test("artifact qualification refuses routes that widen destination, process, wri
     ],
     ["audit only", { ...original, endpoints: [{ ...endpoint, enforcement: "audit" }] }],
     ["write access", { ...original, endpoints: [{ ...endpoint, access: "read_write" }] }],
+    ["opt-in on uninspected TLS", { ...original, endpoints: [{ ...flagged, tls: "skip" }] }],
+    ["opt-in on write access", { ...original, endpoints: [{ ...flagged, access: "read_write" }] }],
+    ["opt-in on another port", { ...original, endpoints: [{ ...flagged, ports: [8443] }] }],
+    ["opt-in on a wildcard", { ...original, endpoints: [{ ...flagged, host: "*.example.test" }] }],
     ["another process", { ...original, binaries: [{ path: "/usr/bin/curl" }] }],
     [
       "package registry for a non-Codex executable",
       {
         ...original,
         binaries: [{ path: "/usr/local/bin/node" }],
-        endpoints: [{ ...endpoint, host: "registry.npmjs.org" }],
+        endpoints: [{ ...flagged, host: "registry.npmjs.org" }],
       },
     ],
   ];
@@ -177,6 +182,57 @@ test("artifact declaration rejects unknown and duplicate rule names instead of i
       );
     });
   }
+});
+
+test("Installation rejects invalid, unselected or conflicting artifact endpoint flags", (t) => {
+  const rule = artifact();
+  const endpoint = rule.endpoints[0]!;
+  const optedIn = {
+    ...rule,
+    endpoints: [{ ...endpoint, protectedArtifactAllowEncodedSlash: true as const }],
+  };
+  assert.throws(() => sandbox(t, [optedIn]), ConfigurationValidationError);
+  for (const value of [false, "true", 1]) {
+    const invalid = {
+      ...rule,
+      endpoints: [{ ...endpoint, protectedArtifactAllowEncodedSlash: value }],
+    };
+    assert.throws(
+      () => sandbox(t, [invalid as OpenShellNetworkPolicyRule], [rule.name]),
+      ConfigurationValidationError,
+    );
+  }
+  const sibling = { ...rule, name: "same-host" };
+  assert.throws(
+    () => sandbox(t, [optedIn, sibling], [rule.name, sibling.name]),
+    ConfigurationValidationError,
+  );
+
+  // The same destination can serve both native binaries when they agree on syntax.
+  const otherArchitecture = {
+    ...optedIn,
+    name: sibling.name,
+    binaries: [
+      {
+        path: "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
+      },
+    ],
+  };
+  const driver = sandbox(t, [optedIn, otherArchitecture], [rule.name, sibling.name]);
+  const snapshot = driver.admitProtectedCodexArtifactPolicy(1).snapshot;
+  const { [sibling.name]: saved, ...remaining } = snapshot.defaults;
+  const savedRule = saved as { endpoints: [{ allow_encoded_slash?: boolean }] };
+  const [{ allow_encoded_slash: _flag, ...strict }] = savedRule.endpoints;
+  assert.throws(
+    () =>
+      openShellProtectedCodexArtifacts(
+        protectedRevision({
+          ...snapshot,
+          defaults: { ...remaining, [sibling.name]: { ...savedRule, endpoints: [strict] } },
+        }),
+      ),
+    ConfigurationValidationError,
+  );
 });
 
 function protectedRevision(snapshot: SandboxPolicySnapshot): AgentRevision {
@@ -228,11 +284,15 @@ function protectedRevision(snapshot: SandboxPolicySnapshot): AgentRevision {
   };
 }
 
-test("protected request-hook Git compilation uses the admitted npm flag without changing defaults", (t) => {
+test("protected request-hook Git compilation replays the explicit opt-in and ordinary defaults stay strict", (t) => {
   const original = artifact();
-  const sibling = original.endpoints[0]!;
-  const npm = { ...sibling, host: "registry.npmjs.org" };
-  const selected = { ...original, endpoints: [npm, sibling] };
+  const mirror = {
+    ...original.endpoints[0]!,
+    host: "packages.example.test",
+    protectedArtifactAllowEncodedSlash: true as const,
+  };
+  const npm = { ...original.endpoints[0]!, host: "registry.npmjs.org" };
+  const selected = { ...original, endpoints: [npm, mirror] };
   const unselected = { ...original, name: "unselected-npm", endpoints: [npm] };
   const driver = sandbox(t, [selected, unselected], [selected.name]);
   const ordinary = driver.admitNetworkPolicy([], 1).defaults;
@@ -243,11 +303,11 @@ test("protected request-hook Git compilation uses the admitted npm flag without 
     enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
     access: "NETWORK_ACCESS_PRESET_READ_ONLY",
   };
-  const wireSibling = { ...endpoint, host: sibling.host };
+  const wireMirror = { ...endpoint, host: mirror.host };
   const legacy = {
     name: selected.name,
     binaries: selected.binaries.map(({ path }) => ({ path })),
-    endpoints: [endpoint, wireSibling],
+    endpoints: [endpoint, wireMirror],
   };
   assert.deepEqual(ordinary, {
     [selected.name]: legacy,
@@ -256,11 +316,12 @@ test("protected request-hook Git compilation uses the admitted npm flag without 
 
   const snapshot = driver.admitProtectedCodexArtifactPolicy(1).snapshot;
   assert.deepEqual(driver.admitNetworkPolicy([], 1).defaults, ordinary);
-  const flagged = { ...endpoint, allow_encoded_slash: true };
+  const flagged = { ...wireMirror, allow_encoded_slash: true };
   assert.deepEqual(snapshot.defaults, {
-    [selected.name]: { ...legacy, endpoints: [flagged, wireSibling] },
+    [selected.name]: { ...legacy, endpoints: [endpoint, flagged] },
   });
-  const revision = protectedRevision(snapshot);
+  const savedBytes = JSON.stringify(snapshot);
+  const revision = protectedRevision(JSON.parse(savedBytes) as SandboxPolicySnapshot);
   const compiled = openShellEgressConfiguration(
     revision.egressPlan!,
     {
@@ -272,6 +333,8 @@ test("protected request-hook Git compilation uses the admitted npm flag without 
   );
   assert.deepEqual(compiled.network_policies, snapshot.defaults);
   assert.equal(Object.hasOwn(compiled, "providers"), false);
+  assert.equal(JSON.stringify(revision.sandboxPolicy), savedBytes);
+  assert.equal(JSON.stringify(compiled.network_policies), JSON.stringify(snapshot.defaults));
 
   const legacySnapshot = { ...snapshot, defaults: { [selected.name]: legacy } };
   assert.equal(
@@ -279,7 +342,7 @@ test("protected request-hook Git compilation uses the admitted npm flag without 
     JSON.stringify(legacySnapshot.defaults),
   );
   for (const endpoint of [
-    { ...flagged, host: "registry.npmjs.org.example.test" },
+    { ...flagged, host: "api.github.com" },
     { ...flagged, allow_encoded_slash: false },
     { ...flagged, allow_encoded_slash: "true" },
   ]) {

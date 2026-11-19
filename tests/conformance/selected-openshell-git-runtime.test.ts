@@ -665,15 +665,15 @@ test("a failed withdrawal still refuses its original route after local collectio
 });
 
 test("fresh repository Git v5 holds and releases one verified launch", async (t) => {
-  const legacyNpm = {
+  const npm = {
     host: "registry.npmjs.org",
     ports: [443],
     protocol: "rest",
     enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
     access: "NETWORK_ACCESS_PRESET_READ_ONLY",
   };
-  const npm = { ...legacyNpm, allow_encoded_slash: true };
-  const sibling = { ...legacyNpm, host: "artifacts.example.test" };
+  const strictMirror = { ...npm, host: "artifacts.example.test" };
+  const mirror = { ...strictMirror, allow_encoded_slash: true };
   const artifact = {
     name: "codex-artifacts",
     binaries: [
@@ -681,7 +681,7 @@ test("fresh repository Git v5 holds and releases one verified launch", async (t)
         path: "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
       },
     ],
-    endpoints: [npm, sibling],
+    endpoints: [npm, mirror],
   };
   const held = await heldGit(t, { [artifact.name]: artifact });
   const { f, store, revision, client, entry } = held;
@@ -709,9 +709,10 @@ test("fresh repository Git v5 holds and releases one verified launch", async (t)
   assert.match((await recipient()) ?? "", /^[a-f0-9]{64}$/);
   // Hold the admitted Sandbox source and policy hash fixed while changing effective policy.
   for (const endpoints of [
-    [legacyNpm, sibling],
-    [{ ...npm, allow_encoded_slash: false }, sibling],
-    [npm, { ...sibling, allow_encoded_slash: true }],
+    [npm, strictMirror],
+    [npm, { ...mirror, allow_encoded_slash: false }],
+    [{ ...npm, allow_encoded_slash: true }, mirror],
+    [{ ...npm, allow_encoded_slash: true }, strictMirror],
   ]) {
     client.getSandboxConfig = async (...args) => {
       const config = await getConfig(...args);
@@ -728,6 +729,36 @@ test("fresh repository Git v5 holds and releases one verified launch", async (t)
     };
     assert.equal(await recipient(), undefined);
   }
+  // The profile can expand only the effective map, even with an exact artifact source.
+  const model = "_provider_" + continuity.model.replaceAll("-", "_");
+  const modelEndpoint = {
+    host: "api.openai.com",
+    port: 443,
+    path: "/v1/**",
+    allow_encoded_slash: false,
+  };
+  client.getSandboxConfig = async (...args) => {
+    const config = await getConfig(...args);
+    const policy = asRecord(config.policy);
+    const rules = asRecord(policy?.network_policies);
+    assert.ok(policy && rules);
+    return {
+      ...config,
+      policy: {
+        ...policy,
+        network_policies: { ...rules, [model]: { name: model, endpoints: [modelEndpoint] } },
+      },
+    };
+  };
+  assert.match((await recipient()) ?? "", /^[a-f0-9]{64}$/);
+  modelEndpoint.allow_encoded_slash = true;
+  assert.equal(await recipient(), undefined, "the effective model route must parse strictly");
+  modelEndpoint.allow_encoded_slash = false;
+  modelEndpoint.host = "ARTIFACTS.example.test";
+  assert.equal(await recipient(), undefined, "the effective model route cannot share port 443");
+  modelEndpoint.port = 8443;
+  modelEndpoint.host = mirror.host;
+  assert.match((await recipient()) ?? "", /^[a-f0-9]{64}$/);
   client.getSandboxConfig = getConfig;
 
   const read = f.owner.readOpenShellMaterial.bind(f.owner);

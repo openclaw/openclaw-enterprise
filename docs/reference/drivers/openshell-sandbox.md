@@ -150,23 +150,23 @@ not satisfy the per-Agent production requirement below.
 ### Protected Codex artifact rules
 
 Select [artifact rules](../../snippets/openshell-quickstart/plugin-network-policy.yaml)
-for protected dedicated Codex repositories with `policy.codexArtifactRuleNames`;
-each name selects exactly one rule. Omission denies access.
-Rules require bundled Codex executables, literal DNS hosts, port 443,
-`protocol: rest`, `enforcement: enforce`, `access: read_only`, and omitted `tls`
-for verified inspection. Admission rejects wildcards, IP addresses, GitHub
-repository hosts, reserved names, credentials, and unknown fields.
+with `policy.codexArtifactRuleNames`. Protected dedicated Codex repositories
+receive only the selected rules. Each requires bundled Codex executables,
+literal DNS hosts outside GitHub, port 443, `protocol: rest`, `enforcement: enforce`,
+`access: read_only`, and omitted `tls` for inspection. Reserved names, credentials,
+and unknown fields are refused.
 
-Admission gives the exact selected `registry.npmjs.org:443` endpoint native
-`allow_encoded_slash: true`. It permits encoded slashes for the whole host,
-including all packages and paths. Other endpoints, including rule
-siblings, and unselected defaults stay unchanged. It is not configurable.
-Earlier snapshots, including npm, stay unchanged. Admission freezes the qualified
-map with empty Agent additions; preparation and replay use it despite changed
-Installation defaults.
+Set `protectedArtifactAllowEncodedSlash: true` on an eligible
+`policy.networkPolicies[].endpoints[]` entry to permit `%2F` on all its paths.
+For example, scoped npm packages use this syntax at `registry.npmjs.org`.
+Omission keeps strict parsing. Settings must agree per destination.
+Opted-in artifacts require separate provider and workspace enrollment routes
+and strict parsing on provider endpoints.
 
-Deploy a new Agent revision. Older readers reject flagged snapshots; returning
-requires an unflagged revision. Live Agent policy apply remains unavailable.
+Use a compatible Installation configuration and deploy a new Agent revision.
+Before returning to an older reader, remove the option and deploy an unflagged
+revision on a compatible controller. Verify the return path with retained
+revisions. Live Agent policy apply is unavailable.
 
 ### Gateway readiness and workspace
 

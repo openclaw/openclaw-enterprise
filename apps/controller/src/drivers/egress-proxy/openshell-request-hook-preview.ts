@@ -6,6 +6,11 @@ import type {
   ProxyRevisionContext,
   RepositoryGitRecipient,
 } from "@openclaw-enterprise/contracts";
+import {
+  openShellArtifactRouteOverlap,
+  openShellEncodedSlashArtifactHosts,
+  openShellEndpointsAllowEncodedSlash,
+} from "../sandbox/openshell-codex-artifacts.ts";
 import type {
   OpenShellGatewayClient,
   OpenShellSandboxResponse,
@@ -61,6 +66,16 @@ function expectedPolicy(
     !model ||
     !isDeepStrictEqual(wirePolicy(runtime), { name: runtimeName }) ||
     !isDeepStrictEqual(wirePolicy(sourceRules), wirePolicy(desired ?? {}))
+  ) {
+    return false;
+  }
+  const artifactHosts = openShellEncodedSlashArtifactHosts(desired);
+  const modelEndpoints = asRecord(model)?.endpoints;
+  const enrollment = asRecord(sourceRules["workspace-node-enrollment"]);
+  if (
+    (artifactHosts.size > 0 && openShellEndpointsAllowEncodedSlash(modelEndpoints)) ||
+    openShellArtifactRouteOverlap(artifactHosts, modelEndpoints) ||
+    (enrollment && openShellArtifactRouteOverlap(artifactHosts, enrollment.endpoints))
   ) {
     return false;
   }

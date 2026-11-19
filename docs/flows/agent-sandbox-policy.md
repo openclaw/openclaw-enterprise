@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-19"
-last_updated_session: "authoring-run/39a44c79-5023-4989-8f66-7ba3720310fd"
+last_updated_session: "authoring-run/71f8a011-0c4b-42b6-ada8-cc50ebe72267"
 ---
 
 # Agent sandbox policy flow
@@ -85,15 +85,12 @@ repository admission can carry the Sandbox Driver's explicitly acknowledged
 [artifact subset](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
 `checkedProtectedCodexArtifactPolicy` verifies its purpose, declared keys, Driver
 identity, version and empty additions before runtime credential provisioning.
-That immutable snapshot remains ineligible for live apply. The policy view reports
-`protectedExecution`.
+The policy view reports `protectedExecution`. Live apply remains unavailable.
 
-`openshell-codex-artifacts.ts:qualifyOpenShellCodexArtifactRules` freezes
-`allow_encoded_slash: true` only on the selected, qualified npm endpoint at
-admission. Rehydration accepts only `true` there and preserves absent flags.
-Both compilers validate and use only the frozen map. Sandbox binds enrollment to
-Agent setup and returns the full policy in `SandboxResourceRef.proxyWiring`.
-The proxy compares the complete loaded policy, including missing or drifted flags.
+`openshell.ts:admitProtectedCodexArtifactPolicy` freezes eligible opt-ins.
+Both compilers replay them. Opted-in artifacts must have separate destinations
+from enrollment and providers. Git checks attached profiles for strict parsing.
+The proxy verifies exact artifact replay and strict effective model endpoints.
 For an Agent with repository bindings (or a Git-bound active revision), Driver
 admission gets `repositoryCredentials`: the OpenShell Driver with its Git route
 refuses a grant or default reaching `github.com` or a name under it, or naming an
@@ -267,6 +264,10 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 19:16: Trace strict provider endpoints for artifact opt-in. (authoring-run/71f8a011-0c4b-42b6-ada8-cc50ebe72267 - b6412e90e68687ce9af9b36f3fe9cb6660efaa85)
+
+- 2026-11-19 19:02: Trace the protected endpoint opt-in. (authoring-run/a43734f7-8d75-46da-a753-921293ba235f - b6412e90e68687ce9af9b36f3fe9cb6660efaa85)
 
 - 2026-11-19 18:11: Trace the frozen npm endpoint flag. (authoring-run/39a44c79-5023-4989-8f66-7ba3720310fd - b63dda0b529b4bf73f5591be89886f66133b3dc9)
 
