@@ -447,6 +447,84 @@ test("apply requires approval of the current target before reserving private evi
   }
 });
 
+test("resume warns about Installation writes before approval even if the local files already match", async (t) => {
+  const f = await fixture(t);
+  await selectCheckout(f);
+  const values = JSON.stringify({ installation: { secretName: "occ-staged" } });
+  const installation = JSON.stringify({
+    drivers: {
+      plugin: [{ id: "codex-plugin", configuration: { catalogSource: "openai-curated" } }],
+    },
+  });
+  const candidateValues = join(f.directory, "candidate-values.yaml");
+  const candidateInstallation = join(f.directory, "candidate-installation.yaml");
+  // An interrupted run can leave the local files at the candidate while Kubernetes
+  // still needs reconciliation. Recreate that local observation without a cluster.
+  await writeFile(join(f.rendered, "values.yaml"), values);
+  await writeFile(join(f.rendered, "installation.yaml"), installation);
+  await writeFile(candidateValues, values, { mode: 0o600 });
+  await writeFile(candidateInstallation, installation, { mode: 0o600 });
+  await mkdir(f.evidence, { mode: 0o700 });
+  const prepared = join(f.evidence, "prepared");
+  await writeFile(prepared, "", { mode: 0o600 });
+  const original = await stat(f.evidence);
+  const originalFiles = (await readdir(f.directory)).sort();
+  const expert = [
+    "--",
+    "--candidate-values",
+    candidateValues,
+    "--candidate-installation",
+    candidateInstallation,
+    "--timeout-seconds",
+    "1",
+  ];
+  // The real native owner rejects this URL before any cluster contact. Its
+  // diagnostic distinguishes a dispatched command from a declined prompt.
+  const env = { OCC_URL: "http://127.0.0.1:9" };
+  const declined = spawnSync(
+    "python3",
+    [
+      "-c",
+      "import os,pty,sys; sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:])))",
+      command,
+      "resume",
+      "--profile",
+      f.profile,
+      "--evidence-dir",
+      f.evidence,
+      ...expert,
+    ],
+    {
+      cwd: repository,
+      encoding: "utf8",
+      input: "no\n",
+      timeout: 30_000,
+      env: { PATH: process.env.PATH, ...env },
+    },
+  );
+  assert.equal(declined.status, 1, declined.stdout + declined.stderr);
+  const prompt = declined.stdout.indexOf("Type yes to continue:");
+  assert.ok(prompt > 0, declined.stdout);
+  const beforeApproval = declined.stdout.slice(0, prompt);
+  assert.match(beforeApproval, /write the recorded local Installation/);
+  assert.match(beforeApproval, /replace the live mutable Installation Secret/);
+  assert.match(beforeApproval, /switch to the recorded immutable Secret/);
+  assert.match(declined.stdout, /Resume cancelled; no command dispatched/);
+  assert.doesNotMatch(declined.stdout + declined.stderr, /OCC_URL must use HTTPS/);
+
+  const approved = run("resume", f, ["--auto-approve", ...expert], { env });
+  assert.equal(approved.status, 1, approved.stdout + approved.stderr);
+  assert.match(approved.stderr, /OCC_URL must use HTTPS/);
+  const retained = await stat(f.evidence);
+  assert.equal(retained.ino, original.ino);
+  assert.equal(retained.mode & 0o777, 0o700);
+  assert.deepEqual(await readdir(f.evidence), ["prepared"]);
+  assert.equal((await stat(prepared)).mode & 0o777, 0o600);
+  assert.deepEqual((await readdir(f.directory)).sort(), originalFiles);
+  assert.equal(await readFile(join(f.rendered, "values.yaml"), "utf8"), values);
+  assert.equal(await readFile(join(f.rendered, "installation.yaml"), "utf8"), installation);
+});
+
 test("the same local candidate is explained by plan and apply without printing its contents", async (t) => {
   const f = await fixture(t);
   await selectCheckout(f);
@@ -659,7 +737,7 @@ test("approval binds only the selected context's referenced CA and refuses chang
   try {
     const plan = run("plan", f);
     assert.equal(plan.status, 0, plan.stderr);
-    assert.match(plan.stdout, /verified CA from the selected kubeconfig context/);
+    assert.match(plan.stdout, /TLS trust: selected external CA/);
     const privateDigest = createHash("sha256").update(original).digest("hex");
     const before = (await readdir(f.directory)).sort();
 
@@ -732,13 +810,36 @@ sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[4:], master_read=at_confir
   await writeConfig(inline);
   const inlinePlan = run("plan", f);
   assert.equal(inlinePlan.status, 0, inlinePlan.stderr);
-  assert.doesNotMatch(inlinePlan.stdout, /verified CA from the selected kubeconfig context/);
-  assert.ok(!inlinePlan.stdout.includes(inline["certificate-authority-data"]));
+  assert.match(inlinePlan.stdout, /TLS trust: inline kubeconfig CA/);
+  const inlineOutput = inlinePlan.stdout + inlinePlan.stderr;
+  for (const withheld of [
+    original,
+    inline["certificate-authority-data"],
+    createHash("sha256").update(original).digest("hex"),
+    createHash("sha256")
+      .update(await readFile(config))
+      .digest("hex"),
+  ]) {
+    assert.ok(!inlineOutput.includes(withheld));
+  }
   await writeConfig(external);
   await writeFile(ca, "", { mode: 0o644 });
   const empty = run("plan", f);
   assert.equal(empty.status, 0, empty.stderr);
-  assert.match(empty.stdout, /empty.*system trust store/);
+  assert.match(empty.stdout, /TLS trust: system roots/);
+  await writeConfig({});
+  const system = run("plan", f);
+  assert.equal(system.status, 0, system.stderr);
+  assert.match(system.stdout, /TLS trust: system roots/);
+
+  await writeConfig({ "insecure-skip-tls-verify": true });
+  const unverified = run("plan", f);
+  assert.equal(unverified.status, 0, unverified.stderr);
+  assert.match(unverified.stdout, /TLS VERIFICATION DISABLED/);
+  assert.doesNotMatch(
+    unverified.stdout,
+    /TLS trust: (selected external CA|inline kubeconfig CA|system roots)/,
+  );
 
   await writeConfig({ ...external, ...inline });
   const conflict = run("plan", f);

@@ -2,11 +2,78 @@
 set -euo pipefail
 
 profile="${1:-baseline}"
-root_dir="$(CDPATH="" cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-bin_dir="${RUNNER_TEMP:-/tmp/claw-ent-ci-implementation}/bin"
-platform="$(uname -s)-$(uname -m)"
+root_dir="$(CDPATH="" cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+platform="$(/usr/bin/uname -s)-$(/usr/bin/uname -m)"
+system_tools_path="/usr/bin:/bin"
+bin_dir="$(/usr/bin/python3 -I - "${RUNNER_TEMP:-}" <<'PYTHON'
+import os
+from pathlib import Path
+import stat
+import sys
+import tempfile
 
-mkdir -p "${bin_dir}"
+uid = os.geteuid()
+system_owner = Path("/").stat().st_uid
+
+
+def safe_directory(original, shared=False):
+    if not original.is_absolute() or not str(original).isprintable() or ".." in original.parts:
+        raise ValueError
+    # Account for system-owned Darwin aliases such as /var and /tmp.
+    for component in (original, *original.parents):
+        if not component.is_symlink():
+            continue
+        if component.lstat().st_uid != system_owner or any(
+            parent.lstat().st_uid != system_owner or parent.lstat().st_mode & 0o022
+            for parent in component.parents
+        ):
+            raise ValueError
+        target = component.parent / os.readlink(component)
+        if any(path.is_symlink() for path in (target, *target.parents)):
+            raise ValueError
+    physical = original.resolve(strict=True)
+    if not str(physical).isprintable():
+        raise ValueError
+    for component in (physical, *physical.parents):
+        info = component.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid not in {uid, system_owner}:
+            raise ValueError
+        if info.st_mode & 0o022 and not (info.st_mode & stat.S_ISVTX and (shared or component != physical)):
+            raise ValueError
+    if not shared and physical.stat().st_uid != uid:
+        raise ValueError
+    return physical
+
+
+try:
+    if sys.argv[1]:
+        root = safe_directory(Path(sys.argv[1]))
+    else:
+        root = Path(tempfile.mkdtemp(prefix="claw-ent-ci.", dir=safe_directory(Path("/tmp"), shared=True)))
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        if not os.path.samestat(os.fstat(directory), root.stat()):
+            raise ValueError
+        try:
+            os.mkdir("bin", mode=0o700, dir_fd=directory)
+        except FileExistsError:
+            pass
+        binary_directory = os.open("bin", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+        try:
+            info = os.fstat(binary_directory)
+            if info.st_uid != uid or info.st_mode & 0o022 or not os.path.samestat(info, (root / "bin").stat()):
+                raise ValueError
+            os.fchmod(binary_directory, 0o700)
+        finally:
+            os.close(binary_directory)
+    finally:
+        os.close(directory)
+    print(root / "bin")
+except (OSError, RuntimeError, ValueError):
+    sys.exit("CI tool setup requires a safe owner-controlled RUNNER_TEMP and a physical private bin directory.")
+PYTHON
+)"
+
 CDPATH="" cd "${root_dir}"
 export PATH="${bin_dir}:${PATH}"
 
@@ -18,9 +85,17 @@ need_command() {
   fi
 }
 
-# Retries transient network failures, then verifies the pinned SHA-256.
+# Keep verification, transport, and the kubectl probe off the caller's PATH
+# and away from shell startup files and exported functions.
+run_system_tool() {
+  /usr/bin/env -i PATH="${system_tools_path}" LC_ALL=C \
+    HTTPS_PROXY="${HTTPS_PROXY:-}" https_proxy="${https_proxy:-}" \
+    NO_PROXY="${NO_PROXY:-}" no_proxy="${no_proxy:-}" \
+    "$@"
+}
+
 download_file() {
-  bash "${root_dir}/scripts/ci/download-pinned.sh" "$@"
+  run_system_tool /bin/bash "${root_dir}/scripts/ci/download-pinned.sh" "$@"
 }
 
 k3d_version_matches() {
@@ -113,28 +188,39 @@ select_linux_artifact() {
 }
 
 install_kubectl() {
-  local pins version amd64_checksum arm64_checksum artifact arch checksum existing
-  pins="$(node -e '
-    const { version, linux } = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
-    if (!/^\d+\.\d+\.\d+$/.test(version) || ![linux.amd64, linux.arm64].every((value) => /^[a-f0-9]{64}$/.test(value))) {
-      throw new Error("Invalid kubectl pins");
-    }
-    console.log(version, linux.amd64, linux.arm64);
-  ' "${root_dir}/scripts/ci/kubectl-pins.json")"
-  read -r version amd64_checksum arm64_checksum <<< "${pins}"
-  artifact="$(select_linux_artifact "${platform}" kubectl "${version}" \
-    "amd64 ${amd64_checksum}" "arm64 ${arm64_checksum}" 2>/dev/null)" || {
-    echo "No repository kubectl checksum for ${platform}; use Linux x86_64 or arm64 for CI tool setup." >&2
-    return 1
-  }
-  read -r arch checksum <<< "${artifact}"
+  local operating_system arch pins version checksum existing
+  case "${platform}" in
+    Linux-x86_64) operating_system=linux; arch=amd64 ;;
+    Linux-aarch64|Linux-arm64) operating_system=linux; arch=arm64 ;;
+    Darwin-x86_64) operating_system=darwin; arch=amd64 ;;
+    Darwin-arm64|Darwin-aarch64) operating_system=darwin; arch=arm64 ;;
+    *)
+      echo "No repository kubectl checksum for ${platform}; use Linux or Darwin on x86_64 or arm64." >&2
+      return 1
+      ;;
+  esac
+  pins="$(/usr/bin/python3 -I - "${root_dir}/scripts/ci/kubectl-pins.json" "${operating_system}" "${arch}" <<'PYTHON'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as manifest:
+    pins = json.load(manifest)
+version = pins["version"]
+checksum = pins[sys.argv[2]][sys.argv[3]]
+if re.fullmatch(r"\d+\.\d+\.\d+", version) is None or re.fullmatch(r"[a-f0-9]{64}", checksum) is None:
+    sys.exit("Invalid kubectl pins")
+print(version, checksum)
+PYTHON
+)"
+  read -r version checksum <<< "${pins}"
   local binary="${bin_dir}/kubectl"
   existing="$(type -P kubectl || true)"
-  # The downloader verifies a private copy of a PATH candidate before reuse.
+  # The downloader verifies a private copy of the PATH candidate before reuse.
   download_file \
-    "https://dl.k8s.io/release/v${version}/bin/linux/${arch}/kubectl" \
+    "https://dl.k8s.io/release/v${version}/bin/${operating_system}/${arch}/kubectl" \
     "${binary}" "${checksum}" "" "${existing}" 0755
-  "${binary}" version --client=true
+  run_system_tool "${binary}" version --client=true
 }
 
 install_k3d() {

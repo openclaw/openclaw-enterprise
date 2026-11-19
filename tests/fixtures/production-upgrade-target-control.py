@@ -16,60 +16,163 @@ import sys
 import tempfile
 from pathlib import Path
 
-proof = Path(sys.argv[1]).resolve()
-root = Path.cwd()
-tools = ("bash", "git", "jq", "node", "yq")
-missing = [tool for tool in tools if not shutil.which(tool)]
-if missing:
-    sys.exit("requires local tools: " + ", ".join(missing))
+MAX_DECODER_BYTES = 128 * 1024 * 1024
 
-def pinned_decoder():
-    architecture = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine())
-    if sys.platform != "linux" or architecture is None:
-        sys.exit("the upgrade target regression requires a supported Linux kubectl build")
-    pins = json.loads((root / "scripts/ci/kubectl-pins.json").read_text())
-    expected = pins["linux"][architecture]
-    # Inspect PATH candidates without invoking them. Nonblocking open keeps
-    # executable FIFOs from blocking discovery before the regular-file check.
+
+def private_directory(directory):
+    directory = directory.resolve(strict=True)
+    caller = os.geteuid()
+    owner = directory.stat()
+    if not stat.S_ISDIR(owner.st_mode) or owner.st_uid != caller or stat.S_IMODE(owner.st_mode) != 0o700:
+        raise ValueError("decoder staging directory must be private")
+    root_owner = directory.parents[-1].stat().st_uid
+    for ancestor in directory.parents:
+        info = ancestor.stat()
+        if info.st_uid not in (caller, root_owner) or (info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX):
+            raise ValueError("decoder staging directory has an unsafe ancestor")
+    return directory
+
+
+def copy_decoder(directory, expected, maximum):
+    destination = private_directory(directory) / "kubectl"
+    # Copy at most the observed regular-file size. The worker's parent owns
+    # its deadline, so slow resolution, open, read, and hash all share one bound.
     for directory in os.get_exec_path():
         candidate = shutil.which("kubectl", path=directory)
         if candidate is None:
             continue
+        created = False
         try:
             candidate = Path(candidate).resolve(strict=True)
             flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
             with os.fdopen(os.open(candidate, flags), "rb") as source:
                 info = os.fstat(source.fileno())
-                if not stat.S_ISREG(info.st_mode) or not info.st_mode & 0o111:
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or not info.st_mode & 0o111
+                    or not 0 < info.st_size <= maximum
+                ):
                     continue
-                digest = hashlib.sha256()
-                for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                    digest.update(chunk)
-                if digest.hexdigest() == expected:
-                    return str(candidate), expected
-        except OSError:
+                with destination.open("x+b") as output:
+                    created = True
+                    remaining = info.st_size
+                    while remaining:
+                        chunk = source.read(min(1024 * 1024, remaining))
+                        if not chunk:
+                            break
+                        remaining -= len(chunk)
+                        output.write(chunk)
+                    if remaining or source.read(1):
+                        continue
+                    output.seek(0)
+                    digest = hashlib.sha256()
+                    for chunk in iter(lambda: output.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                    if digest.hexdigest() != expected:
+                        continue
+                    os.fchmod(output.fileno(), 0o500)
+            created = False
+            return
+        except (OSError, RuntimeError):
             continue
+        finally:
+            if created:
+                destination.unlink()
     sys.exit("requires the pinned native kubectl executable on PATH")
 
-kubectl, kubectl_sha256 = pinned_decoder()
+
+if sys.argv[1] == "--copy-decoder":
+    copy_decoder(Path(sys.argv[2]), sys.argv[3], min(MAX_DECODER_BYTES, int(sys.argv[4])))
+    sys.exit(0)
 
 
 def run_command(command, *, environment=None, timeout=20):
-    with subprocess.Popen(
+    process = subprocess.Popen(
         command, env=environment, text=True, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, start_new_session=True,
-    ) as process:
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except BaseException:
         try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except BaseException:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
             process.communicate(timeout=2)
-            raise
-        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        except subprocess.TimeoutExpired:
+            process.stdout.close()
+            process.stderr.close()
+            raise RuntimeError("fixture command group did not settle after SIGKILL") from None
+        raise
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
+
+def stop_fixture(signum, _frame):
+    # Let an in-flight command reap its isolated group before fixture teardown.
+    raise SystemExit(128 + signum)
+
+
+def stage_decoder(directory, expected, *, environment=None, maximum=MAX_DECODER_BYTES):
+    result = run_command(
+        [sys.executable, str(Path(__file__).resolve()), "--copy-decoder", str(directory), expected, str(maximum)],
+        environment=environment,
+    )
+    if result.returncode != 0:
+        sys.exit(result.stderr.strip() or "could not stage the pinned decoder")
+    return str(directory / "kubectl")
+
+
+def prove_copy_isolation(proof):
+    # Exercise the same staging and execution paths with a disposable donor.
+    # The genuine binary on PATH is reserved for the integration controls.
+    with tempfile.TemporaryDirectory(prefix="decoder-control-", dir=proof) as scratch:
+        control = Path(scratch)
+        fifo, huge, donor, staged = (control / entry for entry in ("fifo", "huge", "donor", "staged"))
+        for path in (fifo, huge, donor, staged):
+            path.mkdir(mode=0o700)
+        os.mkfifo(fifo / "kubectl", 0o700)
+        with (huge / "kubectl").open("xb") as source:
+            source.truncate(MAX_DECODER_BYTES + 1)
+            os.fchmod(source.fileno(), 0o700)
+        original = b"#!/bin/sh\nprintf 'verified copy\\n'\n"
+        tool = donor / "kubectl"
+        tool.write_bytes(original)
+        tool.chmod(0o700)
+        environment = {**os.environ, "PATH": os.pathsep.join(map(str, (fifo, huge, donor)))}
+        decoder = stage_decoder(staged, hashlib.sha256(original).hexdigest(), environment=environment)
+        replacement = donor / "replacement"
+        replacement.write_bytes(b"#!/bin/sh\nexit 99\n")
+        replacement.chmod(0o700)
+        replacement.replace(tool)
+        result = run_command([decoder])
+        assert result.returncode == 0 and result.stdout == "verified copy\n"
+
+        # A matching hash must not override the size gate. Use a smaller bound
+        # so the causal check need not hash an artifact-sized synthetic file.
+        (huge / "kubectl").write_bytes(original)
+        size_control = control / "size-control"
+        size_control.mkdir(mode=0o700)
+        try:
+            stage_decoder(
+                size_control, hashlib.sha256(original).hexdigest(),
+                environment={**os.environ, "PATH": str(huge)}, maximum=len(original) - 1,
+            )
+        except SystemExit as error:
+            assert str(error) == "requires the pinned native kubectl executable on PATH"
+            assert not (size_control / "kubectl").exists()
+        else:
+            raise AssertionError("matching but oversized decoder was accepted")
+
+
+proof = private_directory(Path(sys.argv[1]))
+root = Path.cwd()
+tools = ("bash", "git", "jq", "node", "yq")
+missing = [tool for tool in tools if not shutil.which(tool)]
+if missing:
+    sys.exit("requires local tools: " + ", ".join(missing))
+for number in (signal.SIGHUP, signal.SIGTERM):
+    signal.signal(number, stop_fixture)
 
 # The nested child holds the inherited stdout pipe. A leader-only kill would
 # leave the pipe open beyond the cleanup timeout instead of settling the case.
@@ -85,6 +188,14 @@ except subprocess.TimeoutExpired as error:
 else:
     raise AssertionError("deliberately blocked fixture failed to time out")
 
+architecture = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine())
+if sys.platform != "linux" or architecture is None:
+    sys.exit("the upgrade target regression requires a supported Linux kubectl build")
+pins = json.loads((root / "scripts/ci/kubectl-pins.json").read_text())
+prove_copy_isolation(proof)
+decoder_directory = tempfile.TemporaryDirectory(prefix="decoder-", dir=proof)
+kubectl = stage_decoder(Path(decoder_directory.name), pins["linux"][architecture])
+
 adapter_cmd = ["python3", "scripts/upgrade-production"]
 native_cmd = ["bash", "scripts/upgrade-production-images"]
 
@@ -92,23 +203,12 @@ binaries = proof / "bin"
 binaries.mkdir(mode=0o700, exist_ok=True)
 shim = binaries / "kubectl"
 shim.write_text("""#!/usr/bin/env python3
-import base64,hashlib,json,os,pathlib,stat,subprocess,sys
+import base64,json,os,pathlib,subprocess,sys
 from pathlib import Path
 args = sys.argv[1:]
 case = Path(os.environ["CONTROL_CASE"])
 tool = Path(sys.argv[0]).name
-def decoder():
-    candidate = os.environ["CONTROL_KUBECTL"]
-    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
-    with os.fdopen(os.open(candidate, flags), "rb") as source:
-        info = os.fstat(source.fileno())
-        assert stat.S_ISREG(info.st_mode) and info.st_mode & 0o111, "decoder is no longer an executable file"
-        digest = hashlib.sha256()
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    assert digest.hexdigest() == os.environ["CONTROL_KUBECTL_SHA256"], "decoder changed before invocation"
-    return candidate
-
+decoder = os.environ["CONTROL_KUBECTL"]
 path = Path(args[args.index("--kubeconfig") + 1])
 record = {"tool": tool, "path": str(path)}
 def swap_ca():
@@ -126,8 +226,7 @@ if (tool == "kubectl" and args[:1] == ["--kubeconfig"]
         (case / "material/server.pem").unlink()
     with (case/"events.jsonl").open("a") as out:
         out.write(json.dumps(record)+"\\n")
-    real = decoder()
-    os.execv(real,[real,*args])
+    os.execv(decoder,[decoder,*args])
 if "get" in args and "--raw=/readyz" in args:
     record["operation"] = "ready"
 elif tool == "helm" and args[:2] == ["status","oce"]:
@@ -142,7 +241,7 @@ if os.environ.get("SWAP_AT_BOUNDARY") == "yes":
 # Decode the same source and flatten relative references locally using real
 # client-go compatibility. Permit no non-config subcommand or network call.
 view = subprocess.run(
-    [decoder(),"--kubeconfig",str(path),"--context","fixture","config","view",
+    [decoder,"--kubeconfig",str(path),"--context","fixture","config","view",
      "--minify","--flatten","--raw","-o","json"],
     capture_output=True,text=True,
 )
@@ -160,7 +259,9 @@ shim.chmod(0o700)
 helm = binaries / "helm"
 if not helm.exists():
     helm.symlink_to(shim)
-source = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+revision = run_command(["git", "rev-parse", "HEAD"])
+revision.check_returncode()
+source = revision.stdout.strip()
 authority = b"approved authority for fixture"
 replacement = b"replacement authority for fixture"
 full_image = "registry.example/fixture@sha256:" + "a" * 64
@@ -209,7 +310,6 @@ def run(case, command, *, swap=False, change_before_pin=""):
         "LANG": "C.UTF-8", "OCC_URL":"https://127.0.0.1:9",
         "OCC_SERVICE_KEY_FILE":str(case/"service-key.json"),
         "CONTROL_CASE": str(case), "CONTROL_KUBECTL": kubectl,
-        "CONTROL_KUBECTL_SHA256": kubectl_sha256,
         "SWAP_AT_BOUNDARY": "yes" if swap else "no",
         "CHANGE_BEFORE_PIN": change_before_pin,
     }

@@ -284,7 +284,7 @@ def named_kubeconfig_entry(parser, configuration, field, name):
     parser.error(f"kubeconfig must identify one selected {field}")
 
 
-def selected_kubeconfig_ca(parser, filename, content, context_name):
+def selected_kubeconfig_trust(parser, filename, content, context_name):
     configuration = preview_mapping(parser, "kubeconfig", content)
     context = named_kubeconfig_entry(parser, configuration, "context", context_name)
     cluster_name = context.get("cluster")
@@ -302,14 +302,18 @@ def selected_kubeconfig_ca(parser, filename, content, context_name):
         parser.error("the selected kubeconfig cluster has invalid inline CA data")
     if ca_path and has_inline:
         parser.error("the selected kubeconfig cluster specifies both an inline CA and a CA file")
-    if (ca_path or has_inline) and cluster.get("insecure-skip-tls-verify") is True:
-        parser.error("the selected kubeconfig cluster specifies both a CA and insecure TLS")
+    if cluster.get("insecure-skip-tls-verify") is True:
+        if ca_path or has_inline:
+            parser.error("the selected kubeconfig cluster specifies both a CA and insecure TLS")
+        return None, "TLS VERIFICATION DISABLED for the selected Kubernetes context."
+    if has_inline:
+        return None, "TLS trust: inline kubeconfig CA."
     if not ca_path:
-        return None
-    if os.path.isabs(ca_path):
-        return ca_path
-    # client-go resolves paths relative to the declared kubeconfig's location.
-    return os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(filename)), ca_path))
+        return None, "TLS trust: system roots (can change between commands)."
+    if not os.path.isabs(ca_path):
+        # client-go resolves paths relative to the declared kubeconfig's location.
+        ca_path = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(filename)), ca_path))
+    return ca_path, "TLS trust: selected external CA (verified CA from the selected kubeconfig context)."
 
 
 def setting(mapping, *path):
@@ -436,19 +440,20 @@ def validate_candidate_inputs(parser, before_values, values, before_installation
 def preview_target(parser, profile, resolve_path):
     kubeconfig = resolve_path(profile["kubeconfig"])
     content = preview_file(parser, "kubeconfig", kubeconfig)
-    ca = selected_kubeconfig_ca(parser, kubeconfig, content, profile["context"])
+    ca, trust = selected_kubeconfig_trust(parser, kubeconfig, content, profile["context"])
     paths = {"kubeconfig": kubeconfig}
     digests = {"kubeconfig": hashlib.sha256(content).hexdigest()}
     if ca is not None:
         paths[KUBECONFIG_SERVER_CA] = ca
-        digests[KUBECONFIG_SERVER_CA] = hashlib.sha256(
-            preview_file(parser, KUBECONFIG_SERVER_CA, ca)
-        ).hexdigest()
-    return paths, digests
+        authority = preview_file(parser, KUBECONFIG_SERVER_CA, ca)
+        digests[KUBECONFIG_SERVER_CA] = hashlib.sha256(authority).hexdigest()
+        if not authority:
+            trust = "TLS trust: system roots (empty CA file uses the system trust store, which can change between commands)."
+    return paths, digests, trust
 
 
 def preview_inputs(parser, profile, resolve_path, options, *, validate_candidate):
-    paths, digests = preview_target(parser, profile, resolve_path)
+    paths, digests, trust = preview_target(parser, profile, resolve_path)
     directory = Path(resolve_path(profile["installationDirectory"]))
     paths.update({
         "baseline Helm values": str(directory / "values.yaml"),
@@ -482,6 +487,7 @@ def preview_inputs(parser, profile, resolve_path, options, *, validate_candidate
     if migration not in ("hook", "separate"):
         parser.error("candidate Helm values must select hook or separate database.upgradeMigration")
     effects = [
+        trust,
         f"Database migration mode: {migration}",
         "The upgrade can overwrite values.yaml and submit a Helm upgrade.",
     ]
@@ -525,11 +531,6 @@ def preview_inputs(parser, profile, resolve_path, options, *, validate_candidate
         if flag in options:
             number = int(options[flag])
             effects.append(f"{role}: {number}")
-    if KUBECONFIG_SERVER_CA in digests:
-        if digests[KUBECONFIG_SERVER_CA] == hashlib.sha256(b"").hexdigest():
-            effects.append("The selected CA file is empty. The run uses the system trust store.")
-        else:
-            effects.append("The run will use the verified CA from the selected kubeconfig context.")
     return paths, digests, effects
 
 
@@ -581,6 +582,10 @@ def show_plan(parser, profile, profile_relative_path, input_names, effects, resu
     print("No cluster contact or writes occurred during this preview. Current images and migration requirements are unknown.")
     if resume_run:
         print(f"Resume run: {Path(resume_run).absolute()}")
+        print(
+            "Resume can still write the recorded local Installation, replace the live mutable "
+            "Installation Secret, or switch to the recorded immutable Secret."
+        )
         report_status(parser, resume_run)
         print("Resume can continue deployment. Reconcile previous effects before approving.")
     else:
@@ -759,7 +764,7 @@ def main():
             parser, profile, path, options, validate_candidate=args.operation != "resume",
         )
     else:
-        paths, digests = preview_target(parser, profile, path)
+        paths, digests, _ = preview_target(parser, profile, path)
     if args.operation in ("plan", "apply", "resume"):
         resume_run = args.evidence_dir if args.operation == "resume" else None
         show_plan(parser, profile, path, paths, effects, resume_run)

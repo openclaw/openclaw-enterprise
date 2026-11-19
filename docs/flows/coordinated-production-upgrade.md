@@ -85,8 +85,8 @@ graph TD
 ### 1. Prepare the candidate
 
 `internal/occcli/installation_upgrade.go:installationUpgradeCommand` calls
-`scripts/upgrade-production:main`. Plan previews candidate effects.
-Profiled requests pin cluster trust. Resume and cleanup retain it. New runs print status paths before dispatch.
+`scripts/upgrade-production:main`. Plan previews effects and TLS mode.
+Profiles pin kubeconfig and explicit CA bytes. New runs print status paths before dispatch.
 
 `scripts/upgrade-production-images:prepare_upgrade`
 
@@ -207,9 +207,9 @@ Freeze writers, autoscalers, Helm changes and drafts per the [production guide](
 Resume binds prepared inputs, directory, source and cluster, requalifies images,
 and rejects changed eligible nodes.
 Values must match baseline, candidate or the recorded predecessor and revision.
-Resume checks immutable intent, Secret identity and unrelated data. `verify_installation_switch`
-rechecks both immutable Secrets' UIDs/data. Pending Installation writes require a mutable Secret before scaling. Retries require
-migration-history review and terminal initializer Jobs/Pods. `new_attempt` fsyncs
+Resume can finish local Installation writes, mutable Secret replacement or an immutable
+reference switch. `verify_installation_switch` rechecks both Secrets' UIDs/data.
+Retries require checked migration history and terminal initializer Jobs/Pods. `new_attempt` fsyncs
 attempt-directory ancestors before publishing pointers.
 Failed preflight leaves stopped writers stopped. Reconcile unknown creates before
 same-directory `--resume`, keeping the lock, evidence and journal. Ordinary failures

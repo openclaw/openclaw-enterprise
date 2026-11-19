@@ -46,7 +46,10 @@ occ installation upgrade plan --profile /secure/occ/upgrade.json
 ```
 
 The offline preview checks the profile, local inputs, image digests, and
-checkout commit. It reads the kubeconfig without showing its contents or digest.
+checkout commit. It reports how the selected Kubernetes context verifies the
+server certificate: a CA file, an inline CA, or system roots. If the context
+disables verification, the preview warns you before approval.
+
 When you select candidate files or other expert options, pass the same options
 after `--` to `plan` and `apply`. Review the deployment effects and image digests
 before you approve. Plan, apply, and preflight refuse changes to protected
@@ -76,11 +79,12 @@ output are attached to a terminal, type `yes` to approve the upgrade. For
 automation or redirected output, pass `--auto-approve`. The upgrade checks
 startup and migration compatibility and confirms preflight cleanup before it
 stops writers.
-Profiled commands use a private kubeconfig copy for cluster requests. If the
-selected context uses a CA file, the command embeds the verified CA in the copy.
-Apply and resume check the kubeconfig and its CA again after approval. Client
-credential references and commands still use their original locations. Resume
-and cleanup of a profiled run retain its recorded cluster trust.
+Profiled commands use a private kubeconfig copy for Kubernetes requests.
+Apply and resume recheck the kubeconfig and any explicit CA after approval.
+The CLI embeds the checked bytes from a CA file in the copy. Client credential
+references and commands use their original locations. Resume and cleanup bind
+the recorded kubeconfig and explicit CA bytes. When the context uses system roots,
+changes to the host trust store can affect later recovery commands.
 
 For each fresh `apply`, `preflight`, or `migration check`, the CLI prints
 `Evidence: PATH` and an `Inspect:` command before starting the operation.
@@ -148,6 +152,12 @@ and evidence path:
 ```bash
 occ installation upgrade resume /path/to/original/evidence --profile /secure/occ/upgrade.json
 ```
+
+Resume previews the selected trust mode and the writes that may still occur.
+It can write the recorded local `installation.yaml`, replace data in the live
+mutable Installation Secret, or switch the Helm release to the recorded
+immutable Installation Secret. Treat those effects as possible even when the
+local files already match the candidate.
 
 Resume asks for `yes` at a terminal. In automation, pass `--auto-approve`.
 Append the original expert options and required attestations after `--`.
