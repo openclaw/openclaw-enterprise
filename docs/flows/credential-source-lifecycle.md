@@ -85,6 +85,8 @@ The route accepts `name`, `type`, optional `config` and lowercase-keyed `secrets
 [TokenService source schemas](../../packages/contracts/src/api/token-service-sources.ts) are standalone OpenAPI components.
 One transaction authorizes `credential_source:create`, locks the ready Namespace,
 requires its selected source Driver, then reads the catalog.
+Discovery checks every advertised type. Registration checks the selected type.
+Invalid catalog field names return `503 DEPENDENCY_UNAVAILABLE` before effects.
 An unoffered type returns `CredentialSourceTypeNotOfferedError` (`409`). Unknown
 or missing catalog fields and Driver-invalid values return `400 INVALID_REQUEST`
 before Secret reads, record creation, or gateway writes. OCC checks normalized
@@ -373,6 +375,8 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 
 ## Changelog
 
+- 2026-11-19 03:23: Restore catalog field validation in discovery and registration. (authoring-run/b0e8e24d-3e5e-40a1-ae3b-10e0dfe3e6a8 - 4f81f60db)
+
 - 2026-11-19 03:15: Keep the flow current while moving catalog enforcement to a separate change. (authoring-run/b0e8e24d-3e5e-40a1-ae3b-10e0dfe3e6a8 - ea34779cc)
 
 - 2026-11-18 14:02: Check the selected catalog type during registration. (authoring-run/f10d3e7e-18d9-4ae8-9bdb-8004b6815fb7 - 293833c72)
@@ -414,9 +418,5 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 - 2026-10-14 14:04: Scope PAT authentication and OpenShell prerequisites. (authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f - 96a2b79fa)
 
 - 2026-10-13 20:30: Document provider-managed Codex PAT authentication. (01a136ee-8824-7043-b9e2-49eccacac3bd - ed9018c09)
-
-- 2026-10-14 01:11: Reconcile endpoint validation and provider ownership with external OAuth custody in the accompanying merge. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - c5fb4880ebf2df2aedae12f99adb1992a930ba1b)
-
-- 2026-10-13 20:07: Check provider ownership before profile updates. (authoring-run/01a136d4-3550-7042-834c-cf11f51f41f2 - 146c80ef66b5860cb9bea296d2574156468a103c)
 
 [Credential source lifecycle documentation history](credential-source-lifecycle/history.md) preserves the older dated entries.

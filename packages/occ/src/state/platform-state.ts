@@ -87,6 +87,7 @@ import type {
   IAMPolicyRepository,
 } from "@openclaw-enterprise/contracts";
 import {
+  CREDENTIAL_SOURCE_FIELD_NAME_PATTERN,
   normalizeInitialWorkspaceFiles,
   normalizeWorkspaceDefaultsId,
   normalizePluginDesiredState,
@@ -1706,7 +1707,6 @@ function assertSecret(secret: Secret): void {
 const credentialSourceIdentifier =
   /^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const credentialSourceType = /^[a-z][a-z0-9-]{0,63}$/;
-const credentialSourceField = /^[a-z][a-z0-9_]{0,63}$/;
 
 function isPlainRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -1871,7 +1871,7 @@ function assertCredentialSource(source: CredentialSource): void {
     Object.keys(config).length > 32 ||
     Object.entries(config).some(
       ([field, value]) =>
-        !credentialSourceField.test(field) ||
+        !CREDENTIAL_SOURCE_FIELD_NAME_PATTERN.test(field) ||
         typeof value !== "string" ||
         value.length < 1 ||
         value.length > 2048,
@@ -1885,7 +1885,7 @@ function assertCredentialSource(source: CredentialSource): void {
   // Secret inputs persist only as same-Namespace Secret IDs keyed by field.
   for (const [field, reference] of Object.entries(secretInputs)) {
     if (
-      !credentialSourceField.test(field) ||
+      !CREDENTIAL_SOURCE_FIELD_NAME_PATTERN.test(field) ||
       !isPlainRecord(reference) ||
       Object.keys(reference).length !== 3 ||
       reference.kind !== "secret" ||

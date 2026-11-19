@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { Check } from "typebox/value";
 import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
+import { InstallationResponse } from "../../packages/contracts/src/api/resources.ts";
 
 import {
   createOpenShellBackend,
@@ -532,6 +533,31 @@ test("Installation discovery serializes OpenShell model authentication and refre
   assert.equal(refreshToken?.required, true);
   assert.equal(refreshToken?.issuerRotated, true);
   assert.deepEqual(f.mutations, []);
+});
+
+test("discovery and direct registration refuse unusable credential source fields", async (t) => {
+  const f = await fixture(t);
+  const { body } = await f.request("GET", "/installation");
+  assert.ok(Check(InstallationResponse, body));
+  // The selected Driver requires a field the HTTP API cannot accept.
+  const types = body.data.capabilities.credentialSources.types;
+  const openai = types.find(({ type }) => type === "openai");
+  const validConfig = openai.config;
+  openai.config = [{ name: "client-id", required: true }];
+  assert.equal(Check(InstallationResponse, body), false);
+  f.driver.listSourceTypes = async () => types;
+  const response = await f.request("GET", "/installation");
+  assert.equal(response.status, 503);
+  assert.equal(response.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  // A valid direct POST must not tell the caller to add a field that the API rejects.
+  const registration = await f.create("direct");
+  assert.equal(registration.status, 503, JSON.stringify(registration.body));
+  assert.equal(registration.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  await f.assertNothingSaved();
+  // An unusable unrelated type must not prevent registration of a valid selected type.
+  types.push({ ...openai, type: "broken" });
+  openai.config = validConfig;
+  assert.equal((await f.create("valid")).status, 201);
 });
 
 test("credential source HTTP admission rejects invalid endpoints without retaining records", async (t) => {
