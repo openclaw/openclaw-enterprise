@@ -2064,24 +2064,36 @@ check_migration() {
     "$history" "$evidence_dir"
 }
 
-require_migration_writers_stopped() {
-  local component handoff="$upgrade_evidence_dir/database-migration-handoff.json"
+require_migration_handoff() {
+  local handoff="$upgrade_evidence_dir/database-migration-handoff.json"
+  [[ -e "$handoff" || -L "$handoff" ]] ||
+    die "the original separate database deployment handoff is missing. Keep both writers stopped and reconcile before retrying Helm."
   require_private_file "$handoff"
   jq -es '
     length == 1 and (.[0] | keys == ["api","worker"] and all(.[]; keys == ["generation","uid"] and
       (.uid | type == "string" and length > 0) and (.generation | type == "number" and . > 0 and floor == .)))
   ' "$handoff" >/dev/null || die "the separate database handoff has invalid writer identities."
+}
+
+require_migration_handoff_writer() {
+  local component=$1 observed=$2 handoff="$upgrade_evidence_dir/database-migration-handoff.json"
+  jq -e --arg release "$release" --arg component "$component" --slurpfile handoff "$handoff" '
+    .metadata.labels["app.kubernetes.io/instance"] == $release and
+    .metadata.labels["app.kubernetes.io/component"] == $component and
+    .metadata.deletionTimestamp == null and .spec.replicas == 0 and
+    (.metadata | {uid, generation}) == $handoff[0][$component]
+  ' "$observed" >/dev/null ||
+    die "the $component Deployment changed during the separate database deployment. Preserve the evidence and reconcile the writer."
+}
+
+require_migration_writers_stopped() {
+  local component
+  require_migration_handoff
   for component in api worker; do
     "${kube[@]}" --request-timeout=15s --namespace "$namespace" get "deployment/openclaw-enterprise-$component" --output json \
       >"$evidence_dir/migration-$component-deployment.json" ||
       die "cannot read the stopped $component Deployment; keep writers stopped."
-    jq -e --arg release "$release" --arg component "$component" --slurpfile handoff "$handoff" '
-      .metadata.labels["app.kubernetes.io/instance"] == $release and
-      .metadata.labels["app.kubernetes.io/component"] == $component and
-      .metadata.deletionTimestamp == null and .spec.replicas == 0 and
-      (.metadata | {uid, generation}) == $handoff[0][$component]
-    ' "$evidence_dir/migration-$component-deployment.json" >/dev/null ||
-      die "the $component Deployment changed during the separate database deployment. Preserve the evidence and reconcile the writer."
+    require_migration_handoff_writer "$component" "$evidence_dir/migration-$component-deployment.json"
   done
   "${kube[@]}" --request-timeout=15s --namespace "$namespace" get pods \
     --selector "app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/instance=$release" \
@@ -2105,6 +2117,14 @@ require_settled_initializers() {
     --output json >"$evidence_dir/current-initialization-pods.json"
   jq -e '.items | type == "array" and all(.[]; .status.phase == "Succeeded" or .status.phase == "Failed")' \
     "$evidence_dir/current-initialization-pods.json" >/dev/null || die "an initialization Pod is still active; wait for it to terminate before $purpose."
+}
+
+require_unchanged_helm_status() {
+  helm status "$release" "${helm_args[@]}" --output json >"$1"
+  jq -e --slurpfile observed "$evidence_dir/current-helm-status.json" '
+    . == $observed[0]
+  ' "$1" >/dev/null ||
+    die "the Helm release changed before submission; investigate before continuing."
 }
 
 migration_secret_identities() {
@@ -2958,9 +2978,23 @@ fi
 if ((helm_complete)) && ! matches_yaml "$evidence_dir/current-live-installation.yaml" "$candidate_installation"; then
   die "Helm selected the candidate but the live Installation Secret does not; investigate before continuing."
 fi
+retry_separate_handoff=0
 if [[ -f "$evidence_dir/helm-started" ]] && ((helm_complete == 0)); then
   ((migration_history_checked)) || die "Helm's outcome is unresolved. Inspect the release and initialization Job, run the candidate migration --check against the retained database, then resume with --migration-history-checked."
   require_settled_initializers "retrying Helm"
+  # An intent can outlive a rejected submission. Until Helm advances past the
+  # original revision, keep the same separate-migration writers stopped.
+  original_revision=$(jq -ers '
+    select(length == 1) | .[0].version | select(type == "number" and . > 0 and floor == .)
+  ' "$evidence_dir/before-helm-status.json") || die "cannot identify the original Helm revision."
+  if jq -e --argjson revision "$original_revision" '.version == $revision' \
+    "$evidence_dir/current-helm-status.json" >/dev/null; then
+    upgrade_migration=$(yq -er '.database.upgradeMigration // "hook"' "$candidate_values")
+    if [[ "$upgrade_migration" == separate ]]; then
+      retry_separate_handoff=1
+      require_migration_writers_stopped
+    fi
+  fi
 fi
 
 if ((helm_complete == 0)); then
@@ -2996,8 +3030,10 @@ if ((helm_complete == 0)); then
   if [[ "$upgrade_migration" == separate && ! -f "$evidence_dir/helm-started" ]]; then
     separate_handoff=1
     if [[ -e "$handoff" || -L "$handoff" ]]; then
-      require_private_file "$handoff"
+      require_migration_handoff
     fi
+  elif ((retry_separate_handoff)); then
+    require_migration_handoff
   fi
   # Validate both writers before stopping either one.
   for component in api worker; do
@@ -3013,11 +3049,8 @@ if ((helm_complete == 0)); then
       .metadata.deletionTimestamp == null and
       (.spec.replicas == 0 or .spec.replicas == 1)
     ' "$evidence_dir/current-$component-deployment.json" >/dev/null || die "$deployment has unexpected ownership or replicas."
-    if ((separate_handoff)) && [[ -f "$handoff" ]]; then
-      jq -e --arg component "$component" --slurpfile handoff "$handoff" '
-        .spec.replicas == 0 and (.metadata | {uid, generation}) == $handoff[0][$component]
-      ' "$evidence_dir/current-$component-deployment.json" >/dev/null ||
-        die "The $component Deployment changed during the separate database deployment. Preserve the database and reconcile the writer before resuming."
+    if ((retry_separate_handoff)) || { ((separate_handoff)) && [[ -f "$handoff" ]]; }; then
+      require_migration_handoff_writer "$component" "$evidence_dir/current-$component-deployment.json"
     fi
     # Test and scale atomically: a replacement or concurrent edit must not be stopped.
     jq '[
@@ -3068,6 +3101,11 @@ if ((helm_complete == 0)); then
     ((SECONDS < deadline)) || die "OCC Pods did not terminate before the timeout; migration was not started."
     sleep 2
   done
+  if ((retry_separate_handoff)); then
+    require_unchanged_helm_status "$evidence_dir/pre-resume-helm-status.json"
+    require_settled_initializers "retrying Helm"
+    require_migration_handoff
+  fi
   for component in api worker; do
     quiescence_remaining
     "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" get "deployment/openclaw-enterprise-$component" --output json \
@@ -3077,6 +3115,9 @@ if ((helm_complete == 0)); then
       .metadata.deletionTimestamp == null and .spec.replicas == 0
     ' "$evidence_dir/quiescence-$component-deployment.json" >/dev/null ||
       die "OCC identity or replicas changed during quiescence; migration was not started."
+    if ((retry_separate_handoff)); then
+      require_migration_handoff_writer "$component" "$evidence_dir/quiescence-$component-deployment.json"
+    fi
   done
 
   if ((separate_handoff)) && { [[ ! -f "$handoff" ]] || ((migration_history_checked == 0)); }; then
@@ -3121,11 +3162,7 @@ PYTHON
   if [[ "$repository_enabled" == true ]]; then
     verify_pair_nodes
   fi
-  helm status "$release" "${helm_args[@]}" --output json >"$evidence_dir/before-helm-submission.json"
-  jq -e --slurpfile observed "$evidence_dir/current-helm-status.json" '
-    . == $observed[0]
-  ' "$evidence_dir/before-helm-submission.json" >/dev/null ||
-    die "the Helm release changed before submission; investigate before continuing."
+  require_unchanged_helm_status "$evidence_dir/before-helm-submission.json"
   if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]]; then
     verify_installation_switch
   fi

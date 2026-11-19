@@ -9,6 +9,7 @@ import {
   readdir,
   rename,
   rm,
+  stat,
   writeFile,
   type FileHandle,
 } from "node:fs/promises";
@@ -176,9 +177,59 @@ export function registerWriterHandoffCases({
     assert.equal(refused.helmSubmissions ?? 0, 0);
     assert.deepEqual([refused.api, refused.worker], [0, 0]);
     databaseId = "ins_test";
-    // Completing the handoff requires no further patch.
-    await f.run("--resume", "--migration-history-checked");
-    assert.equal((await f.state()).helmSubmissions, 1);
+    const resume = ["--resume", "--migration-history-checked"];
+    await runWithInjectedFault(f, "reject-helm-submission", ...resume);
+    const rejected = await f.state();
+    const intent = await assertHelmIntent(f, 1, 2);
+    assert.equal(rejected.version, 1);
+    assert.equal(rejected.helmSubmissions, 1);
+    const handoff = join(f.evidence, "database-migration-handoff.json");
+    const savedHandoff = join(f.directory, "saved-handoff.json");
+    const settingsPaths = [
+      join(f.directory, "values.json"),
+      join(f.directory, "installation.json"),
+    ];
+    const settings = () =>
+      Promise.all(
+        settingsPaths.map(async (path) => ({
+          bytes: await readFile(path),
+          inode: (await stat(path)).ino,
+        })),
+      );
+    const attempts = () => readdir(join(f.evidence, "helm-attempts")).then((names) => names.sort());
+    const preflights = () =>
+      readdir(f.evidence).then((names) =>
+        names.filter((name) => name.startsWith("upgrade-preflight-resume.")).sort(),
+      );
+    const before = [await settings(), await attempts(), await preflights(), await f.events()];
+
+    // Manual migration has no sibling journal to reject a missing handoff.
+    assert.equal(existsSync(`${f.evidence}.migration-state.json`), false);
+    await rename(handoff, savedHandoff);
+    try {
+      await assert.rejects(
+        f.run(...resume),
+        /original separate database deployment handoff is missing/,
+      );
+      const held = await f.state();
+      assert.deepEqual(
+        [held.api, held.worker, held.version, held.helmSubmissions, held.dispatches],
+        [0, 0, 1, 1, 0],
+      );
+      assert.deepEqual(await assertHelmIntent(f, 1, 2), intent);
+      assert.deepEqual(
+        [await settings(), await attempts(), await preflights(), await f.events()],
+        before,
+      );
+      assert.equal(existsSync(handoff), false);
+    } finally {
+      await rename(savedHandoff, handoff);
+    }
+
+    // The original evidence allows completion without stopping either writer again.
+    await f.run(...resume);
+    assert.equal((await f.state()).helmSubmissions, 2);
+    assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "migration"]);
   });
 
   test("quiescence validates both writers before stopping either and resumes after correction", async (t) => {

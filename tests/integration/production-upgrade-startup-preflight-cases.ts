@@ -1,6 +1,6 @@
 import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { chmod, readdir, readFile, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -1125,9 +1125,14 @@ exec "$0.fixture" "$@"
 
         // Resume the same evidence after verification succeeds on the second attempt.
         const resume = ["--resume", "--migration-history-checked"];
+        const created = async () =>
+          list(requireRecoveryPreflight(await f.state()).created, "preflight creations").length;
+        const beforeRejection = await created();
         await runWithInjectedFault(f, "reject-helm-submission", ...resume);
         const rejected = await f.state();
         assert.equal(rejected.helmSubmissions, 1);
+        const resumeCreations = (await created()) - beforeRejection;
+        assert.ok(resumeCreations > 0);
         assert.equal(existsSync(join(f.evidence, "helm-started")), true);
         await writeFile(
           statePath,
@@ -1146,6 +1151,157 @@ exec "$0.fixture" "$@"
         );
         await assert.rejects(f.run(...resume), /migrator or database CA Secret changed/);
         assert.equal((await f.state()).helmSubmissions, 1);
+
+        const writers = evidenceObject(
+          rejected.deploymentIdentities,
+          "stopped writer Deployment identities",
+        );
+        const api = evidenceObject(writers.api, "stopped API Deployment identity");
+        const worker = evidenceObject(writers.worker, "stopped worker Deployment identity");
+        const handoff = await readEvidenceObject(f, "database-migration-handoff.json");
+        const generation = field(handoff.api, "generation");
+        const workerGeneration = field(handoff.worker, "generation");
+        assert.ok(typeof generation === "number" && typeof workerGeneration === "number");
+        const restoreWriters = async (status: string, identities = writers) => {
+          const state = await f.state();
+          await writeFile(
+            statePath,
+            JSON.stringify({
+              ...state,
+              helmStatus: status,
+              preflight: { ...requireRecoveryPreflight(state), secrets: migrationSecrets },
+              deploymentIdentities: identities,
+            }),
+          );
+        };
+        const stoppedState = async () => {
+          const { version, helmSubmissions, dispatches, api, worker } = await f.state();
+          return { version, helmSubmissions, dispatches, api, worker, events: await f.events() };
+        };
+        const protectedState = async () =>
+          Promise.all(
+            [
+              join(f.directory, "values.json"),
+              join(f.directory, "installation.json"),
+              join(f.evidence, "helm-started"),
+              join(f.evidence, "database-migration-handoff.json"),
+              `${f.evidence}.migration-state.json`,
+            ].map(async (path) => ({
+              digest: createHash("sha256")
+                .update(await readFile(path))
+                .digest("hex"),
+              inode: (await stat(path)).ino,
+            })),
+          );
+        const progress = async () => ({
+          attempts: (await readdir(join(f.evidence, "helm-attempts"))).length,
+          preflights: (await readdir(f.evidence)).filter((name) =>
+            name.startsWith("upgrade-preflight-resume."),
+          ).length,
+          created: await created(),
+        });
+
+        // A rejected Helm submission can leave the same revision failed. A
+        // replacement API Deployment must refuse before allocating another attempt.
+        const stoppedRelease = await stoppedState();
+        const originalFiles = await protectedState();
+        const beforeRetry = await progress();
+        const apiChanged = { code: 1, stderr: /api Deployment changed/i };
+        for (const [identities, refusal] of [
+          [{ ...writers, api: { ...api, uid: "replacement-api" } }, apiChanged],
+          [
+            {
+              ...writers,
+              worker: {
+                ...worker,
+                generation: workerGeneration + 1,
+                resourceVersion: String(Number(worker.resourceVersion) + 1),
+              },
+            },
+            { code: 1, stderr: /worker Deployment changed/i },
+          ],
+        ] as const) {
+          await restoreWriters("failed", identities);
+          await assert.rejects(f.run(...resume), refusal);
+          assert.deepEqual(await progress(), beforeRetry);
+          assert.deepEqual(await stoppedState(), stoppedRelease);
+          assert.deepEqual(await protectedState(), originalFiles);
+        }
+
+        // Let the next resume pass startup preflight and read the drained Pods
+        // before the API Deployment rolls to a new generation.
+        await restoreWriters("deployed");
+        const kubectl = join(f.directory, "bin", "kubectl");
+        const marker = join(f.directory, "changed-api-generation");
+        const passed = (await readdir(f.evidence)).filter(
+          (name) =>
+            name.startsWith("upgrade-preflight-resume.") &&
+            existsSync(join(f.evidence, name, "startup-preflight-passed")),
+        ).length;
+        await rename(kubectl, `${kubectl}.fixture`);
+        await writeFile(
+          kubectl,
+          `#!/bin/bash
+set -eu
+root=\${0%/bin/kubectl}
+case " $* " in
+  *" get pods --selector app.kubernetes.io/name=openclaw-enterprise,"*)
+    shopt -s nullglob
+    passed=("$root"/evidence/upgrade-preflight-resume.*/startup-preflight-passed)
+    if [[ ! -f "$root/changed-api-generation" ]] && ((\${#passed[@]} > ${passed})); then
+      "$0.fixture" "$@"
+      jq --argjson generation ${generation + 1} '.deploymentIdentities.api |=
+        (.generation = $generation | .resourceVersion |= (tonumber + 1 | tostring))' \\
+        "$root/state.json" >"$root/state.next"
+      mv "$root/state.next" "$root/state.json"
+      touch "$root/changed-api-generation"
+      exit 0
+    fi
+    ;;
+esac
+exec "$0.fixture" "$@"
+`,
+          { mode: 0o700 },
+        );
+        await assert.rejects(f.run(...resume), apiChanged);
+        assert.ok(existsSync(marker), "expected the generation change after writer drain");
+        assert.deepEqual(await progress(), {
+          attempts: beforeRetry.attempts + 1,
+          preflights: beforeRetry.preflights + 1,
+          created: beforeRetry.created + resumeCreations,
+        });
+        assert.deepEqual(await stoppedState(), stoppedRelease);
+        assert.deepEqual(await protectedState(), originalFiles);
+
+        // Retry with the original handoff. Losing Helm's success response must
+        // not replay the accepted submission or the migration Jobs.
+        await restoreWriters("failed");
+        await runWithInjectedFault(f, "lost-helm-response", ...resume);
+        const accepted = await f.state();
+        assert.equal(accepted.helmSubmissions, 2);
+        assert.equal(accepted.version, Number(rejected.version) + 1);
+        const acceptedProgress = await progress();
+        const acceptedFiles = await protectedState();
+        await restoreWriters("deployed", {
+          ...writers,
+          api: {
+            ...api,
+            generation: generation + 1,
+            resourceVersion: String(Number(api.resourceVersion) + 1),
+          },
+        });
+        await f.run("--resume");
+        assert.deepEqual(await progress(), acceptedProgress);
+        assert.deepEqual(await protectedState(), acceptedFiles);
+        assert.deepEqual(await stoppedState(), {
+          ...stoppedRelease,
+          version: accepted.version,
+          helmSubmissions: 2,
+          api: 1,
+          worker: 1,
+          events: [...stoppedRelease.events, "migration"],
+        });
+        assert.deepEqual(acceptedFiles.at(-1), originalFiles.at(-1));
       },
     );
 

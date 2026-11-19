@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-19"
-last_updated_session: "authoring-run/803c9489-57ed-4e31-a5ea-568f16e22161"
+last_updated_session: "authoring-run/aed0a2bc-9691-4859-8bd6-1e7b3549c9b4"
 ---
 
 # Production image upgrade flow
@@ -204,6 +204,16 @@ A failed identity or history check leaves stopped writers stopped. Reconcile
 unknown creates before resume. Resume skips Helm submission when the submitted
 revision is deployed with the candidate values or the recorded recovery successor verifies.
 
+If Helm intent exists and the release is still at the original revision,
+a separate-mode retry calls `require_migration_writers_stopped` before preparing
+a new attempt or starting preflight. Each Deployment must have the handoff UID
+and generation, the expected release and component labels, zero replicas, and no
+deletion timestamp. Writer Pods must be absent. The helper rechecks both
+Deployments before the scale step, which skips stopped writers. Once it confirms
+the Pods are absent, it rechecks Helm status, terminal initialization Jobs and
+Pods, and both Deployments before protected writes.
+A failed expected revision follows the usual checked retry.
+
 For [same-candidate recovery](../guides/deploy/production-helm-recovery.md),
 `scripts/upgrade-helm-state.py:recover` checks Helm payload, ownership, completed
 Job/Pod and exact security contexts. `pod_matches` compares requests/limits through
@@ -353,6 +363,8 @@ requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 19:15: Trace the stopped writers check before Helm retry. (authoring-run/aed0a2bc-9691-4859-8bd6-1e7b3549c9b4 - d976da889bdeca6e9208821a5b4ea79a49033b0f)
 
 - 2026-11-19 17:18: Keep bootstrap handling in the chart. (authoring-run/803c9489-57ed-4e31-a5ea-568f16e22161 - d14128b4a0fc1f499b914107ec6ec14eccc39fdf)
 
