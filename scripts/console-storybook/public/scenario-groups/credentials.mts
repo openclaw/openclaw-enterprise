@@ -591,7 +591,7 @@ export function credentialsScenarios({
         },
       ],
       description:
-        "The Configuration saves, but the follow-up exact Secret access grant is refused (403). The warning says only an Installation administrator can grant it, the saved app token reads Bound · Agent access not confirmed, and Retry Secret access retries the grant without another save.",
+        "The Configuration saves, but the follow-up exact Secret access grant is refused (403). The warning says deploying grants this Agent access, the saved app token reads Bound · Agent access not confirmed, Deploy new version stays available, and Retry Secret access retries the grant without another save.",
     },
     credentialsSlackGrantMissing: {
       group: "Components/Credentials",
@@ -600,10 +600,10 @@ export function credentialsScenarios({
       slack: true,
       slackGrantMissing: "SLACK_APP_TOKEN",
       description:
-        "An Installation administrator opens an Agent whose saved app token Secret has no Agent grant, for example after a member's refused grant. The console reads the Namespace IAM policy, marks the token, blocks Deploy, and offers Retry Secret access.",
+        "An Installation administrator opens an Agent whose saved app token Secret has no Agent grant, for example after a member's refused grant. The console reads the Namespace IAM policy, marks the token, and offers Retry Secret access. Deploy is not held: the deploy writes the grant (RFC-0040).",
       steps: [
-        "The Slack app token reads Bound · Agent access not confirmed; the warning says deploying would be refused.",
-        "Select Retry Secret access. Both tokens read Bound and Deploy new version is available; do not deploy.",
+        "The Slack app token reads Bound · Agent access not confirmed; the warning says deploying grants this Agent access, and Deploy new version is available.",
+        "Select Retry Secret access. Both tokens read Bound and Deploy new version stays available; do not deploy.",
       ],
     },
   } satisfies Record<string, CredentialScenario>;
@@ -670,10 +670,10 @@ export function credentialsRecoveryScenarios({ draft }: Pick<CredentialDependenc
       slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
       slackGrantMissing: "SLACK_APP_TOKEN",
       description:
-        "HTTP mode reads no app token, but SLACK_APP_TOKEN is still bound from Socket Mode and its Secret has no Agent grant. Deploy checks every bound Secret, so the tab lists the key as read by no Slack setting, marks it, blocks Deploy, and offers Retry Secret access.",
+        "HTTP mode reads no app token, but SLACK_APP_TOKEN is still bound from Socket Mode and its Secret has no Agent grant. Deploy grants every bound Secret, so the tab lists the key as read by no Slack setting, marks it, and offers Retry Secret access. Deploy is not held.",
       steps: [
-        "SLACK_APP_TOKEN reads Bound · not read by the Slack settings · Agent access not confirmed; the warning says deploying would be refused.",
-        "Select Retry Secret access. The row reads Bound · not read by the Slack settings and Deploy new version is available; do not deploy.",
+        "SLACK_APP_TOKEN reads Bound · not read by the Slack settings · Agent access not confirmed; the warning says deploying grants this Agent access.",
+        "Select Retry Secret access. The row reads Bound · not read by the Slack settings and Deploy new version stays available; do not deploy.",
       ],
     },
     credentialsSlackOffGrantMissing: {
@@ -685,10 +685,10 @@ export function credentialsRecoveryScenarios({ draft }: Pick<CredentialDependenc
       slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
       slackGrantMissing: "SLACK_APP_TOKEN",
       description:
-        "Disable Slack kept both token bindings, and the app token Secret has no Agent grant. Deploy checks every bound Secret, so with Slack off the tab still lists the bound keys as read by no Slack setting, marks the app token, blocks Deploy, and offers Retry Secret access (finding 3018).",
+        "Disable Slack kept both token bindings, and the app token Secret has no Agent grant. Deploy grants every bound Secret, so with Slack off the tab still lists the bound keys as read by no Slack setting, marks the app token, and offers Retry Secret access (finding 3018). Deploy is not held.",
       steps: [
-        "SLACK_APP_TOKEN reads Bound · not read by the Slack settings · Agent access not confirmed; Deploy new version names SLACK_APP_TOKEN and says to select Retry Secret access.",
-        "Select Retry Secret access. The section says Secret access granted. This Agent can use its bound Secrets. Deploy the new version to deliver them. The row reads Bound · not read by the Slack settings and Deploy new version is available; do not deploy (finding 3021).",
+        "SLACK_APP_TOKEN reads Bound · not read by the Slack settings · Agent access not confirmed; the warning says deploying grants this Agent access, and Deploy new version is available.",
+        "Select Retry Secret access. The section says Secret access granted. This Agent can use its bound Secrets. Deploy the new version to deliver them. The row reads Bound · not read by the Slack settings and Deploy new version stays available; do not deploy (finding 3021).",
       ],
     },
     credentialsSlackOffRetryUnconfirmed: {
@@ -705,7 +705,7 @@ export function credentialsRecoveryScenarios({ draft }: Pick<CredentialDependenc
         "With Slack off, Retry Secret access sends the app token Secret's grant, and the IAM API is unavailable (503), so the grant is not confirmed. A Retry saves no Configuration, so the warning names only the grant and what to do next (finding 3023).",
       gap: "The unavailable IAM API is simulated.",
       steps: [
-        "The section says Secret access grants could not be confirmed. Select Retry Secret access again; if it is refused, ask an Installation administrator. It does not say Configuration saved.",
+        "The section says Secret access grants could not be confirmed. Deploying grants this Agent access, or select Retry Secret access again to confirm it now. It does not say Configuration saved.",
         "Select Retry Secret access again. The section says Secret access granted and Deploy new version is available; do not deploy.",
       ],
     },
@@ -729,7 +729,7 @@ export function credentialsRecoveryScenarios({ draft }: Pick<CredentialDependenc
         "With Slack off, Retry Secret access makes the app token Secret's grant, but its answer is lost, so the grant is not confirmed. Reload draft rebuilds the section, and its grant read finds the grant: the section says that access is confirmed and takes focus, instead of disappearing (finding 3030).",
       gap: "The lost answer and the other browser's save are simulated; the simulated API keeps the grant.",
       steps: [
-        "The section says Secret access grants could not be confirmed. Select Retry Secret access again; if it is refused, ask an Installation administrator.",
+        "The section says Secret access grants could not be confirmed. Deploying grants this Agent access, or select Retry Secret access again to confirm it now.",
         "Select Retry Secret access: another browser changed the Configuration, so the section asks for Reload draft.",
         "Select Reload draft. Once the grant read lands, the section says Secret access confirmed. This Agent can use its bound Secrets. Deploy the new version to deliver them. Focus is on that message, and Deploy new version is available; do not deploy.",
       ],
@@ -742,11 +742,11 @@ export function credentialsRecoveryScenarios({ draft }: Pick<CredentialDependenc
       slackGrantMissing: "SLACK_APP_TOKEN",
       rules: [{ suffix: "/iam/access-bindings", method: "GET", delayMs: 4000 }],
       description:
-        "An Installation administrator opens an Agent while the console still reads the Namespace IAM policy for the bound Slack Secrets' grants. Deploy waits for that read, then stays blocked because the app token Secret has no Agent grant.",
+        "An Installation administrator opens an Agent while the console still reads the Namespace IAM policy for the bound Slack Secrets' grants. Deploy does not wait for that read: the deploy writes each missing grant (RFC-0040).",
       gap: "The slow policy read is simulated.",
       steps: [
-        "While the read is held, Prepare says Checking this Agent's credential access before deploying. and Deploy new version is disabled.",
-        "After the read lands, the Slack app token reads Bound · Agent access not confirmed and Deploy stays disabled until Retry Secret access grants it.",
+        "While the read is held, Prepare says Ready to deploy. and Deploy new version is available; do not deploy.",
+        "After the read lands, the Slack app token reads Bound · Agent access not confirmed, the warning offers Retry Secret access, and Deploy new version stays available.",
       ],
     },
     credentialsSlackSigningSecretMissing: {
@@ -867,7 +867,7 @@ export function credentialsRecoveryScenarios({ draft }: Pick<CredentialDependenc
       rules: [{ suffix: "/iam/access-bindings", method: "POST", status: 403, once: true }],
       actions: [click("Save authentication source")],
       description:
-        "The Agent binding is saved, but the request to grant its Secret access is refused (403). The warning says that request was refused, names the Installation administrator step, and keeps Retry credential access for when access is restored. Deployment stays blocked in this view until access is confirmed.",
+        "The Agent binding is saved, but the request to grant its Secret access is refused (403). The warning says that request was refused and that deploying grants this Agent access, and keeps Retry credential access for when access is restored. Deploy new version waits for Retry credential access or Reload authentication source, which load the saved source into the page.",
       steps: [
         "Read the partial-save message and disabled authentication controls.",
         "Click Retry credential access. This fixture permits the next grant to simulate an administrator restoring authority.",
@@ -880,10 +880,10 @@ export function credentialsRecoveryScenarios({ draft }: Pick<CredentialDependenc
       path: `${draft}&tab=credentials`,
       harnessGrantMissing: true,
       description:
-        "An Installation administrator opens an Agent whose saved model Secret has no Agent grant, for example after a member saved it. The console reads the Namespace IAM policy, says deploying would be refused, names Save authentication source and blocks Deploy.",
+        "An Installation administrator opens an Agent whose saved model Secret has no Agent grant, for example after a member saved it. The console reads the Namespace IAM policy and says that deploying grants this Agent access or that Save authentication source grants it now. Deploy is not held: the deploy writes the grant (RFC-0040).",
       steps: [
-        "Read the warning under the authentication form; Prepare says to confirm authentication and Secret access in Credentials.",
-        "Select Save authentication source. The grant is written, the tab rebuilds without the warning, and Deploy new version is available; do not deploy.",
+        "Read the warning under the authentication form; Deploy new version is available.",
+        "Select Save authentication source. The grant is written, the tab rebuilds without the warning, and Deploy new version stays available; do not deploy.",
       ],
     },
     authSecretGrantParked: {
@@ -898,37 +898,39 @@ export function credentialsRecoveryScenarios({ draft }: Pick<CredentialDependenc
       actions: [
         { selector: "#harness-auth-method" },
         click("Configuration"),
-        click("Set up credentials"),
+        click("Credentials"),
         { selector: 'p.status[data-tone="warning"][role="alert"]' },
       ],
       description:
-        "An Installation administrator opens Credentials while Namespace IAM is still answering, switches to Configuration, and returns after the read finds no operate grant. The warning is written on the parked form, so Credentials still names Save authentication source. Deploy stays disabled.",
+        "An Installation administrator opens Credentials while Namespace IAM is still answering, switches to Configuration, and returns after the read finds no operate grant. The warning is written on the parked form, so Credentials still names Save authentication source. Deploy is not held.",
       steps: [
         "Credentials shows the saved API-key Secret with Save authentication source enabled. The missing-grant warning is absent while Namespace IAM is delayed.",
-        "The story selects Configuration before that read finishes. Deploy new version becomes disabled and says to confirm authentication and Secret access in Credentials.",
-        "Set up credentials returns to the same form. The warning says deploying would be refused and names Save authentication source. The authentication source control stays enabled.",
+        "The story selects Configuration before that read finishes. Deploy new version stays available.",
+        "The story selects Credentials, which returns to the same form. The warning says deploying grants this Agent access and names Save authentication source. The authentication source control stays enabled.",
       ],
       gap: "The IAM delay is simulated. The browser test holds the controller's real Namespace IAM read across the same tab change.",
     },
-    authSecretGrantMemberUnverified: {
+    authSecretGrantMemberAtDeploy: {
       group: "Components/Credentials",
-      name: "Member authentication saved, access checked at deploy",
+      name: "Member authentication saved, granted at deploy",
       path: `${draft}&tab=credentials`,
       observabilityDenied: true,
       extraSecrets: [{ id: "sec_demo_replacement", name: "Replacement model token" }],
       actions: [
         { selector: "#harness-auth-method", value: "codex_pat" },
         { selector: "#harness-auth-secret", value: "sec_demo_replacement" },
+        // The picker stages its choice after reading the Secret answer; Save waits for it.
+        { text: "Secret binding staged. Save changes to apply it." },
         click("Save authentication source"),
       ],
       description:
-        "A member saves a new model Secret. The session already knows this member does not administer the Installation, so the form sends no IAM request for the Agent's grant. The card settles to one saved status: deploying checks that the Agent can use the selected Secret, and an Installation administrator gives the Agent Secret operate on it if it cannot. It offers no Retry credential access.",
+        "A member saves a new model Secret. The session already knows this member does not administer the Installation, so the form sends no IAM request for the Agent's grant: the member's deploy gives the Agent operate on the Secret (RFC-0040). The card settles to one saved status that says so. It offers no Retry credential access and names no administrator.",
       steps: [
-        "Read the status: the source saved, the deploy checks the Agent's access, and an Installation administrator gives it.",
+        "Read the status: Authentication source saved. Deploying gives this Agent operate on the selected Secret.",
         "The method select, the Secret picker and Save authentication source stay enabled. Pick another Secret: the staged hint replaces the saved status.",
-        "Deploy new version stays available, since the API checks the Agent's access when it deploys. The request log shows the Agent PATCH and no /iam/ request.",
+        "Deploy new version stays available. The request log shows the Agent PATCH and no /iam/ request.",
       ],
-      gap: "The member browser test uses a member account and the real Installation permission check.",
+      gap: "The member browser test uses a member account and the real Installation permission check. The PostgreSQL Default users test proves that the member's deploy writes and audits the grant.",
     },
     authSaveRefused: {
       group: "Components/Credentials",

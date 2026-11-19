@@ -156,11 +156,10 @@ export const CONSOLE_NAMESPACE_CREATE_DENIED =
 export const askForGrant = (grant) => `Ask an Installation administrator for ${grant}.`;
 export const notIncluded = (task, grant) =>
   `Your access does not include ${task}. ${askForGrant(grant)}`;
-// A member's console sends no credential grant, so a saved authentication source says the deploy
-// checks the Agent's own access, and who gives it (finding D748). `noun` is "Secret" or
-// "credential source".
-export const credentialCheckedAtDeploy = (noun) =>
-  `Deploying checks that this Agent can use the selected ${noun}. If it cannot, ask an Installation administrator to give the Agent ${noun} operate on it.`;
+// A member's console sends no credential grant: the member's deploy writes it (RFC-0040), so a
+// saved source says that (finding D748). `credential` names it, such as "the selected Secret".
+export const credentialGrantedAtDeploy = (credential) =>
+  `Deploying gives this Agent operate on ${credential}.`;
 export const AGENT_STOP_DENIED = notIncluded("stopping this Agent", "Agent operate on it");
 // The Secret dialog's disabled Replace value and Delete Secret, from the Secret read's answer
 // (finding D761).
@@ -877,28 +876,6 @@ export const NAMESPACE_DELETE_DENIED =
 // Namespace (finding 2861): administration cannot lift it.
 export const NAMESPACE_DELETE_RESTRICTED =
   "A Restriction denies deleting this Namespace, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it.";
-
-// Deploy new version's reason while saved Secrets wait for the Agent's grant names the bindings
-// whose Secrets wait, as the Credentials tab lists them, and where to grant access (finding 3017).
-// `missing`: an Installation administrator's console read no grant; otherwise a grant request left
-// it unconfirmed. `administrator`: the grant was refused, or the reader is offered no Retry.
-export const secretGrantDeployReason = (
-  bindings,
-  { missing = false, administrator = false } = {},
-) => {
-  const names =
-    bindings.length < 2
-      ? bindings.join("")
-      : `${bindings.slice(0, -1).join(", ")} and ${bindings.at(-1)}`;
-  const secrets = `the ${bindings.length > 1 ? "Secrets" : "Secret"} bound to ${names}`;
-  const problem = missing
-    ? `This Agent has no access to ${secrets}, so deploying it would be refused.`
-    : `This Agent's access to ${secrets} is not confirmed.`;
-  const step = administrator
-    ? "Granting access needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Retry Secret access."
-    : "Open Credentials and select Retry Secret access.";
-  return `${problem} ${step}`;
-};
 
 // Channel Secrets outcomes once the Agent can use its bound Secrets (agents/credentials.mts). With
 // Slack on they name the saved Slack Secrets. With Slack off a Retry saved nothing about Slack, so

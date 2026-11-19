@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-11-06
-last_updated_session: authoring-run/d680b93c-3891-475b-b5f6-0b4f5ccf1ecf
+updated: 2026-11-17
+last_updated_session: authoring-run/08b481d4-4a5e-4aed-b768-352a6716323c
 ---
 
 # Console Agent editing and runtime requests
@@ -247,11 +247,12 @@ authentication source follow it without a reload.
 
 After PATCH, `apps/controller/src/console/agents/credential-access.mts:ensureCredentialOperateBinding`
 grants the Agent service principal access to selected Secrets through Namespace IAM. A failed
-grant leaves Configuration saved; a 403 names the Installation administrator, who selects
-**Retry Secret access**; a timeout or 5xx stays unknown. A member's session sends no grant and
-says access was not verified until **Reload draft**. An administrator's console checks every
-bound Secret's grant, as deployment does, with Slack on or off; Deploy waits for those reads and
-rechecks before its POST, and a save or Retry during one reads again before naming Deploy. With
+grant leaves Configuration saved and offers **Retry Secret access**; a timeout or 5xx stays
+unknown. A deploy writes each missing grant the deployer can `operate` (`grantDeployedAgentSources`),
+so no grant outcome holds Deploy. Each warning offers only the steps its reader can take, or
+names who can grant access. A member's session sends no grant, as
+the save message says. An administrator's console reads every bound Secret's grant, with Slack on
+or off, and a save or Retry during one reads again before naming Deploy. With
 Slack off, the section shows only while a bound Secret's grant waits, with only Retry (3018),
 whose success names the granted access. A Retry carries no Secret choices into **Reload draft** (3021).
 A Retry's warning names only the grant, and a later save's names the Configuration save (3023,
@@ -279,10 +280,10 @@ or CredentialSource `operate` through the actor's IAM authority. Managed
 ServiceAccount PATs and runtime authentication skip this grant.
 
 Grant failure preserves saved authentication and freezes controls. `credentials.mjs:grantWarning`
-names the outcome; members send no grant and get no retry. **Retry credential access**
+names the outcome; members send no grant, get no retry, and are told their deploy writes it. **Retry credential access**
 rechecks identity and bindings before granting. Uncertain PATCH requires **Reload authentication
-source**. Pending access survives navigation and holds deployment until confirmed or reloaded;
-members' unverified grants do not. Administrator Namespace IAM denials also hold deployment.
+source**. Until **Retry credential access** or **Reload authentication source** loads the saved
+source into the page, deployment is held, across navigation; the grant itself holds nothing.
 Admission remains authoritative; confirmed access does not prove provider readiness.
 
 Authentication and JSON Save preflight 403 call `detail.mts:retireSaveRead`. The shell's
@@ -356,12 +357,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
-- 2026-11-06 23:58: Render repository guidance. (authoring-run/d680b93c-3891-475b-b5f6-0b4f5ccf1ecf - d55839d701)
-
-- 2026-11-05 19:05: Preserve conflict focus and selection. (authoring-run/17947441-42c1-43df-93a6-339dac4803dc - 0ecbe50bfe0df315fda06a90274b9e218b48d96c)
-- 2026-11-05 18:37: Explain the Configuration number range refusal on Save. (authoring-run/d006a89e-c176-48cc-8710-16d38835bbb9 - 5fd3fde4911e1640c354d69bb09f6f3d72445a05)
-- 2026-11-05 01:51: Guard pending-save history. (authoring-run/19e029b0-7ee3-4034-8e3b-e403265ff746 - 516ee6d87dea5326df70e647b17e2a141392cd0c)
-- 2026-11-05 01:03: Document read failures. (authoring-run/68de7101-f5b0-459f-8861-9ec3e614dcb2 - 8ee2e630)
-- 2026-10-31 21:30: Hide the password button when save would refuse it. (fix-3064)
+- 2026-11-18 22:40: Grant warnings name who can grant access when the reader may neither retry nor deploy. (authoring-run/f86b341d-b08f-47f4-80ff-a375893c8e05 - cfbec6564415e928e74062b91ab00f19656b6a86)
+- 2026-11-17 05:44: Deploys write credential grants; no grant outcome holds Deploy. (authoring-run/08b481d4-4a5e-4aed-b768-352a6716323c - 28afb11d68da12a17148895883235d074b9bb46f)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.
