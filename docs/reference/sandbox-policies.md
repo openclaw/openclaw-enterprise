@@ -11,6 +11,30 @@ argument. The current implementation supports `networking`; `filesystem` and
 The console discovers the owner’s contextual action URLs; the CLI exposes
 `--facet networking`.
 
+## Repository network policy contract
+
+The contracts package can bind an explicit repository access list to a
+SandboxPolicy snapshot. Each entry uses a lowercase `owner/name` and grants
+`read` for clone and fetch or `write` for clone, fetch, and push. Each list and
+its delegation ceiling can contain up to 32 entries, one per repository.
+Admission rejects aliases, malformed entries, duplicates, and grants
+outside the Installation delegation ceiling. A write limit allows read and
+write grants. An absent ceiling delegates no access.
+
+Omission keeps the ordinary policy. An empty list explicitly denies access to
+all repositories. Any explicit list requires the selected Driver's
+`admitRepositoryNetworkPolicy` method. The side-effect-free method receives the
+validated list and an immutable base snapshot. It returns the effective policy
+as a JSON object.
+It must require inspected HTTPS, enforce the list in addition to other rules,
+and deny ungranted repositories. It must refuse bypass paths and any weakening
+of protected execution.
+
+Admission binds the versioned list and effective policy in an immutable
+snapshot. Ordinary deployment rejects a repository list supplied by a Driver.
+API configuration and enforcement in a deployed Sandbox require further
+integration.
+
 ## Discovery and preview
 
 The selected Sandbox implementation contributes the shared definition for

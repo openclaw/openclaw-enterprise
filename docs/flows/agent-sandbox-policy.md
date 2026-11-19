@@ -1,17 +1,16 @@
 ---
 created: 2026-10-15
-updated: "2026-11-13"
-last_updated_session: "authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c"
+updated: "2026-11-19"
+last_updated_session: "authoring-run/2cbf1f13-9f6c-407a-be4f-453fd3ed04f6"
 ---
 
 # Agent sandbox policy flow
 
 ## Overview
 
-OCC persists governed network additions for one Agent, freezes them at deployment,
-and optionally applies a later version through its Sandbox Driver. Denial logs
-and provider recommendations supply independent context for a user review.
-This trace describes the implemented source; runtime proof has separate limits.
+OCC saves Agent network additions, freezes them at deployment, and can apply
+a later version through the Sandbox Driver. Denial logs and provider
+recommendations inform review.
 
 ## Entry Points
 
@@ -126,15 +125,15 @@ cleans its exact IAM access.
 
 ### 2. Freeze deployment or enqueue live application
 
-`packages/occ/src/index.ts:deployAgent` freezes the Driver's defaults and additions
-into `AgentRevision.sandboxPolicy`. The OpenShell Driver provisions from this
-snapshot rather than re-reading changed defaults.
+`packages/occ/src/index.ts:deployAgent` rejects a repository access list from
+ordinary Driver admission before freezing defaults and additions into
+`AgentRevision.sandboxPolicy`. OpenShell provisions from that snapshot.
 
 `applyAgentSandboxPolicy` authorizes Agent `manage_policy` and SandboxPolicy
-`update` and `read` before any refusal that names saved additions, then requires
-the exact active revision and supporting Driver. When the caller supplies reviewed additions, the same transaction saves the new
-policy version, records its pending application and enqueues Agent-target work.
-Omitting additions retains the saved policy version. Neither saving nor enqueueing establishes enforcement.
+`update` and `read` before naming saved additions. It requires the exact active
+revision and supporting Driver. With reviewed additions, one transaction saves
+the new policy version, records its pending application and queues Agent-target
+work. Omission retains the saved version. Enforcement requires worker confirmation.
 
 ### 3. Reconcile provider effects
 
@@ -269,6 +268,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 02:49: Refuse Driver-supplied repository access lists on ordinary deployment. (authoring-run/2cbf1f13-9f6c-407a-be4f-453fd3ed04f6 - 8b711ab7bef82b4db58547655aef785c8e74092b)
 
 - 2026-11-13 22:21: Reject policy saves that remove a pending application. (authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c - cf0370780b4e885e35ee463033b6926e5d3109ef)
 
