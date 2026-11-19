@@ -62,6 +62,26 @@ export interface SandboxPolicySnapshot {
   readonly repositoryNetworkPolicy?: RepositoryNetworkPolicy;
 }
 
+function isIntrinsicPrototype(
+  prototype: object,
+  intrinsic: ObjectConstructor | ArrayConstructor,
+): boolean {
+  if (prototype === intrinsic.prototype) {
+    return true;
+  }
+  if (types.isProxy(prototype)) {
+    return false;
+  }
+
+  // A different realm has its own built-ins. Check the constructor without invoking accessors.
+  const constructor: unknown = Object.getOwnPropertyDescriptor(prototype, "constructor")?.value;
+  return (
+    typeof constructor === "function" &&
+    Function.prototype.toString.call(constructor) === Function.prototype.toString.call(intrinsic) &&
+    Object.getOwnPropertyDescriptor(constructor, "prototype")?.value === prototype
+  );
+}
+
 function isPolicyJsonValue(value: unknown, ancestors = new Set<object>()): boolean {
   if (value === null || typeof value === "string" || typeof value === "boolean") {
     return true;
@@ -74,11 +94,9 @@ function isPolicyJsonValue(value: unknown, ancestors = new Set<object>()): boole
   }
 
   const isArray = Array.isArray(value);
-  const prototype: unknown = Object.getPrototypeOf(value);
+  const prototype = Reflect.getPrototypeOf(value);
   if (
-    (isArray
-      ? prototype !== Array.prototype
-      : prototype !== Object.prototype && prototype !== null) ||
+    (prototype === null ? isArray : !isIntrinsicPrototype(prototype, isArray ? Array : Object)) ||
     Object.getOwnPropertySymbols(value).length > 0
   ) {
     return false;

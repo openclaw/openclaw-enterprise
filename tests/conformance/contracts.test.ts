@@ -462,7 +462,9 @@ test("Sandbox repository policy admission requires the selected Driver and prese
       admitSandboxRepositoryNetworkPolicy(snapshot, [], [], sandboxDriverWithoutRepositoryPolicy),
     { name: "RepositoryNetworkPolicyAdmissionError", code: "UNSUPPORTED_POLICY" },
   );
-  const effective = { evaluated: [{ version: 1 }, null] };
+  const effective = runInNewContext("({ evaluated: [{ version: 1 }, null] })") as {
+    evaluated: ({ version: number } | null)[];
+  };
   let capabilityReads = 0;
   let calls = 0;
   const driver = {
@@ -489,6 +491,11 @@ test("Sandbox repository policy admission requires the selected Driver and prese
   assert.deepEqual(admitted.repositoryNetworkPolicy?.grants, []);
   effective.evaluated[0] = { version: 2 };
   assert.deepEqual(admitted.defaults, { evaluated: [{ version: 1 }, null] });
+  const evaluated = admitted.defaults.evaluated;
+  assert.ok(Array.isArray(evaluated));
+  assert.ok(Object.isFrozen(admitted.defaults));
+  assert.ok(Object.isFrozen(evaluated));
+  assert.ok(Object.isFrozen(evaluated[0]));
   assert.deepEqual(JSON.parse(JSON.stringify(admitted.defaults)), admitted.defaults);
   assert.deepEqual(snapshot.defaults, { inherited: true });
   assert.throws(
