@@ -9,7 +9,7 @@ import type { ResourceHandlers } from "./types.ts";
 
 const recommendationLimiter = new RuntimeLogLimiter();
 
-function policyBody(policy: Readonly<SandboxPolicy>) {
+function policyBody(policy: Readonly<SandboxPolicy>, includeRepositoryNetworkPolicy = true) {
   const application = policy.application;
   return {
     id: policy.id,
@@ -17,9 +17,9 @@ function policyBody(policy: Readonly<SandboxPolicy>) {
     agentId: policy.agentId,
     version: policy.version,
     additions: policy.additions,
-    ...(policy.repositoryNetworkPolicy === undefined
-      ? {}
-      : { repositoryNetworkPolicy: policy.repositoryNetworkPolicy }),
+    ...(includeRepositoryNetworkPolicy && policy.repositoryNetworkPolicy !== undefined
+      ? { repositoryNetworkPolicy: policy.repositoryNetworkPolicy }
+      : {}),
     ...(policy.applied === undefined ? {} : { applied: policy.applied }),
     ...(application === undefined
       ? {}
@@ -132,6 +132,8 @@ export const sandboxPolicyHandlers = {
     request,
     mutationEvent,
   }) {
+    const repositoryNetworkPolicy = body!.repositoryNetworkPolicy as
+      readonly RepositoryNetworkGrant[] | undefined;
     const policy = await controller.transact(async (unit) => {
       const updated = await controller.updateAgentSandboxPolicy(
         context.actorId,
@@ -140,7 +142,7 @@ export const sandboxPolicyHandlers = {
         params.facet as SandboxFacet,
         body!.expectedVersion as number,
         body!.additions as readonly SandboxNetworkGrant[],
-        body!.repositoryNetworkPolicy as readonly RepositoryNetworkGrant[] | undefined,
+        repositoryNetworkPolicy,
       );
       await unit.audit.append(
         mutationEvent(
@@ -149,7 +151,7 @@ export const sandboxPolicyHandlers = {
             policyVersion: updated.version,
             agentId: updated.agentId,
             additions: updated.additions,
-            ...(body!.repositoryNetworkPolicy === undefined
+            ...(repositoryNetworkPolicy === undefined
               ? {}
               : { repositoryGrantCount: updated.repositoryNetworkPolicy?.length }),
           },
@@ -157,7 +159,11 @@ export const sandboxPolicyHandlers = {
       );
       return updated;
     });
-    reply.send({ data: policyBody(policy), meta: { requestId: request.id } });
+    // An additions-only writer may lack permission to read the saved repository grants.
+    reply.send({
+      data: policyBody(policy, repositoryNetworkPolicy !== undefined),
+      meta: { requestId: request.id },
+    });
   },
   async applyAgentSandboxPolicy({
     controller,

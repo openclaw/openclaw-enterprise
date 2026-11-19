@@ -889,6 +889,13 @@ test("the SandboxPolicy API admits authorized repository grants and preserves ex
   f.controller.selectDriver("sandbox", sandbox.id);
   const agent = await f.createAgent({ executionMode: "dedicated" });
   const policyPath = `${f.collection}/${agent.id}/sandbox-policy/networking`;
+  // Admit a revision through the regular deploy route, then select it without provisioning a workload.
+  await f.prepareDeployment(agent);
+  const deployed = await f.request("POST", `${f.collection}/${agent.id}/deploy`);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed));
+  await f.state.transact((unit) =>
+    unit.agents.compareAndSetActiveRevision(f.namespace.id, agent.id, undefined, deployed.data.id),
+  );
   const enabled = await f.request("PATCH", `${policyPath}/editing`, { enabled: true });
   assert.equal(enabled.status, 200, JSON.stringify(enabled));
   const response = await f.request("GET", policyPath);
@@ -897,6 +904,26 @@ test("the SandboxPolicy API admits authorized repository grants and preserves ex
   assert.equal(response.data.repositoryNetworkPolicySaveSupported, true);
   assert.equal(Object.hasOwn(response.data.policy, "repositoryNetworkPolicy"), false);
   assert.deepEqual(response.data.policy.additions, []);
+  assert.equal(response.data.configuration.actions.apply.available, true);
+
+  /** @param {import("../../packages/contracts/src/index.ts").SandboxPolicyViewWire["policy"]} policy */
+  async function assertRequiresDeployment(policy) {
+    // Both wire shapes must refuse without saving a new version or queuing work.
+    const apply = { expectedVersion: policy.version, revisionId: deployed.data.id };
+    for (const body of [apply, { ...apply, additions: [] }]) {
+      const refused = await f.request("POST", `${policyPath}/apply`, body);
+      assert.equal(refused.status, 409, JSON.stringify(refused));
+      assert.equal(refused.error.code, "RESOURCE_CONFLICT");
+      assert.equal(
+        refused.error.message,
+        "Repository network policy changes require a deployment. Deploy explicitly to apply the saved policy.",
+      );
+      const current = await f.request("GET", policyPath);
+      assert.equal(current.status, 200, JSON.stringify(current));
+      assert.deepEqual(current.data.policy, policy);
+      assert.equal(current.data.configuration.actions.apply.available, false);
+    }
+  }
 
   // Agent read alone cannot reveal the Installation grant list through the SandboxPolicy.
   const scope = { namespaceId: f.namespace.id, resourceId: response.data.policy.id };
@@ -943,6 +970,7 @@ test("the SandboxPolicy API admits authorized repository grants and preserves ex
   assert.equal(saved.status, 200, JSON.stringify(saved));
   assert.equal(saved.data.version, desired.expectedVersion + 1);
   assert.deepEqual(saved.data.repositoryNetworkPolicy, repositoryNetworkPolicyCeiling);
+  await assertRequiresDeployment(saved.data);
 
   // An additions-only save keeps the earlier grants without revealing them to a write-only caller.
   const next = { ...desired, expectedVersion: saved.data.version };
@@ -970,6 +998,7 @@ test("the SandboxPolicy API admits authorized repository grants and preserves ex
   assert.equal(cleared.status, 200, JSON.stringify(cleared));
   assert.equal(cleared.data.version, retained.data.version + 1);
   assert.deepEqual(cleared.data.repositoryNetworkPolicy, []);
+  await assertRequiresDeployment(cleared.data);
 
   const after = await f.request("GET", policyPath);
   assert.equal(after.status, 200, JSON.stringify(after));

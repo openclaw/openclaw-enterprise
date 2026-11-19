@@ -160,7 +160,7 @@ export const SandboxPolicyApplyBody = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction.",
+      "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction. An explicit saved repository policy requires deployment and makes this operation return HTTP 409.",
   },
 );
 export const SandboxPolicyEditingBody = Type.Object(

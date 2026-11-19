@@ -11463,6 +11463,7 @@ export class OpenClawController {
     const canApply =
       canSave &&
       driver.networkPolicy.live &&
+      policy.repositoryNetworkPolicy === undefined &&
       agent.desiredRuntimeState === "running" &&
       this.unprotectedPolicyRevision(revision) &&
       revision?.sandboxPolicy !== undefined &&
@@ -11980,11 +11981,6 @@ export class OpenClawController {
       if (updated === undefined) {
         throw new ResourceStateConflictError("The policy changed.");
       }
-      if (repositoryNetworkPolicy === undefined && updated.repositoryNetworkPolicy !== undefined) {
-        // An additions-only writer must not receive repository grants from an earlier save.
-        const { repositoryNetworkPolicy: _savedRepositoryGrants, ...additionsOnly } = updated;
-        return Object.freeze(additionsOnly);
-      }
       return updated;
     });
   }
@@ -12033,6 +12029,11 @@ export class OpenClawController {
       }
       const driver = this.sandboxDriver();
       const revision = await state.revisions.findRevision(namespaceId, agentId, revisionId);
+      if (policy.repositoryNetworkPolicy !== undefined) {
+        throw new ResourceStateConflictError(
+          "Repository network policy changes require a deployment. Deploy explicitly to apply the saved policy.",
+        );
+      }
       // Qualified artifact snapshots do not make protected revisions eligible for live apply.
       if (revision?.executionAdmission?.mode === "protected") {
         throw new ProtectedExecutionNetworkPolicyError("apply");

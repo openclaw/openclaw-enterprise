@@ -32,7 +32,7 @@ graph TD
   U2 --> A["OCC save admission<br/>IAM, schema and ceiling"]
   A --> P["PostgreSQL<br/>desired policy version"]
   P --> D["Explicit deployment<br/>immutable snapshot"]
-  P --> W["Live application work<br/>exact running revision"]
+  P -->|No explicit repository policy| W["Live application work<br/>exact running revision"]
   W --> C["Persist provider CAS<br/>before mutation"]
   C --> S["Sandbox Driver<br/>apply canonical policy"]
   S --> V["Confirm matching<br/>loaded version"]
@@ -128,10 +128,13 @@ ordinary Driver admission before freezing defaults and additions into
 `AgentRevision.sandboxPolicy`. OpenShell provisions from that snapshot.
 
 `applyAgentSandboxPolicy` authorizes Agent `manage_policy` and SandboxPolicy
-`update` and `read` before naming saved additions. It requires the exact active
-revision and supporting Driver. With reviewed additions, one transaction saves
-the new policy version, records its pending application and queues Agent-target
-work. Omission retains the saved version. Enforcement requires worker confirmation.
+`update` and `read` before inspecting the saved grants. An explicit repository
+policy, including deny-all, requires deployment. Both live apply request shapes
+return `409 RESOURCE_CONFLICT` before saving or queuing work. Live application
+requires the exact active revision and a supporting Driver. With reviewed
+additions, one transaction saves the new policy version, records its pending
+application and queues Agent-target work. Omission retains the saved version.
+Enforcement requires worker confirmation.
 
 ### 3. Reconcile provider effects
 
