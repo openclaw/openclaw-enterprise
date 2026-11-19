@@ -14057,6 +14057,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     agentId: string,
+    expectedActiveRevisionId?: string,
   ): Promise<Readonly<Agent>> {
     if (!isNonEmptyString(namespaceId)) {
       throw new ScopeViolationError("The exact Namespace identity is missing.");
@@ -14065,17 +14066,53 @@ export class OpenClawController {
       throw new ScopeViolationError("The exact Agent identity is missing.");
     }
     return this.mutate(async (state) => {
-      await this.authorize(principalId, "operate", {
-        kind: "agent",
-        id: agentId,
-        namespaceId,
-      });
+      const target = { kind: "agent", id: agentId, namespaceId } as const;
+      if (expectedActiveRevisionId !== undefined) {
+        await this.holdAuthority(state);
+      }
+      await this.authorize(principalId, "operate", target);
       await this.lockNamespace(state, namespaceId);
       const agent = await state.agents.lockAgent(namespaceId, agentId);
+      if (expectedActiveRevisionId !== undefined) {
+        await this.authorize(principalId, "operate", target);
+      }
       if (agent === undefined) {
         throw new ScopeViolationError(
           "The Agent does not belong to the exact Installation and Namespace.",
         );
+      }
+      if (expectedActiveRevisionId !== undefined) {
+        // Stop is Agent-wide. A queued successor need not have replaced the active pointer yet.
+        const conflict = () =>
+          new ResourceStateConflictError(
+            "Stop requires the expected revision to be active, latest, and successfully deployed. Inspect the current Agent before stopping it.",
+          );
+        if (
+          agent.status !== "active" ||
+          agent.desiredRuntimeState !== "running" ||
+          agent.activeRevisionId !== expectedActiveRevisionId
+        ) {
+          throw conflict();
+        }
+        const { revisions } = await state.revisions.pageRevisionSummaries(namespaceId, agentId, {
+          limit: 1,
+        });
+        const latest = revisions[0];
+        if (
+          latest?.id !== expectedActiveRevisionId ||
+          latest.namespaceId !== namespaceId ||
+          latest.agentId !== agentId
+        ) {
+          throw conflict();
+        }
+        const work = await state.operations.findWork(`agent_revision:${latest.id}:reconcile`);
+        if (
+          !work ||
+          !workMatchesRevision(work, latest) ||
+          controllerWorkDeploymentStatus(work, this.clock()) !== "succeeded"
+        ) {
+          throw conflict();
+        }
       }
       if (agent.status === "deleting") {
         return agent;
