@@ -165,7 +165,7 @@ read to stderr; a reader without Agent `operate` cannot probe runtime status, so
 notice names the other readable version to pass. Notices call any other version newer or
 older only when the selected version's metadata proves it. `runtime` accepts `-o table|json|yaml`
 and needs Agent `operate` and `read` plus `read` on the Agent revision. Its table output
-lists each Pod's Events (`POD`, `CONTAINER`, `TYPE`, `REASON`, `COUNT`,
+ends with each Pod's Events (`POD`, `CONTAINER`, `TYPE`, `REASON`, `COUNT`,
 `LAST SEEN`, `MESSAGE`); `CONTAINER` is `-` for Pod-level Events. `logs` needs
 Agent `read_logs` (or `administer`) and `read`, which cover every version, and
 each view is audited. Default selection lists only revisions you can

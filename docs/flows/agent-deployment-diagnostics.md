@@ -167,7 +167,7 @@ state after admission.
   also refuse, for example on a force-deleted Pod's owner lease, and exit 1. A
   Kubernetes Gateway that never served then runs the read-only
   `openclaw gateway recover-lock --json` (never `--confirm`) and holds when
-  holders remain. Every 5 minutes either hold
+  holders remain, or exits 1 if none do. Every 5 minutes either hold
   (`runtime-entrypoints.ts:holdGatewayStartupFailure`) retries a failed release
   of its own child's records and inspects again. It restarts on purpose
   (exit 75) once no holder remains; a failed inspection exits 1. Follow

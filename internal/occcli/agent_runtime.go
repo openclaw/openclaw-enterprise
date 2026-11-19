@@ -230,10 +230,7 @@ func (app *application) agentRuntimeCommand() *cobra.Command {
 			if app.output != "table" {
 				return app.printStructured(description)
 			}
-			if err := app.printRuntime(description, namespace, args[0], revisionID); err != nil {
-				return err
-			}
-			return app.printHeldGateway(client, description, namespace, args[0], revisionID)
+			return app.printRuntime(description, namespace, args[0], revisionID)
 		},
 	}
 	command.Flags().StringVar(&revision, "revision", "", "Revision ID (default: a newer not-yet-active revision with Pods or concrete Harness status, else the active revision, else the latest revision you can read)")
