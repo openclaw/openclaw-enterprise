@@ -86,10 +86,12 @@ credential requires both a Box Policy permit and current OCE authorization, and 
 grant a Box operation. Refuse policy that cannot be represented without widening access.
 
 Every process in one Box can use its routes, and the current callback cannot identify
-the originating executable. When CredentialProxy cannot distinguish an admitted
-executable or port, Sandbox must enforce that restriction or refuse the policy, as the
-[credential ownership amendment](installation-credential-ownership.md) requires. That
-enforcement remains pending.
+the originating executable. The proposed [Agent-wide Box policy capability](strands-box-agent-policy.md)
+allows this sharing only when explicitly admitted for one authenticated Agent Sandbox.
+It cannot satisfy an executable-specific assertion. Sandbox must enforce any asserted
+executable or port restriction or refuse the policy, as the
+[credential ownership amendment](installation-credential-ownership.md) requires.
+Executable-specific enforcement remains pending.
 
 For the native experiment, the trusted parent creates the trampoline and child directly.
 Prove that launch provenance, inherited state, exact process incarnation, and fresh
@@ -146,7 +148,9 @@ trusted proxy Pod is a possible later deployment, not a v1 prerequisite.
   the real Agent workflow. Use invented sentinels to prove workload surfaces and same-Pod
   loopback cannot expose credentials or control authority. Verify an authored Box Policy
   permit, deny, and absent-Policy refusal independently of OCE credential admission.
-  Verify Sandbox executable/port enforcement or policy refusal when the callback cannot
+  Qualify the separately admitted Agent-wide capability through the real Agent as
+  specified in its [amendment](strands-box-agent-policy.md#acceptance-criteria). Verify
+  Sandbox executable/port enforcement or policy refusal when the callback cannot
   distinguish the caller. Preserve OpenShell's existing positive and refusal cases and its
   conventional readiness gate.
 - **AC-5 — Installed qualification:** On clean ARM64 Helm installation, use the exact

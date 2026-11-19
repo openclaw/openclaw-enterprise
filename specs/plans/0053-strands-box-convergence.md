@@ -6,7 +6,7 @@ rfc: ../rfcs/0023-egress-proxy-credential-lifecycle/index.md
 
 - **ID:** TASK-0053
 - **Delivery status:** Planned
-- **Authority:** [RFC-0023](../rfcs/0023-egress-proxy-credential-lifecycle/index.md), its proposed [Installation credential ownership amendment](../rfcs/0023-egress-proxy-credential-lifecycle/installation-credential-ownership.md), and the proposed [held-start amendment](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-held-launch.md)
+- **Authority:** [RFC-0023](../rfcs/0023-egress-proxy-credential-lifecycle/index.md), its proposed [Installation credential ownership amendment](../rfcs/0023-egress-proxy-credential-lifecycle/installation-credential-ownership.md), the proposed [held-start amendment](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-held-launch.md), and the proposed [Agent-wide Box policy amendment](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-agent-policy.md)
 - **Source baseline:** `962a41087083053b585b477d4791f8aded6a9f4e`
 
 ## Outcome and scope
@@ -37,9 +37,11 @@ use. Credential binding or injection requires both a Box Policy permit and
 current OCE authorization; it cannot grant a Box operation.
 
 Box routes are available to every process in the same Box, and the current
-callback cannot identify the executable that originated a request. When
-CredentialProxy cannot distinguish an admitted executable or port, Sandbox must
-enforce that restriction or refuse the policy, as required by the
+callback cannot identify the executable that originated a request. The proposed
+[Agent-wide Box policy capability](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-agent-policy.md)
+must be explicitly admitted for one authenticated Agent Sandbox. It cannot satisfy an
+executable-specific assertion. Sandbox must enforce an asserted executable or port
+restriction or refuse the policy, as required by the
 [credential ownership amendment](../rfcs/0023-egress-proxy-credential-lifecycle/installation-credential-ownership.md).
 Per-executable enforcement remains an implementation dependency.
 
@@ -106,7 +108,9 @@ proposes OpenClaw mode reporting; it does not approve Box or Codex support.
 
 1. **Boundary and ingress.** First exercise the real native Box parent, trampoline,
    and contained child with invented sentinels. Verify an authored Policy permit,
-   denial and absent-Policy refusal, executable/port enforcement or policy refusal,
+   denial and absent-Policy refusal. For the explicitly admitted Agent-wide capability,
+   run the [two-subprocess sentinel and zero-effect refusal cases](../rfcs/0023-egress-proxy-credential-lifecycle/strands-box-agent-policy.md#acceptance-criteria)
+   through the real Agent. Verify executable/port enforcement or policy refusal,
    native isolation, exact child and challenge
    binding, unintended descriptor inheritance refusal, live authored-source
    identities, writable-alias refusal, and the public CA's read-only same-object
