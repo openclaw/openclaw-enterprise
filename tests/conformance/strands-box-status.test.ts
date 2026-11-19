@@ -1,19 +1,39 @@
 import { X509Certificate } from "node:crypto";
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import assert from "node:assert/strict";
+import type { RequestListener } from "node:http";
 import { createServer } from "node:https";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { StrandsBoxSandboxDriver } from "../../apps/controller/src/drivers/sandbox/strands-box.ts";
 import { listen } from "../helpers/listen.ts";
 
+type DriverStatus = typeof StrandsBoxSandboxDriver.prototype.harnessStatus;
+type DriverContext = Parameters<DriverStatus>[0];
+type StatusContext = Pick<DriverContext, "signal" | "transportToken"> & {
+  revision: Pick<DriverContext["revision"], "id">;
+};
+type StatusDiscovery = {
+  harnessServiceAddress: () => Promise<string>;
+  listenerCertificate: () => Promise<X509Certificate>;
+};
+
 // Substitute revision Service discovery only. Both status reads use real loopback sockets.
-async function check(t, diagnostic, signal = new AbortController().signal) {
+const harnessStatus = StrandsBoxSandboxDriver.prototype.harnessStatus as (
+  this: StatusDiscovery,
+  context: StatusContext,
+) => ReturnType<DriverStatus>;
+
+async function check(
+  t: TestContext,
+  diagnostic: RequestListener,
+  signal = new AbortController().signal,
+) {
   const tls = await harnessTlsFixture(t);
   const server = createServer(tls, diagnostic);
   server.on("upgrade", (_request, socket) => socket.destroy());
   const port = await listen(t, server);
   const address = `localhost:${port}`;
-  return StrandsBoxSandboxDriver.prototype.harnessStatus.call(
+  return harnessStatus.call(
     {
       harnessServiceAddress: async () => address,
       listenerCertificate: async () => new X509Certificate(tls.cert),
@@ -72,7 +92,7 @@ test("a replacement at the same readiness endpoint receives no bearer or request
   server.on("tlsClientError", (_, socket) => socket.destroy());
   const port = await listen(t, server);
   await assert.rejects(
-    StrandsBoxSandboxDriver.prototype.harnessStatus.call(
+    harnessStatus.call(
       {
         harnessServiceAddress: async () => `localhost:${port}`,
         listenerCertificate: async () => new X509Certificate(original.cert),
