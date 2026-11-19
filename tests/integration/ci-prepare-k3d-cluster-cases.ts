@@ -734,7 +734,8 @@ export function registerClusterCreateCases() {
     );
     const stages = fixturePreparationMetrics(result.stderr)
       .filter(
-        ({ stage, status }) => ["k3d-node-image", "k3d-create"].includes(stage) && status !== "started",
+        ({ stage, status }) =>
+          ["k3d-node-image", "k3d-create"].includes(stage) && status !== "started",
       )
       .map(({ stage, status }) => `${stage}:${status}`);
     assert.deepEqual(stages, ["k3d-node-image:passed", "k3d-create:passed"]);

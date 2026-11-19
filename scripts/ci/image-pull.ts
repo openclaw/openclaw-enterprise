@@ -218,10 +218,7 @@ export async function pullImage<Result extends ImageCommandResult = ImageCommand
         `Transient image pull failure (${reason}); retrying in ${delayMs} ms (attempt ${attempt + 1}/${attempts}): ${image}`,
       );
       // The retry is decided. The seed may use the time left before the retry must start.
-      const seedTimeoutMs = Math.min(
-        attemptTimeoutMs,
-        budgetMs - (Date.now() - started) - delayMs,
-      );
+      const seedTimeoutMs = Math.min(attemptTimeoutMs, budgetMs - (Date.now() - started) - delayMs);
       if (seed !== undefined && evidence.timedOut && seedTimeoutMs > 0) {
         await seedLayers(seed, seedTimeoutMs, { execFile, docker, log });
         seed = undefined;
