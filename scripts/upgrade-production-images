@@ -2183,6 +2183,21 @@ if ((helm_complete == 0)); then
     die "API and worker stopped for the separate database deployment. Keep other writers and autoscalers fenced. Run the chart-selected migration command in the selected controller image against this Installation with the dedicated migrator credential. Confirm the same command with --require-current succeeds, then use --resume --migration-history-checked with this evidence directory. The Helm hook independently requires the complete candidate schema." 3
   fi
 
+  if [[ "$repository_enabled" == true ]]; then
+    verify_pair_nodes
+  fi
+
+  # Compare only stable Helm release identity, revision, manifest and values:
+  # live info.resources reflects cluster state (quiesce) this command changes
+  # itself, so a full-equality check would trip on its own writes. Run before
+  # any candidate write so a refusal leaves the Installation Secret and the
+  # private inputs at their recorded baseline.
+  helm status "$release" "${helm_args[@]}" --output json >"$evidence_dir/before-helm-submission.json"
+  jq -e --slurpfile observed "$evidence_dir/current-helm-status.json" '
+    (del(.info.resources)) == ($observed[0] | del(.info.resources))
+  ' "$evidence_dir/before-helm-submission.json" >/dev/null ||
+    die "the Helm release changed before submission; API and worker remain stopped and no candidate setting was written; investigate before continuing."
+
   progress "Applying reviewed settings and the Helm release."
   install_atomically "$candidate_values" "$values"
   if [[ -f "$evidence_dir/installation-changed" ]]; then
@@ -2201,19 +2216,11 @@ PYTHON
           >"$evidence_dir/installation-secret-apply.txt"
     fi
   fi
-  # The marker precedes the request, so a crash cannot turn an unknown Helm
-  # outcome into an automatic retry or an unsafe return to the old image.
-  if [[ "$repository_enabled" == true ]]; then
-    verify_pair_nodes
-  fi
-  helm status "$release" "${helm_args[@]}" --output json >"$evidence_dir/before-helm-submission.json"
-  jq -e --slurpfile observed "$evidence_dir/current-helm-status.json" '
-    . == $observed[0]
-  ' "$evidence_dir/before-helm-submission.json" >/dev/null ||
-    die "the Helm release changed before submission; investigate before continuing."
   if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]]; then
     verify_installation_switch
   fi
+  # The marker precedes the request, so a crash cannot turn an unknown Helm
+  # outcome into an automatic retry or an unsafe return to the old image.
   python3 scripts/upgrade-helm-state.py record "$evidence_dir" "$helm_attempt"
   # Open stdout before entering the native failure handler.
   helm_status=0

@@ -99,10 +99,6 @@ type ServingPodSpec = {
   }[];
 };
 
-function installationValue(values: unknown, key: string): unknown {
-  return optionalField(optionalField(values, "installation"), key);
-}
-
 function optionalResourceField(resource: unknown, key: string): unknown {
   return resource == null ? undefined : field(field(resource, "metadata"), key);
 }
@@ -204,16 +200,6 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
       }
     } else if (tool === "helm") {
       if (args[0] === "status") {
-        if (
-          state.api === 0 &&
-          state.worker === 0 &&
-          existsSync(join(root, "fail-before-helm-intent")) &&
-          installationValue(await yamlFile(join(root, "values.json")), "upgradeAttemptId") !==
-            installationValue(await yamlFile(join(root, "live-values")), "upgradeAttemptId") &&
-          take("fail-before-helm-intent")
-        ) {
-          return fail(9);
-        }
         out(
           args.includes("json")
             ? {

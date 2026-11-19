@@ -329,7 +329,7 @@ test("production image upgrades preserve controller/runtime ownership and wait f
   const bin = join(directory, "bin");
   await mkdir(bin);
   // Use real JSON operations for the run's dispatch journal and receipts.
-  const dispatchJson = `if [[ "\${!#}" == */before-helm-status.json || "\${!#}" == */after-helm-status.json || "$*" == *'repositoryWorkerRestart'* || "$*" == *'def identifier:'* || "$*" == '-e .spec.replicas == 1 '* || "$*" == '-e .spec.replicas == 0 '* || "$*" == *'.revisionId'* || "$*" == *'.harness.overrides'* || "$*" == *'revisionId: .activeRevisionId'* || "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$*" == *'.metadata.ownerReferences'* || "$*" == *'.status.initContainerStatuses'* || "\${!#}" == */preflight-cleanup-dependency.json || "$1" == '-cs' || "$1" == '-ser' || "$1" == '-cser' || "$1" == '-Rse' ]]; then
+  const dispatchJson = `if [[ "\${!#}" == */before-helm-status.json || "\${!#}" == */after-helm-status.json || "$*" == *'repositoryWorkerRestart'* || "$*" == *'def identifier:'* || "$*" == '-e .spec.replicas == 1 '* || "$*" == '-e .spec.replicas == 0 '* || "$*" == *'.revisionId'* || "$*" == *'.harness.overrides'* || "$*" == *'revisionId: .activeRevisionId'* || "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$*" == *'.metadata.ownerReferences'* || "$*" == *'.status.initContainerStatuses'* || "\${!#}" == */preflight-cleanup-dependency.json || "$*" == *'del(.info.resources)'* || "$1" == '-cs' || "$1" == '-ser' || "$1" == '-cser' || "$1" == '-Rse' ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
 `;
@@ -664,7 +664,29 @@ if [[ "$1" == status ]]; then
   if [[ -n "\${CURRENT_HELM_EVIDENCE:-}" && -f "$CURRENT_HELM_EVIDENCE/prepared" ]]; then
     state="$CURRENT_HELM_STATE"
   fi
-  printf '{"name":"oce","namespace":"openclaw-system","info":{"status":"%s"},"version":%s}\\n' "$state" "$revision"
+  version=$revision
+  resources=
+  # Helm v4 embeds the live resource list in info.resources. Vary it on each
+  # read so the drift guard sees the quiesce writes it makes itself.
+  if [[ "\${HELM_LIVE_RESOURCES:-}" == 1 ]]; then
+    count_file="$LIVE_VALUES_FILE.helm-status-count"
+    count=0
+    [[ ! -f "$count_file" ]] || count=$(cat "$count_file")
+    count=$((count + 1))
+    printf '%s\\n' "$count" >"$count_file"
+    resources=',"resources":{"v1/Deployment":[{"kind":"Deployment","name":"api","replicas":'"$count"'}]}'
+  fi
+  # Return a different stable revision on the third read (the pre-submission
+  # guard) to prove a refused drift check precedes the Installation Secret switch.
+  if [[ "\${HELM_SUBMISSION_DRIFT:-}" == 1 ]]; then
+    drift_file="$LIVE_VALUES_FILE.helm-submission-count"
+    drift=0
+    [[ ! -f "$drift_file" ]] || drift=$(cat "$drift_file")
+    drift=$((drift + 1))
+    printf '%s\\n' "$drift" >"$drift_file"
+    ((drift < 3)) || version=$((revision + 1))
+  fi
+  printf '{"name":"oce","namespace":"openclaw-system","info":{"status":"%s"%s},"version":%s}\\n' "$state" "$resources" "$version"
 elif [[ "$*" == *'get values'* ]]; then
   cat "$LIVE_VALUES_FILE"
 elif [[ "$1" == upgrade && "$*" != *--dry-run=* ]]; then
@@ -820,10 +842,13 @@ case "$*" in
     printf '%s\\n' '{"status":"ok"}'
     ;;
   *' create --raw /apis/authorization.k8s.io/v1/selfsubjectaccessreviews --filename -')
-    PATH="$ORIGINAL_TOOL_PATH" exec jq '.status = {allowed: (.spec.resourceAttributes == {
+    PATH="$ORIGINAL_TOOL_PATH" exec jq '.status = {allowed: ((.spec.resourceAttributes == {
       namespace: "openclaw-system", verb: "patch", group: "apps", version: "v1",
       resource: "deployments", name: "openclaw-enterprise-worker"
-    })}' ;;
+    }) or (.spec.resourceAttributes == {
+      namespace: "openclaw-system", verb: "update", group: "", version: "v1",
+      resource: "secrets", name: "occ-installation-startup"
+    }))}' ;;
   *' create --filename'*|*' get job.batch/'*|*'batch.kubernetes.io/controller-uid='*|*' get pods -o json'*|*' get secret/oce-upgrade-preflight-'*|*' get networkpolicy.networking.k8s.io/oce-upgrade-preflight-'*|*' get pod/oce-upgrade-preflight-'*|*' logs pod/oce-upgrade-preflight-'*|*'delete --raw='*)
     exec "$(dirname "$0")/preflight-kubectl" "$@" ;;
 
@@ -1123,6 +1148,107 @@ esac
   const journal = await readFile(readyEvidence + ".dispatch-state");
   await assertCompletedRunCannotResume(readyEvidence, ["runtime"], runtimeOptions);
   assert.deepEqual(await readFile(readyEvidence + ".dispatch-state"), journal);
+
+  async function resetLiveUpgradeInputs() {
+    await writeFile(protectedFiles.values, valuesDocument, { mode: 0o600 });
+    await writeFile(protectedFiles.installation, installationDocument, { mode: 0o600 });
+    await writeFile(liveValues, valuesDocument, { mode: 0o600 });
+    await writeFile(liveInstallation, installationDocument, { mode: 0o600 });
+    await rm(commandLog, { force: true });
+    await rm(`${liveValues}.helm-status-count`, { force: true });
+    await rm(`${liveValues}.helm-submission-count`, { force: true });
+  }
+
+  // Helm v4 includes live info.resources in `helm status`. Quiescing API and
+  // worker to zero replicas changes only that field, so the drift guard must
+  // ignore it instead of refusing its own writes.
+  await t.test("Helm drift guard ignores live resources changed by quiescence", async () => {
+    await resetLiveUpgradeInputs();
+    const evidence = join(directory, "resource-drift-evidence");
+    await execute(upgradeScript, upgradeArguments(evidence, ["controller"]), {
+      cwd: repository,
+      env: {
+        ...environment,
+        COMMAND_LOG: commandLog,
+        HELM_LIVE_RESOURCES: "1",
+        OBSERVED_CONTROLLER_IMAGE: controllerImage,
+      },
+    });
+    const current = parseJson(await readFile(join(evidence, "current-helm-status.json"), "utf8"));
+    const submitted = parseJson(
+      await readFile(join(evidence, "before-helm-submission.json"), "utf8"),
+    );
+    assertRecord(current);
+    assertRecord(current.info);
+    assertRecord(submitted);
+    assertRecord(submitted.info);
+    assert.notDeepEqual(
+      current.info.resources,
+      submitted.info.resources,
+      "the fixture must change live resources between the snapshot and the guard",
+    );
+    assert.ok(
+      (await readFile(commandLog, "utf8"))
+        .split("\n")
+        .some((line) => line.startsWith("helm upgrade ") && !line.includes("--dry-run")),
+      "an ignored resource-only difference must reach the Helm submission",
+    );
+  });
+
+  // A real release-field difference must stop before any candidate write. The
+  // Installation Secret switch is the first cluster mutation after quiescence.
+  await t.test("a refused Helm drift check leaves the Installation Secret unswitched", async () => {
+    await resetLiveUpgradeInputs();
+    const candidateInstallation = join(directory, "candidate-installation-plugin-array.json");
+    await writeFile(
+      candidateInstallation,
+      JSON.stringify({
+        drivers: {
+          compute: {
+            configuration: {
+              images: { agent: baselineRuntimeImage, gateway: baselineRuntimeImage },
+            },
+          },
+          plugin: [{ id: "codex-plugin", configuration: { catalogSource: "openai-curated" } }],
+        },
+      }),
+      { mode: 0o600 },
+    );
+    const evidence = join(directory, "secret-order-evidence");
+    await assert.rejects(
+      execute(
+        upgradeScript,
+        [
+          ...upgradeArguments(evidence, ["controller"]),
+          "--candidate-installation",
+          candidateInstallation,
+        ],
+        {
+          cwd: repository,
+          env: {
+            ...environment,
+            COMMAND_LOG: commandLog,
+            HELM_SUBMISSION_DRIFT: "1",
+            OBSERVED_CONTROLLER_IMAGE: controllerImage,
+          },
+        },
+      ),
+      /the Helm release changed before submission; API and worker remain stopped and no candidate setting was written/u,
+    );
+    const commands = await readFile(commandLog, "utf8");
+    assert.doesNotMatch(commands, / replace --filename -/u);
+    assert.ok(
+      !commands
+        .split("\n")
+        .some((line) => line.startsWith("helm upgrade ") && !line.includes("--dry-run")),
+      "a refused drift check must not submit the Helm release",
+    );
+    assert.equal(await readFile(protectedFiles.installation, "utf8"), installationDocument);
+    assert.equal(await readFile(protectedFiles.values, "utf8"), valuesDocument);
+    await assert.rejects(readFile(join(evidence, "installation-secret-apply.txt")), {
+      code: "ENOENT",
+    });
+  });
 });
 
 // Argument validation precedes file and cluster access. Keep the kubeconfig
