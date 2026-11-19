@@ -67,12 +67,13 @@ export async function assertHelmIntent(
 
 export async function assertStoppedBeforeWriters(
   fixture: Pick<RecoveryFixture, "state" | "events">,
+  expectedEvents: readonly string[] = [],
 ) {
   const state = await fixture.state();
   assert.equal(state.api, 1);
   assert.equal(state.worker, 1);
   assert.equal(state.version, 1);
-  assert.deepEqual(await fixture.events(), []);
+  assert.deepEqual(await fixture.events(), expectedEvents);
   const preflight = requireRecoveryPreflight(state);
   assert.deepEqual(preflight.secrets, {});
   assert.deepEqual(preflight.pods, {});

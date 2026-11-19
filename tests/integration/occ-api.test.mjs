@@ -1623,6 +1623,7 @@ test("guarded first deployment supports trusted registered validators and hides 
       id: "custom-channel",
       implementation: "test",
       capability: "channel",
+      enableRouting: () => [],
       async lookupDirectory() {
         assert.fail("Unexpected directory lookup");
       },
@@ -2254,6 +2255,57 @@ test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource
     missingRevisionId,
     missingAgentId,
   }));
+
+test("OCC Fastify rejects unsafe guarded Agent stop requests", async () => {
+  const { controller, fixture, namespace, agent, admitted, deploymentWorks, work } =
+    await admittedDeploymentFixture("guarded-stop", "guarded-stop-agent", {
+      recordOperations: true,
+    });
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const stopPath = `${agentPath}/stop`;
+  const expected = `expectedActiveRevisionId=${admitted.data.id}`;
+  const stop = (query) => controller.request("POST", `${stopPath}?${query}`);
+
+  await fixture.platformState.transact((unit) =>
+    unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, admitted.data.id),
+  );
+  const before = (await controller.request("GET", agentPath)).data;
+  const operations = () => fixture.platformState.read((view) => view.operations.list());
+  const queued = await operations();
+  assert.equal(before.activeRevisionId, admitted.data.id);
+  assert.equal(before.desiredRuntimeState, "running");
+  assertApiError(await stop(expected), 409, "RESOURCE_CONFLICT", "queued deployment");
+
+  // A persisted terminal work result can report completion without activation.
+  deploymentWorks.set(
+    work.key,
+    work.record("succeeded", "2026-09-19T20:31:00.000Z", { reasonCode: "REVISION_STOPPED" }),
+  );
+  const deployment = await controller.request(
+    "GET",
+    `${agentPath}/deployments/${admitted.data.id}`,
+  );
+  assert.equal(deployment.data.status, "failed");
+  assertApiError(await stop(expected), 409, "RESOURCE_CONFLICT", "completed without activation");
+
+  for (const query of [
+    "expectedActiveRevisionId=",
+    "expectedActiveRevisionId=invalid",
+    "unexpectedRevisionId=invalid",
+    `${expected}&${expected}`,
+  ]) {
+    assertApiError(await stop(query), 400, "INVALID_REQUEST", query);
+  }
+
+  assert.deepEqual((await controller.request("GET", agentPath)).data, before);
+  assert.deepEqual(await operations(), queued);
+  assert.equal(
+    fixture.auditSink.events.some(
+      (event) => event.kind === "mutation" && event.action === "openclaw.agents.stop",
+    ),
+    false,
+  );
+});
 
 test("credential withdrawal routes authorize the Agent, not the credential source", async () => {
   const controller = await configuredController();
@@ -5802,31 +5854,20 @@ test("Slack validation reads a whole ${NAME} token as the env SecretRef it binds
   assert.deepEqual(tokens, ["Bearer xoxb-synthetic-bot", "Bearer xoxb-synthetic-bot"]);
 });
 
-test("Slack validation with no Slack proxy names the setting at provision and deploy", async () => {
+test("Slack activation without managed egress fails before provider transport", async () => {
   const controller = await configuredController({
     computeDriver: createProvisioningCapableComputeDriver(),
     configurationDriver: createProvisioningCapableConfigurationDriver(),
   });
   const { fixture, namespace, base, app, bot, saveConfiguration, createAgent, provision } =
     await createSlackValidationFixture(controller, "slack-no-route");
-  // Finding 2521: production composition builds the Driver with expectProxy, since its API
-  // egress is default-deny unless sign-in settings open it. With no proxy URL, a check that gets
-  // no answer from Slack usually means the Installation has no Slack route: a fixed refusal names
-  // the setting, and still allows a retry for an open route that timed out (finding 2531).
-  // The rejection has the shape Node's fetch gives a connection that timed out.
-  const timedOut = () =>
-    new TypeError("fetch failed", {
-      cause: Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" }),
-    });
+  // Managed routing is a precondition even if another API egress grant could
+  // reach Slack. Admission must not probe a direct-internet fallback.
   let calls = 0;
-  let answer = timedOut();
   const channel = new SlackChannelDriver(
     async () => {
       calls++;
-      if (answer instanceof Error) {
-        throw answer;
-      }
-      return answer();
+      throw new Error("Unexpected provider transport without managed routing");
     },
     undefined,
     { expectProxy: true },
@@ -5840,27 +5881,13 @@ test("Slack validation with no Slack proxy names the setting at provision and de
     botToken: "${SLACK_BOT_TOKEN}",
   });
   const noRoute = SLACK_ROUTE_NOT_CONFIGURED;
-  // Checks that need no provider call keep their own answers: a wrong token role is still named.
-  assertApiError(await provision(configuration), 400, "CHANNEL_CREDENTIAL_ROLE_MISMATCH");
-  assert.equal(calls, 0);
   configuration.secretBindings.SLACK_BOT_TOKEN.source = bot.ref;
   const refused = await provision(configuration);
   assertApiError(refused, 409, "RESOURCE_CONFLICT");
   assert.equal(refused.body.error.message, noRoute);
   assert.doesNotMatch(JSON.stringify(refused.body), /xoxb-synthetic|xapp-synthetic/);
-  assert.equal(calls, 1);
+  assert.equal(calls, 0);
   await assertNoAgentsInNamespace(fixture, namespace.id);
-  // An answer from Slack proves a route exists, so its failure stays the transient outage.
-  answer = () => new Response("upstream unavailable", { status: 503 });
-  assertApiError(await provision(configuration), 503, "CHANNEL_CREDENTIAL_UNAVAILABLE");
-  // A route an operator approved instead of the proxy still validates: the fixture has no
-  // durable work queue, so its error means the plan passed channel validation.
-  answer = () => new Response(JSON.stringify({ ok: true, bot_id: "B123", team_id: "T123" }));
-  const before = calls;
-  assertApiError(await provision(configuration), 503, "DEPENDENCY_UNAVAILABLE");
-  // auth.test ran and passed: the 503 comes after validation, not from skipping it.
-  assert.equal(calls, before + 1);
-  answer = timedOut();
 
   // Deployment of a saved Agent gets the same answer.
   const config = await saveConfiguration(configuration);
@@ -5869,6 +5896,7 @@ test("Slack validation with no Slack proxy names the setting at provision and de
   const deploy = await controller.request("POST", `${base}/agents/${agent.id}/deploy`);
   assertApiError(deploy, 409, "RESOURCE_CONFLICT");
   assert.equal(deploy.body.error.message, noRoute);
+  assert.equal(calls, 0);
 });
 
 test("saved-Agent discovery offers managed packages only where Agent save admits them", async () => {

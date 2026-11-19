@@ -24,9 +24,10 @@ export interface OccLoggerOptions {
 const SAFE_STRING = /^[A-Za-z0-9][A-Za-z0-9._: /@-]{0,511}$/;
 const SAFE_PATH = /^\/[ -~]{0,1023}$/;
 // Token shapes: a bearer credential, an OpenAI, GitHub (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`,
-// `github_pat_`) or Slack key, a private key, or an AWS access key ID.
+// `github_pat_`), GitLab (`glpat-`) or Slack key, a private key, an AWS access key ID (`AKIA`,
+// or `ASIA` for a temporary one), or a Google OAuth access token (`ya29.`) or API key (`AIza`).
 const SECRET_VALUE =
-  /\bBearer\s+[A-Za-z0-9._~-]+|\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:gh[oprsu]|github_pat)_[A-Za-z0-9_]{12,}|\bxox[abeoprs]-[A-Za-z0-9-]{10,}|\bAKIA[0-9A-Z]{16}\b/i;
+  /\bBearer\s+[A-Za-z0-9._~-]+|\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:gh[oprsu]|github_pat)_[A-Za-z0-9_]{12,}|\bglpat-[A-Za-z0-9_-]{20,}|\bxox[abeoprs]-[A-Za-z0-9-]{10,}|\bA[KS]IA[0-9A-Z]{16}\b|\bya29\.[A-Za-z0-9_-]{20,}|\bAIza[A-Za-z0-9_-]{35}/i;
 // Case-sensitive token shapes. A JWT (`eyJ` header and payload). A basic credential: a base64
 // token of 8 or more characters with a digit, `+` or `=`, or with two uppercase letters after
 // its first character, so prose ("Basic authentication", "basic OpenShell") passes.
@@ -167,11 +168,26 @@ function safeString(value: string): string | undefined {
   return value;
 }
 
-// A URL with user information (`postgres://user:pa/ss@host`; a password may hold an unescaped
-// `/`), a query parameter that usually carries a credential, or a `password=` or OAuth secret
-// pair in a connection string or form body. The scheme is not matched: `://` anchors the search.
-const URL_CREDENTIAL =
-  /:\/\/[^\s/?#@:]*(?::[^\s?#@]*)?@|[?&](?:access_token|api_key|apikey|client_secret|code|id_token|key|password|refresh_token|secret|sig|signature|token|x-amz-credential|x-amz-security-token|x-amz-signature)=|(?:client_secret|passwd|password|pwd|refresh_token)=[^\s&;]/i;
+// Names whose value is a credential. A longer name that ends in one counts too: `DB_PASSWORD`,
+// `refresh_token`, `X-Amz-Signature`, `AccountKey`, `SharedAccessKey`, `x-api-key`.
+const CREDENTIAL_NAME =
+  "(?:access[-_]?key|account[-_]?key|api[-_]?key|authorization|cookie|passw(?:or)?d|private[-_]?key|pwd|secret|sig|signature|token)";
+// A credential behind a name: a URL with user information (`postgres://user:pa/ss@host`; a
+// password may hold an unescaped `/`; the scheme is not matched, `://` anchors the search); a
+// query parameter that carries a credential only in a URL; a named credential with a value, as
+// `name=value` (query, form body, connection string; one space may follow `=`, where a newline or
+// format character collapsed) or as a JSON or dictionary pair (`"name": "value"`, quotes possibly
+// escaped); or an HTTP header: Authorization with any scheme and a value with a digit or `=`, a
+// cookie pair (a cookie name has no `:`), or an API key or session token.
+const NAMED_CREDENTIAL = new RegExp(
+  [
+    String.raw`:\/\/[^\s/?#@:]*(?::[^\s?#@]*)?@`,
+    String.raw`[?&](?:code|key|x-amz-credential)=`,
+    String.raw`${CREDENTIAL_NAME}(?:=\s?[^\s&;]|\\?["']\s*:\s*\\?["'][^"'\\])`,
+    String.raw`\b(?:authorization:\s*[\w-]+\s+[\w.~+/-]*[0-9=]|cookie:\s*[^\s=;:]+=[^\s;]|(?:api-key|x-amz-security-token):\s*[\w.~+/-]*[0-9])`,
+  ].join("|"),
+  "i",
+);
 export const WITHHELD_ERROR_TEXT = "The message was withheld because it resembles a credential.";
 const LOGGED_ERROR_TEXT_CHARACTERS = 512;
 // How much of the collapsed error text is checked: the logged cut (at most 1024 code units) plus
@@ -179,11 +195,12 @@ const LOGGED_ERROR_TEXT_CHARACTERS = 512;
 const CHECKED_ERROR_TEXT_UNITS = 4 * LOGGED_ERROR_TEXT_CHARACTERS;
 
 /**
- * Whether text resembles a credential (a bearer, basic or API token, a JWT, a private key, or a
- * URL or connection-string secret). Its cost grows with the text, so bound long text first.
+ * Whether text resembles a credential (a bearer, basic or API token, a JWT, a private key, a URL,
+ * query, form, JSON or connection-string secret, or a credential header). Its cost grows with the
+ * text, so bound long text first.
  */
 export function resemblesCredential(text: string): boolean {
-  return resemblesToken(text) || URL_CREDENTIAL.test(text);
+  return resemblesToken(text) || NAMED_CREDENTIAL.test(text);
 }
 
 function resemblesToken(text: string): boolean {
@@ -420,6 +437,10 @@ export function configurationLogDetails(value: readonly unknown[]) {
     .map((detail) => ({ path: detail.path, code: detail.code, message: detail.message }));
 }
 
+// Events whose `message` is a Compute Driver's diagnostic for the operator: a preparation
+// failure and a preflight warning.
+const MESSAGE_EVENTS = new Set(["worker.compute-prepare-failed", "compute.preflight-warning"]);
+
 function sanitizedEvent(
   event: Readonly<Record<string, unknown>>,
 ): Readonly<Record<string, unknown>> {
@@ -472,16 +493,13 @@ function sanitizedEvent(
       continue;
     }
     if (key === "message") {
-      // Only these events keep a message. A Compute preparation diagnostic keeps a Driver's
-      // operator prose ("Stop Agent; wait") as one line unless it resembles a credential.
-      let text: string | undefined;
-      if (typeof value === "string" && eventName === "worker.compute-prepare-failed") {
-        text = loggedErrorText(value);
-        text = text === WITHHELD_ERROR_TEXT ? undefined : text;
-      } else if (typeof value === "string" && eventName === "compute.preflight-warning") {
-        text = safeString(value);
-      }
-      if (text !== undefined) {
+      // Only these events keep a message: operator prose ("Stop Agent; wait") as one line, left
+      // out when it resembles a credential.
+      const text =
+        typeof value === "string" && MESSAGE_EVENTS.has(eventName)
+          ? loggedErrorText(value)
+          : undefined;
+      if (text !== undefined && text !== WITHHELD_ERROR_TEXT) {
         result.message = text;
       }
       continue;

@@ -119,11 +119,9 @@ Sandbox defaults. Request-stage bundle failures were observed, but their exact
 peer and network cause remain unproven. The independent contract gap is that no
 explicit artifact authority survives protected admission.
 
-The Sandbox Driver qualifies an explicitly declared subset of its Installation
-rules. For OpenShell, `policy.codexArtifactRuleNames` selects named rules from
-`policy.networkPolicies`; omission grants no artifact access. Qualification must
-reject an unknown name, duplicate or reserved name, or any rule outside all of
-these limits:
+OpenShell qualifies only Installation `policy.networkPolicies` named in
+`policy.codexArtifactRuleNames`; omission grants no artifact access. Reject
+unknown, duplicate or reserved names and rules outside these limits:
 
 - Exact supported Codex runtime executable paths and literal approved DNS hosts.
   Wildcards, numeric addresses, GitHub repository hosts and overlapping Git routes
@@ -134,6 +132,10 @@ these limits:
   or write-capable rules are refused.
 - No credential binding, provider alias, header injection or additional policy
   fields. Other defaults and Agent network additions do not join this authority.
+
+Proposed exception for scoped npm packages: on new admission only, freeze
+`allow_encoded_slash: true` for all read-only paths on selected
+`registry.npmjs.org:443` endpoints. Older readers reject this field.
 
 OCC requests this qualification only for the protected, dedicated Codex repository
 composition through an explicit `admitProtectedCodexArtifactPolicy` producer.

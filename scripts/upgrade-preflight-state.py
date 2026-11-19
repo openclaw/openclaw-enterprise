@@ -13,7 +13,7 @@ import tempfile
 
 
 FORMAT = "upgrade-preflight-v1"
-MIGRATION_ATTEMPT = re.compile(r"migration-preflight-resume\.[A-Za-z0-9]+")
+MIGRATION_ATTEMPT = re.compile(r"migration-preflight(?:-resume)?\.[A-Za-z0-9]+")
 RESUME_ATTEMPT = re.compile(r"upgrade-preflight-resume\.[A-Za-z0-9]+")
 JOURNAL = "preflight-journal.json"
 PLAN = "preflight-plan.json"

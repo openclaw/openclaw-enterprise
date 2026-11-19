@@ -294,6 +294,7 @@
         "a provisioning failure takes the Namespace lock before its claimed work row",
         "provisioning worker reauthorizes after admission and revoked authority creates no backend effects",
         "failed provisioning can retry through the API and resume without duplicating the Agent",
+        "Guarded stop protects a queued successor and stops the exact deployed Agent",
         "Stop and Delete cancel failed pre-handoff provisioning Agents without deployment resurrection",
         "Stop during an interrupted runtime-credential write lets the Agent deploy once the claim's lease ends",
         "Stop after failed provisioning left its runtime-credential write unsettled lets the Agent deploy",

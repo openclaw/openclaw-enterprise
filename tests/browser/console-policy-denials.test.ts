@@ -9,7 +9,7 @@ import {
   DEPLOY_SANDBOX_POLICY_READ_DENIED,
   PLACEHOLDER_DESTINATION,
 } from "../helpers/refusal-text.mjs";
-import { openShellSandboxRecords } from "../helpers/runtime-logs.mjs";
+import { openShellSandboxRecords } from "../helpers/runtime-logs.ts";
 
 import {
   apiRequests,

@@ -4,6 +4,11 @@ import test from "node:test";
 import { dependencyUnavailableLogFields } from "../../apps/controller/src/http/errors.ts";
 import { WITHHELD_ERROR_TEXT } from "../../apps/controller/src/logging.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/index.ts";
+import {
+  carriesFakeCredential,
+  CREDENTIAL_SHAPE_TEXTS,
+  LEGITIMATE_DIAGNOSTIC_TEXTS,
+} from "../fixtures/logged-error-text-cases.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 export function registerDependencyUnavailableFieldsCases(clientText: string) {
@@ -83,39 +88,31 @@ export function registerDependencyUnavailableFieldsCases(clientText: string) {
     "Connect Server=db.example.test;Uid=occ;Pwd=fake-pass; failed.",
     "Token exchange body grant_type=refresh_token&refresh_token=fake-value was refused.",
   ];
-  // Representative renderings of the interpolating construction sites found by the audit of
-  // DependencyUnavailableError and its subclasses, plus prose that names credentials.
-  const BENIGN_MESSAGES = [
-    "ChatGPT Admin API POST request was unavailable.",
-    "ChatGPT Admin API DELETE request failed with HTTP 503.",
-    "The Kubernetes Secret create failed.",
-    "The Kubernetes Secret replace outcome is unknown after timeout.",
-    "The Kubernetes Secret delete was cancelled.",
-    "The Kubernetes ConfigMap create outcome is unknown after timeout.",
-    "The exact AgentRevision gateway could not apply its workspace node (WORKSPACE_NODE_FAILED).",
-    "OpenShell accepted deletion of Sandbox sbx-0123abcd but did not finish it within 30 s.",
-    "OpenShell CreateSandbox failed with gRPC status 14: connection refused",
-    "OpenShell GetSandbox failed: TypeError",
-    "The selected secret Driver is unavailable.",
-    "Persisted saved configuration is invalid.",
-    "Persisted AgentRevision plugin state is invalid.",
-    "The Agent runtime credential Kubernetes namespace is unavailable.",
-    "Basic authentication with the registry failed.",
-    "Uses basic OpenShell sandboxing.",
-    "Basic ServiceAccount token projection failed.",
-    "The ServiceAccount credential Secret create outcome is unknown, and its cleanup could not finish.",
-    "Fetch https://registry.example.test/v2/token?scope=pull failed.",
-    "Cluster https://kubernetes.default.svc:443/api answered 503.",
-  ];
-
   test("dependency log fields withhold common token, URL and connection-string credentials", () => {
     for (const message of CREDENTIAL_MESSAGES) {
       const fields = dependencyUnavailableLogFields(new DependencyUnavailableError(message));
       assert.equal(fields.message, WITHHELD_ERROR_TEXT, message);
     }
-    for (const message of BENIGN_MESSAGES) {
+    for (const message of LEGITIMATE_DIAGNOSTIC_TEXTS) {
       const fields = dependencyUnavailableLogFields(new DependencyUnavailableError(message));
       assert.equal(fields.message, message);
+    }
+    // A JSON, form or connection-string pair, a credential header or a token prefix is withheld
+    // too; the class and cause chain stay, and the value appears nowhere.
+    for (const { shape, text } of CREDENTIAL_SHAPE_TEXTS) {
+      const error = new DependencyUnavailableError(text);
+      error.cause = Object.assign(new Error(text), { name: "ApiException", code: 401 });
+      const fields = dependencyUnavailableLogFields(error);
+      assert.deepEqual(
+        fields,
+        {
+          errorClass: "DependencyUnavailableError",
+          message: WITHHELD_ERROR_TEXT,
+          causes: [{ errorClass: "ApiException", code: 401 }],
+        },
+        shape,
+      );
+      assert.equal(carriesFakeCredential(JSON.stringify(fields)), false, shape);
     }
     // A cause code shaped like a token is dropped; an ordinary code is kept.
     const error = new DependencyUnavailableError("Outage.");
