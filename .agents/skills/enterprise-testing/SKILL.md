@@ -18,17 +18,17 @@ their own scope. Never run `npm run precommit`.
 
 ## Select proof
 
-| Changed contract                         | Starting proof and owner                                                                                                                                         |
-| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Domain or Driver behavior                | `node --test tests/conformance/<name>.test.ts` (existing `.test.mjs`); broaden to `pnpm test:conformance` when relevant.                                         |
-| API or controller behavior               | `node --test tests/integration/<name>.test.ts` (existing `.test.mjs`); broaden to `pnpm test:integration`. See [local checks](../../../docs/testing/local.md).   |
-| PostgreSQL persistence                   | `pnpm test:postgres` after the [database prerequisites](../../../docs/testing/postgresql.md); use the actual database for persisted invariants.                  |
-| Docker runtime                           | `pnpm docker:test` with explicit selectors, images, and credentials from [Docker testing](../../../docs/testing/docker.md).                                      |
-| Kubernetes                               | Select the exact fixture or runtime file from [Kubernetes testing](../../../docs/testing/kubernetes.md), with its disposable cluster and database prerequisites. |
-| Console UI                               | `pnpm test:console-browser` with the prepared browser described in [browser testing](../../../docs/testing/local.md#console-browser-checks).                     |
-| Types, package boundaries, generated API | `pnpm typecheck` (builds packages and checks test types); `pnpm openapi:check` for API changes.                                                                  |
-| Documentation or skills                  | `pnpm docs:check`, relevant links, and `git diff --check`; no runtime tests solely for prose changes.                                                            |
-| CI or test selection                     | `node scripts/ci/run-tests.ts audit`; inspect [CI ownership](../../../docs/testing/ci.md), and use `actionlint` for workflow edits when available.              |
+| Changed contract                         | Starting proof and owner                                                                                                                                                                  |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Domain or Driver behavior                | `node --test tests/conformance/<name>.test.ts` (use `.test.mjs` for an existing JavaScript test); broaden to `pnpm test:conformance` when relevant.                                       |
+| API or controller behavior               | `node --test tests/integration/<name>.test.ts` (use `.test.mjs` for an existing JavaScript test); broaden to `pnpm test:integration`. See [local checks](../../../docs/testing/local.md). |
+| PostgreSQL persistence                   | `pnpm test:postgres` after the [database prerequisites](../../../docs/testing/postgresql.md); use the actual database for persisted invariants.                                           |
+| Docker runtime                           | `pnpm docker:test` with explicit selectors, images, and credentials from [Docker testing](../../../docs/testing/docker.md).                                                               |
+| Kubernetes                               | Select the exact fixture or runtime file from [Kubernetes testing](../../../docs/testing/kubernetes.md), with its disposable cluster and database prerequisites.                          |
+| Console UI                               | `pnpm test:console-browser` with the prepared browser described in [browser testing](../../../docs/testing/local.md#console-browser-checks).                                              |
+| Types, package boundaries, generated API | `pnpm typecheck` (builds packages and checks test types); `pnpm openapi:check` for API changes.                                                                                           |
+| Documentation or skills                  | `pnpm docs:check`, relevant links, and `git diff --check`; no runtime tests solely for prose changes.                                                                                     |
+| CI or test selection                     | `node scripts/ci/run-tests.ts audit`; inspect [CI ownership](../../../docs/testing/ci.md), and use `actionlint` for workflow edits when available.                                        |
 
 Run `pnpm check:workspace` and applicable `pnpm format:check` with the installed
 graph. The root formatter does not include `.agents/skills/**/*.md`; inspect
