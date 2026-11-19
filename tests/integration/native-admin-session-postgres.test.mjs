@@ -164,7 +164,6 @@ const leaseDependencies = { openNativeAdminSocketScenario };
 registerLeaseParentAndRestrictionCases(leaseDependencies);
 registerLeaseDependencyCases(leaseDependencies);
 registerLeaseStopCase(leaseDependencies);
-registerLeaseReplacementAndRevocationCases(leaseDependencies);
 
 registerLeaseReplacementAndRevocationCases(leaseDependencies);
 
