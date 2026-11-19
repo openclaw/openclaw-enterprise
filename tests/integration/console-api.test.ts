@@ -62,6 +62,8 @@ import {
   type NamespaceWire,
 } from "../../packages/contracts/src/api/resources.ts";
 import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
+import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import contract from "../../packages/contracts/openapi/occ-api.openapi.json" with { type: "json" };
 
 type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
@@ -2183,28 +2185,23 @@ async function setDesiredRepositoryPolicy(
   controller: OpenClawController,
   namespaceId: string,
   agentId: string,
-  repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[],
+  repositoryNetworkPolicy: readonly RepositoryNetworkGrant[],
 ) {
-  // This cut consumes State. The public save operation cannot yet create desired ACLs.
+  // Seed the saved policy so this cut exercises deployment admission independently.
   return controller.transact(async (unit) => {
     await unit.namespaces.lockNamespace(namespaceId);
     const current = await unit.sandboxPolicies.find(namespaceId, agentId);
     assert.ok(current);
-    const { repositoryNetworkPolicy: _previous, ...policy } = current;
     const saved = await unit.sandboxPolicies.save(
-      {
-        ...policy,
-        version: policy.version + 1,
-        ...(repositoryNetworkPolicy === undefined ? {} : { repositoryNetworkPolicy }),
-      },
-      policy.version,
+      { ...current, version: current.version + 1, repositoryNetworkPolicy },
+      current.version,
     );
     assert.ok(saved);
     return saved;
   });
 }
 
-test("deploy checks policy read for explicit deny-all and freezes the selected Driver result", async (t) => {
+test("deploy checks repository policy authority and freezes the selected Sandbox Driver result", async (t) => {
   const providerDefaults = { repositoryAccess: { state: "deny-all" } };
   let repositoryAdmissions = 0;
   let runtimeCredentialChecks = 0;
@@ -2232,10 +2229,15 @@ test("deploy checks policy read for explicit deny-all and freezes the selected D
     },
     admitRepositoryNetworkPolicy(policy, base) {
       repositoryAdmissions++;
-      assert.deepEqual(policy.grants, []);
       assert.ok(Object.isFrozen(policy.grants));
       assert.ok(Object.isFrozen(base.defaults));
-      return providerDefaults;
+      return policy.grants.length === 0
+        ? providerDefaults
+        : {
+            repositoryAccess: {
+              grants: policy.grants.map(({ repository, access }) => ({ repository, access })),
+            },
+          };
     },
     async observeNetworkPolicy() {
       assert.fail("live repository policy application must not observe provider state");
@@ -2245,9 +2247,61 @@ test("deploy checks policy read for explicit deny-all and freezes the selected D
     },
   };
   const installationLimit = [{ repository: "example/approved", access: "write" }] as const;
+  const requested = [{ repository: "example/approved", access: "read" }] as const;
+  const approvedNamespaceId = `ns_${randomUUID()}`;
+  const unapprovedNamespaceId = `ns_${randomUUID()}`;
+  // Bootstrap creates the default Namespace before the two in this test.
+  const namespaceIds = [`ns_${randomUUID()}`, approvedNamespaceId, unapprovedNamespaceId];
+  // The registry must bind the two exact API IDs before the Installation starts.
+  const resourceIdPrefixes = new Map<ResourceKind, string>([
+    ["agent", "agt"],
+    ["agent_revision", "rev"],
+    ["configuration", "cfg"],
+    ["sandbox_policy", "sbp"],
+    ["secret", "sec"],
+  ]);
+  const github = {
+    id: "test-github",
+    type: "github",
+    configuration: { registryPath: "/unused/test/registry.json" },
+    drivers: { repo: "test-repository-policy" },
+  };
+  const namespacePolicy = new GitHubRepositoryPolicy(
+    { driverId: github.drivers.repo, backendId: github.id },
+    validateGitHubRepositoryRegistry(
+      {
+        version: 1,
+        backendId: github.id,
+        providerInstanceId: "test-provider",
+        appId: "123",
+        githubInstallationId: "456",
+        maximumDurationSeconds: 3600,
+        repositories: [
+          {
+            repositoryRef: "approved",
+            repositoryId: "789",
+            repository: "example/approved",
+            namespaces: [{ namespaceId: approvedNamespaceId, profiles: ["git-read"] }],
+          },
+        ],
+      },
+      github.id,
+    ),
+    { sessionDurationSeconds: 600 },
+  );
   const fixture = await createConsoleAppFixture(t, {
     sandboxDriver: sandbox,
     nativeWorkerSupport: "custom-image",
+    createId: (kind: ResourceKind) => {
+      if (kind === "namespace") {
+        return namespaceIds.shift() ?? assert.fail("unexpected Namespace creation");
+      }
+      const prefix = resourceIdPrefixes.get(kind);
+      assert.ok(prefix, `unexpected resource kind: ${kind}`);
+      return `${prefix}_${randomUUID()}`;
+    },
+    backends: [...backendFixtures, github],
+    repositoryAdmission: { policyMode: "built-in", backendId: github.id, policy: namespacePolicy },
     repositoryNetworkPolicyCeiling: installationLimit,
     driverConfigurations: [
       {
@@ -2263,7 +2317,7 @@ test("deploy checks policy read for explicit deny-all and freezes the selected D
     ],
   });
   await fixture.bootstrap();
-  const controller = fixture.controller;
+  const controller: OpenClawController | undefined = fixture.controller;
   assert.ok(controller);
   const compute = controller.selectedDriver("compute");
   Object.assign(compute, {
@@ -2277,12 +2331,14 @@ test("deploy checks policy read for explicit deny-all and freezes the selected D
     },
   });
   const namespace = await fixture.createNamespace("Repository policy admission", { ready: true });
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Policy admission Agent",
-    createHarnessConfiguration("openclaw", "gpt-4.1"),
-    { executionMode: "dedicated" },
-  );
+  const createAgent = (namespaceId: string) =>
+    fixture.createAgent(
+      namespaceId,
+      "Policy admission Agent",
+      createHarnessConfiguration("openclaw", "gpt-4.1"),
+      { executionMode: "dedicated" },
+    );
+  const agent = await createAgent(namespace.id);
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const policyPath = `${path}/sandbox-policy/networking`;
   const readRevisions = () =>
@@ -2296,13 +2352,30 @@ test("deploy checks policy read for explicit deny-all and freezes the selected D
   });
   assert.equal(enabled.status, 200);
 
-  // A repository within the Installation limit still needs independent Namespace authority.
-  await setDesiredRepositoryPolicy(controller, namespace.id, agent.id, installationLimit);
-  const missingNamespace = await fixture.request("POST", `${path}/deploy`);
-  assertApiError(missingNamespace, 409, "RESOURCE_CONFLICT");
+  // The same request is in the Installation ceiling for both Namespaces. Only
+  // the Namespace named in the registry may reach Sandbox Driver admission.
+  const unapprovedNamespace = await fixture.createNamespace("No repository grant", { ready: true });
+  const unapprovedAgent = await createAgent(unapprovedNamespace.id);
+  await setDesiredRepositoryPolicy(
+    controller,
+    unapprovedNamespace.id,
+    unapprovedAgent.id,
+    requested,
+  );
+  const missingApproval = await fixture.request(
+    "POST",
+    `/namespaces/${unapprovedNamespace.id}/agents/${unapprovedAgent.id}/deploy`,
+  );
+  assertApiError(missingApproval, 409, "RESOURCE_CONFLICT");
   assert.match(
-    JSON.stringify(missingNamespace.body),
+    JSON.stringify(missingApproval.body),
     /Cannot verify Namespace repository network grants/,
+  );
+  assert.deepEqual(
+    await controller.transact((unit) =>
+      unit.revisions.listRevisions(unapprovedNamespace.id, unapprovedAgent.id),
+    ),
+    [],
   );
   assert.equal(repositoryAdmissions, 0);
   assert.equal(runtimeCredentialChecks, 1);
@@ -2350,9 +2423,9 @@ test("deploy checks policy read for explicit deny-all and freezes the selected D
   assert.equal(runtimeCredentialChecks, 2);
 
   await fixture.activateRevision(namespace.id, agent.id, deployed.id, previous.revision.id);
-  const omitted = await setDesiredRepositoryPolicy(controller, namespace.id, agent.id);
-  // Clearing desired policy cannot turn a live host update into removal of the deployed ACL.
-  const activeApply = await apply(deployed.id, omitted.version);
+  const approved = await setDesiredRepositoryPolicy(controller, namespace.id, agent.id, requested);
+  // A live host update cannot turn the deployed deny-all policy into repository access.
+  const activeApply = await apply(deployed.id, approved.version);
   assertApiError(activeApply, 409, "RESOURCE_CONFLICT");
   assert.match(
     JSON.stringify(activeApply.body),
@@ -2360,15 +2433,36 @@ test("deploy checks policy read for explicit deny-all and freezes the selected D
   );
   assert.deepEqual(
     await controller.transact((unit) => unit.sandboxPolicies.find(namespace.id, agent.id)),
-    omitted,
+    approved,
   );
   assert.equal((await readRevisions()).length, 2);
+
+  const repositoryDeployment = await fixture.deployAgent(namespace.id, agent.id);
+  const repositoryRevision = (await readRevisions()).find(
+    ({ id }) => id === repositoryDeployment.id,
+  );
+  assert.deepEqual(repositoryRevision?.sandboxPolicy, {
+    driverId: sandbox.id,
+    implementation: sandbox.implementation,
+    version: approved.version,
+    additions: [],
+    defaults: {
+      repositoryAccess: { grants: [{ repository: "example/approved", access: "read" }] },
+    },
+    repositoryNetworkPolicy: {
+      version: 1,
+      grants: [{ repository: "example/approved", access: "read" }],
+      identity: '{"version":1,"grants":[{"repository":"example/approved","access":"read"}]}',
+    },
+  });
+  assert.equal(repositoryAdmissions, 2);
+  assert.equal(runtimeCredentialChecks, 3);
 });
 
 test("deploy refuses an explicit repository policy without a supported Sandbox Driver or delegation", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const controller = fixture.controller;
+  const controller: OpenClawController | undefined = fixture.controller;
   assert.ok(controller);
   const namespace = await fixture.createNamespace("Unavailable repository policy", { ready: true });
   const agent = await fixture.createAgent(

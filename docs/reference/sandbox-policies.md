@@ -70,9 +70,11 @@ User editing is disabled by default. Enabling or disabling
 `Agent.sandboxPolicyEditing` requires both Installation and exact-Agent
 `administer`. Changing additions or requesting live application requires exact-Agent
 `manage_policy` and exact-SandboxPolicy `update`. Live application also requires
-SandboxPolicy `read`: it admits and returns the saved additions. When saved
-additions exist, Agent deploy and an Agent update that leaves repository bindings
-also require SandboxPolicy `read` before any refusal that names them. Reads require
+SandboxPolicy `read` because it admits and returns the saved additions. Ordinary
+deployment and fresh first deployment need SandboxPolicy `read` for saved
+network policy additions or an explicit repository network policy list, even an
+empty list. An Agent update that leaves repository bindings still needs
+SandboxPolicy `read` when saved network policy additions exist. Reads require
 `read` on both resources. Ordinary Agent `update` does not authorize these operations.
 The editing switch is temporary until the platform Guardrails primitive owns
 these restrictions. Its controller and HTTP operation are named

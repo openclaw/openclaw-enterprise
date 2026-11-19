@@ -3293,10 +3293,9 @@ test("protected admission refuses an Agent's network policy additions instead of
     f.controller.transact(async (unit) => {
       const policy = await unit.sandboxPolicies.find(f.namespace.id, f.agent.id);
       assert.ok(policy, "every Agent owns a sandbox policy");
-      const { repositoryNetworkPolicy: _previous, ...current } = policy;
       const saved = await unit.sandboxPolicies.save(
         {
-          ...current,
+          ...policy,
           additions,
           version: policy.version + 1,
           ...(repositoryNetworkPolicy === undefined ? {} : { repositoryNetworkPolicy }),
@@ -3320,7 +3319,16 @@ test("protected admission refuses an Agent's network policy additions instead of
     await f.controller.transact((unit) => unit.revisions.listRevisions(f.namespace.id, f.agent.id)),
     [],
   );
-  // An explicit deny-all request must also refuse before a protected revision can be created.
+  // Omission permits the existing protected execution path.
+  await savePolicy([]);
+  const metadata = await f.deployAgent(f.namespace.id, f.agent.id);
+  const revision = await f.controller.transact((unit) =>
+    unit.revisions.findRevision(f.namespace.id, f.agent.id, metadata.id),
+  );
+  assert.equal(revision.executionAdmission.mode, "protected");
+  assert.ok(revision.egressPlan);
+  assert.equal(revision.sandboxPolicy, undefined);
+  // Saving explicit deny-all must refuse a subsequent protected deployment.
   await savePolicy([], []);
   const deniedRepositoryPolicy = await f.request(
     "POST",
@@ -3333,17 +3341,8 @@ test("protected admission refuses an Agent's network policy additions instead of
   );
   assert.deepEqual(
     await f.controller.transact((unit) => unit.revisions.listRevisions(f.namespace.id, f.agent.id)),
-    [],
+    [revision],
   );
-  // Omission permits the existing protected execution path.
-  await savePolicy([]);
-  const metadata = await f.deployAgent(f.namespace.id, f.agent.id);
-  const revision = await f.controller.transact((unit) =>
-    unit.revisions.findRevision(f.namespace.id, f.agent.id, metadata.id),
-  );
-  assert.equal(revision.executionAdmission.mode, "protected");
-  assert.ok(revision.egressPlan);
-  assert.equal(revision.sandboxPolicy, undefined);
 });
 
 test("the policy endpoint refuses additions and live application while the active revision is protected", async (t) => {

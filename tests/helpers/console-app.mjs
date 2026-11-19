@@ -508,7 +508,8 @@ export async function createConsoleAppFixture(t, options = {}) {
       : { nativeAdminGatewayApiKey: options.nativeAdminGatewayApiKey }),
     resolveHarness: resolveApprovedHarness,
     createController(installation) {
-      controller = new OpenClawController(installation, {
+      /** @type {import("../../packages/occ/src/index.ts").ControllerOptions} */
+      const controllerOptions = {
         state: platformState,
         authenticationStateEncryptionSecret: authSecret,
         namespaceLifecycleBindings:
@@ -525,6 +526,7 @@ export async function createConsoleAppFixture(t, options = {}) {
         ...(options.repositoryNetworkPolicyCeiling === undefined
           ? {}
           : { repositoryNetworkPolicyCeiling: options.repositoryNetworkPolicyCeiling }),
+        ...(options.createId === undefined ? {} : { createId: options.createId }),
         driverConfigurations: options.driverConfigurations,
         ...(options.now === undefined ? {} : { now: options.now }),
         recordOperations: options.recordOperations ?? false,
@@ -538,7 +540,15 @@ export async function createConsoleAppFixture(t, options = {}) {
         ...(options.credentialProxyCapacity === undefined
           ? {}
           : { credentialProxyCapacity: options.credentialProxyCapacity }),
-      });
+      };
+      controller =
+        options.repositoryAdmission === undefined
+          ? new OpenClawController(installation, controllerOptions)
+          : OpenClawController.forInstallation(
+              installation,
+              controllerOptions,
+              options.repositoryAdmission,
+            );
       const modelBackends = backends.filter((backend) => backend.type === "chatgpt");
       if (modelBackends.length > 0) {
         const unexpectedBackendCall = async () =>
