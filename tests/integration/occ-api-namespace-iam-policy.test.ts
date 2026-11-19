@@ -791,32 +791,25 @@ async function assertRoleValidation(controller: TestController, namespaceId: str
     { action: "operate", resourceKind: "credential_source" },
   ]);
   assert.equal(supported.status, 201, JSON.stringify(supported.body));
-  const reader = await createRole([{ action: "read", resourceKind: "namespace" }]);
-  const { data: readerData } = checkedBody(reader, 201, IAMRoleResponse);
-  return readerData;
 }
 
 async function assertAccessBindingConflicts(
   controller: TestController,
-  {
-    namespaceId,
-    otherId,
-    memberId,
-    readerId,
-  }: {
-    namespaceId: string;
-    otherId: string;
-    memberId: string;
-    readerId: string;
-  },
+  { namespaceId, otherId, memberId }: { namespaceId: string; otherId: string; memberId: string },
 ) {
-  const foreignRole = await controller.request("POST", `/namespaces/${otherId}/iam/roles`, {
-    body: { permissions: [{ action: "read", resourceKind: "namespace" }] },
-  });
-  const { data: foreignRoleData } = checkedBody(foreignRole, 201, IAMRoleResponse);
+  const createReader = async (id: string) => {
+    const role = await controller.request("POST", `/namespaces/${id}/iam/roles`, {
+      body: { permissions: [{ action: "read", resourceKind: "namespace" }] },
+    });
+    const { data } = checkedBody(role, 201, IAMRoleResponse);
+    return data.id;
+  };
+  const readerId = await createReader(namespaceId);
+  const foreignRoleId = await createReader(otherId);
 
+  const bindingPath = `/namespaces/${namespaceId}/iam/access-bindings`;
   const bind = (body: Partial<CreateIAMAccessBindingBody>) =>
-    controller.request("POST", `/namespaces/${namespaceId}/iam/access-bindings`, {
+    controller.request("POST", bindingPath, {
       body: {
         subjectKind: "identity",
         subjectId: memberId,
@@ -828,26 +821,34 @@ async function assertAccessBindingConflicts(
     });
   for (const [body, path] of [
     [{ resourceId: otherId }, "/resourceId"],
-    [{ roleId: foreignRoleData.id }, "/roleId"],
+    [{ roleId: foreignRoleId }, "/roleId"],
     [{ roleId: `role_${randomUUID()}` }, "/roleId"],
   ] as const) {
     const rejected = await bind(body);
     const { error: rejectedError } = assertApiError(rejected, 400, "INVALID_REQUEST", path);
     assert.deepEqual(rejectedError.details, [{ path, code: "INVALID_VALUE" }]);
   }
-  // An email is the caller's own input, so the answer names that mistake; an unknown principal ID
-  // keeps the answer an ineligible one gets, so it reveals no principal (finding D753).
+  // The email diagnostic identifies a caller-supplied mistake. Unknown IDs get the generic
+  // ineligible-principal response.
   const email = await bind({ subjectId: "nora@example.com" });
   const { error: emailError } = assertApiError(email, 400, "INVALID_REQUEST", "/subjectId");
+  assert.deepEqual(emailError.details, [{ path: "/subjectId", code: "INVALID_VALUE" }]);
   assert.equal(emailError.message, BINDING_SUBJECT_EMAIL);
   const unknown = await bind({ subjectId: `prn_${randomUUID()}` });
   const { error: unknownError } = assertApiError(unknown, 400, "INVALID_REQUEST");
   assert.deepEqual(unknownError.details, [{ path: "/subjectId", code: "INVALID_VALUE" }]);
   assert.equal(unknownError.message, BINDING_SUBJECT_INELIGIBLE);
 
-  // A Role still referenced by an AccessBinding names the reason, not "already exists".
-  const binding = await bind({});
-  assert.equal(binding.status, 201, JSON.stringify(binding.body));
+  const listBindings = async () => {
+    const listed = await controller.request("GET", bindingPath);
+    return checkedBody(listed, 200, IAMAccessBindingListResponse).data;
+  };
+  assert.deepEqual(await listBindings(), [], "rejected AccessBindings must not be persisted");
+
+  const { data: binding } = checkedBody(await bind({}), 201, IAMAccessBindingResponse);
+  assert.deepEqual(await listBindings(), [binding]);
+
+  // Deleting a referenced Role reports why the Role is still in use.
   const inUse = await controller.request(
     "DELETE",
     `/namespaces/${namespaceId}/iam/roles/${readerId}`,
@@ -864,12 +865,11 @@ test("Namespace IAM reports invalid policy input as 400 with the field and refus
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "policy-validation");
   const other = await createNamespace(controller, "policy-validation-other");
-  const reader = await assertRoleValidation(controller, namespace.id);
+  await assertRoleValidation(controller, namespace.id);
   await assertAccessBindingConflicts(controller, {
     namespaceId: namespace.id,
     otherId: other.id,
     memberId: member.principal.id,
-    readerId: reader.id,
   });
 });
 
