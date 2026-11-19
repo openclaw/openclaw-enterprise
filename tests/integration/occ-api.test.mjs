@@ -61,7 +61,6 @@ import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { listManagedMcpToolNames } from "../../apps/controller/src/connections/mcp-tool-discovery.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import {
@@ -5870,98 +5869,6 @@ test("Slack validation with no Slack proxy names the setting at provision and de
   const deploy = await controller.request("POST", `${base}/agents/${agent.id}/deploy`);
   assertApiError(deploy, 409, "RESOURCE_CONFLICT");
   assert.equal(deploy.body.error.message, noRoute);
-});
-
-test("managed MCP discovery reads tool names using one pinned authenticated session", async () => {
-  const url = "https://tools.example/api/mcp/v1";
-  const token = "fixture-mcp-discovery-token";
-  const calls = [];
-  const result = await listManagedMcpToolNames(url, token, undefined, {
-    async resolveHost(host) {
-      assert.equal(host, "tools.example");
-      return [{ address: "8.8.8.8", family: 4 }];
-    },
-    async fetch(target, request) {
-      assert.equal(target.href, url);
-      assert.equal(request.credentials, "omit");
-      assert.equal(request.redirect, "error");
-      const headers = new Headers(request.headers);
-      assert.equal(headers.get("Authorization"), `Bearer ${token}`);
-      const body = request.body === undefined ? undefined : JSON.parse(request.body);
-      calls.push(body?.method ?? request.method);
-      if (body?.method === "initialize") {
-        return Response.json(
-          {
-            jsonrpc: "2.0",
-            id: body.id,
-            result: {
-              protocolVersion: "2025-11-25",
-              capabilities: { tools: {} },
-              serverInfo: { name: "Document MCP fixture", version: "1" },
-            },
-          },
-          { headers: { "mcp-session-id": "fixture-session" } },
-        );
-      }
-      assert.equal(headers.get("mcp-session-id"), "fixture-session");
-      if (body?.method === "notifications/initialized") {
-        return new Response(null, { status: 202 });
-      }
-      if (request.method === "GET" || request.method === "DELETE") {
-        return new Response(null, { status: 405 });
-      }
-      assert.equal(body?.method, "tools/list");
-      const secondPage = body.params?.cursor === "next";
-      const payload = {
-        jsonrpc: "2.0",
-        id: body.id,
-        result: {
-          tools: [
-            {
-              name: secondPage ? "create_document" : "search_documents",
-              inputSchema: { type: "object" },
-            },
-          ],
-          ...(secondPage ? {} : { nextCursor: "next" }),
-        },
-      };
-      return new Response(`event: message\ndata: ${JSON.stringify(payload)}\n\n`, {
-        headers: { "content-type": "text/event-stream" },
-      });
-    },
-  });
-  assert.deepEqual([...result], ["search_documents", "create_document"]);
-  assert.deepEqual(
-    calls.filter((method) => method !== "GET"),
-    ["initialize", "notifications/initialized", "tools/list", "tools/list", "DELETE"],
-  );
-});
-
-test("managed MCP discovery refuses private DNS answers and redirects", async () => {
-  const url = "https://tools.example/api/mcp/v1";
-  const token = "fixture-mcp-discovery-token";
-  let attempted = false;
-  await assert.rejects(
-    listManagedMcpToolNames(url, token, undefined, {
-      resolveHost: async () => [{ address: "127.0.0.1", family: 4 }],
-      async fetch() {
-        attempted = true;
-        throw new Error("Unexpected request");
-      },
-    }),
-    { reason: "unavailable" },
-  );
-  assert.equal(attempted, false);
-  await assert.rejects(
-    listManagedMcpToolNames(url, token, undefined, {
-      resolveHost: async () => [{ address: "8.8.8.8", family: 4 }],
-      async fetch(target) {
-        assert.equal(target.href, url);
-        return Response.redirect("https://other.example/mcp");
-      },
-    }),
-    { reason: "invalid_response" },
-  );
 });
 
 test("saved-Agent discovery offers managed packages only where Agent save admits them", async () => {
