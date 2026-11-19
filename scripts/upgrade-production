@@ -176,7 +176,11 @@ def report_status(parser, directory):
             print("No deployment was prepared in the recorded preflight. Resolve the blocker through an authorized interruption or revision replacement, then recheck inventory with fresh upgrade evidence.")
         else:
             print("Candidate startup checks passed and temporary resources were removed in this attempt.")
-            print("No deployment preparation marker was observed. Inspect the original attempt and use fresh evidence for any upgrade.")
+            print("The final preflight outcome is unknown from this marker alone.")
+            print(
+                "Preserve the original attempt's top-level evidence. "
+                "Reconcile the command result and current inventory before any further write."
+            )
     else:
         print("No completion was recorded; inspect the original attempt before any further write.")
     if observed[".upgrade-lock"]:
