@@ -3427,7 +3427,8 @@ function repositories(
         );
         if (
           grants !== undefined ||
-          revision?.sandboxPolicy?.repositoryNetworkPolicy !== undefined
+          revision?.sandboxPolicy?.repositoryNetworkPolicy !== undefined ||
+          application.snapshot.repositoryNetworkPolicy !== undefined
         ) {
           throw new ScopeViolationError("Repository network policy requires a new deployment.");
         }

@@ -6,16 +6,97 @@ import {
   type AgentRevision,
   type RepositoryNetworkGrant,
   type SandboxPolicy,
+  type SandboxPolicyApplication,
   type SandboxPolicySnapshot,
 } from "../../packages/contracts/src/index.ts";
-import { ScopeViolationError } from "../../packages/occ/src/index.ts";
+import {
+  InMemoryPlatformState,
+  ScopeViolationError,
+  type PlatformStateStore,
+} from "../../packages/occ/src/index.ts";
+import { seedPlatformState } from "../conformance/platform-state-contract-fixture.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
+
+async function verifyLiveApplicationSnapshot(
+  state: PlatformStateStore,
+  namespaceId: string,
+  agentId: string,
+  revisionId: string,
+): Promise<void> {
+  const readPolicy = () => state.read((view) => view.sandboxPolicies.find(namespaceId, agentId));
+  const savePolicy = (policy: SandboxPolicy) =>
+    state.transact((unit) => unit.sandboxPolicies.save(policy, policy.version));
+  const original = await readPolicy();
+  const revision = await state.read((view) =>
+    view.revisions.findRevision(namespaceId, agentId, revisionId),
+  );
+  assert.ok(original);
+  assert.ok(revision);
+  assert.equal(original.repositoryNetworkPolicy, undefined);
+  assert.equal(revision.sandboxPolicy?.repositoryNetworkPolicy, undefined);
+
+  const application: SandboxPolicyApplication = {
+    id: randomUUID(),
+    revisionId,
+    policyVersion: original.version,
+    snapshot: {
+      driverId: "test-sandbox",
+      implementation: "test",
+      version: original.version,
+      defaults: {},
+      additions: original.additions,
+    },
+    state: "pending",
+    requestedBy: "test-administrator",
+    requestedAt: new Date().toISOString(),
+  };
+
+  // An explicit deny-all list in the application alone must require a new deployment.
+  const denyAll = admitRepositoryNetworkPolicy([], []);
+  assert.ok(denyAll);
+  await assert.rejects(
+    savePolicy({
+      ...original,
+      application: {
+        ...application,
+        snapshot: { ...application.snapshot, repositoryNetworkPolicy: denyAll },
+      },
+    }),
+    ScopeViolationError,
+  );
+  assert.deepEqual(await readPolicy(), original);
+
+  // The same application can settle when its snapshot carries ordinary network policy.
+  const pending = { ...original, application };
+  assert.deepEqual(await savePolicy(pending), pending);
+  const providerVersion = "sandbox-policy-version-1";
+  const applied: SandboxPolicy = {
+    ...pending,
+    application: { ...application, state: "applied", providerVersion },
+    applied: {
+      revisionId,
+      policyVersion: original.version,
+      providerVersion,
+      appliedAt: new Date().toISOString(),
+    },
+  };
+  assert.deepEqual(await savePolicy(applied), applied);
+  assert.deepEqual(await readPolicy(), applied);
+}
+
+export async function verifyMemoryRepositoryPolicyLiveApplication(): Promise<void> {
+  const state = new InMemoryPlatformState();
+  const { namespace, agent, revision } = await seedPlatformState(state);
+  await verifyLiveApplicationSnapshot(state, namespace.id, agent.id, revision.id);
+}
 
 export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<void> {
   const { deployAgent, state } = await createPostgresAgentApp(t, {
     label: "repository-network-policy",
     authSecret: "repository-network-policy-fixture-session-secret",
   });
+  const live = await deployAgent("Live sandbox policy");
+  await verifyLiveApplicationSnapshot(state, live.namespace.id, live.agent.id, live.revision.id);
   const { namespace, agent, revision } = await deployAgent("Repository network policy");
   assert.equal(
     await state.read(async (view) => view.sandboxPolicies.supportsRepositoryNetworkPolicy),
