@@ -2,7 +2,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import type { CleanupRegistrar } from "./console-file-app.ts";
+import type { CleanupRegistrar } from "./cleanup-registrar.ts";
 import { temporaryDirectory } from "./temporary-directory.ts";
 
 type Cluster = { name: string; cluster: { server: string } };

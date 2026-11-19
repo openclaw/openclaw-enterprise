@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-19
-last_updated_session: authoring-run/5de05faa-098d-4671-b34e-4148f7a14d08
+last_updated_session: authoring-run/8062b878-7f8a-4aa8-a012-826e230839f4
 ---
 
 # Protected credential request flow
@@ -66,11 +66,17 @@ reads; deployment refusal precedes counterpart probes. Retained revisions keep
 their provider, authorization, withdrawal and cleanup under the
 [current Sandbox contract](../reference/credential-sources/protected-inference.md#bundled-openshell-admission).
 
+Static admission hides incompatible types from capabilities. Creation and adoption
+return 409 on mismatch; refused adoption preserves the Gateway copy.
+`admitStaticEgressSource` rechecks both declarations before reading and injecting material.
+
 OCC checks source and Secret grants; adoption requires consent. Version 3 binds
-Sandbox and Proxy to one Driver. `admitProxyPlan` derives routes from saved Harness
-settings and consent; empty routes deny all. Plans retain execution, digest, grant
-and source generation. `checkEgressUseIn` rechecks delivery and send authorization;
-`createCredentialProxy` rechecks ownership after metadata lookup, before Secret reads.
+Sandbox and Proxy to one Driver. `admitProxyPlan` derives routes from Harness
+settings and consent; empty routes deny all. Plans pin execution, digest, grant
+and source generation. Deployment rechecks the unique compatible provider before
+provisioning transport credentials and saving the revision. `checkEgressUseIn`
+rechecks send and delivery; `createCredentialProxy` rechecks ownership between
+metadata and material reads.
 `apps/controller/src/console/agents/detail.mts:requestedHarnessOverrides` captures
 submitted settings for OCC normalization and grant checks.
 
@@ -347,6 +353,8 @@ None.
 
 ## Changelog
 
+- 2026-11-19 10:37: Check admitted provider identity. (authoring-run/8062b878-7f8a-4aa8-a012-826e230839f4 - 6ff25175b)
+- 2026-11-19 09:31: Check static source lifecycles. (authoring-run/176872aa-dcf6-4c9b-9f11-31d19a4c5dcf - d3749595bd)
 - 2026-11-19 02:07: Fence static material reads. (authoring-run/5de05faa-098d-4671-b34e-4148f7a14d08 - cea7d46c69)
 
 - 2026-11-18 11:53: Require a delta to open a reasoning-text index; consolidate exchange regression coverage. (authoring-run/cd2d6ae9-eb3b-4896-b64b-ae7ecc119b99 - fe38bb0cb)
