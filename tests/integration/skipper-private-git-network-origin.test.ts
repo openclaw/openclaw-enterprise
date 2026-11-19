@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { request } from "node:https";
 import test from "node:test";
 import { startSkipperPrivateGitOrigin } from "../fixtures/skipper-private-git-origin.mjs";
 import {
@@ -50,4 +51,50 @@ test("private Git network origin accepts only its broad fixture credential acros
     network.requests().some((request: { authenticated: boolean }) => request.authenticated),
   );
   assert.equal(network.requests().at(-1)?.authenticated, false);
+
+  const http = (path: string, method: string, body?: string) =>
+    new Promise<{ status: number; type: string | undefined }>((resolve, reject) => {
+      const req = request(
+        new URL(path, origin.origin),
+        {
+          method,
+          ca: origin.tls.ca,
+          headers: {
+            authorization: `Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`,
+            ...(body === undefined
+              ? {}
+              : { "content-type": "application/x-git-receive-pack-request" }),
+          },
+        },
+        (response) => {
+          response.resume();
+          response.once("end", () =>
+            resolve({ status: response.statusCode!, type: response.headers["content-type"] }),
+          );
+        },
+      );
+      req.once("error", reject);
+      req.end(body);
+    });
+  assert.deepEqual(await http("/fixture/a.git/info/refs?service=git-upload-pack", "GET"), {
+    status: 200,
+    type: "application/x-git-upload-pack-advertisement",
+  });
+  assert.deepEqual(await http("/fixture/b.git/git-receive-pack", "POST", "0000"), {
+    status: 200,
+    type: "application/x-git-receive-pack-result",
+  });
+  const beforeUnknown = network.unknownRequests();
+  const beforeKnown = network.requests().length;
+  await http("/unrecognized-sensitive-path?service=unrecognized-sensitive-value", "GET");
+  assert.equal(network.unknownRequests(), beforeUnknown + 1);
+  assert.equal(network.requests().length, beforeKnown);
+  for (const observation of network.requests()) {
+    assert.deepEqual(Object.keys(observation).sort(), [
+      "authenticated",
+      "method",
+      "operation",
+      "repository",
+    ]);
+  }
 });

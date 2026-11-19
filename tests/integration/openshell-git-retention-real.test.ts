@@ -952,6 +952,8 @@ test(
   },
 );
 
+// Run in an approved disposable window with the documented OpenShell prerequisites:
+// OCC_TEST_OPENSHELL_K3D_REAL=1 node --test --test-name-pattern='OpenShell enforces installed Git repository ACLs with managed Basic credentials' tests/integration/openshell-git-retention-real.test.ts
 test(
   "OpenShell enforces installed Git repository ACLs with managed Basic credentials",
   { skip: !selected, timeout: 45 * 60_000 },
@@ -1018,9 +1020,10 @@ test(
     assert.equal(await network.ref("fixture/c", "refs/heads/control"), origin.initialSha);
 
     const createSandbox = async (name: string, providers: string[]) => {
+      const marker = randomUUID();
       const identity: { id?: string } = {};
-      // Register reconciliation before the create. A lost reply never authorizes replay.
-      cleanup.push(async () => {
+      // A lost response permits cleanup only when the immutable ID or create marker proves ownership.
+      const removeOwned = async () => {
         const present = await gatewayClient.getSandbox(
           { workspace, name },
           AbortSignal.timeout(15_000),
@@ -1028,17 +1031,21 @@ test(
         if (!present) {
           return;
         }
-        if (identity.id) {
-          assert.equal(present.id, identity.id);
+        if (
+          !present.id ||
+          (identity.id ? present.id !== identity.id : present.labels["fixture-owner"] !== marker)
+        ) {
+          return; // Ambiguous resources belong to the disposable installation's teardown.
         }
         await gatewayClient.deleteSandbox({ workspace, name }, AbortSignal.timeout(30_000));
-      });
+      };
+      cleanup.push(removeOwned);
       const created = await gatewayClient.createSandbox(
         {
           name,
           workspace,
           requestId: randomUUID(),
-          labels: {},
+          labels: { "fixture-owner": marker },
           annotations: {},
           serviceExposures: [],
           spec: {
@@ -1072,12 +1079,12 @@ test(
         },
         180_000,
       );
-      return { sandboxName: name, sandboxId: created.id };
+      return { sandboxName: name, sandboxId: created.id, removeOwned };
     };
 
     // Resolve the real networking executables in the selected image before binding
     // the Provider. The probe has no credential or network grant.
-    const probe = await createSandbox(`git-probe-${randomUUID().slice(0, 8)}`, []);
+    const probe = await createSandbox(`git-probe-${randomUUID()}`, []);
     const paths = await execute(probe, [
       "sh",
       "-ceu",
@@ -1086,9 +1093,9 @@ test(
     const [gitHelper, curl] = paths.stdout.toString("utf8").trim().split("\n");
     assert.match(gitHelper!, /^\/(usr\/lib(?:exec)?\/git-core)\/git-remote-http(?:s)?$/);
     assert.match(curl!, /^\/[A-Za-z0-9_./-]+$/);
-    await gatewayClient.deleteSandbox({ workspace, name: probe.sandboxName }, t.signal);
+    await probe.removeOwned();
 
-    const name = `git-acl-${randomUUID().slice(0, 8)}`;
+    const name = `git-acl-${randomUUID()}`;
     const provider = new OpenShellPreparedGitProvider(gatewayClient, {
       workspace,
       workspaceId: workspaceResource.id,
@@ -1140,17 +1147,54 @@ test(
     const allowed = network.requests().slice(beforeAllowed);
     assert.ok(
       allowed.some(
-        (request: { path: string }) => request.path === "/fixture/a.git/git-upload-pack",
+        (request: { repository: string; operation: string; authenticated: boolean }) =>
+          request.repository === "fixture/a" &&
+          request.operation === "upload-pack" &&
+          request.authenticated,
       ),
     );
     assert.ok(
       allowed.some(
-        (request: { path: string }) => request.path === "/fixture/b.git/git-receive-pack",
+        (request: { repository: string; operation: string; authenticated: boolean }) =>
+          request.repository === "fixture/b" &&
+          request.operation === "receive-pack" &&
+          request.authenticated,
       ),
     );
-    assert.ok(
-      allowed.some((request: { authenticated: boolean }) => request.authenticated),
-      "origin accepted the managed real credential",
+
+    // Calibrate both HTTP methods through the exact curl binary and guest placeholder.
+    // A blanket curl denial must fail before the repository-specific negative cases.
+    const curlAllowed = async (repository: string, operation: string, script: string) => {
+      const before = network.requests().length;
+      await guest(`test "$GITHUB_TOKEN" = "openshell:resolve:env:GITHUB_TOKEN"; ${script}`);
+      assert.ok(
+        network
+          .requests()
+          .slice(before)
+          .some(
+            (request: {
+              repository: string;
+              operation: string;
+              method: string;
+              authenticated: boolean;
+            }) =>
+              request.repository === repository &&
+              request.operation === operation &&
+              request.method === (operation.endsWith("advertise") ? "GET" : "POST") &&
+              request.authenticated,
+          ),
+        "allowed curl request did not authenticate at the origin",
+      );
+    };
+    await curlAllowed(
+      "fixture/a",
+      "upload-advertise",
+      `result=$('${curl}' -sS -o /dev/null -w '%{http_code} %{content_type}' -u "x-access-token:$GITHUB_TOKEN" 'https://github.com/fixture/a.git/info/refs?service=git-upload-pack'); test "$result" = '200 application/x-git-upload-pack-advertisement'`,
+    );
+    await curlAllowed(
+      "fixture/b",
+      "receive-pack",
+      `result=$('${curl}' -sS -o /dev/null -w '%{http_code} %{content_type}' -u "x-access-token:$GITHUB_TOKEN" -H 'Content-Type: application/x-git-receive-pack-request' --data-binary '0000' 'https://github.com/fixture/b.git/git-receive-pack'); test "$result" = '200 application/x-git-receive-pack-result'`,
     );
 
     // The same broad token succeeded for these operations in the direct control.

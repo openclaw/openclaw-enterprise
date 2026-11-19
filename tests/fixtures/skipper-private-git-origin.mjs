@@ -48,6 +48,7 @@ export async function startSkipperPrivateGitOrigin({
     ? `Basic ${Buffer.from(`x-access-token:${broadToken}`).toString("base64")}`
     : undefined;
   const networkRequests = [];
+  let unknownNetworkRequests = 0;
   const children = new Set();
   // HTTPS exposes a TLSSocket on the request and a net.Socket at TCP accept.
   // Their live TCP four-tuple identifies the same connection across both events.
@@ -264,6 +265,9 @@ export async function startSkipperPrivateGitOrigin({
     }
     server = createServer({ ...tls, IncomingMessage: OriginRequest }, async (request, response) => {
       let endpoint = "other";
+      if (networkAcl) {
+        unknownNetworkRequests++;
+      }
       const reply = (status, body = {}) => {
         count(endpoint, status);
         response.writeHead(status, {
@@ -342,14 +346,6 @@ export async function startSkipperPrivateGitOrigin({
         const matchedRepository = networkRepositories.find((name) =>
           url.pathname.startsWith(`/${name}.git/`),
         );
-        if (networkAcl) {
-          networkRequests.push({
-            method: request.method,
-            path: url.pathname,
-            service: url.searchParams.get("service"),
-            authenticated: request.headers.authorization === broadAuthorization,
-          });
-        }
         const requestGitPrefix = matchedRepository ? `/${matchedRepository}.git` : gitPrefix;
         const service = url.searchParams.get("service");
         const discovery =
@@ -371,6 +367,15 @@ export async function startSkipperPrivateGitOrigin({
           ? service === "git-receive-pack"
           : url.pathname.endsWith("/git-receive-pack");
         endpoint = `${receive ? "receive" : "upload"}-${discovery ? "advertise" : "pack"}`;
+        if (networkAcl) {
+          unknownNetworkRequests--;
+          networkRequests.push({
+            repository: matchedRepository,
+            operation: endpoint,
+            method: discovery ? "GET" : "POST",
+            authenticated: request.headers.authorization === broadAuthorization,
+          });
+        }
         const broad = networkAcl && request.headers.authorization === broadAuthorization;
         if (networkAcl ? !broad : !authority.authorize(request.headers.authorization, "git")) {
           reply(401);
@@ -539,6 +544,7 @@ export async function startSkipperPrivateGitOrigin({
           repositories: networkRepositories,
           token: broadToken,
           requests: () => networkRequests.map((entry) => ({ ...entry })),
+          unknownRequests: () => unknownNetworkRequests,
           async ref(name, ref) {
             assert.ok(networkRepositories.includes(name));
             const result = await git(
