@@ -688,16 +688,33 @@ function assertLaneAdmission(workflow: Workflow, execution: Workflow) {
           outputs: { "use-runtime-artifact": "true" },
         },
       };
-      const inputs = { lane: needs.preflight.outputs.selected_lane };
+      const context = { github, needs, inputs: { lane: needs.preflight.outputs.selected_lane } };
       assert.equal(
-        workflowCondition(job.if, { github, needs, inputs }),
+        workflowCondition(job.if, context),
         event_name !== "schedule" || name !== "logging-collector",
         `${name}: first attempt`,
       );
+      // A failed preflight must block execution even when it publishes lane outputs.
+      assert.equal(
+        workflowCondition(job.if, {
+          ...context,
+          needs: { ...needs, preflight: { ...needs.preflight, result: "failure" } },
+        }),
+        false,
+        `${name}: failed preflight on ${event_name}`,
+      );
+      // A partial all-lanes selection must also be refused after failed preflight.
       assert.equal(
         workflowCondition(job.if, {
           github,
-          inputs,
+          needs: { ...needs, preflight: { result: "failure", outputs: { selected_lane: "all" } } },
+        }),
+        false,
+        `${name}: failed preflight with partial outputs on ${event_name}`,
+      );
+      assert.equal(
+        workflowCondition(job.if, {
+          ...context,
           needs: {
             ...needs,
             preflight: { result: "success", outputs: { selected_lane: "skip", run_all: "false" } },
@@ -707,7 +724,7 @@ function assertLaneAdmission(workflow: Workflow, execution: Workflow) {
         `${name}: skipped admission`,
       );
       assert.equal(
-        workflowCondition(job.if, { github: { ...github, run_attempt: "2" }, needs, inputs }),
+        workflowCondition(job.if, { ...context, github: { ...github, run_attempt: "2" } }),
         false,
         `${name}: use a new approved dispatch to retry`,
       );
@@ -717,19 +734,11 @@ function assertLaneAdmission(workflow: Workflow, execution: Workflow) {
         { event_name: "pull_request" },
       ]) {
         assert.equal(
-          workflowCondition(job.if, { github: { ...github, ...patch }, needs, inputs }),
+          workflowCondition(job.if, { ...context, github: { ...github, ...patch } }),
           false,
           `${name}: ${JSON.stringify(patch)}`,
         );
       }
-      assert.equal(
-        workflowCondition(job.if, {
-          github,
-          needs: { ...needs, preflight: { result: "failure", outputs: { selected_lane: "all" } } },
-        }),
-        false,
-        `${name}: failed preflight`,
-      );
     }
   }
 }
