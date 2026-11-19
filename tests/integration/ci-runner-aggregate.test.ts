@@ -31,15 +31,6 @@ function writePassedBaselineResult(root: string, sourceSha: string, filePath: st
   });
 }
 
-function writeSingleLaneManifest(
-  root: string,
-  lane: string,
-  files: { path: string; expectedTests?: string[] }[],
-  groups: Record<string, string[]>,
-) {
-  return writeRunnerManifest(root, { lanes: { [lane]: { files } }, groups });
-}
-
 async function aggregateWithNeeds(root: string, target: string, needs: unknown) {
   const needsFile = "needs.json";
   await writeJson(join(root, needsFile), needs);
@@ -98,8 +89,9 @@ test("aggregate requires successful job gates and unambiguous lane ownership", a
   const root = await createRunnerFixture(t);
   const sha = currentSha();
   const baselinePath = "tests/integration/baseline.test.mjs";
-  await writeSingleLaneManifest(root, "baseline", [{ path: baselinePath }], {
-    ci: ["baseline"],
+  await writeRunnerManifest(root, {
+    lanes: { baseline: { files: [{ path: baselinePath }] } },
+    groups: { ci: ["baseline"] },
   });
   await writePassedBaselineResult(root, sha, baselinePath);
   const result = await aggregateWithNeeds(root, "ci", {

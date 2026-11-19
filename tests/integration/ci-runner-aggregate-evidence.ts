@@ -27,7 +27,6 @@ interface CaseEvidence {
 interface FileEvidence {
   path: string;
   status: string;
-  cleanup: { status: string };
   tests: CaseEvidence[];
 }
 
