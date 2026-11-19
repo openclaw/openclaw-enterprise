@@ -91,7 +91,7 @@ export async function probePackagedCodex(
     "openclaw-required-worker-authority-regression.patch":
       provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
     "openclaw-google-worker-placeholder.patch":
-      "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
+      "cfd027b90c833f0a0266c94e01dc9387143a265c711868d168fb01864468bb38",
     ...(historicalCodex
       ? {
           "openclaw-control-ui-browser-reconnect.patch":
@@ -111,7 +111,7 @@ export async function probePackagedCodex(
           "openclaw-planned-completion.patch":
             "402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15",
           "openclaw-node-setup-renewal.patch":
-            "cdda7e94a154b3508cf3eaf1513d0dee62cb58b0127c035a769911a86fd51b1e",
+            "1cba704e3888ff7764d62613b0bbb4918ceccb66352a1fc2baf31d72ec8d0df6",
           "openclaw-restart-harness-readiness.patch":
             "fb6541b16a0318d43c521f58902447be1436f1d973d676d3bc8baf70bd9d417f",
         }),
