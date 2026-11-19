@@ -3,11 +3,14 @@ import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from "node:child_p
 import { createHash } from "node:crypto";
 import {
   closeSync,
+  constants,
   copyFileSync,
+  fstatSync,
   linkSync,
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   realpathSync,
   rmSync,
   statSync,
@@ -471,9 +474,6 @@ test("CI tool launcher preserves proxy and certificate settings without exposing
   writePrivate(expected, allowed);
   const startup = join(directory, "forbidden-startup");
   writeFileSync(startup, "exit 79\n", { mode: 0o600 });
-  const candidate = join(directory, "candidate-tool");
-  const installed = join(directory, "installed-tool");
-  writeFileSync(candidate, "approved fixture bytes\n", { mode: 0o600 });
 
   // The child compares values via private fixture input. Its output carries no secrets,
   // even when a regression forwards the wrong environment or puts values on argv.
@@ -482,7 +482,8 @@ test("CI tool launcher preserves proxy and certificate settings without exposing
     "with open(sys.argv[1], encoding='utf-8') as expected:",
     "    allowed = json.load(expected)",
     "assert os.environ == {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', **allowed}",
-    "assert not any(value and value in arg for value in allowed.values() for arg in sys.argv)",
+    "argv = open('/proc/self/cmdline', 'rb').read() if sys.platform == 'linux' else b'\\0'.join(map(os.fsencode, sys.argv))",
+    "assert not any(value and os.fsencode(value) in argv for value in allowed.values())",
   ].join("\n");
   const bash = [
     "set -euo pipefail",
@@ -493,25 +494,10 @@ test("CI tool launcher preserves proxy and certificate settings without exposing
     "set -x",
     "run_system_tool /bin/bash -c '[[ \"$(type -t blocked_fixture)\" != function ]]'",
     'run_system_tool /usr/bin/python3 -I -S -c "$2" "$3"',
-    // Valid local bytes must bypass curl. This unsupported scheme cannot contact a server.
-    'run_system_tool /bin/bash "$4" offline-fixture://unused "$5" "$6" "" "$7" 0755',
   ].join("\n");
   const result = spawnSync(
     "/bin/bash",
-    [
-      "--noprofile",
-      "--norc",
-      "-c",
-      bash,
-      "ci-tool-probe",
-      startup,
-      probe,
-      expected,
-      join(repository, "scripts/ci/download-pinned.sh"),
-      installed,
-      sha256(candidate),
-      candidate,
-    ],
+    ["--noprofile", "--norc", "-c", bash, "ci-tool-probe", startup, probe, expected],
     {
       env: { ...allowed, PATH: directory, UNREVIEWED_CALLER_SETTING: "should-not-leave-caller" },
       encoding: "utf8",
@@ -526,5 +512,140 @@ test("CI tool launcher preserves proxy and certificate settings without exposing
     "launcher exposed a private fixture value",
   );
   assert.equal(result.status, 0, "controlled child rejected the launcher boundary");
-  assert.equal(sha256(installed), sha256(candidate), "verified candidate was not published");
+});
+
+test("CI setup action starts without caller shell startup and reuses pinned yq", (t) => {
+  if (process.platform !== "linux") {
+    t.skip("the required image-packaging lane runs on Linux");
+    return;
+  }
+  const setup = readFileSync(join(repository, "scripts/ci/setup-tools.sh"), "utf8");
+  const arch = process.arch === "x64" ? "amd64" : process.arch;
+  const installer = setup.match(/^install_yq\(\) \{\n[\s\S]*?^\}$/m)?.[0];
+  const pin = installer?.match(new RegExp('"' + arch + " ([a-f0-9]{64})" + '"'))?.[1];
+  assert.ok(pin, "yq installer has no pin for the packaging architecture");
+  const found = spawnSync("/bin/bash", ["-p", "-c", "type -P yq"], {
+    env: { PATH: process.env.PATH },
+    encoding: "utf8",
+    timeout: 2000,
+  }).stdout?.trim();
+  let yqBytes: Buffer | undefined;
+  if (found?.startsWith("/")) {
+    let fd: number | undefined;
+    try {
+      fd = openSync(found, constants.O_RDONLY | constants.O_NONBLOCK);
+      const info = fstatSync(fd);
+      if (info.isFile() && info.size <= 64 * 1024 * 1024) {
+        const bytes = Buffer.alloc(info.size);
+        let copied = 0;
+        while (copied < bytes.length) {
+          const count = readSync(fd, bytes, copied, bytes.length - copied, null);
+          if (count === 0) {
+            break;
+          }
+          copied += count;
+        }
+        if (copied === bytes.length && createHash("sha256").update(bytes).digest("hex") === pin) {
+          yqBytes = bytes;
+        }
+      }
+    } catch {
+      // An unavailable tool does not qualify as a pinned prerequisite.
+    } finally {
+      if (fd !== undefined) {
+        closeSync(fd);
+      }
+    }
+  }
+  if (!yqBytes) {
+    if (process.env.CI === "true" || process.env.GITHUB_ACTIONS === "true") {
+      assert.fail("Required packaging CI must provide the repository-pinned yq from tool setup");
+    }
+    t.skip("local prerequisite: add the repository-pinned yq to PATH");
+    return;
+  }
+
+  const directory = temporaryDirectorySync(t, "ci-action-entry-");
+  const checkout = join(directory, "checkout");
+  const ci = join(checkout, "scripts", "ci");
+  mkdirSync(ci, { recursive: true });
+  for (const name of ["setup-tools.sh", "download-pinned.sh"]) {
+    copyFileSync(join(repository, "scripts", "ci", name), join(ci, name));
+  }
+
+  // Exercise the exact checked-in action shell and step with its real nested
+  // setup/downloader. Use a known verified yq so no remote download is needed.
+  const action = readFileSync(
+    join(repository, ".github/actions/setup-ci-tools/action.yml"),
+    "utf8",
+  );
+  const step = action.split("\n    - name: Set up CI tools\n")[1]?.split("\n    - name: ")[0];
+  const selectedShell = step?.match(/^      shell: (\S.*)$/m)?.[1];
+  const selectedCommand = step?.match(/^      run: (\S.*)$/m)?.[1];
+  assert.ok(selectedShell && selectedCommand, "CI tool setup action step is missing");
+  const [shell, ...args] = selectedShell.split(/\s+/);
+  assert.ok(shell?.startsWith("/"), "expected an absolute action shell");
+  assert.equal(args.at(-1), "{0}", "expected the action runner to execute the step file");
+  const stepFile = join(directory, "ci-step.sh");
+  // Trace the actual inner setup too, so a regression in download_file is
+  // observable before the downloader starts. Preserve its other launch options.
+  const tracedCommand = selectedCommand.replace(/^(\S*\bbash)(?=\s)/, "$1 -x");
+  assert.notEqual(tracedCommand, selectedCommand, "expected the setup step to select Bash");
+  writeFileSync(stepFile, tracedCommand + "\n", { mode: 0o600 });
+  const bin = join(directory, "fixture-bin");
+  const runner = join(directory, "runner");
+  mkdirSync(bin, { mode: 0o700 });
+  mkdirSync(runner, { mode: 0o700 });
+  writeFileSync(join(bin, "docker"), '#!/bin/sh\n[ "$1" = version ]\n', { mode: 0o700 });
+  writeFileSync(join(bin, "yq"), yqBytes, { mode: 0o700 });
+  assert.equal(sha256(join(bin, "yq")), pin, "fixture yq changed before use");
+
+  const proxy = syntheticCredentialUrl({
+    protocol: "offline-fixture",
+    username: "fixture-proxy-user",
+    password: "fixture-proxy-private-canary",
+    host: "proxy.example.invalid",
+  });
+  const startup = join(directory, "forbidden-startup");
+  const startupMarker = join(directory, "startup-executed");
+  writeFileSync(startup, 'printf bad >"$CI_FORBIDDEN_STARTUP"\nexit 79\n', { mode: 0o600 });
+  // GNU timeout owns the action's process group, including the nested downloader.
+  const result = spawnSync(
+    "/usr/bin/timeout",
+    ["--kill-after=2s", "15s", shell, ...args.slice(0, -1), "-x", stepFile],
+    {
+      cwd: checkout,
+      env: {
+        PATH: [bin, dirname(process.execPath), "/usr/bin", "/bin"].join(":"),
+        RUNNER_TEMP: runner,
+        CI_TOOL_PROFILE: "postgres",
+        HTTPS_PROXY: proxy,
+        https_proxy: proxy,
+        ALL_PROXY: proxy,
+        all_proxy: proxy,
+        BASH_ENV: startup,
+        ENV: startup,
+        CI_FORBIDDEN_STARTUP: startupMarker,
+        "BASH_FUNC_cd%%": '() { printf bad >"$CI_FORBIDDEN_STARTUP"; return 80; }',
+      },
+      encoding: "utf8",
+    },
+  );
+  const output = result.stdout + result.stderr;
+  assert.ok(
+    !output.includes(proxy) && !output.includes("fixture-proxy-private-canary"),
+    "CI action trace exposed the private fixture value",
+  );
+  assert.equal(
+    statSync(startupMarker, { throwIfNoEntry: false }),
+    undefined,
+    "untrusted startup ran",
+  );
+  assert.equal(result.status, 0, "the real CI setup action failed to publish verified local bytes");
+  assert.ok(result.stderr.includes("/scripts/ci/download-pinned.sh"), "missing downloader trace");
+  const installed = join(runner, "bin", "yq");
+  assert.equal(sha256(installed), pin);
+  assert.equal(statSync(installed).mode & 0o777, 0o755);
+  assert.equal(statSync(dirname(installed)).mode & 0o777, 0o700);
+  assert.match(result.stdout, /\byq\b.*\bversion\b/i);
 });

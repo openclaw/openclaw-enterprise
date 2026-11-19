@@ -90,7 +90,8 @@
       "path": "tests/integration/upgrade-preflight-state.test.ts",
       "expectedTests": [
         "profiled upgrade checks and recovery bind Kubernetes requests to the approved target",
-        "CI tool launcher preserves proxy and certificate settings without exposing their values"
+        "CI tool launcher preserves proxy and certificate settings without exposing their values",
+        "CI setup action starts without caller shell startup and reuses pinned yq"
       ]
     },
     {
