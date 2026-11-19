@@ -528,13 +528,13 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   assert.equal(record.file, "tests/integration/details.test.mjs");
   assert.equal(record.omittedTests, 0);
   const { detail } = record;
-  assert.equal(detail.line, 18);
+  assert.equal(detail.line, 19);
   assert(
     /decisive line \[env:CI_RUNNER_FIXTURE_CREDENTIAL\]$/.test(detail.message),
     "diagnostics must retain the redacted decisive line",
   );
   assert(
-    /tests\/integration\/details\.test\.mjs:18:\d+/.test(detail.stack),
+    /tests\/integration\/details\.test\.mjs:19:\d+/.test(detail.stack),
     "diagnostics must retain the original failure frame",
   );
   // stdout and stderr arrive on separate pipes, so only the set of lines is fixed.
