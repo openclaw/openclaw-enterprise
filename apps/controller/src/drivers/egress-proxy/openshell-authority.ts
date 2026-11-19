@@ -18,6 +18,7 @@ import {
   type ServerDuplexStream,
 } from "@grpc/grpc-js";
 import type { EgressMaterialEvidence, EgressRefusal } from "@openclaw-enterprise/contracts";
+import { MAX_REQUEST_CREDENTIAL_BODY_BYTES } from "@openclaw-enterprise/contracts";
 import { STREAM_LEASE_IDLE_MS } from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
 import { OpenShellEgressIdentity } from "./openshell-identity.ts";
@@ -157,7 +158,10 @@ export function describeOpenShellMiddleware(
     bindings: bindings.map(([operation, phase]) => ({
       operation,
       phase,
-      max_payload_bytes: 4 * 1024 * 1024,
+      max_payload_bytes:
+        execution && requestTimeCredentials && operation === 1
+          ? MAX_REQUEST_CREDENTIAL_BODY_BYTES
+          : 4 * 1024 * 1024,
     })),
   };
 }

@@ -1,7 +1,7 @@
 ---
 created: "2026-11-10"
-updated: 2026-11-18
-last_updated_session: authoring-run/3ce33251-ef68-40c5-8773-04654aa781ed
+updated: 2026-11-19
+last_updated_session: authoring-run/5cec88b7-8faf-42a6-ad05-8b095a0cff0b
 ---
 
 # Authorize model credentials per request
@@ -109,8 +109,12 @@ credential material.
 
 `openshell-request-credential.ts:authorizeOpenShellRequest` authenticates the
 Gateway-signed supervisor identity, reads the installed binding, and passes the
-captured method, target, headers and body to OCC. Malformed binding configuration
-is denied. `packages/occ/src/index.ts:checkRequestCredential` verifies the current
+captured method, target, headers and body to OCC. The adapter refuses malformed
+binding configuration. Both the adapter and
+`packages/occ/src/credential-proxy.ts:authorizeRequestCredential` refuse request
+bodies above the advertised 4 MiB limit before policy checks or Secret access.
+OCC copies the admitted body after charging an operation slot.
+`packages/occ/src/index.ts:checkRequestCredential` verifies the current
 recipient, installation, revision, source, route, provider and IAM permission,
 then classifies the actual request against the admitted model grant. It rejects
 unsupported IAM with `unsupported_authority` before live recipient verification
@@ -251,6 +255,7 @@ None.
 
 ## Changelog
 
+- 2026-11-19 02:36: Apply the advertised request-body limit to online credential authorization. (authoring-run/5cec88b7-8faf-42a6-ad05-8b095a0cff0b - ffc3b1a4884178d67853d4d9f5a3dbeb90537f15)
 - 2026-11-18 22:17: Preserve explicit public egress when composing the online model request policy. (authoring-run/3ce33251-ef68-40c5-8773-04654aa781ed - 34ea051e9b1a8b01883cb1542af47ea70e006421)
 
 - 2026-11-10 05:07: Align initial policy versions, carry the database release budget through monotonic timing and order authorization against configured-role changes. (authoring-run/a802f6ce-4398-4469-a79b-cc18fe9219a9 - cf0f7b52125917f76d3ff93c4e99e6b1a6c5dcd9)

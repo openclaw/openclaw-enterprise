@@ -10,6 +10,9 @@ import type {
   EgressRoute,
 } from "./drivers/credential-proxy/index.ts";
 
+/** Inclusive body limit for the captured request presented for online credential authorization. */
+export const MAX_REQUEST_CREDENTIAL_BODY_BYTES = 4 * 1024 * 1024;
+
 /** The request inspected before the sender injects any provider material. */
 export interface CredentialHttpRequest {
   readonly target: {

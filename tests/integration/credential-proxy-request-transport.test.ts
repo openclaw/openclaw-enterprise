@@ -62,6 +62,21 @@ const { SignJWT } = createRequire(new URL("../../apps/controller/package.json", 
   "jose",
 );
 
+function modelRequestBody(bytes: number): Buffer {
+  const input = Array.from({ length: 8 }, (_, index) => ({
+    type: "function_call_output",
+    call_id: `call_${index}`,
+    output: "",
+  }));
+  const body = { model: "fixture-model", input, store: false };
+  const payloadBytes = bytes - Buffer.byteLength(JSON.stringify(body));
+  const outputBytes = Math.floor(payloadBytes / input.length);
+  for (const [index, item] of input.entries()) {
+    item.output = "x".repeat(outputBytes + (index < payloadBytes % input.length ? 1 : 0));
+  }
+  return Buffer.from(JSON.stringify(body));
+}
+
 test(
   "signed model request middleware redeems once through TLS after startup release (PostgreSQL)",
   { ...requiresPostgres, timeout: 90_000 },
@@ -285,7 +300,13 @@ test(
     assert.equal((await exited)[0], 0);
     assert.equal(output, "released\n");
 
-    const input = fixture.request();
+    const requestWithBody = (bytes: number): RequestCredentialInput => {
+      const request = fixture.request();
+      const body = modelRequestBody(bytes);
+      assert.equal(body.byteLength, bytes);
+      return { ...request, http: { ...request.http, body } };
+    };
+    const input = requestWithBody(1024 * 1024 + 1);
     const reads = f.secretReads;
     assert.equal((await evaluate(input, gateway)).decision, 2);
     assert.equal(
@@ -304,7 +325,7 @@ test(
     );
     assert.equal((await redeem(input)).status, 403, "no approval means no material");
     assert.equal(f.secretReads, reads);
-    assert.equal((await evaluate(input)).decision, 1);
+    assert.equal((await evaluate(input)).decision, 1, "tool history can exceed 1 MiB");
     assert.equal(
       f.secretReads,
       reads,
@@ -338,6 +359,21 @@ test(
     assert.equal(result.cache, "no-store");
     assert.equal((await redeem(input)).status, 403, "an approval is single use");
     assert.equal((await evaluate(input)).decision, 2, "a consumed ID cannot be approved again");
+
+    const maximumBodyBytes = 4 * 1024 * 1024;
+    const oversized = requestWithBody(maximumBodyBytes + 1);
+    const beforeBodyLimits = f.secretReads;
+    assert.equal(
+      await fixture.exchange.authorizeRequestCredential(oversized, t.signal, () => true),
+      undefined,
+      "the exchange also refuses an oversized body",
+    );
+    assert.equal((await evaluate(oversized)).decision, 2);
+    assert.equal((await redeem(oversized)).status, 403);
+    const maximum = requestWithBody(maximumBodyBytes);
+    assert.equal((await evaluate(maximum)).decision, 1, "the advertised limit is inclusive");
+    assert.equal(f.secretReads, beforeBodyLimits, "body admission does not read key material");
+    assert.equal((await redeem(maximum)).status, 200);
 
     const late = fixture.request();
     const committed = fixture.pauseNextApprovalCommit("after");

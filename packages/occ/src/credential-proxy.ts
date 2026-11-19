@@ -39,7 +39,10 @@ import type {
   StaticEgressSource,
   VersionedSecretValue,
 } from "@openclaw-enterprise/contracts";
-import { egressAssociationInstallation } from "@openclaw-enterprise/contracts";
+import {
+  egressAssociationInstallation,
+  MAX_REQUEST_CREDENTIAL_BODY_BYTES,
+} from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 
 export type {
@@ -194,9 +197,9 @@ export const DEFAULT_CREDENTIAL_PROXY_CAPACITY: CredentialProxyCapacity = Object
 
 /**
  * Largest accepted value for each bound. An operation in progress can hold its request body
- * (up to 1 MiB) and selected material, so the operation bounds stop at 8x the default; a
- * remembered request ID costs well under 1 KiB, so the ID bounds stop at 16x (about 4,300
- * protected requests/s per API process).
+ * (1 MiB for strict dispatch, 4 MiB for online authorization) and selected material.
+ * Operation bounds stop at 8x the default. A remembered request ID costs well under
+ * 1 KiB, so the ID bounds stop at 16x (about 4,300 protected requests/s per API process).
  */
 export const CREDENTIAL_PROXY_CAPACITY_MAXIMUM: CredentialProxyCapacity = Object.freeze({
   operations: 8 * OPERATION_CAPACITY,
@@ -523,7 +526,7 @@ export class CredentialProxy implements CredentialProxyExchange {
       !Number.isFinite(Date.parse(input.replayUntilAt)) ||
       Date.parse(input.replayUntilAt) < Date.parse(input.deadlineAt) ||
       Date.parse(input.replayUntilAt) > this.ports.now() + 3_600_000 ||
-      input.http.body.byteLength > 1024 * 1024 ||
+      input.http.body.byteLength > MAX_REQUEST_CREDENTIAL_BODY_BYTES ||
       !input.requestId ||
       input.requestId.length > 256 ||
       !input.bindingId ||
@@ -531,19 +534,23 @@ export class CredentialProxy implements CredentialProxyExchange {
     ) {
       return Promise.resolve(undefined);
     }
-    const request = {
-      ...immutableCopy({ ...input, http: { ...input.http, body: undefined } }),
-      http: {
-        ...immutableCopy({ ...input.http, body: undefined }),
-        body: new Uint8Array(input.http.body),
-      },
-    };
+    let request: RequestCredentialInput;
     return this.withRequestCredential<"credential">(
-      request.recipient.id,
-      request.deadlineAt,
+      input.recipient.id,
+      input.deadlineAt,
       signal,
-      async (ports, lifetime) =>
-        (await ports.check(request, lifetime)) ? "credential" : undefined,
+      async (ports, lifetime) => {
+        // Detach the caller's body once capacity is charged and before policy can await.
+        const {
+          http: { body, ...http },
+          ...envelope
+        } = input;
+        request = {
+          ...immutableCopy(envelope),
+          http: { ...immutableCopy(http), body: new Uint8Array(body) },
+        };
+        return (await ports.check(request, lifetime)) ? "credential" : undefined;
+      },
       async (decision, ports, lifetime, current) =>
         current() && (await ports.approve(request, lifetime, () => current() && accept()))
           ? decision
