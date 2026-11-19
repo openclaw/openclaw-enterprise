@@ -168,6 +168,7 @@ export function createNetworkPolicyFixture(
     "repository",
     "repositoryDenyAll",
     "repositoryReadOnly",
+    "repositorySaveLost",
   ].includes(scenario.policyState ?? "")
     ? [
         { repository: "example/application", access: "read" },
@@ -366,7 +367,9 @@ export function createNetworkPolicyFixture(
           ? {}
           : {
               repositoryNetworkPolicyCeiling: repositoryCeiling,
-              repositoryNetworkPolicySaveSupported: scenario.policyState !== "repositoryReadOnly",
+              repositoryNetworkPolicySaveSupported:
+                scenario.policyState !== "repositoryReadOnly" &&
+                (scenario.policyState !== "repositorySaveLost" || read === 1),
             }),
         defaults:
           scenario.policyState === "unsupported"
@@ -461,10 +464,13 @@ export function createNetworkPolicyFixture(
           : {}),
       };
       delete sandboxPolicy.application;
+      const { repositoryNetworkPolicy: _repositoryGrants, ...ordinaryPolicy } = sandboxPolicy;
       return response(
         scenario.policyState === "unconfirmedSave"
           ? { ...sandboxPolicy, additions: [] }
-          : sandboxPolicy,
+          : "repositoryNetworkPolicy" in body
+            ? sandboxPolicy
+            : ordinaryPolicy,
       );
     }
     if (

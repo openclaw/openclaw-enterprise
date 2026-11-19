@@ -1426,20 +1426,25 @@ export function renderAgentSandboxPolicy(
   }
 
   function repositoryPolicyEditor(
-    configuration: DriverConfigurationDescriptor,
+    configuration: Pick<DriverConfigurationDescriptor, "actions">,
     policy: Policy,
     updateRuleActions: () => void,
   ) {
     const ceiling = view?.repositoryNetworkPolicyCeiling;
-    if (!readableRepositoryGrants(ceiling)) {
+    const readableCeiling = readableRepositoryGrants(ceiling);
+    if (!readableCeiling && repositoryDraft === undefined) {
       return null;
     }
     const saved = policy.repositoryNetworkPolicy;
-    const saveSupported = view?.repositoryNetworkPolicySaveSupported === true;
+    const saveSupported = readableCeiling && view?.repositoryNetworkPolicySaveSupported === true;
     const panel = element(
       "section",
       { "aria-labelledby": "sandbox-repository-policy-title" },
-      element("h3", { id: "sandbox-repository-policy-title" }, "Repository network policy"),
+      element(
+        "h3",
+        { id: "sandbox-repository-policy-title", tabindex: -1 },
+        "Repository network policy",
+      ),
       element("p", {}, `Saved policy: ${repositoryPolicyLabel(saved)}`),
       saved?.length
         ? element(
@@ -1462,6 +1467,21 @@ export function renderAgentSandboxPolicy(
       ),
       element("p", { className: "hint" }, REPOSITORY_REDEPLOY_HELP),
     );
+    const discard = () =>
+      button(
+        "Discard repository changes",
+        () => {
+          repositoryDraft = undefined;
+          draftGeneration += 1;
+          renderPolicy();
+          const focusTarget =
+            policyPanel.querySelector<HTMLElement>("#sandbox-edit-repository-access") ??
+            policyPanel.querySelector<HTMLElement>("#sandbox-repository-policy-title") ??
+            dialogActions.querySelector<HTMLButtonElement>("button");
+          focusTarget?.focus();
+        },
+        { disabled: mutation },
+      );
     if (!saveSupported || !editable()) {
       let reason = "Changes require enabled editing and policy permissions.";
       if (protectedExecution()) {
@@ -1470,6 +1490,12 @@ export function renderAgentSandboxPolicy(
         reason = "This Installation cannot save repository policies yet.";
       }
       panel.append(element("p", { className: "hint" }, reason));
+      if (repositoryDraft !== undefined) {
+        panel.append(
+          element("p", {}, `Proposed policy: ${repositoryPolicyLabel(repositoryDraft)}`),
+          element("div", { className: "form-actions" }, discard()),
+        );
+      }
       return panel;
     }
     if (repositoryDraft === undefined) {
@@ -1550,17 +1576,7 @@ export function renderAgentSandboxPolicy(
         });
         return field({ label: repository, control: select });
       }),
-      element(
-        "div",
-        { className: "form-actions" },
-        button("Discard repository changes", () => {
-          repositoryDraft = undefined;
-          draftGeneration += 1;
-          renderPolicy();
-          policyPanel.querySelector<HTMLButtonElement>("#sandbox-edit-repository-access")?.focus();
-        }),
-        save,
-      ),
+      element("div", { className: "form-actions" }, discard(), save),
     );
     updateDraftStatus();
     form.addEventListener("submit", (event) => {
@@ -2092,7 +2108,7 @@ export function renderAgentSandboxPolicy(
           ]
         : []),
       rulesOverview,
-      repositoryPanel,
+      ...(repositoryPanel ? [repositoryPanel] : []),
       form,
       ...(!view.capability?.live && !hasSavedRepositoryPolicy
         ? [
@@ -2153,6 +2169,11 @@ export function renderAgentSandboxPolicy(
           : {}),
       },
     })) as Policy | null;
+    // An additions-only PUT can omit the preserved grants from its acknowledgement.
+    const savedRepositoryGrants =
+      !apply && repositoryGrants === undefined && saved?.repositoryNetworkPolicy === undefined
+        ? policy.repositoryNetworkPolicy
+        : saved?.repositoryNetworkPolicy;
     if (
       saved?.id !== policy.id ||
       saved.agentId !== agent.id ||
@@ -2161,7 +2182,7 @@ export function renderAgentSandboxPolicy(
       !sameValue(saved.additions, reviewedRules ?? policy.additions) ||
       !sameRepositoryGrants(
         repositoryGrants ?? policy.repositoryNetworkPolicy,
-        saved.repositoryNetworkPolicy,
+        savedRepositoryGrants,
       ) ||
       (apply &&
         (saved.application?.state !== "pending" ||
@@ -2179,7 +2200,9 @@ export function renderAgentSandboxPolicy(
     if (apply && current()) {
       feedback.textContent = `Policy v${saved.version} saved. Application to the current revision is pending. Enforcement is confirmed only after the provider loads this policy.`;
     }
-    return saved;
+    return savedRepositoryGrants === undefined
+      ? saved
+      : { ...saved, repositoryNetworkPolicy: savedRepositoryGrants };
   }
 
   function applySavedPolicy() {

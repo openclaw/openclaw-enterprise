@@ -306,6 +306,7 @@ export const PolicyDenialsWithheldMany = story("policyDenialsWithheldMany");
 export const PolicyRepositoryAccess = story("policyRepositoryAccess");
 export const PolicyRepositoryDenyAll = story("policyRepositoryDenyAll");
 export const PolicyRepositoryReadOnly = story("policyRepositoryReadOnly");
+export const PolicyRepositorySaveLost = story("policyRepositorySaveLost");
 
 export const ConfigurationInvalid = story("policyConfigurationInvalid");
 export const ConfigurationConflict = story("policyConfigurationConflict");

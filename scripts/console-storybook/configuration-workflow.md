@@ -21,6 +21,10 @@ components with simulated API state; they do not prove persistence or enforcemen
   policy** and confirm that it differs from the initial legacy policy.
 - **Repository policy saving unavailable:** open **Manage rules** and check
   that you can read the saved state. The repository editor is unavailable.
+- **Discard after repository saving becomes unavailable:** open **Manage rules**
+  and select **Edit repository access**. Choose **Refresh policy** after the
+  proposed policy appears. Check the saved state and the retained proposal, then
+  select **Discard repository changes** to remove the proposal locally.
 - **Configuration preview field errors:** review a suggestion. The preview shows
   a field error and retains the proposal without saving.
 - **Configuration version conflict retains draft:** preview a proposal and check

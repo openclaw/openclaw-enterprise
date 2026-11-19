@@ -40,6 +40,7 @@ type PolicyState =
   | "repository"
   | "repositoryDenyAll"
   | "repositoryReadOnly"
+  | "repositorySaveLost"
   | "withheldOne"
   | "withheldMany";
 
@@ -144,6 +145,11 @@ export function createAgentDetailPolicyScenarios({
     ["policyRepositoryDenyAll", "repositoryDenyAll", "Saved deny-all repository policy"],
     ["policyRepositoryReadOnly", "repositoryReadOnly", "Repository policy saving unavailable"],
     [
+      "policyRepositorySaveLost",
+      "repositorySaveLost",
+      "Discard after repository saving becomes unavailable",
+    ],
+    [
       "policyDenialsWithheldOne",
       "withheldOne",
       "One policy record withheld since the last refresh",
@@ -206,17 +212,27 @@ export function createAgentDetailPolicyScenarios({
           gap: "Simulated UI proof only. These fixtures do not prove authorization, persistence, enforcement, or provider policy activation.",
           ...(state === "repository" ||
           state === "repositoryDenyAll" ||
-          state === "repositoryReadOnly"
+          state === "repositoryReadOnly" ||
+          state === "repositorySaveLost"
             ? {
                 description: "Repository network access is saved for a later deployment.",
                 steps: [
                   "Open Manage rules and check the saved repository policy and the redeploy guidance.",
+                  ...(state === "repositorySaveLost"
+                    ? [
+                        "Choose Edit repository access to propose denying all repositories.",
+                        "Refresh policy. The Installation has stopped accepting repository policy saves.",
+                        "Discard repository changes. Confirm the proposal disappears and repository editing remains unavailable.",
+                      ]
+                    : []),
                   ...(state === "repositoryReadOnly"
                     ? ["Confirm repository policy saving is unavailable in this Installation."]
-                    : [
-                        "Choose Edit repository access. Confirm example/application offers Read and example/tooling offers Read and Write.",
-                        "Save a changed policy and reopen Manage rules. Check the saved state and confirm there is no action to apply it to the current revision.",
-                      ]),
+                    : state === "repositorySaveLost"
+                      ? []
+                      : [
+                          "Choose Edit repository access. Confirm example/application offers Read and example/tooling offers Read and Write.",
+                          "Save a changed policy and reopen Manage rules. Check the saved state and confirm there is no action to apply it to the current revision.",
+                        ]),
                 ],
               }
             : {}),
