@@ -95,6 +95,12 @@ function resolverPort(runtime: Runtime): {
 }
 const runtimeFilesProvider = "oce-runtime-" + "a".repeat(16);
 const modelEndpoint = { host: "api.openai.com", port: 443, protocol: "rest" };
+const managedModelEndpoint = {
+  ...modelEndpoint,
+  path: "/v1/**",
+  enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+  access: "NETWORK_ACCESS_PRESET_READ_WRITE",
+};
 
 async function selectedV5(t: TestContext, acl = false, modelProvider = "openai") {
   const repository = registry.repositories[0]!;
@@ -139,14 +145,41 @@ async function selectedV5(t: TestContext, acl = false, modelProvider = "openai")
     const getProvider = client.getProvider.bind(client);
     client.getProvider = async (workspace, name, signal) => {
       const provider = await getProvider(workspace, name, signal);
-      return name === modelProvider && provider ? { ...provider, type: modelProvider } : provider;
+      return name === modelProvider && provider && modelProvider !== "openai"
+        ? { ...provider, type: modelProvider, profileWorkspace: workspace }
+        : provider;
     };
     const getProfile = client.getProviderProfile.bind(client);
     client.getProviderProfile = async (workspace, id, signal) => {
       const profile = await getProfile(workspace, id, signal);
-      return id === modelProvider && profile?.definition
-        ? { ...profile, definition: { ...profile.definition, endpoints: [modelEndpoint] } }
-        : profile;
+      if (id !== modelProvider || !profile?.definition) {
+        return profile;
+      }
+      if (modelProvider === "openai") {
+        return { ...profile, definition: { ...profile.definition, endpoints: [modelEndpoint] } };
+      }
+      // The Credential Gateway registers OpenAI API keys in the selected Workspace.
+      assert.equal(workspace, f.sandbox.workspace);
+      return {
+        id,
+        resourceVersion: "1",
+        annotations: {},
+        definition: {
+          category: "PROVIDER_PROFILE_CATEGORY_INFERENCE",
+          inference_capable: true,
+          binaries: [],
+          credentials: [
+            {
+              name: "api_key",
+              env_vars: ["OPENAI_API_KEY"],
+              required: true,
+              auth_style: "bearer",
+              header_name: "authorization",
+            },
+          ],
+          endpoints: [managedModelEndpoint],
+        },
+      };
     };
   }
   f.owner.material = {
@@ -335,10 +368,14 @@ async function heldGit(t: TestContext, acl = false, modelProvider = "openai") {
       "grant-owner:v1:635fecf5c5e34feba91b4102c557ee2fa1deb6d67e9fd124aa5669d927967fe7",
   };
   const sourcePolicy = { network_policies: {} };
+  const aclModelEndpoint =
+    modelProvider === "openai"
+      ? modelEndpoint
+      : { ...managedModelEndpoint, provider_credentialed: true };
   const modelRule = {
     name: "_provider_" + modelProvider.replaceAll("-", "_"),
     binaries: [],
-    endpoints: [acl ? modelEndpoint : { host: "api.openai.com", port: 443 }],
+    endpoints: [acl ? aclModelEndpoint : { host: "api.openai.com", port: 443 }],
   };
   // The Gateway fixture stamps token-grant owners. The independent wire test
   // covers the encoding for known OpenShell Provider IDs and rules.
@@ -1378,6 +1415,41 @@ test("ACL Git refuses credentials and launcher release when the supervisor lease
     t.signal,
   );
   assert.equal(activity.releases, 1);
+});
+
+test("ACL Git sends no release when installed credentials expire during signing", async (t) => {
+  const { f, revision, startupId, reconcile, setObservationAge } = await heldGit(t, true);
+  const expiresAt = Date.parse(f.owner.material.expiresAt);
+  await reconcile();
+  assert.equal(f.runtime.route(revision.id).state, "installed");
+  setObservationAge(0);
+
+  const wallClock = t.mock.method(Date, "now");
+  let prepared = false;
+  let posts = 0;
+  await assert.rejects(
+    f.runtime.releasePreview(
+      revision.id,
+      startupId,
+      {
+        prepare: async () => {
+          assert.ok(Date.now() < expiresAt);
+          // Move only the credential's wall clock. The supervisor lease stays fresh.
+          wallClock.mock.mockImplementation(() => expiresAt);
+          prepared = true;
+        },
+        deliver: async () => {
+          posts++;
+          return true;
+        },
+      },
+      t.signal,
+    ),
+    /Cannot release this preview startup/,
+  );
+  assert.equal(prepared, true);
+  assert.equal(posts, 0);
+  assert.equal(f.runtime.previewReleased(revision.id), false);
 });
 
 test("ACL Git blocks a release when the POST acknowledgment is lost", async (t) => {

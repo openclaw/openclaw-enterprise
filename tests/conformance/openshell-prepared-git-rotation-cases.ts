@@ -135,7 +135,11 @@ export function registerPreparedGitRotationCases(): void {
     "write timeout",
     "write timeout with empty bearer",
   ] as const) {
-    test(`prepared Git records an unsent update after ${failure} during authentication`, async (t) => {
+    const name =
+      failure === "write timeout"
+        ? "prepared Git records an unsent update when its write budget expires during authentication"
+        : `prepared Git records an unsent update after ${failure} during authentication`;
+    test(name, async (t) => {
       const writeTimeout = failure !== "lease expiry";
       const directory = await temporaryDirectory(t, "prepared-git-auth-");
       const bearer = join(directory, "bearer");

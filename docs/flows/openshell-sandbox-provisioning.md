@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: "2026-11-19"
-last_updated_session: "authoring-run/db1dbeb6-2423-4378-b292-8e694c9e97e0"
+last_updated_session: "authoring-run/49a38c4d-f1b3-44db-a8fc-b46a59e1bde3"
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -354,9 +354,11 @@ reads the loaded bootstrap policy, then sends upload-pack discovery for the
 first canonical grant with a fresh nonce and no credentials. Compute binds the
 path to enrollment and release. The exact denial permits installation. The
 supervisor's 15-second lease covers recipient reads, material selection, Provider
-writes, and release. If Compute's final verification fails before the release
-POST, a fresh observation can retry. A lost acknowledgment after sending blocks
-the route. Disabled TLS inspection or uninspected credentials block qualification.
+writes, and release. Immediately before the release POST, the runtime also checks
+the installed Git credential's expiry and the Agent revision's Git authorization
+deadline. When final verification fails before sending, Compute can retry with a
+fresh observation. A lost acknowledgment after sending blocks the route.
+Disabled TLS inspection or uninspected credentials block qualification.
 See [credential egress](credential-source-egress.md).
 
 For existing profiles without explicit grants, the runtime arms a one-use denial.
@@ -432,6 +434,8 @@ setup, retry and restart under setgid parents.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 10:39: Check Git credential and authorization deadlines before Harness release. (authoring-run/49a38c4d-f1b3-44db-a8fc-b46a59e1bde3 - c9f94c1882a9c1b03cd58b76f024f8567e72848b)
 
 - 2026-11-19 05:56: Retry before dispatch and preserve profile ownership. (authoring-run/db1dbeb6-2423-4378-b292-8e694c9e97e0 - c495c2aa1bc0ab809a92cfe449e17a9d681efad1)
 

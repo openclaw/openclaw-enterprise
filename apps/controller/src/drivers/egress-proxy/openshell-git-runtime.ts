@@ -1164,6 +1164,7 @@ export class OpenShellGitRuntime {
     if (entry.authorization.repositoryNetworkPolicy !== undefined) {
       // A prior readiness result cannot authorize release if the loaded policy has since changed.
       const installed = entry.installed;
+      const material = entry.material;
       const observationSignal = AbortSignal.any([
         signal,
         this.stopped.signal,
@@ -1174,6 +1175,9 @@ export class OpenShellGitRuntime {
         current !== undefined &&
         entry.provider.repositoryPolicyIsFresh(current) &&
         entry.installed === installed &&
+        material !== undefined &&
+        entry.material === material &&
+        this.materialIsLive(entry.revision, material.expiresAt) &&
         !observationSignal.aborted &&
         !entry.blocked;
       if (!current || !isDeepStrictEqual(current, installed) || !canSend() || preview.release) {
