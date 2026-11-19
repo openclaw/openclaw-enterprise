@@ -215,8 +215,10 @@ export function createAgentDetailPolicyScenarios({
           state === "repositoryReadOnly" ||
           state === "repositorySaveLost"
             ? {
+                ...(state === "repositoryReadOnly" ? { policyCeiling: [] } : {}),
                 description: "Repository network access is saved for a later deployment.",
                 steps: [
+                  "Open View network limits. Check the repository limits for this Namespace without opening an editor.",
                   "Open Manage rules and check the saved repository policy and the redeploy guidance.",
                   ...(state === "repository"
                     ? [
@@ -231,7 +233,10 @@ export function createAgentDetailPolicyScenarios({
                       ]
                     : []),
                   ...(state === "repositoryReadOnly"
-                    ? ["Confirm repository policy saving is unavailable in this Installation."]
+                    ? [
+                        "Confirm the limits dialog lists read and write repository grants even though the Installation delegates no ordinary rules.",
+                        "Confirm repository policy saving is unavailable in this Installation.",
+                      ]
                     : state === "repositorySaveLost"
                       ? []
                       : [
@@ -284,7 +289,7 @@ export function createAgentDetailPolicyScenarios({
                 steps: [
                   "Open Manage rules. The protected execution notice is visible, adding and editing are disabled, and live application is unavailable.",
                   "A rule saved before protected execution applied blocks every protected deploy. Choose Remove saved network rules, review the removal, then Save for later and confirm the saved policy is empty.",
-                  "Reopen Manage rules and choose Edit repository access. Select Read for example/application and save. Check the saved repository grant and redeploy guidance. Adding an ordinary rule and live application are still unavailable.",
+                  "Reopen Manage rules. Confirm the saved repository policy is visible. Repository policy saving, ordinary rule additions, and live application are unavailable.",
                 ],
               }
             : {}),

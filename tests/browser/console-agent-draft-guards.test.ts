@@ -1222,7 +1222,7 @@ test("Agent policy proposals preserve valid Unicode executable paths through rev
   assert.deepEqual(unchanged.additions, [grant]);
 });
 
-test("protected execution allows repository policy saves after removing ordinary network rules", async (t) => {
+test("protected execution keeps repository policy read-only after removing ordinary network rules", async (t) => {
   const {
     fixture,
     namespace: rawNamespace,
@@ -1231,8 +1231,7 @@ test("protected execution allows repository policy saves after removing ordinary
   }: PolicyConsoleFixture = await createPolicyConsole(t, [delegatedPolicyGrant]);
   const namespace = resource(rawNamespace);
   const agent = agentFields(rawAgent);
-  // This fixture has no Credential Proxy or repository policy API. Simulate their policy fields
-  // and repository save acknowledgement. The ordinary rule removal uses the real controller.
+  // Simulate the protected policy read. The ordinary rule removal uses the real controller.
   const repositoryGrants: RepositoryNetworkGrant[] = [
     { repository: "example/application", access: "read" },
   ];
@@ -1242,26 +1241,7 @@ test("protected execution allows repository policy saves after removing ordinary
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   const { page } = await newPage(t, fixture);
   await page.route(`${fixture.origin}${base}`, async (route) => {
-    const request = route.request();
-    if (request.method() === "PUT") {
-      const posted = record(request.postDataJSON());
-      if (posted.repositoryNetworkPolicy !== undefined) {
-        const { data } = await fixture.request("GET", base);
-        const policy = record(record(data).policy);
-        await route.fulfill({
-          status: 200,
-          json: {
-            data: {
-              ...policy,
-              version: 4,
-              repositoryNetworkPolicy: repositoryGrants,
-            },
-          },
-        });
-        return;
-      }
-    }
-    if (request.method() !== "GET") {
+    if (route.request().method() !== "GET") {
       await route.fallback();
       return;
     }
@@ -1364,24 +1344,18 @@ test("protected execution allows repository policy saves after removing ordinary
   );
 
   await manage.click();
-  assert.equal(await editRepository.isVisible(), true, "empty additions allow repository editing");
+  await repository.getByText("Saved policy: Legacy repository access", { exact: true }).waitFor();
+  await repository.getByText(/Repository policy saving is unavailable/).waitFor({ timeout: 3000 });
+  assert.equal(await editRepository.count(), 0);
+  assert.equal(await repository.getByRole("button", { name: "Save repository policy" }).count(), 0);
   assert.equal(await page.getByRole("button", { name: "Add rule", exact: true }).count(), 0);
   assert.equal(
     await page.getByRole("button", { name: "Apply saved rules", exact: true }).count(),
     0,
   );
-  await editRepository.click();
-  await repository.getByLabel("example/application", { exact: true }).selectOption("read");
-  const repositorySave = responseTo(page, "PUT", fixture.origin + base);
-  await repository.getByRole("button", { name: "Save repository policy", exact: true }).click();
-  assert.equal((await repositorySave).status(), 200);
-  await page.getByText("Repository policy v4 saved. Deploy a new version to use it.").waitFor();
   assert.deepEqual(
     pathRequests(requests, "PUT", base).map(({ body }) => body),
-    [
-      { expectedVersion: 2, additions: [] },
-      { expectedVersion: 3, additions: [], repositoryNetworkPolicy: repositoryGrants },
-    ],
+    [{ expectedVersion: 2, additions: [] }],
   );
   assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 0);
 });

@@ -85,6 +85,16 @@ function repositoryPolicyLabel(grants: RepositoryGrants | undefined) {
   return "Restrict repository access";
 }
 
+function repositoryGrantList(grants: RepositoryGrants) {
+  return element(
+    "ul",
+    {},
+    ...grants.map(({ repository, access }) =>
+      element("li", {}, element("span", { className: "resource-id" }, repository), ` · ${access}`),
+    ),
+  );
+}
+
 const POLICY_READ_DENIED = SANDBOX_POLICY_READ_DENIED;
 // What each refused request checks: Sandbox log text needs Agent read_logs (or administer) plus
 // Agent read, which admit every version of the Agent; the policy and suggestions need
@@ -485,6 +495,7 @@ export function renderAgentSandboxPolicy(
     if (!view) {
       return;
     }
+    const repositoryCeiling = view.repositoryNetworkPolicyCeiling;
     limitsInvoker = document.activeElement;
     limitsBody.replaceChildren(
       element(
@@ -516,9 +527,21 @@ export function renderAgentSandboxPolicy(
             element(
               "p",
               { className: "notice" },
-              "No additional network access is delegated. Agent-specific network rules cannot be added. Installation defaults still apply.",
+              "The Installation delegates no ordinary network rules. Installation defaults still apply.",
             ),
           ]),
+      ...(readableRepositoryGrants(repositoryCeiling)
+        ? [
+            element("h4", {}, "Repository limits for this Namespace"),
+            repositoryCeiling.length
+              ? repositoryGrantList(repositoryCeiling)
+              : element(
+                  "p",
+                  { className: "notice" },
+                  "No repository access is delegated to this Namespace.",
+                ),
+          ]
+        : []),
       element(
         "p",
         { className: "hint" },
@@ -1437,8 +1460,6 @@ export function renderAgentSandboxPolicy(
     }
     const saved = policy.repositoryNetworkPolicy;
     const saveSupported = readableCeiling && view?.repositoryNetworkPolicySaveSupported === true;
-    const protectedAdditions = () => protectedExecution() && policy.additions.length > 0;
-    const canEditRepository = () => canEdit() && !protectedAdditions();
     const panel = element(
       "section",
       { "aria-labelledby": "sandbox-repository-policy-title" },
@@ -1448,20 +1469,7 @@ export function renderAgentSandboxPolicy(
         "Repository network policy",
       ),
       element("p", {}, `Saved policy: ${repositoryPolicyLabel(saved)}`),
-      saved?.length
-        ? element(
-            "ul",
-            {},
-            ...saved.map(({ repository, access }) =>
-              element(
-                "li",
-                {},
-                element("span", { className: "resource-id" }, repository),
-                ` · ${access}`,
-              ),
-            ),
-          )
-        : null,
+      saved?.length ? repositoryGrantList(saved) : null,
       element(
         "p",
         { className: "hint" },
@@ -1484,13 +1492,13 @@ export function renderAgentSandboxPolicy(
         },
         { disabled: mutation },
       );
-    if (!saveSupported || !canEditRepository()) {
+    if (!saveSupported || !editable()) {
       let reason = "Changes require enabled editing and policy permissions.";
-      if (!saveSupported) {
-        reason = "This Installation cannot save repository policies yet.";
-      } else if (protectedAdditions()) {
+      if (protectedExecution()) {
         reason =
-          "Remove saved network rules before saving a repository policy under protected execution.";
+          "Protected execution uses Credential Proxy routes. Repository policy saving is unavailable.";
+      } else if (!saveSupported) {
+        reason = "This Installation cannot save repository policies yet.";
       }
       panel.append(element("p", { className: "hint" }, reason));
       if (repositoryDraft !== undefined) {
@@ -1588,7 +1596,7 @@ export function renderAgentSandboxPolicy(
       if (
         !current() ||
         !policyPanel.contains(form) ||
-        !canEditRepository() ||
+        !editable() ||
         view?.policy !== policy ||
         view?.repositoryNetworkPolicySaveSupported !== true ||
         save.disabled ||
@@ -2290,6 +2298,7 @@ export function renderAgentSandboxPolicy(
         !sameRepositoryGrants(view.policy.repositoryNetworkPolicy, repositoryDraft)
       ) {
         feedback.textContent =
+          !protectedExecution() &&
           view.repositoryNetworkPolicySaveSupported === true &&
           readableRepositoryGrants(view.repositoryNetworkPolicyCeiling)
             ? `Policy v${view.policy.version} reloaded. Review your repository draft against the saved policy before saving.`

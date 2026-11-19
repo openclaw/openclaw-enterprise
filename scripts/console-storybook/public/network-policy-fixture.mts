@@ -446,6 +446,13 @@ export function createNetworkPolicyFixture(
           "The preview requires network additions with string identities and numeric port ranges.",
         );
       }
+      if (scenario.policyState === "protected" && "repositoryNetworkPolicy" in body) {
+        return error(
+          409,
+          "SANDBOX_POLICY_PROTECTED_EXECUTION",
+          "Protected execution applies to this Agent. The Credential Proxy governs its egress, so an explicit repository network policy cannot be saved.",
+        );
+      }
       if (scenario.policyState === "protected" && body.additions.length > 0) {
         return error(
           409,

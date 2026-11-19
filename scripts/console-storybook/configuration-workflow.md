@@ -25,11 +25,12 @@ components with simulated API state; they do not prove persistence or enforcemen
   policy** and confirm that it differs from the initial legacy policy.
 - **Protected execution refuses network policy additions:** open **Manage rules**
   and remove the saved network rules. Review the removal and choose **Save for
-  later**. Reopen **Manage rules**, choose **Edit repository access**, select
-  **Read** for `example/application`, and save. Check the repository grant and
-  redeploy guidance. Adding rules and applying the policy live are unavailable.
-- **Repository policy saving unavailable:** open **Manage rules** and check
-  that you can read the saved state. The repository editor is unavailable.
+  later**. Reopen **Manage rules** and check the saved repository policy.
+  Repository policy saving, rule additions, and live application are unavailable.
+- **Repository policy saving unavailable:** open **View network limits**.
+  Confirm the dialog shows read and write repository grants even when the
+  Installation delegates no ordinary rules. Close the dialog and open **Manage
+  rules** to view the saved policy.
 - **Discard after repository saving becomes unavailable:** open **Manage rules**
   and select **Edit repository access**. Choose **Refresh policy** after the
   proposed policy appears. Check the saved state and the retained proposal, then

@@ -193,7 +193,9 @@ a time; row controls edit or remove local additions.
 `console/agents/sandbox-policy.mts:renderPolicy` places policy status and suggestions
 above the log. It shows three suggestions initially and expands the remaining
 candidates on request, independently of mutation authority. `openNetworkLimits`
-uses the policy view's ceiling in a separate read-only dialog. Defaults and
+shows the ordinary-rule ceiling and the Namespace's repository limits in a
+separate read-only dialog. The repository editor keeps the saved policy visible
+under protected execution and disables repository changes. Defaults and
 version details stay in the main-page disclosure. The Network policy card also enables or disables Agent policy editing
 through the separately authorized editing operation. Mutation feedback appears in
 the card while the dialog is closed; a failed policy read retains its error and
