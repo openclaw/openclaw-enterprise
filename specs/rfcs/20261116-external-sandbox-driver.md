@@ -6,9 +6,9 @@ author: freeqaz
 
 # Proposal: Run dedicated Codex Agents in an external Sandbox
 
-- **ID:** RFC-0044
+- **ID:** RFC-20261116-external-sandbox-driver
 - **Created:** 2026-11-16
-- **Last updated:** 2026-11-18
+- **Last updated:** 2026-11-19
 - **RFC PR:** [#6346](https://github.com/openclaw/openclaw-enterprise/pull/6346)
 - **Related:** [Sandbox contract](../../docs/reference/drivers/sandbox.md),
   [Credential Proxy contract](../../docs/reference/drivers/credential-proxy.md),
@@ -73,38 +73,6 @@ Proposed. Who holds the model key at rest is question 1.
 | Worker prepared-git owner                 | App key, repository-scoped installation tokens, grant checks, request decision, use records  | —                                             |
 | Agent Gateway                             | enforcement of the mounted binding on every native connection and turn                       | provider credentials                          |
 
-### Contract surface
-
-**Main.** The profile uses these as they are: Sandbox `provisionHarness`, `enrollHarness`, `harnessEndpoint`,
-`harnessStatus`, `withdrawHarnessExposure`, `harnessHome`, `validateWorkspaceSetup` and `repositoryAccess`
-(`packages/contracts/src/drivers/sandbox/index.ts:185-314`); Credential Proxy `bindRepositoryGit(authority)` with the
-`github_repository` profile (`packages/contracts/src/drivers/credential-proxy/index.ts:166-167,456`); one package
-selected as both Drivers (`docs/reference/drivers/selection.md:78-98`); and `network.providerHarness`, the Gateway's
-route to a provider Harness (`apps/controller/src/drivers/compute/kubernetes/index.ts:598`).
-
-**Proposed.**
-
-| Member                                                  | Rule                                                                                                                                                                                                                                                                                                               | Draft   |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------- |
-| `SandboxDriver.harnessTransportCredential?: "verifier"` | Harness launch requirements carry the transport verifier, not the bearer Secret reference; read on every reconcile. `harnessStatus` and enrollment still receive the bearer; the package sends it only to the Harness, after verifying the pinned TLS peer, and never puts it in host state, logs or the workload. | [#6345] |
-| `maintenanceIntervalMs?`, `existingHarnessOnly`         | Maintenance of an active revision reports a missing Harness and never recreates it.                                                                                                                                                                                                                                | [#6098] |
-| `@openclaw-enterprise/controller/workspace-node-launch` | Exports the stock file-only node command allowlist and the programs Compute renders, so a package imports no controller source; the prototype still does.                                                                                                                                                          | [#6353] |
-| `worker.sandboxControlClaimName` (optional)             | An existing claim mounted read-only at `/run/openclaw-sandbox-control` in the Worker only, for a host control socket. Requires `controlPlane.nodeSelector["kubernetes.io/hostname"]`; refuses `executionCluster.enabled`, the bootstrap claim and overlap with the database CA mount. Empty changes nothing.       | [#6356] |
-
-**Binding (proposed, [#6354]; no run has used these names).** Compute mounts the ordinary binding at
-`/etc/openclaw-external-workspace/`: `ca.pem` and `binding.json` with exactly the keys
-`format: "external-workspace-v1"`, `url`, `workspaceRoot` and `generationSha256`. The last two come from the validated
-endpoint, the generation as `SandboxHarnessEndpoint.externalWorkspaceOwner.generationSha256`. The Harness proves the
-generation with exactly one response header, `x-openclaw-workspace-generation`, which the Gateway checks on every
-turn ([#4889]). That enforcement ships in OpenClaw first; OCE carries a patch until its pin includes it. The prototype
-ran with provider-shaped spellings (question 4).
-
-**Validation (proposed).** The installed loader refuses a registration whose optional members have the wrong type or
-value: a declared Harness member that is not a function, `harnessTransportCredential` other than `"verifier"` or
-without `provisionHarness` and `harnessEndpoint`, `maintenanceIntervalMs` that is not a positive integer or lacks
-`provisionHarness`, or a malformed protected capability ([#5783]). Compute refuses a malformed endpoint observation,
-such as an owner without a generation, before it pins, routes or releases.
-
 ### Start and release
 
 **Prototype.** The example obtains two signed releases through main's `release(startupId)` callback, which conveys no
@@ -140,9 +108,9 @@ delivered at start does not meet this profile.
   (`apps/controller/src/drivers/repo/github/access/protected-requests.ts`), as the bundled route does, and records
   one possible use. An allow returns the typed `credential` for that request, the use's `exchangeId` and `sendBy`; a
   refusal, a reason code the Agent sees. There is no exact-dispatch mode: such a recipient gets `route_not_ready`. The
-  package keeps no copy of the rule and gains no access: it already holds the authority. Only a test fixture calls
-  the port so far. Under `github_repository`, which stock `gh` needs, OCE refuses other repositories and applies no
-  ref or draft rule; the mint request's permissions and repository IDs bound the rest
+  package keeps no copy of the rule and gains no access: it already holds the authority. Under `github_repository`,
+  which stock `gh` needs, OCE refuses other repositories and applies no ref or draft rule; the mint request's
+  permissions and repository IDs bound the rest
   (`apps/controller/src/drivers/repo/github/access/provider-transport/request-options.ts:126-132`).
 - **Model.** The same ask. The Worker reads the key once per request and keeps nothing; the workload holds a
   placeholder. Where the key rests is question 1.
@@ -164,8 +132,58 @@ open: one that times out does not block the call. The [known gaps][gaps] list th
 
 **Prototype.** The [example package][prototype] exports one registration. A nonroot service launches Box on a host
 beside the cluster, and the workspace node runs outside Box. Box's egress gateway asks a request-time credential
-source, present only in a Box fork, over the Worker control socket; OCE runs no listener for it. Runs used an x86-64
-guest, where Box support is experimental.
+source, present only in a Box fork, over the Worker control socket; OCE runs no listener for it.
+
+## Interface changes
+
+### APIs
+
+No changes.
+
+### IAM
+
+No changes.
+
+### Database entities
+
+No changes.
+
+### Driver contracts
+
+**Main.** The profile uses these as they are: Sandbox `provisionHarness`, `enrollHarness`, `harnessEndpoint`,
+`harnessStatus`, `withdrawHarnessExposure`, `harnessHome`, `validateWorkspaceSetup` and `repositoryAccess`
+(`packages/contracts/src/drivers/sandbox/index.ts:185-314`); Credential Proxy `bindRepositoryGit(authority)` with the
+`github_repository` profile (`packages/contracts/src/drivers/credential-proxy/index.ts:166-167,456`); one package
+selected as both Drivers (`docs/reference/drivers/selection.md:78-98`); and `network.providerHarness`, the Gateway's
+route to a provider Harness (`apps/controller/src/drivers/compute/kubernetes/index.ts:598`).
+
+**Proposed.**
+
+| Member                                                  | Rule                                                                                                                                                                                                                                                                                                               | Draft   |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------- |
+| `SandboxDriver.harnessTransportCredential?: "verifier"` | Harness launch requirements carry the transport verifier, not the bearer Secret reference; read on every reconcile. `harnessStatus` and enrollment still receive the bearer; the package sends it only to the Harness, after verifying the pinned TLS peer, and never puts it in host state, logs or the workload. | [#6345] |
+| `maintenanceIntervalMs?`, `existingHarnessOnly`         | Maintenance of an active revision reports a missing Harness and never recreates it.                                                                                                                                                                                                                                | [#6098] |
+| `@openclaw-enterprise/controller/workspace-node-launch` | Exports the stock file-only node command allowlist and the programs Compute renders, so a package imports no controller source.                                                                                                                                                                                    | [#6353] |
+| `worker.sandboxControlClaimName` (optional)             | An existing claim mounted read-only at `/run/openclaw-sandbox-control` in the Worker only, for a host control socket. Requires `controlPlane.nodeSelector["kubernetes.io/hostname"]`; refuses `executionCluster.enabled`, the bootstrap claim and overlap with the database CA mount. Empty changes nothing.       | [#6356] |
+| `bindRepositoryGit(authority, requests)`                | Adds the per-request `requests.authorize` port.                                                                                                                                                                                                                                                                    | [#6350] |
+
+**Binding (proposed, [#6354]; no run has used these names).** Compute mounts the ordinary binding at
+`/etc/openclaw-external-workspace/`: `ca.pem` and `binding.json` with exactly the keys
+`format: "external-workspace-v1"`, `url`, `workspaceRoot` and `generationSha256`. The last two come from the validated
+endpoint, the generation as `SandboxHarnessEndpoint.externalWorkspaceOwner.generationSha256`. The Harness proves the
+generation with exactly one response header, `x-openclaw-workspace-generation`, which the Gateway checks on every
+turn ([#4889]). That enforcement ships in OpenClaw first; OCE carries a patch until its pin includes it.
+
+**Validation (proposed).** The installed loader refuses a registration whose optional members have the wrong type or
+value: a declared Harness member that is not a function, `harnessTransportCredential` other than `"verifier"` or
+without `provisionHarness` and `harnessEndpoint`, `maintenanceIntervalMs` that is not a positive integer or lacks
+`provisionHarness`, or a malformed protected capability ([#5783]). Compute refuses a malformed endpoint observation,
+such as an owner without a generation, before it pins, routes or releases.
+
+## Simplifications
+
+Simpler options are rejected under [Rationale and alternatives](#rationale-and-alternatives) or open as question 2 (c).
+No infrastructure simplifications: the profile reuses the Worker's token flow and request decision and removes nothing.
 
 ## Acceptance Criteria
 
@@ -209,12 +227,11 @@ with the proposed names.
 
 1. [#6345] and [#6098], both inert unless declared.
 2. [#6354] with the upstream OpenClaw change, [#6353], and the conformance kit ([#6355]).
-3. The protected workspace binding ([#5119], [#5783]); the prototype's variant shares the ordinary directory.
+3. The protected workspace binding ([#5119], [#5783]).
 4. [#6350], whose base is on main, and the Worker control mount ([#6356]) if question 5 accepts it.
 5. The example package, after AC-3 to AC-5 and AC-8 pass with the proposed names.
 
-Model key delivery waits for questions 1 to 3. No run has used the proposed names or the drafts above, and the kit
-has only the AC-6 and AC-7 cases.
+Model key delivery waits for questions 1 to 3. The kit has only the AC-6 and AC-7 cases.
 
 <a id="alternatives-and-open-decisions"></a>
 
