@@ -77,8 +77,9 @@ export function createManagedWorkloadExec(
     new URL("../fixtures/openshell-workload-exec.proto", import.meta.url),
   );
   const definition = loader.loadSync(proto, { keepCase: true, longs: String, oneofs: true });
-  const execSandbox: Grpc.ClientMethodDefinition<ExecRequest, unknown> | undefined =
-    openShellService(grpc.loadPackageDefinition(definition)).ExecSandbox;
+  const execSandbox: Grpc.MethodDefinition<ExecRequest, unknown> | undefined = openShellService(
+    grpc.loadPackageDefinition(definition),
+  ).ExecSandbox;
   assert.ok(execSandbox && !execSandbox.requestStream && execSandbox.responseStream);
   const { target, credentials } = openShellGatewayGrpcChannel(grpc, backend);
   const client = new grpc.Client(target, credentials, { "grpc.enable_retries": 0 });
