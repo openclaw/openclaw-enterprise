@@ -84,6 +84,25 @@ export function registerEgressCases(): void {
     assert.doesNotMatch(widerTrust.preflight.warnings.join("\n"), /covers more than one address/);
   });
 
+  test("managed profiles default channels on and preserve an explicit false", async (t) => {
+    const input = baseInput();
+    const enabled = await render("openclaw", {
+      ...input,
+      channels: { excludedCidrs: input.channels?.excludedCidrs },
+    });
+    t.after(() => rmSync(enabled.directory, { recursive: true, force: true }));
+    assert.equal(enabled.summary.ok, true, enabled.preflight.errors.join("\n"));
+    assert.ok(objectAt(computeConfiguration(enabled.installation), "runtime").channelEgress);
+    const disabled = await render("openclaw", baseInput({ channels: { managedEgress: false } }));
+    t.after(() => rmSync(disabled.directory, { recursive: true, force: true }));
+    assert.equal(disabled.summary.ok, true, disabled.preflight.errors.join("\n"));
+    assert.equal(
+      objectAt(computeConfiguration(disabled.installation), "runtime").channelEgress,
+      undefined,
+    );
+    assert.match(disabled.values, /channelEgress:\n\s+enabled: false/);
+  });
+
   test("managed channel egress preserves listener ownership and rejects unsupported settings", async (t) => {
     const output = await render("codex", managedCodexInput());
     t.after(() => rmSync(output.directory, { recursive: true, force: true }));

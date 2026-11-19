@@ -90,6 +90,7 @@ const historicalRfcNames = new Set([
   "0041-runtimeclass-agnostic-deployment",
   "0042-redeployment-continuation",
   "0043-native-restart-recovery",
+  "0044-channel-egress",
 ]);
 const rfcNames = new Set();
 for (const file of rfcEntries) {

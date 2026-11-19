@@ -36,6 +36,7 @@ import {
   createProductionTuiRequest,
   ProductionTuiRequestError,
 } from "../helpers/production-tui-request.ts";
+import { loseOneDeploymentResponse } from "../helpers/channel-upgrade-response-proxy.ts";
 import { availablePort } from "../helpers/available-port.ts";
 
 function object(value: unknown): Record<string, unknown> {
@@ -53,6 +54,7 @@ function array(value: unknown): Record<string, unknown>[] {
 }
 
 const selected = process.env.OCC_TEST_SLACK_LIVE === "1";
+const upgrade = process.env.OCC_TEST_CHANNEL_EGRESS_UPGRADE === "1";
 test(
   "Helm-installed OCC and PostgreSQL deploy isolated Slack routing through real model cutover",
   {
@@ -68,6 +70,15 @@ test(
     await validateExplicitK3dLoopbackContext(selection);
     assert.ok(selection.kubeconfigPath && selection.kubernetesContext);
     const controller = process.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE;
+    const sourceController = process.env.OCC_TEST_CHANNEL_EGRESS_SOURCE_CONTROLLER_IMAGE;
+    const sourceChart = process.env.OCC_TEST_CHANNEL_EGRESS_SOURCE_CHART;
+    const nextController = process.env.OCC_TEST_CHANNEL_EGRESS_NEXT_CONTROLLER_IMAGE;
+    if (upgrade) {
+      assert.match(sourceController ?? "", /^\S+@sha256:[a-f0-9]{64}$/);
+      assert.ok(sourceChart, "select the actual pre-channel-egress chart checkout");
+      assert.match(nextController ?? "", /^\S+@sha256:[a-f0-9]{64}$/);
+      assert.notEqual(nextController, controller);
+    }
     const runtime =
       process.env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE ??
       process.env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE;
@@ -256,6 +267,23 @@ test(
       },
     });
     configuration.drivers.compute.configuration.resources.gateway.limits.memory = "4Gi";
+    if (upgrade) {
+      Object.assign(configuration.drivers.compute.configuration.runtime, {
+        channels: {
+          proxyUrl: `http://openclaw-enterprise-slack-proxy.${namespace}.svc:3128`,
+          managedProxy: {
+            hostname: `openclaw-enterprise-slack-proxy.${namespace}.svc`,
+            namespace,
+            port: 3128,
+            podLabels: {
+              "app.kubernetes.io/name": "openclaw-enterprise",
+              "app.kubernetes.io/instance": release,
+              "app.kubernetes.io/component": "slack-proxy",
+            },
+          },
+        },
+      });
+    }
     const apiKey = secret();
     await apply({
       apiVersion: "v1",
@@ -271,7 +299,7 @@ test(
         kubernetesContext: selection.kubernetesContext,
       },
       images: {
-        controller,
+        controller: upgrade ? sourceController! : controller,
         postgres: process.env.OCC_TEST_PRODUCTION_POSTGRES_IMAGE ?? postgresImage,
       },
       namespace,
@@ -284,7 +312,9 @@ test(
       installationName: `Channel routing proof ${suffix}`,
       bootstrapCredentials: "existing",
       apiClients: [{ namespace, podLabels: { app: "channel-proof-operator" } }],
-      channelEgress: egress,
+      ...(upgrade
+        ? { slackProxy: { enabled: true as const }, chartDirectory: sourceChart }
+        : { channelEgress: egress }),
       gatewayRouting: {
         enabled: true,
         gatewayName,
@@ -557,6 +587,20 @@ test(
       },
       201,
     );
+    const stoppedAgent = upgrade
+      ? await api(
+          "POST",
+          `/namespaces/${namespaceId}/agents`,
+          {
+            name: `stay-stopped-${suffix}`,
+            configurationId: saved.id,
+            executionMode: "dedicated",
+            harnessAuth: { method: "api_key", source: model.ref },
+          },
+          201,
+        )
+      : undefined;
+    const workspaceMarker = `One-off workspace continuity ${suffix}\n`;
     const agentId = string(agent.id);
     const agentPath = `/namespaces/${namespaceId}/agents/${agentId}`;
     await api("POST", `${agentPath}/runtime-credentials`, {});
@@ -592,8 +636,241 @@ test(
     ).toString("utf8");
     secrets.push(password);
     let gatewayPod: Record<string, unknown> | undefined;
+    const verifyDelivery = async () => {
+      const delivery = await verifySingleSlackDelivery({
+        slack,
+        gatewayIdentity: targetIdentity,
+        senderIdentity,
+        replyMode: "root",
+        nativeEvidence: (nonce) =>
+          gatewaySlackEvidence(
+            (...args) =>
+              kubectl(
+                "exec",
+                string(object(gatewayPod!.metadata).name),
+                "-n",
+                tenant!,
+                "--",
+                ...args,
+              ),
+            nonce,
+          ),
+      });
+      const link = await slackApi("chat.getPermalink", slack.botToken, {
+        channel: slack.channelId,
+        message_ts: delivery.responseTs,
+      });
+      if (process.env.OCC_TEST_SLACK_EVIDENCE_PATH) {
+        await writeFile(
+          process.env.OCC_TEST_SLACK_EVIDENCE_PATH,
+          JSON.stringify(
+            {
+              ...delivery,
+              responsePermalink: link.permalink,
+              workflow: "production-helm",
+              controller,
+              runtime,
+              harness,
+            },
+            null,
+            2,
+          ),
+          { mode: 0o600 },
+        );
+      }
+    };
     for (let round = 0; round < 2; round++) {
-      const revision = await api("POST", `${agentPath}/deploy`, undefined, 202);
+      let revision: Record<string, unknown>;
+      if (round === 1 && upgrade) {
+        // The running revision retains the original draft. The one-off must adopt
+        // this newly saved draft without changing Agent identity or its workspace.
+        const updatedValues = structuredClone(values);
+        const provider = object(object(object(updatedValues.models).providers).codex);
+        const model = array(provider.models)[0]!;
+        model.name = `Saved draft model ${suffix}`;
+        await api("PATCH", `/namespaces/${namespaceId}/configurations/${String(saved.id)}`, {
+          values: updatedValues,
+        });
+        const before = await api("GET", agentPath);
+        const installationFile = join(directory, "upgrade-installation.json");
+        const installationIdentity = await api("GET", "/installation");
+        await kubectl(
+          "annotate",
+          "secret/occ-installation-startup",
+          "--namespace",
+          namespace,
+          `openclaw.dev/installation-id=${String(installationIdentity.id)}`,
+        );
+        const installedSecret = object(
+          await resource("secret", "occ-installation-startup", namespace),
+        );
+        await writeFile(
+          installationFile,
+          Buffer.from(string(object(installedSecret.data)["installation.yaml"]), "base64"),
+          { mode: 0o600 },
+        );
+        const candidate = join(directory, "channel-candidate");
+        await run("scripts/upgrade-channel-egress", [
+          "prepare",
+          "--namespace",
+          namespace,
+          "--release",
+          release,
+          "--values",
+          join(directory, "values.json"),
+          "--installation",
+          installationFile,
+          "--out-dir",
+          candidate,
+          ...egress.excludedCidrs.flatMap((cidr) => ["--excluded-cidr", cidr]),
+        ]);
+        const targetInstallation = JSON.parse(
+          await readFile(join(candidate, "installation.yaml"), "utf8"),
+        );
+        Object.assign(
+          egress,
+          targetInstallation.drivers.compute.configuration.runtime.channelEgress,
+        );
+        const occ = join(directory, "occ-upgrade");
+        await run("go", ["build", "-trimpath", "-o", occ, "./cmd/occ"]);
+        const key = join(directory, "upgrade-key.json");
+        await writeFile(key, JSON.stringify({ data: { key: controlPlane.serviceKey } }), {
+          mode: 0o600,
+        });
+        const lost = await loseOneDeploymentResponse({
+          upstream: `https://localhost:${httpsPort}`,
+          key: operatorKey,
+          cert: operatorCert,
+          agentPath,
+        });
+        context.after(() => lost.close());
+        const evidence = join(directory, "channel-upgrade");
+        const sourceRevision = (await run("git", ["rev-parse", "HEAD"])).trim();
+        const arguments_ = [
+          "run",
+          "--kubeconfig",
+          selection.kubeconfigPath!,
+          "--context",
+          selection.kubernetesContext!,
+          "--namespace",
+          namespace,
+          "--release",
+          release,
+          "--values",
+          join(directory, "values.json"),
+          "--installation",
+          installationFile,
+          "--candidate-values",
+          join(candidate, "values.yaml"),
+          "--candidate-installation",
+          join(candidate, "installation.yaml"),
+          "--controller-image",
+          controller,
+          "--source-revision",
+          sourceRevision,
+          "--evidence-dir",
+          evidence,
+          "--occ",
+          occ,
+        ];
+        const environment = {
+          ...process.env,
+          OCC_URL: lost.url,
+          OCC_SERVICE_KEY_FILE: key,
+          OCC_CA_BUNDLE: certPath,
+          KUBERC: "off",
+        };
+        const executeUpgrade = (resume: boolean) =>
+          run("scripts/upgrade-channel-egress", [...arguments_, ...(resume ? ["--resume"] : [])], {
+            env: environment,
+            timeout: 900_000,
+          });
+        await assert.rejects(executeUpgrade(false), /incomplete|unknown|failed/i);
+        const accepted = lost.acceptedDeployment();
+        assert.ok(
+          accepted,
+          "the real API must have accepted the deployment before its response was lost",
+        );
+        assert.equal(lost.deploymentRequests(), 1);
+        await assert.rejects(executeUpgrade(true), /incomplete|unknown|failed/i);
+        assert.equal(
+          lost.deploymentRequests(),
+          1,
+          "an uncertain accepted deployment must not be resubmitted",
+        );
+        const journalPath = join(evidence, "channel-agent-operations.json");
+        const journal = JSON.parse(await readFile(journalPath, "utf8"));
+        assert.equal(
+          journal.targets.length,
+          1,
+          "the Agent has no repository and must still be inventoried",
+        );
+        const target = journal.targets[0];
+        assert.equal(target.originalRevisionId, before.activeRevisionId);
+        assert.equal(target.stop, "complete");
+        assert.equal(target.deploy, "sending");
+        const acceptedStatus = await api("GET", `${agentPath}/deployments/${String(accepted.id)}`);
+        assert.equal(acceptedStatus.agentId, agentId);
+        target.deploy = "accepted";
+        target.deploymentId = accepted.id;
+        await writeFile(journalPath, JSON.stringify(journal), { mode: 0o600 });
+        await executeUpgrade(true);
+        assert.equal(lost.deploymentRequests(), 1);
+        revision = accepted;
+        const admitted = await api("GET", `${agentPath}/revisions/${String(accepted.id)}`);
+        const admittedProvider = object(
+          object(object(object(admitted.configuration).models).providers).codex,
+        );
+        assert.equal(array(admittedProvider.models)[0]!.name, `Saved draft model ${suffix}`);
+        assert.equal((await api("GET", agentPath)).id, agentId);
+        assert.equal(
+          (await api("GET", `${agentPath}/workspace/files/USER.md`)).content,
+          workspaceMarker,
+        );
+        const stillStopped = await api(
+          "GET",
+          `/namespaces/${namespaceId}/agents/${String(stoppedAgent!.id)}`,
+        );
+        assert.equal(stillStopped.desiredRuntimeState, "stopped");
+        assert.equal(stillStopped.activeRevisionId, undefined);
+
+        // A subsequent ordinary controller image upgrade retains this new revision
+        // and must not replay the release-specific Stop/Deploy sequence.
+        await run(
+          "scripts/upgrade-production-images",
+          [
+            "--kubeconfig",
+            selection.kubeconfigPath!,
+            "--context",
+            selection.kubernetesContext!,
+            "--namespace",
+            namespace,
+            "--release",
+            release,
+            "--values",
+            join(directory, "values.json"),
+            "--installation",
+            installationFile,
+            "--controller-image",
+            nextController!,
+            "--source-revision",
+            sourceRevision,
+            "--evidence-dir",
+            join(directory, "ordinary-upgrade"),
+            "--occ",
+            occ,
+            "--verify-agent",
+            agentId,
+            "--verify-agent-namespace",
+            namespaceId,
+          ],
+          { env: environment, timeout: 900_000 },
+        );
+        assert.equal(lost.deploymentRequests(), 1);
+        assert.equal((await api("GET", agentPath)).activeRevisionId, accepted.id);
+      } else {
+        revision = await api("POST", `${agentPath}/deploy`, undefined, 202);
+      }
       await waitFor(
         "the Helm worker's admitted revision to activate",
         async () => (await api("GET", agentPath)).activeRevisionId === revision.id,
@@ -677,50 +954,21 @@ test(
       } finally {
         await forward.stop();
       }
+      if (upgrade && round === 0) {
+        await api("PUT", `${agentPath}/workspace/files/USER.md`, { content: workspaceMarker });
+        await verifyDelivery();
+      }
       t.diagnostic(
         `Helm revision ${round + 1}: dedicated model turn, channel route and network denials passed.`,
       );
     }
     assert.ok(gatewayPod);
-    const delivery = await verifySingleSlackDelivery({
-      slack,
-      gatewayIdentity: targetIdentity,
-      senderIdentity,
-      replyMode: "root",
-      nativeEvidence: (nonce) =>
-        gatewaySlackEvidence(
-          (...args) =>
-            kubectl(
-              "exec",
-              string(object(gatewayPod!.metadata).name),
-              "-n",
-              tenant!,
-              "--",
-              ...args,
-            ),
-          nonce,
-        ),
-    });
-    const link = await slackApi("chat.getPermalink", slack.botToken, {
-      channel: slack.channelId,
-      message_ts: delivery.responseTs,
-    });
-    if (process.env.OCC_TEST_SLACK_EVIDENCE_PATH) {
-      await writeFile(
-        process.env.OCC_TEST_SLACK_EVIDENCE_PATH,
-        JSON.stringify(
-          {
-            ...delivery,
-            responsePermalink: link.permalink,
-            workflow: "production-helm",
-            controller,
-            runtime,
-            harness,
-          },
-          null,
-          2,
-        ),
-        { mode: 0o600 },
+    await verifyDelivery();
+    if (stoppedAgent) {
+      assert.equal(
+        (await request("DELETE", `/namespaces/${namespaceId}/agents/${String(stoppedAgent.id)}`))
+          .status,
+        202,
       );
     }
     assert.equal((await request("DELETE", agentPath)).status, 202);

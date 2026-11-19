@@ -247,7 +247,9 @@ existing contracts' meaning.
 - **Configuration:** replace the single `runtime.channels.proxyUrl`/`managedProxy`
   selection with managed channel-egress configuration. Installation inputs must
   identify the egress fleet, listener port range, reserved OCC listener, and
-  qualified listener capacity. Disabled is the default. Exact field names,
+  qualified listener capacity. Managed fresh-install profiles and chart values default
+  channel egress on; an explicit false remains off. Runtime configurations supplied
+  independently still require explicit valid channel-egress settings. Exact field names,
   numerical limits, and Envoy resources are a validation-gate decision below;
   activation must fail when inputs are absent or capacity is exhausted.
 - **API:** no new public endpoint or caller-selected proxy. Existing Agent
@@ -366,3 +368,11 @@ implementation; they do not change the private workspace ingress fleet.
 - [Kubernetes NetworkPolicy semantics](https://kubernetes.io/docs/concepts/services-networking/network-policies/).
 - [SPIRE and Envoy integration](https://spiffe.io/docs/latest/microservices/envoy/).
 - [Current Compute owner](../../apps/controller/src/drivers/compute/kubernetes/index.ts) and [Slack Helm resources](https://github.com/openclaw/openclaw-enterprise/blob/b401e36cb8754af762120e28cbf150e379482fef/deploy/helm/openclaw-enterprise/templates/slack-proxy.yaml).
+
+## Installation follow-up
+
+[TASK-0054](../plans/0054-channel-egress-installation-upgrade.md) covers managed
+installation defaults and the one-off upgrade. It preserves disabled
+channels, patches only channel settings, and uses Stop then Deploy from
+current saved drafts. Uncertain submissions require operator inspection. Ordinary
+upgrades do not replay the transition.

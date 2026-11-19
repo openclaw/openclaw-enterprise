@@ -56,5 +56,11 @@
       ]
     }
   ],
-  "fileConcurrency": 1
+  "fileConcurrency": 1,
+  "optionalEnv": [
+    "OCC_TEST_CHANNEL_EGRESS_UPGRADE",
+    "OCC_TEST_CHANNEL_EGRESS_SOURCE_CONTROLLER_IMAGE",
+    "OCC_TEST_CHANNEL_EGRESS_SOURCE_CHART",
+    "OCC_TEST_CHANNEL_EGRESS_NEXT_CONTROLLER_IMAGE"
+  ]
 }

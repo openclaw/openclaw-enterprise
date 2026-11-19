@@ -115,6 +115,7 @@ type PrepareOptions = HelmTarget &
     bootstrapCredentials?: "generate" | "existing";
     apiClients: readonly PodPeer[];
     channelEgress?: ChannelEgressOptions | undefined;
+    slackProxy?: { enabled: true } | undefined;
     databaseName?: string | undefined;
     databaseTLS?:
       | {
@@ -159,6 +160,7 @@ export async function prepareProductionHelmControlPlane({
   installationName,
   apiClients,
   channelEgress,
+  slackProxy,
   repositoryCredentials,
   gatewayRouting,
   controlPlane,
@@ -414,17 +416,17 @@ export async function prepareProductionHelmControlPlane({
   assert.ok(typeof endpointIP === "string" && endpointIP, "Expected the Kubernetes endpoint IP");
   assert.ok(typeof endpointPort === "number", "Expected the Kubernetes endpoint port");
   const adminEmail = `admin-${suffix}@example.invalid`;
+  const channelSettings =
+    channelEgress === undefined
+      ? { enabled: false }
+      : {
+          ...channelEgress,
+          enabled: true,
+          gatewayClassName: gatewayRouting?.gatewayClassName ?? "eg",
+        };
   const values = {
     images: { controller: images.controller },
-    ...(channelEgress
-      ? {
-          channelEgress: {
-            ...channelEgress,
-            enabled: true,
-            gatewayClassName: gatewayRouting?.gatewayClassName ?? "eg",
-          },
-        }
-      : {}),
+    ...(slackProxy ? { slackProxy } : { channelEgress: channelSettings }),
     installation: { name: installationName },
     auth: { baseUrl: authBaseURL },
     agentNativeAdmin: { domain: agentNativeAdminDomain },

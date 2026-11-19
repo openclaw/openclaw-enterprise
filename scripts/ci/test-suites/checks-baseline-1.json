@@ -1054,6 +1054,9 @@
     },
     {
       "path": "tests/integration/agent-http-chat.test.ts"
+    },
+    {
+      "path": "tests/integration/channel-egress-upgrade.test.ts"
     }
   ]
 }

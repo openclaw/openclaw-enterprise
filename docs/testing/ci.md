@@ -85,3 +85,10 @@ It does not establish CI test coverage or staging installation readiness.
   or run the local installation rehearsal.
 - [Document a CI check](../contributing/ci-check-template.md): use the shared
   template when changing coverage documentation.
+
+## One-off channel upgrade proof
+
+Use the explicit `channel-egress-upgrade` QA scenario with Kubernetes and Codex. Supply the Slack lane inputs plus `OCC_TEST_CHANNEL_EGRESS_SOURCE_CONTROLLER_IMAGE` and `OCC_TEST_CHANNEL_EGRESS_SOURCE_CHART` for the matching pre-PR-6529 source. Supply
+`OCC_TEST_CHANNEL_EGRESS_NEXT_CONTROLLER_IMAGE` for the subsequent ordinary image
+upgrade; that image must be built from the target source commit with a different
+image digest. This operator-selected scenario runs the actual script and regular Agent workflow; it is outside the default advisory matrix.
