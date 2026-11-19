@@ -230,7 +230,11 @@ test("Git-only registry policy binds its transport and exact ref before opening 
       grant: { repository: "example/application", access },
     });
   assert.equal(permits("read"), true);
-  assert.equal(permits("write"), false, "the network policy cannot narrow push to the approved ref");
+  assert.equal(
+    permits("write"),
+    false,
+    "the network policy cannot narrow push to the approved ref",
+  );
   policy.pushRefAllowlist = [];
   assert.notEqual(grant(), scopedGrant, "ref authorization is bound to the grant");
   assert.equal(permits("write"), false, "an empty ref allowlist denies all pushes");
