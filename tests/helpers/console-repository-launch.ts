@@ -11,6 +11,7 @@ import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/driv
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "./console-app.mjs";
+import { unexpectedNodeEnrollment } from "./kubernetes-compute.ts";
 import type {
   AccessBinding,
   Agent,
@@ -85,7 +86,11 @@ export async function createConsoleRepositoryLaunchFixture(
         channelEgress: channelEgressOptions,
       },
     },
-    { id: "console-launch-compute", nodeEnrollment: {}, channelDrivers: slackChannelDrivers },
+    {
+      id: "console-launch-compute",
+      nodeEnrollment: unexpectedNodeEnrollment(),
+      channelDrivers: slackChannelDrivers,
+    },
   );
   // This draft/deploy fixture has no PostgreSQL provisioning queue.
   assert.ok(Reflect.set(compute, "agentProvisioning", undefined));
@@ -174,7 +179,7 @@ export async function createConsoleRepositoryLaunchFixture(
         const bindings: AccessBinding[] = [];
         for (const namespace of await unit.namespaces.listNamespaces()) {
           identities.push(
-            ...(await unit.agents.listAgents(namespace.id)).map((agent) => ({
+            ...(await unit.agents.listAgents(namespace.id)).map<ServicePrincipal>((agent) => ({
               id: agent.servicePrincipalId,
               kind: "service_principal",
               namespaceId: namespace.id,
