@@ -64,7 +64,7 @@ export interface SandboxPolicySnapshot {
   readonly repositoryNetworkPolicy?: RepositoryNetworkPolicy;
 }
 
-const EffectiveRepositoryPolicySchema = Type.Object({});
+const EffectiveRepositoryPolicySchema = { type: "object" };
 
 /** Enrich a base snapshot during revision admission, before any provisioning effects. */
 export function admitSandboxRepositoryNetworkPolicy(
