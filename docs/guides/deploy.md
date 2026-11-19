@@ -1,3 +1,8 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Deploy OpenClaw Enterprise
 
 Install OpenClaw Enterprise (OCE), verify access to the OpenClaw Control Plane
@@ -43,6 +48,10 @@ Sign in with a human administrator account; service keys are for automation.
 The [console reference](../reference/console.md) covers browser behavior and limits.
 
 ## Production
+
+Choose a path in [Control plane setup](deploy/control-plane-setup.md).
+Cloud and distribution-specific settings live in its linked subpages;
+shared Kubernetes requirements and installation steps remain below.
 
 The Kubernetes and EKS setup guides install OCE with OpenShell and prepare the
 shared operator session for **Deploy your first Agent**. Do not repeat the custom
