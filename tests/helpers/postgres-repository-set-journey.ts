@@ -28,7 +28,10 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { InstalledDriver, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
-import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import {
+  OpenShellSandboxDriver,
+  type OpenShellNetworkPolicyRule,
+} from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
@@ -123,6 +126,7 @@ type NarrowPolicy = {
 
 type NarrowStartupOptions = NarrowPolicy & {
   maxAttempts?: number;
+  artifactRules?: readonly OpenShellNetworkPolicyRule[];
   beforeAdmission?: (input: {
     fixture: NarrowJourney["maintenance"]["fixture"];
     agent: NarrowJourney["maintenance"]["agent"];
@@ -284,6 +288,44 @@ async function repositoryGitJourney(
       ...(typeof entry.check === "string" && { check: entry.check }),
     });
   };
+  const createSandbox = (
+    runtime: OpenShellGitRuntime,
+    artifactRules = startupOptions?.artifactRules,
+  ) =>
+    new OpenShellSandboxDriver(
+      {
+        ...(artifactRules && { egress: opts }),
+        gateway: { workspaceMode: "operator" },
+        kubernetes: {
+          serviceAccount: { mode: "gatewayConfigured" },
+          sandboxDataMount: {
+            subPath: "workspace",
+            mountPath: "/sandbox/enterprise",
+            readOnly: false,
+          },
+        },
+        policy: {
+          process: { runAsUser: "1000", runAsGroup: "1000" },
+          ...(artifactRules && { codexArtifactRuleNames: artifactRules.map(({ name }) => name) }),
+          networkPolicies: [
+            {
+              name: "model",
+              binaries: [{ path: "/usr/bin/codex" }],
+              endpoints: conversation
+                ? [
+                    {
+                      host: new URL(conversation.baseUrl).hostname,
+                      ports: [Number(new URL(conversation.baseUrl).port)],
+                    },
+                  ]
+                : [{ host: "api.openai.com", ports: [443] }],
+            },
+            ...(artifactRules ?? []),
+          ],
+        },
+      },
+      { id, implementation: "openshell", backend: backend as never, openShellGit: runtime },
+    );
   const createRuntimeOwner = (listenPort = port) => {
     const runtime = new OpenShellGitRuntime(
       {
@@ -301,37 +343,7 @@ async function repositoryGitJourney(
       },
       (revision) => createGitHubRepositoryDeliveryResolver(peer.registry)(revision),
     );
-    const sandbox = new OpenShellSandboxDriver(
-      {
-        gateway: { workspaceMode: "operator" },
-        kubernetes: {
-          serviceAccount: { mode: "gatewayConfigured" },
-          sandboxDataMount: {
-            subPath: "workspace",
-            mountPath: "/sandbox/enterprise",
-            readOnly: false,
-          },
-        },
-        policy: {
-          process: { runAsUser: "1000", runAsGroup: "1000" },
-          networkPolicies: [
-            {
-              name: "model",
-              binaries: [{ path: "/usr/bin/codex" }],
-              endpoints: conversation
-                ? [
-                    {
-                      host: new URL(conversation.baseUrl).hostname,
-                      ports: [Number(new URL(conversation.baseUrl).port)],
-                    },
-                  ]
-                : [{ host: "api.openai.com", ports: [443] }],
-            },
-          ],
-        },
-      },
-      { id, implementation: "openshell", backend: backend as never, openShellGit: runtime },
-    );
+    const sandbox = createSandbox(runtime);
     const proxy = new OpenShellCredentialProxyDriver(opts, {
       id,
       sandbox,
@@ -510,13 +522,18 @@ async function repositoryGitJourney(
   }
   assert.equal(agent.harnessAuth?.method, "credential_source");
   assert.ok(agent.harnessAuth && "sourceId" in agent.harnessAuth);
-  const model = podContinuity ? openShellProviderName(agent.harnessAuth.sourceId) : "openai";
+  const nativeRegistration = startupOptions?.artifactRules !== undefined;
+  const model =
+    podContinuity || nativeRegistration
+      ? openShellProviderName(agent.harnessAuth.sourceId)
+      : "openai";
   const wire = await gitExpiryGateway(t, {
     model,
-    ...(podContinuity && {
+    ...((podContinuity || nativeRegistration) && {
       modelSourceId: agent.harnessAuth.sourceId,
-      trackGitExpiry: true,
+      trackGitExpiry: podContinuity,
     }),
+    registerSandbox: nativeRegistration,
     workspace,
     sandbox: state.sandbox,
     revisionId: "",
@@ -1081,6 +1098,13 @@ async function repositoryGitJourney(
       compute,
       getRuntime: () => runtime,
       replaceRuntime,
+      registration: wire.registration,
+      replayContext: async (stored: AgentRevision) => {
+        const storedContext = { ...context, revision: stored, plan: stored.egressPlan! };
+        return { ...storedContext, proxyWiring: await release.configure(storedContext) };
+      },
+      sandboxWithDefaults: (rules: readonly OpenShellNetworkPolicyRule[]) =>
+        createSandbox(runtime, rules),
       evaluate,
       reconcile,
       start,
