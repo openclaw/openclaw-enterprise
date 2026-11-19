@@ -132,21 +132,13 @@ export class InstalledDriver {
     return this.#repositoryOnly;
   }
 
-  /** @internal Bundled retirement policy is stable even if the catalog changes. */
-  hasStaticProviderRetirementPolicy(): boolean {
-    return this.#retiredStaticProviderRefs.length > 0;
-  }
-
-  /** @internal Process-local policy for new uses; retained registrations remain resolvable. */
-  allowsNewStaticProviderUse(ref: EgressRef): boolean {
-    return !this.#retiredStaticProviderRefs.some(
-      (retired) => retired.id === ref.id && retired.generation === ref.generation,
-    );
-  }
-
   /** @internal Refuse new static admissions without changing retained provider behavior. */
   assertNewStaticProviderUse(ref: EgressRef): void {
-    if (!this.allowsNewStaticProviderUse(ref)) {
+    if (
+      this.#retiredStaticProviderRefs.some(
+        (retired) => retired.id === ref.id && retired.generation === ref.generation,
+      )
+    ) {
       throw new ResourceStateConflictError(
         "The selected Driver has retired new uses of this protected static credential provider. Ask an Installation administrator to configure a supported model access path.",
       );

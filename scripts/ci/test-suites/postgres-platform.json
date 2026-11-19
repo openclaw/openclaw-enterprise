@@ -78,7 +78,6 @@
     "tests/integration/postgres-harness-overrides.test.ts",
     "tests/integration/postgres-preset-template-validation.test.ts",
     "tests/integration/postgres-readiness-capacity.test.ts",
-    "tests/integration/credential-proxy-request-transport.test.ts",
     "tests/integration/postgres-private-secret-create.test.ts",
     "tests/integration/postgres-iam-durable-authority.test.ts"
   ],
@@ -653,17 +652,7 @@
       "expectedTests": [
         "policy reduction preserves another binding then observes deny-all (PostgreSQL)",
         "static credential exchange rejects a changed control before reading material (PostgreSQL)",
-        "Git reduction v7 preserves earlier admission meanings and rejects widening",
-        "online model requests redeem current material once after durable policy authorization (PostgreSQL)",
-        "online request replay horizons and shared quotas survive API restart (PostgreSQL)",
-        "Only owned readiness deferral preserves pending model credentials (PostgreSQL)",
-        "A refused candidate cannot mint or redeem while its Worker retries stopping it (PostgreSQL)",
-        "Candidate model credentials end when its Worker is interrupted (PostgreSQL)",
-        "Pending model authorization and redemption retry an exact busy work row (PostgreSQL)",
-        "Model approval rolls back when the candidate lease expires during activation (PostgreSQL)",
-        "online approval expiry is bounded by database time despite issuer clock skew (PostgreSQL)",
-        "online release expires on database time while a slow replica reads Secrets (PostgreSQL)",
-        "online release serializes configured role revocation with its final Secret read (PostgreSQL)"
+        "Git reduction v7 preserves earlier admission meanings and rejects widening"
       ]
     },
     {
@@ -791,26 +780,6 @@
     {
       "path": "tests/integration/postgres-readiness-capacity.test.ts",
       "expectedTests": ["PostgreSQL readiness shares only in-flight application-pool work"]
-    },
-    {
-      "path": "tests/integration/credential-proxy-request-transport.test.ts",
-      "expectedTests": [
-        "signed model request middleware redeems once through TLS after startup release (PostgreSQL)",
-        "strict static exchange preserves control identity across material metadata (PostgreSQL)",
-        "credential source HTTP creation and protection readback follow installed policy and exact registrations (PostgreSQL)",
-        "model source admission fences changed authority and transport (PostgreSQL)",
-        "model source re-adoption cannot change protection across an unknown generation (PostgreSQL)",
-        "external model source catalog refuses an unsupported live schema before material access (PostgreSQL)",
-        "strict model source upgrades require an exact original and an eligible successor (PostgreSQL)",
-        "model source admission fences a changed paired Sandbox (PostgreSQL)",
-        "static source admission refuses incompatible profile lifecycles (PostgreSQL)",
-        "static source admission fences Credential Gateway selection (PostgreSQL)",
-        "model source PATCH rechecks admission after its success audit is written (PostgreSQL)",
-        "model-only request admission uses the registered request profile without strict capabilities",
-        "API-admitted model and Git revision requires its original worker (PostgreSQL)",
-        "model request installation survives a material epoch change but fences policy and recipient drift",
-        "online Responses source refuses unsupported Harness before revision or external effects (PostgreSQL)"
-      ]
     },
     {
       "path": "tests/integration/postgres-private-secret-create.test.ts",

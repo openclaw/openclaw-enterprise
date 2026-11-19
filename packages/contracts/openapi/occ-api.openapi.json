@@ -910,14 +910,6 @@
                       { "const": "credential_free", "type": "string" }
                     ]
                   },
-                  "protection": {
-                    "anyOf": [
-                      { "const": "exact-dispatch", "type": "string" },
-                      { "const": "request-time", "type": "string" },
-                      { "const": "unavailable", "type": "string" }
-                    ],
-                    "description": "Live model protection provided by the source's exact admitted provider registration. Unavailable means that registration cannot be validated. This is not evidence of running Sandbox enforcement."
-                  },
                   "retention": { "const": "none", "type": "string" }
                 },
                 "required": ["adoption", "retention"],
@@ -37443,14 +37435,6 @@
                                   { "const": "prepared", "type": "string" },
                                   { "const": "credential_free", "type": "string" }
                                 ]
-                              },
-                              "protection": {
-                                "anyOf": [
-                                  { "const": "exact-dispatch", "type": "string" },
-                                  { "const": "request-time", "type": "string" },
-                                  { "const": "unavailable", "type": "string" }
-                                ],
-                                "description": "Live model protection provided by the source's exact admitted provider registration. Unavailable means that registration cannot be validated. This is not evidence of running Sandbox enforcement."
                               },
                               "retention": { "const": "none", "type": "string" }
                             },

@@ -1,10 +1,4 @@
 import { posix } from "node:path";
-import {
-  modelRequestProviderName,
-  openShellModelRequestPolicy,
-  verifyModelRequestPolicy,
-  verifyModelRequestProfile,
-} from "./openshell-model-request-policy.ts";
 import { OpenShellGatewayUnavailableError } from "./openshell-gateway-errors.ts";
 import {
   validateNamespaceGatewayResources,
@@ -873,19 +867,6 @@ function harnessRuntimeFiles(
         "Protected Harness startup must match the admitted egress plan.",
       );
     }
-    if (plan?.authorization === "online-request") {
-      const endpoint = asRecord(manifest.modelEndpoint);
-      const route = plan.routes[0];
-      if (
-        !route ||
-        endpoint?.modelProvider !== "openai-compatible" ||
-        endpoint.baseUrl !== new URL("/v1", route.origin).href
-      ) {
-        throw new OpenShellSandboxConfigurationFailure(
-          "Online model authorization requires the admitted custom Responses endpoint.",
-        );
-      }
-    }
     configurationObject(manifest.selections, "Codex plugin-runtime selections");
     if (manifest.repositoryBrokerNetworkPolicy !== undefined) {
       throw new SandboxRepositoryRecipientUnverifiedError();
@@ -951,20 +932,14 @@ function harnessRuntimeFiles(
   };
   return {
     config,
-    profile: managedRuntimeProfile(profileBase),
-  };
-}
-
-function managedRuntimeProfile(
-  profile: Omit<OpenShellProviderProfile, "annotations">,
-): OpenShellProviderProfile {
-  return {
-    ...profile,
-    annotations: {
-      // TODO(openshell-stable-profile-hash): Separate ownership and digest after the
-      // pinned OpenShell release canonicalizes protobuf map fields before hashing them.
-      [RUNTIME_PROFILE_MANAGED_ANNOTATION]:
-        RUNTIME_PROFILE_MANAGED_VALUE_PREFIX + sha256Hex(JSON.stringify(profile)),
+    profile: {
+      ...profileBase,
+      annotations: {
+        // TODO(openshell-stable-profile-hash): Separate ownership and digest after the
+        // pinned OpenShell release canonicalizes protobuf map fields before hashing them.
+        [RUNTIME_PROFILE_MANAGED_ANNOTATION]:
+          RUNTIME_PROFILE_MANAGED_VALUE_PREFIX + sha256Hex(JSON.stringify(profileBase)),
+      },
     },
   };
 }
@@ -3433,10 +3408,6 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const codex = context.revision.harness.id === "codex";
     const client = this.gatewayClientForNamespace(sandbox.namespaceName);
     const workspace = workspaceName(context.namespace);
-    const modelRequest =
-      plan && this.options.egress
-        ? openShellModelRequestPolicy(plan, this.options.egress, context.revision)
-        : undefined;
     const plugin = openShellPluginPolicy(
       context.revision,
       context.requirements,
@@ -3467,21 +3438,6 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         gitRouteOverlapMessage(gitOverlap),
       );
     }
-    if (modelRequest) {
-      const { name, profile } = modelRequest.provider;
-      await this.ensureRuntimeProfile(
-        client,
-        workspace,
-        managedRuntimeProfile(profile),
-        context.signal,
-      );
-      verifyModelRequestProfile(
-        await client.getProviderProfile(workspace, name, context.signal),
-        profile,
-        workspace,
-      );
-      await this.ensureRuntimeProvider(client, workspace, context, name, {}, {}, {}, name);
-    }
     const git =
       context.revision.repositoryCredentials === undefined
         ? undefined
@@ -3492,10 +3448,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
             sandbox.resourceName,
             context.signal,
             sandboxDataMount(this.options, context.requirements).mount_path,
-            [
-              ...(modelRequest ? [modelRequest.provider.name] : []),
-              ...sandboxProviders(this.options, context.requirements),
-            ],
+            sandboxProviders(this.options, context.requirements),
             this.options.policy.networkPolicies.flatMap((policy) =>
               policy.endpoints.map((endpoint) => endpoint.host),
             ),
@@ -3507,17 +3460,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     const checkEffectivePolicy = async () => {
       const config =
-        plugin || mcpPolicies.length || modelRequest
+        plugin || mcpPolicies.length
           ? await client.getSandboxConfig?.(workspace, sandbox.resourceName, context.signal)
           : undefined;
-      if (modelRequest) {
-        verifyModelRequestProfile(
-          await client.getProviderProfile(workspace, modelRequest.provider.name, context.signal),
-          modelRequest.provider.profile,
-          workspace,
-        );
-        verifyModelRequestPolicy(config, modelRequest, workspace);
-      }
       if (plugin) {
         verifyPluginRequestGuard(config, plugin, workspace);
       }
@@ -3592,10 +3537,6 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       ),
       serviceExposures,
     };
-    if (modelRequest) {
-      create.spec.providers.unshift(modelRequest.provider.name);
-      Object.assign(create.spec.environment, modelRequest.environment);
-    }
     // Check the final composition against the independently validated setup binding,
     // including absence; a supplied auxiliary rule cannot establish its own authority.
     const expectedWorkspacePolicy =
@@ -3642,11 +3583,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       // Only the independent model attachment selected by this revision can survive Git expiry.
       const auth = context.revision.harnessAuth;
       const originalModel =
-        (modelRequest !== undefined && modelRequest.provider.name === continuity?.model) ||
-        (auth?.method === "credential_source" &&
-          context.requirements.credentialAttachments.some(
-            (a) => a.sourceId === auth.sourceId && a.ref === continuity?.model,
-          ));
+        auth?.method === "credential_source" &&
+        context.requirements.credentialAttachments.some(
+          (a) => a.sourceId === auth.sourceId && a.ref === continuity?.model,
+        );
       await this.openShellGit!.bind(
         context.revision.id,
         (observed) => verifyExistingSandbox(observed, { ...create, requestId: requestIds[0]! }),
@@ -3845,15 +3785,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const auth = revision.harnessAuth;
     // Never substitute the runtime-files provider: it confers no independent inference authority.
     const plan = revision.egressPlan;
-    const modelRequest =
-      plan && this.options.egress
-        ? openShellModelRequestPolicy(plan, this.options.egress, revision)
-        : undefined;
     const retained =
-      modelRequest?.provider.name ||
-      (auth?.method === "credential_source" &&
-        (!plan || (plan.repositoryGit && isDeepStrictEqual(plan.harnessCredentialSource, auth))) &&
-        openShellProviderName(auth.sourceId));
+      auth?.method === "credential_source" &&
+      (!plan || (plan.repositoryGit && isDeepStrictEqual(plan.harnessCredentialSource, auth))) &&
+      openShellProviderName(auth.sourceId);
     if (
       !retained ||
       revision.namespaceId !== context.namespace.id ||
@@ -4506,9 +4441,6 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           await client.deleteProvider(workspace, provider, context.signal);
         }
       }
-      // Request-model registrations contain no credential material. Keep them
-      // for reconciliation: the Gateway's delete RPCs cannot require the instance
-      // we observed. Sandbox removal and policy withdrawal close credential access.
       const git = this.openShellGit;
       const revision = context.revision;
       if (git !== undefined && revision.repositoryCredentials !== undefined) {
@@ -4576,17 +4508,6 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       // Ownership remains the cleanup boundary, and DeleteWorkspace is idempotent.
       verifyWorkspaceOwnership(workspace, context.namespace);
       const providers = await client.listProviders(workspace.name, context.signal);
-      const isRequestModel = (name: string) => /^oce-model-[a-f0-9]{32}$/.test(name);
-      if (
-        providers.some((provider) => isRequestModel(provider.name)) ||
-        (await client.listProviderProfiles(workspace.name, context.signal)).some((profile) =>
-          isRequestModel(profile.id),
-        )
-      ) {
-        throw new OpenShellSandboxConfigurationFailure(
-          "Reconcile retained request-model providers and profiles before deleting this Workspace.",
-        );
-      }
       for (const provider of providers) {
         if (
           Object.values(RUNTIME_PROFILE_IDS).some((id) => provider.type === id) &&
@@ -4601,8 +4522,6 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       for (const profileId of Object.values(RUNTIME_PROFILE_IDS)) {
         await this.deleteRuntimeProfileIfUnused(client, workspace.name, profileId, context.signal);
       }
-      // The Gateway checks members again after marking the Workspace terminating.
-      // Providers and profiles block deletion there, including additions after our listing.
       await client.deleteWorkspace(workspace.name, context.signal);
       if ((await client.getWorkspace(workspace.name, context.signal)) !== undefined) {
         throw new SandboxNamespacePendingError();
@@ -5189,8 +5108,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     config: Readonly<Record<string, string>>,
     credentials: Readonly<Record<string, string>>,
     credentialExpirationTimes: Readonly<Record<string, string>>,
-    name = runtimeProviderName(context.revision.id),
   ): Promise<{ readonly name: string; readonly created: boolean }> {
+    const name = runtimeProviderName(context.revision.id);
     const expectedLabels = runtimeProviderLabels(context.namespace, context.revision);
     let provider = await client.getProvider(workspace, name, context.signal);
     let created = false;
@@ -5238,14 +5157,6 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     verifyRuntimeProvider(provider, name, profileId, expectedLabels, config);
-    if (
-      name === modelRequestProviderName(context.revision.id) &&
-      (provider.workspace !== workspace || provider.profileWorkspace !== workspace)
-    ) {
-      throw new OpenShellSandboxConfigurationFailure(
-        "Model provider belongs to another Workspace.",
-      );
-    }
     return Object.freeze({ name, created });
   }
 

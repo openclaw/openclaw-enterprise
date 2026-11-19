@@ -13,7 +13,6 @@ import {
 import { waitFor } from "./wait-for.ts";
 import { installationDriverConfigurations } from "../../apps/controller/src/composition/installation-config.ts";
 import { freezeAgentRevision } from "../../packages/contracts/src/index.ts";
-import { CredentialSourceUnprotectedError } from "../../packages/occ/src/index.ts";
 
 /**
  * @import { SuiteContext, TestContext } from "node:test"
@@ -709,7 +708,7 @@ export function createWorkerRevisionFixtures(
             );
           await assert.rejects(
             plan({ ...auth, sourceId: "unselected" }),
-            CredentialSourceUnprotectedError,
+            /created or adopted under the Proxy/,
           );
           const egressPlan = await plan(auth);
           assert.deepEqual(egressPlan.harnessCredentialSource, auth);

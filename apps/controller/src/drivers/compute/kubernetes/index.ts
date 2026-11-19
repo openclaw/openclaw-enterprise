@@ -176,7 +176,6 @@ import {
   CredentialWithdrawalRefusedError,
   DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
   DependencyUnavailableError,
-  ResourceStateConflictError,
   RuntimeDiagnosticsTransportError,
   SandboxRepositoryRecipientUnverifiedError,
   imageReferenceProblem,
@@ -241,7 +240,6 @@ import {
 import { managedGatewayConfiguration, validateGatewayToolPolicy } from "../gateway-tool-policy.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { codexGatewayModelConfiguration } from "../codex-model-configuration.ts";
-import { usesOpenAiRequestProvider } from "../../openai-request-adapter.ts";
 import {
   modelProviderBaseUrl,
   normalizeHarnessSettings,
@@ -14895,16 +14893,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     for (const source of sources) {
       if (source.type === "openai") {
         requireModelSourceDestination(source.config, provider);
-        if (
-          usesOpenAiRequestProvider(source) &&
-          (harness.id !== "codex" ||
-            harness.mode !== "dedicated" ||
-            provider?.protocol !== "openai-responses")
-        ) {
-          throw new ResourceStateConflictError(
-            "The online model source requires a dedicated Codex Harness using the Responses protocol.",
-          );
-        }
       }
     }
   }
@@ -15089,7 +15077,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return {
       providerOwned,
       protected: this.hasProtectedCodexAdmission(revision),
-      modelRequestEnrollment: revision.egressPlan?.authorization === "online-request",
       ...(prefix === PROXY_CODEX_LAUNCH && { explicitProxy: true }),
       ...(sandbox?.implementation === "strands-box" && { strandsBox: true }),
       ...(prefix === OPENSHELL_CODEX_LAUNCH && {

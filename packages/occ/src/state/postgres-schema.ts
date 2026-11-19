@@ -738,28 +738,25 @@ export const agentRevisions = occSchema.table(
             AND ${table.admittedSpec} #> '{harness_auth,protectedExecutionVersion}'
               = ${table.admittedSpec} #> '{execution_admission,version}'
             AND (
-                ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4','5','6','7','8','9')
+                ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4','5','6','7')
                 AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '7'
                   THEN ${table.admittedSpec} #> '{egress_plan,policyReductionVersion}' = '2'::jsonb
                   ELSE NOT (${table.admittedSpec}->'egress_plan' ? 'policyReductionVersion') OR
                     (${table.admittedSpec} #>> '{execution_admission,version}' = '3' AND ${table.admittedSpec} #> '{egress_plan,policyReductionVersion}' = '1'::jsonb) END
-                AND ((${table.admittedSpec} #>> '{execution_admission,version}') IN ('4','5','6','7','9'))
+                AND ((${table.admittedSpec} #>> '{execution_admission,version}') IN ('4','5','6','7'))
                   = ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
                 AND (NOT ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
                   OR (jsonb_typeof(${table.admittedSpec}->'repository_credentials')='object'
                     AND ${table.admittedSpec} #> '{egress_plan,repositoryGit}' = ${table.admittedSpec}->'repository_credentials'))
-                AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' IN ('5','9')
+                AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '5'
                     THEN ${table.admittedSpec} #>> '{egress_plan,repositoryGitAuthorization}' = 'online-request'
                     WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '6' THEN
                       ${table.admittedSpec} #>> '{egress_plan,repositoryGitAuthorization}' = 'request-hook-observed'
                       AND ${table.admittedSpec} #>> '{egress_plan,repositoryGit,bindings,0,profile}' = 'github-installation'
                       AND jsonb_array_length(${table.admittedSpec} #> '{egress_plan,repositoryGit,bindings}') = 1
                     ELSE NOT ((${table.admittedSpec}->'egress_plan') ? 'repositoryGitAuthorization') END
-                AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' IN ('8','9')
-                  THEN ${table.admittedSpec} #> '{execution_admission,version}' IN ('8'::jsonb,'9'::jsonb)
-                    AND occ.request_model_plan_is_valid(${table.admittedSpec}->'egress_plan')
-                  ELSE NOT (${table.admittedSpec}->'egress_plan' ? 'authorization') END
-                AND jsonb_typeof(${table.admittedSpec} #> '{egress_plan,driver}') = 'object'
+                AND
+                jsonb_typeof(${table.admittedSpec} #> '{egress_plan,driver}') = 'object'
                 AND length(${table.admittedSpec} #>> '{egress_plan,driver,id}') > 0
                 AND length(${table.admittedSpec} #>> '{egress_plan,driver,implementation}') > 0
                 AND ${table.admittedSpec} #>> '{egress_plan,driver,configurationId}' ~ '^[0-9a-f]{64}$'
@@ -1288,7 +1285,6 @@ export const controllerWork = occSchema.table(
     namespaceTarget: text("namespace_target"),
     agentTarget: text("agent_target"),
     state: text("state").notNull().default("queued"),
-    candidateAuthorized: boolean("candidate_authorized").notNull().default(false),
     availableAt: timestamp("available_at", { withTimezone: true }).notNull(),
     attemptCount: integer("attempt_count").notNull().default(0),
     claimToken: uuid("claim_token"),
@@ -1317,15 +1313,6 @@ export const controllerWork = occSchema.table(
     })
       .onUpdate("restrict")
       .onDelete("no action"),
-    check(
-      "controller_work_candidate_authorized_owner",
-      sql`NOT ${table.candidateAuthorized} OR (
-        ${table.state} IN ('claimed', 'queued') AND ${table.workKind} = 'lifecycle'
-        AND ${table.agentId} IS NOT NULL AND ${table.revisionId} IS NOT NULL
-        AND ${table.namespaceTarget} IS NULL AND ${table.agentTarget} IS NULL
-        AND ${table.idempotencyKey} = 'agent_revision:' || ${table.revisionId} || ':reconcile'
-      )`,
-    ),
     check("controller_work_kind_valid", sql`${table.workKind} IN ('lifecycle', 'provisioning')`),
     check(
       "controller_work_idempotency_key_length",
@@ -1905,37 +1892,6 @@ export const egressRejectedMaterial = occSchema.table(
       "egress_rejected_material_check",
       sql`length(${table.secretDriverId}) > 0 AND length(${table.materialId}) > 0 AND length(${table.materialVersion}) > 0`,
     ),
-  ],
-);
-
-export const requestCredentialApprovals = occSchema.table(
-  "request_credential_approvals",
-  {
-    recipientId: text("recipient_id").notNull(),
-    requestId: text("request_id").notNull(),
-    bindingId: text("binding_id").notNull(),
-    namespaceId: text("namespace_id").notNull(),
-    agentId: text("agent_id").notNull(),
-    revisionId: text("revision_id").notNull(),
-    policyDigest: text("policy_digest").notNull(),
-    driverRef: jsonb("driver_ref").notNull(),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    replayUntilAt: timestamp("replay_until_at", { withTimezone: true }).notNull(),
-    approved: boolean("approved").notNull().default(false),
-    consumed: boolean("consumed").notNull().default(false),
-  },
-  (table) => [
-    primaryKey({ columns: [table.recipientId, table.requestId] }),
-    check(
-      "request_credential_approval_requires_decision",
-      sql`${table.approved} OR NOT ${table.consumed}`,
-    ),
-    check("request_credential_approval_digest", sql`${table.policyDigest} ~ '^[a-f0-9]{64}$'`),
-    check(
-      "request_credential_approval_horizon",
-      sql`${table.replayUntilAt} >= ${table.expiresAt} AND isfinite(${table.replayUntilAt})`,
-    ),
-    index("request_credential_approvals_expiry").on(table.replayUntilAt),
   ],
 );
 

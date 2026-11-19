@@ -107,7 +107,7 @@ export const credentialSourceHandlers = {
     const credentialSourceId = params.credentialSourceId as string;
     const resource = { kind: "credential_source" as const, id: credentialSourceId, namespaceId };
     // The gateway write cannot roll back, so a failed request after it still records a failure.
-    const source = await controller.transact(async () => {
+    const source = await controller.transact(async (unit) => {
       const updated = await controller.updateCredentialSource(
         context.actorId,
         {
@@ -122,8 +122,8 @@ export const credentialSourceHandlers = {
             : { secrets: body.secrets as Record<string, SecretReference> }),
         },
         (reasonCode) => mutationEvent(resource, undefined, undefined, { reasonCode }),
-        mutationEvent(resource),
       );
+      await unit.audit.append(mutationEvent(resource));
       return clientCredentialSource(updated);
     });
     reply.send({ data: source, meta: { requestId: request.id } });

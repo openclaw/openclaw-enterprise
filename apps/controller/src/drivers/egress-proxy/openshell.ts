@@ -1,12 +1,3 @@
-import {
-  openShellModelRequestPolicy,
-  verifyModelRequestProfile,
-  verifyModelRequestPolicy,
-} from "../sandbox/openshell-model-request-policy.ts";
-import {
-  openShellRequestAuthorityEndpoint,
-  type OpenShellTokenGrantConfiguration,
-} from "./openshell-token-grant.ts";
 import { wirePolicy } from "./openshell-wire-policy.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import { bindOpenShellExchange } from "./openshell-exchange-binding.ts";
@@ -29,8 +20,6 @@ import type {
   ProxyRevisionContext,
   SandboxDriver,
   AgentRevision,
-  Namespace,
-  RequestCredentialInput,
 } from "@openclaw-enterprise/contracts";
 import {
   CredentialProxyAdmissionError,
@@ -50,7 +39,7 @@ import {
   advertisesOpenShellExecutionProfile,
   openShellExchangeCapabilities as capabilities,
 } from "./openshell-exchange-capabilities.ts";
-import { createOpenAiStaticProvider, createOpenAiRequestProvider } from "./openai-provider.ts";
+import { createOpenAiStaticProvider } from "./openai-provider.ts";
 import { openShellProtectedCodexArtifacts } from "../sandbox/openshell-codex-artifacts.ts";
 import { assertBoundedWorkspaceNodeRule } from "../sandbox/openshell-workspace-node-policy.ts";
 
@@ -79,40 +68,6 @@ export interface OpenShellProxyOptions {
   /** Installation operator promises a dedicated, operator-controlled supported stock gateway. */
   readonly observedHookPreviewWorkspace?: string;
   readonly authorityScope: "execution";
-  readonly requestCredentials?: {
-    readonly audience: string;
-    readonly tokenEndpoint: string;
-    readonly grpcEndpoint: string;
-  };
-}
-
-function validRequestCredentials(input: unknown): boolean {
-  const value = asRecord(input);
-  if (
-    !value ||
-    Object.keys(value).length !== 3 ||
-    typeof value.audience !== "string" ||
-    !value.audience.trim() ||
-    typeof value.tokenEndpoint !== "string" ||
-    !URL.canParse(value.tokenEndpoint) ||
-    typeof value.grpcEndpoint !== "string" ||
-    !URL.canParse(value.grpcEndpoint)
-  ) {
-    return false;
-  }
-  const endpoint = new URL(value.tokenEndpoint);
-  const authority = new URL(value.grpcEndpoint);
-  return (
-    endpoint.protocol === "https:" &&
-    !endpoint.username &&
-    !endpoint.password &&
-    !endpoint.search &&
-    !endpoint.hash &&
-    endpoint.href === value.tokenEndpoint &&
-    authority.protocol === "https:" &&
-    authority.hostname === endpoint.hostname &&
-    authority.origin === value.grpcEndpoint
-  );
 }
 
 // Retain uint64 revisions as decimal strings: Number would lose generation precision.
@@ -254,23 +209,6 @@ export function openShellEgressConfiguration(
   if (hosts.length !== 1 || !/^[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(hosts[0]!)) {
     throw new Error("Protected egress requires one literal host.");
   }
-  if (plan.authorization === "online-request") {
-    if (!revision) {
-      throw new Error("Request authorization requires its admitted revision.");
-    }
-    const model = openShellModelRequestPolicy(plan, options, revision);
-    if (!model || (plan.repositoryGit && !options.repositoryMiddlewareName)) {
-      throw new DependencyUnavailableError("Request-authorized model delivery is unavailable.");
-    }
-    return immutableCopy({
-      network_policies: artifacts,
-      network_middlewares: {
-        ...model.middlewares,
-        ...(plan.repositoryGit &&
-          openShellGitMiddleware(options.repositoryMiddlewareName!, plan.execution.executionId)),
-      },
-    });
-  }
   if (plan.repositoryGit) {
     if (plan.routes.length || !options.repositoryMiddlewareName) {
       throw new DependencyUnavailableError(
@@ -329,7 +267,6 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   readonly implementation = "openshell";
   readonly id: string;
   readonly sourceControl: CredentialSourceControl;
-  readonly requestTimeCredentials?: NonNullable<CredentialProxyDriver["requestTimeCredentials"]>;
   readonly bindExchange?: NonNullable<CredentialProxyDriver["bindExchange"]>;
   readonly bindRepositoryGit?: NonNullable<CredentialProxyDriver["bindRepositoryGit"]>;
   private readonly mandatoryEnforcement?: OpenShellGitRuntime["mandatoryEnforcement"];
@@ -347,16 +284,6 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       repositoryMiddlewareName: { type: "string", minLength: 1 },
       observedHookPreviewWorkspace: { type: "string", maxLength: 19, minLength: 1 },
       authorityScope: { type: "string", const: "execution" },
-      requestCredentials: {
-        type: "object",
-        additionalProperties: false,
-        required: ["audience", "tokenEndpoint", "grpcEndpoint"],
-        properties: {
-          audience: { type: "string", minLength: 1 },
-          tokenEndpoint: { type: "string", minLength: 1 },
-          grpcEndpoint: { type: "string", minLength: 1 },
-        },
-      },
     },
   };
 
@@ -371,7 +298,6 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
             "authorityScope",
             "repositoryMiddlewareName",
             "observedHookPreviewWorkspace",
-            "requestCredentials",
           ].includes(key),
       ) ||
       typeof value.middlewareName !== "string" ||
@@ -379,8 +305,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       (value.observedHookPreviewWorkspace !== undefined &&
         (typeof value.observedHookPreviewWorkspace !== "string" ||
           !/^[a-z0-9](?:[a-z0-9-]{0,17}[a-z0-9])?$/.test(value.observedHookPreviewWorkspace))) ||
-      value.authorityScope !== "execution" ||
-      (value.requestCredentials !== undefined && !validRequestCredentials(value.requestCredentials))
+      value.authorityScope !== "execution"
     ) {
       return [
         {
@@ -400,7 +325,6 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       readonly backend: Backend<OpenShellGateway>;
       readonly sandbox: SandboxDriver;
       readonly exchangeAuthority?: EgressAuthorityConfiguration;
-      readonly tokenGrant?: OpenShellTokenGrantConfiguration;
       readonly bindRepositoryGit?: NonNullable<CredentialProxyDriver["bindRepositoryGit"]>;
       readonly mandatoryEnforcement?: OpenShellGitRuntime["mandatoryEnforcement"];
       readonly previewEnforcement?: OpenShellGitRuntime["previewEnforcement"];
@@ -415,31 +339,9 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       this.bindRepositoryGit = selection.bindRepositoryGit;
     }
     const exchange = selection.exchangeAuthority;
-    if (
-      Boolean(options.requestCredentials) !== Boolean(selection.tokenGrant) ||
-      (options.requestCredentials &&
-        (!exchange ||
-          options.requestCredentials.audience !== exchange.audience ||
-          options.requestCredentials.tokenEndpoint !== selection.tokenGrant?.endpoint ||
-          options.requestCredentials.grpcEndpoint !==
-            openShellRequestAuthorityEndpoint(
-              options.requestCredentials.tokenEndpoint,
-              exchange.port,
-            )))
-    ) {
-      throw new Error("Request credentials require their selected authority and token grant.");
-    }
     if (exchange) {
       this.bindExchange = (createProxy) =>
-        bindOpenShellExchange(
-          exchange,
-          this.sourceControl.sender,
-          createProxy,
-          selection.tokenGrant && {
-            registrationName: options.middlewareName,
-            tokenGrant: selection.tokenGrant,
-          },
-        );
+        bindOpenShellExchange(exchange, this.sourceControl.sender, createProxy);
     }
     if (options.observedHookPreviewWorkspace && selection.previewEnforcement) {
       this.previewEnforcement = selection.previewEnforcement;
@@ -451,20 +353,12 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     this.backend = selection.backend;
     this.sandbox = selection.sandbox;
     this.options = immutableCopy(options);
-    if (options.requestCredentials) {
-      this.requestTimeCredentials = Object.freeze({
-        assertAvailable: (signal: AbortSignal) => this.assertRequestCredentialsAvailable(signal),
-        verifyRequestInstallation: (context, installation, recipient) =>
-          this.verifyRequestInstallation(context, installation, recipient),
-      });
-    }
     this.sourceControl = Object.freeze({
       backend: { id: selection.backend.id, generation: 1 },
       sender: { id: `${selection.backend.id}/supervisor`, generation: 1 },
       resolver: { id: `${selection.id}/resolver`, generation: 1 },
       providers: [
         createOpenAiStaticProvider(),
-        ...(options.requestCredentials ? [createOpenAiRequestProvider()] : []),
         credentialFreeMetadataProvider,
         ...(selection.preparedProviders ?? []),
       ],
@@ -531,150 +425,6 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     });
   }
 
-  private async assertRequestCredentialsAvailable(signal: AbortSignal): Promise<void> {
-    const client = this.backend.client.clientForNamespace("");
-    const info = await client.getGatewayInfo?.(signal);
-    const extensions = info?.extensions;
-    if (
-      !this.options.requestCredentials ||
-      !Array.isArray(extensions) ||
-      !extensions.some((value) => {
-        const item = asRecord(value);
-        return (
-          item?.configured_name === this.options.middlewareName &&
-          (item.kind === "EXTENSION_KIND_SUPERVISOR_MIDDLEWARE" || item.kind === 4) &&
-          item.protocol_major === 1
-        );
-      })
-    ) {
-      throw new RetryLaterError("proxyRegistration");
-    }
-  }
-
-  private async verifyRequestInstallation(
-    context: ProxyRevisionContext,
-    installation: EgressInstallation,
-    recipient: RequestCredentialInput["recipient"],
-  ): Promise<boolean> {
-    const { namespace, revision, signal } = context;
-    if (
-      (recipient.context !== undefined &&
-        recipient.context !== openShellWorkspaceName(namespace)) ||
-      installation.sandboxId !== recipient.id ||
-      !isDeepStrictEqual(installation.plan, context.plan) ||
-      !isDeepStrictEqual(installation.sender, this.sourceControl.sender)
-    ) {
-      return false;
-    }
-    const current = await this.requestInstallation(namespace, revision, signal, recipient.id);
-    // The Worker independently qualified Git before persisting this installation. Model
-    // requests recheck the full effective policy, without adopting its private Git custody.
-    return (
-      current !== undefined &&
-      current.configurationId === installation.enforcement.requestConfigurationId
-    );
-  }
-
-  private async requestInstallation(
-    namespace: Readonly<Namespace>,
-    revision: Readonly<AgentRevision>,
-    signal: AbortSignal,
-    expectedSandboxId: string,
-  ): Promise<EgressInstallation["enforcement"] | undefined> {
-    const plan = revision.egressPlan;
-    if (!plan || plan.authorization !== "online-request") {
-      return undefined;
-    }
-    const expected = openShellModelRequestPolicy(plan, this.options, revision);
-    if (!expected) {
-      return undefined;
-    }
-    await this.assertRequestCredentialsAvailable(signal);
-    const context = { namespace, revision, plan, signal };
-    const ref = this.sandbox.harnessResource!(context);
-    const client = this.backend.client.clientForNamespace(ref.namespaceName);
-    const workspace = openShellWorkspaceName(namespace);
-    const sandbox = await client.getSandbox({ workspace, name: ref.resourceName }, signal);
-    if (
-      !sandbox ||
-      sandbox.id !== expectedSandboxId ||
-      sandbox.workspace !== workspace ||
-      ![2, "SANDBOX_PHASE_READY"].includes(sandbox.phase as string | number)
-    ) {
-      return undefined;
-    }
-    this.assertOwned(sandbox.annotations, context);
-    const provider = await client.getProvider(workspace, expected.provider.name, signal);
-    if (
-      !provider ||
-      provider.name !== expected.provider.name ||
-      provider.workspace !== workspace ||
-      !isDeepStrictEqual(provider.labels, {
-        "app.kubernetes.io/managed-by": "openclaw-enterprise",
-        "openclaw.dev/namespace-id": namespace.id,
-        "openclaw.dev/agent-id": revision.agentId,
-        "openclaw.dev/revision-id": revision.id,
-      }) ||
-      Object.keys(provider.config).length !== 0 ||
-      provider.type !== expected.provider.profile.id ||
-      provider.profileWorkspace !== workspace ||
-      !Array.isArray(sandbox.spec?.providers) ||
-      sandbox.spec.providers.length !== (plan.repositoryGit ? 3 : 2) ||
-      sandbox.spec.providers[0] !== provider.name ||
-      sandbox.spec.providers[1] !== `oce-runtime-${sha256Hex(revision.id, 16)}`
-    ) {
-      return undefined;
-    }
-    const profile = await client.getProviderProfile(workspace, provider.type, signal);
-    verifyModelRequestProfile(profile, expected.provider.profile, workspace);
-    const config = await client.getSandboxConfig?.(workspace, ref.resourceName, signal);
-    verifyModelRequestPolicy(config, expected, workspace);
-    const admission = sandbox.configurationAdmission;
-    if (
-      !config ||
-      !admission ||
-      admission.state !== 2 ||
-      admission.error ||
-      !sandbox.mainProcessInstanceId ||
-      !admission.instance_id ||
-      config.configuration_instance_id !== admission.instance_id ||
-      config.policy_hash !== admission.policy_hash ||
-      config.config_revision !== admission.config_revision ||
-      config.provider_env_revision !== admission.provider_env_revision ||
-      config.version !== plan.generation ||
-      admission.policy_version !== config.version ||
-      typeof config.policy_hash !== "string" ||
-      !/^[a-f0-9]{64}$/.test(config.policy_hash)
-    ) {
-      return undefined;
-    }
-    // Git credential activation and renewal change this cross-provider material epoch.
-    // Require current admission agreement above, but pin policy and identity independently.
-    // Canonicalize protobuf maps, preserving ordered arrays and explicit default presence.
-    const configurationId = sha256Hex(
-      JSON.stringify(
-        wirePolicy(
-          [
-            sandbox.id,
-            sandbox.mainProcessInstanceId,
-            { ...admission, provider_env_revision: undefined },
-            provider,
-            profile,
-            { ...config, provider_env_revision: undefined },
-          ],
-          true,
-        ),
-      ),
-    );
-    return {
-      instanceId: sandbox.mainProcessInstanceId,
-      configurationId,
-      requestConfigurationId: configurationId,
-      policyHash: config.policy_hash,
-      authorityScope: "execution",
-    };
-  }
-
   /** The selected registry and runtime observer must support the requested delivery.
    * Legacy installation-wide preview remains an explicit, separate opt-in. */
   protected assertRepositoryGitProfileAvailable(
@@ -710,12 +460,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       // refuses it first; preparation repeats the refusal so the worker fails it at once.
       throw new RepositoryGitProfileUnsupportedError(context.plan.repositoryGit.bindings.length);
     }
-    if (context.plan.authorization === "online-request") {
-      await this.requestTimeCredentials!.assertAvailable(context.signal);
-    }
-    if (profile || context.plan.authorization !== "online-request") {
-      await this.sourceControl.assertAvailable(context.signal, profile);
-    }
+    await this.sourceControl.assertAvailable(context.signal, profile);
     return immutableCopy({
       plan: context.plan,
       configuration,
@@ -823,15 +568,10 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   }
 
   private async loadedPolicy(context: ProxyRevisionContext, expectedSandboxId?: string) {
-    if (context.plan.authorization === "online-request") {
-      await this.requestTimeCredentials!.assertAvailable(context.signal);
-    }
-    if (context.plan.repositoryGit || context.plan.authorization !== "online-request") {
-      await this.sourceControl.assertAvailable(
-        context.signal,
-        repositoryGitDeliveryProfile(context.plan.repositoryGit),
-      );
-    }
+    await this.sourceControl.assertAvailable(
+      context.signal,
+      repositoryGitDeliveryProfile(context.plan.repositoryGit),
+    );
     const ref = this.sandbox.harnessResource!(context);
     const client = this.backend.client.clientForNamespace(ref.namespaceName);
     const workspace = openShellWorkspaceName(context.namespace);
@@ -853,47 +593,22 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     return {
       status,
       sandboxId,
-      enforcement: async () => {
-        const model =
-          context.plan.authorization === "online-request"
-            ? await this.requestInstallation(
-                context.namespace,
-                context.revision,
-                context.signal,
-                sandboxId,
-              )
-            : undefined;
-        if (context.plan.authorization === "online-request" && !model) {
-          return undefined;
-        }
-        const existing = context.plan.repositoryGit
+      enforcement: () =>
+        context.plan.repositoryGit
           ? context.plan.repositoryGitAuthorization === "request-hook-observed" &&
             context.revision.executionAdmission.version === 6 &&
             workspace === this.options.observedHookPreviewWorkspace
-            ? await this.previewEnforcement?.(context, sandboxId)
+            ? this.previewEnforcement?.(context, sandboxId)
             : this.mandatoryEnforcement
-              ? await this.mandatoryEnforcement(context, sandboxId)
+              ? this.mandatoryEnforcement(context, sandboxId)
               : this.repositoryGitEnforcement(context, status, sandboxId)
-          : (model ??
-            enforcementEvidence(
+          : enforcementEvidence(
               status,
               sandboxId,
               context.plan.generation,
               context.revision.id,
               this.options,
-            ));
-        if (!existing || !model || !context.plan.repositoryGit) {
-          return existing;
-        }
-        // Keep Git's independently verified recipient while fencing the model provider too.
-        return {
-          ...existing,
-          requestConfigurationId: model.configurationId,
-          configurationId: sha256Hex(
-            JSON.stringify([existing.configurationId, model.configurationId]),
-          ),
-        };
-      },
+            ),
     };
   }
 

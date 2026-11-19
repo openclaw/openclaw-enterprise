@@ -9,11 +9,6 @@ export function bindPlatformUnitOfWork(
 ): PlatformUnitOfWork {
   return Object.freeze({
     preparedTokenProof: bindRepository(repositories.preparedTokenProof, lifetime, ["current"]),
-    requestCredentialApprovals: bindRepository(repositories.requestCredentialApprovals, lifetime, [
-      "insert",
-      "approve",
-      "consume",
-    ]),
     egressSendReceipts: bindRepository(repositories.egressSendReceipts, lifetime, [
       "find",
       "insert",
@@ -247,8 +242,6 @@ export function bindPlatformUnitOfWork(
       "findWork",
       "findWorkByKeys",
       "findWorkAttempt",
-      "lockRequestCredentialWork",
-      "requestCredentialCandidateEligible",
       "hasRepositoryExecutionRedeployRequired",
       "hasOutstandingCredentialWithdrawalWork",
       "retryFailedAgentDeletion",

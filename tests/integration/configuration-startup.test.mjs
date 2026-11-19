@@ -273,7 +273,7 @@ test("Installation startup validates the optional external observability URL", a
   await checkExternalObservabilityUrl(t, startupInputs);
 });
 
-registerStartupDiagnosticsCases({ boot, fixture, productionServer, readFile, settled });
+registerStartupDiagnosticsCases({ boot, fixture, readFile, settled });
 test("Installation startup declares native worker support only as a custom runtime image", async (t) => {
   await checkNativeWorkerSupport(t, startupInputs);
 });

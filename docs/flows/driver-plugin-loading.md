@@ -147,11 +147,9 @@ Driver loads current policy for each identity lookup and authorization decision;
 packaged Drivers must do the same, which operator review verifies because the
 runtime cannot enforce package internals. Packaged factories must return their exact server-owned capability
 and identity. The Helm upgrade hook's `installation-check` also runs this loader
-with the chart's listener and routing settings and the API's configuration
-mounts. When the token grant listener is enabled, the check mounts its public
-JWT trust bundle and uses the same bounded loader as API startup. Refusing the
-bundle stops the hook before migration and API replacement. Driver factories
-must defer other environment and file reads past construction.
+with only `NODE_ENV`, `OCC_CONFIG_PATH`, the API's optional `OCC_CONSOLE_THEME_DIR`
+and the Installation, theme and repository mounts, so factories must defer other
+environment and file reads past construction.
 
 Kubernetes-specific image and projected-credential requirements apply only to
 bundled Kubernetes Compute. SSH preflight verifies local SSH files and probes
