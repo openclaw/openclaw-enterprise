@@ -1,7 +1,7 @@
 ---
 created: 2026-11-19
 updated: 2026-11-20
-last_updated_session: authoring-run/ee570ea2-5d17-4170-a37b-0f46c4fbd8ea
+last_updated_session: authoring-run/6cc6b66e-34c0-474e-98fb-7b1a6de5c987
 ---
 
 # Channel egress flow
@@ -78,10 +78,11 @@ acknowledged resources with UID preconditions. Existing dependencies retain
 ownership; incompatible configuration requires the owner's repair.
 
 `scripts/upgrade-channel-egress:prepare` patches actual legacy input files.
-`helm_values` checks for the Helm display header before `prepare` writes a candidate
-or `validate` compares the baseline and candidate. It rejects files that start
-with the header and contain a null first value or invalid YAML. A first key
-with the same text can hold a mapping. `validate` requires the supported source,
+`helm_values` checks the first line for either Helm display heading,
+`USER-SUPPLIED VALUES:` or `COMPUTED VALUES:`, before `prepare` writes a candidate
+or `validate` compares its inputs. If the first line matches, the helper rejects
+a null first value or a YAML parse error. A first key with the same text can
+hold a mapping. `validate` requires the supported source,
 matching target channel fields and an unchanged normalized
 remainder. It permits the existing validated immutable
 Secret reference switch. The shared `scripts/upgrade-production-images` binds
@@ -195,6 +196,7 @@ and remaining acceptance evidence.
 
 ## Changelog
 
+- 2026-11-20 11:06: Reject either Helm display heading in one-off upgrade values (authoring-run/6cc6b66e-34c0-474e-98fb-7b1a6de5c987 - c86f69daac0044e7a4f770e43aead2121b05f8bd)
 - 2026-11-20 10:51: Preserve valid Helm values mappings that share the display heading (authoring-run/ee570ea2-5d17-4170-a37b-0f46c4fbd8ea - d26c1eb9420d4ec22662f390534a73653325d42f)
 - 2026-11-20 10:26: Reject Helm display output in one-off upgrade values (authoring-run/73549c13-fca6-4842-813d-62fa224637ec - 9092839d0c3b9598e85300451f425ac6d3084fe5)
 

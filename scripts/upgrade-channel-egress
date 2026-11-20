@@ -43,12 +43,14 @@ def yaml(path):
 def helm_values(path, option):
     private(path)
     contents = Path(path).read_bytes()
-    has_heading = contents.split(b"\n", 1)[0].rstrip(b" \t\r") == b"USER-SUPPLIED VALUES:"
-    recapture = (
-        f"{option} contains Helm's USER-SUPPLIED VALUES display header. "
-        "Recapture with 'helm get values RELEASE --output yaml' using the same "
-        "kubeconfig, context, namespace, and revision, then prepare the candidate again."
-    )
+    heading = contents.split(b"\n", 1)[0].rstrip(b" \t\r")
+    has_heading = heading in (b"USER-SUPPLIED VALUES:", b"COMPUTED VALUES:")
+    if has_heading:
+        recapture = (
+            f"{option} contains Helm's {heading[:-1].decode('ascii')} display header. "
+            "Recapture with 'helm get values RELEASE --output yaml' using the same "
+            "kubeconfig, context, namespace, and revision, then prepare the candidate again."
+        )
     # Check the first entry before JSON decoding can collapse duplicate keys.
     expression = "[(to_entries | .[0].value), .]" if has_heading else "."
     result = subprocess.run(["yq", "-o=json", expression, "-"], input=contents, capture_output=True, timeout=120)
