@@ -65,11 +65,12 @@ Before relying on a custom Responses endpoint for an installation or upgrade, us
 
 1. Open a saved chat with the Agent, for example through the [OpenClaw TUI](../deploy/production-tui.md).
 2. Ask the Agent to complete a harmless task that requires a real local tool, such as reading a trial-owned workspace file. Confirm the tool ran and the Agent returned the result.
-3. Send a second message in the same chat and confirm that the Agent can use the earlier result. Before an upgrade, retain this chat and repeat the check after cutover.
+3. Send a second message in the same chat and confirm that the Agent can use the earlier result. Save the chat before upgrading. If you use the TUI, save its `TUI_SESSION` value.
+4. After cutover, reopen the same chat and repeat the tool check. If you use the TUI, select the replacement Agent revision's Gateway and pass the saved value to `--session` in place of the newly generated session key. Confirm the Agent can still use the result from before the upgrade.
 
-Codex login establishes authentication setup. The startup model probe checks a limited inference request with tools disabled. A direct Responses request, including one with a `function` tool, does not prove that the endpoint accepts the tool types used by the installed Codex runtime.
+The startup model probe asks for a text-only reply and fails if Codex uses a tool. The request can still advertise tools. A direct Responses request with a `function` tool checks only that tool type.
 
-If the first chat fails with HTTP 400 after a successful deployment, inspect the provider's error classification without recording credentials or chat content. A provider rejection of `tools` type `custom` identifies a request-schema compatibility failure; it is not evidence of a failed login or a failed startup probe. An HTTP 400 alone does not identify the cause. Select an endpoint and model that accept the installed runtime's actual request, then repeat the saved-chat check.
+If the first chat fails with HTTP 400 after a successful deployment, inspect the provider error without recording credentials or chat content. A provider error that rejects tool type `custom` identifies a request-schema mismatch. In that case, select an endpoint and model that accept the installed runtime's tool types, then repeat the saved-chat check.
 
 ## Prepare the Agent
 
