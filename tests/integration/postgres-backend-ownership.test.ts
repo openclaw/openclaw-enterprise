@@ -43,7 +43,7 @@ import {
   createConsoleFixtureTransport,
   fetchLoopback,
 } from "../helpers/console-fixture-transport.ts";
-import { jsonRequestInit } from "../helpers/inject-json.mjs";
+import { jsonRequestInit } from "../helpers/inject-json.ts";
 import {
   alternateWorkspaceId,
   createAccessTokenServiceAccount,
