@@ -1,7 +1,7 @@
 ---
 created: 2026-11-19
 updated: 2026-11-20
-last_updated_session: authoring-run/6cc6b66e-34c0-474e-98fb-7b1a6de5c987
+last_updated_session: authoring-run/1298084c-0ccd-44f1-84ab-4170b4c56d21
 ---
 
 # Channel egress flow
@@ -78,13 +78,15 @@ acknowledged resources with UID preconditions. Existing dependencies retain
 ownership; incompatible configuration requires the owner's repair.
 
 `scripts/upgrade-channel-egress:prepare` patches actual legacy input files.
-`helm_values` checks the first line for either Helm display heading,
-`USER-SUPPLIED VALUES:` or `COMPUTED VALUES:`, before `prepare` writes a candidate
-or `validate` compares its inputs. If the first line matches, the helper rejects
-a null first value or a YAML parse error. A first key with the same text can
-hold a mapping. `validate` requires the supported source,
-matching target channel fields and an unchanged normalized
-remainder. It permits the existing validated immutable
+Before `prepare` writes candidates or `validate` compares inputs, `helm_values`
+reads a private regular file once and checks the first physical line for
+`USER-SUPPLIED VALUES:` or `COMPUTED VALUES:` with optional trailing whitespace.
+For that line shape, it checks the first entry as YAML regardless of the
+filename. An implicit null at that entry or a failure of that YAML check
+triggers recapture guidance. For accepted inputs, `yq` selects the values parser
+by filename and reads the same bytes through standard input.
+`validate` requires the supported source, matching target channel fields and
+an unchanged normalized remainder. It permits the existing validated immutable
 Secret reference switch. The shared `scripts/upgrade-production-images` binds
 this operation mode and helper hashes to recovery evidence and retains its
 live-input, identity, Secret, startup, migration, quiescence and Helm checks.
@@ -195,6 +197,8 @@ and remaining acceptance evidence.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 14:26: Check Helm display headings and parse values from one file read (authoring-run/1298084c-0ccd-44f1-84ab-4170b4c56d21 - d2c019d17f3c4471b6a10579b1e8c9876240689f)
 
 - 2026-11-20 11:06: Reject either Helm display heading in one-off upgrade values (authoring-run/6cc6b66e-34c0-474e-98fb-7b1a6de5c987 - c86f69daac0044e7a4f770e43aead2121b05f8bd)
 - 2026-11-20 10:51: Preserve valid Helm values mappings that share the display heading (authoring-run/ee570ea2-5d17-4170-a37b-0f46c4fbd8ea - d26c1eb9420d4ec22662f390534a73653325d42f)

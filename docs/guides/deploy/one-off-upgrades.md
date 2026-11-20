@@ -61,9 +61,14 @@ user-supplied Helm values to a new file in the protected input directory:
 )
 ```
 
-If the helper reports a Helm display header, keep the earlier capture private
-and repeat the command above into a new private file. Use that file to prepare
-the candidate again.
+If the first line of a Helm display capture is `USER-SUPPLIED VALUES:` or
+`COMPUTED VALUES:` with optional trailing whitespace, the helper checks that
+entry as YAML. It gives recapture guidance for an implicit null at that entry
+or a YAML parse failure during the check. Keep the earlier capture private and
+repeat the command above into a new private `.yaml` file before preparing the
+candidate again. A genuine first entry written in the same bare form with an
+implicit null is indistinguishable from a display heading. Use an explicit
+`null` for that value in a values file you author.
 
 Create candidates outside the checkout. List every Pod and Service CIDR and all
 node addresses, including public node addresses. Built-in private-address
