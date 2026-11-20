@@ -192,21 +192,23 @@ function providerTrustFixture(initialCa: string | undefined) {
       return { state: "serving" };
     },
   };
-  const driver = new KubernetesComputeDriver(
-    routedOptions({
-      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
-      network: {
-        pluginStatusProxySourceCidrs: ["192.0.2.20/32"],
-        providerHarness: {
-          namespace: "provider",
-          podLabels: { app: "provider" },
-          address: "10.43.0.50",
-          port: 8443,
+  const createDriver = () =>
+    new KubernetesComputeDriver(
+      routedOptions({
+        runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+        network: {
+          pluginStatusProxySourceCidrs: ["192.0.2.20/32"],
+          providerHarness: {
+            namespace: "provider",
+            podLabels: { app: "provider" },
+            address: "10.43.0.50",
+            port: 8443,
+          },
         },
-      },
-    }),
-    { sandboxDriver, nodeEnrollment },
-  );
+      }),
+      { sandboxDriver, nodeEnrollment },
+    );
+  let driver = createDriver();
   const predecessor = routedRevision(driver, {
     sandboxDriverId: sandboxDriver.id,
   }) as AgentRevision;
@@ -267,10 +269,12 @@ function providerTrustFixture(initialCa: string | undefined) {
     }
     return result;
   };
-  Object.assign(driver, {
-    apiClients: Promise.resolve(fixture.clients),
-    workspaceNodePairingWaitMs: 0,
-  });
+  const connectDriver = () =>
+    Object.assign(driver, {
+      apiClients: Promise.resolve(fixture.clients),
+      workspaceNodePairingWaitMs: 0,
+    });
+  connectDriver();
   state.connected = true;
   const trustName = (revision: AgentRevision) =>
     `harness-trust-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
@@ -317,6 +321,11 @@ function providerTrustFixture(initialCa: string | undefined) {
     prepareReady,
     activate,
     gatewayWrites: () => gatewayWrites,
+    reinitialize() {
+      // A controller restart reconnects a new Driver to the same persisted objects.
+      driver = createDriver();
+      connectDriver();
+    },
     setCa(value: string | undefined) {
       caBundle = value;
     },
@@ -324,14 +333,20 @@ function providerTrustFixture(initialCa: string | undefined) {
       fixture.objects.delete(fixture.key("ConfigMap", trustName(revision)));
     },
     saveTrust(revision: AgentRevision, value: string) {
+      const manifest = driver["manifest"](
+        "v1",
+        "ConfigMap",
+        trustName(revision),
+        driver["pluginRuntimeOwnership"](revision),
+        target,
+      );
       fixture.save({
-        ...driver["manifest"](
-          "v1",
-          "ConfigMap",
-          trustName(revision),
-          driver["pluginRuntimeOwnership"](revision),
-          target,
-        ),
+        ...manifest,
+        metadata: {
+          ...manifest.metadata,
+          uid: `${trustName(revision)}-persisted-uid`,
+          resourceVersion: "17",
+        },
         immutable: true,
         data: { "ca-bundle.pem": value },
       });
@@ -358,21 +373,27 @@ test("Kubernetes provider Harness retains prepared successor trust through activ
       if (scenario === "pre-existing trust") {
         fixture.saveTrust(fixture.successor, caA);
       }
+      const persistedTrust = structuredClone(fixture.trust(fixture.successor));
+      fixture.reinitialize();
       const writesBeforePreparation = fixture.gatewayWrites();
       assert.equal((await fixture.prepare(fixture.successor)).ready, true);
       assert.equal(fixture.gatewayWrites(), writesBeforePreparation);
       const preparedTrust = structuredClone(fixture.trust(fixture.successor));
+      assert.ok(preparedTrust);
+      if (scenario === "pre-existing trust") {
+        assert.deepEqual(preparedTrust, persistedTrust);
+      }
       if (scenario === "missing trust") {
         fixture.removeTrust(fixture.successor);
       } else {
         fixture.setCa(scenario === "omitted CA" ? undefined : caB);
       }
+      fixture.reinitialize();
       const beforeStatus = fixture.statusCalls.length;
       const beforeWrites = fixture.gatewayWrites();
-      await assert.rejects(
-        fixture.activate(fixture.successor),
-        /immutable Kubernetes ConfigMap|prepared Harness trust/,
-      );
+      await assert.rejects(fixture.activate(fixture.successor), {
+        message: `Refusing invalid prepared Harness trust ${preparedTrust.metadata.name}.`,
+      });
       assert.equal(
         fixture.statusCalls.length,
         beforeStatus,
@@ -380,21 +401,30 @@ test("Kubernetes provider Harness retains prepared successor trust through activ
       );
       assert.equal(fixture.gatewayWrites(), beforeWrites, "the serving Gateway is not replaced");
       assert.deepEqual(fixture.gateway(), serving);
-      assert.deepEqual(preparedTrust?.data, { "ca-bundle.pem": caA });
-      assert.equal(preparedTrust?.immutable, true);
+      assert.deepEqual(preparedTrust.data, { "ca-bundle.pem": caA });
+      assert.equal(preparedTrust.immutable, true);
       assert.deepEqual(
-        fixture.trust(fixture.successor)?.data,
-        scenario === "missing trust" ? undefined : { "ca-bundle.pem": caA },
+        fixture.trust(fixture.successor),
+        scenario === "missing trust" ? undefined : preparedTrust,
       );
       assert.deepEqual(fixture.trust(fixture.predecessor)?.data, { "ca-bundle.pem": caA });
     });
   }
 
   for (const ca of [caA, undefined]) {
-    await t.test(ca === undefined ? "CA-free cutover" : "unchanged CA cutover", async () => {
+    await t.test(ca === undefined ? "CA-free cutover" : "old persisted CA cutover", async () => {
       const fixture = providerTrustFixture(ca);
       await fixture.prepareReady(fixture.predecessor);
       await fixture.activate(fixture.predecessor);
+      if (ca !== undefined) {
+        // This revision's immutable trust predates the new Driver. Exact-match
+        // preparation and activation must preserve that record, including its UID.
+        fixture.saveTrust(fixture.successor, ca);
+      }
+      const persistedTrust = structuredClone(fixture.trust(fixture.successor));
+      assert.equal(persistedTrust?.immutable, ca === undefined ? undefined : true);
+      fixture.reinitialize();
+      assert.deepEqual(fixture.trust(fixture.successor), persistedTrust);
       const beforePreparation = fixture.gatewayWrites();
       assert.equal((await fixture.prepare(fixture.successor)).ready, true);
       assert.equal(fixture.gatewayWrites(), beforePreparation);
@@ -402,10 +432,12 @@ test("Kubernetes provider Harness retains prepared successor trust through activ
         fixture.trust(fixture.successor)?.data,
         ca === undefined ? undefined : { "ca-bundle.pem": ca },
       );
+      assert.deepEqual(fixture.trust(fixture.successor), persistedTrust);
       const beforeStatus = fixture.statusCalls.length;
       await fixture.activate(fixture.successor);
       assert.equal(fixture.statusCalls.length, beforeStatus + 1);
       assert.ok(fixture.gatewayWrites() > beforePreparation);
+      assert.deepEqual(fixture.trust(fixture.successor), persistedTrust);
       assert.equal(
         (fixture.gateway().metadata.annotations as Record<string, string>)[
           "openclaw.dev/agent-revision-id"
@@ -421,56 +453,66 @@ test("Kubernetes provider Harness retains prepared successor trust through activ
       await fixture.prepareReady(fixture.predecessor);
       await fixture.activate(fixture.predecessor);
       const serving = structuredClone(fixture.gateway());
+      const savedTrust = structuredClone(fixture.trust(fixture.predecessor));
+      assert.ok(savedTrust);
+      fixture.reinitialize();
       const beforeStatus = fixture.statusCalls.length;
       const beforeWrites = fixture.gatewayWrites();
       fixture.setCa(scenario === "omitted CA" ? undefined : caB);
-      await assert.rejects(
-        fixture.activate(fixture.predecessor),
-        /immutable Kubernetes ConfigMap|prepared Harness trust/,
-      );
+      await assert.rejects(fixture.activate(fixture.predecessor), {
+        message: `Refusing invalid prepared Harness trust ${savedTrust.metadata.name}.`,
+      });
       assert.equal(fixture.statusCalls.length, beforeStatus);
       assert.equal(fixture.gatewayWrites(), beforeWrites);
       assert.deepEqual(fixture.gateway(), serving);
-      assert.deepEqual(fixture.trust(fixture.predecessor)?.data, { "ca-bundle.pem": caA });
+      assert.deepEqual(fixture.trust(fixture.predecessor), savedTrust);
     });
   }
 });
 
 test("Kubernetes provider Harness retains saved trust during repeated preparation", async (t) => {
   const caA = publicCaBundle(rootCertificates[0]!);
+  const caB = publicCaBundle(rootCertificates[1]!);
+  assert.notEqual(caA, caB);
   for (const gatewayOwner of ["predecessor", "same revision"] as const) {
-    await t.test(`${gatewayOwner} Gateway rejects omitted CA`, async () => {
-      const fixture = providerTrustFixture(caA);
-      await fixture.prepareReady(fixture.predecessor);
-      await fixture.activate(fixture.predecessor);
-      assert.equal((await fixture.prepare(fixture.successor)).ready, true);
-      if (gatewayOwner === "same revision") {
-        await fixture.activate(fixture.successor);
-      }
-      const serving = structuredClone(fixture.gateway());
-      const savedTrust = structuredClone(fixture.trust(fixture.successor));
-      assert.deepEqual(savedTrust?.data, { "ca-bundle.pem": caA });
-      assert.equal(savedTrust?.immutable, true);
-      const beforeStatus = fixture.statusCalls.length;
-      const beforeWrites = fixture.gatewayWrites();
-      fixture.setCa(undefined);
+    for (const scenario of ["changed CA", "omitted CA"] as const) {
+      await t.test(`${gatewayOwner} Gateway rejects ${scenario}`, async () => {
+        const fixture = providerTrustFixture(caA);
+        await fixture.prepareReady(fixture.predecessor);
+        await fixture.activate(fixture.predecessor);
+        assert.equal((await fixture.prepare(fixture.successor)).ready, true);
+        if (gatewayOwner === "same revision") {
+          await fixture.activate(fixture.successor);
+        }
+        const serving = structuredClone(fixture.gateway());
+        const savedTrust = structuredClone(fixture.trust(fixture.successor));
+        assert.ok(savedTrust);
+        assert.deepEqual(savedTrust.data, { "ca-bundle.pem": caA });
+        assert.equal(savedTrust.immutable, true);
+        fixture.reinitialize();
+        const beforeStatus = fixture.statusCalls.length;
+        const beforeWrites = fixture.gatewayWrites();
+        fixture.setCa(scenario === "omitted CA" ? undefined : caB);
 
-      // Re-preparation cannot replace the revision's saved private trust with
-      // system trust, even if this revision already owns the shared Gateway.
-      await assert.rejects(
-        fixture.prepare(fixture.successor),
-        /immutable Kubernetes ConfigMap|prepared Harness trust/,
-      );
-      assert.equal(
-        fixture.statusCalls.length,
-        beforeStatus,
-        "trust refusal precedes authenticated status",
-      );
-      assert.equal(fixture.gatewayWrites(), beforeWrites, "the serving Gateway is not rewritten");
-      assert.deepEqual(fixture.gateway(), serving);
-      assert.deepEqual(fixture.trust(fixture.successor), savedTrust);
-      assert.deepEqual(fixture.trust(fixture.predecessor)?.data, { "ca-bundle.pem": caA });
-    });
+        // Re-preparation cannot replace the revision's saved private trust with
+        // a different CA or system trust, even after the controller restarts.
+        await assert.rejects(fixture.prepare(fixture.successor), {
+          message:
+            scenario === "omitted CA"
+              ? `Refusing invalid prepared Harness trust ${savedTrust.metadata.name}.`
+              : `Refusing invalid immutable Kubernetes ConfigMap ${savedTrust.metadata.name}.`,
+        });
+        assert.equal(
+          fixture.statusCalls.length,
+          beforeStatus,
+          "trust refusal precedes authenticated status",
+        );
+        assert.equal(fixture.gatewayWrites(), beforeWrites, "the serving Gateway is not rewritten");
+        assert.deepEqual(fixture.gateway(), serving);
+        assert.deepEqual(fixture.trust(fixture.successor), savedTrust);
+        assert.deepEqual(fixture.trust(fixture.predecessor)?.data, { "ca-bundle.pem": caA });
+      });
+    }
   }
 
   for (const ca of [caA, undefined]) {
@@ -481,6 +523,8 @@ test("Kubernetes provider Harness retains saved trust during repeated preparatio
         await fixture.prepareReady(fixture.predecessor);
         await fixture.activate(fixture.predecessor);
         assert.equal((await fixture.prepare(fixture.successor)).ready, true);
+        const savedTrust = structuredClone(fixture.trust(fixture.successor));
+        fixture.reinitialize();
         const beforeStatus = fixture.statusCalls.length;
         const beforeWrites = fixture.gatewayWrites();
         assert.equal((await fixture.prepare(fixture.successor)).ready, true);
@@ -490,12 +534,14 @@ test("Kubernetes provider Harness retains saved trust during repeated preparatio
           fixture.trust(fixture.successor)?.data,
           ca === undefined ? undefined : { "ca-bundle.pem": ca },
         );
+        assert.deepEqual(fixture.trust(fixture.successor), savedTrust);
         await fixture.activate(fixture.successor);
         await fixture.prepareReady(fixture.successor);
         assert.deepEqual(
           fixture.trust(fixture.successor)?.data,
           ca === undefined ? undefined : { "ca-bundle.pem": ca },
         );
+        assert.deepEqual(fixture.trust(fixture.successor), savedTrust);
       },
     );
   }
@@ -505,12 +551,19 @@ test("Kubernetes provider Harness retains saved trust during repeated preparatio
     await fixture.prepareReady(fixture.predecessor);
     await fixture.activate(fixture.predecessor);
     assert.equal((await fixture.prepare(fixture.successor)).ready, true);
+    const savedTrust = structuredClone(fixture.trust(fixture.successor));
+    assert.ok(savedTrust);
+    const serving = structuredClone(fixture.gateway());
     fixture.removeTrust(fixture.successor);
+    fixture.reinitialize();
     const beforeStatus = fixture.statusCalls.length;
     const beforeWrites = fixture.gatewayWrites();
-    await assert.rejects(fixture.activate(fixture.successor), /prepared Harness trust/);
+    await assert.rejects(fixture.activate(fixture.successor), {
+      message: `Refusing invalid prepared Harness trust ${savedTrust.metadata.name}.`,
+    });
     assert.equal(fixture.statusCalls.length, beforeStatus);
     assert.equal(fixture.gatewayWrites(), beforeWrites);
+    assert.deepEqual(fixture.gateway(), serving);
     assert.equal(fixture.trust(fixture.successor), undefined);
     // The read-only activation refusal must still permit the preparation
     // lifecycle to restore missing trust for the unchanged provider endpoint.

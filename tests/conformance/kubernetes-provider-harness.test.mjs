@@ -928,7 +928,9 @@ test("provider Harness verified endpoint trust is projected before rollout and i
   });
 
   providerCaBundle = untrusted.caBundle;
-  await assert.rejects(fixture.activate(), /invalid immutable Kubernetes ConfigMap/);
+  await assert.rejects(fixture.activate(), {
+    message: `Refusing invalid prepared Harness trust ${trust.metadata.name}.`,
+  });
   assert.deepEqual(configMap(trust.metadata.name), trust);
 });
 
