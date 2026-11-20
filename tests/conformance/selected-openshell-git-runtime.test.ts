@@ -159,6 +159,12 @@ async function heldGit(t: TestContext) {
   const selected = await selectedV5(t);
   const { f, store, revision, executionId, prepare } = selected;
   const activity = { updates: 0, releases: 0, probes: 0 };
+  const createProvider = f.client.createProvider;
+  f.client.createProvider = async (...args) => {
+    const provider = await createProvider(...args);
+    provider.id = "fixture-held-git-provider";
+    return provider;
+  };
   const prepared = await prepare();
   const lookup = () => f.runtime.lookup({ ...f.identity, bindingId: executionId }, t.signal);
   const entry = await f.runtime["entries"].get(revision.id);
@@ -169,17 +175,48 @@ async function heldGit(t: TestContext) {
   const preview = entry.preview;
   assert.ok(preview);
   assert.equal(preview.mandatory, true);
-  const runtimeProvider: OpenShellPreparedGitProvider = entry.provider;
   const originalBinding = structuredClone(entry.binding);
-  const gitRule = runtimeProvider.previewNetworkRule();
-  assert.ok(gitRule);
-  const gitEndpoint = gitRule.endpoints.find((endpoint) => endpoint.host === "github.com");
-  assert.ok(gitEndpoint);
+  const gitRuleName = "_provider_" + prepared.provider.replaceAll("-", "_");
+  // These owner values come from the OpenShell protobuf and policy_identity.rs
+  // framing for the fixture Provider ID and both endpoints.
+  const gitEndpoint = {
+    host: "github.com",
+    port: 443,
+    protocol: "rest",
+    path: "/example/application.git/**",
+    enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+    access: "NETWORK_ACCESS_PRESET_READ_WRITE",
+    provider_credentialed: true,
+    token_grant_owner:
+      "grant-owner:v1:635fecf5c5e34feba91b4102c557ee2fa1deb6d67e9fd124aa5669d927967fe7",
+  };
   const runtimeFilesProvider = "oce-runtime-" + "a".repeat(16);
   const sourcePolicy = { network_policies: {} };
   const effectivePolicy = {
     network_policies: {
-      [gitRule.name]: gitRule,
+      [gitRuleName]: {
+        name: gitRuleName,
+        binaries: [
+          "/usr/bin/git",
+          "/usr/lib/git-core/git-remote-https",
+          "/usr/lib/git-core/git-remote-http",
+          "/usr/libexec/git-core/git-remote-https",
+          "/usr/libexec/git-core/git-remote-http",
+          "/usr/bin/curl",
+          "/usr/local/bin/node",
+          "/usr/bin/node",
+        ].map((path) => ({ path })),
+        endpoints: [
+          gitEndpoint,
+          {
+            ...gitEndpoint,
+            host: "api.github.com",
+            path: "/repos/example/application/pulls",
+            token_grant_owner:
+              "grant-owner:v1:4f3ae41cf9ed4cc8cdfd7088b586a59acaf5b91339e7eebf42734fde0e760e90",
+          },
+        ],
+      },
       _provider_openai: {
         name: "_provider_openai",
         endpoints: [{ host: "api.openai.com", port: 443 }],
@@ -338,6 +375,7 @@ async function heldGit(t: TestContext) {
       ],
     };
   };
+  const runtimeProvider: OpenShellPreparedGitProvider = entry.provider;
   const rotate = runtimeProvider.rotate.bind(runtimeProvider);
   runtimeProvider.rotate = async (...args) => {
     f.calls.rotate += 1;
@@ -412,6 +450,7 @@ async function heldGit(t: TestContext) {
     client,
     runtimeFilesProvider,
     receiptReads,
+    gitEndpoint,
     environment,
     reconcile,
     sandbox,
@@ -688,6 +727,25 @@ test("fresh repository Git v5 holds and releases one verified launch", async (t)
   };
   await releaseHeldGit(held, t);
 });
+
+test("mandatory Git request-hook release refuses a different Provider's token-grant owner", async (t) => {
+  const { f, entry, gitEndpoint, revision, reconcile, lookup, startupId } = await heldGit(t);
+  // Keep the observed generation and route intact. The owner belongs to a
+  // replacement Provider with the same route, which cannot receive this token.
+  gitEndpoint.token_grant_owner =
+    "grant-owner:v1:67517d5302dd5e512d96f7438278d11f9e751c2375c8e46bbf50bc4466a5099a";
+  await reconcile();
+  assert.equal(entry.installed, undefined);
+  assert.equal(await lookup(), undefined);
+  assert.equal(f.calls.rotate, 0);
+  await assert.rejects(
+    f.runtime.releasePreview(revision.id, startupId, async () =>
+      assert.fail("The unchanged route with a different owner must remain held."),
+    ),
+    /Cannot release this preview startup/,
+  );
+});
+
 test("bundled live Git refuses historical v5 installation scope before any effect", async (t) => {
   const { revision: selected } = await selectedV5(t);
   const installation = validateGitHubRepositoryRegistry(

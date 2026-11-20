@@ -12,6 +12,11 @@ import {
   SandboxGatewayUnavailableError,
 } from "@openclaw-enterprise/occ";
 import { openShellInstallationGitProviderPrefix } from "./openshell-repository-git-evidence.ts";
+import {
+  openShellExpectedProviderRule,
+  verifyOpenShellRepositoryPolicy,
+  type OpenShellExpectedProviderRule,
+} from "./openshell-repository-policy-readback.ts";
 import { isGitHubWireCredential } from "../repo/github/access/wire-credential.ts";
 import {
   openShellProfileEndpoint,
@@ -20,6 +25,11 @@ import {
   type OpenShellProviderResponse,
   type OpenShellSandboxProviderStatus,
 } from "../sandbox/openshell-gateway-client.ts";
+
+export {
+  openShellExpectedProviderRule,
+  type OpenShellExpectedProviderRule,
+} from "./openshell-repository-policy-readback.ts";
 
 /** Operator-owned scope; never populate this from a workload request. */
 export type OpenShellPreparedGitDelivery = OpenShellGitNetworkTarget;
@@ -31,6 +41,8 @@ export type OpenShellPreparedGitScope = OpenShellGitNetworkInput & {
   readonly observedHookPreview?: true;
   readonly sandbox: string;
   readonly executionId: string;
+  /** Sibling Provider rules derived from the same locally selected revision profiles. */
+  readonly expectedProviders?: readonly OpenShellExpectedProviderRule[];
 };
 
 /** Only the credential worker supplies this value; no App signing key or OAuth material. */
@@ -196,6 +208,9 @@ export class OpenShellPreparedGitProvider {
       ...scope,
       binaries: network.binaries,
       ...(repositoryNetworkPolicy === undefined ? {} : { repositoryNetworkPolicy }),
+      ...(scope.expectedProviders === undefined
+        ? {}
+        : { expectedProviders: structuredClone(scope.expectedProviders) }),
     });
     this.fingerprint = createHash("sha256")
       .update(
@@ -581,17 +596,9 @@ export class OpenShellPreparedGitProvider {
     return true;
   }
 
-  /** The provider profile's exact credential-bearing rule, as composed by the stock 0.1.5 gateway. */
+  /** The Provider profile's credential-bearing rule before the Gateway adds token-grant owners. */
   previewNetworkRule() {
-    const name = "_provider_" + this.provider.replaceAll("-", "_");
-    return {
-      name,
-      binaries: this.scope.binaries.map((path) => ({ path })),
-      endpoints: this.profile.endpoints.map((endpoint) => ({
-        ...openShellProfileEndpoint(endpoint),
-        provider_credentialed: true,
-      })),
-    };
+    return openShellExpectedProviderRule(this.provider, this.profile).rule;
   }
 
   /**
@@ -631,6 +638,7 @@ export class OpenShellPreparedGitProvider {
       this.binding(current, binding.profileVersion, binding.expiresAt, binding.credentialState);
       const requestedAt = Date.now();
       const preview = this.scope.observedHookPreview;
+      const repositoryAcl = this.scope.repositoryNetworkPolicy !== undefined;
       const receipt = this.refreshReceipt ?? this.receipt;
       if (
         preview &&
@@ -638,6 +646,7 @@ export class OpenShellPreparedGitProvider {
       ) {
         return;
       }
+      const readStartedAt = performance.now();
       const status = await this.client.getSandboxProviderStatus(
         this.scope.workspace,
         this.scope.sandbox,
@@ -680,6 +689,7 @@ export class OpenShellPreparedGitProvider {
         evaluatedAt > Date.now() + 30_000 ||
         !Number.isFinite(observedAt) ||
         observedAt > evaluatedAt ||
+        (repositoryAcl && evaluatedAt - observedAt >= 15_000) ||
         (preview &&
           (evaluatedAt - observedAt >= 15_000 ||
             evaluatedAt < requestedAt - 5_000 ||
@@ -701,7 +711,8 @@ export class OpenShellPreparedGitProvider {
         // those are pinned above (resource version, profile version; its profile has no
         // refresh) or by the unchanged policy hash, so only another attached provider moved.
         // Re-check this list when the pinned OpenShell changes.
-        return installed !== undefined &&
+        return !repositoryAcl &&
+          installed !== undefined &&
           status.state === "PROVIDER_READINESS_STATE_PENDING" &&
           status.reason === "PROVIDER_READINESS_REASON_SNAPSHOT_MISMATCH" &&
           installed.workspace === binding.workspace &&
@@ -728,7 +739,7 @@ export class OpenShellPreparedGitProvider {
       ) {
         return undefined;
       }
-      return Object.freeze({
+      const currentInstallation = Object.freeze({
         workspace: binding.workspace,
         sandbox: binding.sandbox,
         sandboxId,
@@ -746,6 +757,22 @@ export class OpenShellPreparedGitProvider {
         processInstanceId: observed.processInstanceId,
         networkInstanceId: status.networkInstanceId,
       });
+      if (
+        repositoryAcl &&
+        (!(await verifyOpenShellRepositoryPolicy(
+          this.client,
+          currentInstallation,
+          this.previewNetworkRule(),
+          this.scope.expectedProviders,
+          signal,
+        )) ||
+          // Conservatively charge the full RPC and readback time to the supervisor lease.
+          evaluatedAt - observedAt + (performance.now() - readStartedAt) >= 15_000 ||
+          (binding.credentialState === "active" && !(Date.parse(binding.expiresAt) > Date.now())))
+      ) {
+        return undefined;
+      }
+      return currentInstallation;
     } catch {
       // Read failures are unavailable evidence; never echo gateway diagnostics or token values.
       return undefined;
@@ -779,6 +806,19 @@ export class OpenShellPreparedGitProvider {
       return false;
     }
     this.binding(current, binding.profileVersion, binding.expiresAt);
+    if (
+      this.scope.repositoryNetworkPolicy !== undefined &&
+      !(await verifyOpenShellRepositoryPolicy(
+        this.client,
+        previous,
+        this.previewNetworkRule(),
+        this.scope.expectedProviders,
+        signal,
+      ))
+    ) {
+      return false;
+    }
+    // Observe the same generation after readback so the reads cannot consume its lease.
     return observeOpenShellGitPredecessor(this.client, previous, signal);
   }
 

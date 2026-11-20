@@ -22,6 +22,7 @@ import {
   takeUnloggedRuntimeFields,
 } from "../helpers/openshell-git-runtime.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.ts";
+import { stockGitPolicy } from "../helpers/openshell-stock-git-policy.ts";
 
 // Every field the runtime emits reaches the worker log: the production logger drops what it
 // does not allowlist, so an event asserted only before the logger can be lost (finding 2244).
@@ -213,7 +214,7 @@ async function observedGitRoute(
   f.client.getSandboxConfig = async () => ({
     policy: {
       network_policies: {
-        [gitRule.name]: gitRule,
+        [gitRule.name]: stockGitPolicy(gitRule, f.entry.binding.providerId),
         _provider_openai: {
           name: "_provider_openai",
           endpoints: [{ host: "api.openai.com", port: 443 }],

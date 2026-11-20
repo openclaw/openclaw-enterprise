@@ -102,6 +102,9 @@ function admitSlackProvider(
         mcp: { strict_tool_names: true, versions: [...install.mcpVersions] },
         rules: [{ allow: { method: "ping" } }],
         provider_credentialed: true,
+        // OpenShell 0.1.8 stamps only the composed Provider rule.
+        token_grant_owner:
+          "grant-owner:v1:807c84bef6223e1b5099c083966f40e38bc5bdfd90c20e326eb6265f74298930",
       },
     ],
   };
@@ -219,11 +222,6 @@ export function registerManagedPluginPolicyCases(
       access: "NETWORK_ACCESS_PRESET_READ_WRITE",
       provider_credentialed: true,
     };
-    const providerRule = {
-      name: provider,
-      binaries: [{ path: managedGoogleInstall.binaryPath }],
-      endpoints: [providerEndpoint],
-    };
     const independentEndpoint = {
       host: "independent.example",
       ports: [8443],
@@ -251,7 +249,20 @@ export function registerManagedPluginPolicyCases(
             ep.provider_credentialed = true;
           }
         }
-        routes[provider] = providerRule;
+        routes[provider] = {
+          name: provider,
+          binaries: [{ path: managedGoogleInstall.binaryPath }],
+          endpoints: [
+            {
+              ...providerEndpoint,
+              // Capture the owner for each distinct stock Provider profile.
+              token_grant_owner:
+                providerEndpoint.path === "/**"
+                  ? "grant-owner:v1:b1d97fc283a578c99635a6be0440319ca8d8575c95fda3e6f8174cff1abb8551"
+                  : "grant-owner:v1:e3f04b2384b20e0e84db8307d01dc42c6b9413f9079eb1ff61554b9ea67c9bea",
+            },
+          ],
+        };
       }
       admitSlackProvider(routes, slack.ref, managedSlackInstall);
       routes[independentProvider.name] = independentProvider;
