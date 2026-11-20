@@ -52,21 +52,94 @@ func TestInstallationUpgradeCLIIntegratesProfileAndCanonicalOwner(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	writeProfile := func() {
+	writeJSON := func(path string, value any, mode os.FileMode) {
 		t.Helper()
-		document, err := json.Marshal(input)
+		document, err := json.Marshal(value)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(profile, document, 0o600); err != nil {
+		if err := os.WriteFile(path, document, mode); err != nil {
 			t.Fatal(err)
 		}
 	}
+	writeProfile := func() { writeJSON(profile, input, 0o600) }
 	writeProfile()
+	// Explicit images still work with an owner-only profile in a shared directory.
+	if err := os.Chmod(directory, 0o775); err != nil {
+		t.Fatal(err)
+	}
 	plan, diagnostic, err := executeUpgrade("plan", "--profile", profile)
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err != nil || diagnostic != "" || !strings.Contains(plan, "reviewed-context") || !strings.Contains(plan, images["controller"]) || !strings.Contains(plan, "No cluster contact or writes occurred") {
 		t.Fatalf("plan = %q, diagnostic = %q, error = %v", plan, diagnostic, err)
 	}
+	broker := "registry.example/broker@sha256:" + strings.Repeat("c", 64)
+	destination := "ghcr.io/openclaw/openclaw-enterprise-"
+	controllerDigest := "sha256:" + strings.Repeat("a", 64)
+	runtimeDigest := "sha256:" + strings.Repeat("b", 64)
+	publication := []map[string]string{
+		{"image": "controller", "destination": destination + "controller", "digest": controllerDigest, "sourceSha": revision, "tag": "sha-" + revision, "runId": "12", "attempt": "1"},
+		{"image": "runtime", "destination": destination + "runtime", "digest": runtimeDigest, "sourceSha": revision, "tag": "sha-" + revision, "runId": "12", "attempt": "1"},
+	}
+	const publicationPath = "publication.json"
+	publicationFile := filepath.Join(directory, publicationPath)
+	rejectPublication := func(want string) {
+		t.Helper()
+		plan, diagnostic, err := executeUpgrade("plan", "--profile", profile)
+		var status *ExitStatusError
+		if !errors.As(err, &status) || status.Code != 2 || plan != "" || !strings.Contains(diagnostic, want) {
+			t.Fatalf("expected %q: plan = %q, diagnostic = %q, error = %v", want, plan, diagnostic, err)
+		}
+	}
+	input["imagePublication"] = publicationPath
+	input["images"] = map[string]string{"broker": broker}
+	writeProfile()
+	writeJSON(publicationFile, publication, 0o644)
+	if err := os.Chmod(publicationFile, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	controllerRef := destination + "controller@" + controllerDigest
+	runtimeRef := destination + "runtime@" + runtimeDigest
+	plan, diagnostic, err = executeUpgrade("plan", "--profile", profile)
+	if err != nil || diagnostic != "" || !strings.Contains(plan, controllerRef) || !strings.Contains(plan, runtimeRef) || !strings.Contains(plan, broker) {
+		t.Fatalf("publication plan = %q, diagnostic = %q, error = %v", plan, diagnostic, err)
+	}
+	input["imagePublication"] = "./" + publicationPath
+	writeProfile()
+	rejectPublication("filename in the profile directory")
+	const linkedPublication = "linked-publication.json"
+	if err := os.Symlink(publicationPath, filepath.Join(directory, linkedPublication)); err != nil {
+		t.Fatal(err)
+	}
+	input["imagePublication"] = linkedPublication
+	writeProfile()
+	rejectPublication("without a symbolic link")
+	input["imagePublication"] = publicationPath
+	writeProfile()
+	for _, writable := range []struct {
+		path       string
+		mode, safe os.FileMode
+	}{
+		{publicationFile, 0o666, 0o644},
+		{directory, 0o775, 0o700},
+	} {
+		if err := os.Chmod(writable.path, writable.mode); err != nil {
+			t.Fatal(err)
+		}
+		rejectPublication("protected from other writers")
+		if err := os.Chmod(writable.path, writable.safe); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publication[1]["sourceSha"] = strings.Repeat("0", 40)
+	writeJSON(publicationFile, publication, 0o644)
+	rejectPublication("matching sourceRevision")
+	input["images"] = images
+	writeProfile()
+	rejectPublication("cannot be combined")
+	delete(input, "imagePublication")
 	for _, invalid := range []struct {
 		name, source string
 		images       map[string]string
@@ -181,6 +254,39 @@ func TestInstallationUpgradeCLIIntegratesProfileAndCanonicalOwner(t *testing.T) 
 	_, diagnostic, err = executeUpgrade(append(append(resume, "--auto-approve"), options...)...)
 	if !errors.As(err, &status) || status.Code != 1 || !strings.Contains(diagnostic, "OCC_URL must use HTTPS") {
 		t.Fatalf("approved resume canonical diagnostic = %q, error = %v", diagnostic, err)
+	}
+
+	// Recover the recorded selection even after the operator removes the downloaded artifact.
+	if err := os.Remove(publicationFile); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("python3", "-c", `
+import json, os, sys
+from pathlib import Path
+root = Path(sys.argv[1]).resolve()
+info = root.stat()
+arguments = [sys.argv[5], "reviewed-context", "openclaw-system", "oce",
+             sys.argv[6], sys.argv[7], *sys.argv[2:5], "https://127.0.0.1:9",
+             "occ", "", "", "", sys.argv[8]]
+os.umask(0o077)
+(root / "parameters.json").write_text(json.dumps({
+    "evidenceDirectory": {"path": str(root), "st_dev": info.st_dev, "st_ino": info.st_ino},
+    "arguments": arguments, "profiled": True,
+}))
+`, evidence, controllerRef, runtimeRef, revision, filepath.Join(directory, "kubeconfig"),
+		filepath.Join(rendered, "values.yaml"), filepath.Join(rendered, "installation.yaml"), broker)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("write saved upgrade selections: %s: %v", output, err)
+	}
+	if output, err := exec.Command("python3", "scripts/upgrade-preflight-state.py", "init", evidence).CombinedOutput(); err != nil {
+		t.Fatalf("bind saved selections to the run: %s: %v", output, err)
+	}
+	input["imagePublication"] = publicationPath
+	input["images"] = map[string]string{"broker": broker}
+	writeProfile()
+	plan, diagnostic, err = executeUpgrade(resume...)
+	if !errors.As(err, &status) || status.Code != 2 || !strings.Contains(diagnostic, "--auto-approve") || !strings.Contains(plan, controllerRef) || !strings.Contains(plan, runtimeRef) {
+		t.Fatalf("publication resume plan = %q, diagnostic = %q, error = %v", plan, diagnostic, err)
 	}
 	t.Chdir(filepath.Join(repository, "internal"))
 	_, _, err = executeUpgrade("status", evidence)

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-19"
-last_updated_session: "authoring-run/aed0a2bc-9691-4859-8bd6-1e7b3549c9b4"
+updated: "2026-11-20"
+last_updated_session: "authoring-run/50e3a914-60d2-4d1e-9fbd-8bb9fc214ad5"
 ---
 
 # Production image upgrade flow
@@ -78,15 +78,16 @@ graph TD
 
 `internal/occcli/installation_upgrade.go:installationUpgradeCommand` runs
 `scripts/upgrade-production:main`. `report_status` compares two local marker scans.
-Plan validates profile inputs, images and checkout commit. The adapter uses
-`kubectl` to decode the selected HTTPS target, binds explicit CA bytes and previews
-trust. Apply and resume require approval and recheck bound inputs before dispatch.
+Plan checks inputs, images and checkout HEAD. `profile_input` opens the profile
+and sibling receipt through one directory descriptor. `original_image_pair`
+reads journal-bound digests for recovery. The adapter decodes the HTTPS target
+with `kubectl`, binds explicit CA bytes and rechecks inputs before dispatch.
 
-Both entrypoints refuse active kubectl preferences. If preferences are enabled
-and no file is active, the native helper snapshots the kubeconfig and refuses
-selected exec credentials before disabling command defaults for live clients.
-Approved snapshots also refuse selected `auth-provider` entries. Profiled
-recovery rechecks the recorded target and explicit CA binding.
+Both entrypoints refuse active kubectl preferences. With preferences enabled
+without an active file, the native helper snapshots kubeconfig, refuses selected
+exec credentials and disables defaults for live clients. Approved snapshots
+refuse selected `auth-provider` entries. Profiled recovery rechecks recorded
+target, explicit CA and parameters under lock.
 
 Before `scripts/upgrade-production-images:prepare_upgrade`, refuse other Helm
 release stores, [Helm overrides](../guides/deploy/production-upgrade.md), source
@@ -365,6 +366,8 @@ requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 11:52: Trace sibling receipt selection and credential rules. (authoring-run/50e3a914-60d2-4d1e-9fbd-8bb9fc214ad5 - d215c0d95c2336244519eca4968df04ec4376ae2)
 
 - 2026-11-19 19:15: Trace the stopped writers check before Helm retry. (authoring-run/aed0a2bc-9691-4859-8bd6-1e7b3549c9b4 - d976da889bdeca6e9208821a5b4ea79a49033b0f)
 
