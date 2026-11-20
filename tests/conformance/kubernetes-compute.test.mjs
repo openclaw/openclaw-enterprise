@@ -68,10 +68,7 @@ import {
   labelSelectorLabels,
   selectorMatches,
 } from "../helpers/kubernetes-routed-scenarios.mjs";
-import {
-  providerReadinessFixture,
-  supervisorPeerLabels,
-} from "../fixtures/kubernetes-provider-readiness.mjs";
+import { supervisorPeerLabels } from "../fixtures/kubernetes-provider-readiness.mjs";
 import { writeSafeKubeconfig, writeUnsafeKubeconfigs } from "../helpers/unsafe-kubeconfigs.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { ControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -6579,26 +6576,8 @@ test("the OpenShell gateway allowlist admits every label Compute puts on a Harne
   );
 });
 
-function providerObservationFixture() {
-  const fixture = providerReadinessFixture();
-  /**
-   * @type {Parameters<typeof providerObservation.checkExactProviderHarnessReadiness>[1] & {
-   *   activate(): Promise<void>
-   * }}
-   */
-  const observation = {
-    labels: fixture.labels,
-    pod: fixture.pod,
-    setObservation: fixture.setObservation,
-    ready: fixture.ready,
-    activate: () =>
-      fixture.driver.activateRevision(fixture.revision, authContext(fixture.revision)),
-  };
-  return observation;
-}
-
 test("provider Harness readiness requires exactly one live matching Pod", async (t) => {
-  await providerObservation.checkExactProviderHarnessReadiness(t, providerObservationFixture());
+  await providerObservation.checkExactProviderHarnessReadiness(t);
 });
 
 test(
@@ -6612,8 +6591,7 @@ test(
 );
 
 test("provider Harness requires its assigned network profile before readiness and activation", async () => {
-  const fixture = providerObservationFixture();
-  await providerObservation.checkProviderAssignedNetworkProfile(fixture, fixture.activate);
+  await providerObservation.checkProviderAssignedNetworkProfile();
 });
 
 test("provider Harness public trust rejects invalid material and composes with execution trust", async (t) => {
@@ -8282,11 +8260,7 @@ test("Namespace provider routing grants exact revision ingress peers and retires
     },
   );
   driver.apiClients = Promise.resolve({ objects: {} });
-  const revision = routedRevision(driver, {
-    id: "new-revision",
-    agentId: "namespace-agent",
-    sandboxDriverId: "namespace-provider",
-  });
+  const revision = routedRevision(driver, providerObservation.namespaceProviderRevisionOverrides);
   const namespace = { name: kubernetesNamespaceName(revision.namespaceId), plane: "control" };
   const render = async (preparation) =>
     (await driver.agentNetworkPoliciesWithPeers(revision, namespace, preparation)).find(

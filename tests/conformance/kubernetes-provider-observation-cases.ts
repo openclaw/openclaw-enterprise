@@ -1130,7 +1130,44 @@ type ProviderReadinessFixture = {
   pod(name: string, ready?: string): unknown;
   setObservation(value: unknown): void;
   ready(): Promise<boolean>;
+  activate(): Promise<void>;
 };
+type ProviderReadinessSource = Omit<ProviderReadinessFixture, "activate"> & {
+  driver: Pick<ReturnType<typeof providerReadinessFixture>["driver"], "activateRevision">;
+  revision: AgentRevision;
+  namespace: string;
+};
+
+function providerObservationFixture(): ProviderReadinessFixture {
+  const fixture: ProviderReadinessSource = providerReadinessFixture();
+  return {
+    labels: fixture.labels,
+    pod: fixture.pod,
+    setObservation: fixture.setObservation,
+    ready: fixture.ready,
+    activate: () => {
+      const auth = fixture.revision.harnessAuth;
+      assert.ok(auth.method === "api_key" && auth.source.kind === "secret");
+      const expected: ResolvedHarnessAuth = {
+        ...auth,
+        backendRef: {
+          namespaceName: fixture.namespace,
+          name: "occ-model-key",
+          key: "value",
+          uid: "model-secret-uid",
+        },
+      };
+      const envelope: unknown = authContext(fixture.revision);
+      const resolved = resourceRecord(envelope, "resolved auth context").harnessAuth;
+      assertResolvedAuth(resolved, expected);
+      return fixture.driver.activateRevision(fixture.revision, {
+        harnessAuth: resolved,
+        secretEnvironment: [],
+      });
+    },
+  };
+}
+
 type MutableProviderPod = {
   apiVersion?: string;
   kind?: string;
@@ -1143,20 +1180,39 @@ type MutableProviderPod = {
   status?: { conditions?: { type: string; status: string }[] };
 };
 
+function assertReadinessPod(value: unknown): asserts value is MutableProviderPod {
+  const pod = resourceRecord(value, "provider Pod");
+  assert.ok(pod.apiVersion === undefined || typeof pod.apiVersion === "string");
+  assert.ok(pod.kind === undefined || typeof pod.kind === "string");
+  const metadata = resourceRecord(pod.metadata, "provider Pod metadata");
+  assert.ok(typeof metadata.name === "string" && typeof metadata.namespace === "string");
+  if (metadata.labels !== undefined) {
+    resourceLabels(metadata.labels, "provider Pod labels");
+  }
+  const timestamp = metadata.deletionTimestamp;
+  assert.ok(timestamp === undefined || timestamp instanceof Date || typeof timestamp === "string");
+  if (pod.status !== undefined) {
+    const status = resourceRecord(pod.status, "provider Pod status");
+    if (status.conditions !== undefined) {
+      for (const condition of resourceRecords(status.conditions, "provider Pod conditions")) {
+        assert.ok(typeof condition.type === "string" && typeof condition.status === "string");
+      }
+    }
+  }
+}
+
 function readinessPod(
   fixture: ProviderReadinessFixture,
   name: string,
   ready?: string,
 ): MutableProviderPod {
   const pod = fixture.pod(name, ready);
-  assertEndpointPod(pod);
+  assertReadinessPod(pod);
   return pod;
 }
 
-export async function checkExactProviderHarnessReadiness(
-  t: TestContext,
-  fixture: ProviderReadinessFixture,
-) {
+export async function checkExactProviderHarnessReadiness(t: TestContext) {
+  const fixture = providerObservationFixture();
   const ready = readinessPod(fixture, "harness-ready");
   const unready = readinessPod(fixture, "harness-starting", "False");
   const terminating = readinessPod(fixture, "harness-terminating");
@@ -1228,10 +1284,8 @@ export async function checkExactProviderHarnessReadiness(
   }
 }
 
-export async function checkProviderAssignedNetworkProfile(
-  fixture: ProviderReadinessFixture,
-  activate: () => Promise<void>,
-) {
+export async function checkProviderAssignedNetworkProfile() {
+  const fixture = providerObservationFixture();
   // The provider receives the provider-fenced profile, derived from the ordinary template.
   assert.equal(
     resourceLabels(fixture.labels, "fixture Harness labels")["openclaw.dev/network-profile"],
@@ -1253,9 +1307,15 @@ export async function checkProviderAssignedNetworkProfile(
     }
     fixture.setObservation({ items: [pod] });
     await assert.rejects(fixture.ready(), /invalid or incomplete provider Harness Pod list/);
-    await assert.rejects(activate(), /invalid or incomplete provider Harness Pod list/);
+    await assert.rejects(fixture.activate(), /invalid or incomplete provider Harness Pod list/);
   }
 }
+
+export const namespaceProviderRevisionOverrides = {
+  id: "new-revision",
+  agentId: "namespace-agent",
+  sandboxDriverId: "namespace-provider",
+} satisfies Partial<AgentRevision>;
 
 export function checkNamespaceProviderGrants(
   value: unknown,
