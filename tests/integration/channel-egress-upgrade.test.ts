@@ -205,6 +205,21 @@ test("one-off rejects Helm values copied from display output", async (t) => {
     });
   }
 
+  await t.test(
+    "prepare preserves a values mapping whose first key matches the heading",
+    async () => {
+      const inputPath = join(f.directory, "operator-values.yaml");
+      const out = join(f.directory, "operator-candidate");
+      await writeFile(inputPath, `USER-SUPPLIED VALUES:\n  operatorNote: keep\n${baseline}`, {
+        mode: 0o600,
+      });
+      const result = f.run("prepare", ["--values", inputPath, "--out-dir", out]);
+      assert.equal(result.status, 0, result.stderr);
+      const values = JSON.parse(await readFile(join(out, "values.yaml"), "utf8"));
+      assert.deepEqual(values["USER-SUPPLIED VALUES"], { operatorNote: "keep" });
+    },
+  );
+
   const out = join(f.directory, "prepared");
   const prepared = f.run("prepare", ["--out-dir", out]);
   assert.equal(prepared.status, 0, prepared.stderr);

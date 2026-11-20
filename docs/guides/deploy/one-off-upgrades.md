@@ -61,9 +61,9 @@ user-supplied Helm values to a new file in the protected input directory:
 )
 ```
 
-If an earlier capture starts with `USER-SUPPLIED VALUES:`, keep it private and
-repeat the capture into a new private file. Use that file to prepare the
-candidate again.
+If the helper reports a Helm display header, keep the earlier capture private
+and repeat the command above into a new private file. Use that file to prepare
+the candidate again.
 
 Create candidates outside the checkout. List every Pod and Service CIDR and all
 node addresses, including public node addresses. Built-in private-address
