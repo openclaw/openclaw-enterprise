@@ -25,8 +25,12 @@ If discovery is unavailable or incomplete, the operator must verify the explicit
 list independently. Both verify CRD establishment, controller readiness and version, patch-policy configuration,
 GatewayClass acceptance, and actual Envoy patch delivery. The temporary probe
 uses a unique namespace and private ClusterIP routing. Cleanup deletes only the
-probe resources with their observed UIDs. Retain the reported probe name if
-cleanup fails. Disabled channel candidates exit without dependency changes.
+probe resources with their observed UIDs. It waits for the namespace and its
+Envoy Pods to disappear before removing the NetworkPolicy. If the script
+loses a create response, it can recover that object's UID
+when its annotation matches the create attempt. The operator needs create,
+read, watch, and delete access for the probe namespace and its NetworkPolicy.
+Disabled channel candidates exit without dependency changes.
 
 If NetworkPolicy isolates the existing Envoy controller Pods, work with the
 controller's owner before starting the probe:
@@ -47,11 +51,13 @@ controller's owner before starting the probe:
    permanent fleet rule.
 
 A successful probe verifies patch delivery for its own Gateway. Check the
-permanent fleet rule before starting an upgrade. If a create or cleanup result
-is uncertain, confirm the previous command has stopped. Inspect the reserved
-namespace and the NetworkPolicy with the same name in the Envoy namespace.
-Verify ownership before reconciling either resource, then reuse the reservation
-after both resources are absent.
+permanent fleet rule before starting an upgrade. If the script reports an
+unsettled create or cleanup, retain the probe name and the reported create attempts.
+Confirm that the command has stopped, then reconcile the create or delete with
+the Kubernetes operator. Inspect the reserved namespace and the NetworkPolicy
+with the same name in the Envoy namespace. Verify ownership before removing
+either resource. Reuse the name after both operations have settled and both
+resources are absent.
 
 The local Kubernetes launcher uses the pinned controller setup and enables patch
 policies before it creates channel resources. It discovers node Pod CIDRs, cluster

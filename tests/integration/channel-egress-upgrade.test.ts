@@ -194,6 +194,7 @@ test("an ingress owner can admit the exact probe fleet before the dependency che
   ]);
   assert.equal(prepared.status, 0, prepared.stderr);
   const log = join(f.directory, "kubectl.jsonl");
+  const state = join(f.directory, "kubectl-state.json");
   const probe = "oce-channel-probe-2918ac095bc0";
   await writeCommand(
     f.directory,
@@ -201,7 +202,9 @@ test("an ingress owner can admit the exact probe fleet before the dependency che
     `import json, os, sys
 from pathlib import Path
 args = sys.argv[6:]
+namespace = None
 if args[0] == "-n":
+    namespace = args[1]
     args = args[2:]
 request = None
 if args[:2] == ["create", "-f"]:
@@ -209,11 +212,36 @@ if args[:2] == ["create", "-f"]:
 elif args[:2] == ["delete", "--raw"]:
     request = json.loads(Path(args[-1]).read_text())
 with open(os.environ["TEST_KUBE_CALLS"], "a") as log:
-    print(json.dumps([args, request]), file=log)
-if args[:2] == ["create", "namespace"]:
-    if os.environ["TEST_EXISTING_NAMESPACE"] == "true":
+    print(json.dumps([args, request, namespace]), file=log)
+state_path = Path(os.environ["TEST_KUBE_STATE"])
+state = json.loads(state_path.read_text())
+fault = os.environ["TEST_KUBE_FAULT"]
+kind = request["kind"] if request and args[0] == "create" else None
+if args[:2] == ["create", "namespace"] or kind == "Namespace":
+    metadata = request["metadata"] if request else {"name": args[2]}
+    if fault == "foreign-namespace":
+        state["namespace"] = {"metadata": {"name": metadata["name"], "uid": "foreign-uid"}}
+        state_path.write_text(json.dumps(state))
         sys.exit(1)
-    response = {"metadata": {"name": args[2], "uid": "probe-namespace-uid"}}
+    response = {"metadata": {**metadata, "uid": "probe-namespace-uid"}}
+    state["namespace"] = response
+    state_path.write_text(json.dumps(state))
+    if fault == "namespace-create":
+        sys.exit(1)
+elif kind == "NetworkPolicy":
+    response = {"metadata": {**request["metadata"], "uid": "probe-egress-uid"}}
+    if fault == "foreign-policy":
+        state["networkpolicy"] = {"metadata": {"name": request["metadata"]["name"],
+                                                "namespace": request["metadata"]["namespace"], "uid": "foreign-uid",
+                                                "annotations": {"openclaw.dev/channel-probe-attempt": state["namespace"]["metadata"]["annotations"]["openclaw.dev/channel-probe-attempt"]}}}
+        state_path.write_text(json.dumps(state))
+        sys.exit(1)
+    state["networkpolicy"] = response
+    state_path.write_text(json.dumps(state))
+    if fault == "policy-create":
+        sys.exit(1)
+elif args[0] == "get" and args[1] in state and args[2] == os.environ["TEST_PROBE_NAME"]:
+    response = state[args[1]]
 elif args[:2] == ["get", "deployment"]:
     response = {"spec": {"template": {"spec": {"containers": [{"image": "envoyproxy/gateway:v1.6.7"}]}}}}
 elif args[:2] == ["get", "configmap"]:
@@ -223,8 +251,6 @@ elif args[:2] == ["get", "gatewayclass"]:
 elif args[:2] == ["get", "pods"]:
     # Stop before port-forward. This test checks fleet identity and resource ownership.
     response = {"items": []}
-elif request and request["kind"] == "NetworkPolicy":
-    response = {"metadata": {"uid": "probe-egress-uid"}}
 else:
     response = {}
 print(json.dumps(response))
@@ -235,9 +261,13 @@ print(json.dumps(response))
     ...process.env,
     PATH: commandPath(f.directory),
     TEST_KUBE_CALLS: log,
+    TEST_KUBE_STATE: state,
+    TEST_PROBE_NAME: probe,
   };
-  const run = (name: string, existing = false) =>
-    spawnSync(
+  const run = async (name: string, fault = "none") => {
+    await writeFile(state, "{}");
+    await writeFile(log, "");
+    return spawnSync(
       "python3",
       [
         "scripts/setup-channel-egress",
@@ -253,20 +283,29 @@ print(json.dumps(response))
         "--probe-name",
         name,
       ],
-      { encoding: "utf8", env: { ...env, TEST_EXISTING_NAMESPACE: String(existing) } },
+      { encoding: "utf8", env: { ...env, TEST_KUBE_FAULT: fault } },
     );
+  };
   const calls = async () =>
     (await readFile(log, "utf8"))
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line));
-  const failed = run(probe);
+  const failed = await run(probe);
   assert.equal(failed.status, 1, failed.stderr);
   assert.match(failed.stderr, /probe expected exactly one owned Envoy Pod/u);
   const recorded = await calls();
   const creates = recorded.filter(([args]) => args[0] === "create");
-  assert.deepEqual(creates[0][0].slice(0, 3), ["create", "namespace", probe]);
   assert.equal(creates.length, 3);
+  assert.equal(creates[0][1].kind, "Namespace");
+  assert.equal(creates[0][1].metadata.name, probe);
+  const attemptAnnotation = "openclaw.dev/channel-probe-attempt";
+  assert.match(creates[0][1].metadata.annotations[attemptAnnotation], /^[a-f0-9]{32}$/u);
+  assert.match(creates[1][1].metadata.annotations[attemptAnnotation], /^[a-f0-9]{32}$/u);
+  assert.notEqual(
+    creates[0][1].metadata.annotations[attemptAnnotation],
+    creates[1][1].metadata.annotations[attemptAnnotation],
+  );
   assert.deepEqual(creates[1][1].spec.podSelector.matchLabels, {
     "gateway.envoyproxy.io/owning-gateway-name": probe,
     "gateway.envoyproxy.io/owning-gateway-namespace": probe,
@@ -281,19 +320,81 @@ print(json.dumps(response))
     recorded.filter(([args]) => args[0] === "delete").map(([, data]) => data.preconditions.uid),
     ["probe-namespace-uid", "probe-egress-uid"],
   );
+  const teardown = (records: Awaited<ReturnType<typeof calls>>) =>
+    records
+      .filter(([args]) => args[0] === "delete" || args.includes("--for=delete"))
+      .map(([args, data, namespace]) =>
+        args[0] === "delete" ? [args[0], data.preconditions.uid] : [args[1], namespace],
+      );
+  const settledProbe = [
+    ["delete", "probe-namespace-uid"],
+    ["namespace", null],
+    ["pods", "existing-envoy"],
+    ["delete", "probe-egress-uid"],
+    ["networkpolicy", "existing-envoy"],
+  ];
+  assert.deepEqual(teardown(recorded), settledProbe);
 
-  await writeFile(log, "");
-  const invalid = run("kube-system");
+  const invalid = await run("kube-system");
   assert.equal(invalid.status, 2, invalid.stderr);
   assert.match(invalid.stderr, /oce-channel-probe- followed by 12 lowercase hexadecimal digits/u);
   assert.equal(await readFile(log, "utf8"), "");
 
-  const collision = run(probe, true);
+  const collision = await run(probe, "foreign-namespace");
   assert.equal(collision.status, 1, collision.stderr);
+  assert.match(collision.stderr, /Unsettled Namespace create/);
   // A failed namespace create grants no authority over the resources of its current owner.
   assert.deepEqual(
-    (await calls()).filter(([args]) => args[0] === "create" || args[0] === "delete"),
-    [[["create", "namespace", probe, "-o", "json"], null]],
+    (await calls())
+      .filter(([args]) => args[0] === "create" || args[0] === "delete")
+      .map(([args, data]) => [args[0], data.kind]),
+    [["create", "Namespace"]],
+  );
+  // The server may have committed either create before the client reported failure.
+  for (const [fault, kind, namespace, uids] of [
+    ["namespace-create", "namespace", null, ["probe-namespace-uid"]],
+    [
+      "policy-create",
+      "networkpolicy",
+      "existing-envoy",
+      ["probe-namespace-uid", "probe-egress-uid"],
+    ],
+  ] as const) {
+    const interrupted = await run(probe, fault);
+    assert.equal(interrupted.status, 1, interrupted.stderr);
+    assert.match(interrupted.stderr, /kubectl failed/u);
+    const attempts = await calls();
+    assert.ok(
+      attempts.some(
+        ([args, , observedNamespace]) =>
+          args[0] === "get" &&
+          args[1] === kind &&
+          args[2] === probe &&
+          observedNamespace === namespace,
+      ),
+      fault,
+    );
+    assert.deepEqual(
+      attempts.filter(([args]) => args[0] === "delete").map(([, data]) => data.preconditions.uid),
+      uids,
+      fault,
+    );
+    assert.equal(attempts.filter(([args]) => args[0] === "create").length, uids.length, fault);
+    assert.deepEqual(
+      teardown(attempts),
+      kind === "networkpolicy" ? settledProbe : settledProbe.slice(0, 3),
+      fault,
+    );
+  }
+  const foreignPolicy = await run(probe, "foreign-policy");
+  assert.equal(foreignPolicy.status, 1, foreignPolicy.stderr);
+  assert.match(foreignPolicy.stderr, /Unsettled NetworkPolicy create/);
+  assert.deepEqual(
+    (await calls())
+      .filter(([args]) => args[0] === "delete")
+      .map(([, data]) => data.preconditions.uid),
+    ["probe-namespace-uid"],
+    "the Namespace marker must not establish policy ownership",
   );
 });
 
