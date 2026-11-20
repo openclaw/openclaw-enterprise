@@ -318,7 +318,7 @@ const authoredScenarios = {
       "Check text, search input, buttons, and the current navigation item. The console stays light with either system appearance preference.",
       "Click an open area of an Agent row, such as the padding in Execution mode or Created. The same Agent detail opens as when clicking its name. Use ← Agents and repeat at phone width.",
       "Tab to an Agent name and press Enter. Keyboard navigation still opens that Agent.",
-      "Open a current-version or latest-deployment link: it opens that version. Stop and Delete open their confirmations and keep the list visible; Cancel returns to the row. Disabled icons do not open the Agent.",
+      "Open a current-version or latest-deployment link to inspect that version. Stop and Delete open confirmations. Dismissing either returns you to the row, and disabled icons keep you on the list.",
       "Drag across an Agent ID to select text. Releasing the mouse keeps the list visible so the ID can be copied.",
       "Open Namespaces and return to Agents; the sidebar stays mounted while the destination data loads.",
       "At a narrow viewport, use Open navigation and choose a page; the drawer must close and return focus to the page.",
@@ -539,7 +539,7 @@ const authoredScenarios = {
     description:
       "The row's Stop icon opens the same confirmation as Agent detail, including when interrupted work can continue and where to cancel a reply.",
     steps: [
-      "Cancel the dialog and check focus returns to the Stop icon.",
+      "Select Go back and check focus returns to the Stop icon.",
       "Open it again and select Stop Agent. The row shows Stop requested, its Stop icon is disabled but keeps focus with Stop requested as its description, and the list stays open.",
       "In Populated, never-deployed Agents show no Stop icon, as on Agent detail.",
     ],
@@ -700,7 +700,7 @@ const authoredScenarios = {
     ],
     actions: [{ selector: '[aria-label="Stop Research assistant"]', click: true }],
     description:
-      "The story opens Stop from the list before the delayed permission answer says no. The confirmation explains the restriction and focuses Cancel.",
+      "Stop opens before the delayed permission response. When access is denied, the dialog explains why and focuses Go back.",
     steps: [
       "Tab to Stop Agent. It takes focus and looks unavailable, described by the restriction; Enter, Space or a click sends nothing (finding 2935).",
     ],
@@ -2188,8 +2188,8 @@ const authoredScenarios = {
     actions: [click("Stop Agent")],
     description: "The story opens Stop before the delayed permission summary answers no.",
     steps: [
-      "Watch the open confirmation explain the restriction, make Stop Agent unavailable, and move focus to Cancel. Tab to it: it takes focus, described by the restriction, and Enter, Space or a click sends nothing (finding 2935).",
-      "Cancel or press Escape. The page explains why Stop is unavailable, without sending a stop request; Stop Agent stays in the Tab order, described by that note.",
+      "Check that the restriction replaces the Stop guidance, disables Stop Agent and moves focus to Go back. Tab to Stop Agent and check that the restriction describes it. Enter, Space and a click should send nothing.",
+      "Select Go back or press Escape. The page explains why Stop Agent is unavailable and keeps it in the Tab order.",
     ],
   } satisfies LocalScenario,
   ...agentDetailScenarios.dangerZone,
@@ -2200,7 +2200,7 @@ const authoredScenarios = {
     deployed: true,
     actions: [click("Stop Agent")],
     description:
-      "Review the shutdown request, what can continue after deployment, and how to cancel a reply in the Agent's chat.",
+      "Review when the Agent goes offline, what may resume when you deploy again, and what stays saved. The note explains how to cancel a reply in chat.",
     steps: [
       "Confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the version detail does not reload.",
       "For the revision clearing after Stop, use Flows / Stop an Agent.",
@@ -2215,7 +2215,7 @@ const authoredScenarios = {
     actions: [click("Stop Agent"), { selector: ".agent-stop-dialog button.danger", click: true }],
     description:
       "The Stop request is held, so the confirmation stays on Stopping…. The button is busy, not unavailable: it sets aria-busy and shows the progress pointer (finding 1927).",
-    steps: ["Hover Stopping…: the pointer is progress, not not-allowed, and Cancel is disabled."],
+    steps: ["Check the progress pointer on Stopping… and the disabled Go back button."],
     gap: "The request never answers; this story does not verify a stop.",
   } satisfies LocalScenario,
   stopRequested: {
@@ -2252,7 +2252,7 @@ const authoredScenarios = {
     stopped: true,
     actions: [click("Request Stop again")],
     description:
-      "An explicit repeated Stop preserves the selected version. Its confirmation says the Agent is already requested to stop and that this sends the request again, not that it interrupts a running gateway (finding D815). Cancel or Escape returns keyboard focus to Request Stop again.",
+      "Read when to repeat a stop request. Go back and Escape return focus to Request Stop again.",
   } satisfies LocalScenario,
   stopNoSelection: {
     group: "Components/Stop Agent",
@@ -2349,7 +2349,7 @@ const authoredScenarios = {
       "Confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the current version still has file editors.",
       "Select Refresh stop status. The fixture clears the current version.",
       "Open Workspace files. It explains why the files are unavailable. Return to Configuration.",
-      "Focus Request Stop again, press Enter, then Cancel or Escape. Focus returns to Request Stop again without submitting. Reopen and confirm if recovery is needed; refresh an uncertain outcome before retrying.",
+      "Focus Request Stop again and press Enter. Select Go back or press Escape to return focus to Request Stop again. Reopen and confirm if recovery is needed. Refresh an uncertain outcome before retrying.",
       "Return to Open draft and Deploy new version to request running again.",
     ],
     gap: "The fixture separates Stop acceptance from the next read clearing the selected revision. Neither establishes that a live gateway shut down. Disabling a channel does not stop the Agent; deletion is destructive.",

@@ -939,7 +939,7 @@ test("Stop stays when the Agents list's Agent read is older than a first deploym
   await stop.click();
   const dialog = page.getByRole("dialog", { name: "Stop Stale list?" });
   await dialog.getByText(STOP_CONFIRMATION, { exact: true }).waitFor();
-  assert.equal(await dialog.getByText(/No version is serving yet/).count(), 0);
+  assert.equal(await dialog.getByText(STOP_FIRST_DEPLOYMENT_CONFIRMATION).count(), 0);
 });
 
 test("Agent detail keeps Stop when its Agent reread fails after a first deployment succeeded", async (t) => {
@@ -996,7 +996,7 @@ test("Stop stays when a first deployment's record cannot be read", async (t) => 
   let dialog = page.getByRole("dialog", { name: "Stop Unread first?" });
   // Without the outcome, the dialog names both things Stop may do.
   await dialog.getByText(STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION, { exact: true }).waitFor();
-  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await dialog.getByRole("button", { name: "Go back" }).click();
   await dialog.waitFor({ state: "hidden" });
 
   await row.getByRole("link", { name: "Unread first", exact: true }).click();

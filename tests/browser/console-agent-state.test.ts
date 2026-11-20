@@ -3507,7 +3507,7 @@ test("Agent detail says an Agent's versions are hidden, not missing, when none i
   await stop.click();
   let dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
   await dialog.getByText(STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION, { exact: true }).waitFor();
-  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await dialog.getByRole("button", { name: "Go back" }).click();
   await dialog.waitFor({ state: "hidden" });
   await page.goto(new URL(`/console/agents?namespace=${namespace.id}`, page.url()).href);
   const row = page.getByRole("row").filter({ hasText: "Pending history" });
@@ -3517,7 +3517,7 @@ test("Agent detail says an Agent's versions are hidden, not missing, when none i
   await rowStop.click();
   dialog = page.getByRole("dialog", { name: "Stop Pending history?" });
   await dialog.getByText(STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION, { exact: true }).waitFor();
-  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await dialog.getByRole("button", { name: "Go back" }).click();
   await dialog.waitFor({ state: "hidden" });
 
   // A never-deployed Agent keeps the creation hint.
@@ -4173,10 +4173,8 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   // Cancelling the confirmation sends nothing and returns focus to the row's icon.
   await stop.click();
   let dialog = page.getByRole("dialog", { name: "Stop Running Agent?" });
-  await dialog
-    .getByText(/Configuration, versions, Credentials, and workspace data are retained/)
-    .waitFor();
-  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await dialog.getByText(/Configuration, versions, credentials, and workspace data/).waitFor();
+  await dialog.getByRole("button", { name: "Go back" }).click();
   await dialog.waitFor({ state: "hidden" });
   assert.equal(await stop.evaluate((node) => node.ownerDocument.activeElement === node), true);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
@@ -4507,7 +4505,7 @@ test("Agents list row actions explain missing access and still report a refused 
   const remove = row.getByRole("button", { name: "Delete Guarded Agent" });
 
   // A refusal that arrives while the dialog is open disables confirmation and moves focus to
-  // Cancel. The redraw replaced the icon that opened the dialog, so closing it must land focus
+  // Go back. The redraw replaced the icon that opened the dialog, so closing it must land focus
   // on the row's new Stop rather than dropping it to the page: Stop is unavailable with its
   // reason, so it stays focusable and says why (finding 2926).
   await stop.click();
@@ -4517,7 +4515,7 @@ test("Agents list row actions explain missing access and still report a refused 
   await dialog.getByText(AGENT_STOP_DENIED).waitFor();
   const confirm = dialog.getByRole("button", { name: "Stop Agent" });
   assert.equal(await confirm.isDisabled(), true);
-  const cancel = dialog.getByRole("button", { name: "Cancel" });
+  const cancel = dialog.getByRole("button", { name: "Go back" });
   assert.equal(await cancel.evaluate((node) => node.ownerDocument.activeElement === node), true);
   // The confirmation stays in the Tab order, described by the refusal, and sends nothing
   // (finding 2935).

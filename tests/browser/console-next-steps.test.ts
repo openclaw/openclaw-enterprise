@@ -558,10 +558,10 @@ async function redeployUnreadable(t: TestContext, name: string, { paged = false 
   await waitForEnabled(stop);
   await stop.click();
   const dialog = page.getByRole("dialog", { name: "Stop this Agent?", exact: true });
-  await dialog.getByText(`Agent: ${agent.name}`, { exact: true }).waitFor();
+  await dialog.getByText(agent.name, { exact: true }).waitFor();
   await dialog.getByText(STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION, { exact: true }).waitFor();
   await waitForEnabled(dialog.getByRole("button", { name: "Stop Agent", exact: true }));
-  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await dialog.getByRole("button", { name: "Go back", exact: true }).click();
   await dialog.waitFor({ state: "hidden" });
   await waitForIdleFetches(page);
   assert.equal(

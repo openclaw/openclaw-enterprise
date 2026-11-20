@@ -8,11 +8,13 @@ simulated data.
 
 1. Open **Components / Dialogs / Stop confirmation**, **Delete confirmation**
    and **Create Secret**. Each is a centred box with the same corners, edge,
-   shadow and backdrop. Cancel is on the left and the confirming action on the
-   right. Focus starts inside the dialog (Cancel for Stop and Delete, Name for
-   Create Secret).
-   In Stop, check that the confirmation says interrupted work may continue
-   after deployment and tells you how to cancel a reply in the Agent's chat.
+   shadow and backdrop. The dismissal button is on the left and the confirming
+   action on the right. Focus starts on **Go back** for Stop, **Cancel** for
+   Delete and **Name** for Create Secret.
+   In Stop, check the Agent name and the rows for shutdown, the next deployment
+   and saved data. The note explains how to cancel a reply in chat. Select
+   **Go back** and check focus returns to **Stop Agent**. On a phone, each
+   row label sits above its description.
    In Delete, read what stays in the Namespace, then open **View separate cleanup
    commands**. Each command includes the Namespace ID. Press Enter on **Copy
    Configuration command**, then on **Copy Secret command** if it appears. Only

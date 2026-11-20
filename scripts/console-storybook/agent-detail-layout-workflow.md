@@ -187,7 +187,7 @@ Switch back to verify the entire card disappears.
 11. Open **Components / Stop Agent / First Deployment Failed**. The Agent has no
     selected version and its latest readable deployment failed. Check that **Stop
     Agent** remains enabled: a newer queued deployment can be unreadable. Open the
-    confirmation, then Cancel. Check **Denied** still offers no Stop control.
+    confirmation, then select **Go back**. Check **Denied** still offers no Stop control.
     These stories do not prove revision filtering or Stop authorization; the mixed-history
     browser regression exercises those through the Controller and Native IAM.
     Confirm Stop: its result replaces the action description, without repeating it.
