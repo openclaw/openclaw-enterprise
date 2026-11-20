@@ -320,8 +320,8 @@ test("a staged credential source refuses an ungranted Agent principal before rev
     namespace.id,
     {
       name: "Staged source",
-      lifecycleConfig: { type: "openai", settings: {} },
-      secret: { api_key: randomUUID() },
+      lifecycleConfig: { type: "static", settings: {} },
+      secret: { opaque: randomUUID() },
     },
     event,
   );
