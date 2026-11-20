@@ -131,7 +131,11 @@ export async function observeControllerEndpoints<T>(
     } catch (error) {
       // Neither command errors nor full Pod JSON belong in the timing receipt.
       // A failed read is unknown, never an observed empty endpoint set.
-      if (error instanceof FixtureCommandError && !error.settled) {
+      if (
+        error instanceof FixtureCommandError &&
+        !error.settled &&
+        !error.outcome.timeoutCleanupConfirmed
+      ) {
         cleanupError ??= error;
       }
     }

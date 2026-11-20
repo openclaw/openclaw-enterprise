@@ -286,14 +286,56 @@ test("controller endpoint observer joins reads and preserves action and evidence
   assert.equal(actions, 1);
 });
 
-for (const terminationFailed of [true, false]) {
-  test(`baseline command without a confirmed exit prevents upgrade (terminationFailed=${terminationFailed})`, async (t) => {
+for (const [phase, exitCode, signal] of [
+  ["before", 0, null],
+  ["during", null, "SIGTERM"],
+] as const) {
+  test(`a timeout with confirmed cleanup in the ${phase} sample lets the upgrade finish`, async (t) => {
     const f = await fixture(t);
-    const failure = new FixtureCommandError("owned command cleanup failed", {
-      exitCode: null,
-      signal: null,
+    const failure = new FixtureCommandError(privateText, {
+      exitCode,
+      signal,
       timedOut: true,
       interrupted: false,
+      spawned: true,
+      terminationFailed: false,
+      timeoutCleanupConfirmed: true,
+    });
+    let serviceReads = 0;
+    const run: FixtureRun = async (_command, args) => {
+      if (args[8] === "services" && serviceReads++ === (phase === "before" ? 0 : 1)) {
+        throw failure;
+      }
+      return list([]);
+    };
+    const result = await observeControllerEndpoints({ ...f.options, run }, async () => "upgraded");
+    assert.equal(result, "upgraded");
+    const receipt = await f.receipt();
+    assert.equal(receipt.complete, true);
+    assert.equal(receipt.actionSucceeded, true);
+    assert.equal(receipt.samples.at(-1).phase, "after");
+    const { service: read } = receipt.samples.find(
+      (sample: { phase: string }) => sample.phase === phase,
+    );
+    assert.equal(read.status, "read-error");
+    assert.ok(!("objects" in read));
+    assert.ok(!(await readFile(f.path, "utf8")).includes(privateText));
+  });
+}
+
+for (const [reason, exitCode, interrupted, terminationFailed] of [
+  ["no observed exit", null, false, false],
+  ["group exit unconfirmed after the command exits", 0, false, false],
+  ["failed termination after observed exit", 0, false, true],
+  ["interruption after timeout", 0, true, false],
+] as const) {
+  test(`an unsafe baseline command prevents upgrade (${reason})`, async (t) => {
+    const f = await fixture(t);
+    const failure = new FixtureCommandError("owned command cleanup failed", {
+      exitCode,
+      signal: null,
+      timedOut: true,
+      interrupted,
       spawned: true,
       terminationFailed,
     });

@@ -188,10 +188,14 @@ An empty `objects` list means the scoped read returned zero objects. A placehold
 EndpointSlice with an owner reference to the named core `v1` Service can report
 `endpoints: null`. The receipt records an empty `endpoints` list for that slice.
 Missing readiness conditions stay null.
-Read errors are unknown, not empty endpoint sets. If the runner reports an unsettled baseline command, the fixture stops before launching the upgrade. The three reads are not atomic,
-and polling cannot locate exact transition times or prove reachability. Compare
-their UTC windows with the HTTP samples; Pod condition transition timestamps come
-from Kubernetes. `actionSucceeded` covers the upgrade and HTTP recorder, while
+A command failure has status `read-error` and leaves the result unknown. After a
+timeout, the observer can continue when the runner confirms that the command
+exited and its process group is gone. An interruption or uncertain command cleanup
+stops the observer. If this occurs during the baseline, the fixture stops before it
+starts the upgrade. The three reads run independently. Polling cannot locate exact
+transition times or prove reachability. Compare their UTC windows with the HTTP
+samples. Pod condition transition timestamps come from Kubernetes.
+`actionSucceeded` covers the upgrade and HTTP recorder, while
 `complete` describes observer completion. Partial receipts remain uncertain.
 
 In the fresh `run_dir` from the lane command, retain each available receipt before removing the runner. A phase
