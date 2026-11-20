@@ -36,11 +36,8 @@ type PolicyState =
   | "readDenied"
   | "loading"
   | "noCredential"
+  | "repositoryLimits"
   | "protected"
-  | "repository"
-  | "repositoryDenyAll"
-  | "repositoryReadOnly"
-  | "repositorySaveLost"
   | "withheldOne"
   | "withheldMany";
 
@@ -80,6 +77,7 @@ export function createAgentDetailPolicyScenarios({
   const variants = [
     ["policyDenials", "ready", "Policy denials and reviewed network additions"],
     ["policyUnicodeExecutable", "unicode", "Unicode executable path remains complete"],
+    ["policyRepositoryLimits", "repositoryLimits", "Inspect Namespace repository limits"],
     ["policyDenialsMany", "many", "Two hundred denials with batch approval"],
     ["policyRulesPopulated", "populated", "Manage ten applied network rules"],
     [
@@ -141,14 +139,6 @@ export function createAgentDetailPolicyScenarios({
       "Policy logs unavailable without runtime credentials",
     ],
     ["policyDenialsProtected", "protected", "Protected execution refuses network policy additions"],
-    ["policyRepositoryAccess", "repository", "Edit repository network access"],
-    ["policyRepositoryDenyAll", "repositoryDenyAll", "Saved deny-all repository policy"],
-    ["policyRepositoryReadOnly", "repositoryReadOnly", "Repository policy saving unavailable"],
-    [
-      "policyRepositorySaveLost",
-      "repositorySaveLost",
-      "Discard after repository saving becomes unavailable",
-    ],
     [
       "policyDenialsWithheldOne",
       "withheldOne",
@@ -210,42 +200,6 @@ export function createAgentDetailPolicyScenarios({
             "Use the Policy editing switch in the Network policy card on the page. Open Manage rules and confirm the editing toggle is absent, saved rules remain, and Add rule follows the editing setting. Close the dialog to re-enable editing. Check the empty, denied, unsupported, missing metadata, and unconfirmed stories.",
           ],
           gap: "Simulated UI proof only. These fixtures do not prove authorization, persistence, enforcement, or provider policy activation.",
-          ...(state === "repository" ||
-          state === "repositoryDenyAll" ||
-          state === "repositoryReadOnly" ||
-          state === "repositorySaveLost"
-            ? {
-                ...(state === "repositoryReadOnly" ? { policyCeiling: [] } : {}),
-                description: "Repository network access is saved for a later deployment.",
-                steps: [
-                  "Open View network limits. Check the repository limits for this Namespace without opening an editor.",
-                  "Open Manage rules and check the saved repository policy and the redeploy guidance.",
-                  ...(state === "repository"
-                    ? [
-                        "Choose Edit repository access, then Done. Select the denial and choose Allow selected. Check the rule review, then go back to editing. Confirm legacy access is still saved and the deny-all proposal is still editable. Discard the repository proposal and reset the story before checking saves.",
-                      ]
-                    : []),
-                  ...(state === "repositorySaveLost"
-                    ? [
-                        "Choose Edit repository access to propose denying all repositories.",
-                        "Refresh policy. The Installation has stopped accepting repository policy saves.",
-                        "Discard repository changes. Confirm the proposal disappears and repository editing remains unavailable.",
-                      ]
-                    : []),
-                  ...(state === "repositoryReadOnly"
-                    ? [
-                        "Confirm the limits dialog lists read and write repository grants even though the Installation delegates no ordinary rules.",
-                        "Confirm repository policy saving is unavailable in this Installation.",
-                      ]
-                    : state === "repositorySaveLost"
-                      ? []
-                      : [
-                          "Choose Edit repository access. Confirm example/application offers Read and example/tooling offers Read and Write.",
-                          "Save a changed policy and reopen Manage rules. Check the saved state and confirm there is no action to apply it to the current revision.",
-                        ]),
-                ],
-              }
-            : {}),
           ...(state === "unicode"
             ? {
                 description:
@@ -284,12 +238,24 @@ export function createAgentDetailPolicyScenarios({
                 ],
               }
             : {}),
+          ...(state === "repositoryLimits"
+            ? {
+                policyCeiling: [],
+                description:
+                  "The Namespace delegates repository access and the Agent has legacy repository access.",
+                steps: [
+                  "Open View network limits. Check that example/application is read and example/tooling is write.",
+                  "Open Manage rules. Check that the saved policy is legacy repository access and no withdrawal action is shown.",
+                ],
+              }
+            : {}),
           ...(state === "protected"
             ? {
                 steps: [
                   "Open Manage rules. The protected execution notice is visible, adding and editing are disabled, and live application is unavailable.",
-                  "A rule saved before protected execution applied blocks every protected deploy. Choose Remove saved network rules, review the removal, then Save for later and confirm the saved policy is empty.",
-                  "Reopen Manage rules. Confirm the saved repository policy is visible. Repository policy saving, ordinary rule additions, and live application are unavailable.",
+                  "Existing ordinary rules and repository grants were saved before protected execution applied. First choose Remove saved network rules, review the removal, and choose Save for later.",
+                  "Reopen Manage rules. Choose Withdraw saved repository grants and check the confirmation. Back to editing preserves the saved grant.",
+                  "Review again and choose Save deny-all policy. Confirm the saved policy denies all repositories and the feedback describes the saved change. Check that no live application or deployment is offered.",
                 ],
               }
             : {}),

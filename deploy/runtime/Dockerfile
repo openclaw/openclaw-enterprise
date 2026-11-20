@@ -10,20 +10,6 @@ FROM ${NODE_BASE_IMAGE} AS node-build-base
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 RUN apt-get update --error-on=any && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
-FROM node-build-base AS node-source
-COPY deploy/runtime/node/source.json deploy/runtime/node/*.sh deploy/runtime/node/*.patch /node-repair/
-RUN --mount=type=secret,id=build-ca,required=false \
-    set -eu; \
-    if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
-    sh /node-repair/fetch.sh
-
-FROM node-source AS node-compiled
-ARG NODE_BUILD_JOBS=auto
-RUN --network=none sh /node-repair/build.sh
-
-FROM node-build-base AS node-repaired-build-base
-COPY --from=node-compiled /out/ /
-
 FROM node-build-base AS curl-packages
 COPY deploy/runtime/curl /tmp/curl
 RUN --mount=type=secret,id=build-ca,required=false \
@@ -134,7 +120,7 @@ RUN chmod -R a=rX /app
 USER node
 ENTRYPOINT ["node", "/app/dist/repository-credentials.js"]
 
-FROM node-repaired-build-base AS openclaw-source
+FROM node-build-base AS openclaw-source
 
 # Keep the source identity separate from its unreleased package version.
 ARG OPENCLAW_COMMIT
@@ -168,7 +154,7 @@ RUN echo 'a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7  /tmp
 # Keep the reviewed Codex 0.164.0 (seccomp profile and artifact rules) until OCE moves to the
 # Codex the pinned OpenClaw bundles. Remove this pin with that upgrade.
 COPY deploy/runtime/stock-codex-0.164.0-dependency-pin.patch /tmp/stock-codex-0.164.0-dependency-pin.patch
-RUN echo '1ca10c576c65748498ede421a230740f2ab3d87bbfb4fa4ab92d89f809c1402f  /tmp/stock-codex-0.164.0-dependency-pin.patch' | sha256sum --check --strict \
+RUN echo 'cb1ff6b003dbe385fc2938b6cc46ba7fc0f91d4954eaad5b591ff29384df0197  /tmp/stock-codex-0.164.0-dependency-pin.patch' | sha256sum --check --strict \
     && git apply /tmp/stock-codex-0.164.0-dependency-pin.patch
 COPY scripts/build-runtime-assets.ts /tmp/build-runtime-assets.ts
 RUN node /tmp/build-runtime-assets.ts inputs /source /inputs \
@@ -177,7 +163,7 @@ RUN node /tmp/build-runtime-assets.ts inputs /source /inputs \
 # @matrix-org/matrix-sdk-crypto-nodejs downloads its native library from GitHub during
 # install, with no retry or checksum. Fetch the pinned library with the retrying,
 # checksum-verifying helper; both installs below get it from a loopback server.
-FROM node-repaired-build-base AS matrix-sdk-crypto
+FROM node-build-base AS matrix-sdk-crypto
 COPY scripts/ci/download-pinned.sh /tmp/download-pinned.sh
 RUN --mount=type=secret,id=build-ca,required=false \
     set -eu; \
@@ -192,7 +178,7 @@ RUN --mount=type=secret,id=build-ca,required=false \
       "https://github.com/matrix-org/matrix-rust-sdk-crypto-nodejs/releases/download/v0.6.6/${library}" \
       "/out/v0.6.6/${library}" "$sha256"
 
-FROM node-repaired-build-base AS openclaw-dependency-inputs
+FROM node-build-base AS openclaw-dependency-inputs
 ARG OPENCLAW_COMMIT
 ARG OPENCLAW_BUILD_TIMESTAMP
 ENV GIT_COMMIT=${OPENCLAW_COMMIT}
@@ -226,29 +212,20 @@ RUN --mount=type=secret,id=build-ca,required=false \
       --config.supportedArchitectures.libc=glibc; \
     rm -rf /tmp/pnpm-store
 COPY --from=openclaw-source /source/ ./
-# Exercise the original caller through the public RPC before and after the
-# placement acknowledgment, including revocation, against this exact source.
-COPY deploy/runtime/openclaw-required-worker-authority-regression.patch /tmp/openclaw-required-worker-authority-regression.patch
-RUN echo 'b6261ce5be40e7d3c8f2d263aba7320301cbdd66381540edbb4362e95794139a  /tmp/openclaw-required-worker-authority-regression.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-required-worker-authority-regression.patch
-# Remove this bridge when the pinned Control UI offers a browser navigation after access refusal.
-COPY deploy/runtime/openclaw-control-ui-browser-reconnect.patch /tmp/openclaw-control-ui-browser-reconnect.patch
-RUN echo 'e29e35beb8e0bef78e6acab7786ce52491e03c2a3af5a49898f63fdecb9aa0b0  /tmp/openclaw-control-ui-browser-reconnect.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-control-ui-browser-reconnect.patch
 # The runtime needs supervised recovery across private PID namespaces. Native
 # lock reinspection and custody still guard every destructive operation.
 COPY deploy/runtime/openclaw-terminated-gateway-namespace.patch /tmp/openclaw-terminated-gateway-namespace.patch
 RUN echo '09a448c28e306410dbb3d1ae002620ec4c46f11487893c107e7bebce38e55cb5  /tmp/openclaw-terminated-gateway-namespace.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-terminated-gateway-namespace.patch
 
-# Forward the scoped Google placeholder and the OpenShell TLS root to native worker children.
+# Forward the scoped Google placeholder to native worker children.
 COPY deploy/runtime/openclaw-google-worker-placeholder.patch /tmp/openclaw-google-worker-placeholder.patch
-RUN echo '55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31  /tmp/openclaw-google-worker-placeholder.patch' | sha256sum --check --strict \
+RUN echo 'cfd027b90c833f0a0266c94e01dc9387143a265c711868d168fb01864468bb38  /tmp/openclaw-google-worker-placeholder.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-google-worker-placeholder.patch
 
 # TODO: Remove this bridge after selecting native setup renewal with bounded saved-device fallback.
 COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-renewal.patch
-RUN echo 'de6b57665698e7c0d60aebac49f5532623f507ac4a8e2eb21804ace95aab78c8  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
+RUN echo '1cba704e3888ff7764d62613b0bbb4918ceccb66352a1fc2baf31d72ec8d0df6  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
 # Remove after the pinned core includes upstream #196972 and its final-write handoff prerequisite.
@@ -256,14 +233,10 @@ COPY deploy/runtime/openclaw-planned-completion.patch /tmp/openclaw-planned-comp
 RUN echo '402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15  /tmp/openclaw-planned-completion.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-planned-completion.patch
 
-# TODO: Remove when the pinned OpenClaw retries safe restart admission and passive Codex recovery.
-COPY deploy/runtime/openclaw-restart-harness-readiness.patch /tmp/openclaw-restart-harness-readiness.patch
-RUN echo 'fb6541b16a0318d43c521f58902447be1436f1d973d676d3bc8baf70bd9d417f  /tmp/openclaw-restart-harness-readiness.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-restart-harness-readiness.patch
-
 # Broad source verification is an explicit target, separate from image assembly.
 # Native container CI requires this target before exporting and smoking the image.
 FROM openclaw-patched-source AS openclaw-bridge-tests
+# Run exactly the tests that exercise a kept carried patch; upstream CI covers the rest.
 # One main runner invocation for the Node test files: the runner compiles the whole
 # source tree for its workers first (about a minute), and a second invocation on
 # a fresh .artifacts directory would compile it again. Keep generated files on
@@ -277,16 +250,12 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     src/gateway/server-methods/suspend.integration.test.ts src/cli/gateway-cli/host-lifecycle.test.ts \
     src/cli/update-cli/update-command-service-drain.native.test.ts \
     src/gateway/server-methods.suspension-admission.test.ts \
-    src/sessions/session-controller.watchdog.test.ts src/agents/embedded-agent-runner/runs.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
     extensions/codex/src/app-server/thread-policy.test.ts extensions/codex/src/app-server/thread-lifecycle.adoption.test.ts \
-    src/auto-reply/reply/session-event-config-readmission.test.ts \
-    src/gateway/session-restart-resume.admission.test.ts src/gateway/session-restart-resume.workspace.test.ts \
-    src/infra/private-store-file.test.ts \
+    extensions/codex/src/app-server/config.test.ts extensions/codex/src/app-server/config-network-proxy.test.ts \
     src/node-host/runner.test.ts \
     src/node-host/gateway-candidate-connection.test.ts \
     src/node-host/runner-lifecycle-lock.test.ts \
-    src/node-host/openclaw-id-join.test.ts \
     src/cli/node-cli/register.test.ts \
     src/cli/node-cli/gateway-options.test.ts \
     src/cli/connect-cli.test.ts \
@@ -298,9 +267,6 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     packages/gateway-client/src/reconnect-policy.test.ts \
     src/node-host/runtime.worker-hosting.test.ts \
     src/node-host/gateway-cloudflare-access.test.ts \
-    src/cli/connect-cli-access.test.ts \
-    src/cli/node-cli/daemon.test.ts \
-    src/cli/node-cli/daemon.restore.test.ts \
     packages/gateway-protocol/src/frame-guards.test.ts \
     src/node-host/runtime.commands.test.ts \
     src/node-host/config.test.ts \
@@ -313,39 +279,22 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     src/node-host/runtime.worker-supervisor.test.ts \
     src/node-host/startup-state-readiness.test.ts \
     src/gateway/desktop/computer-authority.runtime.test.ts \
-    src/infra/dotenv.test.ts \
-    src/daemon/systemd.environment-preservation.test.ts \
     src/node-host/runner.auto-update.test.ts \
-    src/commands/doctor-node-services.test.ts \
     src/node-host/codex-node-plugin.integration.test.ts \
     test/node-host-launcher.test.ts \
-    src/plugins/computer-use-contract.test.ts \
     src/daemon/program-args.test.ts \
-    src/gateway/server-methods.session-main-start.test.ts \
-    src/gateway/server.chat-main-session-narrow.test.ts \
     && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/cli/gateway-cli/run-loop.test.ts \
     -t "keeps the fenced process alive until the supervisor sends SIGTERM" \
-    && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
-    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/session-restart-resume.scope.test.ts \
-    src/gateway/session-restart-resume.test.ts src/gateway/session-restart-resume-custody.test.ts \
-    src/config/sessions/session-entry-json.test.ts \
-    && rm -rf .artifacts
-# These CUA lifecycle cases use the supported SDK adapter boundary. The two
-# native SDK import cases need desktop libraries absent from this build image.
-RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
-    OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
-    node --import ./scripts/tsx.mjs scripts/test-projects.mts extensions/cua-computer/src/driver-client.test.ts \
-    -t '^(?!.*(?:matches the installed CUA Driver desktop input enum contract|preserves typed SDK click refusals in the shared driver result))' \
     && rm -rf .artifacts
 # Type-check production and the native/UI test graphs touched by the bridges.
 # The upstream runner generates database types and compiler cache under .artifacts.
 RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     node scripts/run-tsgo-core-test-shards.mjs --ci-graphs-json '["core","core-test-packages","core-test-config-cli","core-test-gateway-other","core-test-gateway-root","core-test-gateway-server","core-test-infra","core-test-services","core-test-commands-doctor","test-root-other","core-test-plugins-platform","core-test-ui-chat","core-test-ui-app"]' \
     && rm -rf .artifacts
-# Check changed CUA and Codex extensions with upstream strict compiler settings.
+# Check the changed Codex extension with upstream strict compiler settings.
 RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
-    node -e 'const fs=require("node:fs");fs.writeFileSync(".artifacts/tsconfig.changed-extensions-production.json",JSON.stringify({"extends": "../tsconfig.extensions.json", "include": ["../src/**/*.d.ts", "../ui/src/**/*.d.ts", "../extensions/cua-computer/**/*", "../extensions/codex/**/*"], "compilerOptions": {"rootDir": ".."}}));fs.writeFileSync(".artifacts/tsconfig.changed-extensions-test.json",JSON.stringify({"extends": "../test/tsconfig/tsconfig.extensions.test.json", "include": ["../test/types/vitest-codex-attempt-runtime.d.ts", "../src/**/*.d.ts", "../ui/**/*.d.ts", "../extensions/**/*.d.ts", "../extensions/cua-computer/**/*.test.ts", "../extensions/cua-computer/**/*.test.tsx", "../extensions/codex/**/*.test.ts", "../packages/**/*.d.ts"]}));' && \
+    node -e 'const fs=require("node:fs");fs.writeFileSync(".artifacts/tsconfig.changed-extensions-production.json",JSON.stringify({"extends": "../tsconfig.extensions.json", "include": ["../src/**/*.d.ts", "../ui/src/**/*.d.ts", "../extensions/codex/**/*"], "compilerOptions": {"rootDir": ".."}}));fs.writeFileSync(".artifacts/tsconfig.changed-extensions-test.json",JSON.stringify({"extends": "../test/tsconfig/tsconfig.extensions.test.json", "include": ["../test/types/vitest-codex-attempt-runtime.d.ts", "../src/**/*.d.ts", "../ui/**/*.d.ts", "../extensions/**/*.d.ts", "../extensions/codex/**/*.test.ts", "../packages/**/*.d.ts"]}));' && \
     node scripts/run-tsgo.mjs -p .artifacts/tsconfig.changed-extensions-production.json --incremental --tsBuildInfoFile .artifacts/changed-extensions-production.tsbuildinfo && \
     node scripts/run-tsgo.mjs -p .artifacts/tsconfig.changed-extensions-test.json --incremental --tsBuildInfoFile .artifacts/changed-extensions-test.tsbuildinfo \
     && rm -rf .artifacts
@@ -353,9 +302,8 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
 # Vite server on localhost, which Buildah's network-less RUN cannot resolve.
 RUN --network=none cd ui && node ../scripts/run-node-package-bin.mts vitest run --config vitest.config.ts \
     --project unit --project unit-node \
-    src/api/gateway-reachability.node.test.ts src/app/gateway-store.observers.test.ts src/app/app-shell-view.test.ts \
-    src/app/gateway-page-activation.test.ts src/lib/session-method-access.test.ts \
-    src/pages/chat/chat-history-subscription-errors.test.ts
+    src/api/gateway-reachability.node.test.ts \
+    src/app/gateway-page-activation.test.ts
 
 FROM openclaw-patched-source AS openclaw-build
 # Follow the pinned upstream Docker assembly; plugin-local dependencies remain
@@ -457,12 +405,6 @@ RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verifi
 
 FROM node-runtime-base AS runtime
 
-RUN --mount=type=bind,source=deploy/runtime/node/source.json,target=/tmp/node-source.json \
-    set -eu; . /etc/os-release; \
-    test "${VERSION_CODENAME:-}" = bookworm || { echo "The Node termination repair requires a Bookworm runtime base." >&2; exit 1; }; \
-    node -e 'if (process.versions.node !== require("/tmp/node-source.json").version) throw new Error("Select matching Node bases for the reviewed termination repair; do not silently downgrade a newer override.")'
-COPY --from=node-compiled /out/ /
-
 ARG TARGETARCH
 ENV OPENAI_CODEX_VERSION=0.164.0
 
@@ -486,14 +428,6 @@ RUN --mount=type=bind,from=curl-packages,source=/out,target=/tmp/curl-packages \
     && mkdir -p /usr/share/doc/curl/oce \
     && cp /tmp/curl-packages/*.sha256 /usr/share/doc/curl/oce/ \
     && rm -rf /var/lib/apt/lists/*
-RUN --network=none \
-    --mount=type=bind,from=node-source,source=/build/node,target=/verification/node \
-    --mount=type=bind,source=deploy/runtime/node,target=/verification/repair \
-    ldd /usr/local/bin/node > /tmp/node-linkage \
-    && ! grep 'not found' /tmp/node-linkage \
-    && rm /tmp/node-linkage \
-    && node /verification/repair/verify.mts \
-    && sh /verification/repair/test.sh /usr/local/bin/node /verification/node
 # Version checks use throwaway state directories: gh writes a random device ID
 # and Codex a randomly named arg0 directory, which would otherwise ship.
 # Retry partial transfers too. -O lets curl reset partial files before retrying;
@@ -531,6 +465,9 @@ COPY apps/controller/plugins/ /usr/local/lib/oce/plugin-catalog/
 COPY deploy/runtime/managed-mcp-policy/ /usr/local/lib/oce/platform-plugins/oce-managed-mcp-policy/
 
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
+COPY --chmod=0444 deploy/runtime/openshell-bootstrap.cjs /opt/oce/runtime/openshell-bootstrap.cjs
+# OpenShell selects the workload UID. Its private child directory stays on the workload filesystem.
+RUN install -d -m 1777 -o root -g root /opt/oce/managed
 COPY --from=openclaw-runtime-assets /source/ /app/node_modules/openclaw/
 # Both gateway plugins and the Dedicated Harness resolve the same pinned Codex.
 RUN mkdir -p node_modules/.bin \
@@ -569,7 +506,7 @@ RUN --mount=type=bind,source=scripts/lib/runtime-download-clients.ts,target=/tmp
   && rm -rf "$codex_home" \
   && test -f /app/dist/extensions/codex/openclaw.plugin.json \
   && test -f /app/dist/extensions/slack/openclaw.plugin.json \
-  && node /tmp/build-runtime-assets.ts inventory /app/node_modules/openclaw /opt/oce/runtime /usr/local/share/oce-node/provenance.json /tmp/additional-download-clients.json \
+  && node /tmp/build-runtime-assets.ts inventory /app/node_modules/openclaw /opt/oce/runtime /tmp/additional-download-clients.json \
   && rm /tmp/build-runtime-assets.ts /tmp/lib/openclaw-source.ts
 
 RUN /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig

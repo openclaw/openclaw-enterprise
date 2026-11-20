@@ -269,6 +269,7 @@
     "conformance/codex-failure-output-classifier-cases.ts",
     "conformance/codex-native-startup-login-retry-cases.ts",
     "helpers/production-tui-otel.ts",
+    "helpers/production-tui-restart.ts",
     "helpers/credential-source-owner-upgrade.ts",
     "helpers/populated-upgrade-return.ts",
     "integration/postgres-historical-agent-migration-cases.ts",

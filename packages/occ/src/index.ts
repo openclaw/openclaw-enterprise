@@ -78,6 +78,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   CredentialProxy,
+  supportsStaticCredentials,
   resolveCredentialProxyCapacity,
   type CredentialProxyCapacity,
   type ExchangeProvider,
@@ -103,6 +104,11 @@ export type {
   EgressStreamProgress,
 } from "@openclaw-enterprise/contracts";
 import { InstalledDriver } from "./installed-driver.ts";
+import {
+  delegatedRepositoryCeiling,
+  repositoryGrantAuthority,
+  type RepositoryGrantPolicy,
+} from "./repository-network-policy.ts";
 
 export { InstalledDriver } from "./installed-driver.ts";
 import type { DriverByCapability } from "@openclaw-enterprise/contracts";
@@ -131,11 +137,9 @@ import type {
   SandboxPolicyRecommendations,
 } from "@openclaw-enterprise/contracts";
 import {
-  admitRepositoryNetworkPolicy,
   parseRepositoryNetworkPolicyCeiling,
-  RepositoryNetworkPolicyAdmissionError,
   validateSandboxNetworkGrants,
-  sandboxNetworkGrantsWithinCeiling,
+  networkGrantAdmissionDetails,
 } from "@openclaw-enterprise/contracts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes } from "node:crypto";
@@ -161,7 +165,6 @@ import type {
   AgentRevisionRead,
   InitialWorkspaceFiles,
   AgentDeploymentDiagnostics,
-  AgentRuntimeDescribeOptions,
   AgentRuntimeDescription,
   AgentRuntimeHarnessStatus,
   AgentHarnessStatusRead,
@@ -375,8 +378,6 @@ import {
   SandboxNetworkPolicyConflictError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
-  RuntimeLogsForbiddenByClusterError,
-  RuntimeLogsSandboxNotFoundError,
   ScopeViolationError,
   SecretBindingDriverError,
   ServiceAccountBackendBindingError,
@@ -397,16 +398,16 @@ import {
 import { enabledChannelEntries, requireChannelSecretBindings } from "./channel-secret-bindings.ts";
 import { validateModelProviderSettings } from "./model-provider-settings.ts";
 import {
-  readRuntimeLogPage,
-  readSandboxLogPage,
-  runtimeLogPageAtLevel,
-  RuntimeLogReadError,
-  SANDBOX_LOG_RETENTION,
-  validRuntimeDescription,
-  type RuntimeLogCursorCodec,
-  type RuntimeLogPage,
-  type RuntimeLogQuery,
-  type RuntimeLogViewAdmission,
+  describedAgentRuntime,
+  readDriverRuntimeLogs,
+  runtimeLogOperation,
+  withSandboxLogSource,
+} from "./runtime-logs/driver-read.ts";
+import type {
+  RuntimeLogCursorCodec,
+  RuntimeLogPage,
+  RuntimeLogQuery,
+  RuntimeLogViewAdmission,
 } from "./runtime-logs/index.ts";
 import {
   nativeWorkerSupportSource,
@@ -439,6 +440,11 @@ import {
   type DeploymentStatusResult,
 } from "./state/controller-work.ts";
 import { PostgresCommitOutcomeUnknownError } from "./state/postgres-state.ts";
+import {
+  isRepositoryCleanupWork,
+  repositoryCleanupWorkKey,
+  repositoryRetirementWorkKey,
+} from "./repository-withdrawal.ts";
 import {
   validAdmittedRepositoryBindings,
   validRepositoryAccess,
@@ -1289,8 +1295,6 @@ const CONNECTION_SESSION_TTL_MS = 10 * 60 * 1000;
 const PENDING_CONNECTION: unique symbol = Symbol("pending-connection");
 const CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES =
   "Credential source Secrets cannot cross Namespaces.";
-/** Overall deadline for one runtime status or log request, Driver calls included. */
-const RUNTIME_LOG_REQUEST_TIMEOUT_MS = 10_000;
 // Bounds the Sandbox Driver's Harness record read that runs beside Compute diagnostics.
 const HARNESS_OBSERVATION_TIMEOUT_MS = 10_000;
 const REPOSITORY_RESTART_OBSERVATION_TIMEOUT_MS = 10_000;
@@ -1485,6 +1489,16 @@ function registeredCredentialProvider(
     return "ambiguous";
   }
   return matches.length === 1 && isDeepStrictEqual(matches[0]!.ref, ref) ? matches[0] : undefined;
+}
+
+function matchesAdmittedSourceType(
+  source: CredentialSource,
+  provider: CredentialProviderDefinition,
+) {
+  return (
+    source.egress?.adoption !== "live" ||
+    (provider.sourceType.type === source.type && supportsStaticCredentials(provider.sourceType))
+  );
 }
 
 /** The revision was admitted with the source, as its Harness authentication or in its list. */
@@ -2214,17 +2228,14 @@ function rejectCrossNamespaceSecretSources(
 // Internal Installation composition only; the public Repo Driver contract is unchanged.
 type InstallationRepositoryAdmission = Readonly<{
   policyMode?: "built-in";
-  policy: RepositoryPolicyDriver & {
-    listCatalog(input: { readonly namespaceId: string }): Promise<RepositoryOptions>;
-    resolveBindings(input: {
-      readonly namespaceId: string;
-      readonly bindings: readonly RepositoryBindingRequest[];
-    }): RepositoryCredentialResolution;
-    repositoryNetworkPolicyAllows?(input: {
-      readonly namespaceId: string;
-      readonly grant: RepositoryNetworkGrant;
-    }): boolean;
-  };
+  policy: RepositoryPolicyDriver &
+    RepositoryGrantPolicy & {
+      listCatalog(input: { readonly namespaceId: string }): Promise<RepositoryOptions>;
+      resolveBindings(input: {
+        readonly namespaceId: string;
+        readonly bindings: readonly RepositoryBindingRequest[];
+      }): RepositoryCredentialResolution;
+    };
   backendId: string;
 }>;
 
@@ -4552,12 +4563,14 @@ export class OpenClawController {
       "operate",
     );
     return admitRead(() =>
-      this.runtimeLogOperation(signal, async (deadline) => {
+      runtimeLogOperation(signal, async (deadline) => {
         const [described, harness] = await Promise.all([
-          this.describedAgentRuntime(driver, binding, deadline),
+          describedAgentRuntime(driver, binding, deadline),
           this.observedHarness(driver, binding, deadline),
         ]);
-        const description = this.withSandboxLogSource(described, driver, binding.revision);
+        const description = withSandboxLogSource(described, () =>
+          this.sandboxLogDriver(driver, binding.revision),
+        );
         return harness === undefined ? description : Object.freeze({ ...description, harness });
       }),
     );
@@ -4593,8 +4606,8 @@ export class OpenClawController {
       "logs",
     );
     const admitRead = requested.admitRead ?? ((read) => read());
-    return admitRead(async () => {
-      const options = {
+    return admitRead(() =>
+      readDriverRuntimeLogs(principalId, agentId, driver, binding, query, () => ({
         codec: requested.codec,
         ...(requested.signal === undefined ? {} : { signal: requested.signal }),
         admitView: async (admission: RuntimeLogViewAdmission) => {
@@ -4604,120 +4617,10 @@ export class OpenClawController {
             throw new RuntimeLogsError("RUNTIME_LOGS_AUDIT_UNAVAILABLE");
           }
         },
-      };
-      const source = query.source;
-      if (source === "sandbox") {
-        return runtimeLogPageAtLevel(
-          await this.readSandboxLogs(principalId, agentId, driver, binding, query, options),
-          query.minLevel,
-        );
-      }
-      if (typeof driver.readAgentRuntimeLogs !== "function") {
-        throw new NotImplementedError(
-          "readAgentRuntimeLogs",
-          "The selected Compute Driver does not expose runtime logs.",
-        );
-      }
-      return this.runtimeLogOperation(options.signal, async (deadline) => {
-        // Every follow poll describes the runtime again for the ownership re-check; it
-        // needs only the requested source's Pods, not their Events.
-        const description = await this.describedAgentRuntime(driver, binding, deadline, {
-          source,
-          events: false,
-        });
-        try {
-          const page = await readRuntimeLogPage({
-            description,
-            query,
-            codec: options.codec,
-            binding: {
-              principalId,
-              agentId,
-              revisionId: binding.revision.id,
-              source: query.source,
-            },
-            signal: deadline,
-            admitView: options.admitView,
-            readLogs: async (request) => {
-              try {
-                return await driver.readAgentRuntimeLogs!(binding, request);
-              } catch (error) {
-                throw this.runtimeLogDriverFailure(error, deadline);
-              }
-            },
-          });
-          return runtimeLogPageAtLevel(page, query.minLevel);
-        } catch (error) {
-          if (error instanceof RuntimeLogReadError) {
-            throw this.runtimeLogPageFailure(error, query.source);
-          }
-          throw error;
-        }
-      });
-    });
-  }
-
-  /**
-   * The revision's Sandbox log, read through the Sandbox Driver that provisioned it. The
-   * Sandbox is derived from the revision; no caller-named Sandbox reaches the Driver.
-   */
-  private async readSandboxLogs(
-    principalId: string,
-    agentId: string,
-    compute: ComputeDriver,
-    binding: ComputeAgentRevisionBinding,
-    query: RuntimeLogQuery,
-    options: {
-      readonly codec: RuntimeLogCursorCodec;
-      readonly admitView: (admission: RuntimeLogViewAdmission) => Promise<void>;
-      readonly signal?: AbortSignal;
-    },
-  ): Promise<Readonly<RuntimeLogPage>> {
-    const sandbox = this.sandboxLogDriver(compute, binding.revision);
-    if (sandbox === undefined) {
-      throw new RuntimeLogsError("RUNTIME_LOGS_SOURCE_UNAVAILABLE", undefined, "sandbox");
-    }
-    const description = this.withSandboxLogSource(
-      Object.freeze({
-        revisionId: binding.revision.id,
-        observedAt: this.clock().toISOString(),
-        pods: Object.freeze([]),
-        sources: Object.freeze([]),
-      }),
-      compute,
-      binding.revision,
+        resolveSandboxLogDriver: () => this.sandboxLogDriver(driver, binding.revision),
+        clock: () => this.clock(),
+      })),
     );
-    return this.runtimeLogOperation(options.signal, async (deadline) => {
-      try {
-        return await readSandboxLogPage({
-          description,
-          query,
-          codec: options.codec,
-          binding: { principalId, agentId, revisionId: binding.revision.id, source: "sandbox" },
-          admitView: options.admitView,
-          readLogs: async (request) => {
-            try {
-              // The Sandbox lives in Compute's placement of the Namespace, as at provisioning.
-              const namespace = await compute.resolveSandboxNamespace!.call(
-                compute,
-                binding.namespace,
-              );
-              return await sandbox.readSandboxLogs!(
-                { namespace, revision: binding.revision, signal: deadline },
-                request,
-              );
-            } catch (error) {
-              throw this.runtimeLogDriverFailure(error, deadline);
-            }
-          },
-        });
-      } catch (error) {
-        if (error instanceof RuntimeLogReadError) {
-          throw this.runtimeLogPageFailure(error, "sandbox");
-        }
-        throw error;
-      }
-    });
   }
 
   /**
@@ -4817,33 +4720,6 @@ export class OpenClawController {
     return unavailable;
   }
 
-  /** Appends the `sandbox` source when the revision's Sandbox Driver exposes its log. */
-  private withSandboxLogSource(
-    description: Readonly<AgentRuntimeDescription>,
-    compute: ComputeDriver,
-    revision: Readonly<AgentRevision>,
-  ): Readonly<AgentRuntimeDescription> {
-    if (
-      this.sandboxLogDriver(compute, revision) === undefined ||
-      description.sources.some(({ id }) => id === "sandbox")
-    ) {
-      return description;
-    }
-    return Object.freeze({
-      ...description,
-      sources: Object.freeze([
-        ...description.sources,
-        Object.freeze({
-          id: "sandbox" as const,
-          kind: "sandbox" as const,
-          pods: Object.freeze([]),
-          available: true,
-          retention: SANDBOX_LOG_RETENTION,
-        }),
-      ]),
-    });
-  }
-
   private async runtimeLogTarget(
     principalId: string,
     namespaceId: string,
@@ -4941,71 +4817,6 @@ export class OpenClawController {
       { action: "read_logs", resource: agent },
       principalId,
     );
-  }
-
-  private async runtimeLogOperation<T>(
-    signal: AbortSignal | undefined,
-    operation: (deadline: AbortSignal) => Promise<T>,
-  ): Promise<T> {
-    const timeout = AbortSignal.timeout(RUNTIME_LOG_REQUEST_TIMEOUT_MS);
-    const deadline = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
-    try {
-      return await operation(deadline);
-    } catch (error) {
-      if (timeout.aborted && !(error instanceof RuntimeLogsError)) {
-        throw new RuntimeLogsError("RUNTIME_LOGS_TIMEOUT");
-      }
-      throw error;
-    }
-  }
-
-  private async describedAgentRuntime(
-    driver: ComputeDriver,
-    binding: ComputeAgentRevisionBinding,
-    signal: AbortSignal,
-    options?: AgentRuntimeDescribeOptions,
-  ): Promise<Readonly<AgentRuntimeDescription>> {
-    let described: unknown;
-    try {
-      described = await driver.describeAgentRuntime!(binding, signal, options);
-    } catch (error) {
-      throw this.runtimeLogDriverFailure(error, signal);
-    }
-    try {
-      return validRuntimeDescription(described, binding.revision.id);
-    } catch {
-      throw new RuntimeLogsError("RUNTIME_LOGS_UNAVAILABLE");
-    }
-  }
-
-  private runtimeLogPageFailure(
-    error: RuntimeLogReadError,
-    source: RuntimeLogQuery["source"],
-  ): RuntimeLogsError {
-    switch (error.reason) {
-      case "cursor_invalid":
-        return new RuntimeLogsError("RUNTIME_LOGS_CURSOR_INVALID", undefined, source);
-      case "pod_invalid":
-        return new RuntimeLogsError("RUNTIME_LOGS_POD_INVALID", undefined, source);
-      case "source_unavailable":
-        return new RuntimeLogsError("RUNTIME_LOGS_SOURCE_UNAVAILABLE", undefined, source);
-      default:
-        return new RuntimeLogsError("RUNTIME_LOGS_UNAVAILABLE", undefined, source);
-    }
-  }
-
-  /** Driver and cluster error text can hold private runtime details; never propagate it. */
-  private runtimeLogDriverFailure(error: unknown, signal: AbortSignal): RuntimeLogsError {
-    if (error instanceof RuntimeLogsForbiddenByClusterError) {
-      return new RuntimeLogsError("RUNTIME_LOGS_CLUSTER_RBAC");
-    }
-    if (error instanceof RuntimeLogsSandboxNotFoundError) {
-      return new RuntimeLogsError("RUNTIME_LOGS_SANDBOX_NOT_FOUND");
-    }
-    if (signal.aborted) {
-      return new RuntimeLogsError("RUNTIME_LOGS_TIMEOUT");
-    }
-    return new RuntimeLogsError("RUNTIME_LOGS_UNAVAILABLE");
   }
 
   async getServiceAccount(
@@ -6249,6 +6060,18 @@ export class OpenClawController {
     agentId: string,
     revisionId: string,
   ): Promise<Readonly<AgentRevision>> {
+    await this.authorizeRevisionRead(principalId, namespaceId, agentId, revisionId);
+    return this.read(
+      async (state) => (await this.exactRevision(state, namespaceId, agentId, revisionId)).revision,
+    );
+  }
+
+  private async authorizeRevisionRead(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    revisionId: string,
+  ): Promise<void> {
     if (!isNonEmptyString(namespaceId)) {
       throw new ScopeViolationError("The exact Namespace identity is missing.");
     }
@@ -6266,16 +6089,22 @@ export class OpenClawController {
       namespaceId,
       parentAgentId: agentId,
     });
-    return this.read(async (state) => {
-      const { namespace, agent } = await this.exactAgent(state, namespaceId, agentId);
-      const revision = await state.revisions.findRevision(namespace.id, agent.id, revisionId);
-      if (!revision) {
-        throw new ScopeViolationError(
-          "The AgentRevision does not belong to the exact Agent and Namespace.",
-        );
-      }
-      return revision;
-    });
+  }
+
+  private async exactRevision(
+    state: PlatformReadView,
+    namespaceId: string,
+    agentId: string,
+    revisionId: string,
+  ) {
+    const { namespace, agent } = await this.exactAgent(state, namespaceId, agentId);
+    const revision = await state.revisions.findRevision(namespace.id, agent.id, revisionId);
+    if (!revision) {
+      throw new ScopeViolationError(
+        "The AgentRevision does not belong to the exact Agent and Namespace.",
+      );
+    }
+    return { revision, agent };
   }
 
   async getRevisionForBrowsing(
@@ -6284,23 +6113,7 @@ export class OpenClawController {
     agentId: string,
     revisionId: string,
   ): Promise<Readonly<AgentRevisionRead>> {
-    if (!isNonEmptyString(namespaceId)) {
-      throw new ScopeViolationError("The exact Namespace identity is missing.");
-    }
-    if (!isNonEmptyString(agentId)) {
-      throw new ScopeViolationError("The exact Agent identity is missing.");
-    }
-    if (!isNonEmptyString(revisionId)) {
-      throw new ScopeViolationError("The exact AgentRevision identity is missing.");
-    }
-    // The route's Agent is the parent: the lookups below accept only this Agent's revision, so a
-    // revision of another Agent ends as not found, as an unknown ID does.
-    await this.authorize(principalId, "read", {
-      kind: "agent_revision",
-      id: revisionId,
-      namespaceId,
-      parentAgentId: agentId,
-    });
+    await this.authorizeRevisionRead(principalId, namespaceId, agentId, revisionId);
     return this.read(async (state) => {
       const namespace = await this.exactNamespace(state, namespaceId);
       const agent = await state.agents.findAgentForBrowsing(namespace.id, agentId);
@@ -6406,8 +6219,14 @@ export class OpenClawController {
     agentId: string,
     deploymentId: string,
   ): Promise<DeploymentStatusResult> {
-    const revision = await this.getRevision(principalId, namespaceId, agentId, deploymentId);
+    await this.authorizeRevisionRead(principalId, namespaceId, agentId, deploymentId);
     return this.read(async (state) => {
+      const { revision, agent } = await this.exactRevision(
+        state,
+        namespaceId,
+        agentId,
+        deploymentId,
+      );
       const idempotencyKey = `agent_revision:${revision.id}:reconcile`;
       const work = await state.operations.findWork(idempotencyKey);
       if (work === undefined || !workMatchesRevision(work, revision)) {
@@ -6426,12 +6245,15 @@ export class OpenClawController {
           revisionId: revision.id,
         }),
       );
+      const status = deploymentStatusForWork(work, attempt, this.clock());
+      const stopped = work.state === "succeeded" && work.reasonCode === "REVISION_STOPPED";
+      const lostSelection = status === "succeeded" && agent.activeRevisionId !== revision.id;
       return Object.freeze({
         deploymentId: revision.id,
         namespaceId: revision.namespaceId,
         agentId: revision.agentId,
-        status: deploymentStatusForWork(work, attempt, this.clock()),
-        cleanup: await this.deploymentCleanupStatus(state, revision),
+        status,
+        cleanup: await this.deploymentCleanupStatus(state, revision, stopped || lostSelection),
         error: deploymentErrorForWork(work),
         ...(repositoryAccess === undefined ? {} : { repositoryAccess }),
         warnings: deploymentWarningsForWork(work),
@@ -6443,26 +6265,51 @@ export class OpenClawController {
   private async deploymentCleanupStatus(
     state: PlatformReadView,
     revision: Readonly<AgentRevision>,
+    includeSessionDisposal: boolean,
   ): Promise<DeploymentStatusResult["cleanup"]> {
-    const key = `agent_revision:${revision.id}:repository_cleanup:retire:${createHash("sha256").update(revision.id, "utf8").digest("hex")}`;
-    const cleanup = await state.operations.findWork(key);
-    if (cleanup === undefined) {
-      return null;
-    }
-    if (!workMatchesRevision(cleanup, revision)) {
+    const retirementKey = repositoryRetirementWorkKey(revision.id);
+    const sessionsKey = repositoryCleanupWorkKey(revision.id, "sessions");
+    const workByKey = await state.operations.findWorkByKeys([retirementKey, sessionsKey]);
+    const retirement = workByKey.get(retirementKey);
+    const sessions = workByKey.get(sessionsKey);
+    if (
+      [retirement, sessions].some(
+        (work) =>
+          work !== undefined &&
+          (!isRepositoryCleanupWork(work) || !workMatchesRevision(work, revision)),
+      )
+    ) {
       throw new ScopeViolationError("Deployment cleanup does not match its revision.");
     }
-    // A started cleanup stays running between its attempts, as a deployment does (finding 2466).
+
+    const disposal = retirement !== undefined || includeSessionDisposal ? sessions : undefined;
+    if (retirement === undefined && disposal === undefined) {
+      return null;
+    }
+    if (retirement?.state === "failed_permanent" || disposal?.state === "failed_permanent") {
+      return Object.freeze({ status: "failed", nextAttemptAt: null });
+    }
+
+    const nextAttemptAt = [retirement, disposal].reduce<Date | null>(
+      (earliest, work) =>
+        work?.state === "queued" && (earliest === null || work.availableAt < earliest)
+          ? work.availableAt
+          : earliest,
+      null,
+    );
+    // Terminal retirement preserves progress across retries. The session row is reused,
+    // so its current queue state is the only evidence that this disposal is running.
     const attempt =
-      cleanup.state === "queued" && cleanup.attemptCount === 0
-        ? await state.operations.findWorkAttempt(key)
+      retirement?.state === "queued" && retirement.attemptCount === 0
+        ? await state.operations.findWorkAttempt(retirementKey)
         : undefined;
+    const running =
+      disposal?.state === "claimed" ||
+      (retirement !== undefined &&
+        deploymentStatusForWork(retirement, attempt, this.clock()) === "running");
     return Object.freeze({
-      status:
-        cleanup.state === "succeeded"
-          ? "succeeded"
-          : deploymentStatusForWork(cleanup, attempt, this.clock()),
-      nextAttemptAt: cleanup.state === "queued" ? cleanup.availableAt.toISOString() : null,
+      status: running ? "running" : nextAttemptAt === null ? "succeeded" : "queued",
+      nextAttemptAt: nextAttemptAt?.toISOString() ?? null,
     });
   }
 
@@ -7750,6 +7597,8 @@ export class OpenClawController {
         check: (use, material, stream, provider) =>
           this.checkEgressUse(use, material, stream, provider),
         read: async (source, lifetime, isProviderCurrent) => {
+          const owner = this.selectedProxyOwner();
+          const control = owner.require("credential_proxy").sourceControl;
           const secret = await this.state.read((state) =>
             state.secrets.findSecret(source.secret.namespaceId, source.secret.id),
           );
@@ -7760,7 +7609,14 @@ export class OpenClawController {
           if (!driver.readCredentialInput) {
             throw new DependencyUnavailableError("Versioned credential reading is unavailable.");
           }
-          if (!isProviderCurrent()) {
+          if (
+            this.selectedProxyOwner() !== owner ||
+            owner.require("credential_proxy").sourceControl !== control ||
+            !isDeepStrictEqual(control.backend, source.key.backend) ||
+            !isDeepStrictEqual(control.sender, source.sender) ||
+            !isDeepStrictEqual(control.resolver, source.resolver) ||
+            !isProviderCurrent()
+          ) {
             throw new DependencyUnavailableError("Selected credential provider changed.");
           }
           return {
@@ -8064,6 +7920,9 @@ export class OpenClawController {
       return deny("stale_configuration");
     }
     const provider = selectedProvider.receiver;
+    if (!matchesAdmittedSourceType(source, provider)) {
+      return deny("stale_configuration");
+    }
     try {
       const routes = Reflect.apply(selectedProvider.methods.routes, provider, [
         source,
@@ -8316,7 +8175,8 @@ export class OpenClawController {
     });
   }
 
-  private staticEgressProvider(type: string, previous?: EgressRef) {
+  private staticEgressProvider(gatewayType: CredentialSourceType, previous?: EgressRef) {
+    const type = gatewayType.type;
     const driver = this.selectedDriver("credential_proxy");
     const owner = this.selections.get("credential_proxy")?.owner;
     const control = driver.sourceControl;
@@ -8336,6 +8196,9 @@ export class OpenClawController {
       return undefined;
     }
     const ref = immutableCopy(provider.ref);
+    // Catalog entries may be retained by their Drivers across asynchronous admission.
+    const admittedGatewayType = immutableCopy(gatewayType);
+    const admittedProviderType = immutableCopy(provider.sourceType);
     const { inject, normalizeConfig } = provider;
     const assertCurrent = () => {
       if (
@@ -8344,6 +8207,8 @@ export class OpenClawController {
         (owner !== undefined && owner.require("credential_proxy") !== driver) ||
         driver.sourceControl !== control ||
         resolve() !== provider ||
+        !isDeepStrictEqual(gatewayType, admittedGatewayType) ||
+        !isDeepStrictEqual(provider.sourceType, admittedProviderType) ||
         !isDeepStrictEqual(provider.ref, ref) ||
         provider.inject !== inject ||
         provider.normalizeConfig !== normalizeConfig
@@ -8354,7 +8219,7 @@ export class OpenClawController {
       }
       owner?.assertNewStaticProviderUse(ref);
     };
-    return { provider, ref, inject, normalizeConfig, assertCurrent };
+    return { provider, ref, inject, normalizeConfig, assertCurrent, gatewayType };
   }
 
   private async admitStaticEgressSource(
@@ -8366,13 +8231,14 @@ export class OpenClawController {
     config: Readonly<Record<string, string>>,
     references: Readonly<Record<string, SecretReference>>,
     generation: number,
-    selection = this.staticEgressProvider(type),
+    selection: ReturnType<OpenClawController["staticEgressProvider"]>,
   ): Promise<StaticEgressSource> {
     const control = this.selectedDriver("credential_proxy").sourceControl;
     if (
       !selection ||
+      selection.gatewayType.type !== type ||
       selection.provider.sourceType.type !== type ||
-      selection.provider.sourceType.rotation === "refresh" ||
+      !this.staticSourceLifecycleMatches(selection.gatewayType, selection.provider.sourceType) ||
       selection.provider.sourceType.secrets.length !== 1
     ) {
       // An Installation property about the type the request sent (finding 2536). The who comes
@@ -8453,7 +8319,7 @@ export class OpenClawController {
     repositoryGit?: RepositoryRevisionState,
     harnessAuth?: HarnessAuthSnapshot,
     harnessConfiguration?: Readonly<Record<string, unknown>>,
-  ): Promise<ProxyPlan | undefined> {
+  ): Promise<{ plan: ProxyPlan; assertProvidersCurrent: () => void } | undefined> {
     const sources: CredentialSource[] = [];
     let harnessCredentialSource: ProxyPlan["harnessCredentialSource"];
     for (const binding of agent.credentialSources ?? []) {
@@ -8577,14 +8443,27 @@ export class OpenClawController {
       revisionId,
       executionId: repositoryGit ? randomBytes(24).toString("base64url") : crypto.randomUUID(),
     };
-    const routes = sources.flatMap((source) => {
+    const control = driver.sourceControl;
+    const requireProvider = (source: CredentialSource, expected?: CredentialProviderDefinition) => {
       const admitted = source.egress!;
-      const provider = driver.sourceControl.providers.find((entry) =>
-        isDeepStrictEqual(entry.ref, admitted.key.provider),
-      );
-      if (!provider || !isDeepStrictEqual(driver.sourceControl.backend, admitted.key.backend)) {
+      const provider = registeredCredentialProvider(control.providers, admitted.key.provider);
+      if (
+        provider === "ambiguous" ||
+        (expected && provider !== expected) ||
+        (provider && !matchesAdmittedSourceType(source, provider))
+      ) {
+        throw new ResourceStateConflictError(
+          "The admitted credential provider changed or is incompatible. Ask an Installation administrator to restore its unique registration.",
+        );
+      }
+      if (!provider || !isDeepStrictEqual(control.backend, admitted.key.backend)) {
         throw new DependencyUnavailableError("The admitted egress composition is unavailable.");
       }
+      return provider;
+    };
+    const registrations = sources.map((source) => ({ source, provider: requireProvider(source) }));
+    const routes = registrations.flatMap(({ source, provider }) => {
+      const admitted = source.egress!;
       const grant = provider.normalizeGrant([modelId], source.config);
       let digestGrant = grant;
       if (source.type === credentialFreeMetadataType && admitted.adoption === "credential_free") {
@@ -8610,7 +8489,7 @@ export class OpenClawController {
         harnessConfiguration,
       );
     });
-    return immutableCopy({
+    const plan: ProxyPlan = immutableCopy({
       id: crypto.randomUUID(),
       generation: 1,
       execution,
@@ -8626,6 +8505,21 @@ export class OpenClawController {
       ...(harnessCredentialSource && { harnessCredentialSource }),
       routes,
     });
+    // The plan is durable; the receiver identities stay local to this admission.
+    const assertProvidersCurrent = () => {
+      if (registrations.length === 0) {
+        return;
+      }
+      if (this.selectedProxyOwner() !== owner || driver.sourceControl !== control) {
+        throw new ResourceStateConflictError(
+          "The selected Credential Proxy changed during deployment.",
+        );
+      }
+      for (const { source, provider } of registrations) {
+        requireProvider(source, provider);
+      }
+    };
+    return { plan, assertProvidersCurrent };
   }
 
   /**
@@ -8686,9 +8580,7 @@ export class OpenClawController {
       }
       const requiresStaticAdmission =
         !protectedType && !this.ordinaryCredentialGatewayAllowed(type);
-      const staticSelection = requiresStaticAdmission
-        ? this.staticEgressProvider(type.type)
-        : undefined;
+      const staticSelection = requiresStaticAdmission ? this.staticEgressProvider(type) : undefined;
       if (
         requiresStaticAdmission &&
         !this.staticSourceLifecycleMatches(type, staticSelection?.provider.sourceType)
@@ -8736,7 +8628,7 @@ export class OpenClawController {
             principalId,
             locked.id,
             sourceId,
-            type.type,
+            input.type,
             config,
             secretRefs,
             1,
@@ -9007,7 +8899,7 @@ export class OpenClawController {
         const previous = source.egress?.key.provider;
         const admitted =
           previous && this.selections.has("credential_proxy")
-            ? this.staticEgressProvider(source.type, previous)
+            ? this.staticEgressProvider(type, previous)
             : undefined;
         if (!admitted && !(input.adoption === "live" && input.authorityScope === "execution")) {
           throw new ResourceStateConflictError(
@@ -9031,7 +8923,7 @@ export class OpenClawController {
           source.config,
           secretRefs,
           (source.egress?.key.source.generation ?? 0) + 1,
-          admitted,
+          admitted ?? this.staticEgressProvider(type),
         );
         if (input.secrets !== undefined) {
           await state.credentialSources.replaceCredentialSourceSecrets(
@@ -11468,6 +11360,7 @@ export class OpenClawController {
       canSave &&
       driver.networkPolicy.live &&
       policy.repositoryNetworkPolicy === undefined &&
+      revision?.sandboxPolicy?.repositoryNetworkPolicy === undefined &&
       agent.desiredRuntimeState === "running" &&
       this.unprotectedPolicyRevision(revision) &&
       revision?.sandboxPolicy !== undefined &&
@@ -11490,6 +11383,10 @@ export class OpenClawController {
     };
   }
 
+  private agentSandboxPolicyRef(namespaceId: string, agentId: string) {
+    return { kind: "sandbox_policy", id: `sbp_${agentId.slice(4)}`, namespaceId } as const;
+  }
+
   async validateAgentSandboxPolicy(
     principalId: string,
     namespaceId: string,
@@ -11500,11 +11397,7 @@ export class OpenClawController {
   ): Promise<ConfigurationResult<{ readonly additions: readonly SandboxNetworkGrant[] }>> {
     this.requireNetworkPolicyFacet(facet);
     await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
-    await this.authorize(principalId, "update", {
-      kind: "sandbox_policy",
-      id: `sbp_${agentId.slice(4)}`,
-      namespaceId,
-    });
+    await this.authorize(principalId, "update", this.agentSandboxPolicyRef(namespaceId, agentId));
     // The cause comes before the editing setting and version checks it would otherwise hide (D774).
     this.requireNetworkPolicyAvailable();
     return this.read(async (state) => {
@@ -11602,28 +11495,11 @@ export class OpenClawController {
     namespaceId: string,
   ): RepositoryNetworkPolicyCeiling {
     const admission = this.selectedStandingRepositoryAdmission();
-    if (admission === undefined) {
-      return [];
-    }
-    const owner = this.repositoryPermissionOwner(admission);
-    const { policy } = admission;
-    const allowsGrant = policy.repositoryNetworkPolicyAllows?.bind(policy);
-    if (!owner?.unchanged() || allowsGrant === undefined) {
-      return [];
-    }
-    const grants = this.repositoryNetworkPolicyCeiling.flatMap<RepositoryNetworkGrant>((grant) => {
-      if (allowsGrant({ namespaceId, grant })) {
-        return [grant];
-      }
-      if (grant.access === "write") {
-        const read = { repository: grant.repository, access: "read" } as const;
-        if (allowsGrant({ namespaceId, grant: read })) {
-          return [read];
-        }
-      }
-      return [];
-    });
-    return owner.unchanged() ? grants : [];
+    const owner = admission && this.repositoryPermissionOwner(admission);
+    return delegatedRepositoryCeiling(
+      this.repositoryNetworkPolicyCeiling,
+      repositoryGrantAuthority(namespaceId, admission?.policy, owner?.unchanged),
+    );
   }
 
   async getAgentSandboxPolicy(
@@ -11634,11 +11510,7 @@ export class OpenClawController {
   ) {
     this.requireNetworkPolicyFacet(facet);
     await this.authorize(principalId, "read", { kind: "agent", id: agentId, namespaceId });
-    await this.authorize(principalId, "read", {
-      kind: "sandbox_policy",
-      id: `sbp_${agentId.slice(4)}`,
-      namespaceId,
-    });
+    await this.authorize(principalId, "read", this.agentSandboxPolicyRef(namespaceId, agentId));
     return this.read(async (state) => {
       await this.exactNamespace(state, namespaceId);
       const agent = await state.agents.findAgent(namespaceId, agentId);
@@ -11672,7 +11544,8 @@ export class OpenClawController {
         ceiling: this.sandboxNetworkPolicyCeiling,
         repositoryNetworkPolicyCeiling: this.namespaceRepositoryNetworkPolicyCeiling(namespaceId),
         repositoryNetworkPolicySaveSupported:
-          state.sandboxPolicies.supportsRepositoryNetworkPolicy === true,
+          state.sandboxPolicies.supportsRepositoryNetworkPolicy === true &&
+          policy.repositoryNetworkPolicy !== undefined,
         defaults,
         // A fresh deploy carries the saved version into its Sandbox; no application is
         // requested for it (D773).
@@ -11706,10 +11579,17 @@ export class OpenClawController {
       if (agent === undefined || agent.status !== "active") {
         throw new ResourceStateConflictError("The Agent is unavailable for policy configuration.");
       }
-      // Fail early (D774): editing could never save a rule. Turning it off stays allowed.
       const unavailable = this.networkPolicyUnavailable();
       if (enabled && unavailable !== undefined) {
-        throw new ResourceStateConflictError(unavailable);
+        // Only an authorized policy reader can distinguish withdrawal from an unavailable edit.
+        await this.authorize(principalId, "read", this.agentSandboxPolicyRef(namespaceId, agentId));
+        if (
+          state.sandboxPolicies.supportsRepositoryNetworkPolicy !== true ||
+          (await state.sandboxPolicies.find(namespaceId, agentId))?.repositoryNetworkPolicy ===
+            undefined
+        ) {
+          throw new ResourceStateConflictError(unavailable);
+        }
       }
       const updated = await state.agents.setSandboxPolicyEditing(namespaceId, agentId, enabled);
       if (updated === undefined) {
@@ -11744,26 +11624,12 @@ export class OpenClawController {
       validateSandboxNetworkGrants(input);
       const additions = immutableCopy(input);
       requireConfiguration(contribution, { additions });
-      const details: ErrorDetail[] = [];
-      additions.forEach((grant, index) => {
-        if (!sandboxNetworkGrantsWithinCeiling([grant], this.sandboxNetworkPolicyCeiling)) {
-          details.push({
-            path: `/additions/${index}`,
-            code: "OUTSIDE_CEILING",
-            message: "The grant exceeds the Installation delegation ceiling.",
-          });
-        }
-        if (
-          (!driver.networkPolicy!.wildcards && grant.host.startsWith("*.")) ||
-          (!driver.networkPolicy!.portRanges && grant.ports.some(({ from, to }) => from !== to))
-        ) {
-          details.push({
-            path: `/additions/${index}`,
-            code: "INVALID_VALUE",
-            message: "The Driver does not support the requested wildcard or port range.",
-          });
-        }
-      });
+      const details = networkGrantAdmissionDetails(
+        additions,
+        this.sandboxNetworkPolicyCeiling,
+        driver.networkPolicy,
+        "/additions",
+      );
       if (details.length > 0) {
         admissionMessage = details.some((detail) => detail.code === "OUTSIDE_CEILING")
           ? "The requested network policy exceeds the Installation delegation ceiling."
@@ -11934,11 +11800,8 @@ export class OpenClawController {
   ): Promise<Readonly<SandboxPolicy>> {
     this.requireNetworkPolicyFacet(facet);
     await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
-    await this.authorize(principalId, "update", {
-      kind: "sandbox_policy",
-      id: `sbp_${agentId.slice(4)}`,
-      namespaceId,
-    });
+    const sandboxPolicy = this.agentSandboxPolicyRef(namespaceId, agentId);
+    await this.authorize(principalId, "update", sandboxPolicy);
     return this.mutate(async (state) => {
       if (
         repositoryNetworkPolicy !== undefined &&
@@ -11949,8 +11812,14 @@ export class OpenClawController {
           [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
         );
       }
-      // The cause comes before the editing setting and version checks it would otherwise hide (D774).
-      this.requireNetworkPolicyAvailable();
+      // Withdrawing all desired grants needs no Driver. Keep the capability refusal
+      // before the editing and version checks for ordinary network policy updates.
+      const clearsRepository =
+        Array.isArray(repositoryNetworkPolicy) && repositoryNetworkPolicy.length === 0;
+      const clearsAll = clearsRepository && Array.isArray(additions) && additions.length === 0;
+      if (!clearsAll) {
+        this.requireNetworkPolicyAvailable();
+      }
       await this.lockNamespace(state, namespaceId);
       const agent = await state.agents.lockAgent(namespaceId, agentId);
       const previous = await state.sandboxPolicies.find(namespaceId, agentId);
@@ -11966,7 +11835,11 @@ export class OpenClawController {
           "The policy changed or an application is still pending. Reload before editing.",
         );
       }
-      if (additions.length > 0 || repositoryNetworkPolicy !== undefined) {
+      if (clearsRepository) {
+        await this.authorize(principalId, "read", sandboxPolicy);
+      }
+      const withdrawal = clearsRepository && previous.repositoryNetworkPolicy !== undefined;
+      if (additions.length > 0 || (repositoryNetworkPolicy !== undefined && !withdrawal)) {
         const active =
           agent.activeRevisionId === undefined
             ? undefined
@@ -11977,42 +11850,24 @@ export class OpenClawController {
           );
         }
       }
-      let repositoryGrants = previous.repositoryNetworkPolicy;
-      if (repositoryNetworkPolicy !== undefined) {
-        try {
-          repositoryGrants = admitRepositoryNetworkPolicy(
-            repositoryNetworkPolicy,
-            repositoryNetworkPolicy.length === 0
-              ? []
-              : this.namespaceRepositoryNetworkPolicyCeiling(namespaceId),
-          )!.grants;
-        } catch (error) {
-          if (!(error instanceof RepositoryNetworkPolicyAdmissionError)) {
-            throw error;
-          }
-          const message =
-            error.code === "OUTSIDE_CEILING"
-              ? "The grant exceeds the repository network policy delegation limit for this Namespace."
-              : error.message;
-          throw new ResourceStateConflictError(message, [
-            {
-              path: error.path,
-              code: error.code === "UNSUPPORTED_POLICY" ? "INVALID_VALUE" : error.code,
-              message,
-            },
-          ]);
-        }
+      if (repositoryNetworkPolicy !== undefined && !withdrawal) {
+        throw new ResourceStateConflictError(
+          "This Installation cannot deploy a repository network policy. Only an existing list can be cleared.",
+        );
       }
-      const admitted = this.admitAgentNetworkPolicy(additions, expectedVersion + 1, undefined, {
-        repositoryCredentials: (agent.repositoryBindings?.length ?? 0) > 0,
-      });
+      const repositoryGrants = withdrawal ? [] : previous.repositoryNetworkPolicy;
+      const admittedAdditions = clearsAll
+        ? []
+        : this.admitAgentNetworkPolicy(additions, expectedVersion + 1, undefined, {
+            repositoryCredentials: (agent.repositoryBindings?.length ?? 0) > 0,
+          }).additions;
       const updated = await state.sandboxPolicies.save(
         {
           id: previous.id,
           namespaceId,
           agentId,
           version: expectedVersion + 1,
-          additions: admitted.additions,
+          additions: admittedAdditions,
           ...(repositoryGrants === undefined ? {} : { repositoryNetworkPolicy: repositoryGrants }),
           ...(previous.applied === undefined ? {} : { applied: previous.applied }),
         },
@@ -12036,11 +11891,7 @@ export class OpenClawController {
   ): Promise<Readonly<SandboxPolicy>> {
     this.requireNetworkPolicyFacet(facet);
     await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
-    const sandboxPolicy = {
-      kind: "sandbox_policy",
-      id: `sbp_${agentId.slice(4)}`,
-      namespaceId,
-    } as const;
+    const sandboxPolicy = this.agentSandboxPolicyRef(namespaceId, agentId);
     await this.authorize(principalId, "update", sandboxPolicy);
     // Finding 2874: apply admits the saved additions (ceiling and Driver refusals name them)
     // and returns the saved policy, so it needs SandboxPolicy read before either, even with
@@ -12071,7 +11922,12 @@ export class OpenClawController {
       const revision = await state.revisions.findRevision(namespaceId, agentId, revisionId);
       if (policy.repositoryNetworkPolicy !== undefined) {
         throw new ResourceStateConflictError(
-          "Repository network policy changes require a deployment. Deploy explicitly to apply the saved policy.",
+          "Live application is unavailable for the saved repository network policy. To end current access, stop the Agent and confirm its workload has stopped. Applying the saved policy requires a deployment that can enforce it.",
+        );
+      }
+      if (revision?.sandboxPolicy?.repositoryNetworkPolicy !== undefined) {
+        throw new ResourceStateConflictError(
+          "The active revision has a repository network policy that is missing from the saved policy. Stop the Agent and confirm its workload has stopped before investigating the mismatch.",
         );
       }
       // Qualified artifact snapshots do not make protected revisions eligible for live apply.
@@ -13192,6 +13048,7 @@ export class OpenClawController {
           "The expected Configuration generation is unavailable. Recover the original first-deployment receipt after an uncertain result, then review the current Configuration before deploying.",
         );
       }
+      await this.deploymentSandboxPolicy(state, principalId, target.namespaceId, agent.id);
       return { metadata };
     });
     if (initial.receipt !== undefined) {
@@ -13330,6 +13187,26 @@ export class OpenClawController {
     }
   }
 
+  private async deploymentSandboxPolicy(
+    state: PlatformReadView,
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+  ): Promise<Readonly<SandboxPolicy> | undefined> {
+    const policy = await state.sandboxPolicies.find(namespaceId, agentId);
+    if (policy?.repositoryNetworkPolicy !== undefined) {
+      await this.authorize(principalId, "read", {
+        kind: "sandbox_policy",
+        id: policy.id,
+        namespaceId,
+      });
+      throw new ResourceStateConflictError(
+        "This Installation cannot enforce the saved repository network policy. Deploy with an Installation that supports it.",
+      );
+    }
+    return policy;
+  }
+
   private async validateDeploymentChannels(
     principalId: string,
     input: DeployAgentInput,
@@ -13352,6 +13229,7 @@ export class OpenClawController {
         id: agent.configurationId,
         namespaceId: input.namespaceId,
       });
+      await this.deploymentSandboxPolicy(state, principalId, input.namespaceId, agent.id);
       return state.configurations.findConfiguration(input.namespaceId, agent.configurationId);
     });
     return this.prepareDeploymentChannels(principalId, input, metadata);
@@ -13468,6 +13346,11 @@ export class OpenClawController {
           "The Agent does not belong to the exact Installation and Namespace.",
         );
       }
+      // The Namespace lock serializes policy saves and provisioning repair.
+      const ordinaryPolicy =
+        first === undefined
+          ? await this.deploymentSandboxPolicy(state, principalId, namespace.id, agent.id)
+          : undefined;
       if (first === undefined) {
         await this.guardAgentProvisioning(state, namespace.id, agent.id, true);
       }
@@ -13532,6 +13415,11 @@ export class OpenClawController {
           );
         }
       }
+      // First deployment rechecks only after recovery of an existing receipt has been ruled out.
+      const policy =
+        first === undefined
+          ? ordinaryPolicy
+          : await this.deploymentSandboxPolicy(state, principalId, namespace.id, lockedAgent.id);
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -13826,7 +13714,7 @@ export class OpenClawController {
       // PostgreSQL restamps createdAt on its own clock; the response carries the stored value.
       // The repository credential deadline above stays on this controller's clock.
       const revisionId = this.nextIdentifier("agent_revision");
-      const egressPlan = await this.admitProxyPlan(
+      const proxyAdmission = await this.admitProxyPlan(
         state,
         lockedAgent,
         revisionId,
@@ -13836,6 +13724,7 @@ export class OpenClawController {
         harnessAuth,
         revisionHarness.configuration,
       );
+      const egressPlan = proxyAdmission?.plan;
       let executionAdmission: ExecutionAdmission;
       if (egressPlan === undefined) {
         executionAdmission = { version: 2, mode: "unprotected" };
@@ -13869,7 +13758,6 @@ export class OpenClawController {
           "The selected Compute cannot admit this execution mode; protected release and old-reader fencing are unavailable.",
         );
       }
-      const policy = await state.sandboxPolicies.find(namespace.id, lockedAgent.id);
       const policyScope = { repositoryCredentials: repositoryCredentials !== undefined };
       // Finding 2053: protected execution refuses Agent additions, never drops them. Only an
       // explicitly acknowledged artifact snapshot can accompany dedicated Codex repository
@@ -13946,6 +13834,7 @@ export class OpenClawController {
             });
           }
           // The Driver creates only missing owned Secrets; a failed admission can reuse them.
+          proxyAdmission?.assertProvidersCurrent();
           const provisioned = this.runtimeCredentialStatus(
             await this.runtimeCredentialOperation(() =>
               compute.provisionAgentRuntimeCredentials!(binding, {}),
@@ -14002,20 +13891,19 @@ export class OpenClawController {
         },
       });
       const runtimeInputs = compute.snapshotRuntimeInputs?.(admittedDraft);
+      const candidate = freezeAgentRevision({
+        ...admittedDraft,
+        compute: {
+          ...admittedDraft.compute,
+          ...(runtimeInputs === undefined ? {} : { runtimeInputs }),
+        },
+      });
       // Database locks do not freeze process-local selections across awaited Driver calls.
       if (prepared !== undefined) {
         this.assertPreparedDeploymentDrivers(prepared);
       }
-      const revision = await state.revisions.createRevision(
-        freezeAgentRevision({
-          ...admittedDraft,
-          compute: {
-            ...admittedDraft.compute,
-            ...(runtimeInputs === undefined ? {} : { runtimeInputs }),
-          },
-        }),
-        first?.digest,
-      );
+      proxyAdmission?.assertProvidersCurrent();
+      const revision = await state.revisions.createRevision(candidate, first?.digest);
       if (
         lockedAgent.activeRevisionId &&
         (lockedAgent.desiredRuntimeState === "stopped" ||
@@ -14354,6 +14242,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     agentId: string,
+    expectedActiveRevisionId?: string,
   ): Promise<Readonly<Agent>> {
     if (!isNonEmptyString(namespaceId)) {
       throw new ScopeViolationError("The exact Namespace identity is missing.");
@@ -14362,17 +14251,53 @@ export class OpenClawController {
       throw new ScopeViolationError("The exact Agent identity is missing.");
     }
     return this.mutate(async (state) => {
-      await this.authorize(principalId, "operate", {
-        kind: "agent",
-        id: agentId,
-        namespaceId,
-      });
+      const target = { kind: "agent", id: agentId, namespaceId } as const;
+      if (expectedActiveRevisionId !== undefined) {
+        await this.holdAuthority(state);
+      }
+      await this.authorize(principalId, "operate", target);
       await this.lockNamespace(state, namespaceId);
       const agent = await state.agents.lockAgent(namespaceId, agentId);
+      if (expectedActiveRevisionId !== undefined) {
+        await this.authorize(principalId, "operate", target);
+      }
       if (agent === undefined) {
         throw new ScopeViolationError(
           "The Agent does not belong to the exact Installation and Namespace.",
         );
+      }
+      if (expectedActiveRevisionId !== undefined) {
+        // Stop is Agent-wide. A queued successor need not have replaced the active pointer yet.
+        const conflict = () =>
+          new ResourceStateConflictError(
+            "Stop requires the expected revision to be active, latest, and successfully deployed. Inspect the current Agent before stopping it.",
+          );
+        if (
+          agent.status !== "active" ||
+          agent.desiredRuntimeState !== "running" ||
+          agent.activeRevisionId !== expectedActiveRevisionId
+        ) {
+          throw conflict();
+        }
+        const { revisions } = await state.revisions.pageRevisionSummaries(namespaceId, agentId, {
+          limit: 1,
+        });
+        const latest = revisions[0];
+        if (
+          latest?.id !== expectedActiveRevisionId ||
+          latest.namespaceId !== namespaceId ||
+          latest.agentId !== agentId
+        ) {
+          throw conflict();
+        }
+        const work = await state.operations.findWork(`agent_revision:${latest.id}:reconcile`);
+        if (
+          !work ||
+          !workMatchesRevision(work, latest) ||
+          controllerWorkDeploymentStatus(work, this.clock()) !== "succeeded"
+        ) {
+          throw conflict();
+        }
       }
       if (agent.status === "deleting") {
         return agent;
@@ -17533,18 +17458,15 @@ export class OpenClawController {
     type: CredentialSourceType,
     provider?: CredentialSourceType,
   ): boolean {
-    // Externally rotated static inputs still use explicit Secret updates, not Refresh.
     return (
-      type.rotation !== "refresh" &&
-      type.deviceAuthorization === undefined &&
-      type.harnessAuth?.loginMode !== "chatgptAuthTokens" &&
-      (provider === undefined || provider.rotation !== "refresh")
+      supportsStaticCredentials(type) &&
+      (provider === undefined || supportsStaticCredentials(provider))
     );
   }
 
   private staticSourceTypeAvailable(type: CredentialSourceType): boolean {
     try {
-      const selection = this.staticEgressProvider(type.type);
+      const selection = this.staticEgressProvider(type);
       if (
         !selection ||
         !this.staticSourceLifecycleMatches(type, selection.provider.sourceType) ||

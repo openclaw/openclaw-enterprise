@@ -19,7 +19,7 @@ import {
 import { readPrivateJsonResponse } from "../../apps/controller/src/drivers/repo/access/private-json-response.ts";
 import { RepositoryReceiptClient } from "../../apps/controller/src/drivers/repo/access/receipt-client.ts";
 import { callControl } from "../../apps/controller/src/drivers/repo/github/access/client/operator.ts";
-import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.ts";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 

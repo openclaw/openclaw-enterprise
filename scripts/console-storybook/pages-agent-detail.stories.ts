@@ -279,6 +279,7 @@ export const BootstrapFailureCleanupPending = story("deploymentBootstrapCleanup"
 export const BootstrapContainerStatusAndLogs = story("runtimeBootstrapContainers");
 
 export const PolicyDenials = story("policyDenials");
+export const PolicyRepositoryLimits = story("policyRepositoryLimits");
 export const PolicyUnicodeExecutable = story("policyUnicodeExecutable");
 export const PolicyDenialsMany = story("policyDenialsMany");
 export const PolicyRulesPopulated = story("policyRulesPopulated");
@@ -303,10 +304,6 @@ export const PolicyDenialsNoCredential = story("policyDenialsNoCredential");
 export const PolicyDenialsProtected = story("policyDenialsProtected");
 export const PolicyDenialsWithheldOne = story("policyDenialsWithheldOne");
 export const PolicyDenialsWithheldMany = story("policyDenialsWithheldMany");
-export const PolicyRepositoryAccess = story("policyRepositoryAccess");
-export const PolicyRepositoryDenyAll = story("policyRepositoryDenyAll");
-export const PolicyRepositoryReadOnly = story("policyRepositoryReadOnly");
-export const PolicyRepositorySaveLost = story("policyRepositorySaveLost");
 
 export const ConfigurationInvalid = story("policyConfigurationInvalid");
 export const ConfigurationConflict = story("policyConfigurationConflict");

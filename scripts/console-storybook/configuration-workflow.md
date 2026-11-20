@@ -13,28 +13,6 @@ components with simulated API state; they do not prove persistence or enforcemen
   **Add Network rules**, fill the schema fields, add a port range, then select
   **Review changes**. Preview does not change the saved version. Compare **Save**
   with **Save and apply to current revision**, then wait for provider confirmation.
-- **Edit repository network access:** open **Manage rules** and check the saved
-  legacy policy. Choose **Edit repository access**, then **Done**. Select the
-  denial and choose **Allow selected**. In the rule review, choose **Back to
-  editing** and check that the proposed deny-all policy and saved legacy access
-  are both visible. Reset the story, then choose **Edit repository access**.
-  Select **Read** for
-  `example/application` and **Write** for `example/tooling`. Save, reopen the
-  dialog, and check the grants and redeploy guidance. Then select **No access**
-  for both and save. Compare the saved result with **Saved deny-all repository
-  policy** and confirm that it differs from the initial legacy policy.
-- **Protected execution refuses network policy additions:** open **Manage rules**
-  and remove the saved network rules. Review the removal and choose **Save for
-  later**. Reopen **Manage rules** and check the saved repository policy.
-  Repository policy saving, rule additions, and live application are unavailable.
-- **Repository policy saving unavailable:** open **View network limits**.
-  Confirm the dialog shows read and write repository grants even when the
-  Installation delegates no ordinary rules. Close the dialog and open **Manage
-  rules** to view the saved policy.
-- **Discard after repository saving becomes unavailable:** open **Manage rules**
-  and select **Edit repository access**. Choose **Refresh policy** after the
-  proposed policy appears. Check the saved state and the retained proposal, then
-  select **Discard repository changes** to remove the proposal locally.
 - **Configuration preview field errors:** review a suggestion. The preview shows
   a field error and retains the proposal without saving.
 - **Configuration version conflict retains draft:** preview a proposal and check
@@ -106,3 +84,15 @@ Restore the original Model ID before retrying.
 Replace only `1e400` with `2`. Save or create, then inspect the Configuration for
 `[1,2,3]`. Capture the rejection and successful correction. These stories use
 simulated saves; they do not prove Controller persistence or runtime behavior.
+
+## Inspect and withdraw saved repository grants
+
+Open **Inspect Namespace repository limits** in **Pages / Agent detail**. Open
+**View network limits** and check both repository entries. Open **Manage rules**
+to see that this Agent has legacy repository access.
+
+In the protected execution story, remove and save the ordinary network rules
+first. Reopen **Manage rules** and select **Withdraw saved repository grants**.
+Use **Back to editing** to return to the saved grants, then open the review
+again. Select **Save deny-all policy** and verify the saved deny-all state. This
+story simulates the Console and API exchange.

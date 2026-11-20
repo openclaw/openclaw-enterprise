@@ -727,7 +727,7 @@ export const agentRevisions = occSchema.table(
       sql`COALESCE(
         jsonb_typeof(${table.admittedSpec}->'execution_admission') = 'object'
         AND (${table.admittedSpec}->'execution_admission') ?& ARRAY['version', 'mode']
-        AND ((${table.admittedSpec}->'execution_admission') - 'version' - 'mode') = '{}'::jsonb
+        AND ((${table.admittedSpec}->'execution_admission') - 'version' - 'mode' - 'repositoryNetworkPolicyVersion') = '{}'::jsonb
         AND (
           (${table.admittedSpec}->'execution_admission'->>'mode' = 'unprotected'
             AND ${table.admittedSpec} #> '{execution_admission,version}' = '2'::jsonb
@@ -762,6 +762,14 @@ export const agentRevisions = occSchema.table(
                 AND ${table.admittedSpec} #>> '{egress_plan,driver,configurationId}' ~ '^[0-9a-f]{64}$'
               ))
         ), false)`,
+    ),
+    check(
+      "agent_revisions_repository_policy_reader_version",
+      sql`CASE WHEN (${table.admittedSpec}->'sandbox_policy') ? 'repositoryNetworkPolicy'
+      THEN ${table.admittedSpec} #> '{execution_admission,repositoryNetworkPolicyVersion}' IS NOT DISTINCT FROM '1'::jsonb
+        AND ${table.admittedSpec} #> '{sandbox_policy,repositoryNetworkPolicy,version}' IS NOT DISTINCT FROM '1'::jsonb
+      ELSE NOT COALESCE((${table.admittedSpec}->'execution_admission') ? 'repositoryNetworkPolicyVersion', false)
+    END`,
     ),
     check(
       "agent_revisions_admitted_snapshot",
@@ -1851,9 +1859,13 @@ export const egressInstallations = occSchema.table(
     revisionId: text("revision_id").notNull(),
     agentId: text("agent_id").notNull(),
     installation: jsonb("installation").$type<EgressInstallation>().notNull(),
+    retired: boolean("retired").notNull().default(false),
   },
   (table) => [
-    primaryKey({ columns: [table.senderId, table.sandboxId] }),
+    primaryKey({ columns: [table.senderId, table.sandboxId, table.revisionId] }),
+    uniqueIndex("egress_installations_current_sandbox")
+      .on(table.senderId, table.sandboxId)
+      .where(sql`NOT ${table.retired}`),
     check(
       "egress_installations_check",
       sql`length(${table.senderId}) BETWEEN 1 AND 200 AND length(${table.sandboxId}) BETWEEN 1 AND 200`,

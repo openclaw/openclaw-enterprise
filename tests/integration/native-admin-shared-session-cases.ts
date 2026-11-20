@@ -25,6 +25,7 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.ts";
 import { callerDenied } from "../helpers/refusal-text.mjs";
 import type { sharedSessionDependencies } from "./native-admin-access.test.mjs";
+import { activatedDocumentNavigationHeaders } from "./native-admin-browser-access-cases.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type FixtureResponse = { status: number; body: unknown };
@@ -348,10 +349,7 @@ export const registerNativeAdminSessionRecoveryCase: RegisterSharedSessionCases 
     const headers = {
       host: nativeAuthority({ origin }),
       cookie: context.session.cookie,
-      accept: "text/html,application/xhtml+xml",
-      "sec-fetch-mode": "navigate",
-      "sec-fetch-dest": "document",
-      "sec-fetch-user": "?1",
+      ...activatedDocumentNavigationHeaders,
     };
     // Fail the backing session store below Better Auth while leaving the issued session intact.
     const sessions = context.fixture.memoryDatabase.session;

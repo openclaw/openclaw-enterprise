@@ -334,6 +334,7 @@ export async function runStartupProbeScenario(
     kind,
     mode,
     delayMs = 0,
+    heldPrompt = /** @type {string | undefined} */ (undefined),
     until,
     act,
     homeVolume,
@@ -382,6 +383,7 @@ export async function runStartupProbeScenario(
     `PROBE_ENDPOINT_MODE=${mode}`,
     "-e",
     `PROBE_ENDPOINT_DELAY_MS=${delayMs}`,
+    ...(heldPrompt === undefined ? [] : ["-e", `PROBE_ENDPOINT_HELD_PROMPT=${heldPrompt}`]),
     "-e",
     `PROBE_OBSERVE_NATIVE_PORT=${wrapper.nativePort}`,
     "-e",
@@ -511,6 +513,7 @@ export async function runStartupProbeScenario(
   const deadline = Date.now() + 300_000 * imageSmokeTimeoutMultiplier;
   const scenario = {
     containerName,
+    sidecar,
     startedAt,
     setupMs: startedAt - scenarioStartedAt,
     wrapper,

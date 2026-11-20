@@ -1,10 +1,10 @@
 import type {
   SandboxNetworkGrant,
   ConfigurationResult,
+  RepositoryNetworkGrant,
   SandboxPolicy,
   SandboxPolicyApplication,
   OpenClawConfigurationValue,
-  RepositoryNetworkGrant,
   SandboxPolicyRecommendation,
 } from "@openclaw-enterprise/contracts";
 import networkPolicySchema from "./network-policy-schema.mts";
@@ -30,7 +30,7 @@ type FixturePolicy = {
   agentId: unknown;
   version: number;
   additions: SandboxPolicy["additions"];
-  repositoryNetworkPolicy?: RepositoryNetworkGrant[];
+  repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[];
   applied?: {
     -readonly [K in keyof NonNullable<SandboxPolicy["applied"]>]: NonNullable<
       SandboxPolicy["applied"]
@@ -156,6 +156,14 @@ export function createNetworkPolicyFixture(
   let policyEditing = scenario.policyState !== "disabled";
   let policyPolls = 0;
   let policyReads = 0;
+  const protectedExecution = scenario.policyState === "protected";
+  const repositoryLimits = scenario.policyState === "repositoryLimits";
+  const repositoryCeiling: readonly RepositoryNetworkGrant[] = repositoryLimits
+    ? [
+        { repository: "example/application", access: "read" },
+        { repository: "example/tooling", access: "write" },
+      ]
+    : [];
   const initialAdditions =
     scenario.policyState === "protected"
       ? [policyGrant]
@@ -164,25 +172,15 @@ export function createNetworkPolicyFixture(
           id: `explicit-${index + 1}`,
           host: `allowed-${index + 1}.example.org`,
         }));
-  const repositoryCeiling: RepositoryNetworkGrant[] | undefined = [
-    "protected",
-    "repository",
-    "repositoryDenyAll",
-    "repositoryReadOnly",
-    "repositorySaveLost",
-  ].includes(scenario.policyState ?? "")
-    ? [
-        { repository: "example/application", access: "read" },
-        { repository: "example/tooling", access: "write" },
-      ]
-    : undefined;
   let sandboxPolicy: FixturePolicy = {
     id: "sbp_00000000-0000-4000-8000-000000000001",
     namespaceId,
     agentId: seedAgent().id,
     version: 1,
     additions: initialAdditions,
-    ...(scenario.policyState === "repositoryDenyAll" ? { repositoryNetworkPolicy: [] } : {}),
+    ...(protectedExecution
+      ? { repositoryNetworkPolicy: [{ repository: "example/application", access: "read" }] }
+      : {}),
   };
   if (scenario.policyRuleCount) {
     sandboxPolicy.applied = {
@@ -362,16 +360,15 @@ export function createNetworkPolicyFixture(
         policy: sandboxPolicy,
         configuration: policyDescriptor,
         editingEnabled: policyEditing,
-        protectedExecution: scenario.policyState === "protected",
-        ceiling: policyCeiling,
-        ...(repositoryCeiling === undefined
-          ? {}
-          : {
+        protectedExecution,
+        ...(repositoryLimits || protectedExecution
+          ? {
               repositoryNetworkPolicyCeiling: repositoryCeiling,
               repositoryNetworkPolicySaveSupported:
-                scenario.policyState !== "repositoryReadOnly" &&
-                (scenario.policyState !== "repositorySaveLost" || read === 1),
-            }),
+                sandboxPolicy.repositoryNetworkPolicy !== undefined,
+            }
+          : {}),
+        ceiling: policyCeiling,
         defaults:
           scenario.policyState === "unsupported"
             ? null
@@ -446,14 +443,7 @@ export function createNetworkPolicyFixture(
           "The preview requires network additions with string identities and numeric port ranges.",
         );
       }
-      if (scenario.policyState === "protected" && "repositoryNetworkPolicy" in body) {
-        return error(
-          409,
-          "SANDBOX_POLICY_PROTECTED_EXECUTION",
-          "Protected execution applies to this Agent. The Credential Proxy governs its egress, so an explicit repository network policy cannot be saved.",
-        );
-      }
-      if (scenario.policyState === "protected" && body.additions.length > 0) {
+      if (protectedExecution && body.additions.length > 0) {
         return error(
           409,
           "SANDBOX_POLICY_PROTECTED_EXECUTION",
@@ -463,20 +453,27 @@ export function createNetworkPolicyFixture(
       if (!("expectedVersion" in body) || body.expectedVersion !== sandboxPolicy.version) {
         return error(409, "RESOURCE_STATE_CONFLICT");
       }
+      const withdraw = "repositoryNetworkPolicy" in body;
+      if (
+        withdraw &&
+        (!Array.isArray(body.repositoryNetworkPolicy) ||
+          body.repositoryNetworkPolicy.length !== 0 ||
+          sandboxPolicy.repositoryNetworkPolicy === undefined)
+      ) {
+        return error(409, "RESOURCE_CONFLICT", "Only an existing repository list can be cleared.");
+      }
       sandboxPolicy = {
         ...sandboxPolicy,
         version: sandboxPolicy.version + 1,
         additions: body.additions,
-        ...("repositoryNetworkPolicy" in body
-          ? { repositoryNetworkPolicy: body.repositoryNetworkPolicy as RepositoryNetworkGrant[] }
-          : {}),
+        ...(withdraw ? { repositoryNetworkPolicy: [] } : {}),
       };
       delete sandboxPolicy.application;
-      const { repositoryNetworkPolicy: _repositoryGrants, ...ordinaryPolicy } = sandboxPolicy;
+      const { repositoryNetworkPolicy: _preservedGrants, ...ordinaryPolicy } = sandboxPolicy;
       return response(
         scenario.policyState === "unconfirmedSave"
-          ? { ...sandboxPolicy, additions: [] }
-          : "repositoryNetworkPolicy" in body
+          ? { ...ordinaryPolicy, additions: [] }
+          : withdraw
             ? sandboxPolicy
             : ordinaryPolicy,
       );

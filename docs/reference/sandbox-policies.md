@@ -17,31 +17,36 @@ The contracts package can bind an explicit repository access list to a
 SandboxPolicy snapshot. Each entry uses a lowercase `owner/name` and grants
 `read` for clone and fetch or `write` for clone, fetch, and push. Each list and
 its delegation ceiling can contain up to 32 entries, one per repository.
-Admission rejects aliases, malformed entries, duplicates, and grants beyond
-the Installation delegation ceiling or the bound repository policy owner's
-approval for the Namespace. A write limit allows read and write grants.
+Repository policy admission checks canonical names, unique entries, the
+Installation delegation ceiling, and the repository policy owner's approval
+for the Namespace. A write limit allows read and write grants.
 An absent ceiling delegates no access. Policy GET reports the grants available
-to this Namespace and whether the state adapter supports storing explicit lists.
+to this Namespace and whether the Agent has a stored list that you can clear.
 
 `PUT /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/networking`
 accepts optional `repositoryNetworkPolicy` with `expectedVersion` and `additions`.
 Omitting the field keeps the saved list. A new Agent has no saved list.
-An explicit empty list saves deny-all. The API refuses every explicit list
-when protected execution applies. You can still clear ordinary additions by
-sending an empty additions list and omitting the repository field.
+This version cannot enforce repository grants at deployment. It refuses a first
+list, including an empty one, and every nonempty list. Request schema checks
+still apply. To withdraw existing grants, send empty arrays for `additions` and
+`repositoryNetworkPolicy`. With editing enabled and SandboxPolicy read and update
+access, this saves a deny-all policy even under protected execution or without
+Sandbox Driver support. To end existing access, stop the Agent and confirm its
+workload has stopped.
 
-Saving advances the desired policy version. To apply an explicit list, deploy a
-new Agent revision on an Installation with repository policy deployment
-admission and a supporting Sandbox Driver. The live apply endpoint refuses
-explicit repository policies, including deny-all.
+In this version, a saved list, including deny-all, blocks live application and
+deployment. Applying the saved list requires a deployment that can enforce it.
+Live application also refuses an active revision with a repository list when
+the saved list is absent. Stop the Agent and inspect the mismatch.
+You can clear ordinary additions alone by omitting the repository field.
 
-The selected Driver's `admitRepositoryNetworkPolicy` method receives the
-validated list and an immutable base snapshot. This side-effect-free method
-returns the effective policy as a JSON object. It must require inspected HTTPS,
-enforce the list alongside other rules, and deny ungranted repositories.
-It must refuse bypass paths and any weakening of protected execution.
-Deployment admission binds the versioned list and effective policy in an
-immutable Agent revision snapshot.
+The Sandbox Driver's side-effect-free `admitRepositoryNetworkPolicy` method
+receives the validated list and an immutable base snapshot. It returns the
+effective policy synchronously as a plain JSON object. Arrays must contain only
+consecutive elements starting at index zero. The Driver must inspect HTTPS,
+enforce the list alongside other rules, and deny ungranted repositories. It
+must refuse bypass paths and weaker protected execution. Ordinary deployment
+refuses a list supplied by the Driver.
 
 ## Discovery and preview
 
@@ -80,10 +85,13 @@ these restrictions. Its controller and HTTP operation are named
 expect this API to change when Guardrails replaces it.
 Disabling editing preserves approved additions and previously admitted work.
 Revocation requires an explicit policy change or Agent shutdown.
-Without per-Agent network policy support, enabling editing returns HTTP 409;
-disabling it stays allowed. When the Installation selects no Sandbox Driver,
-validate, save and apply return the same 409 right after authorization. Policy GET
-then returns `capability: null` and the cause in `unavailableReason`.
+Without per-Agent network policy support, an administrator also needs
+SandboxPolicy `read` to enable editing. The Installation must support storing
+repository policies and the Agent must have an existing list to withdraw.
+Otherwise enabling editing returns HTTP 409 for an authorized reader.
+Disabling editing remains available. Validate, apply, and ordinary saves return
+HTTP 409 after authorization if the capability is unavailable. Policy GET then
+returns `capability: null` and the cause in `unavailableReason`.
 
 The trusted startup field `sandboxNetworkPolicyCeiling` bounds additions in both
 the API and worker. Each entry has `id`, an exact absolute `binary` path, a DNS

@@ -23,10 +23,12 @@
       "expectedTests": [
         "Native restart migration removes recovery metadata and preserves immutable admitted revisions",
         "Separate database deployment verifies the exact candidate history without applying pending SQL",
+        "Separate migration Jobs guard the expected Installation before applying or verifying SQL",
         "Logical restore preserves reviewed canonical and Provider migration histories",
         "An authenticated user can browse revisions retained across the Harness settings migration",
         "First installation requires empty migration history under the migration lock",
         "Canonical migration commands preserve main data and serialize fresh/repeat runners",
+        "Canonical repository policy migration preserves stock revision egress rows and saved policy",
         "Canonical migration refuses unexplained histories before mutation",
         "Credential Proxy preview receipts require the exact history before the shared migration",
         "Canonical repository-prefix upgrade retains exact attempt cleanup context",

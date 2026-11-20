@@ -16,7 +16,7 @@ import {
   configurationErrors,
   configurationAction,
 } from "../configuration-fields.mjs";
-import { button, dismissOnBackdrop, element, field, mayReturnFocus } from "../dom.mjs";
+import { button, dismissOnBackdrop, element, mayReturnFocus } from "../dom.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
 import {
   askForGrant,
@@ -28,20 +28,9 @@ import {
 import { namespacePath, rejectionMessage } from "./list.mjs";
 import { recordRow, visibleText } from "./logs-view.mjs";
 
+type Policy = SandboxPolicyViewWire["policy"];
+
 type RepositoryGrants = readonly RepositoryNetworkGrant[];
-
-// The repository policy fields arrive with the server's repository ACL support.
-type Policy = SandboxPolicyViewWire["policy"] & {
-  repositoryNetworkPolicy?: RepositoryGrants;
-};
-type PolicyView = SandboxPolicyViewWire & {
-  policy: Policy;
-  repositoryNetworkPolicyCeiling?: RepositoryGrants;
-  repositoryNetworkPolicySaveSupported?: boolean;
-};
-
-const REPOSITORY_REDEPLOY_HELP =
-  "Deploy a new version to use the saved repository policy. Old sandboxes may keep their previous access until they stop.";
 
 function readableRepositoryGrants(value: unknown): value is RepositoryGrants {
   if (!Array.isArray(value)) {
@@ -527,7 +516,7 @@ export function renderAgentSandboxPolicy(
             element(
               "p",
               { className: "notice" },
-              "The Installation delegates no ordinary network rules. Installation defaults still apply.",
+              "No ordinary network rules are delegated. Installation defaults still apply.",
             ),
           ]),
       ...(readableRepositoryGrants(repositoryCeiling)
@@ -646,7 +635,7 @@ export function renderAgentSandboxPolicy(
     filterField,
     logActions,
   );
-  let view: PolicyView | undefined;
+  let view: SandboxPolicyViewWire | undefined;
   let validationDetails: Readonly<ReturnType<typeof requestErrorDetails>> = [];
   let draftGeneration = 0;
   let previewSequence = 0;
@@ -661,7 +650,6 @@ export function renderAgentSandboxPolicy(
   let policyReadUnavailable = false;
   // The schema editor can produce an incomplete or invalid draft. The policy owner validates it.
   let additions: unknown = [];
-  let repositoryDraft: RepositoryGrants | undefined;
   let recommendations: SandboxPolicyRecommendations["recommendations"] = [];
   let suggestionsReading = false;
   // A permission refusal is not retried from here: the same request gets the same answer.
@@ -715,6 +703,11 @@ export function renderAgentSandboxPolicy(
       return false;
     }
     if (view?.capability === null) {
+      if (view.policy.repositoryNetworkPolicy !== undefined) {
+        showNoSandboxDenials();
+        logStatus.textContent = view.unavailableReason ?? logStatus.textContent;
+        return false;
+      }
       section.replaceChildren(
         element("h2", {}, "Policy denials"),
         element(
@@ -748,7 +741,7 @@ export function renderAgentSandboxPolicy(
     current() &&
     hasEditAuthority() &&
     !protectedExecution() &&
-    !repositoryPolicyBlocksLiveApply() &&
+    view?.policy.repositoryNetworkPolicy === undefined &&
     view?.configuration?.actions.apply?.available &&
     view.capability?.live &&
     agent.activeRevisionId === revisionId &&
@@ -1050,23 +1043,8 @@ export function renderAgentSandboxPolicy(
     }
   }
 
-  function hasProposedRuleChanges() {
-    return JSON.stringify(additions) !== JSON.stringify(view?.policy.additions);
-  }
-
-  function hasProposedRepositoryChanges() {
-    return (
-      repositoryDraft !== undefined &&
-      !sameRepositoryGrants(view?.policy.repositoryNetworkPolicy, repositoryDraft)
-    );
-  }
-
   function hasProposedChanges() {
-    return hasProposedRuleChanges() || hasProposedRepositoryChanges();
-  }
-
-  function repositoryPolicyBlocksLiveApply() {
-    return view?.policy.repositoryNetworkPolicy !== undefined || hasProposedRepositoryChanges();
+    return JSON.stringify(additions) !== JSON.stringify(view?.policy.additions);
   }
 
   function stageGrants(grants: SandboxNetworkGrant[], batch: boolean) {
@@ -1110,7 +1088,7 @@ export function renderAgentSandboxPolicy(
       ? "Rules added to your proposal. Review and save to persist changes."
       : "These requests are already covered by saved or proposed rules. Check the policy status before retrying.";
     if (batch && fresh.length) {
-      policyPanel.querySelector<HTMLFormElement>("#sandbox-network-policy-form")?.requestSubmit();
+      policyPanel.querySelector<HTMLFormElement>("form")?.requestSubmit();
     }
   }
 
@@ -1415,9 +1393,7 @@ export function renderAgentSandboxPolicy(
       validationDetails = requestErrorDetails(error);
       feedback.textContent =
         error instanceof Error &&
-        (error === unconfirmedApply ||
-          error === unconfirmedSave ||
-          error === unconfirmedRepositorySave)
+        (error === unconfirmedApply || error === unconfirmedSave || error === unconfirmedWithdrawal)
           ? error.message
           : failureMessage(error);
       feedback.className = "error";
@@ -1448,182 +1424,109 @@ export function renderAgentSandboxPolicy(
     }
   }
 
-  function repositoryPolicyEditor(
-    configuration: Pick<DriverConfigurationDescriptor, "actions">,
-    policy: Policy,
-    updateRuleActions: () => void,
-  ) {
-    const ceiling = view?.repositoryNetworkPolicyCeiling;
-    const readableCeiling = readableRepositoryGrants(ceiling);
-    if (!readableCeiling && repositoryDraft === undefined) {
-      return null;
-    }
+  function repositoryPolicyPanel({
+    configuration,
+    policy,
+    repositoryNetworkPolicySaveSupported,
+  }: SandboxPolicyViewWire) {
     const saved = policy.repositoryNetworkPolicy;
-    const saveSupported = readableCeiling && view?.repositoryNetworkPolicySaveSupported === true;
     const panel = element(
       "section",
       { "aria-labelledby": "sandbox-repository-policy-title" },
-      element(
-        "h3",
-        { id: "sandbox-repository-policy-title", tabindex: -1 },
-        "Repository network policy",
-      ),
+      element("h3", { id: "sandbox-repository-policy-title" }, "Repository network policy"),
       element("p", {}, `Saved policy: ${repositoryPolicyLabel(saved)}`),
       saved?.length ? repositoryGrantList(saved) : null,
-      element(
-        "p",
-        { className: "hint" },
-        "This policy limits HTTPS Git access. Read permits clone and fetch. Write also permits push.",
-      ),
-      element("p", { className: "hint" }, REPOSITORY_REDEPLOY_HELP),
     );
-    const discard = () =>
-      button(
-        "Discard repository changes",
-        () => {
-          repositoryDraft = undefined;
-          draftGeneration += 1;
-          renderPolicy();
-          const focusTarget =
-            policyPanel.querySelector<HTMLElement>("#sandbox-edit-repository-access") ??
-            policyPanel.querySelector<HTMLElement>("#sandbox-repository-policy-title") ??
-            dialogActions.querySelector<HTMLButtonElement>("button");
-          focusTarget?.focus();
-        },
-        { disabled: mutation },
-      );
-    if (!saveSupported || !editable()) {
-      let reason = "Changes require enabled editing and policy permissions.";
-      if (protectedExecution()) {
-        reason =
-          "Protected execution uses Credential Proxy routes. Repository policy saving is unavailable.";
-      } else if (!saveSupported) {
-        reason = "This Installation cannot save repository policies yet.";
-      }
-      panel.append(element("p", { className: "hint" }, reason));
-      if (repositoryDraft !== undefined) {
-        panel.append(
-          element("p", {}, `Proposed policy: ${repositoryPolicyLabel(repositoryDraft)}`),
-          element("div", { className: "form-actions" }, discard()),
-        );
-      }
+    if (!saved?.length || mutation) {
       return panel;
     }
-    if (repositoryDraft === undefined) {
+    const hint = (text: string) => element("p", { className: "hint" }, text);
+    if (repositoryNetworkPolicySaveSupported !== true || !configuration) {
+      panel.append(hint("Repository grants are read-only in this Console."));
+      return panel;
+    }
+    if (!canEdit()) {
       panel.append(
-        button(
-          "Edit repository access",
-          () => {
-            repositoryDraft = saved ?? [];
-            draftGeneration += 1;
-            renderPolicy();
-            policyPanel.querySelector<HTMLElement>("#sandbox-repository-policy-draft")?.focus();
-          },
-          { id: "sandbox-edit-repository-access" },
+        hint(
+          "Withdrawing saved grants requires policy editing and permission to change this policy.",
+        ),
+      );
+      return panel;
+    }
+    if (protectedExecution() && policy.additions.length) {
+      panel.append(
+        hint(
+          "Remove and save the ordinary network rules before withdrawing repository grants under protected execution.",
         ),
       );
       return panel;
     }
 
-    const limits = new Map(ceiling.map(({ repository, access }) => [repository, access]));
-    const choices = new Map(repositoryDraft.map(({ repository, access }) => [repository, access]));
-    const repositories = [...new Set([...limits.keys(), ...choices.keys()])].sort();
-    const form = element("form", { className: "sandbox-policy-form" });
-    const draftStatus = element("p", {
-      id: "sandbox-repository-policy-draft",
-      tabindex: -1,
-      role: "status",
-    });
-    const save = element(
-      "button",
-      { type: "submit", className: "button button--primary" },
-      "Save repository policy",
-    );
-    const updateDraftStatus = () => {
-      const outsideCeiling = [...choices].some(([repository, access]) => {
-        const limit = limits.get(repository);
-        return limit === undefined || (access === "write" && limit !== "write");
-      });
-      draftStatus.textContent = outsideCeiling
-        ? "Remove or reduce grants that exceed the Installation limits."
-        : `Proposed policy: ${repositoryPolicyLabel(repositoryDraft)}`;
-      save.disabled = outsideCeiling || sameRepositoryGrants(saved, repositoryDraft);
-    };
-    form.append(
-      draftStatus,
-      ...(limits.size === 0
-        ? [element("p", { className: "hint" }, "The Installation delegates no repository access.")]
-        : []),
-      ...repositories.map((repository) => {
-        const limit = limits.get(repository);
-        const selectedAccess = choices.get(repository);
-        const select = element(
-          "select",
-          {},
-          element("option", { value: "" }, "No access"),
-          ...(["read", "write"] as const).map((access) =>
-            element(
-              "option",
-              { value: access, disabled: limit !== "write" && limit !== access },
-              access === "read" ? "Read" : "Write",
-            ),
-          ),
-        );
-        select.value = selectedAccess ?? "";
-        select.addEventListener("change", () => {
-          const access = select.value;
-          if (access === "read" || access === "write") {
-            choices.set(repository, access);
-          } else {
-            choices.delete(repository);
-          }
-          repositoryDraft = repositories.flatMap((name) => {
-            const grant = choices.get(name);
-            return grant === undefined ? [] : [{ repository: name, access: grant }];
-          });
-          draftGeneration += 1;
-          updateDraftStatus();
-          updateRuleActions();
-        });
-        return field({ label: repository, control: select });
-      }),
-      element("div", { className: "form-actions" }, discard(), save),
-    );
-    updateDraftStatus();
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      const grants = repositoryDraft;
-      if (
-        !current() ||
-        !policyPanel.contains(form) ||
-        !editable() ||
-        view?.policy !== policy ||
-        view?.repositoryNetworkPolicySaveSupported !== true ||
-        save.disabled ||
-        grants === undefined
-      ) {
-        return;
-      }
-      void mutate(async () => {
-        const savedPolicy = await writePolicy(
-          configuration,
-          policy,
-          false,
-          policy.additions,
-          grants,
-        );
-        if (!current() || !view) {
-          return;
-        }
-        view.policy = savedPolicy;
-        repositoryDraft = undefined;
+    const stillCurrent = () =>
+      current() &&
+      dialog.open &&
+      view?.policy === policy &&
+      view.repositoryNetworkPolicySaveSupported === true &&
+      canEdit();
+    const actionId = "sandbox-withdraw-repository-grants";
+
+    const saveWithdrawal = async () => {
+      const updated = await writePolicy(configuration, policy, "withdraw");
+      if (current() && view) {
+        view.policy = updated;
         outcomeRequested = true;
         failedApplicationInspected = false;
+        feedback.textContent = `Repository policy v${updated.version} saved as deny all. The running Agent keeps its current access.`;
         dialog.close();
-        feedback.textContent = `Repository policy v${savedPolicy.version} saved. Deploy a new version to use it.`;
-      });
-    });
-    panel.append(form);
+      }
+    };
+
+    panel.append(
+      button(
+        "Withdraw saved repository grants",
+        () => {
+          if (!stillCurrent() || !policyPanel.contains(panel)) {
+            return;
+          }
+          const title = element("h3", { tabindex: -1 }, "Withdraw saved repository grants?");
+          const review = element(
+            "section",
+            { className: "sandbox-policy-review" },
+            title,
+            repositoryGrantList(saved),
+            element(
+              "p",
+              {},
+              "Saving sets the repository policy to deny all repositories. The running Agent keeps its current access.",
+            ),
+          );
+          policyPanel.replaceChildren(feedback, review);
+          dialogActions.replaceChildren(
+            button("Back to editing", () => {
+              renderEditor();
+              policyPanel.querySelector<HTMLButtonElement>(`#${actionId}`)?.focus();
+            }),
+            button(
+              "Save deny-all policy",
+              () => {
+                if (stillCurrent() && policyPanel.contains(review)) {
+                  void mutate(saveWithdrawal, true, (error) =>
+                    errorText(
+                      error,
+                      "withdrawing this Agent’s saved repository grants",
+                      POLICY_APPLY_GRANT,
+                    ),
+                  );
+                }
+              },
+              { tone: "primary" },
+            ),
+          );
+          title.focus();
+        },
+        { id: actionId },
+      ),
+    );
     return panel;
   }
 
@@ -1652,9 +1555,15 @@ export function renderAgentSandboxPolicy(
       );
       return;
     }
+    const repositoryPanel =
+      !editingRules &&
+      (policy.repositoryNetworkPolicy !== undefined ||
+        readableRepositoryGrants(view.repositoryNetworkPolicyCeiling))
+        ? repositoryPolicyPanel(view)
+        : null;
     const { application } = policy;
     const pending = application?.state === "pending";
-    const hasSavedRepositoryPolicy = policy.repositoryNetworkPolicy !== undefined;
+    const canApply = canApplySavedPolicy();
     const form = element("form", { className: "sandbox-policy-form" });
     form.id = "sandbox-network-policy-form";
     const reviewButton = element(
@@ -1671,9 +1580,7 @@ export function renderAgentSandboxPolicy(
       role: "status",
     });
     function updateDraftStatus() {
-      const rulesDirty = hasProposedRuleChanges();
-      const repositoryDirty = hasProposedRepositoryChanges();
-      const canApply = canApplySavedPolicy();
+      const dirty = hasProposedChanges();
       let changes = 1;
       if (Array.isArray(additions)) {
         const addedOrChanged = additions.filter(
@@ -1691,18 +1598,14 @@ export function renderAgentSandboxPolicy(
         !deployedWithSavedPolicy(view, revisionId);
       const failed = application?.state === "failed";
       footerStatus.textContent = "No unsaved changes";
-      if (rulesDirty) {
+      if (dirty) {
         footerStatus.textContent = `${changes} rule ${changes === 1 ? "change" : "changes"} to review`;
-      } else if (repositoryDirty) {
-        footerStatus.textContent = "Unsaved repository policy changes";
       } else if (pending) {
         footerStatus.textContent = "Applying…";
       } else if (failed) {
         footerStatus.textContent = "Application unconfirmed";
-      } else if (unapplied) {
-        footerStatus.textContent = hasSavedRepositoryPolicy
-          ? "Saved policy awaiting a new version"
-          : "Saved rules awaiting application";
+      } else if (unapplied && policy.repositoryNetworkPolicy === undefined) {
+        footerStatus.textContent = "Saved rules awaiting application";
       }
       const canReview =
         canEdit() &&
@@ -1712,10 +1615,10 @@ export function renderAgentSandboxPolicy(
         footerStatus,
         button("Done", closeDialog, { disabled: mutation }),
       );
-      if (rulesDirty && editingEnabled && canReview) {
+      if (dirty && editingEnabled && canReview) {
         dialogActions.append(reviewButton);
       } else if (
-        !rulesDirty &&
+        !dirty &&
         (unapplied || failed) &&
         !pending &&
         (!failed || failedApplicationInspected) &&
@@ -1731,11 +1634,13 @@ export function renderAgentSandboxPolicy(
       const addRule = rulesOverview.querySelector(".sandbox-add-rule");
       addRule?.classList.toggle(
         "button--primary",
-        !rulesDirty &&
-          !(unapplied && !pending && (!failed || failedApplicationInspected) && canApply),
+        !dirty && !(unapplied && !pending && (!failed || failedApplicationInspected) && canApply),
       );
     }
     if (!configuration) {
+      if (repositoryPanel) {
+        policyPanel.append(repositoryPanel);
+      }
       return;
     }
     form.noValidate = true;
@@ -1889,7 +1794,12 @@ export function renderAgentSandboxPolicy(
             if (!view?.configuration) {
               return;
             }
-            const saved = await writePolicy(view.configuration, policy, apply, reviewedRules);
+            const saved = await writePolicy(
+              view.configuration,
+              policy,
+              apply ? "apply" : "save",
+              reviewedRules,
+            );
             if (!current()) {
               return;
             }
@@ -1902,16 +1812,15 @@ export function renderAgentSandboxPolicy(
             editingRules = false;
             dialog.close();
             if (!apply) {
-              const savedMessage = `Policy v${saved.version} saved. The current revision is unchanged.`;
-              if (saved.repositoryNetworkPolicy !== undefined) {
-                feedback.textContent = `${savedMessage} ${REPOSITORY_REDEPLOY_HELP}`;
-              } else if (hasProposedRepositoryChanges()) {
-                feedback.textContent = `${savedMessage} Your repository policy changes are still unsaved.`;
-              } else {
-                feedback.textContent = protectedExecution()
-                  ? `Policy v${saved.version} saved without network rules. The current revision is unchanged. Deploy a new version when ready.`
-                  : `${savedMessage} Apply the saved policy or deploy a new version when ready.`;
-              }
+              const savedText = protectedExecution()
+                ? `Policy v${saved.version} saved without network rules. The current revision is unchanged.`
+                : `Policy v${saved.version} saved. The current revision is unchanged.`;
+              feedback.textContent =
+                saved.repositoryNetworkPolicy !== undefined
+                  ? savedText
+                  : protectedExecution()
+                    ? `${savedText} Deploy a new version when ready.`
+                    : `${savedText} Apply the saved policy or deploy a new version when ready.`;
             }
           },
           true,
@@ -1926,14 +1835,6 @@ export function renderAgentSandboxPolicy(
         (saved) => !reviewedRules.some((rule) => rule.id === saved.id),
       );
       const unchanged = reviewedRules.length - changed.length;
-      let saveHelp =
-        "Save for later keeps the current revision’s network access unchanged. Live application requires the current running revision and a supporting Sandbox Driver.";
-      if (hasSavedRepositoryPolicy) {
-        saveHelp = REPOSITORY_REDEPLOY_HELP;
-      } else if (canApplySavedPolicy()) {
-        saveHelp =
-          "Save and apply requests live application to this running revision. Wait for provider confirmation before retrying. Save for later keeps the current revision’s network access unchanged.";
-      }
       const review = element(
         "section",
         { className: "sandbox-policy-review" },
@@ -1953,35 +1854,26 @@ export function renderAgentSandboxPolicy(
             ? ruleList(policy.additions)
             : element("p", {}, "No Agent-specific rules saved."),
         ),
-        ...(hasProposedRepositoryChanges()
-          ? [
-              element(
-                "p",
-                { className: "hint" },
-                `Proposed repository policy: ${repositoryPolicyLabel(repositoryDraft)}. Save for later saves the network rules. Save the repository policy separately.`,
-              ),
-            ]
-          : []),
-        element("p", { className: "hint" }, saveHelp),
+        element(
+          "p",
+          { className: "hint" },
+          canApply
+            ? "Save and apply requests live application to this running revision. Wait for provider confirmation before retrying. Save for later keeps the current revision’s network access unchanged."
+            : "Save for later keeps the current revision’s network access unchanged. Live application requires the current running revision and a supporting Sandbox Driver.",
+        ),
       );
       dialogActions.replaceChildren(
         button("Back to editing", renderPolicy),
         button("Save for later", () => save(false)),
-        ...(!repositoryPolicyBlocksLiveApply()
-          ? [
-              button("Save and apply to current revision", () => save(true), {
-                tone: "primary",
-                disabled: !canApplySavedPolicy(),
-              }),
-            ]
-          : []),
+        button("Save and apply to current revision", () => save(true), {
+          tone: "primary",
+          disabled: !canApply,
+        }),
       );
       dialogTitle.textContent = "Review policy changes";
       rulesOverview.hidden = true;
-      if (repositoryPanel) {
-        repositoryPanel.hidden = true;
-      }
       form.replaceWith(review);
+      repositoryPanel?.remove();
     });
     const rulesOverview = element(
       "section",
@@ -2096,10 +1988,8 @@ export function renderAgentSandboxPolicy(
     );
     rulesOverview.hidden = editingRules;
     form.hidden = !editingRules;
-    const repositoryPanel = editingRules
-      ? null
-      : repositoryPolicyEditor(configuration, policy, updateDraftStatus);
     policyPanel.append(
+      ...(repositoryPanel ? [repositoryPanel] : []),
       ...(protectedExecution()
         ? [
             element(
@@ -2119,9 +2009,8 @@ export function renderAgentSandboxPolicy(
           ]
         : []),
       rulesOverview,
-      ...(repositoryPanel ? [repositoryPanel] : []),
       form,
-      ...(!view.capability?.live && !hasSavedRepositoryPolicy
+      ...(!view.capability?.live && policy.repositoryNetworkPolicy === undefined
         ? [
             element(
               "p",
@@ -2153,8 +2042,8 @@ export function renderAgentSandboxPolicy(
   const unconfirmedSave = new Error(
     "The Console could not confirm the saved rules. Live application was not requested.",
   );
-  const unconfirmedRepositorySave = new Error(
-    "The Console could not confirm the saved repository policy.",
+  const unconfirmedWithdrawal = new Error(
+    "The Console could not confirm the deny-all repository policy.",
   );
   const unconfirmedApply = new Error(
     "The Console could not confirm the saved rules and pending application.",
@@ -2163,10 +2052,12 @@ export function renderAgentSandboxPolicy(
   async function writePolicy(
     descriptor: Pick<DriverConfigurationDescriptor, "actions">,
     policy: Policy,
-    apply: boolean,
+    mode: "save" | "apply" | "withdraw",
     reviewedRules?: SandboxNetworkGrant[],
-    repositoryGrants?: RepositoryGrants,
   ) {
+    const apply = mode === "apply";
+    const withdrawRepository = mode === "withdraw";
+    const rules = withdrawRepository ? policy.additions : reviewedRules;
     const action = configurationAction(descriptor, apply ? "apply" : "save");
     const saved = (await context.request(action.href, {
       method: action.method,
@@ -2174,27 +2065,26 @@ export function renderAgentSandboxPolicy(
       body: {
         expectedVersion: policy.version,
         ...(apply ? { revisionId } : {}),
-        ...(reviewedRules === undefined ? {} : { additions: reviewedRules }),
-        ...(!apply && repositoryGrants !== undefined
-          ? { repositoryNetworkPolicy: repositoryGrants }
-          : {}),
+        ...(rules === undefined ? {} : { additions: rules }),
+        ...(withdrawRepository ? { repositoryNetworkPolicy: [] } : {}),
       },
     })) as Policy | null;
-    // An additions-only PUT can omit the preserved grants from its acknowledgement.
-    const savedRepositoryGrants =
-      !apply && repositoryGrants === undefined && saved?.repositoryNetworkPolicy === undefined
+    // An additions-only response can omit preserved grants. Explicit withdrawal must echo [].
+    const savedGrants =
+      !withdrawRepository && saved?.repositoryNetworkPolicy === undefined
         ? policy.repositoryNetworkPolicy
         : saved?.repositoryNetworkPolicy;
     if (
       saved?.id !== policy.id ||
       saved.agentId !== agent.id ||
       saved.namespaceId !== agent.namespaceId ||
-      saved.version !== policy.version + (reviewedRules === undefined ? 0 : 1) ||
-      !sameValue(saved.additions, reviewedRules ?? policy.additions) ||
+      saved.version !== policy.version + (rules === undefined ? 0 : 1) ||
+      !sameValue(saved.additions, rules ?? policy.additions) ||
       !sameRepositoryGrants(
-        repositoryGrants ?? policy.repositoryNetworkPolicy,
-        savedRepositoryGrants,
+        withdrawRepository ? [] : policy.repositoryNetworkPolicy,
+        savedGrants,
       ) ||
+      (withdrawRepository && saved.application !== undefined) ||
       (apply &&
         (saved.application?.state !== "pending" ||
           typeof saved.application.id !== "string" ||
@@ -2203,17 +2093,15 @@ export function renderAgentSandboxPolicy(
           saved.application.revisionId !== revisionId ||
           saved.application.policyVersion !== saved.version))
     ) {
-      if (repositoryGrants !== undefined) {
-        throw unconfirmedRepositorySave;
+      if (withdrawRepository) {
+        throw unconfirmedWithdrawal;
       }
       throw apply ? unconfirmedApply : unconfirmedSave;
     }
     if (apply && current()) {
       feedback.textContent = `Policy v${saved.version} saved. Application to the current revision is pending. Enforcement is confirmed only after the provider loads this policy.`;
     }
-    return savedRepositoryGrants === undefined
-      ? saved
-      : { ...saved, repositoryNetworkPolicy: savedRepositoryGrants };
+    return savedGrants === undefined ? saved : { ...saved, repositoryNetworkPolicy: savedGrants };
   }
 
   function applySavedPolicy() {
@@ -2223,7 +2111,7 @@ export function renderAgentSandboxPolicy(
     const { configuration, policy } = view;
     void mutate(
       async () => {
-        const applied = await writePolicy(configuration, policy, true);
+        const applied = await writePolicy(configuration, policy, "apply");
         if (current() && view) {
           view.policy = applied;
           outcomeRequested = true;
@@ -2252,11 +2140,10 @@ export function renderAgentSandboxPolicy(
     clearTimeout(policyTimer);
     const sequence = ++policyReadSequence;
     const generation = draftGeneration;
-    const keepDraft = view !== undefined && hasProposedRuleChanges();
-    const keepRepositoryDraft = hasProposedRepositoryChanges();
+    const keepDraft = view !== undefined && hasProposedChanges();
     let readFailed = false;
     try {
-      const loaded = (await context.request(policyPath)) as PolicyView;
+      const loaded = (await context.request(policyPath)) as SandboxPolicyViewWire;
       if (!current() || sequence !== policyReadSequence || generation !== draftGeneration) {
         return;
       }
@@ -2269,7 +2156,7 @@ export function renderAgentSandboxPolicy(
       const wasPending = view?.policy.application?.state === "pending";
       view = loaded;
       failedApplicationInspected = inspectFailure && loaded.policy.application?.state === "failed";
-      if (view.capability === null) {
+      if (view.capability === null && view.policy.repositoryNetworkPolicy === undefined) {
         // The draft tab reads no logs or suggestions, so the unsupported state is shown from here too.
         void policySupported();
         return;
@@ -2292,19 +2179,6 @@ export function renderAgentSandboxPolicy(
         feedback.textContent = `Policy v${view.policy.version} reloaded. Your draft is retained; review it against the saved policy before saving.`;
       } else {
         additions = structuredClone(view.policy.additions);
-      }
-      if (
-        keepRepositoryDraft &&
-        !sameRepositoryGrants(view.policy.repositoryNetworkPolicy, repositoryDraft)
-      ) {
-        feedback.textContent =
-          !protectedExecution() &&
-          view.repositoryNetworkPolicySaveSupported === true &&
-          readableRepositoryGrants(view.repositoryNetworkPolicyCeiling)
-            ? `Policy v${view.policy.version} reloaded. Review your repository draft against the saved policy before saving.`
-            : `Policy v${view.policy.version} reloaded.`;
-      } else if (repositoryDraft !== undefined) {
-        repositoryDraft = view.policy.repositoryNetworkPolicy;
       }
       validationDetails = [];
       unknownOutcome = false;
@@ -2461,21 +2335,12 @@ export function renderAgentSandboxPolicy(
       }
       const presentation = policyStatus();
       policySummary.append(
-        ...(hasProposedRuleChanges()
+        ...(hasProposedChanges()
           ? [
               element(
                 "p",
                 { className: "hint" },
                 "Unsaved rule changes · Open Manage rules to continue your proposal.",
-              ),
-            ]
-          : []),
-        ...(hasProposedRepositoryChanges()
-          ? [
-              element(
-                "p",
-                { className: "hint" },
-                "Unsaved repository policy changes · Open Manage rules to continue your proposal.",
               ),
             ]
           : []),
@@ -2544,7 +2409,8 @@ export function renderAgentSandboxPolicy(
             ),
           ),
         ),
-        ...(readableRepositoryGrants(view.repositoryNetworkPolicyCeiling)
+        ...(policy.repositoryNetworkPolicy !== undefined ||
+        readableRepositoryGrants(view.repositoryNetworkPolicyCeiling)
           ? [
               element(
                 "p",
@@ -2600,18 +2466,15 @@ export function renderAgentSandboxPolicy(
         currentPolicy.version > 1 ||
         outcomeRequested)
     ) {
-      let text = "Your rules are saved. Apply them explicitly or deploy a new version when ready.";
-      if (currentPolicy.repositoryNetworkPolicy !== undefined) {
-        text = REPOSITORY_REDEPLOY_HELP;
-      } else if (hasProposedRepositoryChanges()) {
-        text = "Your rules are saved. Finish the repository policy proposal in Manage rules.";
-      } else if (currentPolicy.applied?.revisionId === revisionId) {
-        text = "Your rules are saved. The running Agent still uses its previously applied rules.";
-      }
       outcome = {
         tone: "info",
         title: "Saved for later",
-        text,
+        text:
+          currentPolicy.repositoryNetworkPolicy !== undefined
+            ? "The repository policy is saved. This Installation cannot apply it to an Agent revision."
+            : currentPolicy.applied?.revisionId === revisionId
+              ? "Your rules are saved. The running Agent still uses its previously applied rules."
+              : "Your rules are saved. Apply them explicitly or deploy a new version when ready.",
       };
     } else if (confirmed && (outcomeRequested || application?.state === "applied")) {
       outcome = {

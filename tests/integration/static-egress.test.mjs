@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { registerStreamReceiptPersistenceCases } from "./credential-proxy-stream-lease-cases.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import {
   encodeSyntheticEvents,
@@ -16,9 +17,6 @@ import { OpenShellEgressIdentity } from "../../apps/controller/src/drivers/egres
 import {
   CredentialProxy,
   OPERATION_SANDBOX_SHARE,
-  STREAM_LEASE_CEILING_MS,
-  STREAM_LEASE_IDLE_MS,
-  STREAM_LEASE_RECHECK_MS,
   egressInjectionDigest,
 } from "../../packages/occ/src/credential-proxy.ts";
 import { deploymentErrorForWork } from "../../packages/occ/src/state/controller-work.ts";
@@ -175,6 +173,35 @@ test("bundled OpenShell startup refuses mixed static CREATE before material or r
       assert.equal(f.countSecretReads(), updateBefore.secretReads + 1);
       assert.deepEqual(f.gatewayEffects, [...updateBefore.gatewayEffects, "updateSource"]);
       assert.deepEqual(f.providerRequests, []);
+
+      // A bound source must be unbound before adoption, even without a Proxy.
+      const config = await f.createConfiguration(f.namespace.id, {
+        agents: {
+          defaults: {
+            model: { primary: "codex/fixture-model" },
+            models: { "codex/fixture-model": { agentRuntime: { id: "codex" } } },
+          },
+        },
+      });
+      const agent = await f.request("POST", `/namespaces/${f.namespace.id}/agents`, {
+        body: {
+          name: "bound-model",
+          configurationId: config.id,
+          executionMode: "dedicated",
+          harnessAuth: { method: "credential_source", sourceId: original.id },
+          credentialSources: [{ sourceId: original.id }],
+        },
+      });
+      assert.equal(agent.status, 201, JSON.stringify(agent.body));
+      const prior = await admissionSnapshot(f);
+      const bound = await f.request("PATCH", `${f.path}/${original.id}`, {
+        body: { adoption: "live", authorityScope: "execution" },
+      });
+      assert.deepEqual(
+        { status: bound.status, reason: bound.body.error?.message },
+        { status: 409, reason: "Protected source changes require an unbound source." },
+      );
+      await assertAdmissionUnchanged(f, prior);
     }
   }
 });
@@ -753,6 +780,87 @@ test("legacy approved copies survive Secret rotation and failed live adoption; o
   assert.equal((await f.request("GET", path)).data.egress, undefined);
   assert.deepEqual([...f.providers.values()], before);
   f.observed.available = true;
+  // A provider that needs managed login tokens cannot adopt a static key.
+  const proxy = f.controller.selectedDriver("credential_proxy");
+  const control = proxy.sourceControl;
+  const original = control.providers.find((entry) => entry.sourceType.type === "openai");
+  assert.ok(original);
+  const providerType = structuredClone(original.sourceType);
+  const gateway = f.controller.selectedDriver("credential_gateway");
+  const listTypes = gateway.listSourceTypes;
+  let gatewayType;
+  let changeDuringAdmission;
+  const reads = f.secretReads;
+  try {
+    // Simulate a Driver returning a retained mutable catalog entry. Keep the
+    // real catalog, peer availability check, and Secret transport.
+    gateway.listSourceTypes = async (...args) => {
+      const catalog = await listTypes.apply(gateway, args);
+      return catalog.map((entry) => {
+        if (entry.type !== "openai") {
+          return entry;
+        }
+        gatewayType ??= structuredClone(entry);
+        return gatewayType;
+      });
+    };
+    assert.ok(
+      Reflect.set(proxy, "sourceControl", {
+        ...control,
+        providers: control.providers.map((p) =>
+          p === original ? { ...p, sourceType: providerType } : p,
+        ),
+        async assertAvailable(signal) {
+          await control.assertAvailable(signal);
+          if (changeDuringAdmission) {
+            changeDuringAdmission.harnessAuth.loginMode = "chatgptAuthTokens";
+          }
+        },
+      }),
+    );
+    assert.equal(providerType.harnessAuth.loginMode, "api_key");
+    providerType.harnessAuth.loginMode = "chatgptAuthTokens";
+    const catalog = await f.request("GET", `/namespaces/${f.namespace.id}/agent-capabilities`);
+    assert.equal(catalog.status, 200);
+    const offered = catalog.data.capabilities.credentialSources.types.some(
+      (entry) => entry.type === "openai",
+    );
+    const create = await f.request("POST", f.path, {
+      body: {
+        name: "incompatible-lifecycle",
+        type: "openai",
+        config: { authorized_base_url: f.modelProvider.baseUrl },
+        secrets: { api_key: f.secret.ref },
+      },
+    });
+    const patch = await f.request("PATCH", path, { body: consent });
+    assert.deepEqual(
+      { offered, create: create.status, patch: patch.status, reads: f.secretReads - reads },
+      { offered: false, create: 409, patch: 409, reads: 0 },
+    );
+    providerType.harnessAuth.loginMode = "api_key";
+    for (const [side, type] of [
+      ["Proxy", providerType],
+      ["Gateway", gatewayType],
+    ]) {
+      // Change one declaration across the await while its counterpart stays static.
+      assert.equal(type.harnessAuth.loginMode, "api_key");
+      changeDuringAdmission = type;
+      const raced = await f.request("PATCH", path, { body: consent });
+      assert.equal(type.harnessAuth.loginMode, "chatgptAuthTokens");
+      assert.deepEqual(
+        { status: raced.status, reads: f.secretReads - reads },
+        { status: 409, reads: 0 },
+        side + " lifecycle changed before Secret access",
+      );
+      type.harnessAuth.loginMode = "api_key";
+      assert.equal((await f.request("GET", path)).data.egress, undefined);
+      assert.deepEqual([...f.providers.values()], before);
+    }
+  } finally {
+    gateway.listSourceTypes = listTypes;
+    Reflect.set(proxy, "sourceControl", control);
+  }
   const adopted = await f.request("PATCH", path, { body: consent });
   assert.equal(adopted.status, 200, JSON.stringify(adopted.body));
   assert.deepEqual(adopted.data.egress, { adoption: "live", retention: "none" });
@@ -836,6 +944,46 @@ test("current supplier evidence is required at access and send; stored receipts 
     f.controller.transact((unit) => unit.credentialSources.recordEgressInstallation(replacement)),
     /already bound/,
   );
+});
+
+test("retained Sandbox policy versions are independent of plan generation but still fence installation", async (t) => {
+  const f = await staticEgressFixture(t, { recordInstallation: false });
+  assert.equal(f.context.plan.generation, 1);
+  f.observed.policyVersion = 4;
+  f.observed.activePolicyVersion = 4;
+  f.observed.evidence.policy_version = 4;
+  const installed = await f.egress.wiringStatus(f.context, f.attachment);
+  assert.ok(installed, "matching loaded policy must enroll after retained-Sandbox updates");
+  assert.equal(await f.egress.verifyInstallation(f.context, installed), true);
+
+  // Independent supplier fields must agree; none can borrow the OCE generation
+  // or claim readiness for a policy that is still loading or failed.
+  for (const change of [
+    { policyVersion: 1 },
+    { activePolicyVersion: 1 },
+    { policyStatus: 1 },
+    { policyStatus: 3 },
+    { policyVersion: 0, activePolicyVersion: 0 },
+  ]) {
+    Object.assign(f.observed, change);
+    assert.equal(await f.egress.wiringStatus(f.context, f.attachment), undefined);
+    assert.equal(await f.egress.verifyInstallation(f.context, installed), false);
+    Object.assign(f.observed, { policyVersion: 4, activePolicyVersion: 4, policyStatus: 2 });
+  }
+  f.observed.evidence.policy_version = 1;
+  assert.equal(await f.egress.wiringStatus(f.context, f.attachment), undefined);
+  assert.equal(await f.egress.verifyInstallation(f.context, installed), false);
+
+  // Even unchanged policy content at a new supplier version invalidates the
+  // earlier receipt; changing the comparison must not remove that fence.
+  f.observed.policyVersion = 5;
+  f.observed.activePolicyVersion = 5;
+  f.observed.evidence.policy_version = 5;
+  assert.equal(await f.egress.verifyInstallation(f.context, installed), false);
+  const replacement = await f.egress.wiringStatus(f.context, f.attachment);
+  assert.ok(replacement);
+  assert.notEqual(replacement.enforcement.configurationId, installed.enforcement.configurationId);
+  assert.equal(await f.egress.verifyInstallation(f.context, replacement), true);
 });
 
 test("V1 permits only the exact inert runtime rule and fences both policies before Secret access and send", async (t) => {
@@ -2552,310 +2700,7 @@ for (const stage of ["check", "read"]) {
   });
 }
 
-// A permitted model stream outlives the 30-second operation deadline only through the
-// renewable lease: progress renews it, idling and the ceiling end it, and current
-// policy is checked on renewal and again before release. The test clock advances; nothing sleeps.
-async function leasedStreamFixture(t, overrides = () => ({}), peerLifetimeMs = 3_600_000) {
-  const receipts = new EgressSendReceipts(new InMemoryPlatformState());
-  const f = await syntheticDispatchFixture(t, receipts);
-  const peer = await f.ports.exchangeOwner.verify("synthetic-peer");
-  const longLived = { ...peer, expiresAt: new Date(f.ports.now() + peerLifetimeMs).toISOString() };
-  const proxy = new CredentialProxy({
-    ...f.ports,
-    exchangeOwner: { ...f.ports.exchangeOwner, verify: async () => longLived },
-    ...overrides(f),
-  });
-  const sandboxId = f.association.installation.sandboxId;
-  const controller = new AbortController();
-  const { signal } = controller;
-  const ready = await proxy.resolve("synthetic-peer", sandboxId, f.request, signal);
-  assert.equal(ready.kind, "ready");
-  const decision = await proxy.authorizeSend(
-    "synthetic-peer",
-    sandboxId,
-    f.request.id,
-    ready.handle,
-    ready.evidence,
-    ready.injectionDigest,
-    f.request.deadlineAt,
-    signal,
-  );
-  assert.equal(decision.kind, "allow");
-  const safeBody = JSON.stringify({ output: "fixture answer" });
-  return {
-    f,
-    receipts,
-    createdAt: Date.parse(f.startedAt),
-    deadline: Date.parse(f.request.deadlineAt),
-    renew: (bodyBytes, headReceived = true) =>
-      proxy.renewResponse("synthetic-peer", sandboxId, f.request.id, { headReceived, bodyBytes }),
-    async complete() {
-      const handle = await proxy.beginResponse("synthetic-peer", sandboxId, f.request.id);
-      if (!handle) {
-        return undefined;
-      }
-      const response = await proxy.protectResponse(
-        handle,
-        {
-          status: 200,
-          headers: [["content-type", "application/json"]],
-          body: Buffer.from(safeBody),
-          trailers: [],
-        },
-        signal,
-        true,
-      );
-      return response && Buffer.from(response.body).toString();
-    },
-    safeBody,
-    abort: () => controller.abort(),
-    async observation() {
-      const stored = await receipts.recover(f.sender, {
-        sender: f.sender,
-        instanceId: peer.instanceId,
-        useId: f.request.id,
-        attemptId: f.request.id,
-        material: ready.evidence,
-        deadlineAt: f.request.deadlineAt,
-      });
-      return stored?.observation;
-    },
-  };
-}
-
-test("a renewed model stream completes after the operation deadline", async (t) => {
-  const s = await leasedStreamFixture(t);
-  s.f.advance(20_000);
-  const first = await s.renew(0);
-  assert.deepEqual(first, {
-    renewBy: new Date(s.f.ports.now() + STREAM_LEASE_IDLE_MS).toISOString(),
-    expiresAt: new Date(s.createdAt + STREAM_LEASE_CEILING_MS).toISOString(),
-  });
-  s.f.advance(40_000);
-  assert.ok(s.f.ports.now() > s.deadline, "the stream is now past the original deadline");
-  const second = await s.renew(1024);
-  assert.equal(second.renewBy, new Date(s.f.ports.now() + STREAM_LEASE_IDLE_MS).toISOString());
-  s.f.advance(100_000);
-  assert.equal(await s.complete(), s.safeBody, "the complete stream is released after 160 s");
-  assert.deepEqual(await s.observation(), { kind: "response", dispatch: "confirmed", status: 200 });
-  assert.equal(await s.renew(2048), undefined, "a released operation has nothing to renew");
-});
-
-test("without progress the operation deadline still bounds the first response byte", async (t) => {
-  const s = await leasedStreamFixture(t);
-  s.f.advance(s.deadline - s.f.ports.now());
-  assert.equal(await s.renew(0), undefined, "no renewal starts at the deadline");
-  assert.equal(await s.complete(), undefined);
-  assert.equal(await s.observation(), null);
-  const headless = await leasedStreamFixture(t);
-  headless.f.advance(10_000);
-  assert.equal(await headless.renew(0, false), undefined, "progress needs the response head");
-  assert.equal(await headless.complete(), undefined, "a head-less frame discards the operation");
-});
-
-test("a model stream idle past the lease horizon expires", async (t) => {
-  const s = await leasedStreamFixture(t);
-  s.f.advance(10_000);
-  assert.ok(await s.renew(10));
-  s.f.advance(STREAM_LEASE_IDLE_MS + 1);
-  assert.equal(await s.renew(20), undefined);
-  assert.equal(await s.complete(), undefined);
-  assert.equal(await s.observation(), null, "expiry settles nothing; the attempt stays uncertain");
-});
-
-test("progress without new bytes keeps the lease but cannot extend it", async (t) => {
-  const s = await leasedStreamFixture(t);
-  s.f.advance(10_000);
-  const lease = await s.renew(100);
-  s.f.advance(200_000);
-  assert.deepEqual(await s.renew(100), lease, "the same byte count returns the unchanged lease");
-  assert.deepEqual(await s.renew(99), lease);
-  s.f.advance(STREAM_LEASE_IDLE_MS - 200_000 + 1);
-  assert.equal(await s.renew(200), undefined, "the unextended lease expired");
-  assert.equal(await s.complete(), undefined);
-});
-
-test("the stream ceiling holds against continued progress", async (t) => {
-  const s = await leasedStreamFixture(t);
-  const ceiling = s.createdAt + STREAM_LEASE_CEILING_MS;
-  let bytes = 0;
-  let lease;
-  s.f.advance(10_000);
-  while (s.f.ports.now() < ceiling) {
-    lease = await s.renew(++bytes);
-    assert.ok(lease, `progress at ${(s.f.ports.now() - s.createdAt) / 1000} s renews`);
-    assert.ok(Date.parse(lease.renewBy) <= ceiling);
-    assert.equal(Date.parse(lease.expiresAt), ceiling);
-    s.f.advance(Math.min(250_000, ceiling - s.f.ports.now()));
-  }
-  assert.equal(Date.parse(lease.renewBy), ceiling, "the last lease ends at the ceiling");
-  assert.equal(await s.renew(bytes + 1), undefined, "no progress extends past the ceiling");
-  assert.equal(await s.complete(), undefined);
-});
-
-test("the stream ceiling is also the peer's expiry", async (t) => {
-  const s = await leasedStreamFixture(t, () => ({}), 120_000);
-  s.f.advance(10_000);
-  const lease = await s.renew(1);
-  assert.equal(Date.parse(lease.renewBy), s.createdAt + 120_000);
-  assert.equal(Date.parse(lease.expiresAt), s.createdAt + 120_000);
-});
-
-test("progress sooner than the recheck interval keeps the lease unchanged", async (t) => {
-  let checks = 0;
-  const s = await leasedStreamFixture(t, (f) => ({
-    check: async (...args) => {
-      checks += args[2] ? 1 : 0;
-      return f.ports.check(...args);
-    },
-  }));
-  s.f.advance(10_000);
-  const lease = await s.renew(1);
-  assert.equal(checks, 1);
-  s.f.advance(STREAM_LEASE_RECHECK_MS - 1);
-  assert.deepEqual(await s.renew(2), lease, "no second policy check inside the interval");
-  assert.equal(checks, 1);
-  s.f.advance(1);
-  const extended = await s.renew(3);
-  assert.equal(checks, 2);
-  assert.ok(Date.parse(extended.renewBy) > Date.parse(lease.renewBy));
-});
-
-test("an unavailable authority leaves the lease unchanged instead of cutting the stream", async (t) => {
-  let outage = false;
-  const s = await leasedStreamFixture(t, (f) => ({
-    check: async (...args) => {
-      if (outage && args[2]) {
-        throw new Error("synthetic policy outage");
-      }
-      return f.ports.check(...args);
-    },
-  }));
-  s.f.advance(10_000);
-  const lease = await s.renew(1);
-  outage = true;
-  s.f.advance(STREAM_LEASE_RECHECK_MS);
-  assert.deepEqual(await s.renew(2), lease, "the bound stands; it is not extended");
-  assert.equal(await s.observation(), null);
-  outage = false;
-  s.f.advance(STREAM_LEASE_RECHECK_MS);
-  assert.ok(Date.parse((await s.renew(3)).renewBy) > Date.parse(lease.renewBy));
-  assert.equal(await s.complete(), s.safeBody);
-});
-
-test("a withdrawal cuts a model stream at its next renewal", async (t) => {
-  let withdrawn = false;
-  const s = await leasedStreamFixture(t, (f) => ({
-    check: async (use, evidence, stream) =>
-      withdrawn && stream
-        ? { kind: "denied", code: "withdrawn" }
-        : f.ports.check(use, evidence, stream),
-  }));
-  s.f.advance(10_000);
-  assert.ok(await s.renew(0));
-  withdrawn = true;
-  s.f.advance(20_000);
-  assert.equal(await s.renew(100), undefined);
-  assert.equal(await s.complete(), undefined, "the withdrawn stream releases no bytes");
-  assert.deepEqual(await s.observation(), {
-    kind: "response_blocked",
-    dispatch: "confirmed",
-    code: "response_policy",
-  });
-});
-
-for (const policy of ["withdrawn", "source changed", "unavailable", "never available"]) {
-  test(`a quiet stream cannot release bytes if policy is ${policy} during receipt persistence`, async (t) => {
-    let persisting = false;
-    let checkedUntil;
-    const s = await leasedStreamFixture(t, (f) => ({
-      check: async (use, evidence, stream) => {
-        const source = await f.ports.check(use, evidence, stream);
-        if (!stream || (!persisting && policy !== "never available")) {
-          return source;
-        }
-        checkedUntil = stream.until;
-        if (policy === "withdrawn") {
-          return { kind: "denied", code: "withdrawn" };
-        }
-        if (policy === "source changed") {
-          return { ...source, materialRefId: "replacement" };
-        }
-        throw new Error("synthetic policy outage");
-      },
-    }));
-    const lease = await s.renew(s.safeBody.length);
-    assert.ok(lease);
-    const saving = Promise.withResolvers();
-    const resume = Promise.withResolvers();
-    const observe = s.receipts.observe.bind(s.receipts);
-    t.mock.method(s.receipts, "observe", async (...args) => {
-      saving.resolve();
-      await resume.promise;
-      return observe(...args);
-    });
-
-    // No more progress. Finish inside the recheck interval, then change policy while
-    // the observation is pending and the proxy still holds the complete response.
-    s.f.advance(STREAM_LEASE_RECHECK_MS - 1);
-    const response = s.complete();
-    await saving.promise;
-    persisting = true;
-    resume.resolve();
-    assert.equal(await response, undefined, "the upstream response must not be released");
-    assert.equal(checkedUntil, lease.renewBy, "release uses the current lease deadline");
-    assert.deepEqual(await s.observation(), {
-      kind: "response",
-      dispatch: "confirmed",
-      status: 200,
-    });
-    assert.equal(await s.complete(), undefined, "the observed response cannot be claimed again");
-  });
-}
-
-for (const loss of ["lease expires", "exchange closes", "owner changes"]) {
-  test(`a final policy check cannot release the response after the ${loss}`, async (t) => {
-    const checking = Promise.withResolvers();
-    const resume = Promise.withResolvers();
-    let finishing = false;
-    const s = await leasedStreamFixture(t, (f) => ({
-      check: async (...args) => {
-        if (finishing && args[2]) {
-          checking.resolve();
-          await resume.promise;
-        }
-        return f.ports.check(...args);
-      },
-    }));
-    const lease = await s.renew(s.safeBody.length);
-    finishing = true;
-    const response = s.complete();
-    await checking.promise;
-    if (loss === "lease expires") {
-      s.f.advance(Date.parse(lease.renewBy) - s.f.ports.now());
-    }
-    if (loss === "exchange closes") {
-      s.abort();
-    }
-    if (loss === "owner changes") {
-      s.f.replaceCustody();
-    }
-    resume.resolve();
-    assert.equal(await response, undefined);
-    assert.deepEqual(await s.observation(), {
-      kind: "response",
-      dispatch: "confirmed",
-      status: 200,
-    });
-  });
-}
-
-test("stream progress beyond the response bound is refused", async (t) => {
-  const s = await leasedStreamFixture(t);
-  s.f.advance(10_000);
-  assert.equal(await s.renew(4 * 1024 * 1024 + 1), undefined);
-  assert.equal(await s.complete(), undefined);
-});
+registerStreamReceiptPersistenceCases(() => new EgressSendReceipts(new InMemoryPlatformState()));
 
 test("authenticated sender receipts survive authority restart without replay permission and distinguish observations", async (t) => {
   const f = await staticEgressFixture(t);
@@ -3363,6 +3208,10 @@ test("the policy endpoint refuses additions and live application while the activ
     });
     assert.equal(repositorySave.status, 409, JSON.stringify(repositorySave.body));
     assert.equal(repositorySave.body.error.code, "SANDBOX_POLICY_PROTECTED_EXECUTION");
+    assert.match(
+      repositorySave.body.error.message,
+      /To withdraw an existing repository list, send empty arrays for additions and repositoryNetworkPolicy\./,
+    );
     const current = await f.request("GET", base);
     assert.equal(current.status, 200, JSON.stringify(current.body));
     assert.deepEqual(current.body.data.policy, view.policy);
@@ -3384,6 +3233,23 @@ test("the policy endpoint refuses additions and live application while the activ
     /protected execution.*Credential Proxy.*application is refused/,
   );
   assert.equal((await f.request("GET", base)).body.data.policy.application, undefined);
+  // A policy saved before enforcement support was withdrawn must stay revocable.
+  const saved = await f.controller.transact(async (unit) => {
+    const policy = await unit.sandboxPolicies.find(f.namespace.id, f.agent.id);
+    assert.ok(policy);
+    return unit.sandboxPolicies.save(
+      { ...policy, version: policy.version + 1, repositoryNetworkPolicy: [repositoryGrant] },
+      policy.version,
+    );
+  });
+  assert.ok(saved);
+  const withdrawn = await f.request("PUT", base, {
+    body: { expectedVersion: saved.version, additions: [], repositoryNetworkPolicy: [] },
+  });
+  assert.equal(withdrawn.status, 200, JSON.stringify(withdrawn.body));
+  assert.deepEqual(withdrawn.body.data.repositoryNetworkPolicy, []);
+  assert.equal(withdrawn.body.data.version, saved.version + 1);
+  assert.deepEqual((await f.request("GET", base)).body.data.policy, withdrawn.body.data);
 });
 
 test("the policy endpoint refuses additions before an Agent's first protected deploy", async (t) => {
