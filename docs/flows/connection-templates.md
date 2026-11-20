@@ -1,18 +1,18 @@
 ---
 created: "2026-11-04"
-updated: "2026-11-18"
-last_updated_session: "authoring-run/0e501248-a309-4913-b4df-122e4c3783c2"
+updated: "2026-11-20"
+last_updated_session: "authoring-run/ff867cfa-69cc-468f-b5a3-e306c1377db2"
 ---
 
-# How OCC saves an OAuth connection template
+# How OCC saves a connection template
 
 ## Overview
 
-An Installation administrator defines where an account can connect and which OAuth client represents the Installation. A person then selects that template to connect an account in a Namespace. OCC runs the browser authorization flow. The Token Service stores and renews the grant. The person can finish connecting before choosing an Agent.
+An Installation administrator saves approved destinations in a static Bearer Connection Template or saves OAuth settings in an OAuth template. OCC keeps the template identity and immutable versions in its repository. For OAuth, a person can then select a template to connect an account in a Namespace. OCC runs browser authorization, and the Token Service stores and renews the grant. Static credential enrollment and delivery are outside this flow.
 
 ## Entry Points
 
-- An Installation administrator opens **Credentials → Connection templates** to edit a template, or **OAuth clients** to register a client against a template version. `apps/controller/src/http/connection-templates.ts:connectionTemplateHandlers`
+- An Installation administrator calls the Connection Template API to manage a static Bearer template, opens **Credentials → Connection templates** to edit an OAuth template, or opens **OAuth clients** to register a client against an OAuth template version. `apps/controller/src/http/connection-templates.ts:connectionTemplateHandlers`
 - A signed-in person with permission to create a credential in the destination Namespace starts consent with a template available there. The OAuth provider returns the browser to OCC's shared callback. `packages/occ/src/index.ts:startNamespaceConnection` and `packages/occ/src/index.ts:completeNamespaceConnection`
 
 ## Flow
@@ -21,11 +21,13 @@ An Installation administrator defines where an account can connect and which OAu
 
 ```mermaid
 graph TD
-  Admin["Administrator"] -->|Manual settings| Version["OCC saves the template version"]
+  Admin["Administrator"] -->|Static Bearer destinations| Version["OCC saves the template version"]
+  Admin -->|Manual OAuth settings| Version
   Admin -->|MCP server URL| Discovery["OCC reads provider metadata"]
   Discovery --> Version
-  Version -->|Register a confidential client| Secret["Secret Driver stores its secret"]
-  Version -->|Register a public client| Publish["OCC publishes the registration"]
+  Version -->|Static template| Saved["Template API returns approved version"]
+  Version -->|OAuth confidential client| Secret["Secret Driver stores its secret"]
+  Version -->|OAuth public client| Publish["OCC publishes the registration"]
   Secret --> Publish
 ```
 
@@ -45,9 +47,11 @@ graph TD
 
 ### 1. Save the template version
 
-`packages/occ/src/index.ts:createConnectionTemplate` and `apps/controller/src/connections/mcp-discovery.ts:discoverMcpAuthorization`
+`packages/occ/src/index.ts:createConnectionTemplate`, `packages/occ/src/index.ts:updateConnectionTemplate`, and `packages/occ/src/state/postgres-connection-templates.ts:postgresConnectionTemplates`
 
-OCC checks Installation administration before it accepts manual settings or starts MCP discovery. For MCP, it reads the protected resource metadata over HTTPS, pins each request to public addresses and contacts the selected advertised authorization server. The version records what OCC discovered, the OAuth resource and the MCP transport destination. An administrator can also edit the installed Google OAuth template and its prefilled Google Workspace destinations. OCC keeps the template ID and commits each new version with its audit record.
+OCC checks Installation administration and the selected Namespace before saving a template. For a static Bearer template, it validates and canonicalizes each complete method, host, port and path row. No discovery or OAuth client is required. The repository stores version 1 with the template identity. An edit that changes approved settings adds an immutable version and advances the current version; a rename alone keeps the version. OCC commits each mutation with its audit record.
+
+For manual OAuth, OCC accepts the approved settings and destinations. For MCP, it reads protected resource metadata over HTTPS, pins each request to public addresses and contacts the selected advertised authorization server. The version records what OCC discovered, the OAuth resource and the MCP transport destination. An administrator can also edit the installed Google OAuth template and its prefilled Google Workspace destinations.
 
 ### 2. Register and maintain the OAuth client
 
@@ -92,7 +96,7 @@ OCC registers the returned grant under the Namespace and credential source ID. T
 ## Related docs
 
 - [Manage credentials in the Console](../guides/console/secrets.md)
-- [OAuth connection templates and clients](../reference/connection-templates.md)
+- [Connection templates and OAuth clients](../reference/connection-templates.md)
 - [Secret storage and delivery](secret-storage-and-delivery.md)
 
 ## Manual Notes
@@ -100,6 +104,8 @@ OCC registers the returned grant under the Namespace and credential source ID. T
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 07:01: Trace static Bearer template validation and shared version persistence in the accompanying change. (authoring-run/ff867cfa-69cc-468f-b5a3-e306c1377db2 - 0ac6f863218c79c2c4143d552a0207a24d20f604)
 
 - 2026-11-18 16:20: Trace browser consent and expiry through shared OCC authentication state in the accompanying change. (authoring-run/0e501248-a309-4913-b4df-122e4c3783c2 - 5dfbd6c1db67024917c79790ee7b6155e6f753e1)
 

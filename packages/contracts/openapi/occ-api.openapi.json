@@ -36908,7 +36908,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "List connection templates the caller may connect in this Namespace",
+        "summary": "List approved connection templates available in this Namespace",
         "tags": ["Connections"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "credential_source", "scope": "namespace" }

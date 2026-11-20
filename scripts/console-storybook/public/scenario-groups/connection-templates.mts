@@ -13,13 +13,14 @@ export const connectionTemplateScenarios = {
     group: "Pages/Credentials",
     name: "OAuth connection templates",
     steps: [
-      "Compare availability, assigned OAuth client, and current version for Google OAuth and Support MCP. Open Edit on either row and check the selected template.",
+      "Compare availability, assigned OAuth client, and current version for Google OAuth and Support MCP. Open Edit on either OAuth row and check the selected template.",
+      "The backing API fixture also contains the static Bearer Reporting API template. Confirm the OAuth catalog omits it and the OAuth Edit controls remain available.",
       "Switch the Namespace in the header. Installation-wide templates remain available in every Namespace.",
     ],
     path: "/console/credentials/connection-templates",
     oauthCatalog: "ready",
     description:
-      "An Installation-wide Google template and a Namespace MCP template with an assigned OAuth client.",
+      "A mixed API fixture verifies that this OAuth-only catalog omits static Bearer templates.",
   },
   credentialsOAuthClientCatalog: {
     group: "Pages/Credentials",
@@ -29,7 +30,7 @@ export const connectionTemplateScenarios = {
     description: "Public and confidential OAuth clients with different issuers and availability.",
     steps: [
       "Compare each client’s issuer, availability, and token endpoint authentication method. Open a delete confirmation and check the name and availability, then cancel.",
-      "Choose Register OAuth client and select the connection template that defines its issuer.",
+      "Choose Register OAuth client. Confirm Reporting API is not offered; select an OAuth template that defines its issuer.",
     ],
   },
   credentialsDeleteTemplate: {

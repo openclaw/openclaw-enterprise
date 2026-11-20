@@ -8,6 +8,8 @@ import type {
 import { refusedAsNonAdministrator, requestFailure } from "./api-client.mjs";
 import {
   openOAuthClientRegistration,
+  isOAuthTemplate,
+  type OAuthTemplate,
   advertisedClientMethods,
   availabilityLabel,
   availableInNamespace,
@@ -26,9 +28,10 @@ function option(value: string, label: string) {
 }
 
 export async function connectionTemplates(context: Context) {
-  return (await context.request("/connection-templates", {
+  const templates = (await context.request("/connection-templates", {
     installationAdministration: "required",
   })) as ConnectionTemplate[];
+  return templates.filter(isOAuthTemplate);
 }
 
 function destinationEditor(initial: readonly ConnectionEndpoint[], onEdit: () => void) {
@@ -179,7 +182,7 @@ export function renderConnectionTemplates(
   );
   section.classList.add("connection-template-catalog");
   let clients: OAuthClient[] = [];
-  let savedTemplates: ConnectionTemplate[] = [];
+  let savedTemplates: OAuthTemplate[] = [];
   let redirectUri: string | undefined;
   async function refresh(saved?: string) {
     create.disabled = true;
@@ -249,7 +252,7 @@ export function renderConnectionTemplates(
     }
   }
 
-  function edit(template?: ConnectionTemplate) {
+  function edit(template?: OAuthTemplate) {
     openConnectionTemplateEditor(context, {
       parent: section,
       namespaces,
@@ -291,10 +294,10 @@ export function openConnectionTemplateEditor(
     namespaces: readonly Namespace[];
     currentNamespace: string | null;
     clients: readonly OAuthClient[];
-    template?: ConnectionTemplate | undefined;
-    onSaved: (saved: ConnectionTemplate) => void;
+    template?: OAuthTemplate | undefined;
+    onSaved: (saved: OAuthTemplate) => void;
     onUnconfirmed: () => void;
-    onRegister?: (saved: ConnectionTemplate) => void;
+    onRegister?: (saved: OAuthTemplate) => void;
   },
 ) {
   const { parent, namespaces, currentNamespace, clients, template } = options;
@@ -649,6 +652,7 @@ export function openConnectionTemplateEditor(
         return;
       }
       if (
+        !isOAuthTemplate(saved) ||
         !saved.id ||
         (template &&
           (saved.id !== template.id || saved.current.version < template.current.version)) ||

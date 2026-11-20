@@ -1,4 +1,4 @@
-import type { ConnectionTemplate, Namespace, OAuthClient } from "@openclaw-enterprise/contracts";
+import type { Namespace, OAuthClient } from "@openclaw-enterprise/contracts";
 import { refusedAsNonAdministrator } from "./api-client.mjs";
 import { button, element } from "./dom.mjs";
 import { oauthCatalog } from "./oauth-catalog.mjs";
@@ -6,6 +6,7 @@ import { oauthDeleteButton } from "./oauth-deletion.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
 import {
   availabilityLabel,
+  type OAuthTemplate,
   availableInNamespace,
   oauthClients,
   oauthFailure,
@@ -28,7 +29,7 @@ export function renderOAuthClients(
   ]);
   let redirectUri: string | undefined;
   let clients: OAuthClient[] = [];
-  let templates: ConnectionTemplate[] = [];
+  let templates: OAuthTemplate[] = [];
   async function refresh(message?: string) {
     create.disabled = true;
     list.replaceChildren();

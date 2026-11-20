@@ -2326,19 +2326,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       validateConfiguration(body);
     }
 
-    // TODO(RFC-0034): Remove this admission guard with the named provider implementation.
-    // Older handlers would otherwise ignore a requested provider or credential destination.
-    if (
-      body?.mode === "static_bearer" &&
-      (operation.operationId === "createConnectionTemplate" ||
-        operation.operationId === "updateConnectionTemplate")
-    ) {
-      throw failure(
-        501,
-        "NOT_IMPLEMENTED",
-        "Static Connection Templates are unavailable on this controller.",
-      );
-    }
+    // TODO(RFC-0034): Remove this guard when the ModelProvider implementation is available.
     if (
       (body &&
         "modelProviderId" in body &&

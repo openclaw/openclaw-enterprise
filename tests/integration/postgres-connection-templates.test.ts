@@ -56,6 +56,149 @@ async function createManualDraft(
 }
 
 test(
+  "static Connection Templates preserve approved request destinations across scoped CRUD and immutable versions",
+  requiresPostgres,
+  async (t) => {
+    const { app, controller, inject, pool, state } = await createPostgresAgentApp(t, options);
+    const namespaces: string[] = [];
+    for (const name of ["Template owner", "Template peer"]) {
+      const created = await inject("POST", "/namespaces", { name: `${name} ${randomUUID()}` });
+      assert.equal(created.statusCode, 201, created.body);
+      namespaces.push(created.json().data.id);
+    }
+    const [namespaceId, peerId] = namespaces;
+    assert.ok(namespaceId && peerId);
+    const destinations = [
+      { method: "POST", host: "10.42.0.8", port: 8443, path: "/inference" },
+      { method: "GET", host: "api.example.test", port: 443, path: "/v1/**" },
+      { method: "POST", host: "api.example.test", port: 443, path: "/v1/**" },
+    ];
+    const settings = { mode: "static_bearer", destinations };
+    // The administrator approves whole request rows. Reordering, casing, and duplicate rows
+    // cannot change the canonical policy or erase the distinction between HTTP methods.
+    const installed = await inject("POST", "/connection-templates", {
+      displayName: "Shared API key",
+      ...settings,
+      destinations: [
+        destinations[2],
+        { ...destinations[1], host: "API.example.test" },
+        destinations[0],
+        destinations[2],
+      ],
+    });
+    assert.equal(installed.statusCode, 201, installed.body);
+    const shared = installed.json().data;
+    assert.equal(shared.current.mode, "static_bearer");
+    assert.equal(shared.current.version, 1);
+    assert.deepEqual(shared.current.destinations, destinations);
+    const scoped = await inject("POST", "/connection-templates", {
+      displayName: "Namespace API key",
+      namespaceId,
+      ...settings,
+    });
+    assert.equal(scoped.statusCode, 201, scoped.body);
+    const scopedId: string = scoped.json().data.id;
+    const catalog = await inject("GET", "/connection-templates");
+    assert.equal(catalog.statusCode, 200, catalog.body);
+    assert.ok(catalog.json().data.some((entry: { id: string }) => entry.id === scopedId));
+    const usable = async (id: string) => {
+      const result = await inject("GET", `/namespaces/${id}/connection-templates`);
+      assert.equal(result.statusCode, 200, result.body);
+      return result.json().data.map((entry: { id: string }) => entry.id);
+    };
+    assert.ok((await usable(namespaceId)).includes(shared.id));
+    assert.ok((await usable(namespaceId)).includes(scopedId));
+    assert.ok((await usable(peerId)).includes(shared.id));
+    assert.ok(!(await usable(peerId)).includes(scopedId));
+
+    const member = { email: `reader-${randomUUID()}@example.test`, password: randomUUID() };
+    const auth = await createPostgresControllerAuth({
+      mode: "development",
+      installationId: controller.installation.id,
+      baseURL: "https://console.oce.localhost",
+      agentDomain: "agents.oce.localhost",
+      secret: options.authSecret,
+      pool,
+    });
+    const reader = await auth.createAccount({ ...member, name: "Template reader" });
+    await state.appendNativeIAMPrincipal(auth.principalSeed(reader, { grant: "none" }));
+    const session = await signedInHeaders(app, "https://console.oce.localhost", member);
+    const denied = await app.inject({
+      method: "POST",
+      url: "/connection-templates",
+      headers: session,
+      payload: { displayName: "Unapproved API key", ...settings },
+    });
+    assert.equal(denied.statusCode, 403, denied.body);
+    const deniedUse = await app.inject({
+      method: "GET",
+      url: `/namespaces/${namespaceId}/connection-templates`,
+      headers: session,
+    });
+    assert.equal(deniedUse.statusCode, 403, deniedUse.body);
+
+    const path = `/connection-templates/${shared.id}`;
+    const read = await inject("GET", path);
+    assert.equal(read.statusCode, 200, read.body);
+    assert.deepEqual(read.json().data.current.destinations, destinations);
+    const renamed = await inject("PATCH", path, { displayName: "Renamed API key" });
+    assert.equal(renamed.statusCode, 200, renamed.body);
+    assert.equal(renamed.json().data.current.version, 1);
+    const reordered = await inject("PATCH", path, {
+      ...settings,
+      destinations: [...destinations].reverse(),
+    });
+    assert.equal(reordered.statusCode, 200, reordered.body);
+    assert.equal(reordered.json().data.current.version, 1);
+    const next = [{ ...destinations[2], path: "/v2/**" }];
+    const changed = await inject("PATCH", path, { ...settings, destinations: next });
+    assert.equal(changed.statusCode, 200, changed.body);
+    assert.equal(changed.json().data.current.version, 2);
+    assert.deepEqual(changed.json().data.current.destinations, next);
+    // An older approved version remains unchanged after the current policy advances.
+    const history = await pool.query(
+      "SELECT version, destinations FROM occ.static_key_template_versions WHERE template_id=$1 ORDER BY version",
+      [shared.id],
+    );
+    assert.deepEqual(history.rows, [
+      { version: 1, destinations },
+      { version: 2, destinations: next },
+    ]);
+    // The database rejects invalid policy even when a caller bypasses public route validation.
+    await assert.rejects(
+      pool.query(
+        "INSERT INTO occ.static_key_template_versions(template_id,version,destinations,created_at) VALUES($1,3,$2,now())",
+        [shared.id, JSON.stringify([next[0], next[0]])],
+      ),
+      { code: "23514", constraint: "static_key_template_versions_destinations_valid" },
+    );
+    const oauthClient = await inject("POST", "/oauth-clients", clientInput(shared.id, 2));
+    assert.equal(oauthClient.statusCode, 409, oauthClient.body);
+    const wrongFamily = await inject("PATCH", path, manual);
+    assert.equal(wrongFamily.statusCode, 409, wrongFamily.body);
+    // Reject an immutable authentication change before attempting outbound MCP discovery.
+    const discoveredFamily = await inject("PATCH", path, {
+      mode: "mcp_discovery",
+      serverUrl: "https://127.0.0.1/metadata",
+      issuer: "https://issuer.example.test",
+      scopes: [],
+    });
+    assert.equal(discoveredFamily.statusCode, 409, discoveredFamily.body);
+    const removed = await inject("DELETE", path);
+    assert.equal(removed.statusCode, 204, removed.body);
+    assert.equal((await inject("GET", path)).statusCode, 404);
+    assert.equal(
+      (
+        await pool.query("SELECT 1 FROM occ.static_key_template_versions WHERE template_id=$1", [
+          shared.id,
+        ])
+      ).rowCount,
+      0,
+    );
+  },
+);
+
+test(
   "the Installation starts with an editable Google OAuth template and preserves saved destination versions",
   requiresPostgres,
   async (t) => {

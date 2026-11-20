@@ -155,13 +155,20 @@ OCC deletes an OAuth row when the matching browser callback consumes it. Device 
 
 ### `connection_templates`
 
-Stores the scope and current version of each OAuth connection template.
+Stores the scope, authentication method, and current version of each Connection Template.
 
 - `id`
 - `namespace_id`
 - `display_name`
-- `current_version`
+- `current_version`, `static_key`
+- `current_oauth_version`, `current_static_version` (generated current-version references)
 - `created_at`
+
+### `static_key_template_versions`
+
+Stores each immutable static bearer approval, including the exact HTTP method, host, port, and path of every approved destination.
+
+- `template_id`, `version`, `destinations`, `created_at`
 
 ### `oauth_connection_template_versions`
 
