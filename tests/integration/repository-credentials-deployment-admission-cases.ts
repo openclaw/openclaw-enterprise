@@ -48,7 +48,6 @@ import {
   BROKER_PROXY_EMPTY_HOST,
   BROKER_PROXY_LOCAL_BINDING,
   BROKER_PROXY_MODE,
-  CODEX_NEEDS_DEDICATED,
   COMPUTE_REPOSITORY_UNSUPPORTED,
   COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED,
   REPOSITORY_SELECTION_NOT_APPROVED,
@@ -56,6 +55,7 @@ import {
   runtimeIdUnsupported,
   SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
 } from "../helpers/refusal-text.mjs";
+import { CODEX_NEEDS_DEDICATED } from "../helpers/refusal-configuration-runtime.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 
 type App = ReturnType<typeof createFastifyApp>;

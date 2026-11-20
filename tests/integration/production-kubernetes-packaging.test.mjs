@@ -58,13 +58,23 @@ import { withBoundedTeardown } from "../helpers/bounded-teardown.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 
 import {
+  checkGatewayServiceTypes,
+  checkRemoteNodeCidrs,
   registerExecutionGatewayHostnameCase,
+  registerExecutionPortAndDnsCase,
   registerExternalGatewayTrustCase,
   registerProductionGatewayHostnameCase,
+  registerProductionGatewayNameCase,
   registerTenantGatewayPortCase,
 } from "./production-kubernetes-gateway-contract-cases.ts";
 import {
+  assertConsoleThemeMounts,
+  controlPlaneWorkloads,
+  findResourceByComponent,
+  registerConsoleThemeValuesCase,
+  registerControlPlaneSelectorValuesCase,
   registerNativeAdminAndRuntimeLogCases,
+  registerOptionalControlPlaneSelectorsCase,
   registerSandboxIngressCase,
 } from "./production-kubernetes-native-access-cases.ts";
 import {
@@ -85,37 +95,7 @@ test("console themes mount only on the API and restart it when the checksum chan
       })
     ).stdout,
   );
-  for (const objects of [defaults, themed]) {
-    for (const component of ["api", "worker"]) {
-      const deployment = findResource(objects, "Deployment", `openclaw-enterprise-${component}`);
-      const enabled = objects === themed && component === "api";
-      const pod = deployment.spec.template;
-      const container = [...(pod.spec.initContainers ?? []), ...pod.spec.containers].find(
-        (item) => item.name === component,
-      );
-      assert.equal(
-        container.env.some((item) => item.name === "OCC_CONSOLE_THEME_DIR"),
-        enabled,
-      );
-      assert.equal(
-        pod.spec.volumes.some((item) => item.name === "console-theme"),
-        enabled,
-      );
-      assert.equal(
-        pod.metadata.annotations?.["openclaw.dev/console-theme-checksum"],
-        enabled ? "revision-two" : undefined,
-      );
-      if (enabled) {
-        assert.deepEqual(pod.spec.volumes.find((item) => item.name === "console-theme").configMap, {
-          name: "console-branding",
-        });
-        assert.deepEqual(
-          container.volumeMounts.find((item) => item.name === "console-theme"),
-          { name: "console-theme", mountPath: "/etc/openclaw/console-theme", readOnly: true },
-        );
-      }
-    }
-  }
+  assertConsoleThemeMounts(defaults, themed);
 });
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const controllerRequire = createRequire(
@@ -176,85 +156,7 @@ async function renderObjects(overrides = {}, options = {}) {
   return resources((await render(overrides, options)).stdout);
 }
 
-function findResourceByComponent(objects, kind, component) {
-  return objects.find(
-    (object) =>
-      object.kind === kind && object.metadata.labels?.["app.kubernetes.io/component"] === component,
-  );
-}
-
-function controlPlaneWorkloads(objects) {
-  return {
-    initialization: findResourceByComponent(objects, "Job", "initialization"),
-    api: findResourceByComponent(objects, "Deployment", "api"),
-    worker: findResourceByComponent(objects, "Deployment", "worker"),
-  };
-}
-
-test(
-  "console theme settings reject YAML booleans and invalid ConfigMap names",
-  tooling,
-  async (t) => {
-    const directory = await temporaryDirectory(t, "oce-console-theme-");
-    const writeValues = async (name, body) => {
-      const path = join(directory, name);
-      await writeFile(path, body);
-      return path;
-    };
-    for (const [name, body, refusal] of [
-      [
-        "yes.yaml",
-        "api:\n  consoleTheme:\n    configMapName: yes\n    checksum: rev\n",
-        /api\.consoleTheme\.configMapName must be a string/,
-      ],
-      [
-        "no.yaml",
-        "api:\n  consoleTheme:\n    configMapName: no\n",
-        /api\.consoleTheme\.configMapName must be a string/,
-      ],
-      [
-        "checksum.yaml",
-        'api:\n  consoleTheme:\n    configMapName: "console-branding"\n    checksum: yes\n',
-        /api\.consoleTheme\.checksum must be a string/,
-      ],
-    ]) {
-      const path = await writeValues(name, body);
-      await assert.rejects(render({}, { valuesFiles: [path] }), refusal);
-    }
-    const quoted = await writeValues(
-      "quoted.yaml",
-      'api:\n  consoleTheme:\n    configMapName: "no"\n    checksum: "rev"\n',
-    );
-    const objects = await renderObjects({}, { valuesFiles: [quoted] });
-    const api = findResource(objects, "Deployment", "openclaw-enterprise-api");
-    assert.equal(
-      api.spec.template.spec.volumes.find((item) => item.name === "console-theme").configMap.name,
-      "no",
-    );
-    assert.equal(
-      api.spec.template.metadata.annotations["openclaw.dev/console-theme-checksum"],
-      "rev",
-    );
-    await assert.rejects(
-      render({ "api.consoleTheme.configMapName": "false" }),
-      /api\.consoleTheme\.configMapName must be a string/,
-    );
-    await assert.rejects(
-      render({ "api.consoleTheme.configMapName": "Not_Valid" }),
-      /api\.consoleTheme\.configMapName must be a Kubernetes resource name/,
-    );
-    const named = await renderObjects(
-      { "api.consoleTheme.checksum": "revision-two" },
-      { strings: { "api.consoleTheme.configMapName": "false" } },
-    );
-    const deployment = findResource(named, "Deployment", "openclaw-enterprise-api");
-    assert.equal(
-      deployment.spec.template.spec.volumes.find((item) => item.name === "console-theme").configMap
-        .name,
-      "false",
-    );
-  },
-);
+registerConsoleThemeValuesCase();
 
 const stringNameDatabaseCa = {
   "database.caSecretName": "occ-database-ca-test",
@@ -688,25 +590,7 @@ function renderProductionValuesExample(extraArgs, options = {}) {
   });
 }
 
-test("Helm refuses a Gateway name Compute refuses", tooling, async () => {
-  for (const [flag, gatewayName] of [
-    ["--set", "Bad_Name"],
-    ["--set-string", " oce-agent-gateways "],
-    ["--set-string", "a".repeat(64)],
-  ]) {
-    await assert.rejects(
-      renderProductionValuesExample([flag, `gatewayRouting.gatewayName=${gatewayName}`]),
-      /gatewayRouting\.gatewayName must be a DNS-safe Kubernetes resource name/,
-    );
-  }
-  const sixtyThree = "a".repeat(63);
-  const { stdout } = await renderProductionValuesExample(
-    ["--set-string", `gatewayRouting.gatewayName=${sixtyThree}`],
-    { maxBuffer: 2_000_000 },
-  );
-  const gateway = (await resources(stdout)).find((object) => object.kind === "Gateway");
-  assert.equal(gateway?.metadata.name, sixtyThree);
-});
+registerProductionGatewayNameCase(renderProductionValuesExample);
 
 test(
   "the execution chart refuses a harness Gateway name or Envoy namespace Compute refuses",
@@ -955,12 +839,7 @@ test(
   },
 );
 
-test("control-plane node selectors are optional unless configured", tooling, async () => {
-  const { initialization, api, worker } = controlPlaneWorkloads(await renderObjects());
-  for (const workload of [initialization, api, worker]) {
-    assert.equal(workload.spec.template.spec.nodeSelector, undefined);
-  }
-});
+registerOptionalControlPlaneSelectorsCase();
 
 test("Installation checksum rolls only its consumers", tooling, async () => {
   const checksum = "c".repeat(64);
@@ -2659,25 +2538,7 @@ test(
 test(
   "gatewayRouting.remoteNodeCidrs rejects invalid and every-address ranges",
   tooling,
-  async () => {
-    for (const override of [
-      { "gatewayRouting.remoteNodeCidrs[0]": "not-a-cidr" },
-      { "gatewayRouting.remoteNodeCidrs[0]": "010.0.0.1/32" },
-      { "gatewayRouting.remoteNodeCidrs[0]": "12345::/64" },
-      { "gatewayRouting.remoteNodeCidrs[0]": "::ffff:999.1.2.3/32" },
-      // A /0 prefix would remove the source restriction on the private listener.
-      { "gatewayRouting.remoteNodeCidrs[0]": "0.0.0.0/0" },
-      { "gatewayRouting.remoteNodeCidrs[0]": "::/0" },
-    ]) {
-      await assert.rejects(
-        render({ ...gatewayRoutingValues, ...override }),
-        /gatewayRouting\.remoteNodeCidrs/,
-      );
-    }
-    for (const cidr of ["10.0.0.1/32", "10.0.0.0/8", "::/64", "::ffff:10.0.0.0/120"]) {
-      await render({ ...gatewayRoutingValues, "gatewayRouting.remoteNodeCidrs[0]": cidr });
-    }
-  },
+  checkRemoteNodeCidrs,
 );
 
 registerDatabaseCaCases({
@@ -3876,105 +3737,11 @@ test("Collector exporter ports preserve decimal meaning in Kubernetes YAML", too
   );
 });
 
-test(
-  "the chart validates control-plane node selectors against Kubernetes label rules",
-  tooling,
-  async (t) => {
-    const valueMessage = /controlPlane\.nodeSelector values must be Kubernetes label values/;
-    const keyMessage = /controlPlane\.nodeSelector keys must be Kubernetes label keys/;
-    for (const [key, value, message] of [
-      ["oce-role", "not valid", valueMessage],
-      ["oce-role", "-control", valueMessage],
-      ["oce-role", "control.", valueMessage],
-      ["oce-role", "a".repeat(64), valueMessage],
-      ["a-", "control", keyMessage],
-      ["bad key", "control", keyMessage],
-    ]) {
-      await assert.rejects(
-        render({}, { strings: { [`controlPlane.nodeSelector.${key}`]: value } }),
-        ({ code, stderr }) => code !== 0 && message.test(stderr),
-        `${key}=${value}`,
-      );
-    }
-    const directory = await temporaryDirectory(t, "openclaw-node-selector-");
-    const selectorValues = join(directory, "selector.yaml");
-    await writeFile(
-      selectorValues,
-      "controlPlane:\n  nodeSelector:\n    Example.com/role: control\n",
-    );
-    await assert.rejects(
-      render({}, { valuesFiles: [selectorValues] }),
-      ({ code, stderr }) => code !== 0 && keyMessage.test(stderr),
-    );
-    const { stdout } = await render(
-      {},
-      {
-        strings: {
-          "controlPlane.nodeSelector.oce-role": "control",
-          "controlPlane.nodeSelector.topology\\.kubernetes\\.io/zone": "east",
-          "controlPlane.nodeSelector.node-role\\.kubernetes\\.io/infra": "",
-          "controlPlane.nodeSelector.edge": "a_b.c-d",
-          [`controlPlane.nodeSelector.${"a".repeat(253)}/pool`]: "control",
-        },
-      },
-    );
-    assert.match(stdout, /oce-role: control/);
-    assert.match(stdout, /topology\.kubernetes\.io\/zone: east/);
-    // Kubernetes allows empty label values; charts before #1848 rendered them.
-    assert.match(stdout, /node-role\.kubernetes\.io\/infra: ""/);
-    assert.match(stdout, /edge: a_b\.c-d/);
-    const objects = await resources(stdout);
-    const api = objects.find(
-      (object) =>
-        object.kind === "Deployment" &&
-        object.metadata.labels?.["app.kubernetes.io/component"] === "api",
-    );
-    assert.equal(api.spec.template.spec.nodeSelector[`${"a".repeat(253)}/pool`], "control");
-  },
-);
+registerControlPlaneSelectorValuesCase();
 
 registerExecutionGatewayHostnameCase();
 
-test(
-  "execution chart refuses an Envoy HTTPS port or DNS namespace the cluster refuses",
-  tooling,
-  async () => {
-    const template = renderExecutionChart;
-    const proxyPolicy = async (stdout) =>
-      findResource(await resources(stdout), "NetworkPolicy", "oce-harness-proxy");
-    // Compute validatePort takes integers from 1 to 65535; Sprig int would truncate 10443.5.
-    // Sprig int turns a value too big for 64 bits into 0, which the lower bound catches.
-    for (const port of ["0", "65536", "10443.5", "-1", "true", "99999999999999999999"]) {
-      await assert.rejects(
-        template("--set", `routing.envoyHttpsTargetPort=${port}`),
-        /routing\.envoyHttpsTargetPort must be an integer TCP port from 1 to 65535/,
-        port,
-      );
-    }
-    for (const port of [1, 65535]) {
-      const policy = await proxyPolicy(
-        (await template("--set", `routing.envoyHttpsTargetPort=${port}`)).stdout,
-      );
-      assert.equal(policy?.spec.ingress[0].ports[0].port, port);
-    }
-    // The DNS egress rule selects kubernetes.io/metadata.name, which holds a Namespace name.
-    for (const namespace of ["Kube-System", "kube.system", "-dns", "a".repeat(64)]) {
-      await assert.rejects(
-        template("--set-string", `dns.namespace=${namespace}`),
-        /dns\.namespace must be a Kubernetes namespace name \(a DNS label of at most 63 characters\)/,
-        namespace,
-      );
-    }
-    const namespace = "a".repeat(63);
-    const policy = await proxyPolicy(
-      (await template("--set-string", `dns.namespace=${namespace}`)).stdout,
-    );
-    assert.equal(
-      policy?.spec.egress[0].to[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"],
-      namespace,
-    );
-  },
-);
+registerExecutionPortAndDnsCase();
 
 test(
   "the plugin request guard installs beside OpenShell without control-plane access",
@@ -4491,25 +4258,7 @@ test(
 test(
   "gateway routing service type is limited to the EnvoyProxy service types",
   tooling,
-  async () => {
-    // EnvoyProxy envoyService.type accepts only these three. Any other value rendered, and the
-    // apply failed after the pre-install hooks had migrated and bootstrapped the Installation.
-    for (const serviceType of ["clusterIP", "ExternalName"]) {
-      await assert.rejects(
-        render({ ...gatewayRoutingValues, "gatewayRouting.serviceType": serviceType }),
-        /gatewayRouting\.serviceType must be ClusterIP, LoadBalancer or NodePort/,
-        serviceType,
-      );
-    }
-    for (const serviceType of ["LoadBalancer", "NodePort"]) {
-      const objects = await renderObjects({
-        ...gatewayRoutingValues,
-        "gatewayRouting.serviceType": serviceType,
-      });
-      const envoy = objects.find(({ kind }) => kind === "EnvoyProxy");
-      assert.equal(envoy.spec.provider.kubernetes.envoyService.type, serviceType);
-    }
-  },
+  checkGatewayServiceTypes,
 );
 
 test("OpenShell Envoy cleanup reports rejected deletes and continues remaining cleanup", async (t) => {
