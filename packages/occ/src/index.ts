@@ -12012,6 +12012,7 @@ export class OpenClawController {
         this.configurationDriver() === configuration &&
         this.credentialSourceOwner(source).driver === sourceDriver;
       return validate(
+        topology.placement,
         harness,
         source,
         repository.resolution,

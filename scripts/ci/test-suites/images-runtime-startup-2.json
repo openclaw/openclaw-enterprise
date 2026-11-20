@@ -78,6 +78,7 @@
         "OpenShell service delivers codex initial workspace files privately after supervisor readiness",
         "OpenShell service delivers openclaw initial workspace files privately after supervisor readiness",
         "native initializer serializes retries and preserves later edits",
+        "protected repository policy pins the actual Compute runtime images",
         "configured protected OpenShell Git admits only the selected execution and network policy",
         "managed Sandbox releases scoped Git for a successor of a Git-free revision",
         "stock OpenShell v0.1.5 cannot carry OCE readiness-extension evidence"

@@ -1,3 +1,8 @@
+import { fixtureRelease, selectFixtureRelease } from "../helpers/inspected-workspace-release.ts";
+import {
+  workspaceNodeSetupSecret,
+  workspaceNodeSetupSecretData,
+} from "./sandbox-driver-workspace-node-setup-fixture.ts";
 import {
   assertGitExecutionContinuity,
   verifyManagedGitReplacement,
@@ -28,13 +33,21 @@ import {
 } from "../../apps/controller/src/drivers/compute/harness-egress-enrollment.ts";
 import { openShellPolicyBaselineDigest } from "../../apps/controller/src/drivers/sandbox/openshell-policy.ts";
 import type { OpenShellSandboxResponse } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import {
+  KubernetesComputeDriver,
+  type KubernetesComputeDriverOptions,
+} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import {
   resolveGitHubRepositoryBinding,
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
-import { admitSandboxRepositoryNetworkPolicy } from "../../packages/contracts/src/index.ts";
+import {
+  admitSandboxRepositoryNetworkPolicy,
+  freezeAgentRevision,
+  admitLoggingConfiguration,
+} from "../../packages/contracts/src/index.ts";
 import type {
   AgentRevision,
   EgressInstallation,
@@ -184,6 +197,11 @@ function protectedRevision(fixture: ProtectedOpenShellGitFixture) {
   return {
     ...revision,
     id: revisionId,
+    compute: {
+      id: protectedGit.computeDriver.id,
+      implementation: protectedGit.computeDriver.implementation,
+    },
+    sandboxDriverId: sandbox.id,
     harnessAuth: auth,
     egressPlan: plan,
     executionAdmission: { version: 5, mode: "protected" },
@@ -227,6 +245,204 @@ function repositoryScopedRevision(
     repositoryCredentials,
     sandboxPolicy,
   };
+}
+
+export function capturedWorkspaceRevision(
+  fixture: ProtectedOpenShellGitFixture,
+  compute: KubernetesComputeDriver,
+  standingApprovalId?: string,
+) {
+  const { credentialGatewayId, sourceId, sourceType } = fixture.auth;
+  const draft = {
+    ...repositoryScopedRevision(fixture, protectedRevision(fixture), standingApprovalId),
+    gatewayManagedMode: true,
+    configuration: admitLoggingConfiguration(createHarnessConfiguration("codex", "gpt-5"), "info"),
+    credentialSources: [{ credentialGatewayId, sourceId, sourceType }],
+  };
+  const admission = compute.admitRevision(draft);
+  assert.ok(admission);
+  const admitted = { ...draft, compute: { ...draft.compute, admission } };
+  const runtimeInputs = compute.snapshotRuntimeInputs(admitted);
+  assert.ok(runtimeInputs);
+  return { ...admitted, compute: { ...admitted.compute, runtimeInputs } };
+}
+
+export async function verifyProtectedRepositoryRuntimeImages(
+  fixture: ProtectedOpenShellGitFixture,
+) {
+  const { protectedGit, owner, sandbox, context, revision, requirements } = fixture;
+  const providersBefore = [...fixture.gateway.providers.keys()];
+  const profilesBefore = [...fixture.gateway.profiles.keys()];
+  const compute = protectedGit.computeDriver;
+  const { credentialGatewayDriver } = protectedGit;
+  const nodeEnrollment = compute["nodeEnrollment"];
+  const options = compute["options"];
+  assert.ok(credentialGatewayDriver && nodeEnrollment);
+  const images = options.images;
+  const { gateway, agent } = images;
+  const computeWithImages = (selected: KubernetesComputeDriverOptions["images"]) =>
+    new KubernetesComputeDriver(
+      { ...options, images: selected },
+      {
+        id: compute.id,
+        implementation: compute.implementation,
+        protectedDriver: owner,
+        credentialGatewayDriver,
+        nodeEnrollment,
+      },
+    );
+  const { credentialGatewayId, sourceId, sourceType } = fixture.auth;
+  const draft = {
+    ...repositoryScopedRevision(fixture, protectedRevision(fixture)),
+    credentialSources: [{ credentialGatewayId, sourceId, sourceType }],
+  };
+  const admit = (driver: KubernetesComputeDriver) => {
+    const admission = driver.admitRevision(draft);
+    assert.ok(admission);
+    return { ...draft, compute: { ...draft.compute, admission } };
+  };
+  const admitted = admit(compute);
+  const runtimeInputs = compute.snapshotRuntimeInputs(admitted);
+  assert.ok(runtimeInputs, "the protected repository policy must carry its saved image selection");
+  assert.match(runtimeInputs, /^planned-runtime:v2:/);
+  const withInputs = (inputs?: string): AgentRevision =>
+    freezeAgentRevision({
+      ...admitted,
+      compute: { ...admitted.compute, ...(inputs !== undefined && { runtimeInputs: inputs }) },
+    });
+  const saved = withInputs(runtimeInputs);
+  assert.equal(compute["workloadImages"](saved, "gateway").runtime, gateway);
+  const harnessImage = compute["workloadImages"](saved, "agent").runtime;
+  assert.equal(harnessImage, agent);
+  // This renderer check observes the image field only. Routed activation must still refuse.
+  const spec = sandbox["harnessSpec"](
+    { ...context, revision, requirements: { ...requirements, image: harnessImage } },
+    "runtime-files",
+    new Set(["OPENCLAW_NODE_SETUP_CODE", "OPENCLAW_NODE_CA_PEM"]),
+  );
+  assert.equal(spec.template.image, agent);
+
+  for (const input of [
+    undefined,
+    "planned-runtime:v2:{",
+    runtimeInputs.replace("planned-runtime:v2:", "planned-runtime:v3:"),
+    runtimeInputs.replace("planned-runtime:v2:", "planned-runtime:v1:"),
+    runtimeInputs.replace(agent, "registry.example.test/runtime/agent:latest"),
+    runtimeInputs.replace(agent, agent.replace("/runtime/", "/Invalid/")),
+  ]) {
+    await assert.rejects(
+      compute.prepareRevision(withInputs(input)),
+      /runtime admission is invalid/,
+    );
+    await assert.rejects(
+      compute.activateRevision(withInputs(input)),
+      /runtime admission is invalid/,
+    );
+  }
+  const unscoped = {
+    ...saved,
+    sandboxPolicy: sandbox.admitProtectedCodexArtifactPolicy(3).snapshot,
+  };
+  await assert.rejects(compute.prepareRevision(unscoped), /runtime admission is invalid/);
+
+  const wrongOwner = { ...saved, compute: { ...saved.compute, id: "foreign-compute" } };
+  const wrongActor = { ...saved, servicePrincipalId: "foreign-service-principal" };
+  const wrongExecution = { ...saved, id: "rev_" + randomUUID() };
+  for (const revision of [wrongOwner, wrongActor, wrongExecution]) {
+    await assert.rejects(
+      compute.prepareRevision(revision),
+      /requires its admitted protected Codex runtime/,
+    );
+  }
+  const changedPolicy = {
+    ...saved,
+    sandboxPolicy: { ...admitted.sandboxPolicy, version: admitted.sandboxPolicy.version + 1 },
+  };
+  const changedDigest = (reference: string) =>
+    reference.replace(/sha256:.*$/, "sha256:" + "c".repeat(64));
+  for (const revision of [
+    changedPolicy,
+    withInputs(runtimeInputs.replace(agent, changedDigest(agent))),
+    withInputs(
+      runtimeInputs.replace(gateway, agent).replace('"agent":"' + agent, '"agent":"' + gateway),
+    ),
+  ]) {
+    await assert.rejects(compute.prepareRevision(revision), /images or policy no longer match/);
+  }
+  const legacy = protectedRevision(fixture);
+  for (const role of ["gateway", "agent"] as const) {
+    const drifted = computeWithImages({ ...images, [role]: changedDigest(images[role]) });
+    await assert.rejects(drifted.activateRevision(saved), /images or policy no longer match/);
+    const tagged = computeWithImages({
+      ...images,
+      requireImmutableDigest: false,
+      [role]: images[role].replace(/@.*/, ":legacy"),
+    });
+    assert.throws(
+      () => tagged.snapshotRuntimeInputs(admit(tagged)),
+      /requires immutable Gateway and Harness/,
+    );
+    assert.equal(tagged.snapshotRuntimeInputs(legacy), undefined);
+    assert.equal(
+      tagged["workloadImages"](legacy, role).runtime,
+      images[role].replace(/@.*/, ":legacy"),
+    );
+  }
+
+  await assert.rejects(
+    compute.prepareRevision(saved),
+    /cannot share Workspace node enrollment over WSS/,
+  );
+  await assert.rejects(
+    compute.activateRevision(saved),
+    /cannot share Workspace node enrollment over WSS/,
+  );
+
+  // Use the same paired Drivers and images in a valid Installation whose direct Gateway
+  // clients cannot supply dedicated placement. The saved revision still pins its own inputs.
+  const { gatewayRouting: _gatewayRouting, ...unroutedOptions } = options;
+  const unrouted = new KubernetesComputeDriver(
+    {
+      ...unroutedOptions,
+      network: {
+        ...options.network,
+        gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }],
+      },
+    },
+    {
+      id: compute.id,
+      implementation: compute.implementation,
+      protectedDriver: owner,
+      credentialGatewayDriver,
+      nodeEnrollment,
+    },
+  );
+  const unroutedAdmission = admit(unrouted);
+  const unroutedInputs = unrouted.snapshotRuntimeInputs(unroutedAdmission);
+  assert.ok(unroutedInputs);
+  const unroutedRevision = freezeAgentRevision({
+    ...unroutedAdmission,
+    compute: { ...unroutedAdmission.compute, runtimeInputs: unroutedInputs },
+  });
+  sandbox.validateProtectedRepositoryNetworkPolicy(unroutedRevision);
+  assert.equal(unrouted.requiresStoppedPredecessors(unroutedRevision), true);
+  assert.throws(
+    () => unrouted.validateProtectedRepositoryNetworkPolicy(unroutedRevision),
+    /Dedicated Agents need gatewayRouting/,
+    "the Worker's pre-stop validator must refuse the missing placement",
+  );
+  await assert.rejects(
+    unrouted.prepareRevision(unroutedRevision),
+    /Dedicated Agents need gatewayRouting/,
+  );
+  await assert.rejects(
+    unrouted.activateRevision(unroutedRevision),
+    /Dedicated Agents need gatewayRouting/,
+  );
+
+  assert.equal(fixture.getCreated(), undefined, "the checks did not create a Sandbox");
+  assert.deepEqual([...fixture.gateway.providers.keys()], providersBefore);
+  assert.deepEqual([...fixture.gateway.profiles.keys()], profilesBefore);
 }
 
 export async function verifyProtectedOpenShellGitExecution(
@@ -327,6 +543,7 @@ export async function verifyProtectedOpenShellGitExecution(
   );
   assert.equal(getCreated(), undefined, "the online sender cannot take over a v4 execution");
   // The Git worker has bound its authority port since it started.
+  assert.ok(authorityPort);
   await authorityPort.release();
   const result = await sandbox.provisionHarness({ ...ctx, requirements: required });
   const cold = sandbox.standingGitExecution(ctx);
@@ -431,16 +648,22 @@ export async function verifyProtectedOpenShellGitExecution(
     "repository policy refuses routed Workspace enrollment before provisioning",
     async () => {
       const compute = protectedGit.computeDriver;
-      const routed = repositoryScopedRevision(fixture, {
-        ...rev,
-        compute: { ...rev.compute, admission: admitted },
+      const scoped = repositoryScopedRevision(fixture, rev);
+      const scopedAdmission = compute.admitRevision(scoped);
+      assert.ok(scopedAdmission);
+      const routed = { ...scoped, compute: { ...scoped.compute, admission: scopedAdmission } };
+      const runtimeInputs = compute.snapshotRuntimeInputs(routed);
+      assert.ok(runtimeInputs);
+      const pinned = freezeAgentRevision({
+        ...routed,
+        compute: { ...routed.compute, runtimeInputs },
       });
       const providersBefore = [...gateway.providers.keys()];
       const profilesBefore = [...gateway.profiles.keys()];
       const read = subtest.mock.method(context.kubernetes, "read");
       try {
         await assert.rejects(
-          compute.prepareRevision(routed),
+          compute.prepareRevision(pinned),
           /cannot share Workspace node enrollment over WSS/,
         );
         assert.equal(
@@ -797,6 +1020,7 @@ async function scopedSupervisor(
 export async function verifyManagedScopedGitExecution(
   t: TestContext,
   fixture: ProtectedOpenShellGitFixture,
+  inspected = false,
 ): Promise<void> {
   const { sandbox: managed, context, revision, requirements, gateway } = fixture;
   const git = managed["openShellGit"];
@@ -827,11 +1051,13 @@ export async function verifyManagedScopedGitExecution(
   await managed.cleanup(predecessor);
   assert.equal(current().phase, "SANDBOX_PHASE_STOPPED");
 
-  const successor = repositoryScopedRevision(
-    fixture,
-    protectedRevision(fixture),
-    "fixture-standing-approval",
-  );
+  const kubernetes = fixture.protectedGit.computeDriver;
+  if (inspected) {
+    selectFixtureRelease(t);
+  }
+  const successor = inspected
+    ? capturedWorkspaceRevision(fixture, kubernetes, "fixture-standing-approval")
+    : repositoryScopedRevision(fixture, protectedRevision(fixture), "fixture-standing-approval");
   const { id, egressPlan: plan } = successor;
   const { providerInstanceId, grantId, repositoryId } =
     successor.repositoryCredentials.bindings[0].grant;
@@ -839,9 +1065,37 @@ export async function verifyManagedScopedGitExecution(
   const probePath = repositoryGitStartupProbePath(successor);
   assert.equal(probePath, "/example/read-source.git/info/refs");
   const prepared = await compute.configure(ctx);
+  let successorRequirements: HarnessWorkloadRequirements = base.requirements;
+  if (inspected) {
+    kubernetes.validateProtectedRepositoryNetworkPolicy(successor);
+    const url = kubernetes.getGatewayEndpoint(successor) + "/node";
+    successorRequirements = {
+      ...base.requirements,
+      image: fixtureRelease.agent,
+      environment: [
+        ...requirements.environment,
+        { name: "OCE_INSPECTED_WORKSPACE_NODE_URL", value: url },
+      ],
+    };
+    t.mock.method(
+      context.kubernetes,
+      "read",
+      async ({ metadata }: { metadata: Parameters<typeof workspaceNodeSetupSecret>[0] }) =>
+        workspaceNodeSetupSecret(
+          metadata,
+          successor.namespaceId,
+          successor.agentId,
+          workspaceNodeSetupSecretData({
+            url,
+            bootstrapToken: "fixture-setup",
+            expiresAtMs: Date.now() + 60_000,
+          }),
+        ),
+    );
+  }
   const harness = {
     ...ctx,
-    requirements: enrolledRequirements(base.requirements, prepared, probePath),
+    requirements: enrolledRequirements(successorRequirements, prepared, probePath),
     transportToken: "fixture-transport",
   };
   const expires = Date.now() + 120_000;
@@ -862,6 +1116,7 @@ export async function verifyManagedScopedGitExecution(
     assert.equal(route.revisionId, id);
     return material;
   });
+  assert.ok(fixture.authorityPort);
   await fixture.authorityPort.release();
   const result = await managed.provisionHarness(harness);
   assert.equal(result.resourceName, name);

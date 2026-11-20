@@ -3,6 +3,7 @@ import {
   type OpenShellGitNetworkInput,
   type OpenShellGitNetworkTarget,
 } from "../sandbox/openshell-git-network-policy.ts";
+import type { InspectedWorkspaceNodeRoute } from "../sandbox/openshell-workspace-node-policy.ts";
 import type { RepositoryGitRecipient } from "@openclaw-enterprise/contracts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -47,6 +48,7 @@ export type OpenShellPreparedGitScope = OpenShellGitNetworkInput & {
   readonly expectedProviders?: readonly OpenShellExpectedProviderRule[];
   /** Verify the current revision's policy on a managed Sandbox. */
   readonly managedSandbox?: true;
+  readonly workspaceRoute?: InspectedWorkspaceNodeRoute;
 };
 
 /** Only the credential worker supplies this value; no App signing key or OAuth material. */
@@ -213,6 +215,9 @@ export class OpenShellPreparedGitProvider {
       refuse();
     }
     const repositoryNetworkPolicy = network.grants;
+    if (scope.workspaceRoute !== undefined && repositoryNetworkPolicy === undefined) {
+      refuse();
+    }
     this.hasRepositoryNetworkPolicy = repositoryNetworkPolicy !== undefined;
     this.client = client;
     this.scope = Object.freeze({
@@ -222,6 +227,7 @@ export class OpenShellPreparedGitProvider {
       ...(scope.expectedProviders === undefined
         ? {}
         : { expectedProviders: structuredClone(scope.expectedProviders) }),
+      ...(scope.workspaceRoute && { workspaceRoute: Object.freeze({ ...scope.workspaceRoute }) }),
     });
     this.fingerprint = createHash("sha256")
       .update(
@@ -642,6 +648,7 @@ export class OpenShellPreparedGitProvider {
       this.scope.expectedProviders,
       signal,
       verifyManagedSandbox,
+      this.scope.workspaceRoute,
     );
   }
 

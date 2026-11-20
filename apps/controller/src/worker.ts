@@ -5803,6 +5803,18 @@ export class ControllerWorker {
         );
       }
       await this.compute.validateProtectedRepositoryNetworkPolicy(revision);
+      if (revision.executionAdmission.mode === "protected") {
+        const sandbox = this.sandbox;
+        if (
+          sandbox?.validateProtectedRepositoryNetworkPolicy === undefined ||
+          sandbox.id !== revision.sandboxDriverId
+        ) {
+          throw new DependencyUnavailableError(
+            "The selected Sandbox cannot enforce this repository network policy.",
+          );
+        }
+        sandbox.validateProtectedRepositoryNetworkPolicy(revision);
+      }
     }
   }
 

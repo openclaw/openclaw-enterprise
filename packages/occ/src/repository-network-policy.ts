@@ -179,7 +179,16 @@ export async function readRepositoryEditTopology(
   ) {
     return undefined;
   }
-  return { harness, source };
+  return {
+    harness,
+    source,
+    placement: {
+      namespaceId,
+      agentId: agent.id,
+      gatewayManagedMode: agent.gatewayManagedMode,
+      configuration: values,
+    },
+  };
 }
 
 export function bindRepositoryPolicyAuthorization(current: () => IAMDriver) {
@@ -234,6 +243,7 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
     ) => admitRepository.call(sandbox, policy, network),
   };
   return (
+    placement: NonNullable<ProtectedRepositoryNetworkPolicySaveContext["placement"]>,
     harness: HarnessDescriptor,
     source: ProtectedRepositoryNetworkPolicySaveContext["harnessCredentialSource"],
     resolution: RepositoryPolicyResolution,
@@ -287,6 +297,7 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
       assertCurrent();
       const { type, ownerCapability, driverId } = source;
       const context: ProtectedRepositoryNetworkPolicySaveContext = immutableCopy({
+        placement,
         harness: dedicated,
         sandboxDriverId: boundSandbox.id,
         protectedDriver: owner.ref,

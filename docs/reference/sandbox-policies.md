@@ -35,8 +35,11 @@ owner must approve its exact access level. The selected Sandbox checks the
 protected Codex artifact snapshot and repository grants at the next saved
 version. Compute checks the same grants and protected topology before OCC
 saves the list.
-The bundled Drivers do not currently admit first saves or nonempty
-replacements.
+Kubernetes Compute requires a managed Gateway, dedicated Codex, a matching
+OpenAI credential source, an exact Workspace node WSS route, and a controller
+built for the qualified runtime image pair. The default controller build
+refuses first saves and nonempty replacements in this topology. See
+[image selection and build arguments](drivers/kubernetes-compute/configuration.md#images-and-resources).
 
 To withdraw existing grants, enable editing and send empty arrays for `additions` and
 `repositoryNetworkPolicy`. You need Agent `manage_policy` and SandboxPolicy
@@ -50,9 +53,9 @@ that can enforce it. Deployment checks edit authority before Channel credential 
 deployment effects. It checks each grant against the current Installation ceiling
 and Namespace approval. Both the selected Sandbox and Compute Drivers
 must admit the policy and topology before runtime credential preparation.
-For protected execution, Compute checks the frozen revision and its pinned
-runtime inputs. The bundled Drivers refuse this protected policy before
-preparing runtime credentials.
+For protected execution, Compute checks the frozen revision, qualified image
+digests, and exact Workspace node route before runtime credential preparation.
+It refuses a mismatch before the Worker stops a serving predecessor.
 Deployment returns `409 RESOURCE_CONFLICT`
 if an admitting Driver or the repository policy owner that approved the list
 changes before runtime credential provisioning or revision creation. A successful

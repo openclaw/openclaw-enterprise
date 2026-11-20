@@ -1041,6 +1041,11 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
     // A previously saved, authorized grant cannot deploy with a Sandbox that lacks
     // scoped admission. The refusal occurs before credential or revision effects.
     await seedRepositoryPolicy(f, agent, [selected]);
+    Object.defineProperty(sandbox, "admitRepositoryNetworkPolicy", {
+      value: undefined,
+      writable: true,
+      configurable: true,
+    });
     const { error } = checkedEnvelope(await deploy(), ErrorResponse, 409);
     assert.match(
       error.message,
@@ -1067,7 +1072,7 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
         additions: [],
         repositoryNetworkPolicy: [selected],
       });
-    // Bundled Drivers lack first-save admission. The API leaves desired policy
+    // The test Drivers lack first-save admission. The API leaves desired policy
     // untouched until both selected Drivers explicitly support it.
     assert.equal(before.repositoryNetworkPolicySaveSupported, false);
     checkedEnvelope(await put(), ErrorResponse, 409);

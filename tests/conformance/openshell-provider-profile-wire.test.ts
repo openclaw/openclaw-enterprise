@@ -7,7 +7,10 @@ import {
   GrpcOpenShellGatewayClient,
   type OpenShellProviderProfile,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { workspaceNodeNetworkPolicy } from "../../apps/controller/src/drivers/sandbox/openshell-workspace-node-policy.ts";
+import {
+  inspectedWorkspaceNodeRule,
+  workspaceNodeNetworkPolicy,
+} from "../../apps/controller/src/drivers/sandbox/openshell-workspace-node-policy.ts";
 import {
   checkOpenShellGitProviders,
   OpenShellGitRouteError,
@@ -528,7 +531,7 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
       };
       overrides = { source, sandboxPolicy: source, effective: { ...expected, ...rules } };
     }
-    reportWorkspaceRule("workspace.example.test", false);
+    reportWorkspaceRule("workspace.example.test", false, true);
     assert.ok(await observe());
     assert.deepEqual(await predecessor(), installed);
     for (const host of ["github.com", "api.github.com", "workspace.example.test"]) {
@@ -540,6 +543,110 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
       }
     }
   });
+
+  await t.test(
+    "the loaded Workspace rule must match the bound route and exclude sibling access",
+    async () => {
+      const workspaceRoute = {
+        host: "workspace.example.test",
+        port: 443,
+        path: "/namespaces/ns1/agents/agent1/node",
+      };
+      const workspaceRule = inspectedWorkspaceNodeRule(workspaceRoute);
+      const scoped = new OpenShellPreparedGitProvider(client, { ...scope, workspaceRoute });
+      const observeScoped = () =>
+        scoped.observe(binding, "sandbox-id", AbortSignal.timeout(10_000));
+      const observeScopedPredecessor = () =>
+        scoped.observePredecessor(binding, installed, AbortSignal.timeout(10_000));
+      const shadow = {
+        name: "shadow",
+        endpoints: [{ ...modelEndpoint, host: workspaceRoute.host }],
+      };
+      const report = (rule: unknown, sibling?: typeof shadow) => {
+        const rules = {
+          [workspaceRule.name]: rule,
+          ...(sibling && { [sibling.name]: sibling }),
+        };
+        const source = {
+          ...stockSource,
+          network_policies: { ...stockSource.network_policies, ...rules },
+        };
+        overrides = { source, sandboxPolicy: source, effective: { ...expected, ...rules } };
+      };
+      report(workspaceRule, {
+        ...shadow,
+        endpoints: [{ ...modelEndpoint, host: "separate.example.test" }],
+      });
+      assert.ok(await observeScoped());
+      assert.deepEqual(await observeScopedPredecessor(), installed);
+      assert.equal(await observe(), undefined, "no independent Workspace route was supplied");
+
+      const [wss, hook] = workspaceRule.endpoints;
+      assert.ok(wss && hook);
+      const broadHook = workspaceRoute.path + "/__openclaw__/native-hook/*";
+      for (const widened of [
+        inspectedWorkspaceNodeRule({ ...workspaceRoute, host: "alias.example.test" }),
+        {
+          ...workspaceRule,
+          endpoints: [
+            wss,
+            { ...hook, path: broadHook, rules: [{ allow: { method: "POST", path: broadHook } }] },
+          ],
+        },
+        inspectedWorkspaceNodeRule({
+          ...workspaceRoute,
+          path: "/namespaces/ns1/agents/other/node",
+        }),
+        { ...workspaceRule, endpoints: [{ ...wss, tls: "NETWORK_TLS_MODE_SKIP" }, hook] },
+        { ...workspaceRule, endpoints: [{ ...wss, deny_rules: [] }, hook] },
+        {
+          ...workspaceRule,
+          endpoints: [wss, { ...hook, rules: [{ allow: { method: "GET", path: hook.path } }] }],
+        },
+      ]) {
+        report(widened);
+        assert.equal(await observeScoped(), undefined);
+        assert.equal(await observeScopedPredecessor(), undefined);
+      }
+      report(workspaceRule, shadow);
+      assert.equal(
+        await observeScoped(),
+        undefined,
+        "a sibling cannot widen the same Workspace host",
+      );
+      assert.equal(await observeScopedPredecessor(), undefined);
+      report(workspaceRule);
+      // Even a sibling Provider matching its approved profile and token-grant owner
+      // must use a different destination from the Workspace route.
+      const shiftedModelRule = {
+        ...modelRule,
+        endpoints: modelRule.endpoints.map((item) => ({ ...item, host: workspaceRoute.host })),
+      };
+      const sameHostProvider = new OpenShellPreparedGitProvider(client, {
+        ...scope,
+        workspaceRoute,
+        expectedProviders: [
+          { name: "model", providerId: modelId, rule: shiftedModelRule },
+          { name: runtime, rule: runtimeRule },
+        ],
+      });
+      const shifted = shiftedModelRule.endpoints[0]!;
+      overrides = {
+        ...overrides,
+        effective: {
+          ...overrides.effective,
+          [modelRule.name]: {
+            ...shiftedModelRule,
+            endpoints: [{ ...shifted, token_grant_owner: stockModelOwner }],
+          },
+        },
+      };
+      assert.equal(
+        await sameHostProvider.observe(binding, "sandbox-id", AbortSignal.timeout(10_000)),
+        undefined,
+      );
+    },
+  );
 
   await t.test("an exact sibling profile still cannot allow uninspected credentials", async () => {
     const unsafe = {

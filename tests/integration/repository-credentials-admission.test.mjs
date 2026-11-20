@@ -1993,8 +1993,9 @@ test("first repository policy save requires affirmative admission of the exact d
   );
   selectedCompute.admitsProtectedRepositoryNetworkPolicySave = admit;
   const sandbox = f.controller.selectedDriver("sandbox");
+  sandbox.admitRepositoryNetworkPolicy = undefined;
   assert.equal((await put([grant])).status, 409);
-  // This fixture opts in on the Sandbox contract. The bundled Driver still refuses.
+  // An admitting Compute Driver cannot grant access without Sandbox admission.
   sandbox.admitRepositoryNetworkPolicy = (_policy, network) => network.defaults;
   sandbox.validateProtectedRepositoryNetworkPolicy = () =>
     assert.fail("Save admitted a frozen Sandbox revision");
@@ -2017,6 +2018,10 @@ test("first repository policy save requires affirmative admission of the exact d
     (await f.request("GET", policyPath)).data.repositoryNetworkPolicySaveSupported,
     true,
   );
+  const { placement } = admit.mock.calls[0].arguments[0];
+  assert.equal(placement?.agentId, agent.id);
+  assert.equal(placement?.namespaceId, f.namespace.id);
+  assert.equal(placement?.gatewayManagedMode, true);
   const wrongScope = await put([{ repository: "example/foreign-project", access: "read" }]);
   assert.equal(wrongScope.status, 409);
   assert.equal(wrongScope.error.details[0].code, "OUTSIDE_CEILING");

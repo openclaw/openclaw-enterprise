@@ -41,7 +41,10 @@ import {
 } from "./openshell-exchange-capabilities.ts";
 import { createOpenAiStaticProvider } from "./openai-provider.ts";
 import { openShellProtectedCodexArtifacts } from "../sandbox/openshell-codex-artifacts.ts";
-import { assertBoundedWorkspaceNodeRule } from "../sandbox/openshell-workspace-node-policy.ts";
+import {
+  assertBoundedWorkspaceNodeRule,
+  workspaceNodePathFor,
+} from "../sandbox/openshell-workspace-node-policy.ts";
 
 /** Whether `registration` is a registered supervisor middleware advertising no execution capability. */
 function registeredWithoutExecution(extensions: unknown, registration: string): boolean {
@@ -495,7 +498,12 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     const expected = prepared.configuration;
     const expectedPolicies = asRecord(expected.network_policies);
     if (expectedPolicies && Object.hasOwn(expectedPolicies, "workspace-node-enrollment")) {
-      assertBoundedWorkspaceNodeRule(expectedPolicies["workspace-node-enrollment"]);
+      assertBoundedWorkspaceNodeRule(
+        expectedPolicies["workspace-node-enrollment"],
+        context.revision.sandboxPolicy?.repositoryNetworkPolicy === undefined
+          ? undefined
+          : workspaceNodePathFor(context.revision.namespaceId, context.revision.agentId),
+      );
     }
     // SandboxResourceRef carries the paired Sandbox's exact WorkspaceNodeBinding-derived
     // auxiliary rule. It grants no artifact authority: every other rule comes from admission.

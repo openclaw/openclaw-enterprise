@@ -224,6 +224,11 @@ export type RepositoryWorkerRestartDisposition =
 
 /** Current desired topology and exact proposed policy, when saving. */
 export interface ProtectedRepositoryNetworkPolicySaveContext {
+  /** Saved Agent placement and its authorized Configuration, for local topology checks. */
+  readonly placement?: Pick<
+    AgentRevision,
+    "agentId" | "namespaceId" | "gatewayManagedMode" | "configuration"
+  >;
   readonly harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "version" | "mode">>;
   readonly sandboxDriverId: string;
   /** The selected registration that owns both Sandbox and Credential Proxy. */

@@ -1,3 +1,4 @@
+import type { InspectedWorkspaceNodeRoute } from "../sandbox/openshell-workspace-node-policy.ts";
 import { openShellGitNetworkDefaults } from "../sandbox/openshell-git-network-policy.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -360,6 +361,7 @@ function gitProvider(
   observedHookPreview?: true,
   expectedProviders?: readonly OpenShellExpectedProviderRule[],
   managedSandbox?: true,
+  workspaceRoute?: InspectedWorkspaceNodeRoute,
 ) {
   return new OpenShellPreparedGitProvider(client, {
     workspace,
@@ -370,6 +372,7 @@ function gitProvider(
     ...(repositoryNetworkPolicy !== undefined && { repositoryNetworkPolicy }),
     ...(expectedProviders !== undefined && { expectedProviders }),
     ...(managedSandbox && { managedSandbox }),
+    ...(workspaceRoute && { workspaceRoute }),
     ...(observedHookPreview && { observedHookPreview }),
     ...openShellGitNetworkDefaults(delivery),
   });
@@ -444,6 +447,13 @@ export class OpenShellGitRuntime {
   ) {
     this.configuration = configuration;
     this.resolveDelivery = resolveDelivery;
+  }
+
+  /** Use the real delivery resolver and ACL checks without preparing or attaching a route. */
+  validateRepositoryNetworkPolicy(revision: Readonly<AgentRevision>): void {
+    if (this.scope(revision).repositoryNetworkPolicy === undefined) {
+      throw new Error("OpenShell Git requires an admitted repository network policy.");
+    }
   }
 
   private scope(revision: Readonly<AgentRevision>): OpenShellGitScope {
@@ -641,6 +651,7 @@ export class OpenShellGitRuntime {
     otherHosts: readonly string[] = [],
     runtimeFileRule?: OpenShellExpectedProviderRule,
     retainedSandbox?: (sandbox: OpenShellSandboxResponse) => Promise<void>,
+    workspaceRoute?: InspectedWorkspaceNodeRoute,
   ) {
     if (retainedSandbox && !this.routes) {
       throw new Error("Retained Git replacement requires a durable route store.");
@@ -745,6 +756,7 @@ export class OpenShellGitRuntime {
             ? undefined
             : [...expectedProviders, ...(runtimeFileRule ? [runtimeFileRule] : [])],
           retainedSandbox ? true : undefined,
+          workspaceRoute,
         );
         const bindingId = admittedExecutionId;
         const route = {

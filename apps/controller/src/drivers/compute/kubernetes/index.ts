@@ -1,3 +1,4 @@
+import { admitsInspectedWorkspace } from "../../sandbox/inspected-workspace-release.ts";
 import { enabledChannelEntries } from "@openclaw-enterprise/occ";
 import { resolveChannelRouting, type ChannelProviderDriver } from "../../channel/routing.ts";
 import {
@@ -54,7 +55,10 @@ import { ProtectedExecutionDriver } from "../protected-execution-driver.ts";
 import {
   decodeReplacementRuntime,
   encodeReplacementRuntime,
+  IMMUTABLE_IMAGE_DIGEST,
+  immutableRuntimeImages,
   replacementCompatibility,
+  type ReplacementRuntime,
 } from "./replacement-runtime.ts";
 import type { InstalledDriver } from "@openclaw-enterprise/occ";
 import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
@@ -154,6 +158,7 @@ import type {
   ConfigurationValidationOptions,
   CredentialAttachmentStatus,
   CredentialGatewayDriver,
+  ProtectedRepositoryNetworkPolicySaveContext,
   CredentialSource,
   CredentialSourceAttachment,
   CredentialSourceType,
@@ -671,6 +676,7 @@ interface GatewayConfigurationSnapshot {
   readonly revision: number;
   readonly revisionId: string;
   readonly gatewayManagedMode: boolean;
+  readonly inspectedWorkspace?: true;
   readonly usesGatewayPasswordEnv: boolean;
   readonly usesWritableNativeAdminConfig: boolean;
   readonly annotations: Readonly<Record<string, string>>;
@@ -1264,7 +1270,6 @@ const WORKLOAD_TERMINATION_TIMEOUT_MS = 120_000;
 const WORKLOAD_TERMINATION_POLL_MS = 100;
 // A yielding stop asks the queue whether other Work waits at most once a second.
 const WORKLOAD_TERMINATION_YIELD_CHECK_MS = 1_000;
-const IMMUTABLE_IMAGE_DIGEST = /@sha256:[a-f0-9]{64}$/;
 const AGENT_TRANSPORT_PORT = 18_790;
 const NATIVE_WORKER_PROFILE = "dedicated-native";
 const DEFAULT_NATIVE_OPENCLAW_SESSION_CAPACITY = 8;
@@ -1333,6 +1338,22 @@ const NODE_SETUP_ANNOTATION = "openclaw.dev/workspace-node-setup";
 const WORKSPACE_NODE_BINDING_VOLUME = "openclaw-workspace-node";
 const WORKSPACE_NODE_BINDING_DIRECTORY = "/run/openclaw-workspace-node";
 const WORKSPACE_NODE_BINDING_FILE = "workspace-node.json";
+const WORKSPACE_NODE_BINDING_PATH =
+  WORKSPACE_NODE_BINDING_DIRECTORY + "/" + WORKSPACE_NODE_BINDING_FILE;
+
+function gatewayLaunch(managed: boolean, inspectedRevision?: string): string {
+  return gatewayRuntimeEntrypoint(
+    managed,
+    inspectedRevision === undefined
+      ? undefined
+      : {
+          kind: "inspected-dedicated-codex",
+          revisionId: inspectedRevision,
+          bindingPath: WORKSPACE_NODE_BINDING_PATH,
+        },
+  );
+}
+
 const WORKSPACE_NODE_BINDING_ANNOTATION = "openclaw.dev/workspace-node-binding";
 // Kubelet refresh after the Pod nudge (1.3-1.7 s on k3d, #612), then the
 // wrapper's 1 s poll, its config write and OpenClaw's plugin reload, confirmed
@@ -4733,7 +4754,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
   // after the deployment stopped its predecessors (finding 2349). Embedded and channel-runtime
   // Installations need none of them, so startup accepts them; Agent save and deployment admission
   // refuse here, naming the setting.
-  private requireDedicatedRuntimePlacement(harness: RevisionHarnessDescriptor): void {
+  private requireDedicatedRuntimePlacement(
+    harness: Pick<RevisionHarnessDescriptor, "id" | "mode">,
+  ): void {
     const runtime = this.options.runtime;
     if (harness.mode !== "dedicated" || runtime === undefined) {
       return;
@@ -5063,7 +5086,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
   }
 
-  getGatewayEndpoint(revision: AgentRevision): string | undefined {
+  getGatewayEndpoint(revision: Pick<AgentRevision, "namespaceId" | "agentId">): string | undefined {
     const routing = this.options.gatewayRouting;
     if (routing === undefined) {
       return undefined;
@@ -6491,12 +6514,101 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
   }
 
+  private supportsInspectedWorkspace(
+    placement: NonNullable<ProtectedRepositoryNetworkPolicySaveContext["placement"]>,
+  ): boolean {
+    if (
+      this.sandboxDriver?.implementation !== "openshell" ||
+      !this.appliesWorkspaceNodeAtRuntime() ||
+      !admitsInspectedWorkspace(
+        this.options.images,
+        placement,
+        this.getGatewayEndpoint(placement) + "/node",
+      )
+    ) {
+      return false;
+    }
+    this.validateConfiguration(placement.configuration);
+    const config = this.kubernetesGatewayConfigurationDocument(placement.configuration);
+    requireWorkspaceNodePlugins(config, callerSettingError);
+    const nodes = asRecord(asRecord(config.gateway)?.nodes);
+    const plugins = asRecord(asRecord(config.plugins)?.entries);
+    // The renderer owns pairing and installs one File Transfer policy when the
+    // revision's binding arrives. Do not enroll with caller-supplied policies.
+    return (
+      !this.usesWritableNativeAdminConfig(config) &&
+      nodes?.pairing === undefined &&
+      asRecord(plugins?.["file-transfer"])?.config === undefined
+    );
+  }
+
+  admitsProtectedRepositoryNetworkPolicySave(
+    context: ProtectedRepositoryNetworkPolicySaveContext,
+  ): boolean {
+    const { placement, harness, harnessCredentialSource: source } = context;
+    if (
+      !placement ||
+      harness.id !== "codex" ||
+      harness.mode !== "dedicated" ||
+      source.type !== "openai" ||
+      source.ownerCapability !== "credential_gateway" ||
+      source.driverId !== this.credentialGatewayDriver?.id ||
+      this.protectedExecution?.sandbox.id !== context.sandboxDriverId ||
+      !isDeepStrictEqual(context.protectedDriver, this.protectedExecution.owner.ref) ||
+      !context.repositoryBindings.length ||
+      !context.repositoryBindings.every(({ profile }) => profile === "github-repository") ||
+      !context.repositoryNetworkPolicy?.grants.length
+    ) {
+      return false;
+    }
+    this.requireDedicatedRuntimePlacement(harness);
+    return this.supportsInspectedWorkspace(placement);
+  }
+
+  validateProtectedRepositoryNetworkPolicy(revision: Readonly<AgentRevision>): void {
+    this.repositoryPolicyRuntime(revision, "admit");
+  }
+
+  private repositoryPolicyRuntime(
+    revision: Readonly<AgentRevision>,
+    operation: "admit" | "execute",
+  ) {
+    const saved = this.replacementRuntime(revision);
+    const sandbox = this.protectedExecution?.sandbox;
+    const plan = revision.egressPlan;
+    if (
+      sandbox?.validateProtectedRepositoryNetworkPolicy === undefined ||
+      revision.sandboxDriverId !== sandbox.id ||
+      revision.sandboxPolicy?.repositoryNetworkPolicy === undefined ||
+      plan?.execution.namespaceId !== revision.namespaceId ||
+      plan.execution.agentId !== revision.agentId ||
+      plan.execution.servicePrincipalId !== revision.servicePrincipalId ||
+      plan.harnessCredentialSource === undefined ||
+      plan.harnessCredentialSource.credentialGatewayId !== this.credentialGatewayDriver?.id
+    ) {
+      throw new ConfigurationFailure("Compute requires its paired protected repository Sandbox.");
+    }
+    this.requireDedicatedRuntimePlacement(revision.harness);
+    if (!this.supportsInspectedWorkspace(revision)) {
+      throw new ConfigurationFailure(
+        "Protected repository network policy cannot share Workspace node enrollment over WSS.",
+      );
+    }
+    if (operation === "execute") {
+      sandbox.validateProtectedRepositoryNetworkPolicy(revision);
+    }
+    return saved;
+  }
+
   private validateRevisionExecution(
     revision: AgentRevision,
     context?: ComputeRevisionContext,
   ): void {
     const provider = this.providerAdmission(revision);
-    const saved = this.replacementRuntime(revision);
+    const saved =
+      revision.sandboxPolicy?.repositoryNetworkPolicy === undefined
+        ? this.replacementRuntime(revision)
+        : this.repositoryPolicyRuntime(revision, "execute");
     if (
       saved &&
       this.options.images.requireImmutableDigest &&
@@ -6519,16 +6631,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     this.validateExecutionAdmission(revision, "stored");
-    if (
-      revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined &&
-      this.nodeEnrollment !== undefined &&
-      this.options.gatewayRouting !== undefined
-    ) {
-      // TODO: Qualify inspected WSS across supported Workspace operations before enabling it.
-      throw new ConfigurationFailure(
-        "Protected repository network policy cannot share Workspace node enrollment over WSS.",
-      );
-    }
     const plan = revision.egressPlan;
     if (!plan) {
       return;
@@ -12788,6 +12890,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
     },
   ): T {
     const defaults = asRecord(asRecord(input.revision?.configuration.agents)?.defaults);
+    const inspectedWorkspaceUrl =
+      input.provider &&
+      !input.native &&
+      !input.setupFile &&
+      input.revision?.sandboxPolicy?.repositoryNetworkPolicy !== undefined
+        ? required(this.getGatewayEndpoint(input.revision), "Workspace Gateway route") + "/node"
+        : undefined;
     const environment: SandboxEnvironmentVariable[] = [
       ...launch.environment,
       input.setupFile
@@ -12798,6 +12907,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
           },
       { name: "OPENCLAW_NODE_STATE_DIR", value: NODE_STATE_PATH },
       ...(input.ca === undefined ? [] : [{ name: "OPENCLAW_NODE_CA_PEM", value: input.ca }]),
+      ...(inspectedWorkspaceUrl === undefined
+        ? []
+        : [{ name: "OCE_INSPECTED_WORKSPACE_NODE_URL", value: inspectedWorkspaceUrl }]),
     ];
     if (input.native) {
       environment.push(
@@ -13743,6 +13855,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       revision: revision.revision,
       revisionId: revision.id,
       gatewayManagedMode: revision.gatewayManagedMode,
+      ...(revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined && {
+        inspectedWorkspace: true,
+      }),
       ...(harnessNamespace === undefined ? {} : { harnessNamespace }),
       usesGatewayPasswordEnv,
       usesWritableNativeAdminConfig: this.usesWritableNativeAdminConfig(nativeConfiguration),
@@ -14336,7 +14451,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return `gateway-${sha256Hex(agentId, 12)}`;
   }
 
-  private gatewayRoutePath(revision: AgentRevision): string {
+  private gatewayRoutePath(revision: Pick<AgentRevision, "namespaceId" | "agentId">): string {
     return `/namespaces/${required(revision.namespaceId, "AgentRevision Namespace ID")}/agents/${required(
       revision.agentId,
       "Agent ID",
@@ -15272,6 +15387,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   }
 
   snapshotRuntimeInputs(revision: Readonly<AgentRevision>): string | undefined {
+    if (revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined) {
+      return encodeReplacementRuntime(this.repositoryRuntimeInputs(revision));
+    }
     // Optional completion metadata must not introduce a new admission failure
     // when this Compute cannot identify the selected Sandbox execution contract.
     const sandbox = revision.sandboxDriverId === undefined ? undefined : this.sandboxDriver;
@@ -15294,10 +15412,61 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     });
   }
 
+  private repositoryRuntimeInputs(revision: Readonly<AgentRevision>): ReplacementRuntime {
+    const plan = revision.egressPlan;
+    if (
+      revision.compute.id !== this.id ||
+      revision.compute.implementation !== this.implementation ||
+      revision.harness.id !== "codex" ||
+      revision.harness.mode !== "dedicated" ||
+      revision.executionAdmission.mode !== "protected" ||
+      revision.executionAdmission.version !== 5 ||
+      plan?.repositoryGitAuthorization !== "online-request" ||
+      plan.repositoryGit === undefined ||
+      !isDeepStrictEqual(plan.repositoryGit, revision.repositoryCredentials) ||
+      plan.execution.revisionId !== revision.id ||
+      plan.execution.agentId !== revision.agentId ||
+      plan.execution.namespaceId !== revision.namespaceId ||
+      plan.execution.servicePrincipalId !== revision.servicePrincipalId ||
+      revision.sandboxDriverId !== this.protectedExecution?.sandbox.id ||
+      revision.compute.admission === undefined ||
+      revision.compute.admission !== this.admitRevision(revision)
+    ) {
+      throw new ConfigurationFailure(
+        "Repository network policy requires its admitted protected Codex runtime.",
+      );
+    }
+    this.validateExecutionAdmission(revision, "stored");
+    const { gateway, agent } = this.options.images;
+    if (!immutableRuntimeImages({ gateway, agent })) {
+      throw new ConfigurationFailure(
+        "Repository network policy requires immutable Gateway and Harness SHA-256 image references.",
+      );
+    }
+    const url = this.getGatewayEndpoint(revision) + "/node";
+    const mode =
+      this.selectedHarness instanceof ManagedOpenShellHarnessRuntime ? "service" : "legacy";
+    return {
+      gateway,
+      agent,
+      compatibility: this.runtimeCompatibility(revision, revision.compute.admission),
+      scope: "repository-policy",
+      ...(admitsInspectedWorkspace({ gateway, agent }, revision, url) && {
+        workspace: { url, mode },
+      }),
+    };
+  }
+
   private replacementRuntime(revision: Readonly<AgentRevision>) {
     const saved = decodeReplacementRuntime(revision.compute.runtimeInputs);
-    if (saved === null) {
+    const scoped = revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined;
+    if (saved === null || scoped !== (saved?.scope === "repository-policy")) {
       throw new ConfigurationFailure("AgentRevision runtime admission is invalid.");
+    }
+    if (scoped && !isDeepStrictEqual(saved, this.repositoryRuntimeInputs(revision))) {
+      throw new ConfigurationFailure(
+        "The admitted repository runtime images or policy no longer match; deploy a new Agent revision.",
+      );
     }
     return saved;
   }
@@ -15312,7 +15481,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       {
         settings,
         requireImmutableDigest: images.requireImmutableDigest,
-        gatewayEntrypoint: gatewayRuntimeEntrypoint(revision.gatewayManagedMode === true),
+        gatewayEntrypoint: gatewayLaunch(
+          revision.gatewayManagedMode === true,
+          revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined &&
+            revision.gatewayManagedMode
+            ? revision.id
+            : undefined,
+        ),
         harnessEntrypoint: COMPUTE_AGENT_RUNTIME_ENTRYPOINT,
         harnessWithNodeEntrypoint: COMPUTE_AGENT_WITH_NODE_ENTRYPOINT,
         runtimeWrapper: RUNTIME_WRAPPER_COMMAND,
@@ -17301,7 +17476,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         });
         variables.push({
           name: "OPENCLAW_WORKSPACE_NODE_PATH",
-          value: `${WORKSPACE_NODE_BINDING_DIRECTORY}/${WORKSPACE_NODE_BINDING_FILE}`,
+          value: WORKSPACE_NODE_BINDING_PATH,
         });
       }
       if (configuration.nativeWorkerProfile !== undefined) {
@@ -17803,7 +17978,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                     workspaceSetup,
                     required(configuration.workspace, "Initial workspace directory"),
                   )) +
-              gatewayRuntimeEntrypoint(configuration.gatewayManagedMode),
+              gatewayLaunch(
+                configuration.gatewayManagedMode,
+                configuration.inspectedWorkspace ? configuration.revisionId : undefined,
+              ),
           ),
         ];
       }
