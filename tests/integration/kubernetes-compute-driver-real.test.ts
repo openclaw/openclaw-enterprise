@@ -38,8 +38,10 @@ import {
   createScopedController as provisionScopedController,
 } from "../helpers/kubernetes-compute-real.mjs";
 import {
+  assertResourceUid,
   assertReadyGateway,
   assertHarnessWorkspaceClaim,
+  assertHarnessWorkspaceMounts,
   assertAgentServiceEndpointCount,
 } from "../helpers/kubernetes-compute-observations.ts";
 
@@ -391,8 +393,8 @@ test(
       );
     }
 
-    const gatewayIdentities = new Map<string, unknown>();
-    const sharedWorkspaceIdentities = new Map<string, unknown>();
+    const gatewayIdentities = new Map<string, string>();
+    const sharedWorkspaceIdentities = new Map<string, string>();
     for (const candidate of candidates) {
       if (driver.requiresStoppedPredecessors(candidate)) {
         for (const previous of candidates.filter(
@@ -426,6 +428,7 @@ test(
         candidate,
       );
       const identityKey = `${candidate.namespaceId}:${candidate.agentId}`;
+      assertResourceUid(gateway, "the gateway Deployment");
       if (gatewayIdentities.has(identityKey)) {
         assert.notEqual(
           gateway.metadata.uid,
@@ -435,7 +438,8 @@ test(
       } else {
         gatewayIdentities.set(identityKey, gateway.metadata.uid);
       }
-      const deployment = await resource("deployment", revisionName(candidate), placement);
+      const workloadName = revisionName(candidate);
+      const deployment = await resource("deployment", workloadName, placement);
       const harnessClaim = await assertHarnessWorkspaceClaim(
         placement,
         candidate.namespaceId,
@@ -443,30 +447,7 @@ test(
         sharedWorkspaceIdentities.get(identityKey),
       );
       sharedWorkspaceIdentities.set(identityKey, harnessClaim.metadata.uid);
-      assert.equal(
-        gateway.spec.template.spec.volumes.some((volume) => {
-          if (volume === null || volume === undefined) {
-            throw new TypeError("Cannot read a nullish gateway volume");
-          }
-          const target: object = Object(volume);
-          const reference: unknown = Reflect.get(target, "persistentVolumeClaim");
-          if (reference === null || reference === undefined) {
-            return harnessClaim.metadata.name === undefined;
-          }
-          const claim: object = Object(reference);
-          const claimName: unknown = Reflect.get(claim, "claimName");
-          return claimName === harnessClaim.metadata.name;
-        }),
-        false,
-        "Gateway must not mount the Harness workspace claim",
-      );
-      assert.deepEqual(
-        deployment.spec.template.spec.volumes?.find(({ name }) => name === "openclaw-workspace"),
-        {
-          name: "openclaw-workspace",
-          persistentVolumeClaim: { claimName: harnessClaim.metadata.name },
-        },
-      );
+      assertHarnessWorkspaceMounts(gateway, deployment, workloadName, harnessClaim.metadata.name);
       assert.equal(deployment.spec.template.spec.serviceAccountName, agentName(candidate.agentId));
       assert.equal(deployment.spec.template.spec.automountServiceAccountToken, false);
       assert.equal(deployment.spec.template.spec.securityContext?.runAsNonRoot, true);

@@ -31,8 +31,8 @@ type ClaimObservation = {
     namespace?: unknown;
     labels?: unknown;
     annotations?: unknown;
-    name?: unknown;
-    uid?: unknown;
+    name: string;
+    uid: string;
   };
   spec: { accessModes?: unknown; resources?: unknown; storageClassName?: unknown };
   status: { phase?: unknown; capacity?: unknown };
@@ -63,6 +63,23 @@ function arrayMember<T extends object, K extends string>(
   key: K,
 ): asserts value is T & Record<K, unknown[]> {
   array(field(value, key));
+}
+
+function assertResourceName(
+  resource: unknown,
+  expected: string,
+  description: string,
+): asserts resource is { metadata: { name: string } } {
+  const observed = optionalField(optionalField(resource, "metadata"), "name");
+  assert.ok(observed === expected, `${description} must have the requested name`);
+}
+
+export function assertResourceUid(
+  resource: { metadata: WireObject },
+  description: string,
+): asserts resource is { metadata: WireObject & { uid: string } } {
+  const { uid } = resource.metadata;
+  assert.ok(typeof uid === "string" && uid.trim().length > 0, `${description} must have a UID`);
 }
 
 function assertString(value: unknown, message?: string): asserts value is string {
@@ -303,6 +320,7 @@ export async function assertReadyGateway(
     false,
     "Agent gateway identity must remain stable across immutable revisions",
   );
+  assertResourceName(deployment, name, "the gateway Deployment");
   const expectedNativeDocument =
     snapshot === undefined ? undefined : expectedGatewayDocument(snapshot);
   if (snapshot !== undefined) {
@@ -330,7 +348,7 @@ export async function assertReadyGateway(
     );
     const configMap = field(volume, "configMap");
     const configMapName = field(configMap, "name");
-    const expectedConfigMapName = `${gatewayName(agentId)}-rev-${hash(snapshot.id)}`;
+    const expectedConfigMapName = `${name}-rev-${hash(snapshot.id)}`;
     assert.equal(configMapName, expectedConfigMapName);
     const configuration: unknown = await resource(
       "configmap",
@@ -448,6 +466,7 @@ export async function assertReadyGateway(
     field(field(field(service, "metadata"), "annotations"), "openclaw.dev/agent-id"),
     agentId,
   );
+  assertResourceName(service, name, "the gateway Service");
   const accountName = snapshot?.harness?.mode === "embedded" ? agentName(agentId) : name;
   const account: unknown = await resource("serviceaccount", accountName, namespaceName);
   assert.equal(field(account, "automountServiceAccountToken"), false);
@@ -455,6 +474,7 @@ export async function assertReadyGateway(
     field(field(field(account, "metadata"), "annotations"), "openclaw.dev/agent-id"),
     agentId,
   );
+  assertResourceName(account, accountName, "the gateway ServiceAccount");
   const rawSlices: unknown = await resources("endpointslices", namespaceName);
   assert.ok(
     array(rawSlices).some(
@@ -474,13 +494,10 @@ export async function assertHarnessWorkspaceClaim(
   namespaceName: string,
   namespaceId: string,
   agentId: string,
-  expectedUid?: unknown,
+  expectedUid?: string,
 ): Promise<ClaimObservation> {
-  const raw: unknown = await resource(
-    "persistentvolumeclaim",
-    harnessWorkspaceClaimName(agentId),
-    namespaceName,
-  );
+  const name = harnessWorkspaceClaimName(agentId);
+  const raw: unknown = await resource("persistentvolumeclaim", name, namespaceName);
   const claim = object(raw);
   assert.equal(field(claim.metadata, "namespace"), namespaceName);
   objectMember(claim, "metadata");
@@ -505,24 +522,58 @@ export async function assertHarnessWorkspaceClaim(
       "Agent-owned Harness workspace claim must be reused",
     );
   }
+  assertResourceName(claim, name, "the Agent-owned Harness workspace claim");
+  assertResourceUid(claim, "the Agent-owned Harness workspace claim");
   return claim;
 }
 
-export async function assertAgentServiceEndpointCount(
+export function assertHarnessWorkspaceMounts(
+  gateway: SnapshotDeploymentObservation,
+  workload: unknown,
+  workloadName: string,
+  claimName: string,
+): void {
+  assert.equal(
+    gateway.spec.template.spec.volumes.some(
+      (volume) => optionalField(field(volume, "persistentVolumeClaim"), "claimName") === claimName,
+    ),
+    false,
+    "Gateway must not mount the Harness workspace claim",
+  );
+  assertResourceName(workload, workloadName, "the revision Deployment");
+  const template = field(field(workload, "spec"), "template");
+  const volumes = field(field(template, "spec"), "volumes");
+  assert.deepEqual(
+    array(volumes).find((volume) => field(volume, "name") === "openclaw-workspace"),
+    { name: "openclaw-workspace", persistentVolumeClaim: { claimName } },
+  );
+}
+
+export async function assertRetainedHarnessWorkspaceClaim(
+  namespaceName: string,
   name: string,
+  uid: string,
+  message: string,
+): Promise<void> {
+  const retained: unknown = await resource("persistentvolumeclaim", name, namespaceName);
+  assertResourceName(retained, name, "the retained Harness workspace claim");
+  assert.equal(field(retained.metadata, "uid"), uid, message);
+}
+
+export async function assertAgentServiceEndpointCount(
+  namespaceName: string,
   agentId: string,
   expected: number,
   message: string,
 ): Promise<unknown> {
+  const serviceName = agentName(agentId);
   const observe = async () => {
-    const service: unknown = await resource("service", agentName(agentId), name);
-    const rawSlices: unknown = await resources("endpointslices", name);
+    const service: unknown = await resource("service", serviceName, namespaceName);
+    const rawSlices: unknown = await resources("endpointslices", namespaceName);
+    assertResourceName(service, serviceName, "the Agent Service");
     const ready = array(rawSlices).flatMap((slice) => {
       const labels = field(field(slice, "metadata"), "labels");
-      if (
-        optionalField(labels, "kubernetes.io/service-name") !==
-        field(field(service, "metadata"), "name")
-      ) {
+      if (optionalField(labels, "kubernetes.io/service-name") !== serviceName) {
         return [];
       }
       return array(field(slice, "endpoints") ?? []).filter(

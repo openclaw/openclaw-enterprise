@@ -8,6 +8,8 @@ import test from "node:test";
 import {
   assertReadyGateway,
   assertHarnessWorkspaceClaim,
+  assertHarnessWorkspaceMounts,
+  assertRetainedHarnessWorkspaceClaim,
 } from "../helpers/kubernetes-compute-observations.ts";
 import { createGatewayNodeEnrollment } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
 import {
@@ -372,27 +374,11 @@ test(
       ...gatewayAuth,
       trustedProxy: { ...gatewayAuth.trustedProxy, requiredHeaders: ["x-openclaw-scopes"] },
     });
-    const workload = await resource("deployment", revisionName(candidate), existingName);
+    const workloadName = revisionName(candidate);
+    const workload = await resource("deployment", workloadName, existingName);
     const harnessClaim = await assertHarnessWorkspaceClaim(existingName, owner.id, agentId);
     const expectedClaimName = harnessWorkspaceClaimName(agentId);
-    assert.ok(
-      harnessClaim.metadata.name === expectedClaimName,
-      "the Agent-owned Harness workspace claim must have the requested name",
-    );
-    assert.equal(
-      gateway.spec.template.spec.volumes.some(
-        ({ persistentVolumeClaim }) => persistentVolumeClaim?.claimName === expectedClaimName,
-      ),
-      false,
-      "Gateway must not mount the Harness workspace claim",
-    );
-    assert.deepEqual(
-      workload.spec.template.spec.volumes.find(({ name }) => name === "openclaw-workspace"),
-      {
-        name: "openclaw-workspace",
-        persistentVolumeClaim: { claimName: expectedClaimName },
-      },
-    );
+    assertHarnessWorkspaceMounts(gateway, workload, workloadName, expectedClaimName);
     await driver.stopRevision(candidate);
     assert.equal(await missing("deployment", revisionName(candidate), existingName), true);
     assert.equal(await missing("deployment", gatewayName(agentId), existingName), true);
@@ -405,8 +391,9 @@ test(
       [],
       "stop must not return while an exact revision Pod can still execute",
     );
-    assert.equal(
-      (await resource("persistentvolumeclaim", expectedClaimName, existingName)).metadata.uid,
+    await assertRetainedHarnessWorkspaceClaim(
+      existingName,
+      expectedClaimName,
       harnessClaim.metadata.uid,
       "stop must preserve the Agent-owned Harness workspace claim",
     );

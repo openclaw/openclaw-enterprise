@@ -68,6 +68,7 @@ import {
 import {
   assertReadyGateway,
   assertHarnessWorkspaceClaim,
+  assertRetainedHarnessWorkspaceClaim,
   assertAgentServiceEndpointCount,
 } from "../helpers/kubernetes-compute-observations.ts";
 
@@ -1386,10 +1387,6 @@ test(
       adoptedTenant.id,
     );
     const adoptedWorkspaceName = harnessWorkspaceClaimName(adoptedTenant.id);
-    assert.ok(
-      adoptedWorkspace.metadata.name === adoptedWorkspaceName,
-      "the adopted Agent workspace claim must have the requested name",
-    );
     await resource(
       "configmap",
       kubernetesConfigurationName(adoptedTenant.configurationId),
@@ -1469,8 +1466,9 @@ test(
         .filter(({ metadata }) => metadata.labels?.["openclaw.dev/agent"] === adoptedTenant.id);
       return ownedPods.length === 0 ? current.data : undefined;
     });
-    assert.equal(
-      (await resource("persistentvolumeclaim", adoptedWorkspaceName, existingName)).metadata.uid,
+    await assertRetainedHarnessWorkspaceClaim(
+      existingName,
+      adoptedWorkspaceName,
       adoptedWorkspace.metadata.uid,
       "API stop must retain the exact Agent workspace claim",
     );
