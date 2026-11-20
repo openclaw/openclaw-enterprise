@@ -434,14 +434,14 @@ export function registerManagedStartupRenderingCases(): void {
         phase = "SANDBOX_PHASE_STOPPED";
         client.getPolicyStatus = async () => policyStatus({ network_policies: {} });
         await assert.rejects(
-          provision("rev_00000000-0000-4000-8000-000000000007", sourceA),
+          provision("rev_00000000-0000-4000-8000-000000000007", attachment),
           /static policy or non-Git middleware bindings/,
         );
         assert.equal(mutations.length, 2);
         client.getPolicyStatus = async () => policyStatus(structuredClone(policy));
         client.detachSandboxProvider = async () => ({});
         await assert.rejects(
-          provision("rev_00000000-0000-4000-8000-000000000007", sourceA),
+          provision("rev_00000000-0000-4000-8000-000000000007", attachment),
           /attachment readback differs/,
         );
         assert.equal(phase, "SANDBOX_PHASE_STOPPED");
