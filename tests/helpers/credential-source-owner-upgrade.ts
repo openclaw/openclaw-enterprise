@@ -81,7 +81,7 @@ export async function retainGatewaySourcesAcrossProxyAdmission(
 /** Effective privileges include role membership and default ACLs, not just explicit grants. */
 export async function assertCredentialSchemaPrivileges(app: pg.Client) {
   const tables = [
-    ["egress_installations", "installation"],
+    ["egress_installations", "installation,retired"],
     ["egress_rejected_material", ""],
     ["egress_send_receipts", "authorized_dispatch,outcome,observation,settled,feedback"],
     ["prepared_github_families", "admission,enabled,next_check_at,worker_claim"],

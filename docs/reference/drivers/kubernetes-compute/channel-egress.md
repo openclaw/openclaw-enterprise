@@ -2,8 +2,10 @@
 
 Enable `channelEgress` in Helm and `runtime.channelEgress` in the Kubernetes
 Compute configuration before deploying a channel-enabled Agent. The settings
-must identify the same dedicated Envoy Gateway, Service and ports. The default
-is disabled. OCC starts without the fleet; affected channel operations fail
+must identify the same dedicated Envoy Gateway, Service and ports. Managed profiles
+and Helm default channel egress on; an explicit false remains off. Independently
+supplied Installation files must include the matching runtime settings.
+OCC starts without the fleet; affected channel operations fail
 instead of using a direct internet connection.
 
 This route supports dedicated Gateways. It does not give the Harness channel
@@ -42,7 +44,10 @@ exclusions or the built-in nonpublic IPv4 exclusions.
 Set Helm `channelEgress.enabled: true` and its matching fields. Helm uses the
 release namespace as `gatewayNamespace`; `gatewayClassName` selects the installed
 Envoy Gateway class. The installation profile renderer accepts
-`channels.managedEgress: true` and `channels.excludedCidrs` and writes both inputs.
+`channels.excludedCidrs` and writes both inputs. `channels.managedEgress` defaults
+to true; false writes an explicit Helm opt-out and omits runtime channel settings.
+Use [dependency setup](../../../guides/deploy/channel-egress.md)
+to provision or check the pinned controller before installing channel resources.
 OCC derives its provider listener from the validated installation configuration;
 it has no separate caller-selected proxy endpoint.
 
