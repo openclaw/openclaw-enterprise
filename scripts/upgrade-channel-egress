@@ -40,6 +40,17 @@ def yaml(path):
     return result
 
 
+def helm_values(path, option):
+    values = yaml(path)
+    if "USER-SUPPLIED VALUES" in values and values["USER-SUPPLIED VALUES"] is None:
+        with Path(path).open("rb") as capture:
+            require(capture.readline().rstrip(b" \t\r\n") != b"USER-SUPPLIED VALUES:",
+                    f"{option} contains Helm's USER-SUPPLIED VALUES display header. "
+                    "Recapture with 'helm get values RELEASE --output yaml' using the same "
+                    "kubeconfig, context, namespace, and revision, then prepare the candidate again.")
+    return values
+
+
 def sync_parent(path):
     descriptor = os.open(Path(path).parent, os.O_RDONLY | os.O_DIRECTORY)
     try:
@@ -152,7 +163,8 @@ def validate(before_values, before_installation, values, installation, namespace
 
 
 def prepare(args):
-    values, installation = yaml(args.values), yaml(args.installation)
+    values = helm_values(args.values, "--values")
+    installation = yaml(args.installation)
     before_values, before_installation = copy.deepcopy(values), copy.deepcopy(installation)
     enabled = source(values, installation, args.namespace, args.release)
     values.pop("slackProxy", None)
@@ -326,7 +338,11 @@ def main():
     if args.action == "prepare":
         prepare(args)
     elif args.action == "validate":
-        print(str(validate(yaml(args.before_values), yaml(args.before_installation), yaml(args.values), yaml(args.installation), args.namespace, args.release)).lower())
+        before_values = helm_values(args.before_values, "--before-values")
+        values = helm_values(args.values, "--values")
+        enabled = validate(before_values, yaml(args.before_installation), values,
+                           yaml(args.installation), args.namespace, args.release)
+        print(str(enabled).lower())
     elif args.action == "check-stopped-inventory":
         stopped_inventory(json.loads(Path(args.before).read_text()), json.loads(Path(args.after).read_text()))
     else:

@@ -1,7 +1,7 @@
 ---
 created: 2026-11-19
-updated: 2026-11-19
-last_updated_session: authoring-run/3d885bbf-20eb-48f1-9e9e-975b986c82ab
+updated: 2026-11-20
+last_updated_session: authoring-run/73549c13-fca6-4842-813d-62fa224637ec
 ---
 
 # Channel egress flow
@@ -78,8 +78,10 @@ acknowledged resources with UID preconditions. Existing dependencies retain
 ownership; incompatible configuration requires the owner's repair.
 
 `scripts/upgrade-channel-egress:prepare` patches actual legacy input files.
-`validate` requires the supported source, matching target channel fields and an
-unchanged normalized remainder. It permits the existing validated immutable
+`helm_values` rejects the Helm display header before `prepare` writes a candidate
+or `validate` compares the baseline and candidate. `validate` requires the
+supported source, matching target channel fields and an unchanged normalized
+remainder. It permits the existing validated immutable
 Secret reference switch. The shared `scripts/upgrade-production-images` binds
 this operation mode and helper hashes to recovery evidence and retains its
 live-input, identity, Secret, startup, migration, quiescence and Helm checks.
@@ -190,6 +192,8 @@ and remaining acceptance evidence.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 10:26: Reject Helm display output in one-off upgrade values (authoring-run/73549c13-fca6-4842-813d-62fa224637ec - 9092839d0c3b9598e85300451f425ac6d3084fe5)
 
 - 2026-11-19 20:41: Verify recorded Agent state before one-off completion and on resume (authoring-run/3d885bbf-20eb-48f1-9e9e-975b986c82ab - 87d5c0d63f6765816d0e4a6dee9cb20f8be1d5c1)
 

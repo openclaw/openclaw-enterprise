@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -176,6 +176,69 @@ test("disabled legacy channels only remove obsolete fields and remain off", asyn
   );
   assert.equal(dependencies.status, 0, dependencies.stderr);
   assert.match(dependencies.stdout, /Channels disabled/);
+});
+
+test("one-off rejects Helm values copied from display output", async (t) => {
+  const f = await fixture(t, false);
+  const before = join(f.directory, "values.yaml");
+  const baseline =
+    "slackProxy:\n  enabled: false\napi:\n  annotations:\n    USER-SUPPLIED VALUES:\n";
+  const displayHeader = "USER-SUPPLIED VALUES: \n";
+  const displayBefore = join(f.directory, "display-values.yaml");
+  await writeFile(before, baseline);
+  await writeFile(displayBefore, displayHeader + baseline, { mode: 0o600 });
+
+  await t.test("prepare refuses the display header before creating candidates", async () => {
+    const out = join(f.directory, "display-candidate");
+    const result = f.run("prepare", ["--values", displayBefore, "--out-dir", out]);
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stderr, /USER-SUPPLIED VALUES.*helm get values RELEASE --output yaml/);
+    assert.equal(result.stdout, "");
+    await assert.rejects(access(out), { code: "ENOENT" });
+  });
+
+  const out = join(f.directory, "prepared");
+  const prepared = f.run("prepare", ["--out-dir", out]);
+  assert.equal(prepared.status, 0, prepared.stderr);
+  const candidate = join(out, "values.yaml");
+  assert.deepEqual(JSON.parse(await readFile(candidate, "utf8")).api.annotations, {
+    "USER-SUPPLIED VALUES": null,
+  });
+
+  const displayCandidate = join(f.directory, "display-candidate.yaml");
+  await writeFile(
+    displayCandidate,
+    `${displayHeader}api:\n  annotations:\n    USER-SUPPLIED VALUES:\nchannelEgress:\n  enabled: false\n`,
+    { mode: 0o600 },
+  );
+  const validate = (baselinePath: string, candidatePath: string) =>
+    f.run("validate", [
+      "--before-values",
+      baselinePath,
+      "--before-installation",
+      join(f.directory, "installation.yaml"),
+      "--values",
+      candidatePath,
+      "--installation",
+      join(out, "installation.yaml"),
+    ]);
+  const clean = validate(before, candidate);
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.equal(clean.stdout, "false\n");
+
+  // A display capture can reach validation on either side of the comparison.
+  for (const [label, beforePath, candidatePath] of [
+    ["baseline", displayBefore, candidate],
+    ["candidate", before, displayCandidate],
+    ["both inputs", displayBefore, displayCandidate],
+  ] as const) {
+    await t.test(`validate refuses the display header in ${label}`, () => {
+      const result = validate(beforePath, candidatePath);
+      assert.equal(result.status, 1, result.stdout);
+      assert.match(result.stderr, /USER-SUPPLIED VALUES.*helm get values RELEASE --output yaml/);
+      assert.equal(result.stdout, "");
+    });
+  }
 });
 
 test("one-off preparation refuses wrong release, external proxy, and unprotected input", async (t) => {

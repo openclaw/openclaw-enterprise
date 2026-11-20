@@ -47,6 +47,24 @@ Configuration read, and AgentRevision read access for the affected fleet. Config
 credentials out of command arguments and terminal output. Use the exact
 kubeconfig, context, namespace, and Helm release throughout.
 
+Set `HELM_REVISION` to the installed revision of the selected release. Save its
+user-supplied Helm values to a new file in the protected input directory:
+
+```sh
+(
+  umask 077
+  set -C
+  helm get values "$RELEASE" \
+    --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
+    --namespace "$NAMESPACE" --revision "$HELM_REVISION" --output yaml \
+    > "$INPUT_DIRECTORY/values.yaml"
+)
+```
+
+If an earlier capture starts with `USER-SUPPLIED VALUES:`, keep it private and
+repeat the capture into a new private file. Use that file to prepare the
+candidate again.
+
 Create candidates outside the checkout. List every Pod and Service CIDR and all
 node addresses, including public node addresses. Built-in private-address
 denials remain in force. The following CIDRs are examples; replace them with
