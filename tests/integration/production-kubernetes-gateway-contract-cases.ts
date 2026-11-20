@@ -582,3 +582,130 @@ export function registerExecutionGatewayHostnameCase(): void {
     }
   });
 }
+
+type ProductionValuesRenderer = (
+  extraArgs: string[],
+  options?: { maxBuffer?: number },
+) => Promise<{ stdout: string }>;
+
+export function registerProductionGatewayNameCase(
+  renderProductionValuesExample: ProductionValuesRenderer,
+): void {
+  test("Helm refuses a Gateway name Compute refuses", tooling, async () => {
+    const refusals: readonly (readonly [string, string])[] = [
+      ["--set", "Bad_Name"],
+      ["--set-string", " oce-agent-gateways "],
+      ["--set-string", "a".repeat(64)],
+    ];
+    for (const [flag, gatewayName] of refusals) {
+      await assert.rejects(
+        renderProductionValuesExample([flag, `gatewayRouting.gatewayName=${gatewayName}`]),
+        /gatewayRouting\.gatewayName must be a DNS-safe Kubernetes resource name/,
+      );
+    }
+    const sixtyThree = "a".repeat(63);
+    const { stdout } = await renderProductionValuesExample(
+      ["--set-string", `gatewayRouting.gatewayName=${sixtyThree}`],
+      { maxBuffer: 2_000_000 },
+    );
+    const gateway = (await resources(stdout)).find((object) => object.kind === "Gateway");
+    assert.equal(gateway?.metadata.name, sixtyThree);
+  });
+}
+
+export async function checkRemoteNodeCidrs(): Promise<void> {
+  for (const override of [
+    { "gatewayRouting.remoteNodeCidrs[0]": "not-a-cidr" },
+    { "gatewayRouting.remoteNodeCidrs[0]": "010.0.0.1/32" },
+    { "gatewayRouting.remoteNodeCidrs[0]": "12345::/64" },
+    { "gatewayRouting.remoteNodeCidrs[0]": "::ffff:999.1.2.3/32" },
+    // A /0 prefix would remove the source restriction on the private listener.
+    { "gatewayRouting.remoteNodeCidrs[0]": "0.0.0.0/0" },
+    { "gatewayRouting.remoteNodeCidrs[0]": "::/0" },
+  ]) {
+    await assert.rejects(
+      render({ ...gatewayRoutingValues, ...override }),
+      /gatewayRouting\.remoteNodeCidrs/,
+    );
+  }
+  for (const cidr of ["10.0.0.1/32", "10.0.0.0/8", "::/64", "::ffff:10.0.0.0/120"]) {
+    await render({ ...gatewayRoutingValues, "gatewayRouting.remoteNodeCidrs[0]": cidr });
+  }
+}
+
+const yamlItems = Type.Array(Type.Unknown());
+
+export function registerExecutionPortAndDnsCase(): void {
+  test(
+    "execution chart refuses an Envoy HTTPS port or DNS namespace the cluster refuses",
+    tooling,
+    async () => {
+      const template = renderExecutionChart;
+      const proxyPolicy = async (stdout: string) =>
+        findResource(await resources(stdout), "NetworkPolicy", "oce-harness-proxy");
+      // Compute validatePort takes integers from 1 to 65535; Sprig int would truncate 10443.5.
+      // Sprig int turns a value too big for 64 bits into 0, which the lower bound catches.
+      for (const port of ["0", "65536", "10443.5", "-1", "true", "99999999999999999999"]) {
+        await assert.rejects(
+          template("--set", `routing.envoyHttpsTargetPort=${port}`),
+          /routing\.envoyHttpsTargetPort must be an integer TCP port from 1 to 65535/,
+          port,
+        );
+      }
+      for (const port of [1, 65535]) {
+        const policy = await proxyPolicy(
+          (await template("--set", `routing.envoyHttpsTargetPort=${port}`)).stdout,
+        );
+        const ingress = asRecord(policy?.spec)?.ingress;
+        assert.ok(Check(yamlItems, ingress), "Expected NetworkPolicy ingress rules");
+        const ports = asRecord(ingress[0])?.ports;
+        assert.ok(Check(yamlItems, ports), "Expected ports on the first ingress rule");
+        assert.equal(asRecord(ports[0])?.port, port);
+      }
+      // The DNS egress rule selects kubernetes.io/metadata.name, which holds a Namespace name.
+      for (const namespace of ["Kube-System", "kube.system", "-dns", "a".repeat(64)]) {
+        await assert.rejects(
+          template("--set-string", `dns.namespace=${namespace}`),
+          /dns\.namespace must be a Kubernetes namespace name \(a DNS label of at most 63 characters\)/,
+          namespace,
+        );
+      }
+      const namespace = "a".repeat(63);
+      const policy = await proxyPolicy(
+        (await template("--set-string", `dns.namespace=${namespace}`)).stdout,
+      );
+      const egress = asRecord(policy?.spec)?.egress;
+      assert.ok(Check(yamlItems, egress), "Expected NetworkPolicy egress rules");
+      const to = asRecord(egress[0])?.to;
+      assert.ok(Check(yamlItems, to), "Expected destinations on the first egress rule");
+      const selector = asRecord(asRecord(to[0])?.namespaceSelector);
+      assert.equal(asRecord(selector?.matchLabels)?.["kubernetes.io/metadata.name"], namespace);
+    },
+  );
+}
+
+const envoyServiceTypeSpec = Type.Object({
+  provider: Type.Object({
+    kubernetes: Type.Object({ envoyService: Type.Object({ type: Type.String() }) }),
+  }),
+});
+
+export async function checkGatewayServiceTypes(): Promise<void> {
+  // EnvoyProxy envoyService.type accepts only these three. Any other value rendered, and the
+  // apply failed after the pre-install hooks had migrated and bootstrapped the Installation.
+  for (const serviceType of ["clusterIP", "ExternalName"]) {
+    await assert.rejects(
+      render({ ...gatewayRoutingValues, "gatewayRouting.serviceType": serviceType }),
+      /gatewayRouting\.serviceType must be ClusterIP, LoadBalancer or NodePort/,
+      serviceType,
+    );
+  }
+  for (const serviceType of ["LoadBalancer", "NodePort"]) {
+    const objects = await resources(
+      (await render({ ...gatewayRoutingValues, "gatewayRouting.serviceType": serviceType })).stdout,
+    );
+    const envoy = objects.find(({ kind }) => kind === "EnvoyProxy");
+    assert.ok(Check(envoyServiceTypeSpec, envoy?.spec), "Expected an EnvoyProxy service type");
+    assert.equal(envoy.spec.provider.kubernetes.envoyService.type, serviceType);
+  }
+}

@@ -1,12 +1,21 @@
 import assert from "node:assert/strict";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 
 import Type, { type Static, type TSchema } from "typebox";
 import { Check } from "typebox/value";
 
+import { asRecord } from "../../packages/utils/src/index.ts";
 import { parseProductionChart, renderExecutionChart } from "../helpers/production-chart.ts";
-import { render, tooling, type ChartValues } from "../helpers/production-chart-network-fixture.ts";
+import {
+  render,
+  tooling,
+  type ChartRenderOptions,
+  type ChartValues,
+} from "../helpers/production-chart-network-fixture.ts";
 import { findResource } from "../helpers/production-chart-resource.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const labels = Type.Record(Type.String(), Type.String());
 const chartResources = Type.Array(
@@ -104,8 +113,11 @@ async function resources(stdout: string): Promise<ChartResource[]> {
   return decoded;
 }
 
-async function renderObjects(values: ChartValues = {}): Promise<ChartResource[]> {
-  return resources((await render(values)).stdout);
+async function renderObjects(
+  values: ChartValues = {},
+  options: ChartRenderOptions = {},
+): Promise<ChartResource[]> {
+  return resources((await render(values, options)).stdout);
 }
 
 function resourceSpec<S extends TSchema>(
@@ -440,6 +452,248 @@ export function registerNativeAdminAndRuntimeLogCases(
         clusterRoleRules(executionDisabled, "oce-execution-tenant-api"),
         executionPodReads,
       );
+    },
+  );
+}
+
+const yamlItems = Type.Array(Type.Unknown());
+const themeContainer = Type.Object({
+  name: Type.String(),
+  env: yamlItems,
+  volumeMounts: Type.Optional(Type.Unknown()),
+});
+const themeDeploymentSpec = Type.Object({
+  template: Type.Object({
+    metadata: Type.Object({ annotations: Type.Optional(Type.Unknown()) }),
+    spec: Type.Object({
+      initContainers: Type.Optional(Type.Union([Type.Null(), yamlItems])),
+      containers: yamlItems,
+      volumes: yamlItems,
+    }),
+  }),
+});
+const workloadSelectorSpec = Type.Object({
+  template: Type.Object({ spec: Type.Object({ nodeSelector: Type.Optional(Type.Unknown()) }) }),
+});
+
+type ComponentResource = { kind: string; metadata: { labels?: Record<string, string> } };
+
+export function findResourceByComponent<T extends ComponentResource>(
+  objects: readonly T[],
+  kind: string,
+  component: string,
+): T | undefined {
+  return objects.find(
+    (object) =>
+      object.kind === kind && object.metadata.labels?.["app.kubernetes.io/component"] === component,
+  );
+}
+
+export function controlPlaneWorkloads<T extends ComponentResource>(objects: readonly T[]) {
+  return {
+    initialization: findResourceByComponent(objects, "Job", "initialization"),
+    api: findResourceByComponent(objects, "Deployment", "api"),
+    worker: findResourceByComponent(objects, "Deployment", "worker"),
+  };
+}
+
+function findNamed(items: readonly unknown[], name: string): unknown {
+  return items.find((item) => asRecord(item)?.name === name);
+}
+
+function themePod(objects: readonly unknown[], component: string) {
+  const deployment = objects.find((object) => {
+    const resource = asRecord(object);
+    return (
+      resource?.kind === "Deployment" &&
+      asRecord(resource.metadata)?.name === `openclaw-enterprise-${component}`
+    );
+  });
+  const spec = asRecord(deployment)?.spec;
+  assert.ok(Check(themeDeploymentSpec, spec), `Expected the ${component} Deployment pod template`);
+  return spec.template;
+}
+
+export function assertConsoleThemeMounts(
+  defaults: readonly unknown[],
+  themed: readonly unknown[],
+): void {
+  for (const objects of [defaults, themed]) {
+    for (const component of ["api", "worker"]) {
+      const enabled = objects === themed && component === "api";
+      const pod = themePod(objects, component);
+      const container = findNamed(
+        [...(pod.spec.initContainers ?? []), ...pod.spec.containers],
+        component,
+      );
+      assert.ok(Check(themeContainer, container), `Expected the ${component} container`);
+      assert.equal(findNamed(container.env, "OCC_CONSOLE_THEME_DIR") !== undefined, enabled);
+      const volume = findNamed(pod.spec.volumes, "console-theme");
+      assert.equal(volume !== undefined, enabled);
+      assert.equal(
+        asRecord(pod.metadata.annotations)?.["openclaw.dev/console-theme-checksum"],
+        enabled ? "revision-two" : undefined,
+      );
+      if (enabled) {
+        assert.deepEqual(asRecord(volume)?.configMap, {
+          name: "console-branding",
+        });
+        assert.ok(Check(yamlItems, container.volumeMounts), "Expected container volume mounts");
+        assert.deepEqual(findNamed(container.volumeMounts, "console-theme"), {
+          name: "console-theme",
+          mountPath: "/etc/openclaw/console-theme",
+          readOnly: true,
+        });
+      }
+    }
+  }
+}
+
+export function registerConsoleThemeValuesCase(): void {
+  test(
+    "console theme settings reject YAML booleans and invalid ConfigMap names",
+    tooling,
+    async (t) => {
+      const directory = await temporaryDirectory(t, "oce-console-theme-");
+      const writeValues = async (name: string, body: string): Promise<string> => {
+        const path = join(directory, name);
+        await writeFile(path, body);
+        return path;
+      };
+      const refusals: readonly (readonly [string, string, RegExp])[] = [
+        [
+          "yes.yaml",
+          "api:\n  consoleTheme:\n    configMapName: yes\n    checksum: rev\n",
+          /api\.consoleTheme\.configMapName must be a string/,
+        ],
+        [
+          "no.yaml",
+          "api:\n  consoleTheme:\n    configMapName: no\n",
+          /api\.consoleTheme\.configMapName must be a string/,
+        ],
+        [
+          "checksum.yaml",
+          'api:\n  consoleTheme:\n    configMapName: "console-branding"\n    checksum: yes\n',
+          /api\.consoleTheme\.checksum must be a string/,
+        ],
+      ];
+      for (const [name, body, refusal] of refusals) {
+        const path = await writeValues(name, body);
+        await assert.rejects(render({}, { valuesFiles: [path] }), refusal);
+      }
+      const quoted = await writeValues(
+        "quoted.yaml",
+        'api:\n  consoleTheme:\n    configMapName: "no"\n    checksum: "rev"\n',
+      );
+      const objects = await renderObjects({}, { valuesFiles: [quoted] });
+      const api = resourceSpec(
+        findResource(objects, "Deployment", "openclaw-enterprise-api"),
+        themeDeploymentSpec,
+      ).template;
+      assert.equal(
+        asRecord(asRecord(findNamed(api.spec.volumes, "console-theme"))?.configMap)?.name,
+        "no",
+      );
+      assert.equal(
+        asRecord(api.metadata.annotations)?.["openclaw.dev/console-theme-checksum"],
+        "rev",
+      );
+      await assert.rejects(
+        render({ "api.consoleTheme.configMapName": "false" }),
+        /api\.consoleTheme\.configMapName must be a string/,
+      );
+      await assert.rejects(
+        render({ "api.consoleTheme.configMapName": "Not_Valid" }),
+        /api\.consoleTheme\.configMapName must be a Kubernetes resource name/,
+      );
+      const named = await renderObjects(
+        { "api.consoleTheme.checksum": "revision-two" },
+        { strings: { "api.consoleTheme.configMapName": "false" } },
+      );
+      const deployment = resourceSpec(
+        findResource(named, "Deployment", "openclaw-enterprise-api"),
+        themeDeploymentSpec,
+      ).template;
+      assert.equal(
+        asRecord(asRecord(findNamed(deployment.spec.volumes, "console-theme"))?.configMap)?.name,
+        "false",
+      );
+    },
+  );
+}
+
+export function registerOptionalControlPlaneSelectorsCase(): void {
+  test("control-plane node selectors are optional unless configured", tooling, async () => {
+    const { initialization, api, worker } = controlPlaneWorkloads(await renderObjects());
+    for (const workload of [initialization, api, worker]) {
+      assert.equal(
+        resourceSpec(workload, workloadSelectorSpec).template.spec.nodeSelector,
+        undefined,
+      );
+    }
+  });
+}
+
+export function registerControlPlaneSelectorValuesCase(): void {
+  test(
+    "the chart validates control-plane node selectors against Kubernetes label rules",
+    tooling,
+    async (t) => {
+      const valueMessage = /controlPlane\.nodeSelector values must be Kubernetes label values/;
+      const keyMessage = /controlPlane\.nodeSelector keys must be Kubernetes label keys/;
+      const refusals: readonly (readonly [string, string, RegExp])[] = [
+        ["oce-role", "not valid", valueMessage],
+        ["oce-role", "-control", valueMessage],
+        ["oce-role", "control.", valueMessage],
+        ["oce-role", "a".repeat(64), valueMessage],
+        ["a-", "control", keyMessage],
+        ["bad key", "control", keyMessage],
+      ];
+      const refused =
+        (message: RegExp) =>
+        (error: unknown): boolean => {
+          const failure = asRecord(error);
+          return (
+            failure !== undefined &&
+            failure.code !== 0 &&
+            typeof failure.stderr === "string" &&
+            message.test(failure.stderr)
+          );
+        };
+      for (const [key, value, message] of refusals) {
+        await assert.rejects(
+          render({}, { strings: { [`controlPlane.nodeSelector.${key}`]: value } }),
+          refused(message),
+          `${key}=${value}`,
+        );
+      }
+      const directory = await temporaryDirectory(t, "openclaw-node-selector-");
+      const selectorValues = join(directory, "selector.yaml");
+      await writeFile(
+        selectorValues,
+        "controlPlane:\n  nodeSelector:\n    Example.com/role: control\n",
+      );
+      await assert.rejects(render({}, { valuesFiles: [selectorValues] }), refused(keyMessage));
+      const { stdout } = await render(
+        {},
+        {
+          strings: {
+            "controlPlane.nodeSelector.oce-role": "control",
+            "controlPlane.nodeSelector.topology\\.kubernetes\\.io/zone": "east",
+            "controlPlane.nodeSelector.node-role\\.kubernetes\\.io/infra": "",
+            "controlPlane.nodeSelector.edge": "a_b.c-d",
+            [`controlPlane.nodeSelector.${"a".repeat(253)}/pool`]: "control",
+          },
+        },
+      );
+      assert.match(stdout, /oce-role: control/);
+      assert.match(stdout, /topology\.kubernetes\.io\/zone: east/);
+      // Kubernetes allows empty label values; charts before #1848 rendered them.
+      assert.match(stdout, /node-role\.kubernetes\.io\/infra: ""/);
+      assert.match(stdout, /edge: a_b\.c-d/);
+      const api = findResourceByComponent(await resources(stdout), "Deployment", "api");
+      const selector = resourceSpec(api, workloadSelectorSpec).template.spec.nodeSelector;
+      assert.equal(asRecord(selector)?.[`${"a".repeat(253)}/pool`], "control");
     },
   );
 }
