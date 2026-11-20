@@ -92,6 +92,7 @@ export type RecoveryFixtureOptions = {
   preflightPolicy?: boolean;
   certificate?: boolean;
   preflightFault?: PreflightFault | null;
+  failBeforeHelmIntent?: boolean;
   kubernetesNamespaces?: readonly RecoveryNamespace[];
   kubernetesDenied?: boolean;
   executionCluster?: ExecutionCluster | null;
@@ -393,6 +394,7 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       preflightPolicy = false,
       certificate = false,
       preflightFault = null,
+      failBeforeHelmIntent = false,
       kubernetesNamespaces = [],
       kubernetesDenied = false,
       executionCluster = null,
@@ -449,6 +451,22 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       await writeFile(
         join(bin, command),
         commandShim({ ...shimTools, port, clientToken, serverToken, command, forwardedEnv: [] }),
+        { mode: 0o700 },
+      );
+    }
+    if (failBeforeHelmIntent) {
+      // A direct wrapper keeps the caller's descriptors intact. The command
+      // server closes fd 3, which the preflight Python reads.
+      const marker = join(directory, "fail-before-helm-intent");
+      await writeFile(
+        join(bin, "python3"),
+        `#!${shimTools.bash}
+if [[ "$1" == "scripts/upgrade-helm-state.py" && "$2" == "record" && -f ${bashString(marker)} ]]; then
+  rm -f ${bashString(marker)}
+  exit 9
+fi
+exec ${bashString(tools.realPython)} "$@"
+`,
         { mode: 0o700 },
       );
     }

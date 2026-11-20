@@ -29,9 +29,6 @@ import {
   gatewayName,
   harnessWorkspaceClaimName,
   revisionName,
-  assertReadyGateway as readyGateway,
-  assertHarnessWorkspaceClaim as workspaceClaim,
-  assertAgentServiceEndpointCount,
   createDriver as createFixtureDriver,
   workloadPod as findWorkloadPod,
   probe as runProbe,
@@ -40,6 +37,13 @@ import {
   authorized,
   createScopedController as provisionScopedController,
 } from "../helpers/kubernetes-compute-real.mjs";
+import {
+  assertResourceUid,
+  assertReadyGateway,
+  assertHarnessWorkspaceClaim,
+  assertHarnessWorkspaceMounts,
+  assertAgentServiceEndpointCount,
+} from "../helpers/kubernetes-compute-observations.ts";
 
 type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
 type Metadata = InstanceType<KubernetesSdk["V1ObjectMeta"]> & { name: string; uid: string };
@@ -86,18 +90,6 @@ const waitFor: <T>(
   operation: () => T | false | undefined | Promise<T | false | undefined>,
   timeoutMs?: number,
 ) => Promise<T> = waitForFixture;
-const assertReadyGateway: (
-  placement: string,
-  agentId: string,
-  namespaceId: string,
-  candidate?: AgentRevision,
-) => Promise<Deployment> = readyGateway;
-const assertHarnessWorkspaceClaim: (
-  placement: string,
-  namespaceId: string,
-  agentId: string,
-  expectedUid?: string,
-) => Promise<KubernetesResource> = workspaceClaim;
 const namespace = createNamespace as (label: string) => Namespace;
 const revision = createFixtureRevision as (
   driver: KubernetesComputeDriver,
@@ -436,6 +428,7 @@ test(
         candidate,
       );
       const identityKey = `${candidate.namespaceId}:${candidate.agentId}`;
+      assertResourceUid(gateway, "the gateway Deployment");
       if (gatewayIdentities.has(identityKey)) {
         assert.notEqual(
           gateway.metadata.uid,
@@ -445,7 +438,8 @@ test(
       } else {
         gatewayIdentities.set(identityKey, gateway.metadata.uid);
       }
-      const deployment = await resource("deployment", revisionName(candidate), placement);
+      const workloadName = revisionName(candidate);
+      const deployment = await resource("deployment", workloadName, placement);
       const harnessClaim = await assertHarnessWorkspaceClaim(
         placement,
         candidate.namespaceId,
@@ -453,20 +447,11 @@ test(
         sharedWorkspaceIdentities.get(identityKey),
       );
       sharedWorkspaceIdentities.set(identityKey, harnessClaim.metadata.uid);
-      assert.equal(
-        gateway.spec.template.spec.volumes?.some(
-          ({ persistentVolumeClaim }) =>
-            persistentVolumeClaim?.claimName === harnessClaim.metadata.name,
-        ),
-        false,
-        "Gateway must not mount the Harness workspace claim",
-      );
-      assert.deepEqual(
-        deployment.spec.template.spec.volumes?.find(({ name }) => name === "openclaw-workspace"),
-        {
-          name: "openclaw-workspace",
-          persistentVolumeClaim: { claimName: harnessClaim.metadata.name },
-        },
+      assertHarnessWorkspaceMounts(
+        gateway,
+        deployment,
+        workloadName,
+        harnessWorkspaceClaimName(candidate.agentId),
       );
       assert.equal(deployment.spec.template.spec.serviceAccountName, agentName(candidate.agentId));
       assert.equal(deployment.spec.template.spec.automountServiceAccountToken, false);

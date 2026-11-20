@@ -35,7 +35,7 @@ export type OpenShellGitExpiryFailure =
 /** The steps an expiry pass reports: fixed names that operators can alert on. */
 export const OPENSHELL_GIT_EXPIRY_CHECKS = [
   "model-provider",
-  "original-launch-and-pods",
+  "original-launch-and-execution",
   "original-git-provider",
   "attachment-after-send-intent",
   "original-git-installation",
@@ -59,10 +59,18 @@ type Client = Pick<
   "getSandbox" | "getProvider" | "getSandboxProviderStatus" | "detachSandboxProvider"
 >;
 
-/** The Sandbox Driver supplies the admitted model attachment and reads the actual supervisor Pod. */
+/** The Sandbox Driver supplies the admitted model attachment and verifies execution ownership through OpenShell. */
 export interface OpenShellGitContinuity {
   readonly model: string;
-  readonly workload: (sandboxId: string, signal: AbortSignal) => Promise<string | undefined>;
+  readonly runtime: string;
+  readonly policy: (
+    sandbox: OpenShellSandboxResponse,
+    signal: AbortSignal,
+  ) => Promise<Readonly<Record<string, unknown>>>;
+  readonly execution: (
+    sandbox: OpenShellSandboxResponse,
+    signal: AbortSignal,
+  ) => Promise<string | undefined>;
 }
 
 const positive = /^[1-9]\d*$/u;
@@ -105,16 +113,16 @@ function requireIdentity(
   }
 }
 
-/** Hash only, never persist the Sandbox spec or Pod. Preserve array order and every other provider. */
+/** Hash only, never persist the Sandbox spec. Preserve array order and every other provider. */
 function launch(
   box: OpenShellSandboxResponse,
   git: Git,
   owner: OpenShellGitContinuity,
-  workload: string | undefined,
+  execution: string | undefined,
   modelId: string,
 ) {
   const { providers, provider_attachment_epoch: epoch, ...spec } = box.spec ?? {};
-  requireIdentity(workload, "launch_workload_unconfirmed");
+  requireIdentity(execution, "launch_workload_unconfirmed");
   requireIdentity(
     git.credentialState === "active" &&
       git.executionId &&
@@ -123,10 +131,12 @@ function launch(
       box.name === git.sandbox &&
       box.workspace === git.workspace &&
       box.annotations["openclaw.dev/revision-id"] === git.executionId &&
+      !!execution &&
+      box.mainProcessInstanceId === git.networkInstanceId &&
+      !!box.mainProcessStartedAt &&
+      Number.isFinite(Date.parse(box.mainProcessStartedAt)) &&
       !!epoch &&
       [2, "SANDBOX_PHASE_READY"].includes(box.phase as string | number) &&
-      (box.restartCount ?? 0) === 0 &&
-      [1, "SANDBOX_RESTART_POLICY_NEVER"].includes(spec.restart_policy as string | number) &&
       positive.test(box.resourceVersion ?? "") &&
       !!modelId &&
       modelId !== git.providerId &&
@@ -140,16 +150,21 @@ function launch(
   const present = providers.includes(git.provider);
   requireIdentity(present === (epoch === git.attachmentEpoch), "launch_contract_mismatch");
   const retained = { ...spec, providers: providers.filter((p) => p !== git.provider) };
+  // OpenShell rotates its internal runtime/authentication metadata on recovery.
+  // Current Provider readiness verifies that runtime; retain caller annotations here.
+  const annotations = Object.fromEntries(
+    Object.entries(box.annotations).filter(([key]) => !key.startsWith("internal.openshell.ai/")),
+  );
   const hash = createHash("sha256")
     .update(
       JSON.stringify(
         [
-          workload,
+          execution,
           box.id,
           box.name,
           box.workspace,
           box.labels,
-          box.annotations,
+          annotations,
           retained,
           owner.model,
           modelId,
@@ -360,13 +375,13 @@ export async function witnessOpenShellGitLaunch(
   ) {
     return;
   }
-  const workload = await owner.workload(git.sandboxId, signal);
+  const execution = await owner.execution(box, signal);
   if (
     observation.kind === "predecessor" &&
     status.state === "PROVIDER_READINESS_STATE_WITHHELD" &&
     status.reason === "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED"
   ) {
-    // Check after the report and workload read: the old report cannot identify a replacement.
+    // Check after the report and execution read: the old report cannot identify a replacement.
     const current = await client.getSandbox(
       { workspace: git.workspace, name: git.sandbox },
       signal,
@@ -390,7 +405,7 @@ export async function witnessOpenShellGitLaunch(
   if (!model || !isDeepStrictEqual(generation(model), generation(git))) {
     return;
   }
-  const value = launch(box, git, owner, workload, id);
+  const value = launch(box, git, owner, execution, id);
   requireIdentity(value.present);
   return value.hash;
 }
@@ -449,11 +464,11 @@ export async function subtractExpiredOpenShellGit(
     const inspect = async () => {
       const box = await client.getSandbox({ name, workspace }, signal);
       requireIdentity(box, "launch_sandbox_missing");
-      const value = launch(box, git, owner, await owner.workload(git.sandboxId, signal), id);
+      const value = launch(box, git, owner, await owner.execution(box, signal), id);
       requireIdentity(retainedLaunchHash === value.hash, "launch_fingerprint_mismatch");
       return value;
     };
-    check = "original-launch-and-pods";
+    check = "original-launch-and-execution";
     let current = await inspect();
     check = "original-git-provider";
     // An absent provider object also gives an empty desired provider id. Keep the object and prove

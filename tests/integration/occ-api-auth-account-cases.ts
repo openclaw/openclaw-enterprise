@@ -8,7 +8,7 @@ import {
   validateAuthAccountPrincipalSeed,
   type AuthPrincipalSeed,
 } from "../../packages/iam/src/index.ts";
-import { signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { signInWithEmailPassword } from "../helpers/auth-session.ts";
 import {
   AccountResponse,
   assertApiError,

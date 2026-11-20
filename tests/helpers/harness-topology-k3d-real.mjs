@@ -58,6 +58,7 @@ import { asRecord } from "../../packages/utils/src/index.ts";
 import { assertDedicatedSkillSourceLifecycle } from "./dedicated-skill-source-lifecycle.mjs";
 import { withSkillPolicyRestore } from "./skill-policy-restore.mjs";
 import { waitForWorkspaceReconnect } from "./gateway-workspace-readiness.ts";
+import { installedGatewayRpc } from "./installed-gateway-rpc.ts";
 import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
 import { defaultUsersIAM } from "./default-users-iam.mjs";
 import { installManagedChannelEgressFixture } from "./managed-channel-egress-k3d.ts";
@@ -3220,36 +3221,15 @@ async function assertGatewayPrivateResources(topology) {
   return claim;
 }
 
-async function gatewayCall(topology, method, params, timeoutMs = 180_000) {
-  // The real CLI authenticates from the Pod's env/config; credentials never enter kubectl args.
-  const result = JSON.parse(
-    await execNode(
-      topology.gatewayPlacement,
-      topology.gatewayPod.metadata.name,
-      `
-    const { execFileSync } = require("node:child_process");
-    try {
-      process.stdout.write(execFileSync(process.execPath, ["/app/openclaw.mjs", "gateway", "call",
-      ${JSON.stringify(method)}, "--params", ${JSON.stringify(JSON.stringify(params))},
-      "--json", "--timeout", ${JSON.stringify(String(timeoutMs))}], { encoding: "utf8", timeout: ${timeoutMs + 30_000} }));
-    } catch (error) {
-      if (error.status !== 1 || error.signal !== null) throw error;
-      let failure;
-      try {
-        failure = JSON.parse(error.stdout);
-      } catch {
-        throw error;
-      }
-      if (failure?.ok !== false || failure.error?.type !== "gateway_request_error") throw error;
-      process.stdout.write(JSON.stringify(failure));
-    }
-  `,
-    ),
+function gatewayRpc(topology) {
+  return installedGatewayRpc(
+    (script) => execNode(topology.gatewayPlacement, topology.gatewayPod.metadata.name, script),
+    180_000,
   );
-  if (result?.ok === false && result.error?.type === "gateway_request_error") {
-    throw new Error(result.error.message, { cause: result.error });
-  }
-  return result;
+}
+
+function gatewayCall(topology, method, params, timeoutMs) {
+  return gatewayRpc(topology).call(method, params, timeoutMs);
 }
 
 async function assertDedicatedSkillSources(topology) {
@@ -3411,22 +3391,8 @@ function assertNativeToolSucceeded(history, marker, expectedText) {
   }
 }
 
-async function readAvailableGatewayHistory(topology, sessionKey, limit = 30) {
-  try {
-    return await gatewayCall(topology, "chat.history", { sessionKey, limit });
-  } catch (error) {
-    const failure = error.cause;
-    if (
-      failure?.type === "gateway_request_error" &&
-      failure.code === "UNAVAILABLE" &&
-      failure.retryable === true &&
-      failure.details?.method === "chat.history"
-    ) {
-      // Startup can still be preparing history after the Pod becomes ready.
-      return undefined;
-    }
-    throw error;
-  }
+function readAvailableGatewayHistory(topology, sessionKey, limit) {
+  return gatewayRpc(topology).readAvailableHistory(sessionKey, limit);
 }
 
 async function waitForGatewayHistory(topology, sessionKey, description, select) {

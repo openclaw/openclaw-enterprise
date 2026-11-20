@@ -22,11 +22,8 @@ import {
 import type { Permission } from "../../packages/contracts/src/index.ts";
 import { RuntimeLogsForbiddenByClusterError } from "../../packages/occ/src/index.ts";
 import { denialsDuring } from "../helpers/console-audit-denials.ts";
-import {
-  callerDenied,
-  POLICY_RECOMMENDATIONS_NO_SANDBOX,
-  runtimeLogSourceUnavailable,
-} from "../helpers/refusal-text.mjs";
+import { callerDenied, POLICY_RECOMMENDATIONS_NO_SANDBOX } from "../helpers/refusal-text.mjs";
+import { runtimeLogSourceUnavailable } from "../helpers/refusal-configuration-runtime.ts";
 import {
   administerGrants,
   createProviderSandboxDriver,
@@ -931,7 +928,7 @@ test("runtime log failures are fixed, content-free and never read after an audit
 test("a version without a Sandbox names the log sources and policy suggestions it lacks", async () => {
   const fixture = await createSecurityFixture();
   const target = await fixture.deployAgent();
-  for (const source of ["sandbox", "agent"]) {
+  for (const source of ["sandbox", "agent"] satisfies ("sandbox" | "agent")[]) {
     const refused = await fixture.request("GET", target.logsPath(`source=${source}`));
     const error = apiError(refused, 400, "RUNTIME_LOGS_SOURCE_UNAVAILABLE");
     assert.equal(error.message, runtimeLogSourceUnavailable(source));

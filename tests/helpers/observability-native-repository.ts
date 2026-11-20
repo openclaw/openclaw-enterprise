@@ -1,11 +1,53 @@
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { KubernetesComputeDriverOptions } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import type { GitHubRepositoryCredentialBackendDefinition } from "../../packages/contracts/src/index.ts";
+import type { NativeRepositoryValues } from "./production-observability-k3d.ts";
+
+type ComputeNetwork = KubernetesComputeDriverOptions["network"];
+type RepositoryNetwork = Omit<ComputeNetwork, "repositoryCredentials"> & {
+  repositoryCredentials?: NonNullable<ComputeNetwork["repositoryCredentials"]>;
+};
+
+type NativeRepositoryConfiguration = {
+  backend?: GitHubRepositoryCredentialBackendDefinition[];
+  repository?: {
+    id: string;
+    configuration: { sessionDurationSeconds: number };
+    nativeSender: { controlSocket: string; publicCaPath: string };
+    preparedGitHub: { custodyKeyPath: string; privateKeyPath: string };
+  };
+  drivers: { compute: { configuration: { network: RepositoryNetwork } } };
+};
+
+type FixtureMetadata = Readonly<{
+  name: string;
+  namespace: string;
+  labels: Readonly<Record<string, string>>;
+}>;
+
+type Fixture = Readonly<{
+  configuration: NativeRepositoryConfiguration;
+  system: string;
+  release: string;
+  directory: string;
+  suffix: string;
+  images: Readonly<{ credentials?: string }>;
+  secrets: string[];
+  run: (command: string, args: string[]) => Promise<string>;
+  apply: (object: object) => Promise<string>;
+  metadata: (name: string) => FixtureMetadata;
+}>;
+
+type PreparedValues = Omit<NativeRepositoryValues, "image"> & {
+  readonly image: string | undefined;
+};
 
 // Supply the chart's real native-sender profile without admitting a repository
 // operation. The native sender requires one exact review ref. No Agent or
 // Namespace is provisioned for this grant, and the keys are fixture-generated.
-export async function prepareObservabilityNativeRepository(f) {
+export async function prepareObservabilityNativeRepository(f: Fixture): Promise<PreparedValues> {
   const backendId = "observability-repository";
   const profile = "git-write";
   const driverId = "observability-repository-driver";
@@ -35,7 +77,7 @@ export async function prepareObservabilityNativeRepository(f) {
   const tlsKey = await readFile(join(f.directory, "repository.key"), "utf8");
   const tlsCert = await readFile(join(f.directory, "repository.crt"), "utf8");
   f.secrets.push(appKey, tlsKey);
-  const createSecret = (name, stringData) =>
+  const createSecret = (name: string, stringData: Record<string, string>) =>
     f.apply({ apiVersion: "v1", kind: "Secret", metadata: f.metadata(name), stringData });
   await createSecret("repository-app-key", { "private-key.pem": appKey });
   await createSecret("repository-tls", { "tls.crt": tlsCert, "tls.key": tlsKey });

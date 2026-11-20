@@ -30,6 +30,8 @@
     "tests/integration/postgres-namespace-iam-policy.test.ts",
     "tests/integration/postgres-agent-update-authority.test.ts",
     "tests/integration/postgres-connection-templates.test.ts",
+    "tests/integration/postgres-static-token-service-lifecycle.test.ts",
+    "tests/integration/postgres-staged-agent-credential-binding.test.ts",
     "tests/integration/workspace-setup-worker.test.ts",
     "tests/integration/postgres-repository-sessions.test.ts",
     "tests/integration/postgres-secret-state.test.ts",
@@ -79,7 +81,8 @@
     "tests/integration/postgres-preset-template-validation.test.ts",
     "tests/integration/postgres-readiness-capacity.test.ts",
     "tests/integration/postgres-private-secret-create.test.ts",
-    "tests/integration/postgres-iam-durable-authority.test.ts"
+    "tests/integration/postgres-iam-durable-authority.test.ts",
+    "tests/integration/postgres-egress-replacement.test.ts"
   ],
   "files": [
     {
@@ -188,6 +191,18 @@
     {
       "path": "tests/integration/postgres-controller-work-targets.test.ts",
       "expectedTests": ["PostgreSQL controller work requires exactly one complete target shape"]
+    },
+    {
+      "path": "tests/integration/postgres-static-token-service-lifecycle.test.ts",
+      "expectedTests": [
+        "staged TokenService lifecycle keeps private custody, audit, and exact update authority"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-staged-agent-credential-binding.test.ts",
+      "expectedTests": [
+        "Agent drafts authorize the staged source and refuse unsupported revision delivery"
+      ]
     },
     {
       "path": "tests/integration/postgres-connection-templates.test.ts",
@@ -580,7 +595,7 @@
       "path": "tests/integration/postgres-openshell-standing-cold-worker.test.ts",
       "expectedTests": [
         "a cold worker persists redeploy-required standing Git status without renewing it",
-        "a cold worker after session expiry checks expired-original-pods",
+        "a cold worker after session expiry checks expired-original-execution",
         "a cold worker after session expiry checks expired-replaced-supervisor"
       ]
     },
@@ -796,6 +811,9 @@
       "expectedTests": [
         "durable authority writes order configured-policy withdrawal at the real callers"
       ]
+    },
+    {
+      "path": "tests/integration/postgres-egress-replacement.test.ts"
     }
   ]
 }

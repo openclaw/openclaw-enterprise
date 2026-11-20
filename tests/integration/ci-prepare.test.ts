@@ -273,6 +273,9 @@ test("model preparation notices follow completed CLI phases", async (t) => {
   for (const suppliedImages of [false, true]) {
     const commands = await fixtureImageCommands(t, "local-digest", "k3d-model", {
       GITHUB_ACTIONS: "true",
+      GITHUB_RUN_ID: "12345",
+      GITHUB_RUN_ATTEMPT: "2",
+      GITHUB_SHA: "a".repeat(40),
       OPENAI_API_KEY: "synthetic-model-key",
       OCC_TEST_OPENAI_MODEL: "synthetic-model",
       NODE_BASE_IMAGE: nodeBaseImage,
@@ -304,6 +307,7 @@ test("model preparation notices follow completed CLI phases", async (t) => {
           ]),
     ]);
     assert.deepEqual(modelImageRoleNotices(prepared.stderr), []);
+    assert.doesNotMatch(prepared.stderr, /^::notice title=Production Observability timing::/m);
     await commands.cleanupSuccessfully();
   }
 });
@@ -399,6 +403,96 @@ test("model preparation notices preserve outcomes and require Actions and a know
     ["postgres-start", "success"],
     ["gateway-routing", "failure"],
   ]);
+});
+
+test("Production Observability notices retain a failed preparation phase", async (t) => {
+  const root = await fixture(t);
+  const docker = join(root, "docker");
+  const lane = "k3d-observability";
+  const sha = "a".repeat(40);
+  const canary = "synthetic-observability-command-failure";
+  // A missing executable inside the first timed phase must leave the
+  // phase red without disclosing the command path in the notice.
+  await writeFile(docker, `#!/bin/sh\nprintf '%s\\n' '${canary}' >&2\nexit 48\n`, { mode: 0o700 });
+  const result = await spawnResult(
+    process.execPath,
+    [preparePath, "--lane", lane, "--state", join(root, "state.json")],
+    {
+      env: {
+        PATH: root,
+        TMPDIR: root,
+        OCC_HELM_BIN: "/bin/true",
+        OCC_DOCKER_BIN: docker,
+        OPENCLAW_CI_K3D_BIN: "/bin/true",
+        OCC_KUBECTL_BIN: join(root, canary),
+        GITHUB_ACTIONS: "true",
+        GITHUB_RUN_ID: "12345",
+        GITHUB_RUN_ATTEMPT: "2",
+        GITHUB_SHA: sha,
+      },
+    },
+  );
+  assert.equal(result.status, 1, result.stderr);
+  assertStderrMatch(result.stderr, new RegExp(canary));
+  assert.match(
+    result.stderr,
+    /\[ci-timing\] lane=k3d-observability phase=cluster-build-pull duration_ms=\d+/,
+  );
+  const notices = result.stderr
+    .split("\n")
+    .filter((line) => line.startsWith("::notice title=Production Observability timing::"));
+  const binding = `::notice title=Production Observability timing::lane=${lane} run_id=12345 run_attempt=2 source_sha=${sha} phase=cluster-build-pull`;
+  assert.equal(notices.length, 2, "failed preparation must publish one start and one terminal");
+  assert.equal(notices[0], `${binding} event=start`);
+  assert.match(
+    notices[1] ?? "",
+    new RegExp(`^${binding} event=finish outcome=failure elapsed_ms=[0-9]+$`),
+  );
+});
+
+test("Production Observability notices accept only fixed outcomes for each phase", async () => {
+  const noticeModule = new URL("../../scripts/ci/observability-phase-notice.ts", import.meta.url);
+  // An untyped caller can supply values outside the TypeScript outcome union.
+  const probe = `const { startObservabilityPhase } = await import(process.argv[1]);
+const [phase, outcome] = process.argv.slice(2);
+startObservabilityPhase("k3d-observability", phase)(outcome, 5);`;
+
+  const canary = "synthetic-outcome-canary";
+  const preparePhase = "workload-image-imports";
+  const cleanupPhase = "lane-cleanup";
+  const sha = "a".repeat(40);
+  const env = {
+    GITHUB_ACTIONS: "true",
+    GITHUB_RUN_ID: "12345",
+    GITHUB_RUN_ATTEMPT: "2",
+    GITHUB_SHA: sha,
+  };
+
+  for (const [phase, outcome, terminal] of tuples([
+    [preparePhase, `failure\n::notice::${canary}`],
+    [preparePhase, `failure%0A::notice::${canary}`],
+    [cleanupPhase, "unknown"],
+    [preparePhase, "skipped"],
+    [preparePhase, "success", "success elapsed_ms=5"],
+    [preparePhase, "failure", "failure elapsed_ms=5"],
+    [cleanupPhase, "skipped", "skipped"],
+  ])) {
+    const result = await spawnResult(
+      process.execPath,
+      ["--input-type=module", "-e", probe, noticeModule.href, phase, outcome],
+      { env },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.doesNotMatch(result.stderr, /^::notice::/m, "unexpected workflow command");
+    assert.doesNotMatch(result.stderr, new RegExp(canary), "unexpected outcome text");
+    const binding = `::notice title=Production Observability timing::lane=k3d-observability run_id=12345 run_attempt=2 source_sha=${sha} phase=${phase}`;
+    const expected = [`${binding} event=start\n`];
+    if (terminal) {
+      expected.push(`${binding} event=finish outcome=${terminal}\n`);
+    }
+    assert.equal(result.stderr, expected.join(""), `unexpected notices for ${phase} ${outcome}`);
+  }
 });
 
 // Most cases wait on preparation children: fake engines, deliberate command timeouts
@@ -2344,16 +2438,6 @@ if (args[0] === "pull") {
         }
       }
     }
-    // The new finite-Git installer still consumes a PAT; joining the installer
-    // lane must not make its file-level preparation accept an API key alone.
-    for (const credentials of [["OPENAI_API_KEY"], ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"]]) {
-      cases.push({
-        harness: "codex",
-        credentials,
-        file: "tests/integration/openshell-git-finite-removal-real.test.ts",
-        ...(credentials.includes("CODEX_ACCESS_TOKEN") ? {} : { missing: "CODEX_ACCESS_TOKEN" }),
-      });
-    }
     // Generic workflows use API keys even when an unrelated managed PAT is present.
     // PAT-only input must fail before the preparer creates a state file or any resources.
     for (const file of [
@@ -2364,6 +2448,8 @@ if (args[0] === "pull") {
       "tests/integration/openshell-refresh-real.test.ts",
       "tests/integration/openshell-withdrawal-real.test.ts",
       "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+      "tests/integration/openshell-git-retention-real.test.ts",
+      "tests/integration/openshell-git-finite-removal-real.test.ts",
     ]) {
       cases.push(
         { harness: "codex", credentials: ["OPENAI_API_KEY"], file },
@@ -2436,8 +2522,8 @@ if (args[0] === "pull") {
     }
   });
 
-  // Each complete OpenShell cohort includes API-key and PAT workflows. Reject
-  // either missing input before creating shared resources.
+  // The installer cohort uses only API keys; the mixed cohorts also retain PAT
+  // workflows. Reject each missing input before creating shared resources.
   for (const lane of ["openshell", "openshell-policy", "openshell-installers"]) {
     for (const harness of ["codex", "openclaw"]) {
       for (const credentials of [
@@ -2474,9 +2560,11 @@ if (args[0] === "pull") {
             10_000,
           );
           assert.equal(result.status, 1);
-          const missing = ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"].filter(
-            (name) => !credentials.includes(name),
-          );
+          const required =
+            lane === "openshell-installers"
+              ? ["OPENAI_API_KEY"]
+              : ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"];
+          const missing = required.filter((name) => !credentials.includes(name));
           if (missing.length) {
             assert.match(result.stderr, /Missing required CI input/u);
             for (const name of missing) {
