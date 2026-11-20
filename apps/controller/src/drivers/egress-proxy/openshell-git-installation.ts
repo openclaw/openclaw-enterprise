@@ -65,8 +65,9 @@ export interface OpenShellGitObservationEntry {
   readonly otherProviders: readonly string[];
   binding: OpenShellPreparedGitBinding;
   readonly preview?: ObservedHookPreview;
-  verify?: (sandbox: OpenShellSandboxResponse) => void;
+  verify?: (sandbox: OpenShellSandboxResponse, signal: AbortSignal) => void | Promise<void>;
   sandboxId?: string;
+  unverified?: true | undefined;
   continuity?: OpenShellGitContinuity;
   retainedLaunchHash?: string;
   /** The last observation that verified; the next one must read as the same installation. */
@@ -193,8 +194,8 @@ export async function readOpenShellGitEvidence<T>(
 }
 
 export function openShellGitExecutionIdentity(observed: OpenShellPreparedGitInstalled) {
-  const { workspace, sandboxId, executionId, processInstanceId, networkInstanceId } = observed;
-  const identity = [workspace, sandboxId, executionId, processInstanceId, networkInstanceId];
+  const { workspace, sandboxId, executionId } = observed;
+  const identity = [workspace, sandboxId, executionId];
   return {
     executionId,
     fingerprint: createHash("sha256").update(JSON.stringify(identity)).digest("hex"),
@@ -337,8 +338,11 @@ export async function observeOpenShellGitInstallation(
     return;
   }
   try {
-    entry.verify(sandbox);
+    await entry.verify(sandbox, signal);
   } catch (error) {
+    if (error instanceof OpenShellGitObservationError || error instanceof OpenShellGitRouteError) {
+      throw error;
+    }
     throw new OpenShellGitRouteError(
       "sandbox_mismatch",
       "OpenShell Git sandbox no longer matches its admitted content.",
@@ -346,10 +350,12 @@ export async function observeOpenShellGitInstallation(
     );
   }
   if (
-    (sandbox.restartCount ?? 0) !== 0 ||
-    ![1, "SANDBOX_RESTART_POLICY_NEVER"].includes(
-      sandbox.spec?.restart_policy as string | number,
-    ) ||
+    (entry.preview &&
+      !entry.preview.mandatory &&
+      ((sandbox.restartCount ?? 0) !== 0 ||
+        ![1, "SANDBOX_RESTART_POLICY_NEVER"].includes(
+          sandbox.spec?.restart_policy as string | number,
+        ))) ||
     (entry.sandboxId && entry.sandboxId !== sandbox.id)
   ) {
     try {
@@ -396,7 +402,12 @@ export async function observeOpenShellGitInstallation(
             audience: configuration.authority.audience,
             gitRule: entry.provider.previewNetworkRule(),
             modelProvider: entry.continuity.model,
-            workload: entry.continuity.workload,
+            runtimeProvider: entry.continuity.runtime,
+            sourcePolicy: await readOpenShellGitEvidence(
+              () => entry.continuity!.policy(sandbox, signal),
+              signal,
+            ),
+            execution: entry.continuity.execution,
             signal,
           }));
         if (!recipient || recipient !== entry.preview.recipient) {
@@ -422,15 +433,55 @@ export async function observeOpenShellGitInstallation(
     signal,
     entry.preview ? undefined : admitted,
   );
+  const previous = entry.supervisor;
+  const recovered =
+    observed &&
+    previous &&
+    (observed.processInstanceId !== previous.processInstanceId ||
+      observed.networkInstanceId !== previous.networkInstanceId);
+  if (observed && previous) {
+    const current = observed;
+    if (
+      (
+        [
+          "workspace",
+          "sandbox",
+          "sandboxId",
+          "executionId",
+          "provider",
+          "providerId",
+          "profileVersion",
+          "attachmentEpoch",
+        ] as const
+      ).some((key) => current[key] !== previous[key])
+    ) {
+      throw new OpenShellGitRouteError("supervisor_replaced", "OpenShell Git recipient changed.");
+    }
+    if (recovered) {
+      if (entry.preview && !entry.preview.mandatory) {
+        throw new OpenShellGitRouteError(
+          "supervisor_replaced",
+          "Observed-only Git runtime was replaced.",
+        );
+      }
+      // A lookup cannot adopt a replacement or carry a previous launcher's ACK forward.
+      if (!adopt) {
+        return;
+      }
+      await verifyFence();
+      entry.preview?.recover();
+      entry.installed = undefined;
+      entry.closedAt ??= performance.now();
+    }
+  }
   if (entry.preview && observed) {
     const preview = entry.preview;
-    // The original worker may advance its fence by reserving a rotation. Recheck
-    // that exact lease; a restarted preview is closed by prepare(), never adopted.
+    // The worker may advance its fence by reserving a rotation. Recheck that exact lease.
     await verifyFence();
     if (
       !entry.continuity ||
       !sandbox.mainProcessStartedAt ||
-      Date.parse(sandbox.mainProcessStartedAt) < preview.opened - 5000 ||
+      (!preview.mandatory && Date.parse(sandbox.mainProcessStartedAt) < preview.opened - 5000) ||
       Date.parse(sandbox.mainProcessStartedAt) > Date.now() + 5000
     ) {
       return;
@@ -444,7 +495,12 @@ export async function observeOpenShellGitInstallation(
       audience: configuration.authority.audience,
       gitRule: entry.provider.previewNetworkRule(),
       modelProvider: entry.continuity.model,
-      workload: entry.continuity.workload,
+      runtimeProvider: entry.continuity.runtime,
+      sourcePolicy: await readOpenShellGitEvidence(
+        () => entry.continuity!.policy(sandbox, signal),
+        signal,
+      ),
+      execution: entry.continuity.execution,
       signal,
     });
     if (!recipient || !entry.provider.repositoryPolicyIsFresh(observed)) {
@@ -457,7 +513,8 @@ export async function observeOpenShellGitInstallation(
     if (
       preview.recipient !== recipient ||
       (observed.credentialState === "active"
-        ? !preview.hook || observed.providerEnvRevision === preview.bootstrapRevision
+        ? (!preview.mandatory && !preview.hook) ||
+          observed.providerEnvRevision === preview.bootstrapRevision
         : observed.providerEnvRevision !== preview.bootstrapRevision)
     ) {
       reportSupervisorChange?.(
@@ -467,6 +524,10 @@ export async function observeOpenShellGitInstallation(
         "supervisor_replaced",
         "Observed Git recipient or policy changed.",
       );
+    }
+    const enrollment = preview.enrollment();
+    if (enrollment) {
+      observed = entry.provider.withEnrollment(observed, enrollment);
     }
     if (preview.hook && !preview.mandatory) {
       observed = Object.freeze({ ...observed, observedHook: preview.hook });
@@ -491,81 +552,21 @@ export async function observeOpenShellGitInstallation(
   } else {
     entry.environmentLag = undefined;
   }
-  const previous = entry.supervisor;
   if (previous === undefined) {
     if (adopt) {
       entry.supervisor = observed;
     }
     return observed;
   }
-  if (
-    observed.processInstanceId !== previous.processInstanceId ||
-    observed.networkInstanceId !== previous.networkInstanceId
-  ) {
-    reportSupervisorChange?.(
-      observed.processInstanceId !== previous.processInstanceId
-        ? "git-supervisor-process"
-        : "git-supervisor-network",
-    );
-    throw new OpenShellGitRouteError(
-      "supervisor_replaced",
-      "OpenShell Git supervisor was replaced.",
-    );
-  }
-  if (observed.supervisorSessionId !== previous.supervisorSessionId) {
-    // The supervisor holds a new control session. Verify its full installation identity.
-    // A replaced Gateway Pod gives every running Sandbox a new control session at once
-    // (the same supervisor process reconnects), so a redeploy of the whole fleet is not
-    // required: the new session is adopted when the verified observation is the same
-    // installation as before. Its identity must read
-    // exactly as before: the Sandbox (id, name, workspace), the execution, the provider
-    // (id, profile version, attachment epoch) and the supervisor's process and network
-    // instance ids. Its generation (provider resource version and env revision, config
-    // revision, policy hash, credential state) is verified by observe() against the
-    // Gateway's own receipt and the provider version this worker last wrote, not against
-    // the previous read: a credential rotation moves it, and its verifying read often lags
-    // the write by seconds, so a stale snapshot would close healthy routes on every Gateway
-    // restart that overlaps a rotation. Any other difference is a replaced supervisor
-    // (finding 2136).
-    //
-    // Stated limit (owner decision 2026-10-20): in OpenShell 0.1.4 (`5a7728c3`) both
-    // instance ids are asserted by the supervisor, not attested by the Gateway. The
-    // network instance id is the supervisor's own SupervisorHello instance id
-    // (crates/openshell-server/src/grpc/provider_readiness.rs; generated sandbox-side in
-    // crates/openshell-supervisor-process/src/delegated.rs), the process instance id comes
-    // from its readiness report and is only held constant within one session, and the
-    // Gateway persists what a reconnecting supervisor claims as its main process instance
-    // (crates/openshell-server/src/compute/mod.rs). ConnectSupervisor does authenticate a
-    // sandbox principal scoped to this Sandbox id, so continuity rests on that principal
-    // plus the supervisor's claims until OpenShell provides an attested reconnect identity
-    // (a planned OpenShell change). No material is issued or replayed on adoption.
-    if (
-      (
-        [
-          "workspace",
-          "sandbox",
-          "sandboxId",
-          "executionId",
-          "provider",
-          "providerId",
-          "profileVersion",
-          "attachmentEpoch",
-        ] as const
-      ).some((key) => observed[key] !== previous[key])
-    ) {
-      reportSupervisorChange?.("git-reconnected-installation");
-      throw new OpenShellGitRouteError(
-        "supervisor_replaced",
-        "OpenShell Git supervisor was replaced.",
-      );
-    }
+  if (observed.supervisorSessionId !== previous.supervisorSessionId || entry.unverified) {
+    // Gateway reconnects and automatic process recovery preserve execution authority.
+    // The provider read above must independently verify the current authenticated runtime.
     if (adopt && entry.opened && observed.supervisorSessionId !== previous.supervisorSessionId) {
       // Reported once the route is open again; a route that never opened has nothing to restore.
       entry.reconnected ??= { since: entry.closedAt ?? performance.now() };
     }
   }
   if (adopt) {
-    entry.supervisor = observed;
     if (entry.continuity && observed.credentialState === "active") {
       // Credential rotation changes the aggregate provider environment. Complete its
       // model observation even after the original launch witness has been retained.
@@ -578,7 +579,7 @@ export async function observeOpenShellGitInstallation(
       if (entry.preview && !previewReceipt) {
         return;
       }
-      if (entry.retainedLaunchHash === undefined) {
+      if (entry.retainedLaunchHash === undefined || recovered) {
         const hash = await witnessOpenShellGitLaunch(
           entry.client,
           entry.continuity,
@@ -590,9 +591,17 @@ export async function observeOpenShellGitInstallation(
         if (!hash) {
           return;
         }
+        if (entry.retainedLaunchHash && entry.retainedLaunchHash !== hash) {
+          throw new OpenShellGitRouteError(
+            "execution_replaced",
+            "OpenShell Git launch configuration changed.",
+          );
+        }
         entry.retainedLaunchHash = hash;
       }
     }
+    entry.supervisor = observed;
+    entry.unverified = undefined;
   }
   return entry.provider.repositoryPolicyIsFresh(observed) ? observed : undefined;
 }

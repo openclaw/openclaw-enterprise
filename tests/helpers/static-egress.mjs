@@ -257,6 +257,9 @@ async function buildStaticEgressFixture(
     policyStatusRequests: 0,
     gatewayInfoRequests: 0,
     policyStatusUnavailable: false,
+    policyVersion: 1,
+    activePolicyVersion: 1,
+    policyStatus: 2,
   };
   // OpenShell reports negotiated capabilities in lexical order, including the base contract.
   const gatewayCapabilities = ["openshell.supervisor-middleware.contract", ...capabilities].sort();
@@ -402,8 +405,8 @@ async function buildStaticEgressFixture(
       }
       callback(null, {
         revision: {
-          version: 1,
-          status: 2,
+          version: observed.policyVersion,
+          status: observed.policyStatus,
           policy: observed.policy,
           policy_hash: observed.policyHash,
         },
@@ -412,7 +415,7 @@ async function buildStaticEgressFixture(
         loaded_policy_observation: observed.observation
           ? { ...observed.observation, enforcement: observed.evidence }
           : undefined,
-        active_version: 1,
+        active_version: observed.activePolicyVersion,
       });
     },
     DeleteSandbox(call, callback) {
@@ -511,7 +514,8 @@ async function buildStaticEgressFixture(
     new OpenShellSandboxDriver(
       {
         egress: egressOptions,
-        gateway: { workspaceMode: "operator" },
+        integrationMode: "legacy",
+        gateway: {},
         kubernetes: {
           serviceAccount: { mode: "gatewayConfigured" },
           sandboxDataMount: {

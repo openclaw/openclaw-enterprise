@@ -10,7 +10,7 @@ import {
 } from "../../packages/contracts/src/api/resources.ts";
 import type { AuditEvent } from "../../packages/contracts/src/index.ts";
 
-import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { grantRole, restrict } from "../helpers/iam-grants.ts";
 import {

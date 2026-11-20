@@ -4,10 +4,10 @@ import { runInNewContext } from "node:vm";
 
 import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.ts";
 import {
-  collectNativeWorkerFailure,
   nativePlacementReadRetryable,
   nativeWorkerSessionPlacement,
-} from "../helpers/local-first-agent-native.mjs";
+} from "../helpers/local-first-agent-native-placement.ts";
+import { collectNativeWorkerFailure } from "../helpers/local-first-agent-native.mjs";
 
 // Exercise the same self-contained function after serialization into a controller.
 const placementFromDescription = runInNewContext(
