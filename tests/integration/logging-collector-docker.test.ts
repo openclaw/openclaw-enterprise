@@ -51,10 +51,15 @@ test(
       "openclaw.agent.id": agentId,
       "openclaw.revision.id": revisionId,
     };
-    const resource = (service: string, containerId: string) => ({
+    const namespaceForService = (service: string) =>
+      service === "occ-api" || service === "occ-worker"
+        ? `system-${fixture.suffix}`
+        : `tenant-${fixture.suffix}`;
+    const resource = (service: string, containerId: string, podUid: string) => ({
       attributes: Object.entries({
         ...protectedIdentity,
-        "k8s.pod.uid": `pod-${randomUUID()}`,
+        "k8s.namespace.name": namespaceForService(service),
+        "k8s.pod.uid": podUid,
         "container.id": containerId,
         ...(service === "occ-api" || service === "occ-worker"
           ? {
@@ -125,6 +130,7 @@ test(
         name: `${projection.event}:${projection.field}:${index}`,
         keep: index === 0,
         containerId: `containerd://${randomUUID()}`,
+        podUid: randomUUID(),
       })),
     );
     cases.push({
@@ -136,11 +142,16 @@ test(
       name: "database-sqlstate",
       keep: true,
       containerId: `containerd://${randomUUID()}`,
+      podUid: randomUUID(),
     });
-    const gatewayResource = resource("openclaw-gateway", `containerd://${randomUUID()}`);
+    const gatewayResource = resource(
+      "openclaw-gateway",
+      `containerd://${randomUUID()}`,
+      randomUUID(),
+    );
     await postLogs(receiverAddress, [
-      ...cases.map(({ event, service, field, value, containerId, phase, outcome }) => ({
-        resource: resource(service, containerId),
+      ...cases.map(({ event, service, field, value, containerId, podUid, phase, outcome }) => ({
+        resource: resource(service, containerId, podUid),
         scopeLogs: [
           {
             logRecords: [
@@ -180,6 +191,9 @@ test(
       );
       assert.ok(actual, `${expected.name} is exported`);
       assert.equal(actual.resource["service.name"], expected.service);
+      assert.equal(actual.resource["k8s.namespace.name"], namespaceForService(expected.service));
+      assert.equal(actual.resource["k8s.pod.uid"], expected.podUid);
+      assert.equal(actual.resource["service.instance.id"], expected.podUid);
       for (const [key, value] of Object.entries(protectedIdentity)) {
         assert.equal(actual.resource[key], value);
       }
