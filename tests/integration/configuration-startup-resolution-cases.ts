@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { SpawnOptions } from "node:child_process";
 import { mkdir, readdir } from "node:fs/promises";
 import { constants } from "node:os";
 import { join } from "node:path";
@@ -19,10 +20,19 @@ type StartupFixture = (
   configuration?: Readonly<Record<string, unknown>>,
 ) => Promise<string>;
 
-type StartupProcessFixtures = {
-  boot: (script: string, environment: NodeJS.ProcessEnv) => Promise<StartupResult>;
+type StartupProcessDependencies = {
+  captureChild: (
+    program: string,
+    args: string[],
+    options: Pick<SpawnOptions, "cwd" | "env" | "timeout">,
+  ) => Promise<unknown>;
+  concurrencyLimit: () => (task: () => Promise<unknown>) => Promise<unknown>;
+  compileCache: string;
+};
+type StartupProcesses = ReturnType<typeof createStartupProcesses>;
+export type StartupSiblingWait = typeof waitForSiblings;
+export type StartupProcessFixtures = Pick<StartupProcesses, "boot" | "productionServer"> & {
   fixture: StartupFixture;
-  productionServer: NodeJS.ProcessEnv;
 };
 
 type InstallationInput = Readonly<Record<string, unknown>> & {
@@ -56,7 +66,7 @@ type RepositoryFixture = (context: TestContext) => Promise<{
 }>;
 
 type StartupEvent = "startup-error" | "worker.startup-error";
-type StartupResult = { status: number | null; stderr: string; stdout: string };
+type StartupResult = Awaited<ReturnType<StartupProcesses["boot"]>>;
 type ChatGPTInputSettings = {
   -readonly [K in keyof BackendConfiguration]: BackendConfiguration[K];
 } & {
@@ -102,9 +112,7 @@ function isSignal(value: unknown): value is NodeJS.Signals {
   return typeof value === "string" && Object.hasOwn(constants.signals, value);
 }
 
-export function checkedStartupCapture(
-  capture: unknown,
-): StartupResult & { signal: NodeJS.Signals | null } {
+function checkedStartupCapture(capture: unknown) {
   const result = asRecord(capture);
   assert.ok(result, "startup child must report a process result");
   const { status, signal, stderr, stdout } = result;
@@ -132,6 +140,72 @@ function productionEnvironment(configPath: string): NodeJS.ProcessEnv {
     OCC_CONFIG_PATH: configPath,
     OCC_DATABASE_URL: unavailableDatabase,
   };
+}
+
+export function createStartupProcesses({
+  captureChild,
+  concurrencyLimit,
+  compileCache,
+}: StartupProcessDependencies) {
+  // The production listener and sign-in settings of the API boots that reach session auth.
+  const productionServer = {
+    OCC_HOST: "192.0.2.10",
+    OCC_PORT: "8080",
+    OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
+    OCC_AUTH_BASE_URL: "https://console.example.test",
+    OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.example.test",
+  };
+
+  // Boots run concurrently, about one per CPU. A boot killed at its timeout rejects with
+  // the signal instead of reading as a wrong exit status. The timeout only guards against a
+  // process that never exits: every boot here ends in a startup refusal within a second or two
+  // on an idle machine, and on a loaded runner the same boot took more than 10 s.
+  const limit = concurrencyLimit();
+  async function boot(
+    script: string,
+    env: NodeJS.ProcessEnv,
+    timeout = 30_000,
+    nodeArguments: readonly string[] = [],
+  ) {
+    const capture = await limit(() =>
+      captureChild(process.execPath, [...nodeArguments, script], {
+        cwd: process.cwd(),
+        env: { ...env, NODE_COMPILE_CACHE: compileCache },
+        timeout,
+      }),
+    );
+    const { signal, ...result } = checkedStartupCapture(capture);
+    if (signal) {
+      throw new Error(`${script} ended by ${signal} (timeout ${timeout} ms): ${result.stderr}`);
+    }
+    return result;
+  }
+
+  async function warmStartupProcesses(path: string): Promise<void> {
+    const env = productionEnvironment(path);
+    const boots = [
+      boot("apps/controller/src/server.mjs", { ...env, ...productionServer }),
+      boot("apps/controller/src/worker.mjs", env),
+    ] as const;
+    await waitForSiblings(boots);
+    const [server, worker] = await Promise.all(boots);
+    // A boot that stopped earlier would leave the composition modules uncached.
+    const warmUp = "compile-cache warm-up";
+    assert.equal(server.status, 1, warmUp);
+    assert.equal(
+      startupDiagnostic(server.stderr, "startup-error").code,
+      "PERSISTENCE_UNAVAILABLE",
+      warmUp,
+    );
+    assert.equal(worker.status, 1, warmUp);
+    assert.equal(
+      startupDiagnostic(worker.stderr, "worker.startup-error").code,
+      "PERSISTENCE_UNAVAILABLE",
+      warmUp,
+    );
+  }
+
+  return { boot, productionServer, warmStartupProcesses };
 }
 
 function assertDriverRefusal(

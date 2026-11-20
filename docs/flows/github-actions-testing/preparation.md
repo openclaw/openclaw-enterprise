@@ -34,7 +34,7 @@ Pagefind succeeds; Baseline and browser part 1 only restore it. Keys include OS,
 architecture, Node.js, pnpm and lockfile hash; prefix matches can cross lockfiles.
 Frozen installation fetches missing packages.
 
-First Agent Smoke and `run-ci-lane` restore yq and k3d outside `PATH`.
+First Agent Smoke and `run-ci-lane` restore yq, k3d and kubectl outside `PATH`.
 `scripts/ci/setup-tools.sh` selects platform checksums;
 `scripts/ci/download-pinned.sh` verifies bytes in private staging before atomic
 0755 publication. Missing or corrupt entries trigger pinned downloads; cache
