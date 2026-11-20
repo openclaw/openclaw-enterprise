@@ -16,9 +16,9 @@ import {
   runRunnerSync,
   writeSingleFileRunnerLane,
 } from "../helpers/ci-runner-fixture.ts";
+import { nativeWorkerPlacementObservation } from "../helpers/local-first-agent-native-placement.ts";
 import {
   collectNativeWorkerFailure,
-  nativeWorkerPlacementObservation,
   nativeWorkerTurnEventObservation,
   nativeWorkerTurnObservation,
 } from "../helpers/local-first-agent-native.mjs";
