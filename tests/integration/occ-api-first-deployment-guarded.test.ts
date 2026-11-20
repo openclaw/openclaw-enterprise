@@ -52,7 +52,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-async function waitForRequestBarrier(barrier: Promise<void>, pending: Promise<unknown>) {
+async function waitForRequestBarrier(barrier: Promise<void>, pending: ReturnType<FixtureRequest>) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error("Request did not reach the expected barrier")), 5000);
