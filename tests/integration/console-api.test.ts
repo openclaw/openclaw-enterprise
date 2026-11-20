@@ -24,7 +24,7 @@ import {
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { bindRole, grantRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
-import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
+import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.ts";
 import {
   authenticatedHeaders,
   cookieHeaderFromSetCookie,
@@ -33,9 +33,11 @@ import {
 
 import { Check } from "typebox/value";
 import { Type, type TSchema } from "typebox";
+import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import {
   SandboxNetworkPolicyConfiguration,
   type AgentRevision,
+  type ChannelCredentialReader,
   type ProtectedRepositoryNetworkPolicyContext,
   type RepositoryNetworkGrant,
   type SandboxDriver,
@@ -2212,6 +2214,77 @@ async function setDesiredRepositoryPolicy(
   });
 }
 
+test("deployment delivers a Channel Secret only through the captured validator", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const controller = fixture.controller;
+  assert.ok(controller);
+  const namespace = await fixture.createNamespace("Channel validator identity", { ready: true });
+  const marker = `synthetic-channel-${randomUUID()}`;
+  const secret = await fixture.createSecret(namespace.id, "Channel credential", marker);
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Channel validation Agent",
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+    { secretBindings: { CHANNEL_TOKEN: { source: secret.ref, delivery: { type: "env" } } } },
+  );
+
+  const channel = new SlackChannelDriver(async () => assert.fail("Unexpected provider request"));
+  const accepted = t.mock.fn(async (value: string) => {
+    assert.ok(value === marker, "the selected validator must receive the bound Secret");
+  });
+  const diverted = t.mock.fn(async () => {});
+  async function validate(
+    this: SlackChannelDriver,
+    _values: Readonly<Record<string, unknown>>,
+    use: ChannelCredentialReader,
+  ) {
+    assert.ok(this === channel, "the selected validator must keep its Driver receiver");
+    channel.validateCredentials = validate;
+    await use("CHANNEL_TOKEN", "channel", accepted);
+  }
+  channel.validateCredentials = validate;
+  controller.registerDriver(channel);
+  controller.selectDriver("channel", channel.id);
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+
+  const first = await fixture.request("POST", `${path}/deploy-first`, {
+    body: {
+      key: "channel-validator",
+      expectedConfigurationId: agent.configurationId,
+      expectedGeneration: 1,
+    },
+  });
+  assert.equal(first.status, 202);
+  assert.equal(accepted.mock.callCount(), 1);
+
+  // After the capability's two method checks, snapshot lookup installs an alternate validator
+  // that restores the original before Secret handoff.
+  const contractReads = [validate, validate];
+  Object.defineProperty(channel, "validateCredentials", {
+    configurable: true,
+    get() {
+      const checked = contractReads.shift();
+      if (checked !== undefined) {
+        return checked;
+      }
+      Object.defineProperty(channel, "validateCredentials", {
+        configurable: true,
+        writable: true,
+        async value(_values: Readonly<Record<string, unknown>>, use: ChannelCredentialReader) {
+          channel.validateCredentials = validate;
+          await use("CHANNEL_TOKEN", "channel", diverted);
+        },
+      });
+      return validate;
+    },
+  });
+  const later = await fixture.request("POST", `${path}/deploy`);
+  assert.equal(diverted.mock.callCount(), 0, "the alternate callback must never receive a Secret");
+  assert.equal(later.status, 202);
+  assert.equal(accepted.mock.callCount(), 2);
+});
+
 test("deploy checks repository policy authority and freezes the selected Sandbox Driver result", async (t) => {
   const providerDefaults = { repositoryAccess: { state: "deny-all" } };
   const deploymentSteps: string[] = [];
@@ -2655,6 +2728,50 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   assertSteps(...policyChecks);
   assert.deepEqual(await readFreshRevisions(), []);
   controller.selectDriver("repo", namespacePolicy.id);
+
+  // The same Driver object can expose a different approval method through a
+  // getter. Replacing that method during validation must also block deployment.
+  let selectedApproval = namespacePolicy.repositoryNetworkPolicyAllows;
+  Object.defineProperty(namespacePolicy, "repositoryNetworkPolicyAllows", {
+    configurable: true,
+    get: () => selectedApproval,
+  });
+  try {
+    validateProtectedRepositoryNetworkPolicy.mock.mockImplementationOnce(async (context) => {
+      await validatePolicy(context);
+      selectedApproval = () => true;
+    });
+    const changedMethod = await deployFresh(true);
+    assertApiError(changedMethod, 409, "RESOURCE_CONFLICT");
+    assert.match(
+      JSON.stringify(changedMethod.body),
+      /Drivers changed during repository network policy admission/,
+    );
+    assertSteps(...policyChecks);
+    assert.deepEqual(await readFreshRevisions(), []);
+  } finally {
+    Reflect.deleteProperty(namespacePolicy, "repositoryNetworkPolicyAllows");
+  }
+
+  // An asynchronous Driver cannot grant repository access, even if it resolves
+  // to true. Its rejection must stay within this request's refusal path.
+  for (const approve of [async () => true, async () => Promise.reject(new Error("refused"))]) {
+    const asynchronous = t.mock.method(namespacePolicy, "repositoryNetworkPolicyAllows", () => {
+      return approve() as unknown as boolean;
+    });
+    try {
+      const refused = await deployFresh();
+      assertApiError(refused, 409, "RESOURCE_CONFLICT");
+      assert.match(
+        JSON.stringify(refused.body),
+        /Cannot verify Namespace repository network grants/,
+      );
+      assertSteps();
+      assert.deepEqual(await readFreshRevisions(), []);
+    } finally {
+      asynchronous.mock.restore();
+    }
+  }
 
   // Each awaited credential operation can invalidate the approved topology.
   // Refuse before the next effect even though the earlier Compute checks passed.

@@ -1015,36 +1015,43 @@ func (app *application) agentCommand() *cobra.Command {
 			return app.printDeploymentStatus(deployment, resource)
 		},
 	}
+	var expectedActiveRevisionID string
 	stop := &cobra.Command{
 		Use:   "stop ID",
 		Short: "Stop an Agent while retaining its revision history and persistent state",
 		Long: "Stop an Agent while retaining its revision history and persistent state.\n" +
 			"The stop is asynchronous: the Agent's runtime shuts down in the background.\n" +
+			"With --if-active-revision, OCC checks at admission that the Agent is set to run and the exact revision is active, newest, and successfully deployed.\n" +
 			"There is no start command; run \"occ agent deploy ID\" to start the Agent again with a new revision.",
 		Args: idArgs(agentIDArg),
 		RunE: func(command *cobra.Command, args []string) error {
+			if command.Flags().Changed("if-active-revision") {
+				if err := revisionIDArg.check(expectedActiveRevisionID, app.namespace); err != nil {
+					return fmt.Errorf("--if-active-revision: %w", err)
+				}
+			}
 			namespace, client, err := app.namespaceClient()
 			if err != nil {
 				return err
 			}
-			// Only an Agent the caller can already read tells whether anything ran:
-			// stopped with no active revision is a never-deployed or already
-			// stopped Agent (finding D746); stopped with an active revision is a
-			// stop requested earlier that has not finished, still running or
-			// failed (finding D765). A failed read keeps the plain notice.
 			idle, stopping := false, false
-			if before, readErr := client.GetAgent(namespace, args[0]); readErr == nil {
-				resource, _ := before.(map[string]any)
-				active, _ := resource["activeRevisionId"].(string)
-				idle = resource["desiredRuntimeState"] == "stopped" && active == ""
-				stopping = resource["desiredRuntimeState"] == "stopped" && active != ""
+			if expectedActiveRevisionID == "" {
+				// A readable Agent can distinguish an idle Agent from an earlier
+				// stop with a still-active revision. A failed read keeps the plain notice.
+				if before, readErr := client.GetAgent(namespace, args[0]); readErr == nil {
+					resource, _ := before.(map[string]any)
+					active, _ := resource["activeRevisionId"].(string)
+					idle = resource["desiredRuntimeState"] == "stopped" && active == ""
+					stopping = resource["desiredRuntimeState"] == "stopped" && active != ""
+				}
 			}
-			agent, err := client.StopAgent(namespace, args[0])
+			agent, err := client.StopAgent(namespace, args[0], expectedActiveRevisionID)
 			if err != nil {
 				return err
 			}
 			resource, _ := agent.(map[string]any)
-			if resource["id"] != args[0] || resource["namespaceId"] != namespace || resource["desiredRuntimeState"] != "stopped" {
+			if resource["id"] != args[0] || resource["namespaceId"] != namespace || resource["desiredRuntimeState"] != "stopped" ||
+				(expectedActiveRevisionID != "" && resource["activeRevisionId"] != expectedActiveRevisionID) {
 				return fmt.Errorf("OCC returned an invalid Agent stop response; the stop outcome is unknown. Run \"occ --namespace %s agent get %s\" to check the Agent's state", namespace, args[0])
 			}
 			if err := app.printAgent(agent, false); err != nil {
@@ -1062,6 +1069,7 @@ func (app *application) agentCommand() *cobra.Command {
 			return err
 		},
 	}
+	stop.Flags().StringVar(&expectedActiveRevisionID, "if-active-revision", "", "Request stop only for the exact active, newest, successfully deployed revision ID")
 	deleteAgent := &cobra.Command{
 		Use:   "delete ID",
 		Short: "Begin asynchronous Agent deletion",
@@ -1519,6 +1527,7 @@ func (app *application) validateOptions(command *cobra.Command) error {
 var emptyFlagValues = map[string]string{
 	"facet":                               "a sandbox policy facet such as networking",
 	"file":                                "a JSON document",
+	"if-active-revision":                  "a revision ID",
 	"key-output":                          "a key file path",
 	"sandbox-network-policy-ceiling-file": "a Sandbox network policy ceiling file",
 	"sandbox-network-policy-file":         "a Sandbox network policy file",

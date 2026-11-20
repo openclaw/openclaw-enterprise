@@ -56,11 +56,13 @@ Live application refuses a saved list or an active revision that has a list.
 If the active revision has a list and the saved policy lacks it, stop the Agent,
 confirm its workload has stopped, and investigate the mismatch.
 
-The Sandbox Driver contract's `admitRepositoryNetworkPolicy` method receives the
-validated list and an immutable base snapshot. This side-effect-free method
-returns the effective policy as a JSON object. It must require inspected HTTPS,
-enforce the list alongside other rules, and deny ungranted repositories.
-It must refuse bypass paths and any weakening of protected execution.
+The Sandbox Driver's side-effect-free `admitRepositoryNetworkPolicy` method
+receives the validated list and an immutable base snapshot. It returns the
+effective policy synchronously as a plain JSON object. Arrays must contain only
+consecutive elements starting at index zero. The Driver must inspect HTTPS,
+enforce the list alongside other rules, and deny ungranted repositories. It
+must refuse bypass paths and weaker protected execution. Ordinary deployment
+refuses a list supplied by the Driver.
 
 ## Discovery and preview
 

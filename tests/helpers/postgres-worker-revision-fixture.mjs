@@ -682,6 +682,7 @@ export function createWorkerRevisionFixtures(
         ...(repositoryCredentials === undefined ? {} : { repositoryCredentials }),
         createdAt: new Date(Date.now() + controllerSkewMs).toISOString(),
       };
+      let proxyAdmission;
       if (protectedRepositoryDriver) {
         const sandbox = protectedRepositoryDriver.require("sandbox");
         await state.transact(async (unit) => {
@@ -713,7 +714,8 @@ export function createWorkerRevisionFixtures(
             plan({ ...auth, sourceId: "unselected" }),
             /created or adopted under the Proxy/,
           );
-          const egressPlan = await plan(auth);
+          proxyAdmission = await plan(auth);
+          const egressPlan = proxyAdmission.plan;
           assert.deepEqual(egressPlan.harnessCredentialSource, auth);
           assert.deepEqual(
             egressPlan.routes,
@@ -757,6 +759,7 @@ export function createWorkerRevisionFixtures(
         if (runtimeInputs !== undefined) {
           candidate.compute = { ...candidate.compute, runtimeInputs };
         }
+        proxyAdmission?.assertProvidersCurrent();
         admitted = await unit.revisions.createRevision(candidate);
         await unit.agents.transitionAgentDesiredRuntimeState(
           namespace.id,

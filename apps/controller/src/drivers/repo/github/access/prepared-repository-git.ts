@@ -27,7 +27,11 @@ import { randomUUID } from "node:crypto";
 import type { OperationReceipt } from "../../access/backend-contracts.ts";
 import { draftOperationId, validateDraftProjection } from "./prepared-draft-pull.ts";
 import { isDeepStrictEqual } from "node:util";
-import { PreparedGitHubPostgres, preparedAttemptSettled } from "./prepared-postgres.ts";
+import {
+  PreparedGitHubPostgres,
+  preparedAttemptSettled,
+  preparedAttemptSettlesAfter,
+} from "./prepared-postgres.ts";
 import type { GitHubPreparationAdmission } from "./prepared-contracts.ts";
 import {
   legacyAdoption,
@@ -110,6 +114,31 @@ export interface PreparedRepositorySession {
   readonly bindings?: RepositoryRevisionState["bindings"];
 }
 
+// A replacement Driver cannot retire another registration's token. After the exact
+// standing session is disposed and both lifetime bounds have elapsed, the old
+// owner retains cleanup custody without blocking the next selected repository.
+const expiredDisposedPredecessor = `EXISTS (
+  SELECT FROM occ.repository_session_attempts disposed
+  JOIN occ.agent_revisions previous
+    ON (previous.namespace_id,previous.agent_id,previous.id) =
+       (disposed.namespace_id,disposed.agent_id,disposed.revision_id)
+  WHERE (disposed.namespace_id,disposed.agent_id)=(s.namespace_id,s.agent_id)
+    AND (disposed.revision_id,disposed.admission_id,disposed.session_id)=
+      (prior.source#>>'{session,revisionId}',prior.source#>>'{session,admissionId}',prior.source#>>'{session,sessionId}')
+    AND disposed.revision_id<>s.revision_id
+    AND disposed.broker_protocol=2 AND disposed.phase='disposed'
+    AND prior.source->>'adoption'='${selectedGitAdoption}'
+    AND prior.source#>'{session,credentialProxyExecution,driver}'=previous.admitted_spec#>'{egress_plan,driver}'
+    AND prior.source#>'{session,credentialProxyExecution,driver}'<>${selectedRepositoryGitDriver}
+    AND prior.source#>>'{session,standingApprovalId}'=previous.admitted_spec#>>'{repository_credentials,standingApprovalId}'
+    AND prior.source#>'{session,standingApprovalGeneration}'=previous.admitted_spec#>'{repository_credentials,standingApprovalGeneration}'
+    AND prior.source#>>'{session,standingApprovalScopeFingerprint}'=previous.admitted_spec#>>'{repository_credentials,standingApprovalScopeFingerprint}'
+    AND attempt.state='committed' AND attempt.custody='current'
+    AND attempt.admission=prior.admission AND attempt.material_version IS NOT NULL
+    AND isfinite(attempt.provider_expires_at) AND attempt.usable_until<attempt.provider_expires_at
+    AND ${preparedAttemptSettlesAfter("attempt")}<=clock_timestamp()
+)`;
+
 /** The session snapshot binds the Agent and the exact installation used for Compute release or the broker generation.
  * The deadline is checked live instead of extending or treating the snapshot as a lease. */
 function sessionQuery(proxy: Recipient): string {
@@ -191,6 +220,12 @@ function sessionQuery(proxy: Recipient): string {
     WHERE prior.source#>>'{session,namespaceId}'=s.namespace_id AND prior.source#>>'{session,agentId}'=s.agent_id
       AND prior.source#>>'{session,admissionId}'<>s.admission_id
       AND NOT ${preparedAttemptSettled("attempt")}
+      ${
+        proxy?.driver
+          ? `AND NOT (s.cleanup_context#>>'{binding,profile}'='github-repository'
+        AND ${expiredDisposedPredecessor})`
+          : ""
+      }
       AND (prior.source->>'adoption' IN ('${installationGitAdoption}','${selectedGitAdoption}')
         OR (prior.source->>'adoption' IN ('${legacyAdoption}','${protectedGitAdoption}') AND ${
           proxy

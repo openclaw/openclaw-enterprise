@@ -23,7 +23,7 @@ import {
   pluginRuntimeSpecForRevision,
 } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { PROXY_REGISTRATION_UNAVAILABLE } from "../helpers/refusal-text.mjs";
@@ -356,6 +356,12 @@ test(
     );
     // Consume the same independently verified adapter observation that Compute
     // commits. State is real; this test does not manufacture an installation receipt.
+    // A retained Sandbox advances its policy version across Agent revisions,
+    // while the newly admitted OCE plan starts at generation 1.
+    assert.equal(f.context.plan.generation, 1);
+    f.observed.policyVersion = 4;
+    f.observed.activePolicyVersion = 4;
+    f.observed.evidence.policy_version = 4;
     const installed = await f.egress.wiringStatus({ ...f.context, signal }, f.attachment);
     assert.ok(installed);
     await f.controller.transact((unit) =>

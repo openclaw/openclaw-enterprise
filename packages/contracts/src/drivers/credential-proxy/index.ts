@@ -150,7 +150,11 @@ export const repositoryGitRecipientFields = Object.freeze([
   "networkInstanceId",
 ] as const);
 export type RepositoryGitRecipient = Readonly<
-  Record<(typeof repositoryGitRecipientFields)[number], string> & {
+  Record<"providerId" | "attachmentEpoch", string> & {
+    /** Exact-dispatch and observed-hook recipients pin a process. Online authorization may
+     * instead bind the ongoing Sandbox execution, with current runtime readiness checked separately. */
+    processInstanceId?: string;
+    networkInstanceId?: string;
     /** Absent on the original repository Git wire. Installation scope needs positive evidence. */
     deliveryProfile?: "github_installation" | "github_repository";
     /** v5 requires online authorization before injection for every new request. In v6 we
@@ -189,7 +193,12 @@ export function validRepositoryGitRecipient(
         ? profile
         : undefined) &&
     repositoryGitRecipientFields.every(
-      (key) => typeof value[key] === "string" && value[key].trim().length > 0,
+      (key) =>
+        (authorization === "online-request" &&
+          (key === "processInstanceId" || key === "networkInstanceId") &&
+          value.processInstanceId === undefined &&
+          value.networkInstanceId === undefined) ||
+        (typeof value[key] === "string" && value[key]!.trim().length > 0),
     )
   );
 }

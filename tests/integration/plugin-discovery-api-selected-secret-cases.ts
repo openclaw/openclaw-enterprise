@@ -10,8 +10,8 @@ import {
   AgentPluginDetailsResponse,
   SecretResponse,
 } from "../../packages/contracts/src/api/resources.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { grantRole } from "../helpers/iam-grants.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";

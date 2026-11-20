@@ -23,6 +23,7 @@ import { harnessEgressEnrollment } from "../../apps/controller/src/drivers/compu
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
+import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
@@ -93,7 +94,8 @@ const sandboxRegistration = (driverId) => ({
 function repositorySandbox(registry, id = "repository-admission-openshell", userNamespaces) {
   return new OpenShellSandboxDriver(
     {
-      gateway: { workspaceMode: "operator" },
+      integrationMode: "legacy",
+      gateway: {},
       kubernetes: {
         ...(userNamespaces === undefined ? {} : { userNamespaces }),
         serviceAccount: { mode: "gatewayConfigured" },
@@ -893,16 +895,8 @@ test("repository policy denies fresh deployment before Channel validation and pr
   await f.prepareDeployment(admitted);
   await f.prepareDeployment(draft);
 
-  const validateCredentials = t.mock.fn(async () => {});
-  const channel = {
-    capability: "channel",
-    id: "channel-policy-admission",
-    implementation: "test",
-    validateCredentials,
-    async lookupDirectory() {
-      return { candidates: [], complete: true };
-    },
-  };
+  const channel = new SlackChannelDriver(async () => assert.fail("Unexpected provider request"));
+  const validateCredentials = t.mock.method(channel, "validateCredentials", async () => {});
   f.controller.registerDriver(channel);
   f.controller.selectDriver("channel", channel.id);
 
@@ -987,16 +981,10 @@ test("deployment checks policy and Secret authority at Channel credential handof
   const withValue = storage.withValue?.bind(storage);
   assert.ok(withValue);
   const deliver = t.mock.fn(async (value) => assert.equal(value, marker));
-  const channel = {
-    capability: "channel",
-    id: "channel-policy-handoff",
-    implementation: "test",
-    /** @type {NonNullable<import("../../packages/contracts/src/index.ts").ChannelDriver["validateCredentials"]>} */
-    validateCredentials: async (_values, use) => use("CHANNEL_TOKEN", "channel", deliver),
-    async lookupDirectory() {
-      return { candidates: [], complete: true };
-    },
-  };
+  const channel = new SlackChannelDriver(async () => assert.fail("Unexpected provider request"));
+  t.mock.method(channel, "validateCredentials", async (_values, use) =>
+    use("CHANNEL_TOKEN", "channel", deliver),
+  );
   f.controller.registerDriver(channel);
   f.controller.selectDriver("channel", channel.id);
 
@@ -1129,6 +1117,35 @@ test("the SandboxPolicy API refuses unsupported repository grants and keeps save
   const initial = await f.request("GET", policyPath);
   assert.equal(initial.status, 200, JSON.stringify(initial));
   assert.equal(initial.data.repositoryNetworkPolicySaveSupported, false);
+  assert.deepEqual(initial.data.repositoryNetworkPolicyCeiling, repositoryNetworkPolicyCeiling);
+  const repository = f.controller.selectedDriver("repo");
+
+  // The Console's policy readback must omit grants when the Driver violates its synchronous contract.
+  const approval = t.mock.method(repository, "repositoryNetworkPolicyAllows", () =>
+    Promise.resolve(false),
+  );
+  try {
+    const denied = await f.request("GET", policyPath);
+    assert.equal(denied.status, 200, JSON.stringify(denied));
+    assert.deepEqual(denied.data.repositoryNetworkPolicyCeiling, [], "async denial");
+
+    approval.mock.mockImplementation(() => Promise.reject(new Error("synthetic approval failure")));
+    const rejected = await f.request("GET", policyPath);
+    assert.equal(rejected.status, 200, JSON.stringify(rejected));
+    assert.deepEqual(rejected.data.repositoryNetworkPolicyCeiling, [], "async rejection");
+
+    // Discard approvals if the selected policy replaces the method while filtering the ceiling.
+    approval.mock.mockImplementation(() => {
+      repository.repositoryNetworkPolicyAllows = () => false;
+      return true;
+    });
+    const replaced = await f.request("GET", policyPath);
+    assert.equal(replaced.status, 200, JSON.stringify(replaced));
+    assert.deepEqual(replaced.data.repositoryNetworkPolicyCeiling, [], "method replacement");
+  } finally {
+    approval.mock.restore();
+  }
+
   const scope = { namespaceId: f.namespace.id, resourceId: initial.data.policy.id };
   const unsupported = {
     id: "sandbox-without-network-policy",
@@ -1159,17 +1176,10 @@ test("the SandboxPolicy API refuses unsupported repository grants and keeps save
     assert.match(refused.error.message, /only clearing an existing repository network policy/i);
   }
   assert.deepEqual((await f.request("GET", policyPath)).data.policy, initial.data.policy);
-  const validateCredentials = t.mock.fn(async () => {});
-  f.controller.registerDriver({
-    id: "channel-preparation",
-    capability: "channel",
-    implementation: "test-channel",
-    validateCredentials,
-    async lookupDirectory() {
-      return { candidates: [], complete: true };
-    },
-  });
-  f.controller.selectDriver("channel", "channel-preparation");
+  const channel = new SlackChannelDriver(async () => assert.fail("Unexpected provider request"));
+  const validateCredentials = t.mock.method(channel, "validateCredentials", async () => {});
+  f.controller.registerDriver(channel);
+  f.controller.selectDriver("channel", channel.id);
   const firstIntent = {
     key: "first-deployment",
     expectedConfigurationId: f.configuration.id,

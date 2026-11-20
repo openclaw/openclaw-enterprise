@@ -34,7 +34,7 @@ they keep their URLs and remain searchable.
 Use the [documentation taxonomy](../taxonomy.md) to select a kind and its template.
 
 For proposals and implementation planning, follow
-[RFCs and implementation plans](specifications.md), including numbering,
+[RFCs and implementation plans](specifications.md), including naming,
 document ownership, and historical preservation.
 
 Use a short sidebar label: `Overview`, `Configure`, and `Troubleshoot` work when
