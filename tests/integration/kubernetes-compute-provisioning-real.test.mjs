@@ -5,6 +5,10 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import {
+  assertReadyGateway,
+  assertHarnessWorkspaceClaim,
+} from "../helpers/kubernetes-compute-observations.ts";
 import { createGatewayNodeEnrollment } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
 import {
   requiresKubernetes,
@@ -22,8 +26,6 @@ import {
   revision,
   gatewayName,
   revisionName,
-  assertReadyGateway,
-  assertHarnessWorkspaceClaim,
   createDriver,
   createScopedController,
   deleteNamespaces,

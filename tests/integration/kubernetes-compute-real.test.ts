@@ -58,15 +58,17 @@ import {
   agentName,
   gatewayName,
   revisionName,
-  assertReadyGateway as readyGateway,
-  assertHarnessWorkspaceClaim as workspaceClaim,
-  assertAgentServiceEndpointCount,
   fixtureComputeConfiguration as createComputeConfiguration,
   workloadPod as findWorkloadPod,
   assertExecDenied,
   createDnsTrafficFixture as provisionDnsTrafficFixture,
   deleteNamespaces,
 } from "../helpers/kubernetes-compute-real.mjs";
+import {
+  assertReadyGateway,
+  assertHarnessWorkspaceClaim,
+  assertAgentServiceEndpointCount,
+} from "../helpers/kubernetes-compute-observations.ts";
 
 type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
 type ObjectMetadata = InstanceType<KubernetesSdk["V1ObjectMeta"]> & { name: string; uid: string };
@@ -133,18 +135,6 @@ type DnsTrafficFixture = {
 };
 
 const kubectlRead: (...args: string[]) => Promise<string> = runKubectlRead;
-const assertReadyGateway: (
-  placement: string,
-  agentId: string,
-  namespaceId: string,
-  candidate?: Revision,
-) => Promise<Deployment> = readyGateway;
-const assertHarnessWorkspaceClaim: (
-  placement: string,
-  namespaceId: string,
-  agentId: string,
-  expectedUid?: string,
-) => Promise<ListedObject> = workspaceClaim;
 const createDnsTrafficFixture = provisionDnsTrafficFixture as (
   context: TestContext,
   peer: KubernetesWorkloadPeer,
@@ -1473,9 +1463,10 @@ test(
         .filter(({ metadata }) => metadata.labels?.["openclaw.dev/agent"] === adoptedTenant.id);
       return ownedPods.length === 0 ? current.data : undefined;
     });
+    const adoptedWorkspaceName = adoptedWorkspace.metadata.name;
+    assert.ok(typeof adoptedWorkspaceName === "string");
     assert.equal(
-      (await resource("persistentvolumeclaim", adoptedWorkspace.metadata.name, existingName))
-        .metadata.uid,
+      (await resource("persistentvolumeclaim", adoptedWorkspaceName, existingName)).metadata.uid,
       adoptedWorkspace.metadata.uid,
       "API stop must retain the exact Agent workspace claim",
     );
@@ -1787,7 +1778,7 @@ test(
     for (const name of adoptedCredentialSecrets) {
       assert.equal(await missing("secret", name, existingName), true);
     }
-    const deletedClaims = [adoptedWorkspace.metadata.name];
+    const deletedClaims = [adoptedWorkspaceName];
     if (runtimeImage !== undefined) {
       deletedClaims.push(`gateway-state-${hash(adoptedTenant.id)}`);
     }

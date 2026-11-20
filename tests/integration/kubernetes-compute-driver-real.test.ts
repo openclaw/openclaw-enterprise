@@ -29,9 +29,6 @@ import {
   gatewayName,
   harnessWorkspaceClaimName,
   revisionName,
-  assertReadyGateway as readyGateway,
-  assertHarnessWorkspaceClaim as workspaceClaim,
-  assertAgentServiceEndpointCount,
   createDriver as createFixtureDriver,
   workloadPod as findWorkloadPod,
   probe as runProbe,
@@ -40,6 +37,11 @@ import {
   authorized,
   createScopedController as provisionScopedController,
 } from "../helpers/kubernetes-compute-real.mjs";
+import {
+  assertReadyGateway,
+  assertHarnessWorkspaceClaim,
+  assertAgentServiceEndpointCount,
+} from "../helpers/kubernetes-compute-observations.ts";
 
 type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
 type Metadata = InstanceType<KubernetesSdk["V1ObjectMeta"]> & { name: string; uid: string };
@@ -86,18 +88,6 @@ const waitFor: <T>(
   operation: () => T | false | undefined | Promise<T | false | undefined>,
   timeoutMs?: number,
 ) => Promise<T> = waitForFixture;
-const assertReadyGateway: (
-  placement: string,
-  agentId: string,
-  namespaceId: string,
-  candidate?: AgentRevision,
-) => Promise<Deployment> = readyGateway;
-const assertHarnessWorkspaceClaim: (
-  placement: string,
-  namespaceId: string,
-  agentId: string,
-  expectedUid?: string,
-) => Promise<KubernetesResource> = workspaceClaim;
 const namespace = createNamespace as (label: string) => Namespace;
 const revision = createFixtureRevision as (
   driver: KubernetesComputeDriver,
@@ -401,8 +391,8 @@ test(
       );
     }
 
-    const gatewayIdentities = new Map<string, string>();
-    const sharedWorkspaceIdentities = new Map<string, string>();
+    const gatewayIdentities = new Map<string, unknown>();
+    const sharedWorkspaceIdentities = new Map<string, unknown>();
     for (const candidate of candidates) {
       if (driver.requiresStoppedPredecessors(candidate)) {
         for (const previous of candidates.filter(
@@ -454,10 +444,19 @@ test(
       );
       sharedWorkspaceIdentities.set(identityKey, harnessClaim.metadata.uid);
       assert.equal(
-        gateway.spec.template.spec.volumes?.some(
-          ({ persistentVolumeClaim }) =>
-            persistentVolumeClaim?.claimName === harnessClaim.metadata.name,
-        ),
+        gateway.spec.template.spec.volumes.some((volume) => {
+          if (volume === null || volume === undefined) {
+            throw new TypeError("Cannot read a nullish gateway volume");
+          }
+          const target: object = Object(volume);
+          const reference: unknown = Reflect.get(target, "persistentVolumeClaim");
+          if (reference === null || reference === undefined) {
+            return false;
+          }
+          const claim: object = Object(reference);
+          const claimName: unknown = Reflect.get(claim, "claimName");
+          return claimName === harnessClaim.metadata.name;
+        }),
         false,
         "Gateway must not mount the Harness workspace claim",
       );
