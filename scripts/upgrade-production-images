@@ -64,7 +64,11 @@ warn() {
 # A closed diagnostic pipe must not stop the upgrade or replace a native status.
 progress() (
   trap '' PIPE
-  printf 'Upgrade: %s\n' "$1" >&2 2>/dev/null || true
+  local timestamp=''
+  TZ=UTC0 builtin printf -v timestamp '%(%Y-%m-%dT%H:%M:%SZ)T' -1 2>/dev/null ||
+    timestamp=$(command date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null) ||
+    timestamp=''
+  printf 'Upgrade: %s%s\n' "$1" "${timestamp:+ [$timestamp]}" >&2 2>/dev/null || true
 )
 
 die() {
