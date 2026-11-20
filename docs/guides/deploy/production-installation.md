@@ -16,8 +16,8 @@ prepare the cluster resources below. Then [run `occ installation install`](#inst
 once, [authenticate to the API](#authenticate-to-the-production-api), and
 [deploy a production Agent](production-agents.md).
 
-Prepare [Kubernetes](kubernetes.md) or [EKS infrastructure](eks-openshell-setup.md#prepare-aws-infrastructure), the
-[requirements below](#requirements), and
+Prepare [Kubernetes](kubernetes.md) or [Amazon EKS](production-installation-preparation.md#use-a-terraform-managed-eks-cluster),
+the [requirements below](#requirements), and
 [workspace routing](workspace-routing.md#requirements), including a GatewayClass.
 Private routing and managed channel egress are enabled by default. Prepare the
 [channel prerequisites](channel-egress.md)

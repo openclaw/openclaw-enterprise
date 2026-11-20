@@ -98,6 +98,45 @@ The build mounts it only during dependency installation and mounts
 `corepack-env` only during bootstrap. Omitting `corepack-env` keeps Corepack's
 default registry selection.
 
+## Use a Terraform-managed EKS cluster
+
+For a dedicated Amazon Elastic Kubernetes Service (EKS) cluster, follow the
+[Terraform reference](https://github.com/freeqaz-openai/oce-eks-terraform). Save
+its private kubeconfig and exported `CONTEXT` in the same Bash session. Finish
+the reference's NetworkPolicy, storage, and readiness checks. Prepare the
+[external database and routing prerequisites](production-installation.md#requirements)
+and the selected OCE images separately. For a cluster managed by another
+workflow, use the [EKS infrastructure requirements](eks-openshell-setup.md#prepare-aws-infrastructure)
+and use its reviewed kubeconfig and context when you configure the Installation.
+
+From the matching OCE checkout, copy the kubeconfig into a new input directory
+so configuration and installation use the same cluster and context.
+
+```bash
+umask 077
+: "${KUBECONFIG_FILE:?Run the Terraform kubeconfig handoff first}"
+: "${CONTEXT:?Set the context returned by the Terraform handoff}"
+OCC_INPUT_DIRECTORY=$(mktemp -d "${RUN_DIR:?Use the Terraform handoff directory}/occ.XXXXXXXX") &&
+  install -m 600 "$KUBECONFIG_FILE" "$OCC_INPUT_DIRECTORY/kubeconfig" &&
+  export OCC_INPUT_DIRECTORY KUBECONFIG_FILE="$OCC_INPUT_DIRECTORY/kubeconfig" &&
+  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" get nodes -L oce-role
+```
+
+Stop if a command fails or either pool lacks Ready nodes. When you generate
+the profile below, set `controlPlane.nodeSelector` and
+`runtime.gatewayNodeSelector` to `{"oce-role":"control"}`. Set
+`runtime.nodeSelector` to `{"oce-role":"agents"}` and
+`runtime.gatewayStorageClassName` to the reference's `encrypted-gp3` class.
+
+Refresh the [API and webhook addresses](eks-openshell-setup.md#refresh-api-network-policies-after-the-node-groups-join).
+Use the refreshed `API_CIDRS` for `controlPlane.clusterCidrs` in the profile.
+For [prerequisite diagnosis](prerequisite-diagnosis.md), use the selected
+kubeconfig and context. Set `eks.clusterArn` to `.arn` from
+`terraform output -json oce_cluster` in the Terraform checkout.
+Resolve failed or unknown checks before installation. Continue below, then run
+[`occ installation install`](production-installation.md#install-the-control-plane)
+with the same kubeconfig and context.
+
 ## Configure the Installation
 
 This runbook uses Helm

@@ -17,7 +17,7 @@ After preparation, [install OCE](eks-openshell-installation.md) in the same prot
 
 ### Prepare AWS infrastructure
 
-Provision the following through your reviewed AWS infrastructure workflow. The OCE chart does not create the EKS cluster, VPC, IAM roles, database or storage add-ons.
+Provision the following through your reviewed AWS infrastructure workflow. For a dedicated cluster, start with the [Terraform reference](https://github.com/freeqaz-openai/oce-eks-terraform). For a custom Helm installation, use the [Terraform-to-install handoff](production-installation-preparation.md#use-a-terraform-managed-eks-cluster). The OCE chart does not create the EKS cluster, VPC, IAM roles, database or storage add-ons.
 
 Use an authorized AWS account and role. The Kubernetes operator needs permission to create namespaces, RBAC, Secrets and storage claims; Kubernetes access does not replace OCC IAM grants.
 
