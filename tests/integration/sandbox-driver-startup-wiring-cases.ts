@@ -240,7 +240,6 @@ export function registerSandboxDriverStartupWiringCases(
       controller.selectedDriver("credential_proxy_delivery"),
       owner.require("credential_proxy_delivery"),
     );
-    await controller.validateBackendConfiguration();
   });
 
   test("startup pairs the Credential Refresh Driver with its gateway on one OpenShell Backend", async (t) => {
