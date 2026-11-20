@@ -31970,7 +31970,7 @@
                         },
                         "protectedExecution": false,
                         "repositoryNetworkPolicyCeiling": [],
-                        "repositoryNetworkPolicySaveSupported": true
+                        "repositoryNetworkPolicySaveSupported": false
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
@@ -32353,7 +32353,7 @@
                           "type": "object"
                         },
                         "protectedExecution": {
-                          "description": "True while the active revision or the next deploy runs under protected execution. Saving additions or an explicit repository policy then returns SANDBOX_POLICY_PROTECTED_EXECUTION. A save can still clear additions by omitting the repository policy field.",
+                          "description": "True while the active revision or the next deploy runs under protected execution. Creating a repository list, saving a nonempty list, or saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone.",
                           "type": "boolean"
                         },
                         "repositoryNetworkPolicyCeiling": {
@@ -32381,11 +32381,11 @@
                           "type": "array"
                         },
                         "repositoryNetworkPolicySaveSupported": {
-                          "description": "Whether the state adapter can store an explicit Agent repository policy.",
+                          "description": "Whether the state adapter can save a withdrawal of this Agent's existing repository grants.",
                           "type": "boolean"
                         },
                         "unavailableReason": {
-                          "description": "Why per-Agent network policy is unavailable, when capability is null: the sentence the save, validate, apply and editing refusals give.",
+                          "description": "Why per-Agent network policy is unavailable when capability is null. An authorized administrator can still enable editing to withdraw an existing repository list.",
                           "type": "string"
                         }
                       },
@@ -32618,7 +32618,7 @@
                   },
                   "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" },
                   "repositoryNetworkPolicy": {
-                    "description": "Desired repository grants. Omit to preserve the saved grants. An empty array requests deny-all. Saving an explicit list requires repository policy persistence.",
+                    "description": "Omit to preserve the saved grants. Send an empty array to change an existing list to deny-all. Send empty arrays for both additions and repositoryNetworkPolicy to withdraw under protected execution or without Sandbox Driver support. This version refuses a first list and nonempty lists.",
                     "items": {
                       "additionalProperties": false,
                       "properties": {
@@ -33009,7 +33009,7 @@
               },
               "schema": {
                 "additionalProperties": false,
-                "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction. An explicit saved repository policy requires deployment and makes this operation return HTTP 409.",
+                "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction. This operation returns HTTP 409 when the saved policy or active Agent revision has a repository network policy. Applying the saved repository policy requires a deployment that can enforce it. If the policy is present only on the active revision, stop the Agent and confirm that its workload has stopped before investigating the mismatch.",
                 "properties": {
                   "additions": {
                     "items": {
@@ -33080,7 +33080,7 @@
               }
             }
           },
-          "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction. An explicit saved repository policy requires deployment and makes this operation return HTTP 409.",
+          "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction. This operation returns HTTP 409 when the saved policy or active Agent revision has a repository network policy. Applying the saved repository policy requires a deployment that can enforce it. If the policy is present only on the active revision, stop the Agent and confirm that its workload has stopped before investigating the mismatch.",
           "required": true
         },
         "responses": {

@@ -3363,6 +3363,10 @@ test("the policy endpoint refuses additions and live application while the activ
     });
     assert.equal(repositorySave.status, 409, JSON.stringify(repositorySave.body));
     assert.equal(repositorySave.body.error.code, "SANDBOX_POLICY_PROTECTED_EXECUTION");
+    assert.match(
+      repositorySave.body.error.message,
+      /To withdraw an existing repository list, send empty arrays for additions and repositoryNetworkPolicy\./,
+    );
     const current = await f.request("GET", base);
     assert.equal(current.status, 200, JSON.stringify(current.body));
     assert.deepEqual(current.body.data.policy, view.policy);
@@ -3384,6 +3388,23 @@ test("the policy endpoint refuses additions and live application while the activ
     /protected execution.*Credential Proxy.*application is refused/,
   );
   assert.equal((await f.request("GET", base)).body.data.policy.application, undefined);
+  // A policy saved before enforcement support was withdrawn must stay revocable.
+  const saved = await f.controller.transact(async (unit) => {
+    const policy = await unit.sandboxPolicies.find(f.namespace.id, f.agent.id);
+    assert.ok(policy);
+    return unit.sandboxPolicies.save(
+      { ...policy, version: policy.version + 1, repositoryNetworkPolicy: [repositoryGrant] },
+      policy.version,
+    );
+  });
+  assert.ok(saved);
+  const withdrawn = await f.request("PUT", base, {
+    body: { expectedVersion: saved.version, additions: [], repositoryNetworkPolicy: [] },
+  });
+  assert.equal(withdrawn.status, 200, JSON.stringify(withdrawn.body));
+  assert.deepEqual(withdrawn.body.data.repositoryNetworkPolicy, []);
+  assert.equal(withdrawn.body.data.version, saved.version + 1);
+  assert.deepEqual((await f.request("GET", base)).body.data.policy, withdrawn.body.data);
 });
 
 test("the policy endpoint refuses additions before an Agent's first protected deploy", async (t) => {

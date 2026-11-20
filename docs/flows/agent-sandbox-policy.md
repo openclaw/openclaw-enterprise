@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-11-19"
-last_updated_session: "authoring-run/36174b4a-9481-45e4-b5e7-f332cc293107"
+updated: "2026-11-20"
+last_updated_session: "authoring-run/34ec168d-3a0c-43f9-bdd1-d0538ec03f14"
 ---
 
 # Agent sandbox policy flow
@@ -31,7 +31,7 @@ graph TD
   Preview -->|valid| U2["Review proposal"]
   U2 --> A["OCC save admission<br/>IAM, schema and ceiling"]
   A --> P["PostgreSQL<br/>desired policy version"]
-  P --> D["Explicit deployment<br/>immutable snapshot"]
+  P -->|No explicit repository policy| D["Explicit deployment<br/>immutable snapshot"]
   P -->|No explicit repository policy| W["Live application work<br/>exact running revision"]
   W --> C["Persist provider CAS<br/>before mutation"]
   C --> S["Sandbox Driver<br/>apply canonical policy"]
@@ -55,27 +55,29 @@ with URLs for the available facet actions. See
 [Installation inspection](driver-plugin-loading.md#4-load-current-policy-and-hand-off-lifecycle-ownership).
 
 Startup validates the YAML [repository ceiling](../reference/configuration.md).
-GET requires Agent and SandboxPolicy read. It returns the saved grants, storage
-support, and the Namespace ceiling. The bound repository policy owner limits
-which Installation grants appear and can reduce write to read. PUT uses the
-same ceiling. An unsupported adapter returns `409 RESOURCE_CONFLICT` for
-explicit lists. An empty list saves deny-all. Omission keeps the saved list
-and excludes it from the PUT response.
+GET requires Agent and SandboxPolicy read. It shows saved grants, withdrawal
+availability, and the ceiling narrowed by the Namespace's repository policy
+owner. PUT refuses first and nonempty lists.
+Omission preserves the saved list and conceals it in the PUT response.
 
 `validateAgentSandboxPolicy` checks authorization, editing, version, pending
-application, the shared schema, ceiling and Driver admission without writing.
-Empty or reversed port ranges fail admission. Mutations repeat these checks.
-Refusals identify the field and cause, including a ceiling or Driver
-capability limit. `internal/occclient/transport.go:APIError.Error` prints up to 32 safe
-details as escaped JSON and excludes records with Unicode control characters.
+work, schema, ceiling, and Driver admission without writing. Mutations repeat
+the checks. Empty or reversed port ranges fail. Refusals identify the field and
+cause. `internal/occclient/transport.go:APIError.Error` prints up to 32 escaped
+JSON details, excluding records with Unicode control characters.
 
-`packages/occ/src/index.ts:updateAgentSandboxPolicy` authorizes Agent
-`manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent, and
-checks editing, expected version, pending work, delegation, and Driver admission.
-Protected execution returns `409 SANDBOX_POLICY_PROTECTED_EXECUTION` for ordinary
-additions and explicit repository lists, including deny-all. An empty additions
-list with the repository field omitted clears ordinary additions. Protected
-execution also refuses live application and deployments with ordinary additions.
+`packages/occ/src/index.ts:updateAgentSandboxPolicy` requires Agent
+`manage_policy` and SandboxPolicy `update`. It locks the Namespace and Agent,
+then checks editing, version, pending work, delegation, and Driver admission.
+Protected execution returns `409 SANDBOX_POLICY_PROTECTED_EXECUTION` for
+ordinary additions and new repository lists. Withdrawal to deny-all also
+requires SandboxPolicy read. An administrator needs that permission to enable
+withdrawal when the Driver lacks support. Clearing both lists needs no Driver.
+
+Deployment checks SandboxPolicy read and refuses stored lists before Channel
+validation and under lock before credential provisioning or revision creation.
+First-deployment receipt recovery keeps its existing permissions. Protected
+execution also refuses live apply and deployments with ordinary additions.
 Protected, dedicated Codex repository admission can carry the Sandbox Driver's explicitly acknowledged
 [artifact subset](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
 `checkedProtectedCodexArtifactPolicy` verifies its purpose, declared keys, Driver
@@ -125,9 +127,9 @@ ordinary Driver admission before freezing defaults and additions into
 `AgentRevision.sandboxPolicy`. OpenShell provisions from that snapshot.
 
 `applyAgentSandboxPolicy` authorizes Agent `manage_policy` and SandboxPolicy
-`update` and `read` before inspecting the saved grants. An explicit repository
-policy, including deny-all, requires deployment. Both live apply request shapes
-return `409 RESOURCE_CONFLICT` before saving or queuing work. Live application
+`update` and `read` before inspecting grants. Both apply request shapes return
+`409 RESOURCE_CONFLICT` before saving or queuing work for a saved list or
+an active revision with a list and no saved list. Live application
 requires the exact active revision and a supporting Driver. With reviewed
 additions, one transaction saves the new policy version, records its pending
 application and queues Agent-target work. Omission retains the saved version.
@@ -266,6 +268,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 01:35: Refuse unsupported repository policies at save and deploy, and allow authorized withdrawal of existing grants. (authoring-run/34ec168d-3a0c-43f9-bdd1-d0538ec03f14 - a0b789e53181ed65aa00c94f161301d80af0d711)
 
 - 2026-11-19 04:47: Limit repository grants to Namespace authority and refuse explicit repository policy saves under protected execution. (authoring-run/36174b4a-9481-45e4-b5e7-f332cc293107 - 6a8b92278837a776fe6479dbf0418790d44bb3ff)
 
