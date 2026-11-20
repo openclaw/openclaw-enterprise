@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 import type { KubernetesWorkloadPeer } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { isKubernetesResourceName } from "../../apps/controller/src/drivers/compute/kubernetes/resource-name.ts";
 import { asRecord, isNonEmptyString } from "../../packages/utils/src/index.ts";
 import {
   fixtureImage,
@@ -39,7 +41,10 @@ function record(value: unknown, description: string): Record<string, unknown> {
 
 function metadataOf(value: Record<string, unknown>, name: string | undefined, namespace: string) {
   const metadata = record(value.metadata, "Kubernetes metadata");
-  assert.ok(isNonEmptyString(metadata.name), "Kubernetes resource must have a name");
+  assert.ok(
+    typeof metadata.name === "string" && isKubernetesResourceName(metadata.name),
+    "resource must have a valid Kubernetes name",
+  );
   if (name !== undefined) {
     assert.equal(metadata.name, name, "Kubernetes resource must have the requested name");
   }
@@ -58,13 +63,16 @@ function networkPod(
 ): NetworkPod {
   const podName = metadataOf(value, name, namespace);
   const status = record(value.status, "Pod status");
-  assert.ok(isNonEmptyString(status.podIP), "Pod must have an IP address before probing");
+  assert.ok(
+    typeof status.podIP === "string" && isIP(status.podIP) !== 0 && !status.podIP.includes("%"),
+    "Pod must have a literal IP address before probing",
+  );
   return { metadata: { name: podName, namespace }, status: { podIP: status.podIP } };
 }
 
 export async function workloadPod(
   namespaceName: string,
-  selector: string,
+  selector: `app.kubernetes.io/name=${string}`,
 ): Promise<WorkloadPod | undefined> {
   const response: unknown = JSON.parse(
     await kubectlRead(
@@ -93,6 +101,11 @@ export async function workloadPod(
   const observed = networkPod(pod, undefined, namespaceName);
   const metadata = record(pod.metadata, "Pod metadata");
   const labels = record(metadata.labels, "Pod labels");
+  const appName = labels["app.kubernetes.io/name"];
+  assert.ok(
+    isNonEmptyString(appName) && selector === `app.kubernetes.io/name=${appName}`,
+    "Running Pod must match the requested app selector",
+  );
   const spec = record(pod.spec, "Pod spec");
   return { ...observed, metadata: { ...observed.metadata, labels }, spec };
 }
@@ -162,8 +175,6 @@ export async function assertExecDenied(
 export async function createDnsTrafficFixture(context: TestContext, peer: KubernetesWorkloadPeer) {
   const namespace = peer.namespace;
   const name = `dns-traffic-${hash(randomUUID())}`;
-  const directory = await mkdtemp(join(tmpdir(), "oce-dns-traffic-"));
-  const manifestPath = join(directory, "resources.json");
   const deployment: unknown = await resource("deployment", "coredns", "kube-system");
   const dnsDeployment = record(deployment, "CoreDNS Deployment");
   metadataOf(dnsDeployment, "coredns", "kube-system");
@@ -252,6 +263,8 @@ export async function createDnsTrafficFixture(context: TestContext, peer: Kubern
       },
     })),
   ];
+  const directory = await mkdtemp(join(tmpdir(), "oce-dns-traffic-"));
+  const manifestPath = join(directory, "resources.json");
   await writeFile(manifestPath, JSON.stringify({ apiVersion: "v1", kind: "List", items }));
   context.after(async () => {
     try {
