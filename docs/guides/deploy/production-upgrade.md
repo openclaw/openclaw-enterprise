@@ -43,38 +43,40 @@ interface. Privately record its Agent and location.
 Prepare:
 
 - images pinned by lowercase `@sha256:` digest, with passing checks and a full
-  reviewed commit. Use [published digests](../../release/containers.md#prepare-and-publish)
+  reviewed commit; use [published digests](../../release/containers.md#prepare-and-publish)
   or build them;
-- a clean release checkout at `RELEASE_SOURCE_SHA`. Run the helper from its root;
-- the matching OCC CLI at `--occ` (`/secure/occ/bin/occ` below). Use the
+- clean `RELEASE_SOURCE_SHA` checkout; run the helper at its root;
+- matching OCC CLI (`--occ`, `/secure/occ/bin/occ`):
   [release binary](../cli.md#connect-to-your-installation) or run
-  `go build -trimpath -o bin/occ ./cmd/occ` in the release checkout;
-- a [pre-upgrade baseline](upgrade-baseline.md) of Helm, Kubernetes, OCC and
+  `go build -trimpath -o bin/occ ./cmd/occ` there;
+- [pre-upgrade baseline](upgrade-baseline.md) of Helm, Kubernetes, OCC and
   database state;
-- the production kubeconfig, Helm values, Installation YAML, OCC service key,
-  and optional CA bundle in protected files;
+- protected files: production kubeconfig, Helm values, Installation YAML, OCC
+  service key and optional CA bundle;
 - Bash, Python 3, Node.js matching `package.json` `engines.node`, Helm, kubectl,
-  jq, yq, cmp and mktemp. The Helm upgrade identity lists Deployments, StatefulSets,
-  Pods and PVCs cluster-wide. In the release namespace it creates, reads and deletes
-  preflight Jobs, Secrets and NetworkPolicies, lists Jobs, reads Pods, logs and
-  Installation Secrets, and gets, patches and watches Deployments. Rendered
-  cert-manager Certificates require server-side dry-run apply.
-  Preparation checks named `update` permission for changed mutable Installation
-  Secrets. Apply and resume check named `patch` permission before stopping a
-  running worker. A confirmed denial stops the command. An inconclusive check
-  warns. Staged immutable Secrets remain read-only.
-- for the bundled Collector, grant `get` on its config Secret in the release namespace.
-  [Refresh that Secret](../observability.md#refresh-the-collector-configuration-on-upgrade)
-  from the release checkout and restart the Collector, including for image-only releases.
-  Differences in `collector.yaml` or `kubernetes.yaml` stop preparation.
-  Use `--collector-config-reviewed` only for intentional, reviewed differences.
-- PostgreSQL backups for controller migrations and Agent-volume backups for
-  runtime releases that can require data restoration.
+  jq, yq, cmp and mktemp. Helm upgrade identity: list Deployments, StatefulSets,
+  Pods, PVCs cluster-wide; in the release namespace create, read, delete
+  preflight Jobs, Secrets, NetworkPolicies; list Jobs; read Pods, logs,
+  Installation Secrets; get, patch, watch Deployments. Rendered cert-manager
+  Certificates require server-side dry-run apply. Preparation checks named `update`
+  for changed mutable Installation Secrets; apply and resume check named `patch`
+  before stopping running workers. Confirmed denials stop commands; inconclusive checks warn.
+  Staged immutable Secrets remain read-only.
+- bundled Collector: `get` on config Secret in the release namespace;
+  [refresh it](../observability.md#refresh-the-collector-configuration-on-upgrade)
+  from the checkout and restart the Collector, including image-only releases.
+  `collector.yaml` or `kubernetes.yaml` differences stop preparation; use
+  `--collector-config-reviewed` only for intentional, reviewed differences.
+- PostgreSQL backups for controller migrations; Agent-volume backups for possible runtime
+  data restoration.
 
-Upgrades ignore `bootstrap.password` and `bootstrap.serviceKey` from earlier charts.
-Keep the legacy PVC through [release verification](#verify-the-release).
-Before deleting it, confirm no workloads reference it and preserve any
-initial administrator credentials it holds.
+Upgrades ignore legacy `bootstrap.password` and `bootstrap.serviceKey`. Identify
+the PVC by saved legacy release namespace and saved effective
+`bootstrap.password.claimName` or recorded initializer hook. Keep it through
+[verification](#verify-the-release) and until the rollback or old-chart reapplication
+window closes. Keep still-needed initial administrator credentials independently recoverable in
+protected storage outside the claim. Before deletion, confirm no live workloads
+or retained Helm manifests or hooks reference its exact namespace and name. If unclear, keep it.
 
 Repository-enabled releases require `--controller-image` and `--broker-image`,
 even for unchanged digests. Stage trusted images as UID 1000 on Linux with OpenSSL
