@@ -77,11 +77,13 @@ graph TD
 ### 1. Prepare the candidate
 
 `internal/occcli/installation_upgrade.go:installationUpgradeCommand` runs
-`scripts/upgrade-production:main`. `report_status` compares two local marker scans.
-Plan checks inputs, images and checkout HEAD. `profile_input` opens the profile
-and sibling receipt through one directory descriptor. `original_image_pair`
-reads journal-bound digests for recovery. The adapter decodes the HTTPS target
-with `kubectl`, binds explicit CA bytes and rechecks inputs before dispatch.
+`scripts/upgrade-production:main`; `report_status` compares marker scans. Plan
+checks inputs and HEAD. `profile_input` opens profile and receipt through
+one directory descriptor. `published_image_pair` checks roles against
+GHCR packages and checks digests, source, tag, run and attempt; operators
+authenticate receipts. `original_image_pair` recovers journal-bound digests.
+Before dispatch, `kubectl` decodes HTTPS; the adapter binds explicit CA bytes
+and rechecks inputs.
 
 Both entrypoints refuse active kubectl preferences. With preferences enabled
 without an active file, the native helper snapshots kubeconfig, refuses selected

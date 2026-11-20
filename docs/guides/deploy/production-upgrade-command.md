@@ -14,13 +14,23 @@ from the [installation profile renderer](installation-profiles.md#render-files).
 Relative paths for the kubeconfig, rendered Installation, and CLI resolve from
 the profile directory. Relative expert paths resolve from the release checkout.
 
-For a published release, save `publication.json` beside the profile. Download it
-from the approved, successful [Enterprise Containers run](published-images.md#check-publication-and-source)
-for the checkout commit. Set `imagePublication` to the filename alone. You or
-root must own the directory and the receipt file, and group and others must have
-no write access to either. Use a regular file with mode `0644`.
-The CLI selects both digests and checks their source against `sourceRevision`.
-Review both digests and the Agent redeployment in the plan before approving `apply`.
+For a published release, open the approved, successful
+[Enterprise Containers run](published-images.md#check-publication-and-source)
+for the checkout commit on `main`. In the run's artifacts, select
+`container-publication-<run-id>-<attempt>` for the approved attempt. Extract it
+into a fresh directory. Confirm that `runId`, `attempt`, and `sourceSha` in
+both entries of `publication.json` match the run you selected. The CLI trusts
+the receipt you supply.
+
+Save the receipt beside the profile and set `imagePublication` to the filename
+alone. You or root must own the directory and regular receipt file; group and
+others must have no write access to either. Modes `0600` and `0644` both work for
+the receipt. The CLI requires the controller entry to name
+`ghcr.io/openclaw/openclaw-enterprise-controller` and the runtime entry to name
+`ghcr.io/openclaw/openclaw-enterprise-runtime`. It checks the SHA-256 format
+of both digests, the shared run and attempt, and the source and tag against
+`sourceRevision`. Review both images and the Agent redeployment in the plan
+before approving `apply`.
 
 ```bash
 umask 077
@@ -32,7 +42,6 @@ cat > /secure/occ/upgrade.json <<'JSON'
   "release": "oce",
   "installationDirectory": "rendered",
   "sourceRevision": "<full-reviewed-40-character-git-sha>",
-  "occ": "bin/occ",
   "imagePublication": "publication.json"
 }
 JSON
@@ -40,13 +49,24 @@ JSON
 
 Set `images.broker` to a digest when repository credentials are enabled; omit it
 when they are disabled. With `imagePublication`, do not set `images.controller`
-or `images.runtime`. Without `imagePublication`, select one or more `controller`,
-`broker`, or `runtime` digests explicitly in `images`; repository-enabled
-upgrades require both controller and broker digests. Keep credentials outside the profile.
+or `images.runtime`. For another registry or package destination, omit
+`imagePublication` and set the verified destination digests explicitly in
+`images.controller` and `images.runtime`. Without `imagePublication`, you can
+select one or more `controller`, `broker`, or `runtime` digests in `images`;
+repository-enabled upgrades require both controller and broker digests. Keep
+credentials outside the profile.
 For image upgrades, set `OCC_URL`,
 `OCC_SERVICE_KEY_FILE`, and, if needed, `OCC_CA_BUNDLE` as described in the
 [upgrade guide](production-upgrade.md#prepare-the-release). The optional `occ`
-field selects the matching CLI file. Omit it to use `occ` on `PATH`.
+field selects the matching CLI file. Omit it to use `occ` on `PATH`. The documented
+build writes `bin/occ` under the release checkout. To use that file from a profile
+outside the checkout, set `occ` to its absolute path or copy it into the profile
+directory and use the copied file's relative path.
+
+The receipt source, `sourceRevision`, and checkout HEAD must match. An older
+matching checkout might not support `imagePublication`. Use that checkout's
+documented explicit image selection instead; do not combine a newer command or
+chart with images from an older source commit.
 
 ## Run the image upgrade
 

@@ -199,20 +199,16 @@ def published_image_pair(parser, receipt, source):
         ):
             parser.error("imagePublication entries must come from the same publication run and attempt")
 
-    if receipt[0].get("destination") == receipt[1].get("destination"):
-        parser.error("imagePublication requires distinct Enterprise GHCR packages")
-
     images = {}
     for row in receipt:
-        destination, digest = row.get("destination"), row.get("digest")
-        if (
-            not isinstance(destination, str)
-            or not re.fullmatch(r"ghcr\.io/openclaw/[a-z0-9]+(?:[._/-][a-z0-9]+)*", destination)
-            or not isinstance(digest, str)
-            or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
-        ):
-            parser.error("imagePublication requires Enterprise GHCR packages and immutable SHA-256 digests")
-        images[row["image"]] = f"{destination}@{digest}"
+        role = row["image"]
+        destination = f"ghcr.io/openclaw/openclaw-enterprise-{role}"
+        if row.get("destination") != destination:
+            parser.error(f"imagePublication expected the published {role} package {destination}")
+        digest = row.get("digest")
+        if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            parser.error("imagePublication requires immutable SHA-256 digests")
+        images[role] = f"{destination}@{digest}"
     return images
 
 

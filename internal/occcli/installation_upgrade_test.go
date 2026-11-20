@@ -133,6 +133,11 @@ func TestInstallationUpgradeCLIIntegratesProfileAndCanonicalOwner(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
+	// A valid source, run, and pair of digests can still name the wrong packages.
+	publication[0]["destination"], publication[1]["destination"] = destination+"runtime", destination+"controller"
+	writeJSON(publicationFile, publication, 0o644)
+	rejectPublication("expected the published controller package")
+	publication[0]["destination"], publication[1]["destination"] = destination+"controller", destination+"runtime"
 	publication[1]["sourceSha"] = strings.Repeat("0", 40)
 	writeJSON(publicationFile, publication, 0o644)
 	rejectPublication("matching sourceRevision")
