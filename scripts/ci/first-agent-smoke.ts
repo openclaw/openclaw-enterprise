@@ -33,7 +33,6 @@ import {
   routeModelProvider,
   setLocalSetupAudit,
   startLocalSetup,
-  wireField,
   type LocalSetup,
   type SmokeAgent,
   type SmokeStack,
@@ -41,9 +40,9 @@ import {
 import {
   allowAgentAuditRead,
   checkLinkedChat,
+  checkLinkedHttpChat,
   chatCodexWithAudit,
   assertAgentTurnAudit,
-  chatWithAudit,
   chatTurn,
   createCodexAgent,
   deployAgent,
@@ -200,7 +199,6 @@ async function smoke() {
     let linkedEventId: string | undefined;
     await Promise.all([
       auditStep("codex-chat", async () => {
-        const http = await chatCodexWithAudit(stack, codex.agent, codex.revisionId, readCodexAudit);
         const first = await checkLinkedChat(
           stack,
           codex.agent,
@@ -210,14 +208,7 @@ async function smoke() {
         );
         linkedEventId = first.turn.id;
         await checkMessageDisclosure(stack, linkedEventId, first.text, codexReader.readMessage);
-        // Codex also annotates a saved user prompt for HTTP chat.
-        assert.ok(http.turn.details.messageId);
-        const detail = await codexReader.readMessage(http.turn.id);
-        const message = wireField(detail, "message");
-        assert.equal(
-          wireField(message, "text"),
-          `Reply with exactly this nonce and no other text: ${http.nonce}`,
-        );
+        await checkLinkedHttpChat(stack, codex.agent, codex.revisionId, codexReader, "codex");
         await expectPersistedRuntimeAudit(stack, codex.revisionId, await readCodexAudit());
       }),
       auditStep("embedded-audit", async () => {
@@ -260,16 +251,13 @@ async function smoke() {
     await auditStep(
       "chat-after-start",
       async () => {
-        const http = await chatWithAudit(
+        await checkLinkedHttpChat(
           stack,
           embedded.agent,
           embeddedRevision,
-          readEmbeddedAudit,
-          "openclaw",
+          embeddedReader,
+          "embedded-openclaw",
         );
-        // The embedded HTTP route has no confirmed mapping from this run to a user row.
-        assert.equal(http.turn.details.messageId, undefined);
-        await assert.rejects(embeddedReader.readMessage(http.turn.id), /HTTP 404$/);
         await expectPersistedRuntimeAudit(stack, embeddedRevision, await readEmbeddedAudit());
       },
       async () => {

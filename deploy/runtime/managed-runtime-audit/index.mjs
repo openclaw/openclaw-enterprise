@@ -31,7 +31,7 @@ function remember(map, key, value) {
   map.set(key, value);
 }
 
-function inputRunId(message) {
+function inputRunId(message, source) {
   const metadata = message.__openclaw;
   // Codex annotates the committed user row when it accepts the native prompt.
   if (metadata?.runId !== undefined) {
@@ -44,21 +44,26 @@ function inputRunId(message) {
     }
     return;
   }
-  // chat.send stamps the model selection on the original visible human input
-  // and uses <client run ID>:user. Other writers also use the :user suffix,
-  // including HTTP chat, where the prefix can be unrelated to the run.
+  // chat.send sets modelSelection on the original input. HTTP chat marks a
+  // single user input with its transport when it supplies <run ID>:user.
+  // Other writers can use the same suffix with an unrelated ID.
   // TODO: Use the committed input ID from lifecycle events when OpenClaw exposes it.
+  const isHttpInput = source === "openclaw" && metadata?.transport?.channel === "openai-http";
   const key = message.idempotencyKey;
-  if (metadata?.modelSelection && typeof key === "string" && key.endsWith(":user")) {
+  if (
+    (metadata?.modelSelection || isHttpInput) &&
+    typeof key === "string" &&
+    key.endsWith(":user")
+  ) {
     return key.slice(0, -":user".length);
   }
 }
 
-function recordInput(inputs, { target, messageId, message }) {
+function recordInput(inputs, source, { target, messageId, message }) {
   if (!target?.sessionId || !messageId || message?.role !== "user") {
     return;
   }
-  const runId = inputRunId(message);
+  const runId = inputRunId(message, source);
   if (!runId) {
     return;
   }
@@ -140,7 +145,7 @@ function createService(runtime) {
       owner = { sink, turns: new Map(), inputs };
       active = owner;
       unsubscribeTranscript = runtime.events.onSessionTranscriptUpdate((update) =>
-        recordInput(inputs, update),
+        recordInput(inputs, sink.source, update),
       );
       if (sink.source === "codex") {
         unsubscribe = subscribeCodexResponses(sink.emit);

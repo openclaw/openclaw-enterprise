@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-19"
-last_updated_session: "authoring-run/bccca424-a66f-4ab2-ad5a-e639f845a228"
+updated: "2026-11-20"
+last_updated_session: "authoring-run/2fce19b6-c5f9-489d-862a-df3396f922c2"
 ---
 
 # Audit ledger flow
@@ -280,9 +280,11 @@ fail. Kubernetes deletes the file with the Pod.
 `apps/controller/src/http/agent-audit.ts:getAgentAuditEventMessage` and
 `apps/controller/src/gateway/audit-message-client.ts:readAgentAuditMessage`
 
-The plugin adds `messageId` to a turn event when it can match a saved
-user message to the run. The text stays in the transcript. See
-[supported inputs](../guides/topics/audit-log.md#open-the-message-for-a-turn).
+When the Gateway saves a [supported user message](../guides/topics/audit-log.md#open-the-message-for-a-turn),
+the plugin remembers its ID for that session and turn. For OpenClaw HTTP
+chat, the saved input carries channel `openai-http` and key `<turn ID>:user`.
+The plugin copies the ID into `details.messageId` when it reports the turn.
+The text stays in chat history.
 
 1. The analyst supplies the audit event ID. In a PostgreSQL transaction,
    `packages/occ/src/index.ts:selectAgentAuditMessage` checks the human
@@ -336,6 +338,8 @@ user message to the run. The text stays in the transcript. See
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 14:01: Trace the saved HTTP message ID from OpenClaw to the turn event. (authoring-run/2fce19b6-c5f9-489d-862a-df3396f922c2 - 097f01174caa0d1db9a7e412efd2558b352a59d2)
 
 - 2026-11-19 17:16: Trace how OCC links a turn to a saved chat message and authorizes the text read. (authoring-run/bccca424-a66f-4ab2-ad5a-e639f845a228 - 04dbfef7e367b86ee5b5275fb510c21798b759b5)
 

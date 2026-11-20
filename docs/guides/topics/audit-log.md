@@ -261,17 +261,18 @@ contains the turn in `data.event` and the text from chat history in
 this request. PostgreSQL stores the message ID and a record of who opened
 the event. The text stays in chat history.
 
-The Gateway can link an ordinary browser chat in all three runtimes.
-Codex can also link an HTTP chat when it reports the ID of its saved input.
-If the ID arrives after the turn starts, check the completion event.
-If a policy blocks a turn after the Gateway saves the user message,
-the link can still open the original input.
+The Gateway can link a browser chat turn to its input in all three runtimes.
+For HTTP chat in embedded and dedicated OpenClaw, the link is available when
+the request contains one user message and no earlier conversation entries.
+You can send the same text twice in the same chat. Each request gets its own
+turn and saved message. Codex links an HTTP turn when it identifies the saved
+prompt.
 
-In both OpenClaw modes, `/v1/chat/completions` assigns unrelated IDs to
-the turn and its input. These events omit `messageId`. The link can also be
-missing if a turn combines inputs, has no saved user message, or ends after
-the Gateway loses its pending IDs. Check for `details.messageId` before
-you offer **Open message**.
+If the Gateway saves the message after the turn starts, check the completion
+event. A turn that a policy blocks after the save can still link to its input.
+The link can be missing if the turn combines inputs, the Gateway skips the
+save, or the Gateway loses the ID before it reports the turn. Check for
+`details.messageId` before you offer **Open message**.
 
 | Status | What to check                                                                                                                                                  |
 | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |

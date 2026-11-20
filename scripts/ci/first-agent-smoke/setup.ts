@@ -24,8 +24,13 @@ import {
 
 type Api = (method: string, path: string, body?: unknown) => Promise<unknown>;
 
-export function createApi(origin: string, key: string): Api {
-  return async (method, path, body) => {
+export function createApi(origin: string, key: string) {
+  return async (
+    method: string,
+    path: string,
+    body?: unknown,
+    options?: { response: "chat"; signal: AbortSignal },
+  ) => {
     const url = new URL(path, origin);
     assert.equal(
       url.origin,
@@ -37,7 +42,7 @@ export function createApi(origin: string, key: string): Api {
       response = await fetch(url, {
         method,
         redirect: "error",
-        signal: AbortSignal.timeout(30_000),
+        signal: options?.signal ?? AbortSignal.timeout(30_000),
         headers: {
           "x-api-key": key,
           ...(body === undefined ? {} : { "content-type": "application/json" }),
@@ -55,6 +60,11 @@ export function createApi(origin: string, key: string): Api {
       envelope = JSON.parse(text);
     } catch {
       throw new Error(`${method} ${path}: HTTP ${response.status} without JSON`);
+    }
+    // The chat route returns native Chat Completions JSON. Keep its body out of failure logs.
+    if (options?.response === "chat") {
+      assert.equal(response.status, 200, `${method} ${path}: chat failed`);
+      return envelope;
     }
     if (!response.ok) {
       throw new Error(
@@ -232,7 +242,7 @@ export interface LocalSetup {
   kubeconfig: string;
   context: string;
   origin: string;
-  api: Api;
+  api: ReturnType<typeof createApi>;
 }
 
 export interface SmokeAgent {
@@ -291,13 +301,18 @@ export async function startLocalSetup(
   };
 }
 
+export type KubernetesAccess = Pick<LocalSetup, "kubeconfig" | "context"> & {
+  commandOptions?: Pick<RunOptions, "env" | "signal">;
+};
+
 export function kubectl(
-  stack: Pick<LocalSetup, "kubeconfig" | "context">,
+  stack: KubernetesAccess,
   args: readonly string[],
   options: RunOptions = {},
 ) {
   return run("kubectl", ["--kubeconfig", stack.kubeconfig, "--context", stack.context, ...args], {
     timeout: 2 * minute,
+    ...stack.commandOptions,
     ...options,
   });
 }

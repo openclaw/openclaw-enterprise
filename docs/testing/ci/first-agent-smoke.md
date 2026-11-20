@@ -113,10 +113,17 @@ in chat history. Its text must match the first message.
 
 For Codex, the test checks that PostgreSQL records the event ID when the
 reader opens its message. The test then makes PostgreSQL refuse the next
-disclosure record. The message request must return HTTP 503. The smoke also
-checks a message sent through the Gateway's HTTP chat endpoint. Codex links
-the saved message. For embedded OpenClaw, the event has no message ID and
-the message request must return HTTP 404.
+disclosure record. The message request must return HTTP 503.
+
+For each runtime, the installed test sends two requests to
+`POST /agents/{agentId}/chat` in one session. Both requests contain the
+same text. Each JSON response must have a different turn ID. The test
+compares the message ID for each turn with the ID in chat history. An
+authorized reader must get the exact text through the audit API.
+
+In both OpenClaw modes, the test also sends two user messages in one
+HTTP request. The turn must finish. Its audit event must omit the message
+ID because the turn has two inputs. The message lookup must return HTTP 404.
 
 For embedded OpenClaw, the smoke test finds the model call and its result
 by turn ID. It then disables audit, deploys a new revision, and sends a

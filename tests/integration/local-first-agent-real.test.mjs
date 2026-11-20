@@ -13,9 +13,11 @@ import {
   allowAgentAuditRead,
   assertAgentAuditMessage,
   assertAgentTurnAudit,
+  checkLinkedHttpChat,
 } from "../../scripts/ci/first-agent-smoke/agents.ts";
 import {
   apiProcess,
+  createApi,
   expectPersistedRuntimeAudit,
   setLocalSetupAudit,
 } from "../../scripts/ci/first-agent-smoke/setup.ts";
@@ -917,14 +919,13 @@ test(
       const revision = await request("GET", `${nativePath}/revisions/${initialRevisionId}`);
       assert.equal(revision.harness.id, "openclaw");
       assert.equal(revision.harness.mode, "dedicated");
-      const reader =
-        auditAdministratorPassword === undefined
-          ? undefined
-          : await allowAgentAuditRead(
-              { ...chartStack, namespaceId: nativeNamespace.id },
-              nativeAgent,
-              auditAdministratorPassword,
-            );
+      const createReader = () =>
+        allowAgentAuditRead(
+          { ...chartStack, namespaceId: nativeNamespace.id },
+          nativeAgent,
+          auditAdministratorPassword,
+        );
+      const reader = auditAdministratorPassword === undefined ? undefined : await createReader();
       const readAudit = reader?.readAudit;
       const access = await request("GET", `${base}/iam/access-bindings`);
       assert.ok(
@@ -1247,13 +1248,35 @@ test(
         // The tool request and the reply after its result need separate model calls.
         await checkAudit(initialRevisionId, firstNativeProof);
       }
-      if (readAudit === undefined) {
+      if (reader === undefined) {
         await checkInitialFilesAndExec();
       } else {
         // A failed subtest keeps the suite red while the replacement can still run normal chat.
         await nativeContext.test(
           "the first native worker reads its workspace and runs exec",
           checkInitialFilesAndExec,
+        );
+        await nativeContext.test(
+          "dedicated OpenClaw links identical HTTP messages to distinct turns",
+          async (httpContext) => {
+            // A failed browser test may have stopped before granting access to its reader.
+            const httpReader = await createReader();
+            await httpReader.grantContent();
+            const commandOptions = { ...chartOptions, signal: httpContext.signal };
+            await checkLinkedHttpChat(
+              { ...chartStack, commandOptions, api: createApi(env.OCC_URL, serviceKey) },
+              { id: nativeAgent.id, label: "Dedicated OpenClaw" },
+              initialRevisionId,
+              httpReader,
+              "dedicated-openclaw",
+            );
+            await expectPersistedRuntimeAudit(
+              chartStack,
+              initialRevisionId,
+              await httpReader.readAudit(),
+              commandOptions,
+            );
+          },
         );
       }
 

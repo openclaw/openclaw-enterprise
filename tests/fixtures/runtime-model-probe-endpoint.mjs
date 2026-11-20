@@ -125,21 +125,29 @@ function auditFault(transport, model, request, caller) {
   const events = answerEvents(model, text);
   const started = events[0];
   const completed = events.at(-1);
-  const responseId = `resp_${text}`;
-  started.response.id = responseId;
-  completed.response.id = responseId;
   completed.response.output = [];
-  return { fault, responseId, started, completed };
+  return { fault, responseId: started.response.id, started, completed };
+}
+
+const auditResponseCounts = new Map();
+
+function nextResponseId(text) {
+  if (!codexAuditFailures || !text.startsWith("OCE_SMOKE_")) {
+    return "resp_runtime_probe";
+  }
+  // Two requests with the same text must still get different provider response IDs.
+  const count = (auditResponseCounts.get(text) ?? 0) + 1;
+  auditResponseCounts.set(text, count);
+  return `resp_${text}_${count}`;
 }
 
 // A minimal Responses API stream: one assistant message saying READY, or the
 // caller's echoed nonce.
 function answerEvents(model, text) {
-  const id =
-    codexAuditFailures && text.startsWith("OCE_SMOKE_") ? `resp_${text}` : "resp_runtime_probe";
+  const id = nextResponseId(text);
   const message = {
     type: "message",
-    id: "msg_runtime_probe",
+    id: id.replace(/^resp_/, "msg_"),
     status: "completed",
     role: "assistant",
     content: [{ type: "output_text", text, annotations: [] }],

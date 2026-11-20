@@ -26,24 +26,27 @@ import {
   signInConsole,
   wireField,
   interruptRefusedObservation,
+  type KubernetesAccess,
   type LocalSetup,
   type SmokeStack,
   type Pod,
   type SmokeAgent,
 } from "./setup.ts";
 
-async function assertModelAnswered(nonce: string, label: string) {
+async function assertModelAnswered(nonce: string, label: string, responseNumber = 1) {
   const events = await modelEvents();
-  assert.ok(
-    events.some(
-      ({ event, text, caller }) => event === "request" && text === nonce && caller === label,
-    ),
-    `${label}: the provider recorded no arrival for ${nonce}`,
+  const requests = events.filter(
+    ({ event, text, caller }) => event === "request" && text === nonce && caller === label,
   );
-  const answered = events.find(
+  assert.ok(
+    requests.length >= responseNumber,
+    `${label}: the provider missed request ${responseNumber} for ${nonce}`,
+  );
+  const answers = events.filter(
     ({ event, status, text, caller }) =>
       event === "turn-answered" && status === 200 && text === nonce && caller === label,
   );
+  const answered = answers[responseNumber - 1];
   assert.ok(
     answered,
     `${label}: the stand-in provider never answered ${nonce} with this Agent's credential`,
@@ -108,7 +111,7 @@ async function waitForDeployment(
 // can still be running during graceful shutdown, so it counts unless the
 // caller asks for live Pods only (gateway selection).
 export async function agentPods(
-  stack: LocalSetup,
+  stack: KubernetesAccess,
   agentId: string,
   { includeTerminating = false } = {},
 ): Promise<Pod[]> {
@@ -141,7 +144,7 @@ export interface GatewayPod {
 }
 
 export async function readyGateway(
-  stack: LocalSetup,
+  stack: KubernetesAccess,
   agentId: string,
   revisionId: string,
 ): Promise<GatewayPod> {
@@ -204,12 +207,15 @@ export function assertChatReply(result: unknown, nonce: string, label: string) {
     !wireField(result, "invalidResponse"),
     `${label}: chat turn returned an unreadable response`,
   );
+  assertAssistantReply(result, nonce, label);
+}
+
+function assertAssistantReply(result: unknown, nonce: string, label: string) {
   assert.ok(
     wireField(result, "role") === "assistant",
     `${label}: reply was not an assistant message`,
   );
-  // This smoke uses a deterministic provider that returns the nonce verbatim.
-  // Whitespace is harmless; an echoed prompt is not a completed answer.
+  // The assistant must return the nonce to prove it answered this request.
   const content = wireField(result, "content");
   assert.ok(
     typeof content === "string" && content.trim() === nonce,
@@ -419,9 +425,9 @@ export async function assertAgentAuditMessage(
   assert.ok(wireField(message, "text") === source.text, "the message differs from the original");
 }
 
-function codexResponse(nonce: string) {
+function codexResponse(nonce: string, responseNumber = 1) {
   const hash = createHash("sha256")
-    .update(`openclaw:codex:response-id:v1\0resp_${nonce}`)
+    .update(`openclaw:codex:response-id:v1\0resp_${nonce}_${responseNumber}`)
     .digest("hex");
   return {
     model: `openai-compatible/${defaultAgentModel}`,
@@ -429,36 +435,25 @@ function codexResponse(nonce: string) {
   };
 }
 
-export async function chatWithAudit(
+export async function chatCodexWithAudit(
   stack: SmokeStack,
   agent: SmokeAgent,
   revisionId: string,
   readAudit: () => Promise<AgentAuditPage>,
-  runtimeSource: "codex" | "openclaw",
 ) {
   const previousIds = new Set((await readAudit()).events.map(({ id }) => id));
   const nonce = await chatTurn(stack, agent, revisionId);
-  const turn = await assertAgentTurnAudit(readAudit, {
+  await assertAgentTurnAudit(readAudit, {
     label: agent.label,
     revisionId,
-    runtimeSource,
-    ...(runtimeSource === "codex" ? codexResponse(nonce) : { model: defaultAgentModel }),
+    runtimeSource: "codex",
+    ...codexResponse(nonce),
     previousIds,
   });
-  return { turn, nonce };
-}
-
-export function chatCodexWithAudit(
-  stack: SmokeStack,
-  agent: SmokeAgent,
-  revisionId: string,
-  readAudit: () => Promise<AgentAuditPage>,
-) {
-  return chatWithAudit(stack, agent, revisionId, readAudit, "codex");
 }
 
 async function gatewayRpc(
-  stack: LocalSetup,
+  stack: KubernetesAccess,
   { namespace, pod }: GatewayPod,
   method: string,
   params: Record<string, unknown>,
@@ -476,6 +471,91 @@ async function gatewayRpc(
     { input, timeout: minute },
   );
   return JSON.parse(stdout) as unknown;
+}
+
+async function savedUserMessageIds(
+  stack: KubernetesAccess,
+  gateway: GatewayPod,
+  sessionKey: string,
+  sessionId: string,
+) {
+  const history = await gatewayRpc(stack, gateway, "chat.history", { sessionKey, limit: 10 });
+  assert.equal(wireField(history, "sessionId"), sessionId);
+  const messages = wireField(history, "messages");
+  assert.ok(Array.isArray(messages));
+  const users = messages.filter((message) => wireField(message, "role") === "user");
+  assert.equal(users.length, 2, "expected two saved user messages");
+  function id(message: unknown) {
+    const value = wireField(wireField(message, "__openclaw"), "id");
+    assert.ok(typeof value === "string" && value.length > 0, "missing saved user message ID");
+    return value;
+  }
+  const first = id(users[0]);
+  const second = id(users[1]);
+  assert.notEqual(first, second);
+  return { first, second };
+}
+
+export async function checkLinkedHttpChat(
+  stack: KubernetesAccess & Pick<LocalSetup, "api">,
+  agent: SmokeAgent,
+  revisionId: string,
+  reader: AuditReader,
+  runtime: "codex" | "embedded-openclaw" | "dedicated-openclaw",
+) {
+  const signal = stack.commandOptions?.signal;
+  const gateway = await readyGateway(stack, agent.id, revisionId);
+  const user = `audit-http-${randomUUID()}`;
+  const nonce = `OCE_SMOKE_${randomUUID()}`;
+  const text = `Reply with exactly this nonce and no other text: ${nonce}`;
+
+  async function send(responseNumber: number, inputs = [text]) {
+    const timeout = AbortSignal.timeout(3 * minute);
+    const result = await stack.api(
+      "POST",
+      `/agents/${agent.id}/chat`,
+      { user, messages: inputs.map((content) => ({ role: "user", content })) },
+      { response: "chat", signal: signal ? AbortSignal.any([signal, timeout]) : timeout },
+    );
+    const choices = wireField(result, "choices");
+    assert.ok(Array.isArray(choices) && choices.length === 1);
+    const reply = wireField(choices[0], "message");
+    assertAssistantReply(reply, nonce, agent.label);
+    const turnId = wireField(result, "id");
+    assert.ok(typeof turnId === "string" && turnId.length > 0);
+    if (runtime !== "dedicated-openclaw") {
+      await assertModelAnswered(nonce, agent.label, responseNumber);
+    }
+    return assertAgentTurnAudit(reader.readAudit, {
+      label: agent.label,
+      revisionId,
+      runtimeSource: runtime === "codex" ? "codex" : "openclaw",
+      turnId,
+      ...(runtime === "codex" ? codexResponse(nonce, responseNumber) : {}),
+      ...(runtime === "embedded-openclaw" ? { model: defaultAgentModel } : {}),
+    });
+  }
+
+  // Identical requests in one session must link to different messages in chat history.
+  const first = await send(1);
+  const second = await send(2);
+  assert.notEqual(first.details.turnId, second.details.turnId);
+  const sessionId = first.details.sessionId;
+  assert.equal(second.details.sessionId, sessionId);
+  const session = await gatewayRpc(stack, gateway, "sessions.resolve", { sessionId });
+  assert.equal(wireField(session, "ok"), true);
+  const sessionKey = wireField(session, "key");
+  assert.ok(typeof sessionKey === "string" && sessionKey.length > 0);
+  const ids = await savedUserMessageIds(stack, gateway, sessionKey, sessionId);
+  await assertAgentAuditMessage(reader, first, { messageId: ids.first, text });
+  await assertAgentAuditMessage(reader, second, { messageId: ids.second, text });
+  if (runtime !== "codex") {
+    // An HTTP turn can have a reply even when it has no single original user message.
+    const combined = await send(3, ["An earlier user message.", text]);
+    assert.equal(combined.details.messageId, undefined);
+    await assert.rejects(reader.readMessage(combined.id), /HTTP 404$/);
+  }
+  log(`${agent.label}: OCC HTTP turn events matched the saved user messages`);
 }
 
 export async function checkLinkedChat(
@@ -507,18 +587,11 @@ export async function checkLinkedChat(
   const first = await send();
   await send();
   // Opening the earlier event after a follow-up must return the first user message.
-  const history = await gatewayRpc(stack, gateway, "chat.history", { sessionKey, limit: 10 });
-  assert.equal(wireField(history, "sessionId"), first.turn.details.sessionId);
-  const messages = wireField(history, "messages");
-  assert.ok(Array.isArray(messages));
-  const users = messages.filter((message) => wireField(message, "role") === "user");
-  assert.equal(users.length, 2);
-  const messageId = wireField(wireField(users[0], "__openclaw"), "id");
-  assert.ok(typeof messageId === "string" && messageId.length > 0);
+  const ids = await savedUserMessageIds(stack, gateway, sessionKey, first.turn.details.sessionId);
   await assertAgentAuditMessage(
     reader,
     first.turn,
-    { messageId, text: first.text },
+    { messageId: ids.first, text: first.text },
     { checkGrant: true },
   );
   log(`${agent.label}: audit message matched the earlier chat after the content grant`);
