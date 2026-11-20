@@ -1463,14 +1463,9 @@ test(
         .filter(({ metadata }) => metadata.labels?.["openclaw.dev/agent"] === adoptedTenant.id);
       return ownedPods.length === 0 ? current.data : undefined;
     });
+    const adoptedWorkspaceName = String(adoptedWorkspace.metadata.name);
     assert.equal(
-      (
-        await resource(
-          "persistentvolumeclaim",
-          String(adoptedWorkspace.metadata.name),
-          existingName,
-        )
-      ).metadata.uid,
+      (await resource("persistentvolumeclaim", adoptedWorkspaceName, existingName)).metadata.uid,
       adoptedWorkspace.metadata.uid,
       "API stop must retain the exact Agent workspace claim",
     );
