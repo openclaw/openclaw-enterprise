@@ -17,14 +17,16 @@ import { asRecord } from "../../packages/utils/src/index.ts";
 import { selfSigned } from "../helpers/certificates.ts";
 import { nativeAdminGatewayAuth } from "../helpers/harness-configuration.mjs";
 import { waitUntil } from "../helpers/wait-for.ts";
-import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 import {
   registerRefusedUpgradeAuditCase,
   registerUpgradeShutdownAuditCases,
 } from "./native-admin-upgrade-audit-cases.ts";
 import {
+  clientResetDuringPendingDenial,
+  clientResetDuringUpgradeAdmission,
   registerUpgradeAdmissionRecoveryCases,
   registerUpgradeLeaseAndResetRecoveryCases,
+  settleCallbacks,
 } from "./native-admin-upgrade-recovery-cases.ts";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
@@ -413,77 +415,10 @@ test(
   },
 );
 
-test("a client reset during native-admin upgrade admission does not crash", async () => {
-  // Admission settles only after the reset, so its late result meets a closed socket and
-  // app.close() has no pending admission to wait out for the full drain (finding 814).
-  const verification = pendingValue();
-  let verifying = false;
-  const crashes = [];
-  const onUncaught = (error) => {
-    crashes.push(error);
-  };
-  process.on("uncaughtException", onUncaught);
-  const app = Fastify({ logger: false });
-  createNativeAdminAccess({
-    app,
-    installationId: "inst_native_admin_upgrade",
-    publicOrigin: undefined,
-    factory: {
-      create() {
-        return {};
-      },
-    },
-    getController() {
-      return undefined;
-    },
-    selectedIAMDriver() {
-      throw new Error("unused");
-    },
-    getContext() {
-      return undefined;
-    },
-    getAdmission() {
-      return undefined;
-    },
-    auth: {
-      admissionVerifier: {
-        verify() {
-          verifying = true;
-          return verification.promise;
-        },
-      },
-    },
-    nativeAdmin: { enabled: false, domain: "agents.example.test" },
-    nativeAdminGatewayApiKey: undefined,
-    webSocketLeaseIntervalMs: undefined,
-    auditSink: { async append() {} },
-  });
-  await app.listen({ host: "127.0.0.1", port: 0 });
-  const address = app.server.address();
-  assert.ok(address && typeof address === "object");
-  try {
-    await new Promise((resolve, reject) => {
-      const socket = net.connect(address.port, "127.0.0.1");
-      socket.on("error", reject);
-      socket.on("connect", () => {
-        socket.write(
-          "GET / HTTP/1.1\r\nHost: agent-a.agents.example.test\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
-        );
-        setTimeout(() => {
-          socket.resetAndDestroy();
-          setTimeout(resolve, 300);
-        }, 80);
-      });
-    });
-    assert.equal(verifying, true, "the upgrade must reach admission");
-    verification.reject(new Error("admission settled after the client reset"));
-    await settleCallbacks();
-    assert.deepEqual(crashes, []);
-  } finally {
-    process.off("uncaughtException", onUncaught);
-    await app.close();
-  }
-});
+test(
+  "a client reset during native-admin upgrade admission does not crash",
+  clientResetDuringUpgradeAdmission,
+);
 
 // These cases use real Fastify registration and shutdown without binding a port.
 // Upgrade sockets, HTTP replies, deadlines, external decisions and the HTTPS transport
@@ -496,12 +431,6 @@ function pendingValue() {
     reject = refuse;
   });
   return { promise, resolve, reject };
-}
-
-async function settleCallbacks() {
-  for (let i = 0; i < 4; i += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
 }
 
 /**
@@ -870,133 +799,10 @@ test("native-admin denial ownership permits a completed HTTP request on a live c
   }
 });
 
-test("a client reset during a pending native-admin denial still records the denial", async () => {
-  const installationId = "inst_native_admin_upgrade";
-  const agent = { id: "agent_a", namespaceId: "ns_a" };
-  const domain = "agents.example.com";
-  const host = deriveNativeAdminHost(installationId, agent, domain);
-  const audits = [];
-  let rejectAdmission = () => {};
-  let admissionEntered = false;
-  const admissionGate = new Promise((_resolve, reject) => {
-    rejectAdmission = reject;
-  });
-  const crashes = [];
-  const onUncaught = (error) => {
-    crashes.push(error);
-  };
-  process.on("uncaughtException", onUncaught);
-  const app = Fastify({ logger: false });
-  createNativeAdminAccess({
-    app,
-    installationId,
-    publicOrigin: "https://console.example.com",
-    factory: {
-      create(input) {
-        return input;
-      },
-    },
-    getController() {
-      return {
-        async resolveAgentReference(predicate) {
-          return predicate(agent) ? agent : undefined;
-        },
-        getBrowserAccessibleActiveAgentRevision() {
-          admissionEntered = true;
-          return admissionGate;
-        },
-      };
-    },
-    selectedIAMDriver() {
-      return {
-        id: "iam_test",
-        async lookupIdentity() {
-          return {
-            kind: "principal",
-            id: "actor_1",
-            issuer: "https://issuer.example",
-            subject: "user-1",
-          };
-        },
-      };
-    },
-    getContext() {
-      return undefined;
-    },
-    getAdmission() {
-      return undefined;
-    },
-    auth: {
-      sharedCookieDomain: "example.com",
-      admissionVerifier: {
-        async verify() {
-          return {
-            method: "session",
-            decisionId: "dec_1",
-            admittedScope: { installationId },
-            externalIdentity: { issuer: "https://issuer.example", subject: "user-1" },
-            session: {
-              id: "sess_1",
-              userId: "user-1",
-              expiresAt: new Date(Date.now() + 60_000).toISOString(),
-            },
-          };
-        },
-      },
-    },
-    nativeAdmin: { enabled: true, domain },
-    nativeAdminGatewayApiKey: "gateway-test-key",
-    webSocketLeaseIntervalMs: undefined,
-    auditSink: {
-      async append(event) {
-        audits.push(event);
-      },
-    },
-  });
-  await app.listen({ host: "127.0.0.1", port: 0 });
-  const address = app.server.address();
-  assert.ok(address && typeof address === "object");
-  try {
-    await new Promise((resolve, reject) => {
-      const socket = net.connect(address.port, "127.0.0.1");
-      socket.on("error", reject);
-      socket.on("connect", () => {
-        socket.write(
-          `GET / HTTP/1.1\r\nHost: ${host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n`,
-        );
-        const admissionDeadline = Date.now() + 1000;
-        const waitForAdmission = () => {
-          if (admissionEntered || Date.now() > admissionDeadline) {
-            socket.resetAndDestroy();
-            setTimeout(resolve, 50);
-            return;
-          }
-          setTimeout(waitForAdmission, 10);
-        };
-        setTimeout(waitForAdmission, 20);
-      });
-    });
-    const denied = new Error(GENERIC_DENIAL);
-    denied.name = "AuthorizationDeniedError";
-    denied.authorization = {
-      action: "openclaw.agents.native_admin.proxy.authorize",
-      resource: { kind: "agent", id: agent.id, namespaceId: agent.namespaceId },
-    };
-    rejectAdmission(denied);
-    await waitUntil("the denial audit", () => audits.length > 0, { timeoutMs: 1000 });
-    assert.equal(admissionEntered, true);
-    assert.equal(audits.length, 1);
-    assert.equal(audits[0].kind, "authorization_denial");
-    assert.equal(audits[0].actor.principalId, "actor_1");
-    assert.equal(audits[0].outcome, "denied");
-    assert.equal(audits[0].details.nativeAdmin.reason, "authorization_denied");
-    assert.equal(audits[0].details.nativeAdmin.host, host);
-    assert.deepEqual(crashes, []);
-  } finally {
-    process.off("uncaughtException", onUncaught);
-    await app.close();
-  }
-});
+test(
+  "a client reset during a pending native-admin denial still records the denial",
+  clientResetDuringPendingDenial,
+);
 
 for (const phase of ["admission", "gateway key"]) {
   test(`a client reset while the native-admin ${phase} is pending never opens the Agent gateway`, async () => {

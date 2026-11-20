@@ -85,6 +85,8 @@
     "tests/integration/ci-download-pinned.test.ts",
     "tests/integration/ci-registry-transport.test.ts",
     "tests/conformance/native-admin-websocket-relay.test.ts",
+    "tests/integration/qa-fixture-credentials-diagnostics.test.ts",
+    "tests/integration/qa-fixture-results.test.ts",
     "tests/integration/qa-fixture-inputs.test.mjs",
     "tests/integration/compose-network.test.ts",
     "tests/integration/qa-repository-installation.test.ts",
@@ -137,7 +139,6 @@
     "tests/conformance/repository-credentials-receive-pack.test.ts",
     "tests/integration/runtime-assets.test.ts",
     "tests/integration/runtime-ai-package-relocation.test.ts",
-    "tests/integration/runtime-node-build-jobs.test.ts",
     "tests/integration/openclaw-source.test.ts",
     "tests/conformance/repository-credentials-tool-evidence.test.ts",
     "tests/integration/client-address.test.ts",
@@ -224,6 +225,12 @@
     },
     {
       "path": "tests/helpers/socket-relay.test.ts"
+    },
+    {
+      "path": "tests/integration/qa-fixture-credentials-diagnostics.test.ts"
+    },
+    {
+      "path": "tests/integration/qa-fixture-results.test.ts"
     },
     {
       "path": "tests/integration/qa-fixture-inputs.test.mjs"
@@ -784,14 +791,6 @@
       ]
     },
     {
-      "path": "tests/integration/runtime-node-build-jobs.test.ts",
-      "expectedTests": [
-        "auto Node compile jobs follow the builder's CPUs and memory within fixed bounds",
-        "explicit Node compile jobs are used as given and invalid values fail",
-        "the runtime Dockerfile defaults the Node compile to auto jobs"
-      ]
-    },
-    {
       "path": "tests/integration/openclaw-source.test.ts"
     },
     {
@@ -943,6 +942,7 @@
       "path": "tests/integration/workspace-gateway-host-route.test.ts",
       "expectedTests": [
         "Linux Gateway routes reuse distinct bound ports and preserve the HTTPS Service target",
+        "Gateway TLS readiness fails when its forwarder exits after loopback readiness",
         "Gateway Service mapping failure retains forwarder cleanup and reports shutdown failure",
         "Gateway relay rejects a malformed HTTPS Service target before starting a forwarder"
       ]

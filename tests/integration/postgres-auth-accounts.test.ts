@@ -21,7 +21,7 @@ import { accountProvisioning } from "./postgres-auth-account-provisioning-cases.
 import { composePostgresDevelopment } from "../helpers/password-hasher.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { signInToControllerApp } from "../helpers/auth-session.mjs";
-import { injectJson as injectJsonRequest } from "../helpers/inject-json.mjs";
+import { injectJson as injectJsonRequest } from "../helpers/inject-json.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
@@ -37,7 +37,7 @@ type App = Awaited<ReturnType<typeof composePostgresDevelopment>>;
 
 async function injectJson(
   app: App,
-  method: string,
+  method: Parameters<typeof injectJsonRequest>[1],
   url: string,
   options: Parameters<typeof injectJsonRequest>[3] = {},
 ): Promise<InjectedResponse> {

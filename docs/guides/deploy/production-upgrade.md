@@ -1,5 +1,7 @@
 # Upgrade production images
 
+See [One Off Upgrades](one-off-upgrades.md).
+
 Upgrade [Kubernetes Compute releases](production-installation.md) with
 `scripts/upgrade-production-images` or [profile commands](production-upgrade-command.md)
 and the [OCC CLI](../cli.md#connect-to-your-installation).

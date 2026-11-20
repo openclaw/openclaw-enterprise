@@ -12,7 +12,7 @@ import {
   DependencyUnavailableError,
   ResourceConflictError,
 } from "../../packages/occ/src/index.ts";
-import { CREDENTIAL_SOURCE_DRIVER_CHANGED } from "../helpers/refusal-text.mjs";
+import { CREDENTIAL_SOURCE_DRIVER_CHANGED } from "../helpers/refusal-credential-admission.ts";
 import { administrator, editor, fixture, zeroGrant } from "./credential-source-occ-fixture.ts";
 
 export function registerAgentAdmissionCases(): void {

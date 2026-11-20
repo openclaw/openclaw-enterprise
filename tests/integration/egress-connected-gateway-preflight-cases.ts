@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { createRequire } from "node:module";
+import { dirname } from "node:path";
 import test from "node:test";
 import {
   deploymentErrorForWork,
@@ -319,7 +321,12 @@ export function registerConnectedEgressGatewayPreflightCases(): void {
     const sentinel = `private-native-${randomUUID()}`;
     const directory = await temporaryDirectory(t, "connected-native-failure-");
     const preload = directory + "/websocket.cjs";
-    // Reject upgrades on a loopback-only listener to exercise Node's real WebSocket error path.
+    const controller = createRequire(
+      new URL("../../apps/controller/package.json", import.meta.url),
+    );
+    const fromKubernetesClient = createRequire(controller.resolve("@kubernetes/client-node"));
+    const nodePath = dirname(dirname(fromKubernetesClient.resolve("ws")));
+    // Reject upgrades on a loopback-only listener to exercise the real ws error path.
     const port = await listen(
       t,
       createServer((_request, response) => response.writeHead(503).end()),
@@ -337,7 +344,9 @@ export function registerConnectedEgressGatewayPreflightCases(): void {
           },
         });
       }
-      globalThis.WebSocket = class extends EventTarget {
+      const transportPath = require.resolve("ws");
+      require(transportPath);
+      require.cache[transportPath].exports = class extends EventTarget {
         constructor() {
           super();
           queueMicrotask(() => this.dispatchEvent(new Event("open")));
@@ -472,6 +481,7 @@ export function registerConnectedEgressGatewayPreflightCases(): void {
       const result = spawnSync(process.execPath, [...nodeOptions, "-e", script], {
         encoding: "utf8",
         env: {
+          NODE_PATH: ${JSON.stringify(nodePath)},
           ...(scenario !== "missing-url" && { APP_SERVER_URL: url }),
           ...(scenario !== "loopback-no-token" && { APP_SERVER_TOKEN: sentinel }),
           SCENARIO: mode,

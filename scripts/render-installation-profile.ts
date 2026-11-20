@@ -127,7 +127,8 @@ interface ProfileValues extends SecretValues {
     scraperPodLabels?: InputRecord;
   };
   logging: { collector: { enabled: boolean; exporter?: CollectorExporter } };
-  channelEgress?: ChannelEgressOptions & { enabled: boolean; gatewayClassName: string };
+  channelEgress?:
+    (ChannelEgressOptions & { enabled: true; gatewayClassName: string }) | { enabled: false };
   publicGithubRead?: { enabled: boolean; clusterIP: string; upstreamCidrs: unknown[] };
 }
 interface KubernetesDriver {
@@ -1775,7 +1776,7 @@ function buildRendered(
     channels,
     ["channels", "managedEgress"],
     diagnostics,
-    false,
+    true,
   );
   const channelEgress: ChannelEgressOptions | undefined = managedEgressEnabled
     ? {
@@ -2020,7 +2021,7 @@ function buildRendered(
       enabled: repositoryEnabled,
     },
     ...(channelEgress === undefined
-      ? {}
+      ? { channelEgress: { enabled: false } }
       : {
           channelEgress: {
             ...channelEgress,

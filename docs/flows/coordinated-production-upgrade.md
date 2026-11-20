@@ -9,6 +9,8 @@ last_updated_session: "authoring-run/aed0a2bc-9691-4859-8bd6-1e7b3549c9b4"
 ## Overview
 
 Upgrades OpenClaw Control Plane (OCC) and Agent runtimes.
+See [channel transitions](channel-egress.md#0-install-or-upgrade-channel-routing)
+for the explicit one-off entrypoint.
 
 ## Entry Points
 
