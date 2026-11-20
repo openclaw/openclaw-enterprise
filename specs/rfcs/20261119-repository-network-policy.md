@@ -106,13 +106,20 @@ sequenceDiagram
 
 **Git.** On the exact verified Git origin, read allows GET `/{owner}/{repo}.git/info/refs?service=git-upload-pack` and POST `/{owner}/{repo}.git/git-upload-pack`. Write adds the corresponding `git-receive-pack` requests without requiring an assigned branch. Reject mixed services, ambiguous paths, aliases and redirects. The [stock matcher](https://github.com/NVIDIA/OpenShell/blob/v0.1.8/crates/openshell-supervisor-network/data/sandbox-policy.rego#L761-L817) accepts HEAD for GET, repeated identical service values and extra keys. Check their effects under AC-3.
 
-**REST.** Set [`scopedRest: "v1"`](https://github.com/openclaw/openclaw-enterprise/pull/6716) on each participating `github-repository` Namespace registration, rebind and deploy. On `https://api.github.com/repos/{owner}/{repo}`, allow only the routes below. Recheck redirects before forwarding. Native network rules constrain the origin, repository, method and path; they do not inspect JSON bodies. Enable [PR creation](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request) only through a separately qualified trusted-hook path that verifies a same-repository head, including `head_repo`, rejects issue conversion (`issue`), and preserves the selected grant’s approved base, head and draft restrictions. Disable creation if that check is unavailable.
+### What can the Agent do on GitHub?
 
-| Operation                           | Scoped Git-only       | Scoped Git and REST                                       |
-| ----------------------------------- | --------------------- | --------------------------------------------------------- |
-| Fetch / push                        | Fetch A and B, push B | Same Git grants                                           |
-| GET `/issues` or `/issues/{number}` | Denied                | Repository read or write and Issues read                  |
-| POST `/pulls`                       | Denied                | Repository write and Pull requests write, normal or draft |
+The Agent can **list and read issues** and **open pull requests** through GitHub’s REST API. Each operation requires both the Agent’s repository grant and the corresponding GitHub permission. For example, suppose the Namespace enables issue reads and PR creation for A and B. The Admin gives this Agent read access to A, write access to B, and no access to C.
+
+| Agent action                          | A (read) | B (write) | C (no grant) |
+| ------------------------------------- | -------- | --------- | ------------ |
+| Clone or fetch code                   | Yes      | Yes       | No           |
+| List issues or read one issue         | Yes      | Yes       | No           |
+| Push a branch                         | No       | Yes       | No           |
+| Open a PR (draft or ready for review) | No       | Yes       | No           |
+
+**Enabling API access.** The operator sets [`scopedRest: "v1"`](https://github.com/openclaw/openclaw-enterprise/pull/6716) on each participating `github-repository` Namespace registration, rebinds the credential and redeploys the Agent. Issue reads require at least **Issues: read**. Opening a PR requires **Pull requests: write**. For a repository with a scoped Git grant, leaving REST disabled permits only the granted Git operations. Issue writes, PR merges and GraphQL are outside this grant.
+
+**Enforcement.** Under `https://api.github.com/repos/{owner}/{repo}`, OpenShell allows only the authorized routes for that repository: `GET /issues`, `GET /issues/{number}` and `POST /pulls`. Recheck redirects before forwarding. For [PR creation](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request), a trusted hook also checks the JSON body. It requires a head in the same repository (including `head_repo`), rejects issue conversion (`issue`), and preserves approved base, head and draft restrictions. Refuse creation if the hook is unavailable.
 
 Bundle the [`github-repository-rest` skill](https://github.com/openclaw/openclaw-enterprise/pull/6658) with the Agent runtime. The operator enables it per Sandbox revision. It uses stock `gh api repos/OWNER/REPO/issues` for reads. For an explicitly requested normal PR it sends one `curl` POST with redirects and retries disabled, since `gh` can resend a POST on 307/308. If the outcome is uncertain, check GitHub. Never automatically repeat the write. Draft-only grants use the existing ref-constrained client. Every client faces the same policy.
 
