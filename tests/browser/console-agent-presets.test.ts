@@ -9,11 +9,12 @@ import {
   waitForCreateFormReads,
   submitCreateAgent,
   createAgentThroughForm,
+  openCreateTab,
 } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
-import type { Dialog, Locator, Page, Request } from "playwright";
+import type { Dialog, Page, Request } from "playwright";
 
 import { normalizePresetTemplate } from "../../packages/contracts/src/presets.ts";
 import {
@@ -53,7 +54,6 @@ import {
   apiRequests,
   consoleViewports,
   detailUrl,
-  expectReachableReason,
   focusKeptOverClose,
   holdRequests,
   inViewport,
@@ -84,7 +84,6 @@ import {
 } from "./console-agents-test-support.ts";
 import {
   AGENT_NAME_CONFLICT,
-  callerDenied,
   READ_UNAVAILABLE,
   namespaceListDenied,
   PLUGIN_CREDENTIALS_REJECTED,
@@ -215,7 +214,7 @@ test("Preset string variables preserve multiline defaults, edits and restored dr
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
     const requests = apiRequests(page, fixture.origin);
     await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-    await page.getByLabel("Preset template", { exact: true }).selectOption(preset.id);
+    await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
     const notes = page.getByLabel("Notes", { exact: true });
     await notes.waitFor();
     if (scenario.edit !== undefined) {
@@ -300,11 +299,12 @@ test("Selecting an existing fallback keeps the referenced model catalog deployab
 
     const { page } = await newPage(t, fixture);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset template").selectOption(preset.id);
+    await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
     await page.getByRole("button", { name: "Use Preset", exact: true }).click();
     const editor = page.locator("#configuration-json");
     const model = page.getByLabel("Model ID", { exact: true });
     const checkSelection = async (id: string, retained: string[]) => {
+      await openCreateTab(page, "basics");
       await model.fill(id);
       await model.press("Tab");
       const selected: typeof values = JSON.parse(await editor.inputValue());
@@ -463,7 +463,7 @@ test("Changing a Preset model keeps explicit and inherited roster selections dep
 
     const { page } = await newPage(t, fixture);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset template").selectOption(preset.id);
+    await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
     await page.getByRole("button", { name: "Use Preset", exact: true }).click();
     const model = page.getByLabel("Model ID", { exact: true });
     const editor = page.locator("#configuration-json");
@@ -515,6 +515,7 @@ test("Changing a Preset model keeps explicit and inherited roster selections dep
           });
         }
       }
+      await openCreateTab(page, "basics");
       await model.fill(id);
       await model.press("Tab");
       const selected: typeof values = JSON.parse(await editor.inputValue());
@@ -615,7 +616,7 @@ test("Main-only Preset models create drafts through the regular Agent APIs", asy
     const { page } = await newPage(t, fixture);
     const requests = apiRequests(page, fixture.origin);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset template").selectOption(preset.id);
+    await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
     await page.getByRole("button", { name: "Use Preset", exact: true }).click();
     const model = page.getByLabel("Model ID", { exact: true });
     assert.equal(await model.inputValue(), "primary-model");
@@ -701,7 +702,7 @@ test("Model clearing preserves enumerable draft content", async (t) => {
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   const requests = apiRequests(page, fixture.origin);
-  await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
   await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
   await openAdvancedSettings(page);
@@ -714,6 +715,7 @@ test("Model clearing preserves enumerable draft content", async (t) => {
   draft.models.providers = [retained];
   await editor.fill(JSON.stringify(draft));
   const model = page.getByLabel("Model ID", { exact: true });
+  await openCreateTab(page, "basics");
   await model.fill("");
   await model.press("Tab");
   const edited: unknown = JSON.parse(await editor.inputValue());
@@ -769,7 +771,7 @@ test("Model edits preserve refusals for invalid Advanced JSON rosters", async (t
             await page.goto(new URL(createUrl, fixture.origin).href);
           }
           loaded = false;
-          await page.getByLabel("Preset template").selectOption(preset.id);
+          await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
           await page.getByRole("button", { name: "Use Preset", exact: true }).click();
           await openAdvancedSettings(page);
           const invalid = structuredClone(values);
@@ -801,9 +803,11 @@ test("Model edits preserve refusals for invalid Advanced JSON rosters", async (t
           await editor.fill(JSON.stringify(invalid));
           const model = page.getByLabel("Model ID", { exact: true });
           if (clearFirst) {
+            await openCreateTab(page, "basics");
             await model.fill("");
             await model.press("Tab");
           }
+          await openCreateTab(page, "basics");
           await model.fill("replacement-model");
           await model.press("Tab");
           // A convenience control must not silently repair an invalid roster's explicit selections.
@@ -846,7 +850,7 @@ test("Runtime-auth Presets retain OpenClaw when changing from Anthropic to OpenA
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
   await page.getByRole("button", { name: "Use Preset" }).click();
   assert.equal(await page.getByLabel("Provider", { exact: true }).inputValue(), "anthropic");
   await page.getByLabel("Provider", { exact: true }).selectOption("openai");
@@ -905,7 +909,7 @@ test("Runtime-auth Presets are refused before anything is saved where Compute re
     const { page } = await newPage(t, fixture);
     const requests = apiRequests(page, fixture.origin);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset template").selectOption(preset.id);
+    await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
     await page.getByRole("button", { name: "Use Preset" }).click();
     const alert = page.getByRole("alert").filter({ hasText: "operator-managed credentials" });
     await alert.waitFor();
@@ -930,7 +934,7 @@ test("Runtime-auth Presets are refused before anything is saved where Compute re
       method: "POST",
     });
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset template").selectOption(preset.id);
+    await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
     await page.getByRole("button", { name: "Use Preset" }).click();
     await early.requested;
     const preflight = page.waitForResponse(
@@ -963,10 +967,11 @@ test("Create Agent browses the Codex catalog and discards its selections when sw
   const requests = apiRequests(page, fixture.origin);
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start with default Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   // Codex serves curated plugins only to ChatGPT logins: the API-key default cannot browse them.
   assert.equal(await page.getByLabel("Authentication method").inputValue(), "api_key");
+  await openCreateTab(page, "plugins");
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
   await dialog
@@ -977,7 +982,9 @@ test("Create Agent browses the Codex catalog and discards its selections when sw
   assert.deepEqual(pathRequests(requests, "POST", catalogPath), []);
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
 
+  await openCreateTab(page, "basics");
   await page.getByLabel("Authentication method").selectOption("codex_pat");
+  await openCreateTab(page, "plugins");
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const linear = dialog.getByRole("button", { name: "Linear", exact: true });
   await linear.waitFor();
@@ -995,7 +1002,9 @@ test("Create Agent browses the Codex catalog and discards its selections when sw
     [{ harnessId: "codex", pluginId: "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c" }],
   );
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await openCreateTab(page, "basics");
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  await openCreateTab(page, "plugins");
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   await dialog
     .getByText("To install Google Workspace, open Plugins on a saved dedicated OpenClaw Agent", {
@@ -1017,17 +1026,19 @@ test("Create Agent clears approvers when the selected Harness has no plugin cata
   const namespace = await fixture.createNamespace("Single catalog", { ready: true });
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Preset", { exact: true }).selectOption("");
   await page.getByLabel("Agent name", { exact: true }).fill("OpenClaw without plugins");
   const harness = page.getByLabel("Harness", { exact: true });
   await harness.selectOption("codex");
   await openAdvancedSettings(page);
   const approvers = page.getByLabel("Default plugin approvers mode");
+  await openCreateTab(page, "plugins");
   await approvers.selectOption("chosen");
   const people = page.getByRole("combobox", { name: "Default plugin approvers people" });
   await people.fill("UOTHER123");
   await people.press("Enter");
   await page.locator('.slack-directory-chip[data-value="UOTHER123"]').waitFor();
+  await openCreateTab(page, "basics");
   await harness.selectOption("openclaw");
   await approvers.waitFor({ state: "hidden" });
   await enterManualModel(page, "single-catalog-model-key", "gpt-4.1");
@@ -1229,7 +1240,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   t.after(() => searchRelease.resolve());
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start with default Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
   await page.locator("#plugin-discovery-token > summary").click();
   const token = page.getByLabel("Token for plugin discovery", { exact: true });
@@ -1243,6 +1254,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
   assert.equal(await dialog.isVisible(), false);
   const brokenImageRequest = page.waitForRequest(brokenLogoUrl);
+  await openCreateTab(page, "plugins");
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   await dialog.getByRole("status").filter({ hasText: "Loading available plugins…" }).waitFor();
   prefetchRelease.resolve();
@@ -1626,6 +1638,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
 
   // A credential edit cancels background discovery; explicit plugin selections survive.
   await closePluginDialog();
+  await openCreateTab(page, "basics");
   await token.fill("");
   const clearedSetup = page.locator(".plugin-access-help");
   await clearedSetup.locator("a").first().waitFor({ state: "detached" });
@@ -1650,6 +1663,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   assert.equal(await dialog.isVisible(), false);
   await token.fill("at-browser-plugin-two");
   await stalePrefetchCanceled;
+  await openCreateTab(page, "plugins");
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   await page.clock.runFor(300);
   await dialog.getByRole("button", { name: "New-account-plugin", exact: true }).waitFor();
@@ -1661,6 +1675,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   assert.equal(await dialog.isVisible(), false);
   // Selecting a saved PAT sends only its reference to OCC for both list and detail reads.
   holdList = false;
+  await openCreateTab(page, "basics");
   await token.fill("");
   const selectedPrefetch = page.waitForResponse(
     (response) =>
@@ -1671,6 +1686,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   await page.clock.runFor(300);
   assert.equal((await selectedPrefetch).status(), 200);
   assert.equal(await dialog.isVisible(), false);
+  await openCreateTab(page, "plugins");
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   await calendar.waitFor();
   await calendar.click();
@@ -1692,7 +1708,9 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   await closePluginDialog();
 
   // Switching the saved Secret discards the previous account's catalog and reloads with the new one.
+  await openCreateTab(page, "basics");
   await selectSecret(page, "Service account token Secret", secondSecret);
+  await openCreateTab(page, "plugins");
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   await page.clock.runFor(300);
   await dialog.getByRole("button", { name: "New-account-plugin", exact: true }).waitFor();
@@ -1767,8 +1785,9 @@ test("Agent creation edits Preset plugin policies through the modal and persists
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
   await page.getByRole("button", { name: "Use Preset" }).click();
+  await openCreateTab(page, "plugins");
   await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
   const json = page.getByLabel("Plugin selections JSON", { exact: true });
   assert.deepEqual(JSON.parse(await json.inputValue()), plugins);
@@ -1981,16 +2000,18 @@ test("API-key Presets keep their credential provider fixed while allowing model 
   await routeInstallationWithoutProvisioning(page, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
   await page.getByRole("button", { name: "Use Preset" }).click();
   await openAdvancedSettings(page);
   const configuration = page.getByLabel("Configuration JSON", { exact: true });
   const original = JSON.parse(await configuration.inputValue());
   assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "openclaw");
+  await openCreateTab(page, "basics");
   assert.equal(await page.getByLabel("Harness", { exact: true }).isEnabled(), true);
   // Editing JSON must not silently retarget the saved OpenAI Secret to Anthropic.
   const changed = structuredClone(original);
   changed.agents.defaults.model = "anthropic/claude-account-model";
+  await openCreateTab(page, "configuration");
   await configuration.fill(JSON.stringify(changed));
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await page
@@ -2009,6 +2030,7 @@ test("API-key Presets keep their credential provider fixed while allowing model 
 
   // Same-provider model and embedded-to-dedicated edits retain the original credential binding.
   await configuration.fill(JSON.stringify(original));
+  await openCreateTab(page, "basics");
   await page.getByLabel("Model ID", { exact: true }).fill("gpt-5.1");
   await page.getByLabel("Model ID", { exact: true }).press("Tab");
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
@@ -2023,6 +2045,7 @@ test("API-key Presets keep their credential provider fixed while allowing model 
     "openai/gpt-5.1": dedicated.agents.defaults.models["codex/gpt-5.1"],
   };
   delete dedicated.models.providers.codex.models;
+  await openCreateTab(page, "configuration");
   await configuration.fill(JSON.stringify(dedicated));
   const created = await createAgentThroughForm(page, fixture, namespace.id);
   assert.deepEqual(created.harnessAuth, harnessAuth);
@@ -2060,13 +2083,14 @@ test("Harness switches preserve unrestricted and explicit native plugin allowlis
     });
     const { page } = await newPage(t, fixture);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset template", { exact: true }).selectOption(preset.id);
+    await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
     await page.getByRole("button", { name: "Use Preset", exact: true }).click();
     await openAdvancedSettings(page);
     const configuration = page.getByLabel("Configuration JSON", { exact: true });
     const harness = page.getByLabel("Harness", { exact: true });
 
     // Harness wiring changes must neither grant plugins nor erase an authored restriction.
+    await openCreateTab(page, "basics");
     await harness.selectOption("codex");
     const dedicated = JSON.parse(await configuration.inputValue());
     assert.deepEqual(dedicated.plugins.allow, allow);
@@ -2096,14 +2120,13 @@ test("Default Codex policy survives Harness switches, explicit edits and restore
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const starter = await defaultPresetSummary(fixture, namespace.id);
-  // Explicit Preset selection supports restored drafts; the starter shortcut deliberately discards them.
-  await page.getByLabel("Preset template", { exact: true }).selectOption(starter.id);
-  await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+  // A new form starts from the default Preset.
+  await page.getByText("From Preset · default-codex", { exact: true }).waitFor();
   await openAdvancedSettings(page);
   const configuration = page.getByLabel("Configuration JSON", { exact: true });
   const harness = page.getByLabel("Harness", { exact: true });
   assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.allow, ["codex"]);
+  await openCreateTab(page, "basics");
   await harness.selectOption("openclaw");
   assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.allow, ["codex"]);
   await harness.selectOption("codex");
@@ -2117,6 +2140,7 @@ test("Default Codex policy survives Harness switches, explicit edits and restore
   await page.goBack();
   await page.goForward();
   await openAdvancedSettings(page);
+  await openCreateTab(page, "basics");
   await harness.selectOption("openclaw");
   await harness.selectOption("codex");
   assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.allow, []);
@@ -2159,11 +2183,12 @@ for (const finalHarness of ["openclaw", "codex"] as const) {
     });
     const { page } = await newPage(t, fixture, browserOptions);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset template", { exact: true }).selectOption(preset.id);
+    await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
     await page.getByRole("button", { name: "Use Preset", exact: true }).click();
     await openAdvancedSettings(page);
     const configuration = page.getByLabel("Configuration JSON", { exact: true });
     const harness = page.getByLabel("Harness", { exact: true });
+    await openCreateTab(page, "basics");
     await harness.selectOption("codex");
     if (finalHarness === "openclaw") {
       // Settle the initial model catalog before editing an unfinished Configuration.
@@ -2191,6 +2216,7 @@ for (const finalHarness of ["openclaw", "codex"] as const) {
       const incomplete = JSON.stringify(dedicated).slice(0, -1);
       await replaceEditorText(incomplete);
       assert.equal(await configuration.inputValue(), incomplete);
+      await openCreateTab(page, "basics");
       await harness.selectOption("openclaw");
       assert.equal(await configuration.inputValue(), incomplete);
       await replaceEditorText(native);
@@ -2203,6 +2229,7 @@ for (const finalHarness of ["openclaw", "codex"] as const) {
       await harness.selectOption("openclaw");
       assert.equal(JSON.parse(await configuration.inputValue()).plugins.entries.codex, undefined);
     } else {
+      await openCreateTab(page, "basics");
       await harness.selectOption("openclaw");
       assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins, plugins);
       await harness.selectOption("codex");
@@ -2278,7 +2305,7 @@ test("Dedicated OpenClaw Presets preserve custom provider transport across execu
     const { page } = await newPage(t, fixture);
     await routeInstallationWithoutProvisioning(page, fixture);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset template").selectOption(preset.id);
+    await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
     await page.getByRole("button", { name: "Use Preset" }).click();
     await page.getByRole("alert").filter({ hasText: unavailable }).waitFor();
     assert.equal(await page.getByLabel("Execution mode").inputValue(), "dedicated");
@@ -2292,7 +2319,7 @@ test("Dedicated OpenClaw Presets preserve custom provider transport across execu
     nativeWorkers: { support: "custom-image" },
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
   await page.getByRole("button", { name: "Use Preset" }).click();
   // The Preset's own agentRuntime, not its execution mode, selects the harness.
   assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "openclaw");
@@ -2301,6 +2328,7 @@ test("Dedicated OpenClaw Presets preserve custom provider transport across execu
   await openAdvancedSettings(page);
   const configuration = page.getByLabel("Configuration JSON", { exact: true });
   assert.deepEqual(JSON.parse(await configuration.inputValue()), values);
+  await openCreateTab(page, "basics");
   await page.locator(".launch-runtime:not([open]) > summary").click();
   // Changing only topology must not redirect inference or discard provider settings.
   for (const mode of ["dedicated", "embedded"]) {
@@ -2345,7 +2373,7 @@ test("Partial Presets without a model policy retain the default Codex harness", 
   const { page } = await newPage(t, fixture);
   await routeInstallationWithoutProvisioning(page, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
   await page.getByRole("button", { name: "Use Preset" }).click();
   assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "codex");
   assert.equal(await page.getByLabel("Execution mode").inputValue(), "dedicated");
@@ -2422,10 +2450,11 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   await routeInstallationWithoutProvisioning(page, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
   await page.getByLabel("Name", { exact: true }).waitFor();
+  // The form waits for Use Preset: choosing the Preset does not fill it.
+  assert.equal(await page.getByText("From Preset · Reusable Agent").count(), 0);
   const save = page.getByRole("button", { name: "Create Agent", exact: true });
-  assert.equal(await save.count(), 0, "choose a starting point before editing the Agent draft");
   const apply = page.getByRole("button", { name: "Use Preset" });
   await apply.click();
   assert.equal(
@@ -2443,14 +2472,15 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
       'Rendered Preset contains invalid Agent fields or Secret bindings: agent.executionMode must be "embedded" or "dedicated". Check the variables you entered, or ask a Preset editor to fix the template.',
     )
     .waitFor();
-  assert.equal(await save.count(), 0);
+  assert.equal(await page.getByText("From Preset · Reusable Agent").count(), 0);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   await page.getByLabel("Execution", { exact: true }).fill("dedicated");
   await page.getByLabel("Marker", { exact: true }).fill("changed");
   await apply.click();
-  await page.getByLabel("Agent name", { exact: true }).waitFor();
-  assert.equal(await page.getByLabel("Preset template").count(), 0);
+  await page.getByText("From Preset · Reusable Agent", { exact: true }).waitFor();
+  // The form holds the Preset's values: its variables and Use Preset no longer show.
   assert.equal(await page.getByLabel("Marker", { exact: true }).count(), 0);
+  assert.equal(await apply.isVisible(), false);
   await page
     .getByText("Preset authentication: Service Accounts · Secret configured", { exact: true })
     .waitFor();
@@ -2502,6 +2532,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   edited.plugins.entries.knowledge.config.thresholds = [5, 6];
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON", { exact: true }).fill(JSON.stringify(edited));
+  await openCreateTab(page, "workspace");
   await page.getByLabel("AGENTS.md", { exact: true }).fill("# Edited workspace\n");
   // Route reconstruction must retain the rendered copy even after its source Preset was deleted.
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
@@ -2633,7 +2664,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     ),
   );
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(keyEntryPreset.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(keyEntryPreset.id);
   await page.getByRole("button", { name: "Use Preset" }).click();
   const presetKey = page.locator("#provider-credential-secret");
   assert.equal(await page.getByLabel("Model ID", { exact: true }).inputValue(), "gpt-4.1");
@@ -2649,10 +2680,12 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   assert.equal(await page.getByLabel("Provider", { exact: true }).inputValue(), "openai");
   assert.equal(await presetKey.inputValue(), "");
   const mode = page.getByLabel("Execution mode");
+  await openCreateTab(page, "basics");
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   await selectSecret(page, "API key Secret", presetKeySecrets[2]);
   const anthropicConfiguration = JSON.parse(await native.inputValue());
   anthropicConfiguration.agents.defaults.model = "anthropic/claude-account-model";
+  await openCreateTab(page, "configuration");
   await native.fill(JSON.stringify(anthropicConfiguration));
   assert.equal(await page.getByLabel("Provider", { exact: true }).inputValue(), "anthropic");
   assert.equal(await mode.inputValue(), "embedded");
@@ -2664,9 +2697,9 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   );
 });
 
-// The standard Preset fills a form taller than the window. Its only primary, Create Agent, stays
-// in view after Use Preset, and the form starts at its focused heading even when the chooser was
-// scrolled (finding 2098).
+// The standard Preset fills a form taller than the window. Its only primary, Create Agent, sits
+// in the bar under the title after Use Preset, and the form starts at its focused heading even
+// when the chooser was scrolled (finding 2098).
 test("Create Agent stays in view after Use Preset fills a long form", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -2678,9 +2711,9 @@ test("Create Agent stays in view after Use Preset fills a long form", async (t) 
     await page.setViewportSize(viewport);
     await routeInstallationWithoutProvisioning(page, fixture);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset template").selectOption(preset.id);
+    await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
     await page.getByLabel("Name", { exact: true }).fill("Preset action");
-    await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+    await page.locator(".create-preset").getByLabel("Model", { exact: true }).fill("gpt-5.1");
     await page.getByLabel("Model Secret", { exact: true }).fill("synthetic-preset-action-key");
     const use = page.getByRole("button", { name: "Use Preset" });
     await use.scrollIntoViewIfNeeded();
@@ -2711,7 +2744,7 @@ test("Create Agent stays in view after Use Preset fills a long form", async (t) 
       await page.keyboard.press("Tab");
       const focus = await page.evaluate(() => {
         const focused = document.activeElement!;
-        const row = document.querySelector("#create-agent-form ~ .form-actions")!;
+        const row = document.querySelector(".create-agent-bar")!;
         if (row.contains(focused)) {
           return { inRow: true, hidden: null };
         }
@@ -2741,9 +2774,9 @@ test("standard Codex password Preset creates one scoped Secret and reuses it aft
   await routeInstallationWithoutProvisioning(page, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
   await page.getByLabel("Name", { exact: true }).fill("Existing Agent");
-  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.locator(".create-preset").getByLabel("Model", { exact: true }).fill("gpt-5.1");
   const password = page.getByLabel("Model Secret", { exact: true });
   assert.equal(await password.getAttribute("type"), "password");
   await page.getByRole("button", { name: "Use Preset" }).click();
@@ -2845,10 +2878,10 @@ test("Preset marks referenced variables without defaults as required before rend
   const { page } = await newPage(t, fixture);
   await routeInstallationWithoutProvisioning(page, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
   await page.getByLabel("Name", { exact: true }).fill("Required Agent");
   await page.getByLabel("Model Secret", { exact: true }).fill("synthetic-required-key");
-  const model = page.getByLabel("Model", { exact: true });
+  const model = page.locator(".create-preset").getByLabel("Model", { exact: true });
   const marker = page.getByLabel("Marker", { exact: true });
   const unused = page.getByLabel("Unused", { exact: true });
   await marker.fill("");
@@ -2864,7 +2897,7 @@ test("Preset marks referenced variables without defaults as required before rend
     await page.getByRole("group", { name: "Preset" }).getByRole("alert").textContent(),
     "",
   );
-  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
   await model.fill("gpt-5.1");
   assert.equal(await (await usePreset(page)).inputValue(), "Required Agent");
 });
@@ -2909,9 +2942,9 @@ async function variablePresetForm(
   const { page } = await newPage(t, fixture, { context: { viewport } });
   await routeInstallationWithoutProvisioning(page, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
   await page.getByLabel("Name", { exact: true }).fill("Variable Agent");
-  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.locator(".create-preset").getByLabel("Model", { exact: true }).fill("gpt-5.1");
   return { fixture, namespace, preset: preset, page };
 }
 
@@ -3120,13 +3153,8 @@ for (const viewport of consoleViewports) {
     await feedback.getByRole("button", { name: "Change Human", exact: true }).click();
     await page.getByText(/^This Preset could not be loaded\./).waitFor();
     assert.deepEqual(dialogs, ["Discard the changes on this form and go back to the Preset?"]);
-    assert.equal(
-      await page.evaluate(() => {
-        const active = globalThis.document.activeElement;
-        return active?.tagName === "H2" ? active.textContent : active?.tagName;
-      }),
-      "Use a saved setup",
-    );
+    // With no variable to mark, focus goes to the Preset chooser in Basics.
+    await page.waitForFunction(() => globalThis.document.activeElement?.id === "agent-preset");
   });
 
   // The Preset variable filled a valid allowlist, and the reader then edited that setting in the
@@ -3173,9 +3201,9 @@ test("Preset with a prebound model Secret grants the created draft access", asyn
   const { page } = await newPage(t, fixture);
   await routeInstallationWithoutProvisioning(page, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
   await page.getByLabel("Name", { exact: true }).fill("Bound Secret Agent");
-  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.locator(".create-preset").getByLabel("Model", { exact: true }).fill("gpt-5.1");
   await page.getByRole("button", { name: "Use Preset" }).click();
   const created = await createAgentThroughForm(page, fixture, namespace.id);
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
@@ -3237,9 +3265,9 @@ for (const collection of ["secrets", "configurations"]) {
     });
 
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset template").selectOption(preset.id);
+    await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
     await page.getByLabel("Name", { exact: true }).fill("Requested model");
-    await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+    await page.locator(".create-preset").getByLabel("Model", { exact: true }).fill("gpt-5.1");
     await page.getByLabel("Model Secret", { exact: true }).fill("test-preset-value");
     await page.getByRole("button", { name: "Use Preset" }).click();
     const create = page.getByRole("button", { name: "Create Agent", exact: true });
@@ -3287,9 +3315,9 @@ test("password Preset can reuse an existing Secret and retry an uncertain grant 
   const requests = apiRequests(page, fixture.origin);
   const bindingPath = `/namespaces/${namespace.id}/iam/access-bindings`;
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
   await page.getByLabel("Name", { exact: true }).fill("Existing Secret Agent");
-  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.locator(".create-preset").getByLabel("Model", { exact: true }).fill("gpt-5.1");
   await page.getByLabel("Secret source for Model Secret", { exact: true }).selectOption("existing");
   const existingSecret = page.getByLabel("Existing Secret for Model Secret", { exact: true });
   await existingSecret.selectOption(modelSecret.id);
@@ -3356,9 +3384,9 @@ test("codex_pat password Preset creates one Secret and reuses it after an Agent 
   await routeInstallationWithoutProvisioning(page, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
   await page.getByLabel("Name", { exact: true }).fill("Existing Codex Agent");
-  await page.getByLabel("Model", { exact: true }).fill("gpt-6-astra");
+  await page.locator(".create-preset").getByLabel("Model", { exact: true }).fill("gpt-6-astra");
   await page.getByLabel("Secret source for Model Secret", { exact: true }).selectOption("new");
   const password = page.getByLabel("Model Secret", { exact: true });
   await password.fill("at-codex-pat-preset-token");
@@ -3407,14 +3435,15 @@ for (const recovery of ["existing", "alternate", "denied existing"] as const) {
     await routeInstallationWithoutProvisioning(page, fixture);
     const requests = apiRequests(page, fixture.origin);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset template").selectOption(preset.id);
+    await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
     await page.getByLabel("Name", { exact: true }).fill("Recreated Agent");
-    await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+    await page.locator(".create-preset").getByLabel("Model", { exact: true }).fill("gpt-5.1");
     await page.getByLabel("Model Secret", { exact: true }).fill("replacement-model-key");
     await page.getByRole("button", { name: "Use Preset" }).click();
     const apiKey = page.getByLabel("API key", { exact: true });
     const save = page.getByRole("button", { name: "Create Agent", exact: true });
     await openAdvancedSettings(page);
+    await openCreateTab(page, "workspace");
     await page.getByLabel("USER.md", { exact: true }).fill("Preserve this workspace draft.");
     const configurationBefore = await page
       .getByLabel("Configuration JSON", { exact: true })
@@ -3565,9 +3594,9 @@ test("codex_pat Secret recovery restores authenticated plugin discovery", async 
   await routeInstallationWithoutProvisioning(page, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
   await page.getByLabel("Name", { exact: true }).fill("Recreated Agent");
-  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.locator(".create-preset").getByLabel("Model", { exact: true }).fill("gpt-5.1");
   await page.getByLabel("Model Secret", { exact: true }).fill("at-replacement");
   await page.getByRole("button", { name: "Use Preset" }).click();
   const conflict = page.waitForResponse(
@@ -3588,20 +3617,22 @@ test("codex_pat Secret recovery restores authenticated plugin discovery", async 
   await token.fill("at-discovery");
   assert.equal((await discovered).status(), 200);
   assert.ok(discoveryTokens.includes("Bearer at-discovery"));
+  await openCreateTab(page, "plugins");
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
   await dialog.waitFor();
   // Done closes the dialog, and its close event fires a task later. Focus that moves to the
-  // Secret field in between must stay there: taking it back closed the field's list while
-  // selectSecret typed (finding 2862).
+  // Plugins tab's own selections in between must stay there (finding 2862). The Secret field
+  // is on the Basics tab, which focus cannot reach while the Plugins tab shows.
   assert.equal(
     await focusKeptOverClose(
       dialog.getByRole("button", { name: "Done", exact: true }),
-      page.getByLabel("Service account token Secret", { exact: true }),
+      page.getByRole("tab", { name: "Basics", exact: true }),
     ),
     true,
     "closing the dialog keeps focus on the Secret field",
   );
+  await openCreateTab(page, "basics");
   await selectSecret(page, "Service account token Secret", existing);
   const created = await createAgentThroughForm(page, fixture, namespace.id);
   assert.deepEqual(created.harnessAuth, { method: "codex_pat", source: existing.ref });
@@ -3625,14 +3656,15 @@ test("password Secret recovery clears on OAuth and Preset context changes", asyn
   await routeInstallationWithoutProvisioning(page, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
   await page.getByLabel("Name", { exact: true }).fill("Recreated Agent");
-  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.locator(".create-preset").getByLabel("Model", { exact: true }).fill("gpt-5.1");
   await page.getByLabel("Model Secret", { exact: true }).fill("replacement-model-key");
   await page.getByRole("button", { name: "Use Preset" }).click();
   const apiKey = page.getByLabel("API key", { exact: true });
   const save = page.getByRole("button", { name: "Create Agent", exact: true });
   await openAdvancedSettings(page);
+  await openCreateTab(page, "workspace");
   await page.getByLabel("USER.md", { exact: true }).fill("Preserve this workspace draft.");
 
   const conflict = page.waitForResponse(
@@ -3697,9 +3729,9 @@ test("password Secret recovery clears on OAuth and Preset context changes", asyn
   );
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Start over", exact: true }).click();
-  await page.getByLabel("Preset template").selectOption(preset.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
   await page.getByLabel("Name", { exact: true }).fill("Fresh preset draft");
-  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.locator(".create-preset").getByLabel("Model", { exact: true }).fill("gpt-5.1");
   await page.getByLabel("Model Secret", { exact: true }).fill("fresh-preset-key");
   await page.getByRole("button", { name: "Use Preset" }).click();
   assert.equal(await alternate.isVisible(), false);
@@ -3719,9 +3751,9 @@ for (const failure of ["denied", "uncertain", "generic conflict"] as const) {
     await routeInstallationWithoutProvisioning(page, fixture);
     const requests = apiRequests(page, fixture.origin);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset template").selectOption(preset.id);
+    await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
     await page.getByLabel("Name", { exact: true }).fill("Recreated Agent");
-    await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+    await page.locator(".create-preset").getByLabel("Model", { exact: true }).fill("gpt-5.1");
     await page.getByLabel("Model Secret", { exact: true }).fill("replacement-model-key");
     await page.getByRole("button", { name: "Use Preset" }).click();
     const apiKey = page.getByLabel("API key", { exact: true });
@@ -3833,9 +3865,9 @@ test("method-only codex_pat Preset requires credential entry in the create form"
   await routeInstallationWithoutProvisioning(page, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
   await page.getByLabel("Name", { exact: true }).fill("Method-only Codex Agent");
-  await page.getByLabel("Model", { exact: true }).fill("gpt-6-astra");
+  await page.locator(".create-preset").getByLabel("Model", { exact: true }).fill("gpt-6-astra");
   assert.equal(await page.getByLabel("Model Secret", { exact: true }).count(), 0);
   await page.getByRole("button", { name: "Use Preset" }).click();
   const credential = page.getByLabel("Service account token Secret", { exact: true });
@@ -3902,7 +3934,7 @@ test("Create Agent reuses its PAT Secret and resumes plugin prefetch after an Ag
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start with default Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name", { exact: true }).fill("Existing picker Agent");
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
   await page.clock.install({ time: new Date("2026-09-27T12:00:00Z") });
@@ -3968,10 +4000,12 @@ test("Create Agent reuses its PAT Secret and resumes plugin prefetch after an Ag
   assert.equal((await prefetched).status(), 200);
   const plugins = page.getByRole("dialog", { name: "Configure plugins", exact: true });
   assert.equal(await plugins.isVisible(), false);
+  await openCreateTab(page, "plugins");
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   await plugins.getByRole("button", { name: "Linear", exact: true }).waitFor();
   await plugins.getByRole("button", { name: "Done", exact: true }).click();
 
+  await openCreateTab(page, "basics");
   await page.getByLabel("Agent name", { exact: true }).fill("Picker credential Agent");
   const created = await createAgentThroughForm(page, fixture, namespace.id);
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
@@ -4008,13 +4042,13 @@ test("Preset Secret picker preserves existing mode on catalog failure and can sw
     await route.fallback();
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
   const source = page.getByLabel("Secret source for Model Secret", { exact: true });
   await source.selectOption("existing");
   await page.getByText(/Choose create-new mode to enter a new token/).waitFor();
   assert.equal(await source.inputValue(), "existing");
   await page.getByLabel("Name", { exact: true }).fill("Catalog fallback Agent");
-  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.locator(".create-preset").getByLabel("Model", { exact: true }).fill("gpt-5.1");
   await source.selectOption("new");
   await page.getByLabel("Model Secret", { exact: true }).fill("new-token-after-catalog-error");
   await usePreset(page);
@@ -4034,7 +4068,7 @@ test("Preset list and Preset Secret field name the Namespace read a Restriction 
   await routeInstallationWithoutProvisioning(page, fixture);
   // A Restriction on Namespace read, held only while Native IAM answers one list request: both
   // lists check Namespace read first, so the real 403 is that grant's, never an item's.
-  const denyNamespaceReadOnce = (path: string) =>
+  const denyNamespaceReadOnce = (path: string, times = 1) =>
     page.route(
       `${fixture.origin}${path}`,
       async (route) => {
@@ -4053,25 +4087,26 @@ test("Preset list and Preset Secret field name the Namespace read a Restriction 
         assert.equal(response.status(), 403);
         await route.fulfill({ response });
       },
-      { times: 1 },
+      { times },
     );
 
-  await denyNamespaceReadOnce(`/namespaces/${namespace.id}/presets`);
+  // The read that opens a new form, and the form's own.
+  await denyNamespaceReadOnce(`/namespaces/${namespace.id}/presets`, 2);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page
     .getByText(`Presets unavailable. ${namespaceListDenied("Presets")}`, { exact: true })
     .waitFor();
-  // The shortcut stays in the Tab order, described by the chooser's status (finding 2937).
-  await expectReachableReason(
-    page,
-    page.getByRole("button", { name: "Start with default Preset", exact: true }),
-    `Presets unavailable. ${namespaceListDenied("Presets")}`,
-  );
+  // The form still opens, with No Preset, and the chooser's status says why (finding 2937).
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Preset", { exact: true }).inputValue(), "");
 
   // With the list readable again, the chosen Preset's Secret field lists the Namespace's Secrets.
   await page.reload();
+  // The Restriction is held once the form's own lists are in, so it meets only the chooser's read.
+  await waitForEnabled(page.getByLabel("Preset", { exact: true }));
+  await waitForCreateFormReads(page);
   await denyNamespaceReadOnce(`/namespaces/${namespace.id}/secrets`);
-  await page.getByLabel("Preset template").selectOption(preset.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
   await page.getByLabel("Secret source for Model Secret", { exact: true }).selectOption("existing");
   await page
     .getByText(
@@ -4109,8 +4144,8 @@ test("Preset picker ignores stale Preset responses after switching selection", a
     await route.fallback();
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(first.id);
-  await page.getByLabel("Preset template").selectOption(second.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(first.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(second.id);
   await page.getByLabel("Second Name", { exact: true }).waitFor();
   releaseFirst();
   // The page has read the stale response and run its handler.
@@ -4138,9 +4173,10 @@ test("a default starter creation form survives every exit but a confirmed Cancel
 
   for (const exit of ["breadcrumb", "sidebar", "history", "namespace"]) {
     await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-    await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+    await page.locator("#create-agent-form").waitFor();
     await page.getByLabel("Agent name", { exact: true }).fill(`Kept ${exit}`);
     await openAdvancedSettings(page);
+    await openCreateTab(page, "workspace");
     await page.getByLabel("USER.md", { exact: true }).fill(`Kept workspace ${exit}`);
 
     if (exit === "breadcrumb") {
@@ -4156,8 +4192,8 @@ test("a default starter creation form survives every exit but a confirmed Cancel
       await page.getByLabel("Namespace", { exact: true }).selectOption(otherNamespace.id);
       await page.getByRole("button", { name: "Create Agent", exact: true }).click();
       // Drafts belong to their Namespace: the other one starts from the choices.
-      await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
-      assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+      await page.locator("#create-agent-form").waitFor();
+      assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
       await page.getByLabel("Namespace", { exact: true }).selectOption(namespace.id);
     }
 
@@ -4168,6 +4204,7 @@ test("a default starter creation form survives every exit but a confirmed Cancel
       await page.getByRole("button", { name: "Create Agent", exact: true }).click();
     }
     const name = page.getByLabel("Agent name", { exact: true });
+    await openCreateTab(page, "basics");
     await name.waitFor();
     assert.equal(await name.inputValue(), `Kept ${exit}`, exit);
     await openAdvancedSettings(page);
@@ -4186,19 +4223,19 @@ test("a default starter creation form survives every exit but a confirmed Cancel
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
     await page.getByRole("button", { name: "Create Agent", exact: true }).click();
     assert.deepEqual(dialogs.splice(0), ["confirm: Discard this draft?"], exit);
-    await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
-    await page.getByLabel("Preset template").waitFor();
-    assert.equal(await name.count(), 0, exit);
+    await page.locator("#create-agent-form").waitFor();
+    await page.getByLabel("Preset", { exact: true }).waitFor();
+    assert.equal(await name.inputValue(), "", exit);
     await page.getByRole("link", { name: "← Agents" }).click();
   }
 
   // An untouched form has nothing to lose: Start over and Cancel leave without asking.
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Start over", exact: true }).click();
-  await page.getByLabel("Preset template").waitFor();
-  await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  await page.getByLabel("Preset", { exact: true }).waitFor();
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
@@ -4234,7 +4271,7 @@ test("a restored default starter chooser keeps its applied form across navigatio
 
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Name", { exact: true }).fill("Restored starter");
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
@@ -4268,13 +4305,14 @@ test("a default shortcut restored after a pending Preset read keeps its form", a
     await route.fallback();
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  // A new form waits for the default Preset's read before it opens.
   await within(observed, "the held starter Preset read");
+  await page.getByText("Loading Presets…", { exact: true }).waitFor();
   await page.getByRole("link", { name: "← Agents" }).click();
   releaseRead();
   await page.unroute(presetPath);
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+  await page.getByText("From Preset · default-codex", { exact: true }).waitFor();
   await page.getByLabel("Agent name", { exact: true }).fill("Pending read draft");
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
@@ -4307,9 +4345,9 @@ test("invalid Preset application retains chooser edits and the applied form for 
   for (const origin of ["shortcut", "explicit"]) {
     await page.getByRole("button", { name: "Create Agent", exact: true }).click();
     if (origin === "shortcut") {
-      await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+      await page.locator("#create-agent-form").waitFor();
     } else {
-      await page.getByLabel("Preset template").selectOption(starter.id);
+      await page.getByLabel("Preset", { exact: true }).selectOption(starter.id);
     }
     const mode = page.getByLabel("Mode", { exact: true });
     await mode.fill("invalid");
@@ -4377,11 +4415,15 @@ test("a stored null Preset primary opens with model choices for both origins", a
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   for (const origin of ["shortcut", "explicit"]) {
     if (origin === "explicit") {
+      // The form offers Use Preset for a Preset it does not use yet.
       await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
-      await page.getByLabel("Preset template").selectOption(starter.id);
+      await page.getByLabel("Preset", { exact: true }).selectOption("");
+      await page.getByText("From Preset · default-codex").waitFor({ state: "detached" });
+      await page.getByLabel("Preset", { exact: true }).selectOption(starter.id);
       await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+      await page.getByText("From Preset · default-codex", { exact: true }).waitFor();
     } else {
-      await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+      await page.locator("#create-agent-form").waitFor();
     }
     const model = page.getByLabel("Model", { exact: true });
     await model.waitFor();
@@ -4392,6 +4434,7 @@ test("a stored null Preset primary opens with model choices for both origins", a
       await page.getByLabel("Configuration JSON", { exact: true }).inputValue(),
     );
     assert.partialDeepStrictEqual(before, { agents: { defaults: { model: { primary: null } } } });
+    await openCreateTab(page, "basics");
     await model.selectOption("gpt-6-sol");
     const after: unknown = JSON.parse(
       await page.getByLabel("Configuration JSON", { exact: true }).inputValue(),
@@ -4444,9 +4487,9 @@ test("a non-text Preset primary refuses application and retains chooser edits fo
 
     await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
     if (origin === "shortcut") {
-      await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+      await page.locator("#create-agent-form").waitFor();
     } else {
-      await page.getByLabel("Preset template").selectOption(starter.id);
+      await page.getByLabel("Preset", { exact: true }).selectOption(starter.id);
     }
     const marker = page.getByLabel("Marker", { exact: true });
     await marker.fill(`draft ${origin}`);
@@ -4458,13 +4501,13 @@ test("a non-text Preset primary refuses application and retains chooser edits fo
           "This Preset's primary model must be text. Choose another Preset, or ask a Preset editor to fix the template.",
       })
       .waitFor();
-    assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0, origin);
+    assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "", origin);
     assert.equal(await marker.inputValue(), `draft ${origin}`, origin);
     await page.getByRole("link", { name: "← Agents" }).click();
     await page.getByRole("button", { name: "Create Agent", exact: true }).click();
     await marker.waitFor();
     assert.equal(await marker.inputValue(), `draft ${origin}`, origin);
-    await page.getByLabel("Preset template").selectOption(fallback.id);
+    await page.getByLabel("Preset", { exact: true }).selectOption(fallback.id);
     await page.getByRole("button", { name: "Use Preset", exact: true }).click();
     await page.getByLabel("Agent name", { exact: true }).waitFor();
   }
@@ -4480,20 +4523,24 @@ test("unsaved Preset drafts retain unfinished edits across navigation until expl
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
   await page.getByLabel("Name", { exact: true }).fill("Navigation draft");
-  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.locator(".create-preset").getByLabel("Model", { exact: true }).fill("gpt-5.1");
   await page.getByLabel("Model Secret", { exact: true }).fill("synthetic-navigation-key");
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   assert.equal(await page.getByLabel("Name", { exact: true }).inputValue(), "Navigation draft");
-  assert.equal(await page.getByLabel("Model", { exact: true }).inputValue(), "gpt-5.1");
+  assert.equal(
+    await page.locator(".create-preset").getByLabel("Model", { exact: true }).inputValue(),
+    "gpt-5.1",
+  );
   assert.equal(await page.getByLabel("Model Secret", { exact: true }).inputValue(), "");
   await page.getByLabel("Model Secret", { exact: true }).fill("synthetic-navigation-key");
   await page.getByRole("button", { name: "Use Preset" }).click();
   await openAdvancedSettings(page);
   const unfinished = '{"agents":';
   await page.getByLabel("Configuration JSON", { exact: true }).fill(unfinished);
+  await openCreateTab(page, "workspace");
   await page.getByLabel("USER.md", { exact: true }).fill("");
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
@@ -4534,16 +4581,21 @@ test("unsaved Preset drafts retain unfinished edits across navigation until expl
   );
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Start over" }).click();
-  await page.getByLabel("Preset template").waitFor();
-  assert.equal(await page.getByLabel("Preset template").inputValue(), "");
+  // Start over opens a new form, from the default Preset again.
+  await page.getByText("From Preset · default-codex", { exact: true }).waitFor();
+  assert.equal(
+    await page.getByLabel("Preset", { exact: true }).locator("option:checked").textContent(),
+    "default-codex",
+  );
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page.getByLabel("Preset template").waitFor();
-  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+  await page.getByLabel("Preset", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
 
   // Reload ends the SPA session; a new form must not recover discarded or browser-stored inputs.
   // The browser asks first while the draft holds changes.
-  await page.getByRole("button", { name: "Start with default Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name", { exact: true }).fill("Reload-only draft");
   const leaving: string[] = [];
   const answer = async (dialog: Dialog) => {
@@ -4554,11 +4606,11 @@ test("unsaved Preset drafts retain unfinished edits across navigation until expl
   await page.reload();
   page.off("dialog", answer);
   assert.deepEqual(leaving, ["beforeunload"]);
-  await page.getByLabel("Preset template").waitFor();
-  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+  await page.getByLabel("Preset", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
 
   // Signing back in without reloading must not recover the previous session's in-memory draft.
-  await page.getByRole("button", { name: "Start with default Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name", { exact: true }).fill("Private session draft");
   await page.locator(".account-toggle").click();
   await page.getByRole("menuitem", { name: "Sign out" }).click();
@@ -4566,8 +4618,8 @@ test("unsaved Preset drafts retain unfinished edits across navigation until expl
   await page.getByLabel("Password").fill(fixture.credentials.password);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page.getByLabel("Preset template").waitFor();
-  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+  await page.getByLabel("Preset", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
 });
 
 test("an empty Namespace can create an Agent without a Preset", async (t) => {
@@ -4582,11 +4634,10 @@ test("an empty Namespace can create an Agent without a Preset", async (t) => {
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByText(/^No Presets available to you in this Namespace\./).waitFor();
-  assert.equal(
-    await page.getByRole("button", { name: "Start with default Preset" }).isDisabled(),
-    true,
+  assert.deepEqual(
+    await page.getByLabel("Preset", { exact: true }).locator("option").allTextContents(),
+    ["No Preset"],
   );
-  await page.getByRole("button", { name: "Start without Preset" }).click();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
   await page.getByLabel("Agent name", { exact: true }).fill("Kept draft");
   // A form started without a Preset is kept across navigation, as a Preset form is.
@@ -4605,7 +4656,7 @@ test("an empty Namespace can create an Agent without a Preset", async (t) => {
   );
 });
 
-test("a delayed restored Preset list cannot read a selection after starting without a Preset", async (t) => {
+test("a delayed Preset list on a restored form reads no Preset and keeps the form usable", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Delayed Preset list", { ready: true });
@@ -4618,10 +4669,10 @@ test("a delayed restored Preset list cannot read a selection after starting with
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/presets/${starter.id}` &&
       response.request().method() === "GET",
   );
-  await page.getByLabel("Preset template").selectOption(starter.id);
+  // A new form starts from the default Preset.
   assert.equal((await selectedPresetResponse).status(), 200);
-  await page.getByRole("button", { name: "Use Preset", exact: true }).click({ trial: true });
-  assert.equal(await page.getByLabel("Preset template").inputValue(), starter.id);
+  await page.getByText("From Preset · default-codex", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Preset", { exact: true }).inputValue(), starter.id);
   await page.getByRole("link", { name: "← Agents" }).click();
 
   // A real catalog change makes the admitted return construct a fresh chooser
@@ -4667,7 +4718,10 @@ test("a delayed restored Preset list cannot read a selection after starting with
   try {
     await page.getByRole("button", { name: "Create Agent", exact: true }).click();
     pendingList = await listStarted;
-    await page.getByRole("button", { name: "Start without Preset" }).click();
+    // The form is usable while the list is pending; Preset waits for it, naming the applied one.
+    const chooser = page.getByLabel("Preset", { exact: true });
+    assert.equal(await chooser.isDisabled(), true);
+    assert.equal(await chooser.locator("option:checked").textContent(), "default-codex");
     await page.getByLabel("Agent name", { exact: true }).fill("Independent Agent");
     assert.equal(heldRequest, pendingList);
     exactReadsBeforeRelease = requests.filter(
@@ -4699,12 +4753,19 @@ test("a delayed restored Preset list cannot read a selection after starting with
     ).length,
     exactReadsBeforeRelease,
   );
+  // The list changed nothing in the form: the applied Preset is not read again.
   assert.equal(
     await page.getByLabel("Agent name", { exact: true }).inputValue(),
     "Independent Agent",
   );
-  await page.getByLabel("Agent name", { exact: true }).fill("Still usable");
-  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Still usable");
+  const chooser = page.getByLabel("Preset", { exact: true });
+  await waitForEnabled(chooser);
+  assert.equal(await chooser.inputValue(), starter.id);
+  assert.deepEqual(await chooser.locator("option").allTextContents(), [
+    "No Preset",
+    "Another Preset",
+    "default-codex",
+  ]);
 });
 
 test("denied Preset reads do not automatically start an Agent form", async (t) => {
@@ -4713,34 +4774,25 @@ test("denied Preset reads do not automatically start an Agent form", async (t) =
   const namespace = await fixture.createNamespace("Denied Preset", { ready: true });
   const starter = await defaultPresetSummary(fixture, namespace.id);
   const { page } = await newPage(t, fixture);
-  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page
-    .getByRole("button", { name: "Start with default Preset" })
-    .waitFor({ state: "visible" });
-  await page.waitForFunction(
-    () => globalThis.document.querySelector<HTMLSelectElement>("#agent-preset")?.disabled === false,
-  );
-  // Deny the exact read after the list is visible to exercise a changed grant.
-  restrict(fixture.policy, "read", "preset", { namespaceId: namespace.id, resourceId: starter.id });
+  // The list still names the default Preset; its exact read is denied, as after a changed grant.
+  await page.route(`**/namespaces/${namespace.id}/presets/${starter.id}`, async (route) => {
+    restrict(fixture.policy, "read", "preset", {
+      namespaceId: namespace.id,
+      resourceId: starter.id,
+    });
+    await route.continue();
+  });
   const denied = page.waitForResponse((response) =>
     response.url().endsWith(`/namespaces/${namespace.id}/presets/${starter.id}`),
   );
-  await page.getByRole("button", { name: "Start with default Preset" }).click();
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   assert.equal((await denied).status(), 403);
-  // The API's named denial (finding 2534) names the Preset the request sent.
-  await page
-    .getByRole("alert")
-    .filter({ hasText: callerDenied("Preset read", `Preset ${starter.id}`) })
-    .waitFor();
-  assert.equal(await page.locator("#create-agent-form").count(), 0);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
-  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
-  // A later list filters the now-unreadable Preset; the independent action remains available.
-  // Cancel discards the untouched form without asking.
-  await page.getByRole("button", { name: "Cancel", exact: true }).click();
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  // The form opens without the Preset: nothing it could not read fills it. Its own list read
+  // no longer names the unreadable Preset.
   await page.getByText(/^No Presets available to you in this Namespace\./).waitFor();
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  assert.equal(await page.locator("#create-agent-form").count(), 1);
+  assert.equal(await page.getByText("From Preset · default-codex").count(), 0);
+  assert.equal(await page.getByLabel("Preset", { exact: true }).inputValue(), "");
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
 });
 
@@ -4758,19 +4810,12 @@ test("The console requires a readable installed default for quick-start and stil
 
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page
-    .getByRole("status")
-    .filter({ hasText: /^Choose a Preset\.$/ })
-    .waitFor();
-  await page
-    .getByText("default-codex is not available to you in this Namespace.", { exact: true })
-    .waitFor();
-  assert.equal(
-    await page.getByRole("button", { name: "Start with default Preset" }).isDisabled(),
-    true,
-  );
-  await page.getByLabel("Preset template", { exact: true }).selectOption(alternative.id);
+  // Without default-codex, the form opens with No Preset; another Preset fills it once used.
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Preset", { exact: true }).inputValue(), "");
+  await page.getByLabel("Preset", { exact: true }).selectOption(alternative.id);
   await page.getByRole("button", { name: "Use Preset" }).click();
+  await page.getByText("From Preset · Custom starter", { exact: true }).waitFor();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Custom Agent");
 });
 
@@ -4799,9 +4844,9 @@ test("Preset with a managed PAT account creates a draft without a Secret grant",
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(preset.id);
   await page.getByLabel("Name", { exact: true }).fill("Managed PAT Preset Agent");
-  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.locator(".create-preset").getByLabel("Model", { exact: true }).fill("gpt-5.1");
   await page.getByRole("button", { name: "Use Preset" }).click();
   const created = await createAgentThroughForm(page, fixture, namespace.id);
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
@@ -4815,9 +4860,9 @@ test("Preset with a managed PAT account creates a draft without a Secret grant",
   assert.equal(secretPostRequests(requests, namespace.id).length, 0);
 });
 
-// The chooser's Start with default Preset named no Preset, and after a Preset was chosen Use
-// Preset stayed secondary while the shortcut kept the filled style (finding 2066).
-test("the Preset chooser names its default and fills Use Preset once a Preset is chosen", async (t) => {
+// A new form starts from default-codex. A Preset with variables shows them and Use Preset; No
+// Preset empties the form again; a failed Preset read offers no Use Preset (finding 2066).
+test("the Preset chooser starts from default-codex and offers Use Preset for variables", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Preset emphasis", { ready: true });
@@ -4832,25 +4877,24 @@ test("the Preset chooser names its default and fills Use Preset once a Preset is
   const { page } = await newPage(t, fixture);
   await routeInstallationWithoutProvisioning(page, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  const shortcut = page.getByRole("button", { name: "Start with default Preset" });
   const use = page.getByRole("button", { name: "Use Preset" });
-  const filled = (locator: Locator) =>
-    locator.evaluate((node) => node.classList.contains("button--primary"));
-  await page.getByText("The default Preset is default-codex.", { exact: true }).waitFor();
-  assert.equal(await shortcut.getAttribute("aria-describedby"), "agent-preset-default-hint");
-  await waitForEnabled(shortcut);
-  assert.deepEqual([await filled(shortcut), await filled(use)], [true, false]);
+  await page.getByText("From Preset · default-codex", { exact: true }).waitFor();
+  assert.equal(await use.isVisible(), false);
 
-  await page.getByLabel("Preset template").selectOption(other.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(other.id);
   await page.getByLabel("Agent Name", { exact: true }).waitFor();
-  assert.deepEqual([await filled(shortcut), await filled(use)], [false, true]);
+  await waitForEnabled(use);
+  assert.equal(await use.isVisible(), true);
 
-  // Clearing the choice gives the filled style back to the shortcut.
-  await page.getByLabel("Preset template").selectOption("");
+  // No Preset empties the form the default Preset filled.
+  await page.getByLabel("Preset", { exact: true }).selectOption("");
   await page.getByLabel("Agent Name", { exact: true }).waitFor({ state: "detached" });
-  assert.deepEqual([await filled(shortcut), await filled(use)], [true, false]);
+  await page
+    .getByText("From Preset · default-codex", { exact: true })
+    .waitFor({ state: "detached" });
+  assert.equal(await use.isVisible(), false);
 
-  // A failed Preset read leaves Use Preset disabled, so the shortcut keeps the filled style.
+  // A failed Preset read offers no Use Preset.
   await page.route(`**/namespaces/${namespace.id}/presets/${other.id}`, (route) =>
     route.fulfill({
       status: 503,
@@ -4860,8 +4904,7 @@ test("the Preset chooser names its default and fills Use Preset once a Preset is
       }),
     }),
   );
-  await page.getByLabel("Preset template").selectOption(other.id);
+  await page.getByLabel("Preset", { exact: true }).selectOption(other.id);
   await page.getByText(READ_UNAVAILABLE).waitFor();
-  assert.equal(await use.isDisabled(), true);
-  assert.deepEqual([await filled(shortcut), await filled(use)], [true, false]);
+  assert.equal(await use.isVisible(), false);
 });

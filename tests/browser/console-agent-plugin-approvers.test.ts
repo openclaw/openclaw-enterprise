@@ -2,6 +2,7 @@ import {
   enterManualModel,
   openAdvancedSettings,
   submitCreateAgent,
+  openCreateTab,
 } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -801,7 +802,7 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
     },
   );
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start with default Preset" }).click();
+  await page.locator("#create-agent-form").waitFor();
   await openAdvancedSettings(page);
   // The approvers select looks like every other select on the form: it was bold with a thin
   // square border and no padding (finding 2401).
@@ -820,6 +821,7 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
     await controlStyle(page.getByLabel("Default plugin approvers mode")),
     await controlStyle(page.getByLabel("Provider", { exact: true })),
   );
+  await openCreateTab(page, "plugins");
   await page.getByLabel("Default plugin approvers mode").selectOption("chosen");
   const people = page.getByRole("combobox", {
     name: "Default plugin approvers people",
@@ -861,6 +863,7 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
     .waitFor();
   releaseLookup.resolve();
   assert.ok(lookups.some((body) => body.secretId === bot.id && body.query === "free"));
+  await openCreateTab(page, "basics");
   await page.getByLabel("Agent name").fill("Approver search Agent");
   await enterManualModel(page, "synthetic-model-key", "gpt-5.1");
   await submitCreateAgent(page, fixture, namespace.id, { status: 201 });
@@ -927,9 +930,10 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
     },
   );
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption({ label: preset.name });
+  await page.getByLabel("Preset", { exact: true }).selectOption({ label: preset.name });
   await page.getByRole("button", { name: "Use Preset", exact: true }).click();
   await openAdvancedSettings(page);
+  await openCreateTab(page, "plugins");
   await page.getByLabel("Default plugin approvers mode").selectOption("chosen");
   // The people search's Secret picker follows the answer: its inline Create Secret is disabled
   // with the reason (finding 2451).

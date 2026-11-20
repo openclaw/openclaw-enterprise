@@ -27,9 +27,9 @@ a refused request; uncertain registration reuses the same request. Switching to 
 Open **Pages/Create Agent → Model choices before credential entry**. Use the
 story's catalog correction steps before entering credentials:
 
-1. In **Advanced settings**, add `models.providers.codex.models` as `{}` to
-   **Configuration JSON**. Close Advanced settings and choose `gpt-6-sol`.
-   Confirm the list returns to **Choose a model**, Advanced settings opens, and
+1. On the **Configuration** tab, add `models.providers.codex.models` as `{}` to
+   **Configuration JSON**. Return to **Basics** and choose `gpt-6-sol`.
+   Confirm the list returns to **Choose a model**, the Configuration tab opens, and
    JSON receives focus. The inline guidance says to use an array of model
    objects with an `id` or remove the field. The raw text stays unchanged.
 2. Correct the list to `[{"id":"gpt-6-astra","cost":{"input":1}}]` and choose

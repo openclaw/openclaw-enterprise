@@ -30,7 +30,7 @@ import {
 import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
 import { restrict } from "../helpers/iam-grants.ts";
 
-// The shipped default Preset, so Create Agent offers "Start with default Preset".
+// The shipped default Preset, which Create Agent starts from.
 const DEFAULT_CODEX_PRESET = await shippedPreset("default-codex");
 
 function assertId(value: unknown): asserts value is { id: string } {
@@ -281,10 +281,9 @@ test("the Namespace selector with no readable Namespace is reachable and names t
   assert.equal(new URL(page.url()).pathname, "/console/agents");
 });
 
-// Finding 2937: with no default Preset, Start with default Preset was natively disabled with no
-// reason. The hint beside it says why, describes it, and stays when another Preset is chosen
-// (the chooser's status line changes then).
-test("Start with default Preset names the missing default as its reason", async (t) => {
+// Finding 2937: without default-codex, Create Agent opens with No Preset chosen and lists the
+// Presets the reader may use. A Preset without variables fills the form once chosen.
+test("Create Agent without default-codex opens with No Preset and lists the others", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "No default Preset", {
     defaultPresets: [],
     filesystemConfiguration: true,
@@ -295,31 +294,24 @@ test("Start with default Preset names the missing default as its reason", async 
   assert.equal(other.status, 201, JSON.stringify(other.body));
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  const reason = "default-codex is not available to you in this Namespace.";
-  await page.getByText(reason, { exact: true }).waitFor();
-  const shortcut = page.getByRole("button", { name: "Start with default Preset", exact: true });
-  assert.equal(await shortcut.isDisabled(), true);
-  await expectReachableReason(page, shortcut, reason);
-  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
-  // The chooser's status line does not repeat the hint (finding 2946), and it still describes
-  // the unavailable Use Preset.
-  const choose = "Choose a Preset.";
-  await page
-    .getByRole("status")
-    .filter({ hasText: /^Choose a Preset\.$/ })
-    .waitFor();
-  assert.equal(await page.getByText(reason, { exact: false }).count(), 1);
-  await expectReachableReason(page, page.getByRole("button", { name: "Use Preset" }), choose);
+  const chooser = page.getByLabel("Preset", { exact: true });
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
+  await waitForEnabled(chooser);
+  assert.equal(await chooser.inputValue(), "");
+  assert.deepEqual(await chooser.locator("option").allTextContents(), ["No Preset", "Team Preset"]);
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
+  // Nothing waits on a choice, so no unavailable Use Preset shows.
+  assert.equal(await page.getByRole("button", { name: "Use Preset" }).isVisible(), false);
 
   const preset: unknown = other.data;
   assertId(preset);
-  await page.getByLabel("Preset template").selectOption(preset.id);
-  await page
-    .getByText("Fill in the variables, then use this Preset to create an editable draft.", {
-      exact: true,
-    })
-    .waitFor();
-  await expectReachableReason(page, shortcut, reason);
+  await chooser.selectOption(preset.id);
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  await page.getByText("From Preset · Team Preset", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Team Agent");
+  assert.equal(await page.getByLabel("Preset", { exact: true }).inputValue(), preset.id);
+  // The form uses this Preset now, so nothing is left to use.
+  assert.equal(await page.getByRole("button", { name: "Use Preset" }).isVisible(), false);
 });
 
 // Finding D793. Save plugin selections, Discard changes, Save channel Secrets and Use Preset were
@@ -364,19 +356,19 @@ test("a draft's disabled Save and Discard name their reasons", async (t) => {
   }
 });
 
-// Use Preset waits for a Preset; the status line under the chooser says so.
-test("Use Preset names the Preset still to choose as its reason", async (t) => {
+// A new form starts from default-codex: it has no variables, so it fills the form and offers no
+// Use Preset to wait on.
+test("Create Agent starts from default-codex without a Use Preset step", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Described Preset", {
     defaultPresets: [DEFAULT_CODEX_PRESET],
   });
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  const reason = "Choose a Preset or start with the default Preset.";
-  await page.getByRole("status").filter({ hasText: reason }).waitFor();
-  const use = page.getByRole("button", { name: "Use Preset" });
-  assert.equal(await use.isDisabled(), true);
-  await expectReachableReason(page, use, reason);
+  await page.getByText("From Preset · default-codex", { exact: true }).waitFor();
+  const chooser = page.getByLabel("Preset", { exact: true });
+  assert.equal(await chooser.locator("option:checked").textContent(), "default-codex");
+  assert.equal(await page.getByRole("button", { name: "Use Preset" }).isVisible(), false);
 });
 
 // A Slack token without a Secret is the reason too.
@@ -463,7 +455,7 @@ test("a pending Codex Create keeps Execution mode natively disabled", async (t) 
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Pending Codex mode");
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Preset", { exact: true }).selectOption("");
   await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
   await page.getByLabel("Agent name").fill("Pending Codex Agent");
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");

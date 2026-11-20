@@ -2,7 +2,7 @@
 published: false
 ---
 
-Open **Agents**, select the **default** Namespace, and click **Create Agent**. Choose **Start without Preset**.
+Open **Agents**, select the **default** Namespace, and click **Create Agent**.
 
 <Frame caption="Create Agent starts a new Agent in the selected Namespace.">
 
@@ -10,13 +10,7 @@ Open **Agents**, select the **default** Namespace, and click **Create Agent**. C
 
 </Frame>
 
-<Frame caption="Start without Preset opens the form where you choose the model and credentials.">
-
-![Start without Preset beside the default Preset option](../../assets/openshell-quickstart/start-without-preset.jpg)
-
-</Frame>
-
-Enter `fred` for **Agent name**. Choose **OpenAI** as the provider and **Codex** as the harness. Under **Authentication method**, choose one:
+The form opens on **Basics**. In **Preset**, make sure **No Preset** is selected. Enter `fred` for **Agent name**. Choose **OpenAI** as the provider and **Codex** as the harness. Under **Authentication method**, choose one:
 
 - **OpenAI API key** — For chat, select the Secret that holds your API key.
 - **Service Accounts** — For workspace plugins such as Linear, select a separate Secret that holds your ChatGPT workspace service account’s Codex access token. [Get a service account access token](https://learn.chatgpt.com/docs/enterprise/service-accounts#create-an-access-token).

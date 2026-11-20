@@ -81,8 +81,8 @@ startup; the renderer validates the list but does not read container files. See
 resolution and startup validation.
 
 Set `presets.includeDefaults` to `false` (default `true`) to seed only the
-listed files; saved Presets remain. To keep **Start with default Preset**, name
-your starter Preset `default-codex`.
+listed files; saved Presets remain. A new Create Agent form starts from the
+Preset named `default-codex`; to keep that, give your starter Preset this name.
 
 Repository support is optional. When enabled, the renderer wires the broker
 container, GitHub Backend, Repo Driver, and Compute peer. The repository registry

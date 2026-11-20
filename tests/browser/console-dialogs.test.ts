@@ -159,7 +159,7 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
         await page.goto(
           new URL(`/console/agents/new?namespace=${namespace.id}`, fixture.origin).href,
         );
-        await page.getByRole("button", { name: "Start without Preset" }).click();
+        await page.getByLabel("Preset", { exact: true }).selectOption("");
         await openCreateSecretDialog(page, "API key Secret");
         await page.getByRole("dialog", { name: "Create model credential Secret" }).waitFor();
         return page.getByLabel("API key Secret", { exact: true });
@@ -359,7 +359,7 @@ test("On a phone the Secret sheet keeps its actions in the visible area above th
     context: { viewport: { width: 390, height: 844 } },
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Preset", { exact: true }).selectOption("");
   await openCreateSecretDialog(page, "API key Secret");
   await page.getByRole("dialog", { name: "Create model credential Secret" }).waitFor();
   await openDialog(page);

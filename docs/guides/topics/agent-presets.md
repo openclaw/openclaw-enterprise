@@ -101,13 +101,19 @@ selected runtime before relying on it.
    Namespace IAM cannot grant `create`, so only Installation administrators can save
    the Agent. Other members can render a Preset into a draft, and the console says
    that creating it needs Installation access.
-2. Choose your Preset in **Preset template**, fill its variables,
-   and select **Use Preset**. The chooser closes and the Agent form opens with
-   the rendered copy. To load the installed `default-codex` copy, select **Start with default Preset**.
-   To create an Agent without a saved setup, select **Start without Preset** instead.
-3. Review the model, execution mode, native Configuration JSON, authentication,
-   plugin selections, and workspace files under Advanced settings. Configure Slack
-   Secrets in its channel drawer. Edit any copied setting and fill
+2. The form opens on **Basics**. A new form starts from the installed
+   [`default-codex` copy](../../reference/presets.md#plain-console-default) when
+   you can read it. In **Preset**, choose your Preset, fill its variables, and
+   select **Use Preset**. The form does not change until then. If the form has
+   changes, confirm that the draft can be discarded. The form then holds the
+   rendered copy and shows a **From Preset** badge.
+   To create an Agent without a saved setup, choose **No Preset** instead.
+   If the console cannot read the Presets, **Preset** is disabled and the text
+   under it gives the reason.
+3. Review each tab: the model, execution mode, and authentication on **Basics**,
+   native Configuration JSON on **Configuration**, plugin selections on
+   **Plugins**, Slack Secrets on **Channels**, repositories on **Repositories**,
+   and workspace files on **Workspace files**. Edit any copied setting and fill
    missing values. Enter credentials only in password variables or credential
    fields; never in ordinary variables or native JSON.
 4. Select **Create Agent**. Supported Dedicated runtimes start first-time
@@ -123,16 +129,20 @@ Existing mode reuses the selected reference without reading credential bytes.
 Choosing another primary model keeps the ordered fallback list and saved options for
 still-referenced models. Review the resulting Configuration JSON before saving.
 
-Variables are used once to fill the form. Edit the resulting fields directly.
+Variables are used once to fill the form, and no longer show after **Use Preset**.
+Edit the resulting fields directly.
 You can navigate away and return to your [unsaved Console draft](../../reference/console/create-and-deploy.md#create-an-agent); reenter any new credentials.
-Before saving, to choose another Preset or supply different variables, select **Start over**
-and confirm that the unsaved draft can be discarded. A supplied
+Before saving, to use another Preset, choose it in **Preset**. To supply different
+variables, choose **No Preset** and then the Preset again, or select **Start over**.
+Each action replaces the form; confirm that the unsaved draft can be discarded.
+**Preset** is disabled when **Start over** is. A supplied
 `configuration.values` replaces the entire native JSON editor.
 
 If Create Agent refuses a Configuration setting that a variable filled, the
 refusal names that variable and offers **Change** with its name. That action
-returns to the Preset with your entries, except passwords. The variable shows
-the refusal and has focus. The action is available only while **Start over** is.
+opens the form without a Preset, with that Preset selected in **Preset** and your
+entries kept, except passwords. The variable shows the refusal and has focus.
+The action is available only while **Start over** is.
 A variable used in a key is named only for a refusal of that key, not of a setting inside it.
 If you changed that setting in the Configuration JSON, the refusal names no variable.
 

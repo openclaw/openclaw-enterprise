@@ -14,13 +14,23 @@ Compare **New version queued**, **Deployment waiting for runtime**, and
 a separate credential action. Its initial state is not a Stop request; OCC
 generation is simulated.
 
-Choose a Preset, fill its variables, review seeded workspace files, and create
+In **Preset** on **Basics**, choose a Preset, fill its variables, and select
+**Use Preset**. Review seeded files on **Workspace files**, and create
 a Codex-harness Agent: the Console submits inline Configuration and Secret
 references, then follows simulated provisioning. Another flow uses the default
 Preset with OpenAI Codex, a new or existing model Secret, and a model, editing
 IDENTITY.md and clearing USER.md first.
 OpenClaw and unsupported-runtime stories keep the draft workflow: provision
 credentials and deploy from Agent detail.
+
+These simulated **Pages → Create Agent** stories show the form's tabs and Preset
+states. **New form** opens filled from the default Preset, with the bar under the
+title and the six tabs. **No Preset** shows the empty form. **Preset variables**
+shows a Preset that is chosen but not yet used. In **Initial workspace file the
+API would refuse**, **Create Agent** on **Basics** selects **Workspace files** and
+focuses AGENTS.md. **Model credential Secret required** focuses the Secret field.
+**Secret creation not permitted** and **Default Preset access denied** show the
+permission-limited states.
 
 **Plugins Curated** exercises token-free discovery against simulated Driver
 responses, leaving access unverified. Hosted discovery requires an eligible Codex
@@ -118,9 +128,9 @@ In **Flows → Keep an Agent draft**, fill a default starter form, leave, and
 re-enter, also after a refused Create: it returns; Cancel clears it.
 
 In **Pages/Create Agent → Preset with an invalid field**, Use Preset names
-`agent.executionMode` and keeps the chooser. **Agent creation needs an
-administrator** shows the denied capability check without retry; **Capability
-check failure** keeps the retry.
+`agent.executionMode`, keeps the variables, and leaves the form unchanged.
+**Agent creation needs an administrator** shows the denied capability check
+without retry; **Capability check failure** keeps the retry.
 
 Use **Pages/Create Agent → Keep Preset variables** before applying a Preset and
 **Keep an unsaved Preset draft** afterward. Ordinary fields survive; token inputs

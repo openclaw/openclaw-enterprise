@@ -1,5 +1,5 @@
 import {
-  openAdvancedSettings,
+  openCreateTab,
   openCreateSecretDialog,
   waitForCreateFormReads,
 } from "./console-agents-ui-test-support.ts";
@@ -429,7 +429,7 @@ test("Create Agent refuses what the API would refuse before any write", async (t
     await routeInstallationWithoutProvisioning(page, fixture);
     const requests = apiRequests(page, fixture.origin);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByRole("button", { name: "Start with default Preset" }).click();
+    await page.locator("#create-agent-form").waitFor();
     await waitForCreateFormReads(page);
     if (secret) {
       // A complete form apart from the field under test, so that field is the first to fix.
@@ -459,14 +459,14 @@ test("Create Agent refuses what the API would refuse before any write", async (t
   });
 
   // Finding 2341: an oversized or NUL workspace file was refused by the API with a message that
-  // named no file, inside the collapsed Advanced settings.
+  // named no file, inside a section the reader could not see.
   await t.test("initial workspace files follow the Workspace tab's rule", async (t) => {
     const { page, invalidEvents, requests } = await createForm(t, "Workspace rule", "Files key");
     await page.getByLabel("Agent name", { exact: true }).fill("Workspace rule");
-    await openAdvancedSettings(page);
+    await openCreateTab(page, "workspace");
     const agents = page.getByLabel("AGENTS.md", { exact: true });
     const create = page.getByRole("button", { name: "Create Agent", exact: true });
-    const advanced = page.locator(".launch-advanced");
+    const workspaceTab = page.locator("#create-tab-workspace");
     const tooLarge = "Use at most 16 KiB (16,384 UTF-8 bytes) in AGENTS.md.";
     for (const [content, error] of [
       ["a".repeat(16_385), tooLarge],
@@ -474,11 +474,12 @@ test("Create Agent refuses what the API would refuse before any write", async (t
       ["x\0y", "Use valid Unicode without NUL characters in AGENTS.md."],
     ] as const) {
       await agents.fill(content);
-      // Advanced settings closes, so the check must open it to show the file.
-      await advanced.locator("> summary").click();
+      // Another tab shows, so the check must select the Workspace files tab to show the file.
+      await openCreateTab(page, "basics");
       await create.click();
       assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
-      assert.equal(await advanced.evaluate((node) => (node as HTMLDetailsElement).open), true);
+      assert.equal(await workspaceTab.getAttribute("aria-selected"), "true");
+      assert.equal(await page.locator("#create-panel-basics").isVisible(), false);
       await assertShownError(agents, error);
     }
     assert.deepEqual(nonAuthWriteRequests(requests), [], "nothing is saved");

@@ -10,7 +10,7 @@ each story at 1440 and at 390.
    Model Secret each show "… is required." in red under the control, above
    its help. Focus is on Name. Name, which names the Agent, is a single-line
    input; Model stays a textarea, as any other Preset string may hold several
-   lines. The Preset template select has the same edge and height as the
+   lines. The Preset select has the same edge and height as the
    inputs.
 2. Type a name. Its error clears; the others stay until Use Preset again,
    which moves focus to Model.
@@ -50,8 +50,8 @@ each story at 1440 and at 390.
     both lines are there.
 11. Open **Agent name the API would refuse**. Agent name shows the same Name
     rule and has focus. Open **Initial workspace file the API would refuse**:
-    Advanced settings is open and AGENTS.md shows its 16 KiB error, naming the
-    file, with focus.
+    the Workspace files tab is selected and AGENTS.md shows its 16 KiB error,
+    naming the file, with focus.
 12. With a screen reader, focus each field with an error: it reads the label,
     then the error and the help.
 

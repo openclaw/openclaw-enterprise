@@ -144,7 +144,7 @@ async function openGatedForm(
   }
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   const view = page.locator(settledView);
-  await view.getByRole("button", { name: "Start without Preset" }).click();
+  await view.getByLabel("Preset", { exact: true }).selectOption("");
   await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
   await view.getByText(WAITS, { exact: true }).waitFor();
   const create = view.getByRole("button", { name: "Create Agent", exact: true });
@@ -289,7 +289,7 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
       await view.getByRole("button", { name: "Start over", exact: true }).click();
       await view.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
       await view.getByRole("status").filter({ hasText: MISSING }).waitFor();
-      assert.equal(await view.getByRole("button", { name: "Start without Preset" }).count(), 0);
+      assert.equal(await view.locator("#create-agent-form").count(), 0);
     },
   );
 
@@ -435,7 +435,7 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     await view.getByText(READY_PLAN, { exact: true }).waitFor();
     page.once("dialog", (dialog) => void dialog.accept());
     await view.getByRole("button", { name: "Start over", exact: true }).click();
-    await view.getByRole("button", { name: "Start without Preset" }).click();
+    await view.getByLabel("Preset", { exact: true }).selectOption("");
     await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
     await view.getByText(READY_PLAN, { exact: true }).waitFor();
     assert.equal(await view.getByText(NOT_READY).count(), 0);
@@ -452,7 +452,7 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     const replaced = await create.elementHandle();
     page.once("dialog", (dialog) => void dialog.accept());
     await view.getByRole("button", { name: "Start over", exact: true }).click();
-    await view.getByRole("button", { name: "Start without Preset" }).waitFor();
+    await view.locator("#create-agent-form").waitFor();
     namespaces.status = null;
     release();
     await waitForSettledFetches(page, "/namespaces", answered + 1);

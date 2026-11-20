@@ -611,9 +611,10 @@ test("refocusing at phone width with the navigation drawer open focuses the draw
 // brings it back to the page's first. That lap is not the reader coming back: the refocus recheck
 // it started held the page inert, so the next lap went from the header straight back to the
 // sidebar (finding 2879). Each recheck's session read is held here, so a held page stays held
-// while the lap runs. A refocus from elsewhere still rechecks.
+// while the lap runs. A refocus from elsewhere still rechecks the Agent page. Create Agent is a
+// form from the start, and a refocus never reloads a form, which would discard it.
 for (const view of ["Agent page", "Create Agent"] as const) {
-  test(`a Tab lap past the end of ${view} reaches its content again, and a refocus still rechecks`, async (t) => {
+  test(`a Tab lap past the end of ${view} reaches its content again, and a refocus ${view === "Agent page" ? "still rechecks" : "keeps its form"}`, async (t) => {
     const { fixture, namespace } = await createReadyConsoleNamespace(t, `Tab lap ${view}`);
     const agent = await fixture.createAgent(namespace.id, "Tab lap Agent", nativeValues("v1"));
     const { page } = await newPage(t, fixture, { browser });
@@ -689,6 +690,16 @@ for (const view of ["Agent page", "Create Agent"] as const) {
     assert.equal(sessionReads, 0, "a Tab lap starts no recheck");
     assert.equal(await page.locator(heldView).count(), 0);
 
+    if (view === "Create Agent") {
+      // No refocus holds or reloads the form, so the lap is the only way focus returns to it.
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      await page.evaluate(() => globalThis.dispatchEvent(new Event("blur")));
+      await refocus(page);
+      assert.equal(await page.locator(heldView).count(), 0);
+      assert.equal(sessionReads, 0, "a refocus does not reload the form");
+      assert.equal(await page.locator("#create-agent-form").count(), 1);
+      return;
+    }
     // A refocus that no Tab started is the reader coming back: it rechecks and holds the page.
     await refocus(page);
     await page.locator(heldView).waitFor();
@@ -709,25 +720,19 @@ for (const view of ["Agent page", "Create Agent"] as const) {
     await page.locator(settledView).waitFor();
 
     // Nor is a Tab out that comes back after the lap window (10 s): the reader may have been
-    // elsewhere meanwhile, so the return rechecks. One page is enough for this shared handler.
-    if (view === "Agent page") {
-      holdSession();
-      assert.equal(await tabUntil("outside"), true, "Tab leaves the page");
-      await new Promise((resolve) => setTimeout(resolve, 10_500));
-      await page.keyboard.press("Tab");
-      await page.locator(heldView).waitFor();
-      await sessionReadsReach(3, "a return after the lap window rechecks");
-      releaseSession();
-      await page.locator(settledView).waitFor();
-    }
+    // elsewhere meanwhile, so the return rechecks.
+    holdSession();
+    assert.equal(await tabUntil("outside"), true, "Tab leaves the page");
+    await new Promise((resolve) => setTimeout(resolve, 10_500));
+    await page.keyboard.press("Tab");
+    await page.locator(heldView).waitFor();
+    await sessionReadsReach(3, "a return after the lap window rechecks");
+    releaseSession();
+    await page.locator(settledView).waitFor();
     // Each stage's exact count can absorb a late duplicate read from the stage before it, and
     // the last stage has no stage after it: once the last recheck has settled, no further
     // session read has been sent (finding 3120).
-    assert.equal(
-      sessionReads,
-      view === "Agent page" ? 3 : 2,
-      "the last recheck sends no duplicate session read",
-    );
+    assert.equal(sessionReads, 3, "the last recheck sends no duplicate session read");
   });
 }
 

@@ -33,9 +33,10 @@ as the reason Dedicated OpenClaw is disabled.
 
 1. Sign in, select the intended Namespace, open **Agents**, and select
    **Create Agent**.
-2. Choose a [Preset](../presets.md), fill its variables, and select **Use Preset**.
-   Review defaults and choose a model Secret.
-   **Start with default Preset** loads `default-codex`. **Start without Preset** skips Presets.
+2. The form opens on **Basics**, filled from `default-codex` when
+   [available](../presets.md#plain-console-default). For another [Preset](../presets.md),
+   choose it in **Preset**, fill its variables, and select **Use Preset**. **No Preset**
+   empties the form.
 3. Name the Agent uniquely within its Namespace. Choose **Provider**, then
    **Harness**. OpenAI offers **Codex** (default, Dedicated **Execution mode**)
    and **OpenClaw**. Anthropic offers only Embedded **OpenClaw**. OpenAI OpenClaw
@@ -52,28 +53,28 @@ as the reason Dedicated OpenClaw is disabled.
    Reselect unlisted IDs when you return.
 4. Check Installation, credential, and runtime model support. Primary and
    fallback models must share a supported provider and Harness. Model changes keep
-   unrelated JSON and authored `plugins.allow`/`plugins.deny`. **Advanced settings** → **Reset template** replaces them.
+   unrelated JSON and authored `plugins.allow`/`plugins.deny`. **Configuration** → **Reset template** replaces them.
    If a malformed provider list, malformed Codex `plugins.allow`, or a number
    outside JavaScript's finite range blocks a JSON rewrite, the form keeps the draft
    and focuses **Configuration JSON**. Fix or remove the malformed field, or replace `1e400` with a finite value; retry.
    Provider lists take model objects with string `id` values in an array.
    `plugins.allow` takes a string array.
-5. Under **Repository access**, optionally select up to 16 approved repositories
+5. On **Repositories**, optionally select up to 16 approved repositories
    and set their [access levels](repository-access.md). Kubernetes supports Codex (Dedicated) and Embedded
    OpenClaw without a Sandbox Driver, not Dedicated OpenClaw. Use Codex for repositories
    with Slack.
 
-6. For Slack, select **Dedicated** execution and open its channel card.
+6. For Slack, select **Dedicated** execution and open the **Channels** Slack card.
    Each token menu offers readable Namespace Secrets and **Create new Secret...**.
    **Apply channel settings** stages settings and bindings. **Cancel** discards selections.
    Configuration stores settings and Secret bindings. The Agent stores plugin selections.
    After creation, you can supply Slack credentials on the Agent's **Credentials** tab.
-7. Optionally configure plugins or open **Advanced settings** for Configuration JSON
-   and **Workspace files**. Presets prefill overrides. Omitted files use OpenClaw
-   defaults. Clear a field to submit an empty file. The browser submits LF
-   newlines. See [initial contents](../agents.md#initial-contents-at-creation) for limits.
-8. Select **Create Agent** to submit Configuration, Secret references, Agent inputs,
-   repositories, and workspace files for supported Dedicated provisioning.
+7. Optionally edit **Plugins**, **Configuration**, or **Workspace files**. Presets prefill
+   overrides. Omitted files use OpenClaw defaults. Clear a field to submit an empty file.
+   The browser submits LF newlines. See [initial contents](../agents.md#initial-contents-at-creation) for limits.
+8. Select **Create Agent**, under the page title, to submit Configuration, Secret references,
+   Agent inputs, repositories, and workspace files for supported Dedicated provisioning.
+   A field to correct selects its tab and takes focus.
    Create opens the first revision's **Deployment** tab for progress and recovery as soon as
    it can read the deployment. If Create sees job success first, it opens **Configuration**.
    If a newer deployment takes over while Create is open, Create offers no retry or link.

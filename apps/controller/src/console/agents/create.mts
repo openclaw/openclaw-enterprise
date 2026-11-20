@@ -19,12 +19,15 @@ import type { Static } from "typebox";
 import { type RequestOptions, requestFailure, responseFields } from "../api-client.mjs";
 import { sameValue } from "../carry.mjs";
 import defaultCodexPreset from "../default-codex-preset.mjs";
+import type { createDraftStore } from "../drafts.mjs";
 import {
   button,
   element,
   field as formField,
   fieldError,
   jsonObjectDiagnostic,
+  REVEAL_FIELD,
+  revealField,
   setFieldError,
   setStatusTone,
   setText,
@@ -50,6 +53,7 @@ import { workspaceFileProblem } from "./workspace.mjs";
 import { namespaceNameProblem } from "../namespaces.mjs";
 import {
   createPresetFields,
+  type PresetDraft,
   presetVariableLabels,
   type PresetReturn,
   refusedPresetVariables,
@@ -104,7 +108,7 @@ export interface CreateAgentContext extends AgentNavigation {
   permissions: Permissions | null | undefined;
   // The Namespace permission answer's secrets.create, for inline Create Secret.
   secretsCreateAllowed?: (() => Promise<boolean | undefined>) | undefined;
-  drafts: Parameters<typeof createPresetFields>[0]["drafts"];
+  drafts: ReturnType<ReturnType<typeof createDraftStore>["scope"]>;
   request: CreateRequest;
   isCurrent(): boolean;
   onExpired(): void;
@@ -183,6 +187,8 @@ export interface CreateAgentDraft {
   savedSecret: SecretMetadata | undefined;
   savedCredentialSource: RegisteredCredential | undefined;
   savedConfiguration: SavedConfiguration | undefined;
+  // The Preset chooser's selection and variables, applied or not.
+  presetChoice?: PresetDraft | undefined;
 }
 
 interface ProvisioningAttempt {
@@ -738,60 +744,97 @@ export function renderCreateAgent(
     }
     return;
   }
-  // Starting the form replaces the launch view, and with it the control that started it. Give
-  // focus to the page heading instead of dropping it to the document (finding 1446).
   const operateAnswer = namespaceSecretOperateAnswer(context);
-  const startForm = (
-    rendered: PresetLaunchSettings,
-    options: PresetOptions,
-    draft?: Partial<CreateAgentDraft>,
-  ) => {
-    renderAgentForm(context, rendered, options, draft, operateAnswer);
-    // The chooser could be scrolled; the form starts at its heading (finding 2098).
-    if (document.activeElement === document.body && context.isCurrent()) {
-      context.view.closest(".content")?.querySelector("h1")?.focus();
-    }
-  };
-  const presets = createPresetFields(
+  // A Preset the reader is sent back to shows its variables in Basics (finding 3122).
+  if (returning) {
+    renderAgentForm(context, {}, {}, {}, operateAnswer, returning);
+    return;
+  }
+  // A new form starts from default-codex when it is available. This chooser reads the Presets
+  // first, so the form opens once: filled, or without a Preset and with this chooser's selection.
+  const chooser = createPresetFields(
     { ...context, secretsOperateDenied: operateAnswer.read },
-    startForm,
-    returning,
+    (rendered, options, draft) => {
+      renderAgentForm(context, rendered, options, draft, operateAnswer);
+      focusHeading(context);
+      return true;
+    },
+    undefined,
+    {
+      autoDefault: true,
+      onSettled() {
+        if (context.isCurrent() && chooser.section.isConnected) {
+          renderAgentForm(context, {}, {}, { presetChoice: chooser.capture() }, operateAnswer);
+        }
+      },
+    },
   );
+  chooser.section.hidden = true;
   context.view.replaceChildren(
     // A provisioning Namespace accepts drafts; its status shows before any start (finding 1895).
     // replaceChildren would print a null child as the text "null".
     ...(notReady ? [namespaceNote(notReady)] : []),
-    element(
-      "section",
-      { className: "launch-intro agent-card" },
-      element("h2", {}, "Your next teammate"),
-      element(
-        "p",
-        { className: "muted" },
-        // Repository access depends on the Installation; the form offers it where set up
-        // (finding 2404).
-        "Choose a model and give your Agent a place to work.",
-      ),
-      element(
-        "div",
-        { className: "launch-actions" },
-        presets.startDefault,
-        button("Start without Preset", () => startForm({}, {})),
-      ),
-      presets.defaultHint,
-    ),
-    element(
-      "section",
-      { className: "agent-card launch-preset" },
-      element("h2", {}, "Use a saved setup"),
-      element(
-        "p",
-        { className: "muted" },
-        "Start from a Preset to reuse your team's configuration.",
-      ),
-      presets.section,
-    ),
+    element("p", { className: "hint", role: "status" }, "Loading Presets…"),
+    chooser.section,
   );
+}
+
+// Moves focus to the page heading when the control that had it left with a replaced form
+// (findings 1446, 2098).
+function focusHeading(context: CreateAgentContext) {
+  if (document.activeElement === document.body && context.isCurrent()) {
+    context.view.closest(".content")?.querySelector("h1")?.focus();
+  }
+}
+
+// The Create Agent sections as tabs, with the Agent page's tab list markup and style (detail.mts).
+// Every panel is already built, so Left/Right and Home/End select as they move focus, as the
+// Workspace file tabs do. Hidden panels keep their fields: the form's state and validation span
+// every tab, and a field the form reveals selects its tab.
+function createAgentTabs(entries: readonly (readonly [string, string, HTMLElement])[]) {
+  const tabs = entries.map(([id, label, panel]) => {
+    const tab = button(label, () => select(panel), {
+      id: `create-tab-${id}`,
+      role: "tab",
+      "aria-controls": `create-panel-${id}`,
+    });
+    panel.id = `create-panel-${id}`;
+    panel.setAttribute("role", "tabpanel");
+    panel.setAttribute("aria-labelledby", tab.id);
+    panel.addEventListener(REVEAL_FIELD, () => select(panel));
+    return tab;
+  });
+  function select(shown: HTMLElement) {
+    for (const [index, [, , panel]] of entries.entries()) {
+      const tab = tabs[index];
+      panel.hidden = panel !== shown;
+      tab?.setAttribute("aria-selected", String(panel === shown));
+      tab?.setAttribute("tabindex", panel === shown ? "0" : "-1");
+    }
+  }
+  const tablist = element(
+    "div",
+    { className: "agent-tabs", role: "tablist", "aria-label": "Create Agent sections" },
+    ...tabs,
+  );
+  tablist.addEventListener("keydown", (event) => {
+    const at = tabs.findIndex((tab) => tab === document.activeElement);
+    const next = { ArrowLeft: at - 1, ArrowRight: at + 1, Home: 0, End: tabs.length - 1 }[
+      event.key
+    ];
+    if (at < 0 || next === undefined || event.altKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
+    event.preventDefault();
+    const tab = tabs[(next + tabs.length) % tabs.length];
+    tab?.click();
+    tab?.focus();
+  });
+  const first = entries[0]?.[2];
+  if (first) {
+    select(first);
+  }
+  return tablist;
 }
 
 // A member's deploy gives the Agent access to each Secret and credential source it uses that the
@@ -851,6 +894,7 @@ function renderAgentForm(
   presetOptions: PresetOptions = {},
   draft: Partial<CreateAgentDraft> = {},
   operateAnswer = namespaceSecretOperateAnswer(context),
+  returning?: PresetReturn,
 ) {
   const { view, request, namespaceId } = context;
   const secretsOperateDenied = operateAnswer.read;
@@ -1262,6 +1306,7 @@ function renderAgentForm(
     feedback.textContent =
       "Choose an existing model credential Secret, then select Create Agent. Your other draft fields are unchanged.";
     updateControls();
+    revealField(modelCredentialField);
     modelCredentialField.querySelector("input")?.focus();
   });
   const chooseAlternateName = button("Use another Secret name", () => {
@@ -1270,6 +1315,7 @@ function renderAgentForm(
     }
     alternateSecretField.hidden = false;
     alternateSecretName.required = true;
+    revealField(alternateSecretName);
     alternateSecretName.focus();
   });
   const secretConflictRecovery = statusBlock(
@@ -2131,6 +2177,7 @@ function renderAgentForm(
   let stagedChannelSecrets = draft.stagedChannelSecrets ?? [];
   const feedback = element("p", { className: "error", role: "alert" });
   const savedStatus = element("p", { className: "hint", role: "status" });
+  const barState = element("p", {}, "Not created yet.");
   // Create's refusals show in the danger status block (UX plan C1). The line above keeps its
   // markup so open changes to the lines around it still merge.
   setStatusTone(feedback, "danger");
@@ -2399,10 +2446,36 @@ function renderAgentForm(
   const intro = element("p", { className: "muted" }, introText(true));
   // The collapsed Runtime details still name the selected execution mode.
   const runtimeModeSummary = element("span", { className: "muted" });
+  // Basics starts with the Preset this form was filled from. Another Preset, or No Preset, fills
+  // the form again as Start over does, so it asks first when the form has changes (finding 1902).
+  const replaceForm = (
+    settings: PresetLaunchSettings,
+    options: PresetOptions,
+    replacement: Partial<CreateAgentDraft>,
+  ) => {
+    if (
+      startOver.disabled ||
+      (isTouched() && !window.confirm("Discard this draft and fill the form again?"))
+    ) {
+      return false;
+    }
+    context.drafts.forget("channels");
+    renderAgentForm(context, settings, options, replacement, operateAnswer);
+    focusHeading(context);
+    return true;
+  };
+  const presets = createPresetFields(secretContext, replaceForm, returning, {
+    applied: presetOptions.presetDraft,
+    appliedName: presetOptions.presetName,
+    pending: draft.presetChoice,
+    clear: () => replaceForm({}, {}, {}),
+  });
+  const presetSection = presets.section;
   let repositories: Repositories;
-  const form = element(
-    "form",
-    { id: formId, className: "agent-form agent-card", novalidate: "" },
+  const basicsPanel = element(
+    "div",
+    {},
+    presetSection,
     ...(presetBadge ? [presetBadge] : []),
     field("Agent name", name, "Unique within this Namespace."),
     authSection,
@@ -2419,6 +2492,10 @@ function renderAgentForm(
         "Codex uses Dedicated execution. OpenClaw uses Dedicated execution with a Sandbox Driver that provisions it, and Embedded execution without a Sandbox Driver. Slack requires Dedicated execution.",
       ),
     ),
+  );
+  const repositoriesPanel = element(
+    "div",
+    {},
     (repositories = createRepositoryFields(
       context,
       (changed) => {
@@ -2433,27 +2510,46 @@ function renderAgentForm(
       // never to learn the answer (finding 2909).
       { held: namespacePermissions?.agents?.create !== true },
     )).section,
-    pluginFields.section,
-    element(
-      "details",
-      { className: "launch-advanced" },
-      element("summary", {}, "Advanced settings"),
-      element(
-        "p",
-        { className: "hint" },
-        "Defaults are ready to use. Customize configuration or initial workspace files when needed.",
-      ),
-      field(
-        "Configuration JSON",
-        configuration,
-        "Provider and model selections update this JSON. Supported Dedicated runtimes provision and deploy from this form. Embedded and unsupported runtimes save a draft for later deployment. Slack token Secrets can be selected or created from the channel editor.",
-        configurationError.node,
-      ),
-      reset,
-      workspaceSection,
-    ),
   );
+  const pluginsPanel = element("div", {}, pluginFields.section);
+  const configurationPanel = element(
+    "div",
+    {},
+    field(
+      "Configuration JSON",
+      configuration,
+      "Provider and model selections update this JSON. Supported Dedicated runtimes provision and deploy from this form. Embedded and unsupported runtimes save a draft for later deployment. Slack token Secrets can be selected or created from the channel editor.",
+      configurationError.node,
+    ),
+    reset,
+  );
+  const workspacePanel = element("div", {}, workspaceSection);
+  // Channels save through their own editor, outside the form, so its controls never submit it.
+  const channelsPanel = element("div", {}, channelEditor);
+  const form = element(
+    "form",
+    { id: formId, className: "agent-form agent-card", novalidate: "" },
+    basicsPanel,
+    configurationPanel,
+    pluginsPanel,
+    repositoriesPanel,
+    workspacePanel,
+  );
+  const tabs = createAgentTabs([
+    ["basics", "Basics", basicsPanel],
+    ["configuration", "Configuration", configurationPanel],
+    ["plugins", "Plugins", pluginsPanel],
+    ["channels", "Channels", channelsPanel],
+    ["repositories", "Repositories", repositoriesPanel],
+    ["workspace", "Workspace files", workspacePanel],
+  ]);
+  // The Preset chooser keeps its own variables, draft and checks: the form's do not include it.
+  const inPresetChooser = (target: EventTarget | null) =>
+    target instanceof Node && presetSection.contains(target);
   form.addEventListener("input", (event) => {
+    if (inPresetChooser(event.target)) {
+      return;
+    }
     edited = true;
     const control = event.target;
     if (
@@ -2474,8 +2570,10 @@ function renderAgentForm(
       }
     }
   });
-  form.addEventListener("change", () => {
-    edited = true;
+  form.addEventListener("change", (event) => {
+    if (!inPresetChooser(event.target)) {
+      edited = true;
+    }
   });
   const draftInputs = {
     name,
@@ -2511,6 +2609,9 @@ function renderAgentForm(
   // Whether the reader changed this form itself, not only the Preset variables before it.
   let changedHere = false;
   const markTouched = (event: Event) => {
+    if (inPresetChooser(event.target)) {
+      return;
+    }
     touched ||= event.isTrusted;
     changedHere ||= event.isTrusted;
   };
@@ -2523,6 +2624,7 @@ function renderAgentForm(
   const isTouched = () => touched || edited;
   const captureDraft = (): CreateAgentDraft => ({
     touched: isTouched(),
+    presetChoice: presets.capture(),
     nativeAdmin: nativeAdmin.checked,
     rendered,
     presetOptions,
@@ -2552,10 +2654,12 @@ function renderAgentForm(
       ? { modelCredentialSource: savedSecret.ref, modelCredentialSecret: savedSecret }
       : {}),
   });
-  // A changed form, or one holding resources a refused Create saved, would lose work on reload.
+  // A changed form, Preset variables changed and not used yet, or resources a refused Create
+  // saved would lose work on reload.
   const unsavedDraft = (captured?: CreateAgentDraft) =>
     Boolean(
       captured?.touched ||
+      captured?.presetChoice?.touched ||
       captured?.savedSecret ||
       captured?.savedCredentialSource ||
       captured?.savedConfiguration,
@@ -2599,12 +2703,9 @@ function renderAgentForm(
     }
     return undefined;
   }
-  // The JSON is the thing to fix: open its section and put the caret there (finding 1903).
+  // The JSON is the thing to fix: open its tab and put the caret there (finding 1903).
   function focusConfiguration() {
-    const details = configuration.closest("details");
-    if (details) {
-      details.open = true;
-    }
+    revealField(configuration);
     configuration.focus();
   }
   function hasEnabledChannel(values: Record<string, unknown>) {
@@ -2949,7 +3050,7 @@ function renderAgentForm(
     for (const node of form.querySelectorAll<
       HTMLInputElement | HTMLSelectElement | HTMLButtonElement | HTMLTextAreaElement
     >("button, input, select, textarea")) {
-      if (repositories?.section.contains(node)) {
+      if (repositories?.section.contains(node) || presetSection.contains(node)) {
         continue;
       }
       node.disabled = planLocked;
@@ -3315,6 +3416,9 @@ function renderAgentForm(
       Boolean(savedSecret || savedCredentialSource || credentialRegistration);
     // Shown only while it can act, so no unavailable action sits in the refusal.
     changePresetVariables.hidden = startOver.disabled;
+    // A Preset replaces the form, so it is chosen only while Start over could be.
+    presets.setLocked(startOver.disabled);
+    barState.hidden = Boolean(savedAgent);
     if (useModelChoices) {
       choiceField.hidden = manualModel;
       modelField.hidden = !manualModel;
@@ -3381,6 +3485,7 @@ function renderAgentForm(
     waitForNamespace();
     if (focusTakenName && !name.disabled) {
       focusTakenName = false;
+      revealField(name);
       name.focus();
     }
   };
@@ -3404,6 +3509,7 @@ function renderAgentForm(
         active === savedStatus ||
         active === feedback)
     ) {
+      revealField(line);
       line.tabIndex = -1;
       line.focus({ preventScroll: true });
       line.scrollIntoView({ block: "nearest" });
@@ -3832,8 +3938,8 @@ function renderAgentForm(
     if (ownsSecretRecovery() && !alternateSecretField.hidden) {
       alternateSecretName.setCustomValidity(namespaceNameProblem(alternateSecretName.value.trim()));
     }
-    // The Workspace tab's check, naming the file; validateFields opens Advanced settings to it
-    // (finding 2341).
+    // The Workspace tab's check, naming the file; validateFields opens the Workspace files tab
+    // to it (finding 2341).
     for (const [filename, input] of workspaceInputs) {
       input.setCustomValidity(workspaceFileProblem(filename, input.value));
     }
@@ -3847,8 +3953,9 @@ function renderAgentForm(
       selectedModeUnavailable() ||
       credentialSourceRefused() ||
       (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
-      // The console's own errors under each field, not the browser's bubble (UX plan C3).
-      !validateFields([...form.elements])
+      // The console's own errors under each field, not the browser's bubble (UX plan C3). The
+      // Preset chooser checks its own variables.
+      !validateFields([...form.elements].filter((control) => !presetSection.contains(control)))
     ) {
       return;
     }
@@ -3863,6 +3970,8 @@ function renderAgentForm(
       return;
     }
     if (!savedAgent && !repositories.validate({ required: requiresRepositories() })) {
+      revealField(repositories.section);
+      repositories.section.focus();
       return;
     }
     if (!model.value.trim()) {
@@ -4420,18 +4529,18 @@ function renderAgentForm(
     }
   });
   view.replaceChildren(
+    // The bar under the title holds the form's state and its actions. The page header above it
+    // names the Namespace.
+    element("div", { className: "create-agent-bar" }, barState, actions),
     ...(notReadyNote ? [notReadyNote] : []),
     intro,
     accessStatus,
-    form,
-    channelEditor,
+    element("div", { id: "create-agent-sections" }, tabs, form, channelsPanel),
     // The outcome leads; the saved-resources line identifies what was kept (finding 1862).
     feedback,
     savedStatus,
     recovery,
-    actions,
   );
   context.setDraftCapture(captureDraft, unsavedDraft);
-  context.drafts.forget("preset");
   context.setDiscardOnExit(false);
 }

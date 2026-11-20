@@ -147,7 +147,7 @@ test("create a Namespace from the console, then open its Agent workflow", async 
   await view.getByRole("heading", { name: "No Agents yet", exact: true }).waitFor();
   assert.equal(await page.getByLabel("Namespace", { exact: true }).inputValue(), created.id);
   await view.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page.getByRole("button", { name: "Start without Preset", exact: true }).waitFor();
+  await page.locator("#create-agent-form").waitFor();
   assert.equal(new URL(page.url()).searchParams.get("namespace"), created.id);
 });
 

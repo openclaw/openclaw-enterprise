@@ -1,4 +1,4 @@
-import { openAdvancedSettings } from "./console-agents-ui-test-support.ts";
+import { openAdvancedSettings, openCreateTab } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -280,7 +280,7 @@ test("every keyboard stop on Agents, Agent detail, its logs and Create Agent sho
       "Create Agent",
       `/console/agents/new?namespace=${namespace.id}`,
       "button",
-      "Start without Preset",
+      "Start over",
       "button",
     ],
   ] as const;
@@ -396,7 +396,8 @@ test("repository rows and the Slack people search on Create Agent show an unclip
         }),
     );
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByRole("button", { name: "Start with default Preset" }).click();
+    await page.locator("#create-agent-form").waitFor();
+    await openCreateTab(page, "repositories");
     await repositoryCheckbox(page, "example/app").waitFor();
     // Each repository result draws its ring around the whole row for its borderless checkbox.
     await page.getByRole("heading", { level: 1 }).first().focus();
@@ -433,6 +434,7 @@ test("repository rows and the Slack people search on Create Agent show an unclip
       );
     }
     await openAdvancedSettings(page);
+    await openCreateTab(page, "plugins");
     await page.getByLabel("Default plugin approvers mode").selectOption("chosen");
     // The people search input has no outline of its own; its chip field draws the ring.
     await page.getByLabel("Default plugin approvers mode").focus();

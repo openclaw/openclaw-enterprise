@@ -186,7 +186,7 @@ test("Agents, Agent detail, Workspace, Create Agent and Logs each show at most o
         name: "Create Agent",
         url: new URL(`/console/agents/new?namespace=${namespace.id}`, fixture.origin),
         ready: async () => {
-          await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
+          await page.getByLabel("Preset", { exact: true }).selectOption("");
           await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
         },
         primary: "Create Agent",
@@ -274,10 +274,7 @@ test("Secondary buttons have an edge of at least 3:1 against their fill and the 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
 
   const checks = [
-    [
-      new URL(`/console/agents/new?namespace=${namespace.id}`, fixture.origin),
-      "Start without Preset",
-    ],
+    [new URL(`/console/agents/new?namespace=${namespace.id}`, fixture.origin), "Start over"],
     [detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"), "Edit Configuration"],
     [detailUrl(fixture, namespace.id, agent.id, active.revision.id, "logs"), "Download"],
   ] as const;
@@ -486,7 +483,7 @@ async function openCreateForm(
   name: string,
 ) {
   await page.goto(new URL(`/console/agents/new?namespace=${namespace.id}`, fixture.origin).href);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Preset", { exact: true }).selectOption("");
   await page.getByLabel("Agent name").fill(name);
   await enterManualModel(page, `${name} key`, "gpt-busy-create");
   await waitForCreateFormReads(page);
@@ -589,7 +586,7 @@ test("Create Agent is busy only for its own request, not a recovery control's", 
   const { page } = await newPage(t, fixture, { browser });
   await routeCredentialSourceInstallation(page, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Preset", { exact: true }).selectOption("");
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   await page.getByLabel("Agent name").fill("Own busy Agent");
   await createModelCredentialSecret(page, "own-busy-model-key");

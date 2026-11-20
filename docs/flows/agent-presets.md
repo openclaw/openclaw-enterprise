@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-11-10
-last_updated_session: authoring-run/1321c9af-ae4c-4a8f-bf46-69a02bbb2a8d
+updated: 2026-11-20
+last_updated_session: authoring-run/60c984e8-fa98-4112-8f46-3faf0cf1bdac
 ---
 
 # Agent Presets flow
@@ -42,10 +42,10 @@ graph TD
   B --> C["Store Namespace-owned Preset"]
   C --> D["Console reads selected Preset once"]
   D --> E["User supplies variables and selects Use Preset"]
-  D -->|Default quick-start without variables| F
+  D -->|New form, default-codex without variables| F
   E --> F["Renderer copies launch settings"]
-  F --> G["Chooser closes; user edits and saves ordinary draft"]
-  U["User selects Start without Preset"] --> G
+  F --> G["Form fills; user edits and saves ordinary draft"]
+  U["No Preset: form opens unfilled"] --> G
   G --> S["Password input: create Secret in current Namespace"]
   S --> H["Configuration API admits and saves"]
   G -->|Existing credential binding| H
@@ -152,14 +152,14 @@ path records mutations and denials without template or variable contents.
 
 `apps/controller/src/console/agents/presets.mts:createPresetFields`
 
-[`createPresetFields`](../../apps/controller/src/console/agents/presets.mts)
-lists readable Preset summaries, requiring Namespace read, then reads the selection
-once. **Start with default Preset** reads the listed `default-codex` resource.
-Variable-free templates apply immediately; customized variables keep the chooser
-and its shortcut origin. Missing defaults or failed reads do not open a hardcoded
-starter; other readable Presets remain selectable. **Start without Preset** opens
-the form without a Preset read, not as a fallback for a denied selection. Normal
-creation authorization applies.
+[`createPresetFields`](../../apps/controller/src/console/agents/presets.mts),
+the chooser, lists readable Preset summaries, requiring Namespace read, and reads
+a selection once. `agents/create.mts:renderCreateAgent` waits for the list, so a
+new form opens once: filled from a variable-free `default-codex`, otherwise
+unfilled, with a `default-codex` that has variables still selected. A failed list
+read disables **Preset** and states why. `renderAgentForm` puts the chooser first
+on the **Basics** tab; **No Preset** empties a filled form. Normal creation
+authorization applies.
 
 `console-assets.ts:readConsoleAsset` serves the public
 [`default-codex`](../../deploy/presets/default-codex.json) as
@@ -182,34 +182,34 @@ keys, and preserves runtime placeholders and unresolved SecretRefs.
 
 An older stored Preset can contain a non-null, non-text primary model that current
 Controller admission refuses. `agents/create.mts:renderAgentForm` rejects that
-selected primary before opening the form. The chooser explains that it must be
-text and keeps entered variables. Select another Preset or ask a Preset editor
+selected primary and leaves the form unchanged. The chooser explains that it must
+be text and keeps entered variables. Select another Preset or ask a Preset editor
 to fix the template. A null primary remains unset so the user can choose a model.
 Partial Presets and valid roster-only selections still open.
 
-Rendering makes no requests. Success opens the Agent form with rendered settings
-and optional ephemeral Secret metadata for grants. The alphabetic chooser moves
-password values into the masked credential input and clears detached controls;
-later Preset changes cannot alter the form. Before saving, **Start over** confirms
-discard and opens a fresh chooser. A successful or uncertain save disables restart
-and uses ordinary creation recovery.
+Rendering makes no requests. **Use Preset** confirms discarding changes, then
+fills a new form with rendered settings and optional ephemeral Secret metadata
+for grants. The chooser moves password values into the masked credential input
+and clears detached controls; later Preset changes cannot alter the form. Before
+saving, **Start over** confirms discard and opens a new form. A successful or
+uncertain save disables **Preset** and restart and uses ordinary creation recovery.
 
 The form keeps the chooser state and the `configuration.values` path each variable
 filled. A Create refusal that starts `Configuration setting <path>` and covers such a
 path names those variables and offers **Change** with their labels, unless the submitted
 value at that path differs from the one the Preset rendered. While restart is
-enabled, that action reopens the chooser from the kept state, marks those fields
-with the server's sentence and focuses the first. The added text names variables, never
-their values. A quoted path segment, such as `models["openai/gpt 5"]`, is one key. If the
-Preset then fails to load, focus moves to the chooser heading.
+enabled, that action opens an unfilled form whose chooser restores the kept state,
+marks those fields with the server's sentence and focuses the first. The added
+text names variables, never their values. A quoted path segment, such as `models["openai/gpt 5"]`, is one key. If the
+Preset then fails to load, focus moves to the **Preset** select.
 
 `apps/controller/src/console/console.mjs:loadPage`
 
-`loadPage` captures JSON, model controls, workspace files, repositories and staged
-Secret references per user/Namespace before resetting views. Explicit
-Preset, default-shortcut and bare forms all return from this copy with fresh
+`loadPage` captures JSON, model controls, workspace files, repositories, staged
+Secret references and the chooser's state per user/Namespace before resetting views.
+Preset-filled and unfilled forms return from this copy with fresh
 capability and repository discovery. A confirmed **Cancel** removes creation and
-channel snapshots and the retained view; re-entry opens the chooser and preserves
+channel snapshots and the retained view; re-entry opens a new form and preserves
 saved resources. `beforeunload` asks first while any capture holds changes. Invalid JSON stays text; passwords
 and discovery results are excluded. Start over, session loss, logout, user change or
 page exit clears captures, not a failed `/namespaces` read. A known Create refusal keeps
@@ -318,6 +318,8 @@ or an immutable saved version.
 
 ## Changelog
 
+- 2026-11-20 14:31: Trace the Preset chooser on the Create Agent Basics tab and the default-filled new form, with uncommitted Console changes. (authoring-run/60c984e8-fa98-4112-8f46-3faf0cf1bdac - 5bf2ae7fd703197701f311098d734a10ed4ab593)
+
 - 2026-11-10 23:35: Explain real-token Preset launch validation and deferred Gateway password references. (authoring-run/1321c9af-ae4c-4a8f-bf46-69a02bbb2a8d - 60cf8f904c39918ddd5b23a42fa2d7591c2eb193)
 
 - 2026-11-05 21:30: Explain the non-text primary refusal and retained chooser recovery. (authoring-run/1a621287-125a-41d1-baae-06e4b9f829f7 - 516f7563fffa2e2d3f626cbe21a81367281ba1a1)
@@ -335,9 +337,5 @@ or an immutable saved version.
 - 2026-10-10 07:02: Integrate main without changing the model-selection repair; retain both flow histories. (authoring-run/93ddce15-e08f-4d84-9e30-6c2cb0f1e838 - 500ca364793d117e7996ef568ac144df877e5b8b)
 
 - 2026-10-10 06:42: Preserve referenced fallback model metadata and retire obsolete primary catalog entries during Console selection. (authoring-run/d6d98411-224c-4a17-8bb9-5bd060b1dd59 - f27f55ce2bfb3d54b8e95c8c3f0f670425717a52)
-
-- 2026-10-10 04:52: Preserve multiline strings and exact restored defaults in the Preset chooser. (authoring-run/0f2600bb-f524-4114-9ba6-7ff3cbee3d29 - 64dff25990334c8cf1e9372d5452c38cdcadfa61)
-
-- 2026-10-10 02:23: Admit contract-sized Preset writes at the HTTP boundary; template limits and mutation checks remain unchanged. (authoring-run/6f54c753-eb8a-4e11-b078-b178ba613240 - 5bf37b274fcdfefb49dfa99984a15d99b757dc8e)
 
 [Agent Presets documentation history](agent-presets/history.md) preserves the older dated entries.
