@@ -8941,10 +8941,17 @@ export class OpenClawController {
         );
       }
       const owner = this.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+      const presetChanges =
+        input.providerPreset !== undefined &&
+        (input.providerPreset ?? undefined) !== source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY];
+      if (presetChanges && ownerUpdate !== undefined) {
+        throw new ResourceStateConflictError(
+          "Change the provider preset separately from credential material or lifecycle settings.",
+        );
+      }
       if (
         lockSource &&
-        input.providerPreset !== undefined &&
-        (input.providerPreset ?? undefined) !== source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] &&
+        presetChanges &&
         (await state.credentialSources.hasReferences(ref.namespaceId, source.id))
       ) {
         // TODO(source preset replacement): permit bound changes after withdrawal and redeployment can replace the admitted authority.
@@ -17654,7 +17661,7 @@ export class OpenClawController {
     if (isManagedTokenServiceSource(source)) {
       // TODO: Replace this refusal when revision delivery can freeze and dispatch this owner.
       throw new ResourceStateConflictError(
-        "Agent revision delivery for this TokenService source is not available.",
+        "Agent revision delivery for this TokenService source is not available. To deploy, select supported Harness authentication and remove this staged source from the Agent's credential sources.",
       );
     }
     const gateway = this.ownedCredentialGatewayDriver(source);

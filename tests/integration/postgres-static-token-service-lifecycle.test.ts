@@ -14,6 +14,7 @@ import {
   AuditAppendUnavailableError,
   AuthorizationDeniedError,
   DependencyUnavailableError,
+  ResourceStateConflictError,
   RetryLaterError,
   ScopeViolationError,
   type UpdateManagedCredentialSourceInput,
@@ -428,6 +429,18 @@ test(
     assert.deepEqual(await sourceConfig(), { provider_preset: "openai" });
     assert.equal(core.calls.replaceNamespacedSecret, replacementsBeforePreset);
     assert.equal(core.reads, readsBeforePreset);
+    // A failed completion audit must not leave replacement material under the old approval.
+    await withRejectedAuditRows(migrator, "openclaw.credential_sources.update", async () => {
+      await assert.rejects(
+        updateSource(principal.id, {
+          secret: { replacement: randomUUID() },
+          providerPreset: null,
+        }),
+        ResourceStateConflictError,
+      );
+    });
+    assert.equal(await resolve(), key);
+    assert.deepEqual(await sourceConfig(), { provider_preset: "openai" });
     assert.deepEqual(
       (
         await pool.query(
@@ -440,7 +453,10 @@ test(
     await updateSource(principal.id, { lifecycleConfig: { type: "static", settings: {} } });
     assert.deepEqual(await sourceConfig(), { provider_preset: "openai" });
     const replacementKey = randomUUID();
-    await update(principal.id, replacementKey);
+    await updateSource(principal.id, {
+      secret: { replacement: replacementKey },
+      providerPreset: "openai",
+    });
     assert.equal(await resolve(), replacementKey);
     assert.deepEqual(await sourceConfig(), { provider_preset: "openai" });
 

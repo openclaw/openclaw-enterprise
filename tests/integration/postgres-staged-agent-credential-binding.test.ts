@@ -378,6 +378,10 @@ test(
     // the delivery refusal. That same transaction must roll back its Role, binding, and audit.
     const authorizedDeploy = await inject("POST", `${base}/agents/${agent.id}/deploy`, {});
     assert.equal(authorizedDeploy.statusCode, 409, authorizedDeploy.body);
+    assert.match(
+      authorizedDeploy.json().error.message,
+      /select supported Harness authentication and remove this staged source/i,
+    );
     assert.match(authorizedDeploy.json().error.message, /revision delivery.*not available/i);
     assert.deepEqual(await deploymentEffects(), noDeploymentEffects);
 

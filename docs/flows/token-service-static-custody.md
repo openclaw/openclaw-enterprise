@@ -1,7 +1,7 @@
 ---
 created: "2026-11-20"
 updated: 2026-11-20
-last_updated_session: authoring-run/e2439242-c252-46cd-a0c0-40604e02ddc5
+last_updated_session: authoring-run/3d03cbe0-452f-4e38-baa5-5098e9a89002
 ---
 
 # Internal static TokenService custody flow
@@ -84,8 +84,9 @@ material without changing the preset remain allowed while bound.
 
 For a material or lifecycle update, OCC first audits the attempt, then rechecks
 authority and calls `TokenServiceDriver.updateSource`. It preserves the preset
-when lifecycle settings change and commits any requested preset change with the
-completion audit. The Driver receives only material and lifecycle settings.
+when lifecycle settings change. An effective preset change must be a separate
+operation because a TokenService write cannot roll back with the source audit.
+The Driver receives only material and lifecycle settings.
 Static sources accept only empty lifecycle settings and cannot refresh.
 
 ### 4. Delete the source
@@ -131,6 +132,8 @@ delivery.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 15:57: Require separate preset and custody changes to prevent partial authority updates. (authoring-run/3d03cbe0-452f-4e38-baa5-5098e9a89002 - 8094be8535ce7ac130fe9d5f766bb9309bded408)
 
 - 2026-11-20 15:45: Describe OCC-owned provider preset approval and atomic metadata updates. (authoring-run/e2439242-c252-46cd-a0c0-40604e02ddc5 - 8f5b739756f9236e7ada9238a31a2b8ed6164667)
 
