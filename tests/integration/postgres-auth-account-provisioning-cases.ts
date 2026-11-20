@@ -16,7 +16,7 @@ import {
   text,
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
 import type { NativeIAMState } from "../../packages/iam/src/index.ts";
-import type { signInToControllerApp } from "../helpers/auth-session.mjs";
+import type { signInToControllerApp } from "../helpers/auth-session.ts";
 import type { injectJson as injectJsonRequest } from "../helpers/inject-json.mjs";
 import type { InjectedResponse } from "../helpers/postgres-sign-in-test-boundaries.ts";
 

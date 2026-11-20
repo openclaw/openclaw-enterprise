@@ -426,6 +426,18 @@ export interface OpenShellGatewayClient
     readonly chunks: readonly Readonly<Record<string, unknown>>[];
     readonly version: string;
   }>;
+  stopSandbox?(
+    request: OpenShellSandboxDeleteRequest,
+    signal: AbortSignal,
+  ): Promise<OpenShellSandboxResponse>;
+  startSandbox?(
+    request: OpenShellSandboxDeleteRequest,
+    signal: AbortSignal,
+  ): Promise<OpenShellSandboxResponse>;
+  updateSandbox?(
+    request: OpenShellSandboxCreateRequest & { readonly expectedResourceVersion: string },
+    signal: AbortSignal,
+  ): Promise<OpenShellSandboxResponse>;
   health(signal: AbortSignal): Promise<void>;
   getGatewayInfo?(signal: AbortSignal): Promise<RecordValue>;
   /** Stock preview reads. The operator independently controls gateway access and every writer. */
@@ -462,6 +474,14 @@ export interface OpenShellGatewayClient
     name: string,
     signal: AbortSignal,
   ): Promise<OpenShellServiceResponse | undefined>;
+  /** Restore a Harness exposure; callers read back the exact endpoint before starting it. */
+  exposeService?(
+    request: OpenShellServiceRequest & {
+      readonly targetPort: number;
+      readonly authorizationMode: "bearer_passthrough";
+    },
+    signal: AbortSignal,
+  ): Promise<void>;
   /**
    * Removes one exposed service endpoint. Resolves only once OpenShell confirms the endpoint
    * gone (COMPLETED or ALREADY_ABSENT); any other answer is a failure. NOT_FOUND is one too: it
@@ -576,6 +596,14 @@ export interface OpenShellGatewayClient
     credentialKey: string,
     signal: AbortSignal,
   ): Promise<{ readonly value: string; readonly expirationTime?: string }>;
+  /** Adds an existing Provider; the caller reads back membership before starting the Sandbox. */
+  attachSandboxProvider(
+    workspace: string,
+    sandbox: string,
+    provider: string,
+    signal: AbortSignal,
+    conditional: { readonly expectedResourceVersion: string; readonly requestId: string },
+  ): Promise<void>;
   /** Undefined when the Sandbox no longer exists, so nothing remains to revoke. */
   detachSandboxProvider(
     workspace: string,
@@ -620,9 +648,13 @@ export interface OpenShellGatewayClient
 }
 
 type OpenShellMethod =
+  | "ExposeService"
   | "GetSandboxConfig"
   | "ListSandboxes"
   | "ListWorkspaceMembers"
+  | "StopSandbox"
+  | "StartSandbox"
+  | "UpdateSandbox"
   | "GetSandboxPolicyStatus"
   | "UpdateConfig"
   | "GetDraftPolicy"
@@ -645,6 +677,7 @@ type OpenShellMethod =
   | "GetSandboxProviderStatus"
   | "CreateProvider"
   | "UpdateProvider"
+  | "AttachSandboxProvider"
   | "DetachSandboxProvider"
   | "GetProvider"
   | "ListProviders"
@@ -1835,6 +1868,65 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     );
   }
 
+  async stopSandbox(request: OpenShellSandboxDeleteRequest, signal: AbortSignal) {
+    return sandboxResponse(
+      await this.unary(
+        "StopSandbox",
+        {
+          name: request.name,
+          workspace_scope: { workspace: request.workspace },
+        },
+        signal,
+      ),
+      "StopSandbox",
+      this.options.endpoint,
+      false,
+    );
+  }
+
+  async startSandbox(request: OpenShellSandboxDeleteRequest, signal: AbortSignal) {
+    return sandboxResponse(
+      await this.unary(
+        "StartSandbox",
+        {
+          name: request.name,
+          workspace_scope: { workspace: request.workspace },
+        },
+        signal,
+      ),
+      "StartSandbox",
+      this.options.endpoint,
+      false,
+    );
+  }
+
+  async updateSandbox(
+    request: OpenShellSandboxCreateRequest & { readonly expectedResourceVersion: string },
+    signal: AbortSignal,
+  ) {
+    const template = asRecord(request.spec.template);
+    return sandboxResponse(
+      await this.unary(
+        "UpdateSandbox",
+        {
+          name: request.name,
+          workspace_scope: { workspace: request.workspace },
+          image: template?.image,
+          command: { argv: request.spec.command },
+          environment: { values: request.spec.environment },
+          labels: { values: request.labels },
+          annotations: { values: request.annotations },
+          expected_resource_version: request.expectedResourceVersion,
+          request_id: request.requestId,
+        },
+        signal,
+      ),
+      "UpdateSandbox",
+      this.options.endpoint,
+      false,
+    );
+  }
+
   async getSandbox(
     request: OpenShellSandboxDeleteRequest,
     signal: AbortSignal,
@@ -1906,6 +1998,27 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       advertisedUrl: serviceUrl(response.url).toString(),
       url: normalizeServiceUrl(response.url, this.options.endpoint),
     });
+  }
+
+  async exposeService(
+    request: OpenShellServiceRequest & {
+      readonly targetPort: number;
+      readonly authorizationMode: "bearer_passthrough";
+    },
+    signal: AbortSignal,
+  ): Promise<void> {
+    await this.unary(
+      "ExposeService",
+      {
+        sandbox: nonempty(request.sandbox, "OpenShell Sandbox name"),
+        name: request.service,
+        target_port: request.targetPort,
+        workspace_scope: { workspace: request.workspace },
+        authorization_mode: "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH",
+        request_id: randomUUID(),
+      },
+      signal,
+    );
   }
 
   async deleteService(
@@ -2343,11 +2456,12 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
   ): Promise<OpenShellProviderResponse> {
     if (
       Object.keys(config).length === 0 ||
-      Object.values(config).some((value) => !isNonEmptyString(value))
+      Object.values(config).some((value) => typeof value !== "string")
     ) {
-      // OpenShell interprets an empty value as a request to delete that field.
-      throw new OpenShellGatewayFailure("OpenShell provider config updates must be nonempty.");
+      throw new OpenShellGatewayFailure("OpenShell provider config updates require string fields.");
     }
+    // Empty string values deliberately request deletion under UpdateProvider's
+    // patch contract; an empty map would leave all config unchanged.
     if (!/^[1-9]\d*$/u.test(expectedResourceVersion)) {
       throw new OpenShellGatewayFailure(
         "OpenShell provider config updates require a positive resource version.",
@@ -2405,6 +2519,31 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       throw new OpenShellGatewayFailure("The OpenShell credential has expired.");
     }
     return Object.freeze({ value, ...(expirationTime === null ? {} : { expirationTime }) });
+  }
+
+  async attachSandboxProvider(
+    workspace: string,
+    sandbox: string,
+    provider: string,
+    signal: AbortSignal,
+    conditional: { readonly expectedResourceVersion: string; readonly requestId: string },
+  ): Promise<void> {
+    if (!/^[1-9]\d*$/.test(conditional.expectedResourceVersion) || !conditional.requestId) {
+      throw new OpenShellGatewayFailure(
+        "A conditional attach requires a resource version and request ID.",
+      );
+    }
+    await this.unary(
+      "AttachSandboxProvider",
+      {
+        sandbox: nonempty(sandbox, "OpenShell Sandbox name"),
+        provider: nonempty(provider, "OpenShell provider name"),
+        workspace_scope: { workspace },
+        expected_resource_version: conditional.expectedResourceVersion,
+        request_id: conditional.requestId,
+      },
+      signal,
+    );
   }
 
   async detachSandboxProvider(
@@ -2803,19 +2942,39 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       oneofs: true,
     });
     const loaded = grpc.loadPackageDefinition(packageDefinition) as unknown as {
-      readonly openshell?: { readonly v1?: { readonly OpenShell?: ServiceClientConstructor } };
+      readonly openshell?: {
+        readonly v1?: {
+          readonly OpenShell?: ServiceClientConstructor;
+          readonly SandboxUpdates?: ServiceClientConstructor;
+        };
+      };
     };
     const OpenShell = loaded.openshell?.v1?.OpenShell;
     if (OpenShell === undefined) {
       throw new OpenShellGatewayFailure("OpenShell gRPC service was not found in the proto.");
     }
     const { target, credentials } = openShellGatewayGrpcChannel(grpc, this.options);
-    return {
-      grpc,
-      client: new OpenShell(target, credentials, {
-        "grpc.max_receive_message_length": MAX_RECEIVE_MESSAGE_BYTES,
-      }) as unknown as OpenShellGrpcClient,
-    };
+    const client = new OpenShell(target, credentials, {
+      "grpc.max_receive_message_length": MAX_RECEIVE_MESSAGE_BYTES,
+    }) as unknown as OpenShellGrpcClient;
+    const updateDefinition = loaded.openshell?.v1?.SandboxUpdates?.service.UpdateSandbox;
+    if (updateDefinition === undefined) {
+      client.close();
+      throw new OpenShellGatewayFailure(
+        "SandboxUpdates service is missing from the local descriptor.",
+      );
+    }
+    client.UpdateSandbox = (request, headers, options, callback) =>
+      client.makeUnaryRequest(
+        updateDefinition.path,
+        updateDefinition.requestSerialize,
+        updateDefinition.responseDeserialize,
+        request,
+        headers,
+        options,
+        callback,
+      );
+    return { grpc, client };
   }
 }
 

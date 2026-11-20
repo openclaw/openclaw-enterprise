@@ -1004,6 +1004,7 @@ function externalGitJourney(
                 image: "fixture",
                 command: [],
                 workspaceMounts: [],
+                retainedDirectories: [],
                 files: [],
                 environment: [],
                 labels: {},

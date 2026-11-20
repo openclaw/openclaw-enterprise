@@ -107,7 +107,13 @@ export const validRecipient = [
   "policyHash",
   ...repositoryGitRecipientFields.map((field) => "repositoryGitRecipient," + field),
 ]
-  .map((path) => `nullif(btrim(p.installation#>>'{enforcement,${path}}'), '') IS NOT NULL`)
+  .map((path) => {
+    const present = `nullif(btrim(p.installation#>>'{enforcement,${path}}'), '') IS NOT NULL`;
+    return path.endsWith("processInstanceId") || path.endsWith("networkInstanceId")
+      ? `(${present} OR (${admittedAuthorization}='online-request'
+          AND NOT (${recipient} ? 'processInstanceId') AND NOT (${recipient} ? 'networkInstanceId')))`
+      : present;
+  })
   .join(" AND ");
 
 /**

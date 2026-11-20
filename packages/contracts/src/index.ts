@@ -51,6 +51,7 @@ export type {
   ProxyRevisionContext,
   CredentialProviderDefinition,
   CredentialSourceControl,
+  CredentialUpdateNotification,
   CredentialProxyDriver,
 } from "./drivers/credential-proxy/index.ts";
 export type {
@@ -1550,6 +1551,8 @@ export type {
   SandboxEnvironmentVariable,
   SandboxWorkloadFile,
   SandboxWorkloadIdentity,
+  HarnessRetainedDirectory,
+  HarnessLaunchDescription,
   HarnessWorkloadRequirements,
   SandboxResourceRef,
   SandboxHarnessEndpoint,
@@ -1772,8 +1775,3 @@ export type {
   HarnessStartupRef,
   SandboxDeploymentContract,
 } from "./drivers/sandbox/deployment.ts";
-
-export type {
-  CredentialUpdateNotification,
-  CredentialProxyDeploymentContract,
-} from "./drivers/credential-proxy/deployment.ts";

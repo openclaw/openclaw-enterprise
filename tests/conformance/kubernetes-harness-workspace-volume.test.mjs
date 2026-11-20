@@ -68,7 +68,7 @@ test("dedicated Harness shares one claim while preserving private subpaths", asy
     for (const node of ["none", "setup-file", "native"]) {
       for (const initialSetup of [false, true]) {
         await t.test(`${loginMode} ${node} setup=${initialSetup}`, () => {
-          const { driver, pod } = render(loginMode, node, initialSetup);
+          const { pod } = render(loginMode, node, initialSetup);
           const claimVolumes = pod.volumes.filter((volume) => volume.persistentVolumeClaim);
           assert.equal(claimVolumes.length, 1, "one volume for the Harness claim");
           assert.equal(claimVolumes[0].name, claimVolume);
@@ -91,19 +91,9 @@ test("dedicated Harness shares one claim while preserving private subpaths", asy
             workspaceMounts.map(({ subPath, mountPath }) => [subPath, mountPath]),
             expected,
           );
-          const projected = driver.sandboxWorkspaceMounts(pod.volumes, mounts, node !== "none");
-          assert.deepEqual(
-            projected.map(({ subPath, mountPath }) => [subPath, mountPath]),
-            expected,
-          );
           // Authentication remains Pod-local for every supported login mode.
           assert(!mounts.some(({ mountPath }) => mountPath === homePath));
-          assert(
-            projected.every(
-              ({ claimName, readOnly }) =>
-                claimName === claimVolumes[0].persistentVolumeClaim.claimName && readOnly === false,
-            ),
-          );
+          assert(workspaceMounts.every(({ readOnly }) => readOnly === false));
           const privateInit = pod.initContainers.find(
             ({ name }) => name === "prepare-private-state",
           );
@@ -152,95 +142,9 @@ test("dedicated Harness shares one claim while preserving private subpaths", asy
   }
 });
 
-test("provider projection rejects unexpected node and persistent authentication home mounts", () => {
-  const { driver, pod } = render("chatgptAuthTokens", "setup-file", false);
-  const mounts = pod.containers[0].volumeMounts;
-  const node = mounts.find(({ mountPath }) => mountPath === nodePath);
-  const project = (candidate) => driver.sandboxWorkspaceMounts(pod.volumes, candidate, true);
-  const unapproved = { message: "Dedicated Harness must mount every approved workspace path." };
-  const nodeState = {
-    message: "Harness node state must preserve its Agent node directory on the Harness claim.",
-  };
-  for (const [bad, refusal] of [
-    [[...mounts, { name: claimVolume, mountPath: homePath, subPath: "codex-home" }], unapproved],
-    [[...mounts, node], nodeState],
-    [mounts.map((mount) => (mount === node ? { ...mount, name: "other" } : mount)), nodeState],
-    [mounts.map((mount) => (mount === node ? { ...mount, subPath: "other" } : mount)), nodeState],
-    [mounts.map((mount) => (mount === node ? { ...mount, readOnly: true } : mount)), nodeState],
-    [
-      [...mounts, { name: claimVolume, mountPath: "/unapproved", subPath: "codex-home" }],
-      unapproved,
-    ],
-  ]) {
-    assert.throws(() => project(bad), refusal);
-  }
-  // The node subPath names exactly one Agent node directory.
-  assert.throws(
-    () =>
-      project(
-        mounts.map((mount) => (mount === node ? { ...mount, subPath: `${nodeName}/../x` } : mount)),
-      ),
-    /node directory/,
-  );
-});
-
-test("requirements require node state only when node wiring was selected", async (t) => {
-  for (const node of ["setup-file", "native"]) {
-    await t.test(node, () => {
-      const { driver, deployment, pod } = render("chatgptAuthTokens", node, false);
-      const requirements = () =>
-        driver.harnessRequirementsFromDeployment(deployment, "chatgptAuthTokens", true, [], []);
-      const nodeMount = pod.containers[0].volumeMounts.find(
-        ({ mountPath }) => mountPath === nodePath,
-      );
-      assert(nodeMount);
-      assert(
-        pod.containers[0].env.some(
-          ({ name, value }) => name === "OPENCLAW_NODE_STATE_DIR" && value === nodePath,
-        ),
-      );
-      assert(requirements().workspaceMounts.some(({ mountPath }) => mountPath === nodePath));
-      pod.containers[0].volumeMounts = pod.containers[0].volumeMounts.filter(
-        (mount) => mount !== nodeMount,
-      );
-      assert.throws(requirements, /Harness node state/);
-    });
-  }
-  await t.test("activation render without node", () => {
-    const { driver, deployment } = render("chatgptAuthTokens", "none", false);
-    const requirements = driver.harnessRequirementsFromDeployment(
-      deployment,
-      "chatgptAuthTokens",
-      false,
-      [],
-      [],
-    );
-    assert(!requirements.workspaceMounts.some(({ mountPath }) => mountPath === nodePath));
-    assert(
-      requirements.workspaceMounts.some(({ mountPath }) => mountPath === "/home/node/workspace"),
-    );
-  });
-  await t.test("no node with an independently supplied state variable", () => {
-    const { driver, deployment } = render("chatgptAuthTokens", "none", false, {
-      OPENCLAW_NODE_STATE_DIR: "/user-supplied",
-    });
-    const requirements = driver.harnessRequirementsFromDeployment(
-      deployment,
-      "chatgptAuthTokens",
-      false,
-    );
-    assert(
-      requirements.environment.some(
-        ({ name, value }) => name === "OPENCLAW_NODE_STATE_DIR" && value === "/user-supplied",
-      ),
-    );
-    assert(!requirements.workspaceMounts.some(({ mountPath }) => mountPath === nodePath));
-  });
-});
-
-// The production Compute renderer supplies this exact tuple to the Sandbox Driver.
-// These assertions cover projection; the credentialed k3d workflow proves the mount.
-test("scratch projection keeps the durable workspace and requires its exact admitted writable claim", () => {
+// The shared launch description supplies operator-mode mounts directly, without
+// reconstructing them from a Kubernetes Deployment. Keep scratch on a separate PVC.
+test("scratch requirements keep the durable workspace and exact admitted writable claim", () => {
   const scratch = {
     namespaceId: owner.namespaceId,
     agentId: owner.agentId,
@@ -248,82 +152,66 @@ test("scratch projection keeps the durable workspace and requires its exact admi
     claimName: "operator-scratch",
     claimUid: "scratch-uid",
   };
-  const command = (binding) => render("api_key", "none", false, {}, binding).pod.containers[0].args;
-  assert.notDeepEqual(
-    command(scratch),
-    command(),
-    "scratch must exercise the provider-owned Harness",
-  );
-  const { driver, deployment, pod } = render("api_key", "native", false, {}, scratch);
-  const mounts = pod.containers[0].volumeMounts;
-  const projected = driver.harnessRequirementsFromDeployment(
-    deployment,
-    "api_key",
-    true,
-    [],
-    [],
-    undefined,
-    scratch,
-  ).workspaceMounts;
+  const { driver, pod } = render("api_key", "none", false, {}, scratch);
+  const launch = driver.harnessLaunch({
+    name: "test-agent",
+    ownership: owner,
+    image: "agent:local",
+    serviceAccountName: "agent",
+    environment: {},
+    loggingLevel: "info",
+    auth: { loginMode: "api_key", environment: [] },
+    provider: true,
+  });
+  const requirements = driver.sandboxRequirements(launch, owner.agentId, [], scratch);
+  const expected = {
+    claimName: scratch.claimName,
+    subPath: "scratch",
+    mountPath: "/sandbox/scratch",
+    readOnly: false,
+  };
   assert.deepEqual(
-    projected.find(({ mountPath }) => mountPath === "/sandbox/scratch"),
-    {
-      claimName: scratch.claimName,
-      subPath: "scratch",
-      mountPath: "/sandbox/scratch",
-      readOnly: false,
-    },
+    requirements.workspaceMounts.find(({ mountPath }) => mountPath === "/sandbox/scratch"),
+    expected,
   );
-  assert.equal(projected.filter(({ claimName }) => claimName === scratch.claimName).length, 1);
+  assert.equal(
+    requirements.workspaceMounts.filter(({ claimName }) => claimName === scratch.claimName).length,
+    1,
+  );
   assert(
-    projected.some(
+    requirements.workspaceMounts.some(
       ({ mountPath, claimName }) =>
         mountPath === "/home/node/workspace" && claimName !== scratch.claimName,
     ),
   );
-  const project = (volumes, candidate, admitted = scratch) =>
-    driver.sandboxWorkspaceMounts(volumes, candidate, true, admitted);
-  const scratchMount = mounts.find(({ mountPath }) => mountPath === "/sandbox/scratch");
-  const scratchVolume = pod.volumes.find(({ name }) => name === scratchMount.name);
-  const refusal = /scratch.*(?:admitted|binding)/i;
-  assert.throws(() => driver.sandboxWorkspaceMounts(pod.volumes, mounts, true), refusal);
-  for (const candidate of [
-    mounts.filter((mount) => mount !== scratchMount),
-    [...mounts, scratchMount],
-    mounts.map((mount) => (mount === scratchMount ? { ...mount, readOnly: true } : mount)),
-    mounts.map((mount) => (mount === scratchMount ? { ...mount, subPath: "workspace" } : mount)),
-    mounts.map((mount) =>
-      mount === scratchMount ? { ...mount, mountPath: "/sandbox/other" } : mount,
-    ),
-  ]) {
-    assert.throws(() => project(pod.volumes, candidate), refusal);
-  }
-  assert.throws(
-    () =>
-      project(
-        pod.volumes.map((volume) =>
-          volume === scratchVolume
-            ? { ...volume, persistentVolumeClaim: { claimName: "foreign" } }
-            : volume,
-        ),
-        mounts,
-      ),
-    refusal,
+  assert.deepEqual(
+    pod.volumes.find(({ name }) => name === "openclaw-scratch"),
+    {
+      name: "openclaw-scratch",
+      persistentVolumeClaim: { claimName: scratch.claimName },
+    },
   );
-  assert.throws(
-    () =>
-      project(
-        pod.volumes.filter((volume) => volume !== scratchVolume),
-        mounts,
-      ),
-    refusal,
+  assert.deepEqual(
+    pod.containers[0].volumeMounts.find(({ name }) => name === "openclaw-scratch"),
+    {
+      name: "openclaw-scratch",
+      mountPath: expected.mountPath,
+      subPath: expected.subPath,
+      readOnly: false,
+    },
+  );
+  assert(
+    !driver
+      .sandboxRequirements(launch, owner.agentId)
+      .workspaceMounts.some(({ mountPath }) => mountPath === "/sandbox/scratch"),
   );
 });
 
 function scratchCompute(bindings) {
   const sandbox = new OpenShellSandboxDriver(
     {
-      gateway: { workspaceMode: "operator" },
+      integrationMode: "legacy",
+      gateway: {},
       kubernetes: {
         userNamespaces: false,
         serviceAccount: { mode: "gatewayConfigured" },
