@@ -67,8 +67,9 @@ about one minute after the new Gateway is ready, and then works again. Files
 that the turn wrote with relative paths are no longer in the session's working
 directory; send the task again.
 
-When the Sandbox is lost, a request in flight gets no answer until the `504` at
-the [HTTP chat deadline](../agent-http-chat.md#availability-and-failures). After
+When the Sandbox is lost, a request in flight gets no answer until the
+[HTTP chat deadline](../agent-http-chat.md#availability-and-failures): `504`, or
+a closed connection without `[DONE]` if its stream had already started. After
 you deploy the Agent again, the same `user` label can keep answering `500`; use
 a new label.
 

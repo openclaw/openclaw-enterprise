@@ -70,9 +70,9 @@ turn within seconds; a command that is already running can finish in the
 background. To continue longer work, send a new request with the same `user`
 label and a message that tells the Agent to continue. Work that records its
 progress in the workspace can continue at the next step. A response carries no
-bytes while tools run, so a proxy or load balancer in front of OCC with an idle
-timeout at or below the deadline closes the connection first: the caller gets a
-connection reset, not `504`.
+bytes while tools run. A proxy or load balancer in front of OCC whose idle
+timeout is shorter than such a silent interval closes the connection first: the
+caller gets a connection reset, not `504`.
 
 OCC rechecks credential validity, principal status, permission and the selected
 revision every 25 seconds and before final delivery, with a 5-second deadline. Revocation, dependency
