@@ -18,6 +18,7 @@ import type {
   EgressMaterialEvidence,
 } from "@openclaw-enterprise/contracts";
 import type { StoredOAuthClient } from "../ports/oauth-client.ts";
+import type { TokenServiceInstance } from "../ports/token-service.ts";
 import type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
 import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
@@ -130,13 +131,6 @@ import type {
 } from "./agent-provisioning.ts";
 
 export type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
-
-/** Durable identity of the selected private credential store. */
-export interface TokenServiceInstance {
-  readonly id: string;
-  readonly driverId: string;
-  readonly storeIdentity: string;
-}
 
 export interface InstallationReadRepository {
   findInstallation(installationId: string): Promise<Readonly<Installation> | undefined>;
