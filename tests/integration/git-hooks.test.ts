@@ -151,7 +151,9 @@ test("the native pre-push hook runs the pinned formatter and blocks formatting f
   for (const filename of [".prettierrc.json", ".prettierignore", ".bun-version"]) {
     await copyFile(join(repositoryRoot, filename), join(fixtureRoot, filename));
   }
-  const manifest: unknown = JSON.parse(await readFile(join(repositoryRoot, "package.json"), "utf8"));
+  const manifest: unknown = JSON.parse(
+    await readFile(join(repositoryRoot, "package.json"), "utf8"),
+  );
   assert.ok(manifest !== null && typeof manifest === "object" && "scripts" in manifest);
   const { scripts } = manifest;
   assert.ok(scripts !== null && typeof scripts === "object" && "format:check" in scripts);
