@@ -57,6 +57,7 @@ import {
   namespace,
   agentName,
   gatewayName,
+  harnessWorkspaceClaimName,
   revisionName,
   fixtureComputeConfiguration as createComputeConfiguration,
   workloadPod as findWorkloadPod,
@@ -1384,6 +1385,11 @@ test(
       adoptedNamespaceId,
       adoptedTenant.id,
     );
+    const adoptedWorkspaceName = harnessWorkspaceClaimName(adoptedTenant.id);
+    assert.ok(
+      adoptedWorkspace.metadata.name === adoptedWorkspaceName,
+      "the adopted Agent workspace claim must have the requested name",
+    );
     await resource(
       "configmap",
       kubernetesConfigurationName(adoptedTenant.configurationId),
@@ -1463,7 +1469,6 @@ test(
         .filter(({ metadata }) => metadata.labels?.["openclaw.dev/agent"] === adoptedTenant.id);
       return ownedPods.length === 0 ? current.data : undefined;
     });
-    const adoptedWorkspaceName = String(adoptedWorkspace.metadata.name);
     assert.equal(
       (await resource("persistentvolumeclaim", adoptedWorkspaceName, existingName)).metadata.uid,
       adoptedWorkspace.metadata.uid,
