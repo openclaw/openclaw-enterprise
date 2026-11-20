@@ -1071,6 +1071,37 @@ export async function runNativeAdminScenario(context) {
     .waitFor();
   const nativePage = await openNativeAdminConsole(page, status.origin);
 
+  // The main session has no row before its first message: every chat turn here starts
+  // its own session. A document load of /chat/main, as a reload or a bookmark makes, must
+  // still open the app, not the Gateway's public "Conversation unavailable" page.
+  await nativePage.goto(new URL("/chat/main", status.origin).href);
+  await waitForStockUi(nativePage).catch(async (cause) => {
+    const shown = await nativePage.locator("body").innerText();
+    throw new Error(`/chat/main before the first message did not open the app: ${shown}`, {
+      cause,
+    });
+  });
+  // routeReady: the app shell committed its current route.
+  await nativePage.waitForFunction(
+    () => globalThis.openclawControlUi.snapshot().routeReady === true,
+    undefined,
+    { timeout: 60_000 },
+  );
+  const mainChat = await nativePage.evaluate(() => {
+    const { route, sessionKey } = globalThis.openclawControlUi.snapshot();
+    return {
+      pathname: globalThis.location.pathname,
+      chat: route.status === "success" && route.matches[0]?.routeId === "chat",
+      sessionKey,
+    };
+  });
+  assert.deepEqual(
+    mainChat,
+    { pathname: "/chat/main", chat: true, sessionKey: "agent:main:main" },
+    "/chat/main before the first message must show the main chat",
+  );
+  assert.equal(await nativePage.getByText("Conversation unavailable").count(), 0);
+
   const deepLink = new URL("/settings/advanced", status.origin);
   const deepLinkResponse = await nativePage.goto(deepLink.href);
   assert.ok(deepLinkResponse?.status() < 400, "stock UI deep link must be served");
