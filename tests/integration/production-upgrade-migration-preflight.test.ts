@@ -126,12 +126,12 @@ test(
         assert.deepEqual(probe.command, ["node"]);
         assert.deepEqual(probe.args, [...selectedImageMigrationEntry, "--check"]);
 
-        // A candidate from a historical chart must keep that image's real entry point.
+        // A historical chart can name its executable directly. Its preflight
+        // still checks the selected image's mode support before import.
         migration.args = ["scripts/migrate-production.mjs", "--require-current"];
         const historical: unknown = JSON.parse(
           (await generate(action, withInitializer(selected))).stdout,
         );
-        probe.args = ["scripts/migrate-production.mjs", "--check"];
         assert.deepEqual(historical, generated);
         migration.args = ["-e", "process.exit(0)", "--"];
         await refuses(action, withInitializer(selected), /invalid migration arguments/);

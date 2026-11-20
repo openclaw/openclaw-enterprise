@@ -40,13 +40,13 @@ Live application also refuses an active revision with a repository list when
 the saved list is absent. Stop the Agent and inspect the mismatch.
 You can clear ordinary additions alone by omitting the repository field.
 
-The Sandbox Driver contract's `admitRepositoryNetworkPolicy` method receives the
-validated list and an immutable base snapshot. This side-effect-free method
-returns the effective policy as a JSON object. It must require inspected HTTPS,
-enforce the list alongside other rules, and deny ungranted repositories.
-It must refuse bypass paths and any weakening of protected execution.
-Deployment admission binds the versioned list and effective policy in an
-immutable Agent revision snapshot.
+The Sandbox Driver's side-effect-free `admitRepositoryNetworkPolicy` method
+receives the validated list and an immutable base snapshot. It returns the
+effective policy synchronously as a plain JSON object. Arrays must contain only
+consecutive elements starting at index zero. The Driver must inspect HTTPS,
+enforce the list alongside other rules, and deny ungranted repositories. It
+must refuse bypass paths and weaker protected execution. Ordinary deployment
+refuses a list supplied by the Driver.
 
 ## Discovery and preview
 

@@ -1,3 +1,5 @@
+import type { ChannelProviderDriver } from "../drivers/channel/routing.ts";
+import { SlackChannelDriver } from "../drivers/channel/slack.ts";
 import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
 import type { NamespaceLifecycleBinding } from "@openclaw-enterprise/occ";
 import {
@@ -89,6 +91,7 @@ import {
   PreprovisionedKubernetesNamespace,
   type KubernetesComputeDriverOptions,
 } from "../drivers/compute/kubernetes/index.ts";
+import { ManagedOpenShellSandbox } from "../drivers/sandbox/openshell/managed.ts";
 import { refuseRewrittenIpv4Host, refuseWrittenUserinfo } from "../auth/configuration.ts";
 import {
   createExternalDriver,
@@ -239,6 +242,7 @@ export type ServiceAccountDriverFactory = (
 ) => void;
 
 export interface InstallationRuntimeDrivers {
+  readonly channelDrivers?: readonly ChannelProviderDriver[];
   readonly defaultPresets?: readonly PresetDraftDefinition[];
   /** Bundled defaults replaced by a same-named `presets.files` entry; startup warns once each. */
   readonly shadowedDefaultPresets?: readonly ShadowedDefaultPreset[];
@@ -855,6 +859,24 @@ export async function loadInstallationConfiguration(options: {
   }
 }
 
+function loadRepositoryNetworkPolicyCeiling(
+  value: unknown,
+): RepositoryNetworkPolicyCeiling | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  try {
+    return parseRepositoryNetworkPolicyCeiling(value);
+  } catch (error) {
+    if (!(error instanceof RepositoryNetworkPolicyAdmissionError)) {
+      throw error;
+    }
+    throw new InstallationFieldError([
+      { path: error.path, code: "INVALID_VALUE", message: error.message },
+    ]);
+  }
+}
+
 async function composeInstallationConfiguration(
   options: Parameters<typeof loadInstallationConfiguration>[0],
   loaded: { externalOwner?: InstalledDriver },
@@ -899,21 +921,9 @@ async function composeInstallationConfiguration(
   if (sandboxNetworkPolicyCeiling !== undefined) {
     validateSandboxNetworkGrants(sandboxNetworkPolicyCeiling, "/sandboxNetworkPolicyCeiling");
   }
-  let repositoryNetworkPolicyCeiling: RepositoryNetworkPolicyCeiling | undefined;
-  if (configuration.repositoryNetworkPolicyCeiling !== undefined) {
-    try {
-      repositoryNetworkPolicyCeiling = parseRepositoryNetworkPolicyCeiling(
-        configuration.repositoryNetworkPolicyCeiling,
-      );
-    } catch (error) {
-      if (!(error instanceof RepositoryNetworkPolicyAdmissionError)) {
-        throw error;
-      }
-      throw new InstallationFieldError([
-        { path: error.path, code: "INVALID_VALUE", message: error.message },
-      ]);
-    }
-  }
+  const repositoryNetworkPolicyCeiling = loadRepositoryNetworkPolicyCeiling(
+    configuration.repositoryNetworkPolicyCeiling,
+  );
   const observability = observabilityConfiguration(configuration.observability);
   const iamSettings = iamConfiguration(configuration.iam);
   const runtime = runtimeConfiguration(configuration.runtime);
@@ -1187,6 +1197,27 @@ async function composeInstallationConfiguration(
       ? await loadBundledOpenShellSandboxDriver()
       : undefined;
 
+  const sandbox =
+    sandboxSelection === undefined
+      ? undefined
+      : selected(
+          sandboxSelection,
+          "sandbox",
+          sandboxPackage?.implementation ?? (boxPackage ? "strands-box" : "openshell"),
+          sandboxPackage?.module ?? boxPackage ?? bundledSandboxPackage!,
+        );
+  const openShellServiceIntegration =
+    kubernetesCompute &&
+    sandbox !== undefined &&
+    sandboxPackage === undefined &&
+    (sandbox.configuration as unknown as OpenShellSandboxDriverOptions).integrationMode ===
+      "service";
+  if (openShellServiceIntegration && options.createSandboxDriver !== undefined) {
+    throw new Error(
+      "Managed Kubernetes + OpenShell Compute requires its bundled Sandbox collaborator.",
+    );
+  }
+
   const configured = selected(
     configurationSelection,
     "configuration",
@@ -1199,11 +1230,14 @@ async function composeInstallationConfiguration(
     iamPackage?.implementation ?? "occ/native-iam",
     iamPackage?.module ?? NativeIAMDriver,
   );
+  const bundledCompute = sshCompute
+    ? { implementation: "occ/ssh", module: SshComputeDriver }
+    : { implementation: "occ/kubernetes", module: KubernetesComputeDriver };
   const compute = selected(
     computeSelection,
     "compute",
-    computePackage?.implementation ?? (sshCompute ? "occ/ssh" : "occ/kubernetes"),
-    computePackage?.module ?? (sshCompute ? SshComputeDriver : KubernetesComputeDriver),
+    computePackage?.implementation ?? bundledCompute.implementation,
+    computePackage?.module ?? bundledCompute.module,
   );
   if (kubernetesCompute) {
     requireChartGatewayRouting(
@@ -1211,6 +1245,16 @@ async function composeInstallationConfiguration(
       environment,
     );
   }
+  const createOpenShellSandbox = (
+    configuration: Readonly<Record<string, unknown>>,
+    selection: OpenShellSandboxDriverSelection,
+  ): SandboxDriver =>
+    openShellServiceIntegration
+      ? new ManagedOpenShellSandbox(
+          configuration as unknown as OpenShellSandboxDriverOptions,
+          selection,
+        )
+      : new bundledSandboxPackage!.OpenShellSandboxDriver(configuration, selection);
   const secret = selected(
     secretSelection,
     "secret",
@@ -1286,15 +1330,6 @@ async function composeInstallationConfiguration(
       },
     ]);
   }
-  const sandbox =
-    sandboxSelection === undefined
-      ? undefined
-      : selected(
-          sandboxSelection,
-          "sandbox",
-          sandboxPackage?.implementation ?? (boxPackage ? "strands-box" : "openshell"),
-          sandboxPackage?.module ?? boxPackage ?? bundledSandboxPackage!,
-        );
   if (sandbox?.package !== undefined && packageProxyId !== undefined) {
     // The package owns one startup configuration. Its Sandbox-only agent
     // contributions must not be registered a second time as Credential Proxy.
@@ -1557,8 +1592,7 @@ async function composeInstallationConfiguration(
       sandbox,
       backend: openShell!,
       operatorOwnedKubernetesResources: preprovisionedNamespace !== undefined,
-      createSandbox: (configuration, selection) =>
-        new bundledSandboxPackage!.OpenShellSandboxDriver(configuration, selection),
+      createSandbox: createOpenShellSandbox,
       ...(proxySelection === undefined
         ? {}
         : {
@@ -1616,6 +1650,24 @@ async function composeInstallationConfiguration(
   // This check admits an implementation to try installation. Compute still verifies its
   // actual recipient and enforcement before release or the first eligible material read.
   repositoryGitDriver?.requireRepositoryGitTransport();
+  const channelOptions = (compute.configuration as unknown as KubernetesComputeDriverOptions)
+    .runtime?.channelEgress;
+  const channelHost =
+    channelOptions === undefined
+      ? undefined
+      : `${channelOptions.serviceName}.${channelOptions.envoyNamespace}.svc`;
+  const channelDrivers: readonly ChannelProviderDriver[] = Object.freeze([
+    {
+      provider: "slack",
+      driver: new SlackChannelDriver(
+        globalThis.fetch,
+        channelOptions === undefined
+          ? undefined
+          : `http://${channelHost}:${channelOptions.occListenerPort}`,
+        { expectProxy: true, managedProxyHosts: channelHost === undefined ? [] : [channelHost] },
+      ),
+    },
+  ]);
   let computeDriver: ComputeDriver;
   if (computePackage !== undefined) {
     computeDriver = createExternalDriver(
@@ -1633,41 +1685,43 @@ async function composeInstallationConfiguration(
       },
     );
   } else {
+    const selection: NonNullable<ConstructorParameters<typeof KubernetesComputeDriver>[1]> = {
+      id: compute.id,
+      implementation: compute.implementation,
+      lifecycleDrivers: [configurationDriver],
+      channelDrivers,
+      ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
+      ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
+      // Both built-ins above received this exact Backend; injected and package Sandboxes opt out.
+      ...(openShell !== undefined &&
+      sandboxDriver !== undefined &&
+      sandboxPackage === undefined &&
+      options.createSandboxDriver === undefined &&
+      credentialGatewayDriver !== undefined
+        ? {
+            openShellAttachments: {
+              sandboxDriver,
+              credentialGatewayDriver,
+              attachments: credentialGatewayDriver.attachments,
+            },
+          }
+        : {}),
+      ...(protectedDriver === undefined ? {} : { protectedDriver }),
+      preparedTokens: tokenService,
+      ...(preparedRepositoryGit === undefined || repositoryTransport || repositoryGitDriver
+        ? {}
+        : { preparedRepositoryIngress: true }),
+      preprovisionedNamespace,
+      nodeEnrollment: createGatewayNodeEnrollment(() =>
+        readWorkspaceFilesApiKey(
+          nonempty(environment.OCC_GATEWAY_API_KEY_PATH, "OCC_GATEWAY_API_KEY_PATH"),
+        ),
+      ),
+      readNodeCa: () => readHarnessNodeCa(environment),
+    };
     computeDriver = new KubernetesComputeDriver(
       compute.configuration as unknown as KubernetesComputeDriverOptions,
-      {
-        id: compute.id,
-        implementation: compute.implementation,
-        lifecycleDrivers: [configurationDriver],
-        ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
-        ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
-        // Both built-ins above received this exact Backend; injected and package Sandboxes opt out.
-        ...(openShell !== undefined &&
-        sandboxDriver !== undefined &&
-        sandboxPackage === undefined &&
-        options.createSandboxDriver === undefined &&
-        credentialGatewayDriver !== undefined
-          ? {
-              openShellAttachments: {
-                sandboxDriver,
-                credentialGatewayDriver,
-                attachments: credentialGatewayDriver.attachments,
-              },
-            }
-          : {}),
-        ...(protectedDriver === undefined ? {} : { protectedDriver }),
-        preparedTokens: tokenService,
-        ...(preparedRepositoryGit === undefined || repositoryTransport || repositoryGitDriver
-          ? {}
-          : { preparedRepositoryIngress: true }),
-        preprovisionedNamespace,
-        nodeEnrollment: createGatewayNodeEnrollment(() =>
-          readWorkspaceFilesApiKey(
-            nonempty(environment.OCC_GATEWAY_API_KEY_PATH, "OCC_GATEWAY_API_KEY_PATH"),
-          ),
-        ),
-        readNodeCa: () => readHarnessNodeCa(environment),
-      },
+      selection,
     );
   }
   const namespaceLifecycleBindings =
@@ -1698,6 +1752,7 @@ async function composeInstallationConfiguration(
   }
   const { repositoryPolicy: _repositoryPolicy, ...repositoryServices } = repositoryRuntime ?? {};
   return Object.freeze({
+    channelDrivers,
     defaultPresets: Object.freeze(defaultPresets),
     shadowedDefaultPresets: Object.freeze(shadowedDefaultPresets),
     bundledPresetVersions,

@@ -22,7 +22,7 @@ import {
   waitForSettledFetches,
 } from "./console-fetch-accounting.ts";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { NAMESPACE_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 import { refocus } from "./console-refocus-helpers.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";

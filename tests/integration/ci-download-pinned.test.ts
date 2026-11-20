@@ -1,11 +1,21 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, open, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  open,
+  writeFile,
+} from "node:fs/promises";
 import { readdirSync, statSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { machine, tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -461,90 +471,112 @@ test("a writable destination does not expose unverified staging bytes", async ()
 
 for (const tool of ["yq", "k3d"]) {
   test(`Linux tool setup never executes corrupt cached or existing ${tool} before verification`, async (t) => {
-    if (process.platform !== "linux" || (process.arch !== "x64" && process.arch !== "arm64")) {
+    const hardware = machine();
+    const arch = hardware === "x86_64" ? "amd64" : "arm64";
+    if (process.platform !== "linux" || !["x86_64", "aarch64", "arm64"].includes(hardware)) {
       t.skip("Linux amd64/arm64 pinned tool setup");
       return;
     }
-    const dir = await mkdtemp(join(tmpdir(), "ci-tool-cache-"));
-    try {
-      const bin = join(dir, "bin");
-      const cache = join(dir, "cache");
-      await mkdir(bin);
-      await mkdir(cache);
-      const marker = join(dir, "unverified-executed");
-      const version = tool === "yq" ? "yq version v4.48.1" : "k3d version v5.8.3";
-      const untrusted = `#!/bin/sh\nprintf executed > "$TOOL_TEST_MARKER"\necho "${version}"\n`;
-      // Other tool prerequisites are outside this test. The selected tool's
-      // verifier and downloader stay real; curl reports a terminal failure.
-      for (const [name, text] of Object.entries({
-        docker: "#!/bin/sh\necho 29.9.2\n",
-        helm: "#!/bin/sh\necho v3.19.2\n",
-        kubectl: `#!/bin/sh\necho '{"clientVersion":{"gitVersion":"v1.35.0"}}'\n`,
-        curl: "#!/bin/sh\nprintf '404 0'\nexit 22\n",
-        [tool]: untrusted,
-      })) {
-        await writeFile(join(bin, name), text, { mode: 0o755 });
-      }
-      const digests =
-        tool === "yq"
-          ? {
-              arm64: "0e46b5b926a9e57c526fa2bd8f8e38b7e17fbf6e2403ff1741f3b268e3363a9e",
-              x64: "99df6047f5b577a9d25f969f7c3823ada3488de2e2115b30a0abb10d9324fd9f",
-            }
-          : {
-              arm64: "0b8110f2229631af7402fb828259330985918b08fefd38b7f1b788a1c8687216",
-              x64: "dbaa79a76ace7f4ca230a1ff41dc7d8a5036a8ad0309e9c54f9bf3836dbe853e",
-            };
-      await writeFile(join(cache, digests[process.arch]), untrusted, { mode: 0o755 });
-      const setup = fileURLToPath(new URL("../../scripts/ci/setup-tools.sh", import.meta.url));
-      const runSetup = () =>
-        new Promise<CommandResult>((done) => {
+
+    await withServer(
+      () => "fast",
+      async ({ url, requests, dir }) => {
+        const bin = join(dir, "bin");
+        const cache = join(dir, "cache");
+        const scripts = join(dir, "scripts", "ci");
+        await mkdir(bin);
+        await mkdir(cache);
+        await mkdir(scripts, { recursive: true });
+        const origin = new URL(url).origin;
+        const setup = join(scripts, "setup-tools.sh");
+        const setupSource = await readFile(
+          new URL("../../scripts/ci/setup-tools.sh", import.meta.url),
+          "utf8",
+        );
+        // Change only transport destinations in the private setup. The real
+        // system launcher, architecture selection, downloader, and tool pins run.
+        const localSetup = setupSource.replaceAll(
+          /https:\/\/(?:github\.com|get\.helm\.sh|dl\.k8s\.io)\//g,
+          `${origin}/`,
+        );
+        assert.notEqual(localSetup, setupSource, "fixture did not redirect tool downloads");
+        assert.doesNotMatch(localSetup, /https?:\/\/(?!127\.0\.0\.1:)/);
+        await writeFile(setup, localSetup);
+        await copyFile(script, join(scripts, "download-pinned.sh"));
+
+        const install = setupSource.match(
+          new RegExp(`^install_${tool}\\(\\) \\{\\n[\\s\\S]*?^\\}$`, "m"),
+        )?.[0];
+        const checksum = install?.match(new RegExp(`"${arch} ([a-f0-9]{64})"`))?.[1];
+        assert.ok(checksum, `missing current ${tool} pin for ${arch}`);
+        const version = tool === "yq" ? "4.48.1" : "5.8.3";
+        const artifact =
+          tool === "yq"
+            ? `/mikefarah/yq/releases/download/v${version}/yq_linux_${arch}`
+            : `/k3d-io/k3d/releases/download/v${version}/k3d-linux-${arch}`;
+        // Record execution even if a regression reaches a probe with sanitized env.
+        const recordExecution = "#!/bin/sh\nprintf executed > ./unverified-executed\n";
+        const untrusted = Buffer.from(`${recordExecution}echo "${tool} version v${version}"\n`);
+        const pathCanary = `${recordExecution}exit 75\n`;
+        const installed = join(bin, tool);
+        const cached = join(cache, checksum);
+        for (const [name, text] of Object.entries({
+          docker: "#!/bin/sh\necho 29.9.2\n",
+          helm: "#!/bin/sh\necho v3.19.2\n",
+          curl: pathCanary,
+          uname: pathCanary,
+          [tool]: untrusted,
+        })) {
+          await writeFile(join(bin, name), text, { mode: 0o755 });
+        }
+        await chmod(installed, 0o555);
+        await writeFile(cached, untrusted, { mode: 0o755 });
+
+        if (tool === "k3d") {
+          // Pass the prerequisite's real checksum gate with a fixture-only pin
+          // so the test can reach k3d without downloading kubectl.
+          const kubectl = "#!/bin/sh\nprintf 'verified fixture kubectl\\n'\n";
+          await writeFile(join(bin, "kubectl"), kubectl, { mode: 0o755 });
+          await writeFile(
+            join(scripts, "kubectl-pins.json"),
+            JSON.stringify({
+              version: "1.35.0",
+              linux: { [arch]: createHash("sha256").update(kubectl).digest("hex") },
+            }),
+          );
+        }
+
+        const result = await new Promise<CommandResult>((done) => {
           execFile(
-            "bash",
+            "/bin/bash",
             [setup, tool === "yq" ? "images" : "k3d"],
             {
               env: {
-                ...process.env,
-                BASH_ENV: "/dev/null",
-                ENV: "/dev/null",
                 RUNNER_TEMP: dir,
                 CI_PINNED_TOOL_CACHE: cache,
-                TOOL_TEST_MARKER: marker,
-                PATH: `${bin}:${process.execPath.slice(0, process.execPath.lastIndexOf("/"))}:/usr/bin:/bin`,
+                PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`,
+                // Keep any unexpected download on loopback too.
+                ALL_PROXY: origin,
+                NO_PROXY: "127.0.0.1",
               },
               timeout: 15_000,
             },
-            (error, stdout, stderr) => done({ code: error?.code ?? 0, stdout, stderr }),
+            (error, stdout, stderr) =>
+              done({ code: error ? (error.code ?? 1) : 0, stdout, stderr }),
           );
         });
-      const result = await runSetup();
-      assert.equal(
-        (await readdir(dir)).includes("unverified-executed"),
-        false,
-        "unverified tool executed",
-      );
-      assert.notEqual(result.code, 0, result.stderr);
-      assert.match(result.stderr, /Download failed.*HTTP 404/);
-      assert.equal(await readFile(join(bin, tool), "utf8"), untrusted);
-      await writeFile(
-        join(bin, "uname"),
-        '#!/bin/sh\nif [ "$1" = -s ]; then echo Linux; else echo riscv64; fi\n',
-        { mode: 0o755 },
-      );
-      const unsupported = await runSetup();
-      assert.notEqual(unsupported.code, 0);
-      assert.match(unsupported.stderr, /No supported checksum pin/);
-      assert.equal((await readdir(dir)).includes("unverified-executed"), false);
-      const manualTool = tool === "yq" ? "helm" : "kubectl";
-      await writeFile(join(bin, manualTool), "#!/bin/sh\nexit 1\n");
-      const manual = await runSetup();
-      assert.notEqual(manual.code, 0);
-      assert.match(
-        manual.stderr,
-        new RegExp(`Install ${tool === "yq" ? "Helm" : "kubectl"} .* manually`),
-      );
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
+        assert.ok(!(await readdir(dir)).includes("unverified-executed"), "untrusted PATH tool ran");
+        assert.deepEqual(requests, [artifact]);
+        assert.equal(result.code, 1, result.stderr);
+        assert.match(result.stdout, /: FAILED$/m);
+        assert.match(result.stderr, /computed checksum did NOT match/);
+        if (tool === "k3d") {
+          assert.match(result.stdout, /^verified fixture kubectl$/m);
+        }
+        assert.deepEqual(await readTool(installed), { bytes: untrusted, mode: 0o555 });
+        assert.deepEqual(await readFile(cached), untrusted);
+        assert.deepEqual(await readdir(cache), [checksum]);
+      },
+    );
   });
 }

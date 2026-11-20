@@ -19,7 +19,11 @@ REQUIRED = (
     "inventory/restart-preflight.json",
     "prepared-helm-attempt.json",
 )
-OPTIONAL = ("before-candidate-installation-secret.json", "installation-changed", "installation-checksum", "agent-continuity.json", "controller-compatibility-results.json")
+OPTIONAL = (
+    "before-candidate-installation-secret.json", "installation-changed",
+    "installation-checksum", "agent-continuity.json", "controller-compatibility-results.json",
+    "migration-secret-identities.json",
+)
 
 
 def digest(directory, name, optional=False):

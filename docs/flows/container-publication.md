@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: "2026-11-18 03:26"
-last_updated_session: "authoring-run/ac86eb9c-8f66-4c1a-b92a-ec70193e5fd5"
+updated: "2026-11-19 18:56"
+last_updated_session: "01a1f528-3827-7cb0-9d72-19b91cbb6f69"
 ---
 
 # Container publication flow
@@ -80,15 +80,12 @@ docker build -f deploy/runtime/Dockerfile \
   "${openclaw_build_args[@]}" --target openclaw-bridge-tests .
 ```
 
-`openclaw-bridge-tests` typechecks and tests bridge and CUA assembly inputs.
-Coverage includes native turn settlement, approval discovery after reconnect,
-HTTP rejection, native handoff during late writes and revision-scoped restart
-resume. Failure blocks smoke and upload. Local builds can run independently.
+`openclaw-bridge-tests` typechecks and runs only the tests that exercise a kept
+carried patch; upstream CI covers the rest. Failure blocks smoke and upload.
 
-The `resources` step checks architecture, CPU, memory and ancestor cgroup-v2 limits.
-Both stages use its Node compiler budget. ARM uses up to eight jobs, or four for
-smaller or unknown limits. Before smoke, `scripts/ci/setup-tools.sh` installs
-checksum-pinned kubectl, k3d, Helm and yq. See [build settings](../release/configuration.md#build-settings).
+The resource step checks the native architecture, CPU count, and memory.
+Before smoke, `scripts/ci/setup-tools.sh` installs checksum-pinned kubectl, k3d,
+Helm and yq. See [build settings](../release/configuration.md#build-settings).
 
 Buildx runs up to two steps at once and caches by image and architecture on
 Blacksmith sticky disks or in GitHub Actions. Standalone `container-check.yml`
@@ -106,22 +103,19 @@ The `openclaw-source` stage verifies and patches the archive. Then
 `scripts/build-runtime-assets.ts inputs` copies preparation manifests and lists
 required bundled plugins, Codex, and Slack for the frozen production install.
 The standalone Codex command uses the plugin's installation. Build stages use full Bookworm; final images use separately
-pinned slim bases. The controller requires Node 24.22.1+ within the 24 series.
-The runtime requires matching Node 24.22.1 Bookworm bases. Its `node-source` stage checks
-the archive and patch digests in `deploy/runtime/node/source.json` before applying the
-worker-termination repair. `node-compiled` builds native Node with full ICU and runs
-the worker regression and adjacent loader tests. Slim Bookworm repeats the tests
-with the copied executable. Missing libraries, ABI changes or regression failures
-stop assembly. The repository-credential service retains its original base.
+pinned slim bases. The controller and runtime require stock Node 24.22.1+
+within the 24 series. The runtime uses the executable from each selected base
+without compiling Node or applying a Node patch. The repository-credential
+service retains its original base.
 Both bases apply updates from mutable Debian repositories, even with pinned image digests.
 Every index refresh uses
 `apt-get update --error-on=any` to stop builds on incomplete downloads.
 
-`deploy/runtime/node/build.sh` records the source, patch, ABI and executable digest.
-The `inventory` command checks its running executable's digest
-before recording `node` in final runtime provenance. Image startup compares that
-record with the checkout and installed executable. Native qualification requires
-packaged Gateway restart tests.
+The `inventory` command records the installed Node executable digest in
+`downloadClients`, with the other native download clients. Native qualification
+requires packaged Gateway shutdown and restart tests. Stock Node 24.22.1 can
+abort the Gateway if worker termination interrupts synchronous ESM loading;
+see the [runtime limits](../../deploy/runtime/README.md#build-a-local-runtime-image).
 
 `deploy/runtime/Dockerfile` and `deploy/runtime/repository-credentials/Dockerfile.client`
 retry pinned GitHub CLI archive and manifest downloads up to six times, including partial
@@ -314,6 +308,14 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 18:56: Remove the custom Node build and worker-termination patch; use stock Node from the pinned bases. (01a1f528-3827-7cb0-9d72-19b91cbb6f69 - 32662b9d2)
+
+- The source-built Node repair is removed from runtime packaging. (NOT_IN_SPEC)
+
+- 2026-11-19 15:20: Bridge tests cover only kept carried patches.
+
+- 2026-11-19 08:19: Bridge tests no longer check CUA inputs; the node setup bridge carries no computer-use hunks. (authoring-run/fce9aadb-9500-4a97-949d-80408d45b612 - ebafb89344294a28044b07ef5650efa2a4939bbd)
 
 - 2026-11-18 03:26: Point preparation callers to the TypeScript command. (authoring-run/ac86eb9c-8f66-4c1a-b92a-ec70193e5fd5 - f5ac2329754d41a36a6cc47950cd3a95eae1ebfc)
 

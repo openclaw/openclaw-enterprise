@@ -132,6 +132,20 @@ export async function writeJson(path: string, value: unknown) {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
+export async function writeCleanupFixture(root: string, mode: "sync" | "async" = "async") {
+  const asyncKeyword = mode === "async" ? "async " : "";
+  await writeFile(
+    join(root, "scripts/ci/prepare.ts"),
+    [
+      'import { appendFile } from "node:fs/promises";',
+      `export ${asyncKeyword}function prepareFile({ file, statePath }) {`,
+      `  return { cleanup: ${asyncKeyword}() => appendFile(statePath, file.path + "\\n") };`,
+      "}",
+      "",
+    ].join("\n"),
+  );
+}
+
 interface ManifestFixture {
   lanes: Record<string, unknown>;
   groups?: Record<string, string[]>;

@@ -554,8 +554,8 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 	return map[string]any{
 		"id": openShellSandboxID,
 		"configuration": map[string]any{
+			"integrationMode": "legacy",
 			"gateway": map[string]any{
-				"workspaceMode": "operator",
 				"operatorNamespaceLabels": map[string]string{
 					openShellOperatorNamespaceLabel: openShellOperatorNamespaceValue,
 				},

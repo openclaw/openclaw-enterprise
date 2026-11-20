@@ -1,6 +1,7 @@
+import type { ChannelEgressOptions } from "../../apps/controller/src/drivers/compute/kubernetes/channel-egress-policy.ts";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   V1NetworkPolicyPeer,
@@ -113,8 +114,10 @@ type PrepareOptions = HelmTarget &
     installationName: string;
     bootstrapCredentials?: "generate" | "existing";
     apiClients: readonly PodPeer[];
-    channelDirectoryProxyUrl?: string | undefined;
+    channelEgress?: ChannelEgressOptions | undefined;
+    slackProxy?: { enabled: boolean } | undefined;
     databaseName?: string | undefined;
+    databaseUpgradeMigration?: "hook" | "separate" | undefined;
     databaseTLS?:
       | {
           caSecretName: string;
@@ -157,13 +160,15 @@ export async function prepareProductionHelmControlPlane({
   agentNativeAdminDomain,
   installationName,
   apiClients,
-  channelDirectoryProxyUrl,
+  channelEgress,
+  slackProxy,
   repositoryCredentials,
   gatewayRouting,
   controlPlane,
   executionCluster,
   metrics,
   databaseName = "openclaw_enterprise",
+  databaseUpgradeMigration,
   databaseTLS,
   run,
   kubernetes,
@@ -197,8 +202,9 @@ export async function prepareProductionHelmControlPlane({
   });
   const createSecret = (name: string, stringData: Record<string, string>) =>
     apply({ apiVersion: "v1", kind: "Secret", metadata: metadata(name), stringData });
+  const postgresResources: FixtureResource[] = [];
   const createClaim = (name: string) =>
-    apply({
+    postgresResources.push({
       apiVersion: "v1",
       kind: "PersistentVolumeClaim",
       metadata: metadata(name),
@@ -245,7 +251,7 @@ export async function prepareProductionHelmControlPlane({
       "admin-service-key": serviceKey,
     });
   }
-  await apply({
+  postgresResources.push({
     apiVersion: "v1",
     kind: "Pod",
     metadata: metadata("postgres", system, { app: "postgres" }),
@@ -352,16 +358,44 @@ export async function prepareProductionHelmControlPlane({
       ],
     },
   });
-  await apply({
+  postgresResources.push({
     apiVersion: "v1",
     kind: "Service",
     metadata: metadata("postgres"),
     spec: { selector: { app: "postgres" }, ports: [{ port: 5432 }] },
   });
+  // PostgreSQL is a real Helm-installed fixture dependency. Credentials stay in
+  // the separately provisioned Secret, outside chart files and Helm values.
+  const postgresChart = join(directory, "postgres-chart");
+  await mkdir(join(postgresChart, "templates"), { recursive: true });
+  await writeFile(
+    join(postgresChart, "Chart.yaml"),
+    "apiVersion: v2\nname: proof-postgres\nversion: 0.1.0\n",
+    { mode: 0o600 },
+  );
+  await writeFile(
+    join(postgresChart, "templates", "resources.yaml"),
+    postgresResources.map((object) => JSON.stringify(object)).join("\n---\n"),
+    { mode: 0o600 },
+  );
+  await run("helm", [
+    "install",
+    `${release}-postgres`,
+    postgresChart,
+    "--kubeconfig",
+    selection.kubeconfigPath,
+    "--kube-context",
+    selection.kubernetesContext,
+    "--namespace",
+    system,
+  ]);
   await waitPod("postgres");
   const postgres = asRecord(await get("pod", "postgres"));
   const postgresIP = asRecord(postgres?.status)?.podIP;
   assert.ok(typeof postgresIP === "string" && postgresIP, "Expected the ready PostgreSQL Pod IP");
+  if (channelEgress) {
+    Object.assign(configuration.drivers.compute.configuration.runtime, { channelEgress });
+  }
   await createSecret("occ-installation-startup", {
     "installation.yaml": JSON.stringify(configuration),
   });
@@ -384,13 +418,23 @@ export async function prepareProductionHelmControlPlane({
   assert.ok(typeof endpointIP === "string" && endpointIP, "Expected the Kubernetes endpoint IP");
   assert.ok(typeof endpointPort === "number", "Expected the Kubernetes endpoint port");
   const adminEmail = `admin-${suffix}@example.invalid`;
+  const channelSettings =
+    channelEgress === undefined
+      ? { enabled: false }
+      : {
+          ...channelEgress,
+          enabled: true,
+          gatewayClassName: gatewayRouting?.gatewayClassName ?? "eg",
+        };
   const values = {
     images: { controller: images.controller },
+    ...(slackProxy ? { slackProxy } : { channelEgress: channelSettings }),
     installation: { name: installationName },
     auth: { baseUrl: authBaseURL },
     agentNativeAdmin: { domain: agentNativeAdminDomain },
     bootstrap: { adminEmail, credentials: { secretName: "occ-bootstrap-credentials" } },
     database: {
+      ...(databaseUpgradeMigration ? { upgradeMigration: databaseUpgradeMigration } : {}),
       cidrs: [`${postgresIP}/32`],
       ...(databaseTLS && {
         caSecretName: databaseTLS.caSecretName,
@@ -404,7 +448,6 @@ export async function prepareProductionHelmControlPlane({
     },
     api: {
       clients: apiClients,
-      ...(channelDirectoryProxyUrl !== undefined && { channelDirectoryProxyUrl }),
     },
     resources,
     // Callers without prepared routing exercise the supported direct-access installation.

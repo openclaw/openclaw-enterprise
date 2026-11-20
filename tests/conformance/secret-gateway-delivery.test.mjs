@@ -7,7 +7,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.ts";
 
 const tenant = {
   id: "ns_00000000-0000-4000-8000-000000000014",
@@ -124,7 +124,7 @@ test("secret-gateway-delivery renders exact bound Namespace Secret env only into
       },
       { name: namespace, plane: "execution" },
     ),
-    [],
+    undefined,
     secretEnvironment,
   );
   const environment = Object.fromEntries(
@@ -159,7 +159,7 @@ test("secret-gateway-delivery renders exact bound Namespace Secret env only into
         false,
         undefined,
         undefined,
-        [],
+        undefined,
         secretEnvironment,
       ),
     /only be delivered to Agent gateways/i,
