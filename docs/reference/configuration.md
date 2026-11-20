@@ -1,10 +1,8 @@
 # Configuration
 
-OpenClaw Control Plane (OCC) keeps Agent settings and platform settings in
-separate places. Agent settings live in a reusable Configuration in the Agent's
-Namespace. Saving a change does not affect a running Agent; deploy each Agent
-that should use it. Platform operators set Installation and Driver options in
-trusted startup YAML, not in Agent Configurations.
+Agent settings live in a reusable Namespace Configuration. Saving does not
+affect running Agents; deploy each Agent that should use the change. Operators
+set Installation and Driver options in trusted startup YAML.
 
 - To reuse launch settings when creating Agents, use [Presets](presets.md).
 - To change a model or other Agent settings and put them into use, follow
@@ -144,14 +142,12 @@ returns: it normally advances by one, but recovery from an interrupted write can
 skip a number. Do not send `kind`, `generation`, or ownership fields in a PATCH.
 Successful DELETE returns HTTP `204` with no body.
 
-`expectedGeneration` is an optional positive safe integer from the caller's last
-GET. OCC compares it with the current generation while holding the Configuration
-lock. A mismatch returns `409 RESOURCE_CONFLICT` without replacing values or
-Secret bindings or incrementing the generation. Read the Configuration again,
-merge the intended edits with its current values, and submit that generation;
-do not retry the stale body with a newer number. Omitting `expectedGeneration`
-replaces whichever generation is current, without this freshness check. The
-console's Configuration and channel saves include it.
+`expectedGeneration` is an optional positive safe integer from the last GET,
+compared under the Configuration lock. A mismatch returns
+`409 RESOURCE_CONFLICT` without changing values, Secret bindings, or generation.
+Read again, merge your edits with current values, and submit that generation;
+do not retry a stale body with a newer number. Omitting it replaces the current
+generation unchecked. Console Configuration and channel saves include it.
 
 Creation requires `kind: "agent"`; missing or unsupported kinds are rejected.
 `values` must be a JSON object. It can contain the nested objects,
@@ -206,9 +202,11 @@ OCC also refuses `security.preset`. Remove it and [set the controls you need](..
 OpenClaw's `doctor --fix` removes the field without translating its restrictions.
 See [OpenClaw's repair behavior](https://github.com/openclaw/openclaw/blob/554f0b886bde6c089578c49967227f8b50d1cf16/docs/gateway/doctor/config-migrations.md#removed-security-presets).
 
-Creation requires `create` permission for Configurations in the
-exact parent Namespace. Reads, updates, and deletes require the corresponding
-permission for the exact Configuration. Unauthenticated requests return `401`.
+Create requires exact parent-Namespace permission; other operations require
+exact Configuration permission. PATCH rechecks `update` after the Namespace lock.
+A preceding withdrawal that removes all update permission returns `403 FORBIDDEN`
+without changing values or generation. Installation IAM changes commit before
+authorization or after PATCH. Unauthenticated requests return `401`.
 
 ## Credentials and channels
 
@@ -277,8 +275,9 @@ The Kubernetes Configuration Driver stores live native documents in tenant Confi
   `baseUrl` or `api` field, correct that model provider setting; when it names
   an `agents` setting, fix the roster as it says.
 - **Configuration operation returns `403`:** Verify exact-Namespace `create`
-  or exact-Configuration `read`, `update`, or `delete` permission; check the
-  selected Kubernetes identity's namespaced ConfigMap Role separately.
+  or exact-Configuration `read`, `update`, or `delete` permission. A pending
+  PATCH can be refused if its update grant was withdrawn while it waited.
+  Check the selected Kubernetes identity's namespaced ConfigMap Role separately.
 - **Configuration operation returns `404`:** Confirm the Configuration ID
   belongs to the Namespace in the request path.
 - **Configuration update returns `409 RESOURCE_CONFLICT`:** A detail at

@@ -1,26 +1,21 @@
 ---
 created: 2026-08-19
-updated: 2026-11-11
-last_updated_session: authoring-run/f2efc59c-e63d-4f5b-a392-e38ad865f04d
+updated: 2026-11-18
+last_updated_session: authoring-run/b75fdfcc-44c4-49bf-a6d0-65970f10ffd7
 ---
 
 # Configuration Driver and Agent Revision Flow
 
 ## Overview
 
-Authenticated API requests create, read, replace, or delete exact Namespace-owned
-native OpenClaw configuration documents through the selected bundled or installed
-Configuration Driver. The bundled Kubernetes implementation persists each
-document in a tenant-owned ConfigMap.
-Each Configuration requires immutable `kind: "agent"` and a server-managed
-generation; documents preserve unresolved inline SecretRefs without interpreting
-them. Agent deployment authorizes the separate Secret bindings, applies any
-selected Sandbox Driver transformation, and saves the validated values in the
-Agent revision. Configuration identity, kind, generation, and Secret
-references are recorded separately. This flow stops when OCC persists that
-version and hands off workload reconciliation; the selected Compute Driver
-then owns the Agent gateway, while worker execution and secret resolution remain
-outside this flow's scope.
+Authenticated requests manage exact Namespace-owned native documents through the
+selected Configuration Driver. Kubernetes stores each in a tenant ConfigMap.
+Configurations have immutable `kind: "agent"`, server-managed generations, and
+unresolved inline SecretRefs. Deployment authorizes separate Secret bindings,
+applies the selected Sandbox transformation, and saves validated values with
+their Configuration identity, kind, generation, and Secret references in an
+Agent revision. Compute then owns gateway reconciliation; worker execution and
+Secret resolution are outside this flow.
 
 ## Entry Points
 
@@ -55,7 +50,9 @@ graph TD
   E --> G["Accept exact Namespace Configuration request"]
   G --> H{"IAM authorizes exact resource?"}
   H -->|no| Y["Reject without cross-Namespace access"]
-  H -->|yes| I["Lock PostgreSQL ownership metadata"]
+  H -->|yes| F["PATCH: fence caller and IAM configuration; recheck after Namespace lock"]
+  F -->|denied| Y
+  F -->|authorized or other operation| I["Lock PostgreSQL ownership metadata"]
   I --> J["Validate agent kind and generation; invoke the selected Configuration Driver"]
   J --> K{"Agent deployment references Configuration?"}
   K -->|no| L["Return authorized Configuration response"]
@@ -72,26 +69,23 @@ graph TD
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
 
-The API and worker load trusted Installation selections and validate the chosen
-Configuration Driver's schema and implementation-owned rules before
-constructing its bundled or installed implementation. OCC receives that exact
-capability and identity; invalid settings or a mismatched factory reject
-startup. Installation settings never come from a Configuration Driver. The
-[Driver package loading flow](driver-plugin-loading.md) owns package identity,
-validation, trust boundaries, and IAM construction.
+The API and worker validate trusted Installation selections before constructing
+the selected bundled or installed Configuration Driver. OCC receives its exact
+capability and identity; invalid settings or a mismatched factory reject startup.
+Installation settings never come from that Driver. The
+[Driver loading flow](driver-plugin-loading.md) owns validation, package identity,
+trust boundaries, and IAM construction.
 
 ### 2. Resolve singleton state and select Drivers
 
 `apps/controller/src/composition/production.ts:composeProduction`
 
 [Production composition](../../apps/controller/src/composition/production.ts)
-loads the sole persisted Installation from
-[PostgreSQL platform state](../../packages/occ/src/state/postgres-state.ts).
-Both processes use the same startup document and Installation identity. The [Driver loading flow](driver-plugin-loading.md)
-traces process-local construction and the selected Secret, Sandbox, and
-ServiceAccount branches. Existing AgentRevisions retain their selected Compute
-identity and immutable admitted configuration; subsequent Configuration edits
-apply only to later deployments.
+loads the sole Installation from
+[PostgreSQL state](../../packages/occ/src/state/postgres-state.ts). Both processes
+use the same startup document and identity. The [Driver loading flow](driver-plugin-loading.md)
+traces process-local construction. Existing AgentRevisions retain their Compute
+identity and immutable admitted configuration; edits apply only to later deployments.
 
 Provisioning's `KubernetesConfigurationDriver.createExact` and `inspectExact`
 use the same verified CP namespace as ordinary Configuration CRUD. Recovery checks
@@ -110,18 +104,26 @@ the exact Configuration.
 
 `packages/occ/src/index.ts:OpenClawController.createConfiguration`
 
-[Configuration route contracts](../../packages/contracts/src/api/routes.ts)
-define requests the [controller request handler](../../apps/controller/src/index.ts)
-dispatches to `createConfiguration`, `getConfiguration`, `updateConfiguration`,
-or `deleteConfiguration` in [OCC](../../packages/occ/src/index.ts). OCC resolves
-the server-owned Namespace and checks the selected IAM Driver before accessing
-tenant data. Create checks Configuration permission at Namespace scope. Read,
-update, and delete target the exact Configuration in that Namespace.
+[Configuration routes](../../packages/contracts/src/api/routes.ts) dispatch through
+the [controller handler](../../apps/controller/src/index.ts) to [OCC](../../packages/occ/src/index.ts).
+OCC resolves the server-owned Namespace and authorizes through the selected IAM
+Driver before accessing tenant data: create at Namespace scope, other operations
+on the exact Configuration.
 
 POST and PATCH accept up to 6 × (1 MiB + 32 KiB) for the Kubernetes Driver's
 1 MiB of values and the envelope in six-byte JSON escapes. `onRequest` runs
 `authorizeConfigurationWrite` before reading the body. Without the grant, callers get `403`
 before body errors. OCC rechecks in the transaction.
+
+PATCH holds caller authority and shared IAM-configuration locks, checks the exact
+Configuration, then locks its Namespace and rechecks before metadata or Driver
+writes. If a preceding AccessBinding withdrawal removes all update permission,
+`403 FORBIDDEN` leaves values and generation unchanged and records no success.
+Configured-policy changes hold the exclusive IAM lock and commit before
+authorization or after PATCH. The
+[persistence flow](configuration-driver/persistence-and-revisions.md) covers
+generation checks, compensation, and unknown COMMIT outcomes.
+
 For every JSON route, `createFastifyApp` registers
 `apps/controller/src/http/json-depth.ts:tooDeepJsonPath` to scan raw text once.
 A value more than 24 levels below the root gets `400 INVALID_REQUEST` with
@@ -180,20 +182,18 @@ outside the transaction.
 
 ## Debugging and Verification
 
-`tests/integration/occ-api.test.mjs` listens on loopback and uses Slack validation
-with a synthetic sender. It covers one revision/work/success audit,
-receipt recovery without extra calls, ordinary and disabled-Slack deployment,
-Secret authority, Configuration/Driver drift, and late dependency failures.
-
-`tests/integration/postgres-platform-state.test.ts` separately proves persisted
-recovery through a reopened adapter, reconcile counts, and one successful deploy
-audit. Its sender is synthetic.
+`tests/integration/occ-api.test.mjs` covers loopback deployment, Slack validation,
+receipt recovery without extra calls, Secret authority, Driver drift, and late
+failures using a synthetic sender. `postgres-platform-state.test.ts` proves
+persisted recovery through a reopened adapter, reconcile counts, and one deploy
+success audit with a synthetic sender.
 
 Run focused Configuration conformance and integration checks:
 
 ```bash
 node --test tests/conformance/configuration-occ.test.ts tests/conformance/kubernetes-configuration.test.ts tests/conformance/filesystem-configuration.test.ts
 node --test tests/integration/configuration-controller.test.mjs tests/integration/postgres-platform-state.test.ts
+node --test tests/integration/postgres-configuration-update-authority.test.ts tests/integration/postgres-default-users.test.ts
 node --test tests/integration/postgres-platform-state-kubernetes.test.ts
 ```
 
@@ -233,6 +233,8 @@ its optional integration is skipped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 02:47: Fence Configuration PATCH authorization. (authoring-run/b75fdfcc-44c4-49bf-a6d0-65970f10ffd7 - 4657570be473fd721dc059021d0f6dda1f9451eb)
 
 - 2026-11-13 12:50: Retain validated Configuration and Driver identities. (authoring-run/01a1d4f7-afbf-7f20-8109-a5f81d8b7d5b - a056cbd25)
 

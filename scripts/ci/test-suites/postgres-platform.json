@@ -29,6 +29,7 @@
     "tests/integration/postgres-worker-audit.test.ts",
     "tests/integration/postgres-namespace-iam-policy.test.ts",
     "tests/integration/postgres-agent-update-authority.test.ts",
+    "tests/integration/postgres-configuration-update-authority.test.ts",
     "tests/integration/postgres-connection-templates.test.ts",
     "tests/integration/postgres-static-token-service-lifecycle.test.ts",
     "tests/integration/postgres-staged-agent-credential-binding.test.ts",
@@ -223,6 +224,12 @@
       ]
     },
     {
+      "path": "tests/integration/postgres-configuration-update-authority.test.ts",
+      "expectedTests": [
+        "Configuration update refuses an exact grant withdrawn while waiting for its Namespace lock"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-namespace-iam-policy.test.ts",
       "expectedTests": [
         "selected native IAM sees original-unit grants and revocations before rollback",
@@ -357,6 +364,7 @@
         "an iam configuration change at restart revokes Group grants and keeps what members created",
         "a session revoked while a Default user's deploy waits commits no Agent grant",
         "an iam configuration change and a member's create commit one after the other",
+        "an iam configuration change and a member's Configuration update commit one after the other",
         "an Agent Owner binding deleted while its owner's deploy waits commits no Agent grant"
       ]
     },

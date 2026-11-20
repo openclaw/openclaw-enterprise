@@ -6,6 +6,7 @@ import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import type { ControllerAppOptions } from "../../apps/controller/src/index.ts";
 import type {
   AuthorizationRequest,
+  Configuration,
   PresetDraftDefinition,
   PresetSummary,
 } from "../../packages/contracts/src/index.ts";
@@ -21,6 +22,7 @@ import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { waitFor, within } from "../helpers/wait-for.ts";
 
 const OWNER_ROLE = "role_config_owner";
 const AGENT_CREATOR_ROLE = "role_config_agent_creator";
@@ -842,5 +844,221 @@ test(
       agent.id,
     ]);
     assert.equal(revisions.rowCount, 0);
+  },
+);
+
+/** Observe a particular wait edge, but report an operation that finishes instead. */
+async function configurationLockWaiter(
+  pool: AgentApp["pool"],
+  holderPid: number,
+  queryLike: string,
+  operation: Promise<{ status: number }>,
+  description: string,
+): Promise<number> {
+  let completed: { status: number } | undefined;
+  let rejected = false;
+  let failure: unknown;
+  void operation.then(
+    (response) => {
+      completed = response;
+    },
+    (error: unknown) => {
+      rejected = true;
+      failure = error;
+    },
+  );
+  function checkCompletion() {
+    if (rejected) {
+      throw failure;
+    }
+    assert.equal(
+      completed,
+      undefined,
+      description + " completed before its required lock wait with HTTP " + completed?.status,
+    );
+  }
+  return waitFor(
+    description,
+    async () => {
+      checkCompletion();
+      const waiting = await pool.query<{ pid: number }>(
+        `SELECT pid FROM pg_stat_activity
+         WHERE datname = current_database() AND wait_event_type = 'Lock'
+           AND $1::int = ANY(pg_blocking_pids(pid)) AND query LIKE $2`,
+        [holderPid, queryLike],
+      );
+      checkCompletion();
+      assert.ok(waiting.rows.length <= 1, "ambiguous Configuration authority lock waiter");
+      return waiting.rows[0]?.pid;
+    },
+    { timeoutMs: 5_000 },
+  );
+}
+
+test(
+  "an iam configuration change and a member's Configuration update commit one after the other",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const agentApp = await defaultUsersApp(t, "default-users-configuration-update-fence");
+    const { controller, pool, state, account, inject } = agentApp;
+    const namespaceId = await defaultNamespace(agentApp);
+    const base = "/namespaces/" + namespaceId;
+    const alice = await account("configuration-owner");
+    const originalValues = { agents: { defaults: { skipBootstrap: true } } };
+    const replacementValues = { agents: { defaults: { skipBootstrap: false } } };
+    const created = await alice.request("POST", base + "/configurations", {
+      kind: "agent",
+      values: originalValues,
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.error));
+    const configurationId = created.data.id as string;
+    const path = base + "/configurations/" + configurationId;
+    const replacement = { values: replacementValues };
+    const withoutUpdate = defaultUsersIAM();
+    withoutUpdate.roles = withoutUpdate.roles.map((role) =>
+      role.id === "owner"
+        ? {
+            ...role,
+            permissions: role.permissions.filter((value) => value !== "configuration:update"),
+          }
+        : role,
+    );
+    async function snapshot() {
+      const read = await inject("GET", path);
+      assert.equal(read.statusCode, 200, read.body);
+      const metadata = await pool.query<{ metadata: unknown }>(
+        "SELECT to_jsonb(c) AS metadata FROM occ.configurations AS c WHERE id = $1",
+        [configurationId],
+      );
+      assert.equal(metadata.rowCount, 1);
+      const audits = await pool.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM occ.audit_events
+         WHERE action = 'openclaw.configurations.update' AND kind = 'mutation'
+           AND outcome = 'success' AND resource_kind = 'configuration' AND resource_id = $1`,
+        [configurationId],
+      );
+      assert.ok(audits.rows[0]);
+      return {
+        configuration: read.json().data as Configuration,
+        metadata: metadata.rows[0]?.metadata,
+        successAudits: audits.rows[0].count,
+      };
+    }
+
+    // Apply the genuine startup writer inside its enclosing transaction. The
+    // signal leaves its exclusive IAM-configuration lock held until we commit.
+    const before = await snapshot();
+    const restarted = restartedController(controller, state, withoutUpdate);
+    const applied = Promise.withResolvers<void>();
+    const commit = Promise.withResolvers<void>();
+    const changing = restarted.transact(async () => {
+      await restarted.applyIAMConfiguration();
+      applied.resolve();
+      await commit.promise;
+    });
+    void changing.catch(applied.reject);
+    let updating: ReturnType<typeof alice.request> | undefined;
+    try {
+      await within(applied.promise, "configured policy application", 5_000);
+      const writer = await pool.query<{ pid: number }>(
+        `SELECT pid FROM pg_locks
+         WHERE locktype = 'advisory' AND granted AND mode = 'ExclusiveLock'
+           AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+           AND classid = ((hashtextextended($1, 0) >> 32) & 4294967295)::oid
+           AND objid = (hashtextextended($1, 0) & 4294967295)::oid AND objsubid = 1`,
+        ["occ:iam-configuration"],
+      );
+      assert.equal(writer.rowCount, 1, "the startup writer holds its exact IAM lock");
+      assert.ok(writer.rows[0]);
+      updating = alice.request("PATCH", path, replacement);
+      await configurationLockWaiter(
+        pool,
+        writer.rows[0].pid,
+        "%pg_advisory_xact_lock_shared(hashtextextended%",
+        updating,
+        "Configuration PATCH behind the configured-policy writer",
+      );
+    } finally {
+      commit.resolve();
+      await Promise.allSettled([changing, updating]);
+    }
+    await changing;
+    assert.ok(updating);
+    const refused = await updating;
+    assert.equal(refused.status, 403, JSON.stringify(refused.error));
+    assert.equal(refused.error?.code, "FORBIDDEN");
+    assert.deepEqual(await snapshot(), before);
+    const denial = await pool.query<{ authorization: AuthorizationRequest }>(
+      `SELECT details->'__occAuditMetadata'->'authorization' AS authorization
+       FROM occ.audit_events WHERE actor_id = $1 AND action = 'openclaw.configurations.update'
+         AND kind = 'authorization_denial' AND outcome = 'denied'
+         AND details->'__occAuditMetadata'->>'requestId' = $2`,
+      [alice.principalId, refused.meta.requestId],
+    );
+    assert.deepEqual(denial.rows, [
+      {
+        authorization: {
+          principalId: alice.principalId,
+          action: "update",
+          resource: { kind: "configuration", id: configurationId, namespaceId },
+        },
+      },
+    ]);
+    assert.equal((await alice.request("GET", path)).status, 200);
+
+    // With PATCH first, the real writer must wait for PATCH's shared IAM lock.
+    // The Namespace wait edge identifies the exact PATCH backend independently
+    // of response order, and the second edge identifies the policy writer.
+    await restartedController(controller, state, defaultUsersIAM()).applyIAMConfiguration();
+    const namespaceLock = await pool.connect();
+    let preceding: ReturnType<typeof alice.request> | undefined;
+    let following: Promise<void> | undefined;
+    try {
+      await namespaceLock.query("BEGIN");
+      const holder = await namespaceLock.query<{ pid: number }>(
+        "SELECT pg_backend_pid() AS pid FROM occ.namespaces WHERE id = $1 FOR UPDATE",
+        [namespaceId],
+      );
+      assert.ok(holder.rows[0]);
+      preceding = alice.request("PATCH", path, replacement);
+      const patchPid = await configurationLockWaiter(
+        pool,
+        holder.rows[0].pid,
+        "%FROM occ.namespaces%FOR UPDATE%",
+        preceding,
+        "Configuration PATCH waiting for its Namespace",
+      );
+      following = restartedController(controller, state, withoutUpdate).applyIAMConfiguration();
+      await configurationLockWaiter(
+        pool,
+        patchPid,
+        "%pg_advisory_xact_lock(hashtextextended%",
+        following.then(() => ({ status: 204 })),
+        "configured-policy writer behind Configuration PATCH",
+      );
+    } finally {
+      try {
+        await namespaceLock.query("ROLLBACK");
+      } finally {
+        namespaceLock.release();
+        await Promise.allSettled([preceding, following]);
+      }
+    }
+    assert.ok(preceding !== undefined && following !== undefined);
+    await following;
+    const accepted = await preceding;
+    assert.equal(accepted.status, 200, JSON.stringify(accepted.error));
+    assert.deepEqual(accepted.data, {
+      ...before.configuration,
+      generation: before.configuration.generation + 1,
+      values: replacementValues,
+    });
+    const after = await snapshot();
+    assert.deepEqual(after.configuration, accepted.data);
+    assert.equal(after.successAudits, before.successAudits + 1);
+    const later = await alice.request("PATCH", path, { values: originalValues });
+    assert.equal(later.status, 403, JSON.stringify(later.error));
+    assert.equal(later.error?.code, "FORBIDDEN");
+    assert.deepEqual(await snapshot(), after);
   },
 );
