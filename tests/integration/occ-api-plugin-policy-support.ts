@@ -9,10 +9,10 @@ import {
   type PluginDriver,
   type UpdateAgentBody,
 } from "../../packages/contracts/src/index.ts";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
+import type { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import {
   checkedInjectedBody,
-  createInjectedControllerFixture,
+  type createInjectedControllerFixture,
   type FixtureRequest,
 } from "./occ-api-injected-fixture.ts";
 
