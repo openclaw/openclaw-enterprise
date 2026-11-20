@@ -11,7 +11,6 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import {
   InMemoryPlatformState,
-  PersistedStateInvalidError,
   ScopeViolationError,
   type PlatformStateStore,
 } from "../../packages/occ/src/index.ts";
@@ -155,11 +154,10 @@ export async function verifyMemoryRepositoryPolicyPersistence(): Promise<void> {
   assert.deepEqual(created.sandboxPolicy?.repositoryNetworkPolicy, denyAll);
 
   const protectedRevision = protectedSuccessor(scoped, installation.id);
-  await assert.rejects(createRevision(protectedRevision), {
-    name: ScopeViolationError.name,
-    message: /Repository network policy requires unprotected execution/,
-  });
-  assert.equal(await readRevision(protectedRevision.id), undefined);
+  const createdProtected = await createRevision(protectedRevision);
+  assert.deepEqual(await readRevision(protectedRevision.id), createdProtected);
+  assert.deepEqual(createdProtected.sandboxPolicy?.repositoryNetworkPolicy, denyAll);
+  assert.deepEqual(createdProtected.egressPlan, protectedRevision.egressPlan);
 }
 
 export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<void> {
@@ -318,11 +316,6 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
   const installation = await state.loadInstallation();
   assert.ok(installation);
   const protectedRevision = protectedSuccessor(scopedUnprotectedRevision, installation.id);
-  await assert.rejects(createRevision(protectedRevision), {
-    name: ScopeViolationError.name,
-    message: /Repository network policy requires unprotected execution/,
-  });
-  assert.equal(await readRevision(protectedRevision.id), undefined);
 
   const scope = { sandbox_driver_id: baseSnapshot.driverId, sandbox_policy: scoped.sandboxPolicy };
   const protectedSpec: Record<string, unknown> = {
@@ -363,18 +356,22 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
     }),
     { code: "23514", constraint: "agent_revisions_execution_admission" },
   );
-  // A valid future row passes the database constraints but remains unreadable
-  // to this State adapter until Worker can enforce scoped protected execution.
-  const result = await insertStoredRevision(protectedRevision, {
-    ...protectedSpec,
-    execution_admission: { ...protectedRevision.executionAdmission, ...marker },
+  // Protected admission preserves the egress plan and both storage reader markers.
+  await createRevision(protectedRevision);
+  const storedProtected = await readStoredSpec(protectedRevision.id);
+  assert.deepEqual(storedProtected.execution_admission, {
+    ...protectedRevision.executionAdmission,
+    ...marker,
   });
-  assert.equal(result.rowCount, 1);
-  await assert.rejects(readRevision(protectedRevision.id), (error: unknown) => {
-    assert.ok(error instanceof PersistedStateInvalidError);
-    assert.match(error.message, /Persisted AgentRevision execution admission/);
-    return true;
-  });
+  assert.equal(
+    storedProtected.harness_auth.protectedExecutionVersion,
+    protectedRevision.executionAdmission.version,
+  );
+  assert.deepEqual(storedProtected.egress_plan, protectedRevision.egressPlan);
+  const protectedRead = await readRevision(protectedRevision.id);
+  assert.deepEqual(protectedRead?.executionAdmission, protectedRevision.executionAdmission);
+  assert.deepEqual(protectedRead?.egressPlan, protectedRevision.egressPlan);
+  assert.deepEqual(protectedRead?.sandboxPolicy?.repositoryNetworkPolicy, admitted);
 
   const denyAll = { ...desired, version: desired.version + 1, repositoryNetworkPolicy: [] };
   assert.deepEqual(await savePolicy(denyAll, desired.version), denyAll);

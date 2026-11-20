@@ -12,13 +12,20 @@ export type {
 export { recognizedRuntimeFailureValues } from "./runtime-failure-cause.ts";
 import {
   GATEWAY_MANAGED_MODE_UNSUPPORTED,
+  activePolicyRevision,
   admitComputeRevision,
-  admitDeploymentRepositoryPolicy,
+  assertAgentConfiguration,
   checkedSandboxPolicySnapshot,
+  computeRepositoryPolicyAdmission,
   defaultDeploymentSandboxPolicy,
   deploymentExecution,
+  editableSandboxPolicy,
+  bindProtectedRepositoryPolicySandbox,
+  selectsModel,
+  soleHarnessSource,
+  unprotectedPolicyRevision,
   sandboxPolicyRefused,
-  unsupportedComputeRepositoryPolicy,
+  type ConfigurationOwnership,
 } from "./deployment-policy.ts";
 import { deploymentRepositoryAccessStatus } from "./deployment-repository-access.ts";
 import { exchangeAuthorizationCode, startBrowserAuthorization } from "./browser-authorization.ts";
@@ -57,7 +64,6 @@ import {
   validateConnectionTemplateAuthorization,
   ConnectionTemplateValidationError,
   MAX_AGENT_CREDENTIAL_SOURCES,
-  assertExecutionAdmission,
   assertExecutionReleaseAllowed,
   credentialFreeMetadataGrant,
   isInstallationRepositoryProfile,
@@ -115,9 +121,15 @@ export type {
 } from "@openclaw-enterprise/contracts";
 import { InstalledDriver } from "./installed-driver.ts";
 import {
+  admitDeploymentRepositoryPolicy,
+  assertSelectedRepositoryGrants,
+  bindRepositoryPolicyAuthorization,
   delegatedRepositoryCeiling,
+  readRepositoryEditTopology,
   repositoryGrantAuthority,
+  repositoryPolicySaveValidator,
   type RepositoryGrantPolicy,
+  type RepositoryPolicyResolution,
 } from "./repository-network-policy.ts";
 
 export { InstalledDriver } from "./installed-driver.ts";
@@ -264,7 +276,6 @@ import type {
   RepositoryOption,
   RepositoryOptions,
   RepositoryPolicyDriver,
-  RepositoryCredentialResolution,
   RepositoryRevisionState,
   RevisionHarnessDescriptor,
   ResourceKind,
@@ -308,7 +319,6 @@ import {
   isSecretHarnessAuth,
   isServiceAccountHarnessAuth,
   type ServiceAccountReference,
-  freezeAgentRevision,
 } from "@openclaw-enterprise/contracts";
 import {
   asRecord,
@@ -1894,14 +1904,6 @@ function resolveAgentHarness(
   return approvedHarness;
 }
 
-// Whether the Configuration selects a model for the default or any roster entry.
-function selectsModel(values: Readonly<OpenClawConfigurationDocument>): boolean {
-  const agents = asRecord(values.agents);
-  return [asRecord(agents?.defaults), ...Object.values(asRecord(agents?.entries) ?? {})].some(
-    (entry) => asRecord(entry)?.model !== undefined,
-  );
-}
-
 // A Driver names unsupported Configuration content the caller owns; keep that message. Other
 // refusals get this fixed text; the caller is already authorized for the Agent.
 function validateAgentHarnessAuth(
@@ -2267,7 +2269,7 @@ type InstallationRepositoryAdmission = Readonly<{
       resolveBindings(input: {
         readonly namespaceId: string;
         readonly bindings: readonly RepositoryBindingRequest[];
-      }): RepositoryCredentialResolution;
+      }): RepositoryPolicyResolution;
     };
   backendId: string;
 }>;
@@ -10226,14 +10228,11 @@ export class OpenClawController {
     return this.read(async (state) => {
       const namespace = await this.exactNamespace(state, namespaceId);
       const metadata = await state.configurations.findConfiguration(namespace.id, configurationId);
-      if (!metadata) {
+      if (!metadata || metadata.namespaceId !== namespace.id || metadata.id !== configurationId) {
         throw new ScopeViolationError("The Configuration does not belong to the exact Namespace.");
       }
       await this.guardProvisioningConfiguration(state, namespace.id, configurationId, true);
-      const configuration = await this.driverOperation(() =>
-        driver.read({ id: metadata.id, namespaceId: namespace.id }),
-      );
-      return this.exactConfiguration(configuration, metadata);
+      return this.readExactConfiguration(metadata, driver);
     });
   }
 
@@ -11852,7 +11851,7 @@ export class OpenClawController {
       policy.repositoryNetworkPolicy === undefined &&
       revision?.sandboxPolicy?.repositoryNetworkPolicy === undefined &&
       agent.desiredRuntimeState === "running" &&
-      this.unprotectedPolicyRevision(revision) &&
+      unprotectedPolicyRevision(revision) &&
       revision?.sandboxPolicy !== undefined &&
       revision.sandboxDriverId === driver.id;
     const href = `/namespaces/${encodeURIComponent(agent.namespaceId)}/agents/${encodeURIComponent(agent.id)}/sandbox-policy/${facet}`;
@@ -11892,29 +11891,17 @@ export class OpenClawController {
     this.requireNetworkPolicyAvailable();
     return this.read(async (state) => {
       await this.exactNamespace(state, namespaceId);
-      const agent = await state.agents.findAgent(namespaceId, agentId);
-      const previous = await state.sandboxPolicies.find(namespaceId, agentId);
-      if (agent?.status !== "active" || agent.sandboxPolicyEditing !== true) {
-        throw new ResourceStateConflictError("Policy editing is disabled for this Agent.");
-      }
-      if (
-        previous === undefined ||
-        previous.version !== expectedVersion ||
-        previous.application?.state === "pending"
-      ) {
-        throw new ResourceStateConflictError(
-          "The policy changed or an application is still pending. Reload before editing.",
-        );
-      }
+      const { agent } = editableSandboxPolicy(
+        await state.agents.findAgent(namespaceId, agentId),
+        await state.sandboxPolicies.find(namespaceId, agentId),
+        expectedVersion,
+      );
       try {
         const snapshot = this.admitAgentNetworkPolicy(additions, expectedVersion + 1, undefined, {
           repositoryCredentials: (agent.repositoryBindings?.length ?? 0) > 0,
         });
         if (snapshot.additions.length > 0) {
-          const active =
-            agent.activeRevisionId === undefined
-              ? undefined
-              : await state.revisions.findRevision(namespaceId, agentId, agent.activeRevisionId);
+          const active = await activePolicyRevision(state.revisions, agent);
           if (await this.protectedExecutionApplies(state, agent, active)) {
             throw new ProtectedExecutionNetworkPolicyError("save");
           }
@@ -11942,72 +11929,101 @@ export class OpenClawController {
     }
   }
 
-  /**
-   * Finding 2053: a protected execution keeps only its Credential Proxy egress policy, so an
-   * Agent's network policy additions are refused rather than dropped. They are refused at save
-   * while the active revision is protected or the next deploy requires protection,
-   * and live application is refused to a protected active revision.
-   * createRevision and the OpenShell Driver refuse the same rule at deploy.
-   */
-  private unprotectedPolicyRevision(revision: Readonly<AgentRevision> | undefined): boolean {
-    if (revision?.executionAdmission?.mode !== "unprotected") {
-      return false;
-    }
-    try {
-      assertExecutionAdmission(revision);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   private async protectedExecutionApplies(
     state: PlatformReadView,
     agent: Readonly<Agent>,
     activeRevision: Readonly<AgentRevision> | undefined,
   ): Promise<boolean> {
-    if (activeRevision !== undefined && !this.unprotectedPolicyRevision(activeRevision)) {
+    if (activeRevision !== undefined && !unprotectedPolicyRevision(activeRevision)) {
       return true;
     }
     if (!this.selections.has("credential_proxy")) {
       return false;
     }
-    if (
+    return (
       !this.selectedProxyOwner().allowsOrdinaryCredentialGateway() ||
-      (agent.repositoryBindings?.length ?? 0) > 0
-    ) {
-      return true;
-    }
-    return !(await this.ordinaryModelBinding(state, agent));
-  }
-
-  private requireDeploymentRepositoryOwner(
-    namespaceId: string,
-    grants: readonly RepositoryNetworkGrant[],
-  ) {
-    const owner = this.repositoryPermissionOwner(this.installationRepositoryAdmission);
-    const authority = repositoryGrantAuthority(
-      namespaceId,
-      owner?.admission?.policy,
-      owner?.unchanged,
+      Boolean(agent.repositoryBindings?.length) ||
+      !(await this.ordinaryModelBinding(state, agent))
     );
-    if (!authority?.approvesAll(grants) || !authority.unchanged()) {
-      throw new ResourceStateConflictError(
-        "Cannot verify Namespace repository network grants. Review the Installation repository policy before deploying.",
-      );
-    }
-    return authority.unchanged;
   }
 
-  private namespaceRepositoryNetworkPolicyCeiling(
+  private repositoryGrantAuthority(
     namespaceId: string,
-  ): RepositoryNetworkPolicyCeiling {
-    const admission = this.selectedStandingRepositoryAdmission();
-    const owner = admission && this.repositoryPermissionOwner(admission);
+    admission: InstallationRepositoryAdmission | undefined,
+  ) {
+    try {
+      const owner = admission && this.repositoryPermissionOwner(admission);
+      return repositoryGrantAuthority(namespaceId, owner?.admission?.policy, owner?.unchanged);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private namespaceRepositoryNetworkPolicyCeiling(namespaceId: string) {
     return delegatedRepositoryCeiling(
       this.repositoryNetworkPolicyCeiling,
-      repositoryGrantAuthority(namespaceId, admission?.policy, owner?.unchanged),
+      this.repositoryGrantAuthority(namespaceId, this.selectedStandingRepositoryAdmission()),
     );
+  }
+
+  private async qualifyRepositoryEdit(
+    state: PlatformReadView | PlatformUnitOfWork,
+    agent: Readonly<Agent>,
+    version: number,
+    canRead: (target: ResourceRef) => Promise<boolean>,
+    resolveHarness: HarnessResolver | undefined,
+  ) {
+    const { namespaceId, repositoryBindings: bindings } = agent;
+    const admission = this.installationRepositoryAdmission;
+    if (!admission || !resolveHarness || !bindings?.length) {
+      return undefined;
+    }
+    try {
+      const compute = this.selectedDriver("compute");
+      const owner = this.selectedProxyOwner();
+      const validate = repositoryPolicySaveValidator(compute, owner);
+      if (!validate || this.networkPolicyUnavailable() !== undefined) {
+        return undefined;
+      }
+      const authority = this.repositoryGrantAuthority(namespaceId, admission);
+      const configuration = this.configurationDriver();
+      const { resolveBindings } = admission.policy;
+      const topology = await readRepositoryEditTopology(
+        state,
+        agent,
+        resolveHarness,
+        canRead,
+        (metadata) => this.readExactConfiguration(metadata, configuration),
+      );
+      if (!topology) {
+        return undefined;
+      }
+      const { harness, source } = topology;
+      const sourceDriver = this.credentialSourceOwner(source).driver;
+      const repository = this.resolveRepositoryBindings(namespaceId, bindings, "saved", admission);
+      if (!repository) {
+        return undefined;
+      }
+      const ownersCurrent = () =>
+        repository.unchanged() &&
+        admission.policy.resolveBindings === resolveBindings &&
+        this.selectedDriver("compute") === compute &&
+        this.selectedProxyOwner() === owner &&
+        this.configurationDriver() === configuration &&
+        this.credentialSourceOwner(source).driver === sourceDriver;
+      return validate(
+        harness,
+        source,
+        repository.resolution,
+        this.repositoryNetworkPolicyCeiling,
+        authority,
+        version,
+        ownersCurrent,
+      );
+    } catch {
+      // Driver refusals can contain protected configuration and binding details.
+      return undefined;
+    }
   }
 
   async getAgentSandboxPolicy(
@@ -12015,6 +12031,7 @@ export class OpenClawController {
     namespaceId: string,
     agentId: string,
     facet: SandboxFacet,
+    resolveHarness?: HarnessResolver,
   ) {
     this.requireNetworkPolicyFacet(facet);
     await this.authorize(principalId, "read", { kind: "agent", id: agentId, namespaceId });
@@ -12026,16 +12043,27 @@ export class OpenClawController {
       if (agent === undefined || policy === undefined) {
         throw new ScopeViolationError("The Agent policy is unavailable in this Namespace.");
       }
-      const revision =
-        agent.activeRevisionId === undefined
-          ? undefined
-          : await state.revisions.findRevision(namespaceId, agentId, agent.activeRevisionId);
+      const revision = await activePolicyRevision(state.revisions, agent);
       const driver = this.sandboxDriver();
       const unavailableReason = this.networkPolicyUnavailable();
       const defaults =
         revision?.sandboxPolicy?.defaults ??
         driver?.admitNetworkPolicy?.([], policy.version).defaults ??
         null;
+      const storesRepositoryPolicy = state.sandboxPolicies.supportsRepositoryNetworkPolicy === true;
+      const canWithdraw = storesRepositoryPolicy && policy.repositoryNetworkPolicy !== undefined;
+      const firstSave =
+        storesRepositoryPolicy && !canWithdraw && unavailableReason === undefined
+          ? await this.qualifyRepositoryEdit(
+              state,
+              agent,
+              policy.version + 1,
+              (ref) => this.canRead(principalId, ref),
+              resolveHarness,
+            )
+          : undefined;
+      const repositoryNetworkPolicyCeiling =
+        this.namespaceRepositoryNetworkPolicyCeiling(namespaceId);
       return {
         policy,
         configuration: await this.policyConfigurationDescriptor(
@@ -12050,10 +12078,9 @@ export class OpenClawController {
         capability: this.sandboxDriver()?.networkPolicy ?? null,
         ...(unavailableReason === undefined ? {} : { unavailableReason }),
         ceiling: this.sandboxNetworkPolicyCeiling,
-        repositoryNetworkPolicyCeiling: this.namespaceRepositoryNetworkPolicyCeiling(namespaceId),
+        repositoryNetworkPolicyCeiling,
         repositoryNetworkPolicySaveSupported:
-          state.sandboxPolicies.supportsRepositoryNetworkPolicy === true &&
-          policy.repositoryNetworkPolicy !== undefined,
+          canWithdraw || firstSave?.supports(repositoryNetworkPolicyCeiling) === true,
         defaults,
         // A fresh deploy carries the saved version into its Sandbox; no application is
         // requested for it (D773).
@@ -12199,16 +12226,26 @@ export class OpenClawController {
     expectedVersion: number,
     additions: readonly SandboxNetworkGrant[],
     repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[],
+    resolveHarness?: HarnessResolver,
   ): Promise<Readonly<SandboxPolicy>> {
     this.requireNetworkPolicyFacet(facet);
-    await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
+    const target = { kind: "agent", id: agentId, namespaceId } as const;
     const sandboxPolicy = this.agentSandboxPolicyRef(namespaceId, agentId);
-    await this.authorize(principalId, "update", sandboxPolicy);
+    const explicitList = repositoryNetworkPolicy !== undefined;
     return this.mutate(async (state) => {
-      if (
-        repositoryNetworkPolicy !== undefined &&
-        state.sandboxPolicies.supportsRepositoryNetworkPolicy !== true
-      ) {
+      if (explicitList) {
+        await this.holdAuthority(state);
+      }
+      const authority = explicitList
+        ? bindRepositoryPolicyAuthorization(() => this.authorizationAuthority(principalId))
+        : undefined;
+      const [iam, decide] = authority?.inputs ?? [];
+      const authorizeEdit = async () => {
+        await this.authorize(principalId, "manage_policy", target, iam, decide);
+        await this.authorize(principalId, "update", sandboxPolicy, iam, decide);
+      };
+      await authorizeEdit();
+      if (explicitList && state.sandboxPolicies.supportsRepositoryNetworkPolicy !== true) {
         throw new ResourceStateConflictError(
           "Saving a repository network policy requires an Installation version that supports storing Agent repository grants.",
           [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
@@ -12218,51 +12255,61 @@ export class OpenClawController {
       // before the editing and version checks for ordinary network policy updates.
       const clearsRepository =
         Array.isArray(repositoryNetworkPolicy) && repositoryNetworkPolicy.length === 0;
-      const clearsAll = clearsRepository && Array.isArray(additions) && additions.length === 0;
-      if (!clearsAll) {
+      const repositoryOnly = explicitList && Array.isArray(additions) && additions.length === 0;
+      const clearsAll = clearsRepository && repositoryOnly;
+      if (!repositoryOnly) {
         this.requireNetworkPolicyAvailable();
       }
       await this.lockNamespace(state, namespaceId);
-      const agent = await state.agents.lockAgent(namespaceId, agentId);
-      const previous = await state.sandboxPolicies.find(namespaceId, agentId);
-      if (agent?.status !== "active" || agent.sandboxPolicyEditing !== true) {
-        throw new ResourceStateConflictError("Policy editing is disabled for this Agent.");
+      if (explicitList) {
+        await authorizeEdit();
       }
-      if (
-        previous === undefined ||
-        previous.version !== expectedVersion ||
-        previous.application?.state === "pending"
-      ) {
-        throw new ResourceStateConflictError(
-          "The policy changed or an application is still pending. Reload before editing.",
-        );
-      }
+      const { agent, previous } = editableSandboxPolicy(
+        await state.agents.lockAgent(namespaceId, agentId),
+        await state.sandboxPolicies.find(namespaceId, agentId),
+        expectedVersion,
+      );
       if (clearsRepository) {
-        await this.authorize(principalId, "read", sandboxPolicy);
+        await this.authorize(principalId, "read", sandboxPolicy, iam, decide);
       }
+      // Omission retains the list. An empty list can withdraw only an existing policy.
       const withdrawal = clearsRepository && previous.repositoryNetworkPolicy !== undefined;
-      if (additions.length > 0 || (repositoryNetworkPolicy !== undefined && !withdrawal)) {
-        const active =
-          agent.activeRevisionId === undefined
-            ? undefined
-            : await state.revisions.findRevision(namespaceId, agentId, agent.activeRevisionId);
+      const edit = explicitList && !withdrawal;
+      const admittedEdit =
+        repositoryOnly && repositoryNetworkPolicy.length > 0
+          ? (
+              await this.qualifyRepositoryEdit(
+                state,
+                agent,
+                expectedVersion + 1,
+                (ref) => this.canRead(principalId, ref, iam, decide),
+                resolveHarness,
+              )
+            )?.admit(repositoryNetworkPolicy)
+          : undefined;
+      if (!admittedEdit && (edit || additions.length > 0)) {
+        const active = await activePolicyRevision(state.revisions, agent);
         if (await this.protectedExecutionApplies(state, agent, active)) {
           throw new ProtectedExecutionNetworkPolicyError(
             repositoryNetworkPolicy === undefined ? "save" : "saveRepository",
           );
         }
+        if (edit) {
+          throw new ResourceStateConflictError(
+            "This Installation allows only clearing an existing repository network policy.",
+          );
+        }
       }
-      if (repositoryNetworkPolicy !== undefined && !withdrawal) {
-        throw new ResourceStateConflictError(
-          "This Installation allows only clearing an existing repository network policy.",
-        );
-      }
-      const repositoryGrants = withdrawal ? [] : previous.repositoryNetworkPolicy;
-      const admittedAdditions = clearsAll
-        ? []
-        : this.admitAgentNetworkPolicy(additions, expectedVersion + 1, undefined, {
-            repositoryCredentials: (agent.repositoryBindings?.length ?? 0) > 0,
-          }).additions;
+      const repositoryGrants =
+        admittedEdit?.grants ?? (withdrawal ? [] : previous.repositoryNetworkPolicy);
+      const admittedAdditions =
+        clearsAll || admittedEdit
+          ? []
+          : this.admitAgentNetworkPolicy(additions, expectedVersion + 1, undefined, {
+              repositoryCredentials: (agent.repositoryBindings?.length ?? 0) > 0,
+            }).additions;
+      admittedEdit?.assertCurrent();
+      authority?.assertCurrent();
       const updated = await state.sandboxPolicies.save(
         {
           id: previous.id,
@@ -12338,7 +12385,7 @@ export class OpenClawController {
       }
       if (
         driver === undefined ||
-        !this.unprotectedPolicyRevision(revision) ||
+        !unprotectedPolicyRevision(revision) ||
         revision?.sandboxPolicy === undefined ||
         revision.sandboxDriverId !== driver.id ||
         driver.networkPolicy?.live !== true ||
@@ -13691,14 +13738,7 @@ export class OpenClawController {
   private async prepareDeploymentChannels(
     principalId: string,
     target: DeploymentAgentRef,
-    metadata:
-      | Readonly<
-          Pick<
-            Configuration,
-            "id" | "namespaceId" | "kind" | "generation" | "createdAt" | "secretBindings"
-          >
-        >
-      | undefined,
+    metadata: ConfigurationOwnership | undefined,
   ): Promise<PreparedDeploymentChannels> {
     if (metadata?.kind !== "agent") {
       throw new ScopeViolationError("The Agent Configuration is unavailable.");
@@ -13908,11 +13948,7 @@ export class OpenClawController {
         namespace.id,
         lockedAgent.configurationId,
       );
-      if (!metadata || metadata.kind !== "agent") {
-        throw new ScopeViolationError(
-          "The Agent Configuration must belong to the exact Namespace and configure an Agent.",
-        );
-      }
+      assertAgentConfiguration(metadata, namespace.id, lockedAgent.configurationId);
       if (prepared !== undefined && metadata.generation !== prepared.configuration.generation) {
         throw new ResourceStateConflictError(
           first === undefined
@@ -13921,12 +13957,7 @@ export class OpenClawController {
         );
       }
       const configurationDriver = this.configurationDriver();
-      const configuration = this.exactConfiguration(
-        await this.driverOperation(() =>
-          configurationDriver.read({ id: metadata.id, namespaceId: namespace.id }),
-        ),
-        metadata,
-      );
+      const configuration = await this.readExactConfiguration(metadata, configurationDriver);
       if (prepared !== undefined && !isDeepStrictEqual(configuration, prepared.configuration)) {
         throw new ResourceStateConflictError(
           first === undefined
@@ -14109,20 +14140,20 @@ export class OpenClawController {
       // nothing created), because the worker must decode them all to stop or retire them.
       const previous = await state.revisions.listRevisions(namespace.id, lockedAgent.id);
       const createdAt = this.timestamp();
-      const admittedRepositoryCredentials = this.admitRepositoryCredentials(
+      const admittedRepository = this.admitRepositoryCredentials(
         lockedAgent,
         compute,
         { ...approvedHarness, mode: lockedAgent.executionMode },
         sandbox?.id,
         Date.parse(createdAt),
       );
-      if (admittedRepositoryCredentials !== undefined) {
+      if (admittedRepository !== undefined) {
         this.validateRepositoryBrokerNetworkProxy(revisionHarness, admittedConfiguration, sandbox);
       }
       const repositoryCredentials = await repositoryCredentialsWithStandingApproval(
         state.repositorySessions,
         { namespaceId: namespace.id, agentId: lockedAgent.id },
-        admittedRepositoryCredentials,
+        admittedRepository?.credentials,
         ({ repositoryRef, profile }) =>
           this.resolveRepositoryBindings(
             namespace.id,
@@ -14160,12 +14191,7 @@ export class OpenClawController {
       }
       const policyScope = { repositoryCredentials: repositoryCredentials !== undefined };
       const protectedExecution = execution.executionAdmission.mode === "protected";
-      if (
-        policy !== undefined &&
-        (policy.additions.length > 0 || policy.repositoryNetworkPolicy !== undefined)
-      ) {
-        // Repository policy was authorized before effects. Ordinary additions retain their
-        // existing read check before any refusal that names them.
+      if (policy?.additions.length) {
         if (policy.repositoryNetworkPolicy === undefined) {
           await this.authorize(principalId, "read", {
             kind: "sandbox_policy",
@@ -14174,13 +14200,16 @@ export class OpenClawController {
           });
         }
         if (protectedExecution) {
-          if (policy.repositoryNetworkPolicy !== undefined) {
-            throw new ResourceStateConflictError(
-              "Protected execution cannot enforce the saved repository network policy. Review the policy and execution mode before deploying.",
-            );
-          }
           throw new ProtectedExecutionNetworkPolicyError("deploy");
         }
+      }
+      const repositoryGrants = policy?.repositoryNetworkPolicy;
+      const protectedSandbox =
+        protectedExecution && repositoryGrants !== undefined
+          ? bindProtectedRepositoryPolicySandbox(compute, sandbox)
+          : undefined;
+      if (protectedSandbox) {
+        assertSelectedRepositoryGrants(repositoryGrants, admittedRepository?.selectedGrants);
       }
       const sandboxSnapshot =
         !protectedExecution && policy !== undefined && policy.additions.length > 0
@@ -14198,11 +14227,11 @@ export class OpenClawController {
         );
       }
       const { sandboxPolicy, ownerUnchanged } = admitDeploymentRepositoryPolicy(
-        sandboxSnapshot,
-        policy?.repositoryNetworkPolicy,
+        () => sandboxSnapshot,
+        repositoryGrants,
         this.repositoryNetworkPolicyCeiling,
-        sandbox,
-        (grants) => this.requireDeploymentRepositoryOwner(namespace.id, grants),
+        protectedSandbox?.driver ?? sandbox,
+        () => this.repositoryGrantAuthority(namespace.id, this.installationRepositoryAdmission),
       );
       const revisionDraft: AgentRevision = {
         id: revisionId,
@@ -14233,42 +14262,32 @@ export class OpenClawController {
         servicePrincipalId: lockedAgent.servicePrincipalId,
         createdAt,
       };
-      const explicitRepositoryPolicy = sandboxPolicy?.repositoryNetworkPolicy !== undefined;
+      const policyCompute =
+        sandboxPolicy?.repositoryNetworkPolicy === undefined
+          ? undefined
+          : computeRepositoryPolicyAdmission(compute, protectedSandbox);
       const assertRepositoryNetworkPolicyDrivers = () => {
-        if (!explicitRepositoryPolicy) {
-          return;
-        }
         // State locks do not freeze the process-local Driver registrations.
         if (
-          computeSelection === undefined ||
-          this.selections.get("compute") !== computeSelection ||
-          !this.unchangedDriver(computeSelection) ||
-          sandboxSelection === undefined ||
-          this.selections.get("sandbox") !== sandboxSelection ||
-          !this.unchangedDriver(sandboxSelection) ||
-          ownerUnchanged?.() === false
+          policyCompute &&
+          (computeSelection === undefined ||
+            this.selections.get("compute") !== computeSelection ||
+            !this.unchangedDriver(computeSelection) ||
+            sandboxSelection === undefined ||
+            this.selections.get("sandbox") !== sandboxSelection ||
+            !this.unchangedDriver(sandboxSelection) ||
+            !policyCompute.unchanged() ||
+            ownerUnchanged?.() === false)
         ) {
           throw new ResourceStateConflictError(
             "The selected Drivers changed during repository network policy admission. Review the Installation's Driver selections before deploying.",
           );
         }
       };
-      if (explicitRepositoryPolicy) {
-        if (compute.validateProtectedRepositoryNetworkPolicy === undefined) {
-          throw unsupportedComputeRepositoryPolicy();
-        }
-        try {
-          await compute.validateProtectedRepositoryNetworkPolicy(
-            freezeAgentRevision(revisionDraft),
-          );
-        } catch {
-          throw unsupportedComputeRepositoryPolicy();
-        }
-        assertRepositoryNetworkPolicyDrivers();
-      }
-      const policyAdmittedRevision = explicitRepositoryPolicy
-        ? admitComputeRevision(compute, revisionDraft)
-        : undefined;
+      const policyAdmittedRevision = await policyCompute?.admit(
+        revisionDraft,
+        assertRepositoryNetworkPolicyDrivers,
+      );
       if (compute.requiresAgentRuntimeCredentials === true) {
         if (
           compute.getAgentRuntimeCredentialStatus === undefined ||
@@ -14314,7 +14333,6 @@ export class OpenClawController {
       }
       const admittedRevision =
         policyAdmittedRevision ?? admitComputeRevision(compute, revisionDraft);
-      // Database locks do not freeze process-local selections across awaited Driver calls.
       if (prepared !== undefined) {
         this.assertPreparedDeploymentDrivers(prepared);
       }
@@ -15381,8 +15399,14 @@ export class OpenClawController {
     return Object.freeze(readable);
   }
 
-  private async canRead(principalId: string, target: AuthorizationTarget): Promise<boolean> {
-    return (await this.authorizationDecision(principalId, "read", target)).decision.allowed;
+  private async canRead(
+    principalId: string,
+    target: AuthorizationTarget,
+    driver?: IAMDriver,
+    authorize?: IAMDriver["authorize"],
+  ): Promise<boolean> {
+    return (await this.authorizationDecision(principalId, "read", target, driver, authorize))
+      .decision.allowed;
   }
 
   /**
@@ -17827,19 +17851,11 @@ export class OpenClawController {
     agent: Readonly<Agent>,
     admitted?: HarnessAuthSnapshot,
   ): Promise<boolean> {
-    const auth = agent.harnessAuth;
-    if (
-      auth?.method !== "credential_source" ||
-      agent.credentialSources?.length !== 1 ||
-      agent.credentialSources[0]?.sourceId !== auth.sourceId ||
-      !this.selections.has("credential_gateway")
-    ) {
+    const sourceId = soleHarnessSource(agent);
+    if (sourceId === undefined || !this.selections.has("credential_gateway")) {
       return false;
     }
-    const source = await state.credentialSources.findCredentialSource(
-      agent.namespaceId,
-      auth.sourceId,
-    );
+    const source = await state.credentialSources.findCredentialSource(agent.namespaceId, sourceId);
     const gateway = this.credentialGatewayDriver();
     if (
       source?.state !== "ready" ||
@@ -17849,16 +17865,13 @@ export class OpenClawController {
     ) {
       return false;
     }
-    let type: CredentialSourceType;
-    try {
-      type = await this.credentialSourceType(gateway, source.type);
-    } catch (error) {
+    const type = await this.credentialSourceType(gateway, source.type).catch((error: unknown) => {
       if (error instanceof CredentialSourceTypeNotOfferedError) {
-        return false;
+        return undefined;
       }
       throw error;
-    }
-    if (type.harnessAuth === undefined || !this.staticSourceLifecycleMatches(type)) {
+    });
+    if (type?.harnessAuth === undefined || !this.staticSourceLifecycleMatches(type)) {
       return false;
     }
     const snapshot: HarnessAuthSnapshot = {
@@ -18580,27 +18593,24 @@ export class OpenClawController {
     }
   }
 
+  private async readExactConfiguration(
+    metadata: ConfigurationOwnership,
+    driver = this.configurationDriver(),
+  ) {
+    const { id, namespaceId } = metadata;
+    return this.exactConfiguration(
+      await this.driverOperation(() => driver.read({ id, namespaceId })),
+      metadata,
+    );
+  }
+
   // The Configuration an Agent save names, read from the Configuration Driver at most once and
   // only when a check needs its values.
   private savedConfigurationReader(
-    metadata: Pick<
-      Configuration,
-      "id" | "namespaceId" | "kind" | "generation" | "createdAt" | "secretBindings"
-    >,
+    metadata: ConfigurationOwnership,
   ): () => Promise<Readonly<Configuration>> {
     let read: Promise<Readonly<Configuration>> | undefined;
-    return () => {
-      read ??= (async () => {
-        const driver = this.configurationDriver();
-        return this.exactConfiguration(
-          await this.driverOperation(() =>
-            driver.read({ id: metadata.id, namespaceId: metadata.namespaceId }),
-          ),
-          metadata,
-        );
-      })();
-      return read;
-    };
+    return () => (read ??= this.readExactConfiguration(metadata));
   }
 
   // Agent save runs deploy admission's checks of the Agent against its Configuration and the
@@ -18956,12 +18966,7 @@ export class OpenClawController {
     bindings: readonly RepositoryBindingRequest[] | undefined,
     origin: "request" | "saved",
     admission?: InstallationRepositoryAdmission,
-  ):
-    | {
-        readonly driver: RepositoryPolicyDriver;
-        readonly resolution: RepositoryCredentialResolution;
-      }
-    | undefined {
+  ) {
     if (bindings === undefined) {
       return undefined;
     }
@@ -18983,7 +18988,7 @@ export class OpenClawController {
       );
     }
     const { driver } = owner;
-    let resolution: RepositoryCredentialResolution;
+    let resolution: RepositoryPolicyResolution;
     try {
       const input = immutableCopy({ namespaceId, bindings });
       resolution =
@@ -19037,7 +19042,7 @@ export class OpenClawController {
     ) {
       throw new RepositoryBindingSelectionError();
     }
-    return { driver, resolution: immutableCopy(resolution) };
+    return { driver, resolution: immutableCopy(resolution), unchanged: owner.unchanged };
   }
 
   private repositoryBindingSelections(
@@ -19065,7 +19070,7 @@ export class OpenClawController {
     harness: RevisionHarnessDescriptor,
     sandboxDriverId: string | undefined,
     admittedAtWallMs: number,
-  ): RepositoryRevisionState | undefined {
+  ) {
     const resolved = this.resolveRepositoryBindings(
       agent.namespaceId,
       agent.repositoryBindings,
@@ -19086,7 +19091,8 @@ export class OpenClawController {
         "The selected repository credential Driver returned an invalid admission snapshot.",
       );
     }
-    return immutableCopy(snapshot);
+    const { selectedRepositoryNetworkGrants: selectedGrants } = resolved.resolution;
+    return { credentials: immutableCopy(snapshot), selectedGrants };
   }
 
   private async driverOperation<T>(
@@ -19147,10 +19153,7 @@ export class OpenClawController {
    */
   private async lockedConfiguration(
     driver: ConfigurationDriver,
-    record: Pick<
-      Configuration,
-      "id" | "namespaceId" | "kind" | "generation" | "createdAt" | "secretBindings"
-    >,
+    record: ConfigurationOwnership,
   ): Promise<Readonly<Configuration>> {
     const stored = await this.driverOperation(() =>
       driver.read({ id: record.id, namespaceId: record.namespaceId }),
@@ -19197,10 +19200,7 @@ export class OpenClawController {
 
   private exactConfiguration(
     configuration: Configuration,
-    expected: Pick<
-      Configuration,
-      "id" | "namespaceId" | "kind" | "generation" | "createdAt" | "secretBindings"
-    >,
+    expected: ConfigurationOwnership,
   ): Readonly<Configuration> {
     if (
       !configuration ||

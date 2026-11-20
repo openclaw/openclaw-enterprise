@@ -8537,11 +8537,11 @@ Read one Agent sandbox policy and delegation ceiling
 | `data.policy.repositoryNetworkPolicy[].access` | `"read" or "write"` | Yes | — |
 | `data.policy.repositoryNetworkPolicy[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 | `data.policy.version` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
-| `data.protectedExecution` | `boolean` | Yes | True while the active revision or the next deploy runs under protected execution. Creating a repository list, saving a nonempty list, or saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone. |
-| `data.repositoryNetworkPolicyCeiling` | `array<object>` | Yes | max items: 32; Installation repository grants that the current repository policy owner allows for this Agent's Namespace. |
+| `data.protectedExecution` | `boolean` | Yes | True while the active revision or the next deploy runs under protected execution. Saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. The current Sandbox and Compute pair must admit a first nonempty repository list or a nonempty replacement. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone. |
+| `data.repositoryNetworkPolicyCeiling` | `array<object>` | Yes | max items: 32; Repository access levels the current policy owner approved for this Namespace when the view was generated. PUT checks each exact requested access level independently. |
 | `data.repositoryNetworkPolicyCeiling[].access` | `"read" or "write"` | Yes | — |
 | `data.repositoryNetworkPolicyCeiling[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
-| `data.repositoryNetworkPolicySaveSupported` | `boolean` | Yes | Whether the state adapter can save a withdrawal of this Agent's existing repository grants. |
+| `data.repositoryNetworkPolicySaveSupported` | `boolean` | Yes | Whether the state adapter supports withdrawal of a saved list or the current protected topology admits a candidate for a first save. PUT checks the requested list independently. |
 | `data.unavailableReason` | `string` | No | Why per-Agent network policy is unavailable when capability is null. An authorized administrator can still enable editing to withdraw an existing repository list. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -8610,7 +8610,7 @@ Replace one Agent network policy additions
 | `additions[].ports[].from` | `integer` | Yes | minimum: 1; maximum: 65535 |
 | `additions[].ports[].to` | `integer` | Yes | minimum: 1; maximum: 65535 |
 | `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
-| `repositoryNetworkPolicy` | `array<object>` | No | max items: 32; Omit to preserve the saved grants. Send an empty array to change an existing list to deny-all. Send empty arrays for both additions and repositoryNetworkPolicy to withdraw under protected execution or without Sandbox Driver support. This version refuses a first list and nonempty lists. |
+| `repositoryNetworkPolicy` | `array<object>` | No | max items: 32; Omit to preserve the saved grants. A first list must be nonempty. A first list or nonempty replacement requires an admitted protected topology and empty additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported. |
 | `repositoryNetworkPolicy[].access` | `"read" or "write"` | Yes | — |
 | `repositoryNetworkPolicy[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 

@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-20"
-last_updated_session: "authoring-run/140d9cef-7de2-45f4-aa02-b53c18c4757e"
+last_updated_session: "authoring-run/4758cc5b-0069-4094-a947-c93410e5e46b"
 ---
 
 # Agent sandbox policy flow
@@ -60,25 +60,27 @@ A null method matches every method. The Sandbox checks HTTP and exact MCP paths;
 discovery can be credentialless. Providers enforce OAuth scopes.
 
 Startup validates the [repository ceiling](../reference/configuration.md).
-GET requires Agent and SandboxPolicy read. It reports saved grants, withdrawal
-availability and the Namespace ceiling. `packages/occ/src/repository-network-policy.ts:delegatedRepositoryCeiling`
-requires synchronous Driver approval. GET returns an empty ceiling if checking
-approval throws or if the Driver or method changes during filtering. The saved
-grants and withdrawal availability remain visible. PUT refuses first and nonempty
-lists. Omission preserves the saved list and excludes it from the response.
+GET requires Agent and SandboxPolicy read. It reports saved grants and Namespace
+ceiling. `delegatedRepositoryCeiling` returns an empty ceiling if synchronous
+Repo approval throws or changes ownership. The save hint checks individual grants.
 
-`packages/occ/src/index.ts:updateAgentSandboxPolicy` requires Agent
-`manage_policy` and SandboxPolicy `update`. It locks the Namespace and Agent
-and checks editing, version and pending work. Protected execution refuses
-ordinary additions and new lists. Withdrawing to deny-all or enabling editing
-for withdrawal without Driver support requires SandboxPolicy read. Clearing
-both lists works without Driver support. Protected dedicated Codex repository
+PUT requires Agent `manage_policy` and SandboxPolicy `update`. Explicit lists
+hold Installation IAM and caller authority through commit. OCC locks Namespace
+and Agent and checks editing, version, and pending work. Omission preserves the
+list and excludes it from the response.
+
+A first list needs at least one grant. Nonempty lists require Configuration and
+Harness credential source read. OCC checks the ceiling, exact Repo approval,
+selected Git access, and Sandbox and Compute admission. It rechecks bound
+methods before saving the next version. Send empty arrays with SandboxPolicy
+read to withdraw an existing list. Protected execution refuses ordinary additions.
+
+Protected dedicated Codex repository
 admission can carry the Driver's acknowledged
 [artifact subset](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
 `packages/occ/src/deployment-policy.ts:checkedProtectedCodexArtifactPolicy`
-checks the purpose, rule keys, Driver identity, version and empty additions
-before credential provisioning. Live application refuses that snapshot.
-The policy view reports `protectedExecution`.
+checks purpose, rule keys, Driver identity, version and empty additions at save
+and deployment. Live application refuses that snapshot.
 
 `openshell-codex-artifacts.ts` compiles the qualified artifact snapshot without
 ambient defaults. The Sandbox checks workspace enrollment against the Agent's
@@ -114,16 +116,15 @@ validator. OCC invokes that same validator with its Driver as the receiver.
 `packages/occ/src/index.ts:admitAgentDeployment` rechecks before repair, grants
 or runtime credentials. An existing first receipt returns before fresh
 admission. Ordinary host additions still require SandboxPolicy `read`.
-Protected execution refuses explicit lists.
+Protected execution refuses ordinary additions.
 
-For ordinary deployment, grants must fit the Installation ceiling and the
-selected Repo Driver must approve each grant synchronously. The Sandbox admits
-the policy as plain JSON and Compute validates that Sandbox, policy and
-Harness. OCC rechecks Driver and approval method identity before provisioning
-runtime credentials and before writing a revision. The revision freezes the
-policy and grant identity.
+OCC checks the ceiling and Repo approval. For protected execution, OCC also
+checks current selected Git access. Compute checks placement and Sandbox
+validates the frozen revision. OCC rechecks their methods and the Sandbox
+snapshot admission method before credentials or revision writes. Bundled
+Drivers refuse scoped deployment.
 
-PostgreSQL writes a reader version marker for unprotected scoped revisions.
+PostgreSQL writes a reader version marker for all scoped revisions.
 `packages/occ/src/state/postgres-state.ts:revisionFromRow` checks that marker
 before handing off the revision. Before enabling scoped writes, drain Workers
 that cannot enforce repository grants, reconcile their outstanding deployment
@@ -251,6 +252,8 @@ hides denial counts and controls.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 10:08: Trace explicit repository policy save and frozen revision admission. (authoring-run/4758cc5b-0069-4094-a947-c93410e5e46b - de6466ddf9605d648785288bed755038d99d24ed)
 
 - 2026-11-20 08:14: Refuse deployment without returning private approval errors. (authoring-run/140d9cef-7de2-45f4-aa02-b53c18c4757e - 237d0fc8fe3e9b258e06fc84a68caeb3eb93ef33)
 

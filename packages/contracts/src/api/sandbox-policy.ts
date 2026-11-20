@@ -91,17 +91,17 @@ export const SandboxPolicyViewResponse = Type.Object(
         editingEnabled: Type.Boolean(),
         protectedExecution: Type.Boolean({
           description:
-            "True while the active revision or the next deploy runs under protected execution. Creating a repository list, saving a nonempty list, or saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone.",
+            "True while the active revision or the next deploy runs under protected execution. Saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. The current Sandbox and Compute pair must admit a first nonempty repository list or a nonempty replacement. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone.",
         }),
         ceiling: SandboxNetworkGrantsSchema,
         repositoryNetworkPolicyCeiling: Type.Array(RepositoryNetworkGrantSchema, {
           description:
-            "Installation repository grants that the current repository policy owner allows for this Agent's Namespace.",
+            "Repository access levels the current policy owner approved for this Namespace when the view was generated. PUT checks each exact requested access level independently.",
           maxItems: maxRepositoryNetworkGrants,
         }),
         repositoryNetworkPolicySaveSupported: Type.Boolean({
           description:
-            "Whether the state adapter can save a withdrawal of this Agent's existing repository grants.",
+            "Whether the state adapter supports withdrawal of a saved list or the current protected topology admits a candidate for a first save. PUT checks the requested list independently.",
         }),
         defaults: Type.Union([Type.Null(), Type.Record(Type.String(), Type.Unknown())]),
         defaultsRevisionId: Type.Optional(RevisionId),
@@ -142,7 +142,7 @@ export const SandboxPolicyUpdateBody = Type.Object(
     repositoryNetworkPolicy: Type.Optional(
       Type.Array(RepositoryNetworkGrantSchema, {
         description:
-          "Omit to preserve the saved grants. Send an empty array to change an existing list to deny-all. Send empty arrays for both additions and repositoryNetworkPolicy to withdraw under protected execution or without Sandbox Driver support. This version refuses a first list and nonempty lists.",
+          "Omit to preserve the saved grants. A first list must be nonempty. A first list or nonempty replacement requires an admitted protected topology and empty additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported.",
         maxItems: maxRepositoryNetworkGrants,
       }),
     ),

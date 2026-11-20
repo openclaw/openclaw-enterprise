@@ -20,15 +20,25 @@ its delegation ceiling can contain up to 32 entries, one per repository.
 Repository policy admission checks canonical names, unique entries, the
 Installation delegation ceiling, and the repository policy owner's approval
 for the Namespace. A write limit allows read and write grants.
-An absent ceiling delegates no access. Policy GET reports the grants available
-to this Namespace and whether the Agent has a stored list that you can clear.
+An absent ceiling delegates no access. Policy GET shows Namespace delegation.
+It shows whether current Drivers admit a first-save candidate or the state
+adapter supports withdrawal of a saved list. PUT checks each requested grant.
 
 `PUT /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/networking`
 accepts optional `repositoryNetworkPolicy` with `expectedVersion` and `additions`.
 Omitting the field keeps the saved list. A new Agent has no saved list.
-The API refuses a first list, including an empty one, and any nonempty
-replacement. Request schema checks still apply. To withdraw existing grants,
-enable editing and send empty arrays for `additions` and
+A first list or nonempty replacement requires Agent `manage_policy`,
+SandboxPolicy `update`, and read access to the Agent's Configuration and Harness
+credential source. Leave ordinary additions empty. A first empty list is
+refused. Each grant must fit the Agent's selected Git credential and the Repo
+owner must approve its exact access level. The selected Sandbox checks the
+protected Codex artifact snapshot and repository grants at the next saved
+version. Compute checks the same grants and protected topology before OCC
+saves the list.
+The bundled Drivers do not currently admit first saves or nonempty
+replacements.
+
+To withdraw existing grants, enable editing and send empty arrays for `additions` and
 `repositoryNetworkPolicy`. You need Agent `manage_policy` and SandboxPolicy
 `read` and `update`. This saves deny-all even under protected execution or
 without Sandbox Driver support. To end existing access, stop the Agent and
@@ -38,9 +48,12 @@ additions alone.
 A stored list, including deny-all, can take effect only through a deployment
 that can enforce it. Deployment checks edit authority before Channel credential validation and new
 deployment effects. It checks each grant against the current Installation ceiling
-and Namespace approval. Protected execution refuses explicit lists. For
-ordinary execution, both the selected Sandbox and Compute Drivers must admit
-the policy and topology before runtime credential preparation. Deployment returns `409 RESOURCE_CONFLICT`
+and Namespace approval. Both the selected Sandbox and Compute Drivers
+must admit the policy and topology before runtime credential preparation.
+For protected execution, Compute checks the frozen revision and its pinned
+runtime inputs. The bundled Drivers refuse this protected policy before
+preparing runtime credentials.
+Deployment returns `409 RESOURCE_CONFLICT`
 if an admitting Driver or the repository policy owner that approved the list
 changes before runtime credential provisioning or revision creation. A successful
 deployment saves the list, its identity, and the effective policy in the Agent
