@@ -522,3 +522,70 @@ test("the signed OpenShell request guard intersects the source envelope with the
   session.end({ preflight: { context } });
   assert.equal((await decision).preflight_decision.action, 3);
 });
+
+test("the plugin request guard ends a WebSocket preflight that never arrives", async (t) => {
+  const { directory, caBundle, certPath, keyPath } = await harnessTlsFixture(t);
+  const keys = generateKeyPairSync("ed25519");
+  const issuerPublicKeyPath = join(directory, "issuer.pub");
+  await writeFile(issuerPublicKeyPath, keys.publicKey.export({ type: "spki", format: "pem" }));
+  const reservation = await reservePort();
+  t.after(reservation.release);
+  await bindReservedPortInProcess(reservation);
+  const guard = await startPluginRequestGuard(
+    {
+      OCC_PLUGIN_REQUEST_AUTHORITY_PORT: String(reservation.port),
+      OCC_PLUGIN_REQUEST_AUTHORITY_ISSUER: "https://gateway.example.test",
+      OCC_PLUGIN_REQUEST_AUTHORITY_KEY_ID: "gateway-key",
+    },
+    {
+      certificatePath: certPath,
+      privateKeyPath: keyPath,
+      issuerPublicKeyPath,
+    },
+  );
+  t.after(guard.close);
+  await reservation.release();
+  const client = openShellMiddlewareClient(t, reservation.port, caBundle);
+  const sandbox = "fixture-runtime-1";
+  const signed = token(keys, "supervisor", sandbox, managedPluginMiddlewareAudience);
+
+  // No supervisor identity is a refusal, not a stream the guard holds open.
+  const anonymousStarted = Date.now();
+  const anonymous = client.EvaluateWebSocketSession(new grpc.Metadata(), {
+    deadline: Date.now() + 5_000,
+  });
+  const anonymousError = await new Promise<unknown>((resolve) => {
+    anonymous.once("data", () => {
+      resolve(new Error("anonymous preflight received a decision"));
+    });
+    anonymous.once("error", resolve);
+  });
+  const anonymousElapsed = Date.now() - anonymousStarted;
+  assert.ok(anonymousElapsed < 1_000, `anonymous websocket stayed open for ${anonymousElapsed} ms`);
+  assert.ok(
+    typeof anonymousError === "object" && anonymousError !== null && "code" in anonymousError,
+  );
+  assert.equal(anonymousError.code, grpc.status.PERMISSION_DENIED);
+
+  // The client deadline is 5 seconds. A pass means the guard applied its own
+  // decision budget and denied the upgrade without a preflight message.
+  const metadata = new grpc.Metadata();
+  metadata.set("authorization", signed);
+  const silentStarted = Date.now();
+  const silent = client.EvaluateWebSocketSession(metadata, { deadline: Date.now() + 5_000 });
+  const silentResult = await new Promise<unknown>((resolve) => {
+    silent.once("data", resolve);
+    silent.once("error", resolve);
+  });
+  const silentElapsed = Date.now() - silentStarted;
+  assert.ok(silentElapsed < 1_500, `silent websocket stayed open for ${silentElapsed} ms`);
+  assert.ok(
+    typeof silentResult === "object" &&
+      silentResult !== null &&
+      "preflight_decision" in silentResult &&
+      typeof silentResult.preflight_decision === "object" &&
+      silentResult.preflight_decision !== null &&
+      "action" in silentResult.preflight_decision,
+  );
+  assert.equal(silentResult.preflight_decision.action, 3);
+});

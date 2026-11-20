@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-11-19
-last_updated_session: authoring-run/0cdd91e7-47ea-4661-a124-c23fd4479805
+updated: 2026-11-20
+last_updated_session: authoring-run/b72f51ee-120b-45ad-ae2d-faa889f8b0ef
 ---
 
 # Agent Plugin Deployment Flow
@@ -151,7 +151,9 @@ against Compute’s package descriptors.
 - **CLI packages.** The Gateway loads skills; the Harness runs the pinned executable.
   For Google, the [OpenShell Sandbox](../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts)
   checks the guard version before attachment, and the signed guard enforces the
-  source scope and reviewed requests.
+  source scope and reviewed requests. A WebSocket preflight with no supervisor
+  identity is refused before the guard waits. A preflight that sends no message
+  ends within 400 ms, or sooner when the caller deadline is shorter.
 - **Hosted MCP packages.** The worker advertises selected tools. Gateway grants
   same-node execution; Gateway hooks and cross-node calls return structured
   results or policy denials through Code Mode. The credential Driver attaches
@@ -388,20 +390,12 @@ timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 
 
 ## Changelog
 
+- 2026-11-20 06:15: End a silent plugin-request WebSocket preflight within 400 ms. (authoring-run/b72f51ee-120b-45ad-ae2d-faa889f8b0ef - 4c9357e905eb)
+
 - 2026-11-18 06:02: Describe static Google action and discovery paths at admission. (authoring-run/c5b621b3-7d32-4ae1-a88e-295aab3e7532 - 99e7ca47e0d979596f3834a16a73e6ad17cf66ae)
 
 - 2026-11-17 21:20: Check guard compatibility before attachment. (01a1eb01-409e-7270-a471-5a104ce7b468 - a5ebff48cd9cb180ea21ecd9740a034fde254864)
 
 - 2026-11-17 19:48: Trace OpenClaw deployment requirements through account validation. (01a1eb01-409e-7270-a471-5a104ce7b468 - 23b54e2855d0a8d60b2168588fe8c7d7f06e9b36)
-
-- 2026-11-12 11:28: Accept omitted hosted executor metadata. (authoring-run/b8442d2f-2982-4cf1-8421-13f99290aa97 - b80d084ba843cb8e9ff99e9550bb35dcf6b820f6)
-
-- 2026-11-05 21:02: Trace plugin JSON refusal. (authoring-run/ead82952-8ee4-4f4a-82fe-148da7fa2edc - 3768cfd0d640f450f485cb334b6753ac1e5ea1c3)
-
-- 2026-11-05 13:37: Trace plugin-policy refusal recovery. (authoring-run/9cb771c4-f1a8-44ec-a4ef-7c914a5ddb6e - a8259883139ac831b32c0a7b0fe872f6db4ee290)
-
-- 2026-11-05 01:02: Select the Harness catalog and recheck its identity before cutover. (01a169f0-a851-7b81-8e83-ff597893aa21 - 0e9575278)
-
-- 2026-11-03 01:40: Trace startup of multiple managed packages on one dedicated Agent. (authoring-run/e29308a5-ef76-4952-b439-23483c4dbd99 - 54b2a30498f690e2a16a3198e84a6363f69d91ae)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.
