@@ -1112,20 +1112,23 @@ func TestKubernetesOnlyControlPlaneUsesItsPublishedConsoleOrigin(t *testing.T) {
 			state.SandboxDriver = test.sandboxDriver
 			state.APIPort = 3100
 			state.BrowserPort = test.browserPort
-			if err := os.WriteFile(filepath.Join(state.directory, "installation.yaml"), []byte("occ: {}\n"), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(state.directory, "installation.yaml"), []byte("occ: {}\ndrivers:\n  compute:\n    id: compute-kubernetes\n    configuration:\n      runtime: {}\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			commands := fakeProfileCommands(t, map[string]string{
-				"kubectl": `"apply -f "*) ;;
+				"kubectl": `"get nodes -o json") echo '{"items":[{"spec":{"podCIDRs":["10.42.0.0/24"]},"status":{"addresses":[{"address":"172.30.42.3"}]}}]}' ;;
+"get servicecidrs -o json") echo '{"items":[{"spec":{"cidrs":["10.43.0.0/16"]}}]}' ;;
+"apply -f "*) ;;
 "-n oce-system rollout status statefulset/postgres "*) ;;
 "-n oce-system get pod postgres-0 -o jsonpath={.status.podIP}") echo 10.42.0.20 ;;
 "-n default get endpoints kubernetes -o jsonpath={.subsets[0].addresses[0].ip}") echo 172.30.42.3 ;;
 "-n default get endpoints kubernetes -o jsonpath={.subsets[0].ports[0].port}") echo 6443 ;;
 "-n oce-system rollout status deployment/occ-development-api-proxy "*) ;;`,
-				"docker": `"network inspect k3d-occ-dev-owned") echo '[{"IPAM":{"Config":[{"Subnet":"172.30.42.0/24"}]}}]' ;;`,
-				"helm":   `"upgrade --install openclaw-enterprise deploy/helm/openclaw-enterprise "*) ;;`,
+				"docker":  `"network inspect k3d-occ-dev-owned") echo '[{"IPAM":{"Config":[{"Subnet":"172.30.42.0/24"}]}}]' ;;`,
+				"python3": `"scripts/setup-channel-egress check "*) ;;`,
+				"helm":    `"upgrade --install openclaw-enterprise deploy/helm/openclaw-enterprise "*) ;;`,
 			})
-			r := newRunner(Options{Repository: state.Repository})
+			r := newRunner(Options{Repository: repositoryRoot(t)})
 			r.engine = "docker"
 			if err := r.installKubernetesControlPlane(context.Background(), state, "controller@"+profileTestDigest, "postgres@"+profileTestDigest, test.routing, time.Minute); err != nil {
 				t.Fatalf("%v\n%s", err, strings.Join(commands(), "\n"))

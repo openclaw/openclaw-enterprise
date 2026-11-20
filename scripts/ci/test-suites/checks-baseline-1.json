@@ -8,6 +8,7 @@
     "tests/integration/dev-up-compose-startup.test.ts",
     "tests/integration/dev-up-compose.test.mjs",
     "tests/integration/occ-api.test.mjs",
+    "tests/integration/occ-api-mutation-refusals.test.ts",
     "tests/integration/managed-mcp-tool-discovery.test.ts",
     "tests/integration/occ-api-channel-directory.test.ts",
     "tests/integration/occ-api-auth-accounts.test.ts",
@@ -506,6 +507,19 @@
     },
     {
       "path": "tests/integration/occ-api.test.mjs"
+    },
+    {
+      "path": "tests/integration/occ-api-mutation-refusals.test.ts",
+      "expectedTests": [
+        "credential withdrawal routes authorize the Agent, not the credential source",
+        "credential source registration names the missing Credential Gateway",
+        "a duplicate Secret name answers 409 naming the taken Secret name",
+        "Secret values with an unpaired surrogate are refused as an invalid value",
+        "a state conflict names what blocks the request, after authorization only",
+        "Create Agent's preflight refuses what Configuration and Agent create would, writing nothing",
+        "OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB limit",
+        "Configuration and Agent writes reject invalid Secret bindings as invalid requests"
+      ]
     },
     {
       "path": "tests/integration/managed-mcp-tool-discovery.test.ts",
@@ -1059,6 +1073,9 @@
     },
     {
       "path": "tests/integration/agent-http-chat.test.ts"
+    },
+    {
+      "path": "tests/integration/channel-egress-upgrade.test.ts"
     }
   ]
 }

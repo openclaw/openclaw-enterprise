@@ -29,7 +29,7 @@ import {
   createCredentialProxyInstallationConfiguration as credentialProxyInstallation,
   createInstallationDriverConfiguration,
 } from "../helpers/installation-driver-configuration.ts";
-import { injectJson as injectUntypedJson } from "../helpers/inject-json.mjs";
+import { injectJson } from "../helpers/inject-json.ts";
 import {
   AUTHORIZATION_HEADER_REFUSED,
   CREDENTIAL_REQUIRED,
@@ -54,12 +54,6 @@ type InstallationFixture = {
   };
 };
 type PackageLayout = { root: string; entry?: string; files: Record<string, string> };
-type InjectedResponse = {
-  statusCode: number;
-  body: string;
-  headers: Record<string, unknown>;
-  json(): unknown;
-};
 
 function installation(): InstallationFixture {
   return createInstallationDriverConfiguration();
@@ -73,27 +67,6 @@ function hasOperationAbortSignal(
   value: unknown,
 ): value is { currentOperationAbortSignal(): unknown } {
   return isRecord(value) && typeof value.currentOperationAbortSignal === "function";
-}
-
-function isInjectedResponse(value: unknown): value is InjectedResponse {
-  return (
-    isRecord(value) &&
-    typeof value.statusCode === "number" &&
-    typeof value.body === "string" &&
-    isRecord(value.headers) &&
-    typeof value.json === "function"
-  );
-}
-
-async function injectJson(
-  app: ReturnType<typeof createFastifyApp>,
-  method: string,
-  url: string,
-  options?: Parameters<typeof injectUntypedJson>[3],
-): Promise<InjectedResponse> {
-  const response: unknown = await injectUntypedJson(app, method, url, options);
-  assert.ok(isInjectedResponse(response));
-  return response;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -398,7 +371,7 @@ async function request(
     host: new URL(authOrigin).host,
     body,
   });
-  return { status: response.statusCode, ...record(response.json()) };
+  return { status: response.statusCode, ...record(response.json<unknown>()) };
 }
 
 test("Installation inspection returns accepted Driver values, redacts opaque resources, and rechecks administration", async (t) => {
@@ -656,7 +629,7 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
           body: { name: "Unauthenticated Driver selection" },
         });
         assert.equal(unauthenticated.statusCode, 401);
-        assert.equal(record(record(unauthenticated.json()).error).message, message);
+        assert.equal(record(record(unauthenticated.json<unknown>()).error).message, message);
       }
       const publicSignup = await injectJson(fixture.app, "POST", "/api/auth/sign-up/email", {
         host: new URL(fixture.config.authOrigin).host,

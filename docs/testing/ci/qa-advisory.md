@@ -30,13 +30,13 @@ and real dependencies. Results do not gate merge or publication.
 Maintainers label reviewed same-repository PRs. Dependabot authors and triggers
 are ineligible. Narrow labels select their union. `full-qa` runs `console-secrets` for Codex,
 `agent-audit` in Compose, and `http-chat` for both presets and placements.
-The focused Compose job checks
+The Compose job checks
 native redeployment and required-worker execution on Kubernetes workloads.
 
 PR runs test the merge commit. New commits replace opted-in runs; unrelated
 labels cannot restart or cancel them. Remove labels before pushing unreviewed
 code; removal stops future selection but does not cancel active runs. Eligible
-main pushes finish independently. The author of a breaking change owns triage.
+main pushes finish independently. Authors triage regressions.
 
 Keycloak needs no model credential and allows 180 minutes; OpenClaw allows 120.
 Together they allow 300 runtime runner-minutes per attempt, plus selection—not
@@ -59,20 +59,21 @@ for Codex.
 | Scenario                         | In advisory          | Presets         | Checks                                                                                                                                                                                                                              |
 | -------------------------------- | -------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `sandbox-policy`                 | Yes — OpenShell jobs | Codex           | Discover and preview configuration, then apply, update, and withdraw OpenShell network policy in a prepared environment.                                                                                                            |
-| `plugin-install`                 | Yes — OpenShell jobs | Codex           | Install a dedicated Codex plugin, verify it after restart, then remove it.                                                                                                                                                          |
+| `plugin-install`                 | Yes — OpenShell jobs | Codex           | Install a dedicated Codex plugin, find it after the Codex process restarts, then remove it from the Agent selection.                                                                                                                |
 | `model-ui`                       | Focused label only   | OpenClaw        | Real model turn and native browser response.                                                                                                                                                                                        |
 | `scratch-volume`                 | Yes — OpenShell job  | Codex           | Admitted scratch and workspace access through real tools, frozen selection, and missing/wrong-UID claim refusal.                                                                                                                    |
 | `oidc-agent-chat`                | Yes, separate job    | OpenClaw        | First-login Default user enrollment, returning Keycloak sign-in, signed admission claims, owner creation and deployment, browser reply, administrative and sibling-Agent denial.                                                    |
-| `console-secrets`                | Yes (Codex)          | OpenClaw, Codex | Manage Console Secrets in Agent drafts. Namespace deletion refusals identify deployed Agents and link their cleanup controls.                                                                                                       |
+| `console-secrets`                | Yes (Codex)          | OpenClaw, Codex | Create and manage Console Secrets referenced by Agent drafts. Refusing Namespace deletion identifies the deployed Agent and links to its cleanup controls.                                                                          |
+| `agent-audit`                    | Yes (Compose)        | Codex           | Check the exact Agent grant and link the deployed Agent's queue, claim, and result records. Check the record for a successful Agent read.                                                                                           |
 | `git-write`                      | No                   | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                                                                                                                         |
 | `git-push-denied`                | No                   | Codex           | Reject a push to any other branch and dispose credentials.                                                                                                                                                                          |
 | `slack`                          | No                   | Codex           | Threaded reply and new root message.                                                                                                                                                                                                |
+| `channel-egress-upgrade`         | No                   | Codex           | [One-off channel upgrade](../slack.md#one-off-channel-upgrade-proof).                                                                                                                                                               |
 | `openshell-linear-read`          | No                   | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                                                                                                       |
 | `codex-search-config`            | No                   | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.                                                                                                     |
 | `openshell-git-model`            | No                   | Codex           | Register after enabling Git; verify model turns with and without repositories, Git expiry, and worker restart.                                                                                                                      |
 | `openshell-provider-replacement` | No                   | Codex           | [Prepared managed OpenShell installation](../openshell-managed.md#provider-replacement): separate and combined source/network grant changes, unchanged redeploy, model turns and shared-source isolation.                           |
 | `openshell-git-replacement`      | No                   | Codex           | [Prepared managed OpenShell Git installation](../openshell-git-replacement.md): retained workspace, automatic recovery, Git enable/disable/re-enable, unchanged redeploy, repository addition/removal and fresh revision authority. |
-| `agent-audit`                    | Yes (Compose)        | Codex           | Check the exact Agent grant and link the deployed Agent's queue, claim, and result records. Check the record for a successful Agent read.                                                                                           |
 
 Source: [QA matrix](../../../tests/integration/qa-matrix-real.test.mjs),
 [scenario selection](../../../tests/helpers/qa-selection.mjs).

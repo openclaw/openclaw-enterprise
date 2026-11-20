@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { deleteOwnedK3dCluster } from "./cleanup.ts";
+import { ensureImage } from "./image-pull.ts";
 import { redactCredentialLine } from "./k3d-node-log.ts";
 import {
   ANSI_COLOR,
@@ -225,6 +226,14 @@ export function createK3dPreparation({
       resource.nodeImage = bootstrap.k3sImage;
       resource.kubectl = bootstrap.kubectl;
       await writeState(statePath, state);
+    }
+    // k3d pulls the node image only when the engine lacks it, inside the create's
+    // timeout and without retries. Pull it here with pullImage's retries instead.
+    const nodeImage = resource.nodeImage;
+    if (nodeImage) {
+      await k3dStage(state, "k3d-node-image", () =>
+        ensureImage(nodeImage, { execFile, docker: process.env.OCC_DOCKER_BIN ?? "docker" }),
+      );
     }
     try {
       if (crossNodePluginStatus) {

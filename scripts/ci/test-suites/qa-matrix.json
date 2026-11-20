@@ -64,12 +64,19 @@
     "OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE",
     "OCC_TEST_DATABASE_URL",
     "OPENCLAW_ENTERPRISE_CI_STATE",
-    "OPENCLAW_ENTERPRISE_CI_PREFIX"
+    "OPENCLAW_ENTERPRISE_CI_PREFIX",
+    "OCC_TEST_CHANNEL_EGRESS_UPGRADE",
+    "OCC_TEST_CHANNEL_EGRESS_SOURCE_CONTROLLER_IMAGE",
+    "OCC_TEST_CHANNEL_EGRESS_SOURCE_CHART",
+    "OCC_TEST_CHANNEL_EGRESS_NEXT_CONTROLLER_IMAGE",
+    "OCC_TEST_CHANNEL_EGRESS_DATABASE_MODE"
   ],
   "prepare": {
     "sourceBuildFiles": [
       "tests/integration/qa-matrix-real.test.mjs",
-      "tests/integration/openshell-git-retention-real.test.ts"
+      "tests/integration/openshell-git-retention-real.test.ts",
+      "tests/integration/channel-egress-disabled-helm-real.test.ts",
+      "tests/integration/channel-egress-upgrade-helm-real.test.ts"
     ]
   },
   "files": [
