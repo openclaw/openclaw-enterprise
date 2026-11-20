@@ -623,7 +623,7 @@ export async function runCliRecovery(t: TestContext, options: CliRecoveryOptions
     }),
   );
   assert.equal(failure.code, 1, "an unusable receipt must leave the CLI outcome uncertain");
-  assert.equal(failure.stdout, "");
+  assert(failure.stdout.length === 0, "the uncertain command must not write to stdout");
   assert(
     !failure.stderr.includes(callerKey),
     "the uncertain result must not print the service key",
@@ -649,7 +649,7 @@ export async function runCliRecovery(t: TestContext, options: CliRecoveryOptions
   // Execute exactly the printed command, including its quoted path with spaces.
   const recovery = await execute("/bin/sh", ["-c", recoveryCommand], {
     env: { ...process.env, PATH: `${directory}:${process.env.PATH}` },
-  });
+  }).catch(() => assert.fail("the printed recovery command must succeed"));
   assert.deepEqual(relayErrors, []);
   assert.deepEqual(recovered, committed);
   assert(
