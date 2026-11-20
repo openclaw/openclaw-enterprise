@@ -296,9 +296,8 @@ export async function startSkipperPrivateGitOrigin({
     };
     // This origin delegates every selected repository to the same App token.
     // The installed network boundary must enforce its narrower A/B/C grants.
-    const serveScopedRest = async (request, match, reply) => {
-      const [, name, route] = match;
-      const scope = repositoryByName.get(name);
+    const serveScopedRest = async (request, scope, route, reply) => {
+      const name = scope.repository;
       const authorization = request.headers.authorization;
       const authenticated = authority.authorize(authorization);
       const operation = {
@@ -313,11 +312,7 @@ export async function startSkipperPrivateGitOrigin({
         authenticated,
         ...(authenticated && { credentialIndex: authority.tokenIndex(authorization) }),
       });
-      if (
-        !scope ||
-        !authenticated ||
-        !authority.permitsRepository(authorization, scope.repositoryId)
-      ) {
+      if (!authenticated || !authority.permitsRepository(authorization, scope.repositoryId)) {
         reply(403);
         return;
       }
@@ -474,11 +469,16 @@ export async function startSkipperPrivateGitOrigin({
         const rest =
           scopedRest &&
           !url.search &&
-          /^\/repos\/(fixture\/[abc])\/(issues(?:\/42)?|pulls)$/.exec(url.pathname);
+          /^\/repos\/([^/]+\/[^/]+)\/(issues(?:\/42)?|pulls)$/.exec(url.pathname);
         if (rest) {
+          const scope = repositoryByName.get(rest[1]);
+          if (!scope) {
+            reply(404);
+            return;
+          }
           endpoint = "scoped-rest";
           unknownNetworkRequests--;
-          await serveScopedRest(request, rest, reply);
+          await serveScopedRest(request, scope, rest[2], reply);
           return;
         }
         const gitPath = url.pathname;

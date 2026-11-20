@@ -166,7 +166,6 @@ test("private Git network origin accepts only its broad fixture credential acros
 
 test("private Git network origin calibrates the exact issued A/B/C credential and observes retirement", async (t) => {
   const origin = await startSkipperPrivateGitOrigin({
-    repository: "fixture/a",
     networkAcl: "issued",
     scopedRest: true,
   });
@@ -191,7 +190,7 @@ test("private Git network origin calibrates the exact issued A/B/C credential an
   };
   assert.equal(grant.repository_selection, "selected");
   assert.deepEqual(grant.repositories, [
-    { id: 73, full_name: "fixture/a", private: true },
+    { id: 73, full_name: origin.repository, private: true },
     { id: 74, full_name: "fixture/b", private: true },
     { id: 75, full_name: "fixture/c", private: true },
   ]);
@@ -200,7 +199,7 @@ test("private Git network origin calibrates the exact issued A/B/C credential an
 
   // Authenticated Git and REST must work at the origin even for repositories
   // the Sandbox should deny. Otherwise an origin refusal could hide an ACL leak.
-  for (const repo of repos) {
+  for (const repo of [origin.repository, "fixture/b", "fixture/c"]) {
     for (const service of ["git-upload-pack", "git-receive-pack"]) {
       const advertise = await send(origin, `/${repo}.git/info/refs?service=${service}`, {
         authorization: basic(grant.token),
@@ -230,6 +229,13 @@ test("private Git network origin calibrates the exact issued A/B/C credential an
   }
   const calibrated = network.requests();
   assert.equal(calibrated.length, 18);
+  const unknownBefore = network.unknownRequests();
+  const unknown = await send(origin, "/repos/fixture/a/issues/42", {
+    authorization: `Bearer ${grant.token}`,
+  });
+  assert.equal(unknown.status, 404);
+  assert.equal(network.unknownRequests(), unknownBefore + 1);
+  assert.deepEqual(network.requests(), calibrated);
   assert.ok(calibrated.every((entry) => entry.authenticated && entry.credentialIndex === index));
   for (const representation of [grant.token, basic(grant.token)]) {
     assert.ok(
@@ -282,7 +288,11 @@ test("private Git network origin calibrates the exact issued A/B/C credential an
   assert.equal(observedPull?.base.sha, origin.initialSha);
   assert.equal(observedPull?.draft, false);
 
-  const missing = await send(origin, "/fixture/a.git/info/refs?service=git-upload-pack", {});
+  const missing = await send(
+    origin,
+    `/${origin.repository}.git/info/refs?service=git-upload-pack`,
+    {},
+  );
   assert.equal(missing.status, 401);
   assert.equal(network.requests().at(-1)?.authenticated, false);
   assert.equal(
