@@ -6,6 +6,7 @@
 // Keep this fixture pinned to upstream; do not derive it from the production proto.
 // Shared datamodel types are flattened into this package, as in the v0.1.5 fixture.
 syntax = "proto3";
+import "google/protobuf/timestamp.proto";
 package openshell.v1;
 
 service OpenShell {
@@ -24,6 +25,35 @@ message AttachSandboxProviderRequest {
 message AttachSandboxProviderResponse {
   Sandbox sandbox = 1;
   bool attached = 2;
+  ProviderMutationReceipt receipt = 3;
+}
+enum ProviderMutationKind {
+  PROVIDER_MUTATION_KIND_UNSPECIFIED = 0;
+  PROVIDER_MUTATION_KIND_ATTACH = 1;
+  PROVIDER_MUTATION_KIND_DETACH = 2;
+  PROVIDER_MUTATION_KIND_UPDATE = 3;
+  PROVIDER_MUTATION_KIND_OBSERVE = 4;
+}
+message ProviderDesiredIdentity {
+  string sandbox_id = 1;
+  string sandbox = 2;
+  string attachment_epoch = 3;
+  string provider_id = 4;
+  uint64 provider_resource_version = 5;
+  uint64 provider_env_revision = 6;
+  uint64 config_revision = 7;
+  string policy_hash = 8;
+}
+message ProviderMutationReceipt {
+  string receipt_id = 1;
+  string mutation_id = 2;
+  string provider = 3;
+  string workspace = 4;
+  ProviderMutationKind kind = 5;
+  ProviderDesiredIdentity desired = 6;
+  reserved 7;
+  reserved "persisted_at_ms";
+  google.protobuf.Timestamp persisted_time = 107;
 }
 service SandboxUpdates {
   rpc UpdateSandbox(UpdateSandboxRequest) returns (SandboxResponse);
@@ -83,7 +113,11 @@ message ObjectMeta {
   map<string, string> annotations = 6;
   string workspace = 7;
 }
-message Sandbox { ObjectMeta metadata = 1; }
+message SandboxSpec { repeated string providers = 8; }
+message Sandbox {
+  ObjectMeta metadata = 1;
+  SandboxSpec spec = 2;
+}
 message SandboxResponse { Sandbox sandbox = 1; }
 
 // Public OpenShell service exposure wire contract, independent of the controller descriptor.

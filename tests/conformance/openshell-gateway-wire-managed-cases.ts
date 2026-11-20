@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { grpc, loader, type Grpc } from "../helpers/openshell-grpc-sdk.ts";
 import { bindWireServer } from "./openshell-gateway-wire-fixture.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts";
 
 type WorkspaceScope = { workspace?: string };
 type ScopedRequest = { workspace_scope?: WorkspaceScope };
@@ -37,6 +38,13 @@ type SandboxReply = {
       resource_version: string;
     };
   };
+};
+type AttachReply = {
+  sandbox?: {
+    metadata: { name: string; id: string; workspace: string; resource_version: string };
+  };
+  attached: boolean;
+  receipt?: { receipt_id: string; provider: string; workspace: string; kind: number };
 };
 type ReceivedCall =
   | { operation: "stop" | "update" | "start"; request: WorkloadRequest }
@@ -101,11 +109,49 @@ export function registerManagedWorkloadCases(): void {
       StartSandbox: reply("start"),
       AttachSandboxProvider(call, callback) {
         received.push({ operation: "attach", request: call.request });
+        if (call.request.provider === "denied-provider") {
+          callback({ code: grpc.status.PERMISSION_DENIED, details: "private-synthetic-detail" });
+          return;
+        }
+        if (call.request.provider === "admission-limited-provider") {
+          callback({
+            code: grpc.status.RESOURCE_EXHAUSTED,
+            details:
+              "caller has reached the durable mutation admission limit; private-synthetic-detail",
+          });
+          return;
+        }
         if (call.request.expected_resource_version !== "9007199254740994") {
           callback({ code: grpc.status.ABORTED, message: "stale resource version" });
           return;
         }
-        callback(null, { attached: true });
+        if (call.request.provider === "legacy-provider") {
+          callback(null, { attached: true });
+          return;
+        }
+        assert.ok(
+          call.request.sandbox && call.request.provider && call.request.workspace_scope?.workspace,
+        );
+        callback(null, {
+          sandbox: {
+            metadata: {
+              name: call.request.sandbox,
+              id: "sandbox-id",
+              workspace: call.request.workspace_scope.workspace,
+              resource_version: "9007199254740995",
+            },
+          },
+          attached: true,
+          receipt: {
+            receipt_id: "receipt-attach",
+            provider:
+              call.request.provider === "invalid-receipt"
+                ? "another-provider"
+                : call.request.provider,
+            workspace: call.request.workspace_scope.workspace,
+            kind: 1,
+          },
+        });
       },
       ExposeService(call, callback) {
         received.push({ operation: "expose", request: call.request });
@@ -114,7 +160,7 @@ export function registerManagedWorkloadCases(): void {
     } satisfies {
       StopSandbox: Grpc.handleUnaryCall<WorkloadRequest, SandboxReply>;
       StartSandbox: Grpc.handleUnaryCall<WorkloadRequest, SandboxReply>;
-      AttachSandboxProvider: Grpc.handleUnaryCall<AttachRequest, { attached: boolean }>;
+      AttachSandboxProvider: Grpc.handleUnaryCall<AttachRequest, AttachReply>;
       ExposeService: Grpc.handleUnaryCall<ExposeRequest, Record<string, never>>;
     };
     server.addService(wire.openShell, handlers);
@@ -187,7 +233,7 @@ export function registerManagedWorkloadCases(): void {
       expectedResourceVersion: "9007199254740994",
       requestId: randomUUID(),
     };
-    await client.attachSandboxProvider(
+    const attached = await client.attachSandboxProvider(
       selector.workspace,
       selector.name,
       "model-b",
@@ -204,6 +250,22 @@ export function registerManagedWorkloadCases(): void {
         request_id: conditional.requestId,
       },
     });
+    assert.ok(attached);
+    assert.equal(attached.sandbox.id, "sandbox-id");
+    assert.equal(attached.sandbox.resourceVersion, "9007199254740995");
+    assert.equal(attached.receiptId, "receipt-attach");
+    assert.equal(attached.attached, true);
+    // Existing reconciliation can still read back membership after a successful legacy reply;
+    // staged callers receive no validated attachment evidence from absent or mismatched receipts.
+    for (const provider of ["legacy-provider", "invalid-receipt"]) {
+      assert.equal(
+        await client.attachSandboxProvider(selector.workspace, selector.name, provider, signal, {
+          ...conditional,
+          requestId: randomUUID(),
+        }),
+        undefined,
+      );
+    }
     await assert.rejects(
       client.attachSandboxProvider(selector.workspace, selector.name, "model-b", signal, {
         ...conditional,
@@ -215,6 +277,31 @@ export function registerManagedWorkloadCases(): void {
         assert.equal(error.grpcStatus, grpc.status.ABORTED);
         return true;
       },
+    );
+    await assert.rejects(
+      client.attachSandboxProvider(selector.workspace, selector.name, "denied-provider", signal, {
+        ...conditional,
+        requestId: randomUUID(),
+      }),
+      (error: Error) =>
+        error.message.includes("gRPC status 7") &&
+        !error.message.includes("private-synthetic-detail"),
+    );
+    await assert.rejects(
+      client.attachSandboxProvider(
+        selector.workspace,
+        selector.name,
+        "admission-limited-provider",
+        signal,
+        {
+          ...conditional,
+          requestId: randomUUID(),
+        },
+      ),
+      (error: Error) =>
+        error instanceof OpenShellAdmissionLimitError &&
+        !error.message.includes("private-synthetic-detail") &&
+        !String(error.cause).includes("private-synthetic-detail"),
     );
   });
 }

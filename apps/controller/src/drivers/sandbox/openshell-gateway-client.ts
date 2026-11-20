@@ -328,6 +328,12 @@ export interface OpenShellProviderDetachResult {
   readonly receiptId?: string;
 }
 
+export interface OpenShellProviderAttachResult {
+  readonly sandbox: OpenShellSandboxResponse;
+  readonly attached: boolean;
+  readonly receiptId: string;
+}
+
 export interface OpenShellSandboxLogsRequest {
   readonly workspace: string;
   readonly sandbox: string;
@@ -596,14 +602,14 @@ export interface OpenShellGatewayClient
     credentialKey: string,
     signal: AbortSignal,
   ): Promise<{ readonly value: string; readonly expirationTime?: string }>;
-  /** Adds an existing Provider; the caller reads back membership before starting the Sandbox. */
+  /** Adds an existing Provider; returns validated attachment intent when the Gateway supplies it. */
   attachSandboxProvider(
     workspace: string,
     sandbox: string,
     provider: string,
     signal: AbortSignal,
     conditional: { readonly expectedResourceVersion: string; readonly requestId: string },
-  ): Promise<void>;
+  ): Promise<OpenShellProviderAttachResult | undefined>;
   /** Undefined when the Sandbox no longer exists, so nothing remains to revoke. */
   detachSandboxProvider(
     workspace: string,
@@ -2527,23 +2533,56 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     provider: string,
     signal: AbortSignal,
     conditional: { readonly expectedResourceVersion: string; readonly requestId: string },
-  ): Promise<void> {
+  ): Promise<OpenShellProviderAttachResult | undefined> {
     if (!/^[1-9]\d*$/.test(conditional.expectedResourceVersion) || !conditional.requestId) {
       throw new OpenShellGatewayFailure(
         "A conditional attach requires a resource version and request ID.",
       );
     }
-    await this.unary(
+    const response = await this.unary(
       "AttachSandboxProvider",
       {
         sandbox: nonempty(sandbox, "OpenShell Sandbox name"),
         provider: nonempty(provider, "OpenShell provider name"),
-        workspace_scope: { workspace },
         expected_resource_version: conditional.expectedResourceVersion,
+        workspace_scope: { workspace: nonempty(workspace, "OpenShell Workspace name") },
         request_id: conditional.requestId,
       },
       signal,
     );
+    const receipt = asRecord(response.receipt);
+    if (
+      !isNonEmptyString(receipt?.receipt_id) ||
+      receipt.provider !== provider ||
+      receipt.workspace !== workspace ||
+      receipt.kind !== "PROVIDER_MUTATION_KIND_ATTACH"
+    ) {
+      return undefined;
+    }
+    let attachedSandbox: OpenShellSandboxResponse;
+    try {
+      attachedSandbox = sandboxResponse(
+        response,
+        "AttachSandboxProvider",
+        this.options.endpoint,
+        false,
+      );
+    } catch {
+      return undefined;
+    }
+    if (
+      attachedSandbox.name !== sandbox ||
+      attachedSandbox.workspace !== workspace ||
+      !attachedSandbox.id ||
+      !/^[1-9]\d*$/.test(attachedSandbox.resourceVersion ?? "")
+    ) {
+      return undefined;
+    }
+    return Object.freeze({
+      sandbox: attachedSandbox,
+      attached: response.attached === true,
+      receiptId: receipt.receipt_id,
+    });
   }
 
   async detachSandboxProvider(
@@ -2838,14 +2877,25 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
             if (error !== null) {
               const details = asRecord(error)?.details;
               const code = statusCode(error);
-              // Refresh and plaintext-read errors must not expose credential backend messages.
+              // Attach is replay-admitted, but its backend details can contain credentials.
               if (
+                method === "AttachSandboxProvider" &&
+                code === grpc.status.RESOURCE_EXHAUSTED &&
+                typeof details === "string" &&
+                details.startsWith(ADMISSION_LIMIT_DETAILS)
+              ) {
+                reject(
+                  new OpenShellAdmissionLimitError(method, gatewayRequestFailure(method, error)),
+                );
+              } else if (
+                // Credential operations must not expose credential backend messages.
                 [
                   "GetProviderCredentials",
                   "ConfigureProviderRefresh",
                   "RotateProviderCredential",
                   "GetProviderRefreshStatus",
                   "DeleteProviderRefresh",
+                  "AttachSandboxProvider",
                 ].includes(method)
               ) {
                 reject(gatewayRequestFailure(method, error));

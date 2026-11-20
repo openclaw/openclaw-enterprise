@@ -1,10 +1,19 @@
+import { randomUUID } from "node:crypto";
 import { wirePolicy } from "./openshell-wire-policy.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import { bindOpenShellExchange } from "./openshell-exchange-binding.ts";
 import { openShellGitMiddleware, type OpenShellGitRuntime } from "./openshell-git-runtime.ts";
-import { repositoryGitDeliveryProfile, requireConfiguration } from "@openclaw-enterprise/contracts";
+import {
+  repositoryGitDeliveryProfile,
+  requireConfiguration,
+  sandboxNetworkGrantsWithinCeiling,
+} from "@openclaw-enterprise/contracts";
 import type {
   CredentialProviderDefinition,
+  CredentialDeploymentConfiguration,
+  CredentialDeploymentReadiness,
+  CredentialProjection,
+  CredentialProxyRouting,
   ErrorDetail,
   RepositoryGitDeliveryProfile,
 } from "@openclaw-enterprise/contracts";
@@ -42,6 +51,18 @@ import {
 import { createOpenAiStaticProvider } from "./openai-provider.ts";
 import { openShellProtectedCodexArtifacts } from "../sandbox/openshell-codex-artifacts.ts";
 import { assertBoundedWorkspaceNodeRule } from "../sandbox/openshell-workspace-node-policy.ts";
+import {
+  assertOpenShellDeploymentConfiguration,
+  assertOpenShellDeploymentRef,
+  assertOpenShellPushedTarget,
+  assertOpenShellDeploymentContext,
+  assertOpenShellInjectionPolicy,
+  assertOpenShellPushedBinding,
+  OpenShellCredentialDeliveryRefusedError,
+  prepareOpenShellPushedProvider,
+  readOpenShellPushedProvider,
+  type OpenShellDeploymentContext,
+} from "./openshell-pushed-provider.ts";
 
 /** Whether `registration` is a registered supervisor middleware advertising no execution capability. */
 function registeredWithoutExecution(extensions: unknown, registration: string): boolean {
@@ -664,6 +685,161 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     this.assertOwned(existing.annotations, context);
     await refused(() => client.deleteSandbox(selector, context.signal));
     return ((await refused(read)) ?? (await absent())) === undefined;
+  }
+
+  async deployProxy(
+    context: OpenShellDeploymentContext,
+    input: Parameters<NonNullable<CredentialProxyDriver["deployProxy"]>>[1],
+  ): Promise<{ readonly proxyRouting?: CredentialProxyRouting }> {
+    assertOpenShellDeploymentContext(context, this.sandbox.id);
+    assertOpenShellDeploymentRef(context, input.deployment);
+    const request = assertOpenShellInjectionPolicy(input.injectionPolicies);
+    if (!sandboxNetworkGrantsWithinCeiling([request], input.networkAccessPolicy.allowed)) {
+      throw new DependencyUnavailableError("The native credential route is not allowed.");
+    }
+    return {};
+  }
+
+  async configureDeployment(
+    context: OpenShellDeploymentContext,
+    input: Parameters<NonNullable<CredentialProxyDriver["configureDeployment"]>>[1],
+  ): Promise<{ readonly credentialProjections: readonly CredentialProjection[] }> {
+    assertOpenShellDeploymentContext(context, this.sandbox.id);
+    assertOpenShellDeploymentConfiguration(context, input);
+    const supplied = input.bindings[0];
+    if (
+      input.bindings.length !== 1 ||
+      !supplied ||
+      supplied.sharedProviderRef !== undefined ||
+      typeof supplied.resolveCredential !== "function"
+    ) {
+      throw new DependencyUnavailableError("The native credential binding is unavailable.");
+    }
+    const { binding } = supplied;
+    assertOpenShellPushedBinding(context, binding, input.injectionPolicies);
+    let target = await this.pushedTarget(context, input);
+    const prepared = await prepareOpenShellPushedProvider({
+      client: target.client,
+      workspace: target.workspace,
+      namespaceId: context.namespace.id,
+      binding,
+      resolveCredential: async () => {
+        await this.pushedTarget(context, input);
+        return supplied.resolveCredential();
+      },
+      signal: context.signal,
+    });
+    target = await this.pushedTarget(context, input);
+    const providers = target.sandbox.spec?.providers;
+    if (!target.sandbox.spec || (providers !== undefined && !Array.isArray(providers))) {
+      throw new DependencyUnavailableError("The native Sandbox has no Provider membership.");
+    }
+    if (!providers?.includes(prepared.name)) {
+      // TODO(CP2): accepted race: a same-name replacement can reuse this version. Remove when
+      // Gateway atomically enforces the expected Sandbox ID: https://github.com/NVIDIA/OpenShell/issues/5794
+      const attached = await target.client.attachSandboxProvider(
+        target.workspace,
+        target.name,
+        prepared.name,
+        context.signal,
+        { expectedResourceVersion: target.sandbox.resourceVersion, requestId: randomUUID() },
+      );
+      if (!attached) {
+        throw new DependencyUnavailableError(
+          "The native Provider attachment receipt is unavailable.",
+        );
+      }
+      assertOpenShellPushedTarget(attached.sandbox, target.workspace, target.name, input);
+      if (
+        !Array.isArray(attached.sandbox.spec?.providers) ||
+        !attached.sandbox.spec.providers.includes(prepared.name)
+      ) {
+        throw new DependencyUnavailableError("The native Provider attachment is unavailable.");
+      }
+    }
+    const current = await readOpenShellPushedProvider({
+      client: target.client,
+      workspace: target.workspace,
+      namespaceId: context.namespace.id,
+      binding,
+      signal: context.signal,
+    });
+    if (!isDeepStrictEqual(current, prepared)) {
+      throw new DependencyUnavailableError(
+        "The native credential Provider changed during attachment.",
+      );
+    }
+    const after = await this.pushedTarget(context, input);
+    if (
+      !Array.isArray(after.sandbox.spec?.providers) ||
+      !after.sandbox.spec.providers.includes(prepared.name)
+    ) {
+      throw new DependencyUnavailableError("The native Provider attachment changed.");
+    }
+    return {
+      credentialProjections: [
+        {
+          bindingRef: binding.bindingRef,
+          environment: binding.projection.environment,
+          placeholder: { kind: "runtime" },
+        },
+      ],
+    };
+  }
+
+  async getDeploymentStatus(
+    context: OpenShellDeploymentContext,
+    expected: CredentialDeploymentConfiguration,
+  ): Promise<CredentialDeploymentReadiness> {
+    try {
+      assertOpenShellDeploymentContext(context, this.sandbox.id);
+      assertOpenShellDeploymentConfiguration(context, expected);
+      // TODO(CP2): check the canonical admitted binding, policy, delivered version and
+      // supervisor receipt once the deployment coordinator supplies durable admission authority.
+      // Stock OpenShell also lacks qualified exact executable enforcement.
+      return { state: "failed", code: "NATIVE_EXECUTABLE_AUTHORITY_UNQUALIFIED" };
+    } catch (error) {
+      context.signal.throwIfAborted();
+      if (error instanceof OpenShellCredentialDeliveryRefusedError) {
+        return { state: "failed", code: "NATIVE_CREDENTIAL_DEPLOYMENT_REFUSED" };
+      }
+      throw error;
+    }
+  }
+
+  async removeDeployment(
+    context: OpenShellDeploymentContext,
+    input: Parameters<NonNullable<CredentialProxyDriver["removeDeployment"]>>[1],
+  ): Promise<void> {
+    assertOpenShellDeploymentContext(context, this.sandbox.id);
+    if ("unboundDeployment" in input) {
+      assertOpenShellDeploymentRef(context, input.unboundDeployment);
+      return;
+    }
+    assertOpenShellDeploymentRef(context, input.targetRef);
+    // TODO(CP3): withdraw target-bound native Providers through the coordinated lifecycle.
+    throw new DependencyUnavailableError(
+      "Native target-bound credential withdrawal is unavailable.",
+    );
+  }
+
+  private async pushedTarget(
+    context: OpenShellDeploymentContext,
+    expected: CredentialDeploymentConfiguration,
+  ) {
+    assertOpenShellDeploymentConfiguration(context, expected);
+    const ref = this.sandbox.harnessResource!({
+      namespace: context.namespace,
+      revision: context.revision,
+    });
+    if (ref.agentId !== context.revision.agentId || ref.revisionId !== context.revision.id) {
+      throw new OpenShellCredentialDeliveryRefusedError();
+    }
+    const client = this.backend.client.clientForNamespace(ref.namespaceName);
+    const workspace = openShellWorkspaceName(context.namespace);
+    const sandbox = await client.getSandbox({ workspace, name: ref.resourceName }, context.signal);
+    assertOpenShellPushedTarget(sandbox, workspace, ref.resourceName, expected);
+    return { client, workspace, name: ref.resourceName, sandbox };
   }
 
   private assertPlan(context: ProxyRevisionContext): void {

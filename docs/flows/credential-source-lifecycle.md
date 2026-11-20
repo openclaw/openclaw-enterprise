@@ -1,24 +1,22 @@
 ---
 created: "2026-09-26"
-updated: 2026-11-19
-last_updated_session: authoring-run/b0e8e24d-3e5e-40a1-ae3b-10e0dfe3e6a8
+updated: 2026-11-20
+last_updated_session: 01a1eae9-8497-74d2-a9c7-9bc93809e94a
 ---
 
 # Credential source lifecycle Flow
 
 ## Overview
 
-OCC authorizes sources and stores metadata/references; OpenShell holds values.
-Admission freezes identity; workers pass live sources to Compute.
-See [refresh](credential-source-refresh.md) and
+OCC authorizes sources, stores references and freezes identity; OpenShell holds values.
+Workers pass sources to Compute; see [refresh](credential-source-refresh.md) and
 [Sandbox provisioning](openshell-sandbox-provisioning.md).
 
 [Protected sources](credential-source-egress.md) admit versioned Secret references,
-skip gateway copies and require explicit migration while unbound. Protected revisions
-refuse legacy attachments. [OpenShell-owned Codex OAuth](credential-source-refresh.md#device-authorization-and-configuration)
-retains its recorded Credential Gateway and Refresh owners, including when a Git
-Proxy is later selected. Fresh OAuth enrollment is not part of the Git-only static
-model exception. Without a selected Proxy, the existing Gateway/Refresh path remains.
+omit gateway copies and require migration while unbound. Protected revisions refuse legacy attachments.
+[OpenShell-owned Codex OAuth](credential-source-refresh.md#device-authorization-and-configuration)
+retains Gateway/Refresh ownership after Git Proxy selection; Git-only static-model support
+excludes fresh OAuth enrollment. Without a Proxy, Gateway/Refresh continues.
 
 ## Entry Points
 
@@ -188,61 +186,57 @@ requires dedicated Codex or native OpenClaw, paired Drivers, and
 `openai`/`chatgptAuthTokens` from an external-auth Driver. Compute renders no
 model Secret and passes the resolved source to Sandbox provisioning.
 
-`admitCredentialSources` requires a Sandbox (`409`) and rechecks caller and Agent
-`operate` on every source. The recorded owner must still offer its type;
-a matching Proxy type cannot replace a withdrawn Gateway type.
-The revision records `sourceId`, `sourceType` and the owner's `credentialGatewayId`
-or `credentialProxyId`. Older sources keep their Gateway owner, even when a Proxy
-with the same Driver ID enforces the revision's egress plan.
+`admitCredentialSources` requires a Sandbox (`409`) and caller/Agent `operate` for
+each source. The recorded owner must still offer its type; a Proxy cannot replace a
+withdrawn Gateway type. The revision records `sourceId`, `sourceType` and the owner's
+`credentialGatewayId`/`credentialProxyId`. Existing sources retain Gateway ownership
+even when the same-ID Proxy enforces egress.
 
-Both State adapters call
-`packages/occ/src/state/platform-state.ts:assertRevisionAuthAvailable` from
-`createRevision`. Each listed or Harness snapshot must match a ready same-Namespace source by ID,
-type, owner capability and Driver ID; otherwise, `ScopeViolationError`.
-`packages/occ/src/state/postgres-state.ts:createRevision` locks all unique source
-IDs in one ordered `SELECT FOR SHARE` and holds them through commit. Source-bearing
-insertions first take a shared Namespace lock and an Agent key-share lock, following
-OCC admission's Namespace, Agent, then source order. Both adapters copy input
-before awaiting, then validate, persist and return that copy without reordering
-snapshots. Memory checks its transaction snapshot. These checks reject stale or
-forged owners on insertion; historical snapshots remain readable after legitimate
-source deletion.
+Both State adapters call `platform-state.ts:assertRevisionAuthAvailable` in
+`createRevision`: listed/Harness snapshots must match a ready same-Namespace source's
+ID, type, owner capability and Driver ID, or raise `ScopeViolationError`.
+`postgres-state.ts:createRevision` locks Namespace shared, Agent key-share, then
+ordered unique source IDs with `SELECT FOR SHARE` through commit. Both adapters copy
+input before awaiting and validate/persist/return it without reordering; memory checks
+its transaction snapshot. Stale/forged owners fail; historical snapshots remain readable after deletion.
 
 ### 6. Resolve the source at dispatch
 
-`apps/controller/src/worker.ts:authorizeRevision`,
-`apps/controller/src/worker.ts:resolveRevisionSecretContext`
+Worker `authorizeRevision` and `resolveRevisionSecretContext` recheck actor/Agent
+`credential_source:operate` (`AUTHORIZATION_DENIED`), Gateway/Proxy snapshot
+(`CREDENTIAL_GATEWAY_MISMATCH`) and source ownership/type
+(`HARNESS_AUTH_SOURCE_UNAVAILABLE` or `CREDENTIAL_SOURCE_UNAVAILABLE`). Withdrawn
+sources stay detached; Compute repeats snapshot checks before [Sandbox provisioning](openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request).
 
-The worker rechecks the deploying actor's and Agent's
-`credential_source:operate` (`AUTHORIZATION_DENIED`), the selected Gateway/Proxy
-snapshot (`CREDENTIAL_GATEWAY_MISMATCH`) and live source ownership/type.
-Unavailable sources return `HARNESS_AUTH_SOURCE_UNAVAILABLE` or
-`CREDENTIAL_SOURCE_UNAVAILABLE`. Withdrawn sources stay detached; Compute repeats
-snapshot checks before
-[Sandbox provisioning](openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request).
+Kubernetes preparation/activation recheck the Gateway catalog. Validated Git-only
+installations require a static source for unprotected repository-free revisions;
+refresh, device authorization and `chatgptAuthTokens` stop release. Gateway-only and
+protected paths retain their rules.
 
-Before attachment or release, Kubernetes preparation and activation recheck the
-selected Gateway catalog. On a validated Git-only installation, unprotected revisions
-without repositories require a static model source. Refresh, device authorization or `chatgptAuthTokens`
-stops release. Gateway-only installations and protected plans keep their existing rules.
+`installation-config.ts` shares `OpenShellCredentialAttachments` only between bundled
+Sandbox/Gateway instances on one Backend; Compute verifies them.
+`staticOpenAiAttachmentsForRevision` selects one same-Namespace, snapshot-matching
+`openai`/`api_key` Harness source for unprotected dedicated Codex/OpenClaw on the selected Gateway, with no egress plan,
+additional sources or egress binding. Refusal never retries Gateway methods.
+`openshell-credential-attachments.ts` implements shared `attachForRevision`,
+`attachmentStatus` and `withdraw`.
 
-`apps/controller/src/composition/installation-config.ts` shares the internal
-`OpenShellCredentialAttachments` handler only with bundled Sandbox/Gateway
-instances on one Backend; Compute verifies those exact instances.
-`staticOpenAiAttachmentsForRevision` selects it for unprotected dedicated
-Codex/OpenClaw revisions without an egress plan or additional admitted sources:
-one admitted `openai`/`api_key` Harness source on the selected Gateway. The
-source must match Namespace and snapshot, without an egress binding.
-Refusal never retries through Gateway methods.
+For `chatgptAuthTokens`, `credentialSourceEnvironment` puts trusted metadata and a
+placeholder in ephemeral `auth.json`; `sandboxCommand` wraps a stable JWT alias.
+Injection preserves identity across rotation; refresh tokens and legacy bundles never
+reach Codex. See [external authentication](../reference/drivers/credential-gateway.md#external-chatgpt-authentication).
 
-`apps/controller/src/drivers/sandbox/openshell-credential-attachments.ts` implements
-`attachForRevision`, `attachmentStatus` and `withdraw`, shared with public Gateway attachment consumers.
+Native Proxy `configureDeployment` accepts a trusted admitted binding, exact target
+and source-bound resolver. First use transfers material to an OpenShell Provider and
+attaches with a Sandbox resource-version precondition; reuse neither resolves nor repairs. It checks
+returned identity/membership and returns a runtime placeholder projection. TODO: a same-name,
+same-version replacement can receive the Provider before ID rejection. The Gateway
+client validates the receipt and returned Sandbox for staged callers; malformed receipts
+yield no usable result. Legacy serving ignores the result. RPC errors are sanitized.
 
-For `chatgptAuthTokens`, `credentialSourceEnvironment` forwards trusted metadata
-and a placeholder into ephemeral `auth.json`. OpenShell's `sandboxCommand` wraps
-it as a stable JWT alias; upstream injection preserves identity across rotation.
-Neither refresh tokens nor legacy bundles reach Codex. See the
-[external-auth contract](../reference/drivers/credential-gateway.md#external-chatgpt-authentication).
+Regular Agent serving remains unchanged; staged Worker, admission and Sandbox composer
+integration and live model proof are absent. Status fails closed: its published signature
+lacks admission binding, and exact native executable enforcement is unqualified.
 
 ### 7. Delete the source
 
@@ -372,6 +366,8 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20: Document native staged Proxy operation and holds. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - 291d3b1de)
 
 - 2026-11-19 03:15: Keep the flow current while moving catalog enforcement to a separate change. (authoring-run/b0e8e24d-3e5e-40a1-ae3b-10e0dfe3e6a8 - ea34779cc)
 
