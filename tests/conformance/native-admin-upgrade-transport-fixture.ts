@@ -11,13 +11,14 @@ import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import Fastify, {
   type FastifyInstance,
 } from "../../apps/controller/node_modules/fastify/fastify.js";
+import type { AdmissionVerifier } from "../../apps/controller/src/admission/admission-verifier.ts";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
-import type { createNativeAdminAccess } from "../../apps/controller/src/http/native-admin.ts";
 import type { AuditEventCreationInput } from "../../packages/audit/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { selfSigned } from "../helpers/certificates.ts";
 import { nativeAdminGatewayAuth } from "../helpers/harness-configuration.mjs";
 import type {
+  Selection,
   UpgradeAuditTransport,
   UpgradeAuditTransportOptions,
 } from "./native-admin-upgrade-audit-cases.ts";
@@ -28,10 +29,12 @@ import type { DenialOverrides, DenialOwner } from "./native-admin-upgrade-recove
 const realSetTimeout = globalThis.setTimeout;
 const realClearTimeout = globalThis.clearTimeout;
 
-type Selection = Omit<Parameters<UpgradeAuditTransportOptions["authorize"]>[0], "denied">;
 export type PendingResetPhase = "admission" | "gateway key";
 
-export function nativeAdminScenario(installationId: string) {
+export function nativeAdminScenario(
+  installationId: string,
+  overrides?: Pick<DenialOverrides, "admissionError">,
+) {
   const agent: Selection["agent"] = {
     id: "agent_a",
     namespaceId: "ns_a",
@@ -52,45 +55,56 @@ export function nativeAdminScenario(installationId: string) {
     },
   };
   const selection: Selection = { agent, revision, mode: "admin" };
-  return { installationId, agent, domain, host, origin, revision, selection };
+  const admissionVerifier: AdmissionVerifier = {
+    async verify() {
+      if (overrides?.admissionError) {
+        throw overrides.admissionError;
+      }
+      return {
+        method: "session",
+        decisionId: "dec_1",
+        admittedScope: { installationId },
+        externalIdentity: { issuer: "https://issuer.example", subject: "user-1" },
+        session: {
+          id: "sess_1",
+          userId: "user-1",
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      };
+    },
+  };
+  return { installationId, admissionVerifier, agent, domain, host, origin, revision, selection };
 }
 
 type Scenario = ReturnType<typeof nativeAdminScenario>;
-type AuditAppend = (event: AuditEventCreationInput) => Promise<void>;
 
-export interface TransportRegistration extends Pick<
+export interface AccessRegistration extends Pick<
   Scenario,
-  "installationId" | "agent" | "revision" | "domain"
-> {
-  readonly app: FastifyInstance;
-  readonly denied: Error;
-  readonly entered: Pick<PromiseWithResolvers<void>, "resolve">;
-  readonly authorize: UpgradeAuditTransportOptions["authorize"];
-  supportsBrowser(): boolean;
-  gatewayEndpoint(): string;
-  readonly appendAudit: AuditAppend;
-}
-
-export interface DenialRegistration extends Pick<
-  Scenario,
-  "installationId" | "agent" | "revision" | "domain"
-> {
-  readonly t: TestContext;
-  readonly app: FastifyInstance;
-  readonly denied: Error;
-  readonly overrides: DenialOverrides;
-  readonly upstreams: AdmissionSocket[];
-  readonly appendAudit: AuditAppend;
-}
-
-export interface PendingResetRegistration extends Pick<
-  Scenario,
-  "installationId" | "agent" | "domain"
+  "installationId" | "agent" | "domain" | "admissionVerifier"
 > {
   readonly app: FastifyInstance;
   admit(): Selection | Promise<Selection>;
+  supportsBrowser?(): boolean;
   gatewayEndpoint(): string;
+  readonly browserHeaders?: Readonly<Record<string, string>>;
   gatewayKey(): Promise<string>;
+  readonly leaseIntervalMs: number | undefined;
+  readonly appendAudit: (event: AuditEventCreationInput) => Promise<void>;
+}
+
+interface DenialRegistration extends AccessRegistration {
+  readonly t: TestContext;
+  readonly upstreams: AdmissionSocket[];
+}
+
+function authorizationDenied(agent: Selection["agent"], action: string) {
+  return Object.assign(new Error("The exact platform operation was not authorized."), {
+    name: "AuthorizationDeniedError",
+    authorization: {
+      action,
+      resource: { kind: "agent", id: agent.id, namespaceId: agent.namespaceId },
+    },
+  });
 }
 
 export function within<T>(
@@ -141,9 +155,16 @@ export function gatewayEndpoint(gateway: https.Server | net.Server): string {
   return `wss://127.0.0.1:${address.port}/`;
 }
 
-// Only authorization and audit persistence are controlled. Admission, TLS, relay,
-// lease timer and both ends of each connection are real.
-export function createTransportOwner(register: (input: TransportRegistration) => void) {
+export function writeUpgradeRequest(socket: net.Socket, { host, origin }: Scenario): void {
+  socket.write(
+    `GET / HTTP/1.1\r\nHost: ${host}\r\nOrigin: ${origin}\r\nConnection: Upgrade\r\n` +
+      "Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n" +
+      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+  );
+}
+
+// The upgrade handler, TLS, relay and lease timer run over real loopback connections.
+export function createTransportOwner(register: (input: AccessRegistration) => void) {
   return async (
     t: TestContext,
     {
@@ -185,7 +206,7 @@ export function createTransportOwner(register: (input: TransportRegistration) =>
     });
     const { key, cert } = await selfSigned(directory);
     setDefaultCACertificates([...previousCertificates, cert]);
-    const peerClosed = Promise.withResolvers<boolean>();
+    const peerClosed = Promise.withResolvers<void>();
     let gatewayConnections = 0;
     const gateway = https.createServer({ key, cert });
     resources.gateway = gateway;
@@ -197,7 +218,7 @@ export function createTransportOwner(register: (input: TransportRegistration) =>
     gateway.on("upgrade", (_request, socket) => {
       sockets.add(socket);
       socket.on("error", () => {});
-      socket.once("close", peerClosed.resolve);
+      socket.once<"close">("close", () => peerClosed.resolve());
       socket.write(
         "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
       );
@@ -207,13 +228,8 @@ export function createTransportOwner(register: (input: TransportRegistration) =>
     gateway.listen(0, "127.0.0.1");
     await within(listen(gateway), "the fixture gateway must listen");
     const scenario = nativeAdminScenario("inst_native_admin_transport");
-    const denied = Object.assign(new Error("The exact platform operation was not authorized."), {
-      name: "AuthorizationDeniedError",
-      authorization: {
-        action: "openclaw.agents.native_admin.proxy.authorize",
-        resource: { kind: "agent", id: scenario.agent.id, namespaceId: scenario.agent.namespaceId },
-      },
-    });
+    const { agent, revision } = scenario;
+    const denied = authorizationDenied(agent, "openclaw.agents.native_admin.proxy.authorize");
     const entered = Promise.withResolvers<void>();
     const auditEntered = Promise.withResolvers<void>();
     const serverClosed = Promise.withResolvers<boolean>();
@@ -231,11 +247,18 @@ export function createTransportOwner(register: (input: TransportRegistration) =>
     register({
       ...scenario,
       app,
-      denied,
-      entered,
-      authorize,
+      admit() {
+        entered.resolve();
+        return authorize({ agent, revision, denied, mode: "admin" });
+      },
       supportsBrowser,
       gatewayEndpoint: () => gatewayEndpoint(gateway),
+      browserHeaders: {
+        "x-occ-identity": "test:native-actor-1",
+        "x-occ-browser-key": "browser-test-secret",
+      },
+      gatewayKey: async () => "transport-fixture-key",
+      leaseIntervalMs: 50,
       appendAudit(event) {
         audits.push(event);
         if (event.kind === "authorization_denial") {
@@ -277,50 +300,65 @@ export function createTransportOwner(register: (input: TransportRegistration) =>
         socket.once("close", closed.resolve);
         const ready = Promise.withResolvers<string>();
         let received = "";
-        socket.on("data", (chunk: Buffer) => {
+        socket.on<"data">("data", (chunk) => {
           received += chunk.toString();
           if (received.includes("\r\n\r\npeer-ready")) {
             ready.resolve(received);
           }
         });
         await within(connected(socket), "the fixture client must connect");
-        socket.write(
-          `GET / HTTP/1.1\r\nHost: ${scenario.host}\r\nOrigin: ${scenario.origin}\r\nConnection: Upgrade\r\n` +
-            "Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n" +
-            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
-        );
+        writeUpgradeRequest(socket, scenario);
         return { closed: closed.promise, ready: ready.promise, received: () => received };
       },
     };
   };
 }
 
-// The incompatible HTTPS request interception and partial product options stay in JS.
+function denialRequest(scenario: Scenario) {
+  return {
+    method: "GET",
+    url: "/",
+    headers: {
+      host: scenario.host,
+      origin: scenario.origin,
+      "sec-websocket-key": "synthetic",
+      "sec-websocket-version": "13",
+    },
+    socket: { remoteAddress: "127.0.0.1" },
+    destroyed: false,
+  };
+}
+
 export function createDenialOwner(
-  register: (input: DenialRegistration) => ReturnType<typeof createNativeAdminAccess>,
+  register: (input: DenialRegistration) => {
+    access: DenialOwner["access"];
+    emitUpgrade: (
+      request: ReturnType<typeof denialRequest>,
+      socket: AdmissionSocket,
+      head: Buffer<ArrayBuffer>,
+    ) => void;
+  },
 ) {
   return async (t: TestContext, overrides: DenialOverrides = {}): Promise<DenialOwner> => {
-    const scenario = nativeAdminScenario("inst_native_admin_audit");
-    const denied = Object.assign(new Error("The exact platform operation was not authorized."), {
-      name: "AuthorizationDeniedError",
-      authorization: {
-        action: "administer",
-        resource: { kind: "agent", id: scenario.agent.id, namespaceId: scenario.agent.namespaceId },
-      },
-    });
+    const scenario = nativeAdminScenario("inst_native_admin_audit", overrides);
+    const { agent, revision } = scenario;
+    const denied = authorizationDenied(agent, "administer");
     const audits: AuditEventCreationInput[] = [];
     const warnings: unknown[] = [];
     const upstreams: AdmissionSocket[] = [];
     const app = Fastify({ logger: false });
     t.after(() => app.close());
     t.mock.method(app.log, "warn", (event: unknown) => warnings.push(event));
-    const access = register({
+    const { access, emitUpgrade } = register({
       ...scenario,
       t,
       app,
-      denied,
-      overrides,
       upstreams,
+      admit: () =>
+        overrides.authorize?.({ agent, revision, denied, mode: "admin" }) ?? Promise.reject(denied),
+      gatewayEndpoint: () => "wss://gateway.example.test",
+      gatewayKey: overrides.transport ?? (async () => "synthetic"),
+      leaseIntervalMs: undefined,
       appendAudit(event) {
         audits.push(event);
         return overrides.append?.(event) ?? Promise.resolve();
@@ -328,18 +366,7 @@ export function createDenialOwner(
     });
     await app.ready();
     t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
-    const request = () => ({
-      method: "GET",
-      url: "/",
-      headers: {
-        host: scenario.host,
-        origin: scenario.origin,
-        "sec-websocket-key": "synthetic",
-        "sec-websocket-version": "13",
-      },
-      socket: { remoteAddress: "127.0.0.1" },
-      destroyed: false,
-    });
+    const request = () => denialRequest(scenario);
     return {
       access,
       warnings,
@@ -350,7 +377,7 @@ export function createDenialOwner(
       shutdown: () => app.close(),
       upgrade() {
         const socket = new AdmissionSocket();
-        app.server.emit("upgrade", request(), socket, Buffer.alloc(0));
+        emitUpgrade(request(), socket, Buffer.alloc(0));
         return socket;
       },
     };

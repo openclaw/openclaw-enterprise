@@ -9,7 +9,7 @@ type BrowserSelection = Awaited<
   ReturnType<OpenClawController["getBrowserAccessibleActiveAgentRevision"]>
 >;
 
-type Selection = {
+export type Selection = {
   readonly agent: Pick<BrowserSelection["agent"], "id" | "namespaceId" | "desiredRuntimeState">;
   readonly revision: Pick<BrowserSelection["revision"], "id" | "compute" | "configuration">;
   readonly mode: BrowserSelection["mode"];
@@ -31,7 +31,7 @@ export interface UpgradeAuditTransport {
   readonly appClosed: Promise<void>;
   readonly auditEntered: Promise<void>;
   readonly serverClosed: Promise<boolean>;
-  readonly peerClosed: Promise<boolean>;
+  readonly peerClosed: Promise<void>;
   gatewayConnections(): number;
   denials(): readonly AuditEventCreationInput[];
   closeAudit(): AuditEventCreationInput | undefined;

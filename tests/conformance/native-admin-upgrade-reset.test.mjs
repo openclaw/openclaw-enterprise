@@ -22,23 +22,23 @@ import {
   within,
 } from "./native-admin-upgrade-transport-fixture.ts";
 
-// These three registrations deliberately provide partial product options. Keep them at
-// the JS boundary rather than fabricating a complete Controller, IAM Driver or auth object.
-/** @param {import("./native-admin-upgrade-transport-fixture.ts").TransportRegistration} input */
-function registerTransport({
+// The tests supply only the controller, IAM and auth methods exercised by the upgrade.
+/** @param {import("./native-admin-upgrade-transport-fixture.ts").AccessRegistration} input */
+function registerAccess({
   app,
   installationId,
   agent,
-  revision,
-  denied,
-  entered,
-  authorize,
-  supportsBrowser,
-  gatewayEndpoint,
-  appendAudit,
   domain,
+  admissionVerifier,
+  admit,
+  supportsBrowser = () => true,
+  gatewayEndpoint,
+  browserHeaders,
+  gatewayKey,
+  leaseIntervalMs,
+  appendAudit,
 }) {
-  createNativeAdminAccess({
+  return createNativeAdminAccess({
     app,
     installationId,
     publicOrigin: "https://console.example.com",
@@ -47,10 +47,7 @@ function registerTransport({
       async resolveAgentReference(predicate) {
         return predicate(agent) ? agent : undefined;
       },
-      getBrowserAccessibleActiveAgentRevision() {
-        entered.resolve();
-        return authorize({ agent, revision, denied, mode: "admin" });
-      },
+      getBrowserAccessibleActiveAgentRevision: admit,
       selectedDriver: () => ({
         id: "compute_test",
         implementation: "native-admin-reset-test",
@@ -58,10 +55,7 @@ function registerTransport({
           ? async () => ({
               endpoint: gatewayEndpoint(),
               subject: "test:native-actor-1",
-              headers: {
-                "x-occ-identity": "test:native-actor-1",
-                "x-occ-browser-key": "browser-test-secret",
-              },
+              headers: { ...browserHeaders },
             })
           : undefined,
       }),
@@ -79,204 +73,33 @@ function registerTransport({
     }),
     getContext: () => undefined,
     getAdmission: () => undefined,
-    auth: {
-      sharedCookieDomain: "example.com",
-      admissionVerifier: {
-        async verify() {
-          return {
-            method: "session",
-            decisionId: "dec_1",
-            admittedScope: { installationId },
-            externalIdentity: { issuer: "https://issuer.example", subject: "user-1" },
-            session: {
-              id: "sess_1",
-              userId: "user-1",
-              expiresAt: new Date(Date.now() + 60_000).toISOString(),
-            },
-          };
-        },
-      },
-    },
+    auth: { sharedCookieDomain: "example.com", admissionVerifier },
     nativeAdmin: { enabled: true, domain },
-    nativeAdminGatewayApiKey: async () => "transport-fixture-key",
-    webSocketLeaseIntervalMs: 50,
+    nativeAdminGatewayApiKey: gatewayKey,
+    webSocketLeaseIntervalMs: leaseIntervalMs,
     auditSink: { append: appendAudit },
   });
 }
 
-/** @param {import("./native-admin-upgrade-transport-fixture.ts").DenialRegistration} input */
-function registerDenial({
-  t,
-  app,
-  installationId,
-  agent,
-  revision,
-  denied,
-  overrides,
-  upstreams,
-  domain,
-  appendAudit,
-}) {
+/** @type {Parameters<typeof createDenialOwner>[0]} */
+function registerDenial(input) {
+  const { t, app, upstreams } = input;
   // A missing interception fails before any external network request can occur.
   t.mock.method(https, "request", () => {
     const upstream = new AdmissionSocket();
     upstreams.push(upstream);
     return upstream;
   });
-  return createNativeAdminAccess({
-    app,
-    installationId,
-    publicOrigin: "https://console.example.com",
-    factory: { create: (event) => event },
-    getController: () => ({
-      async resolveAgentReference(predicate) {
-        return predicate(agent) ? agent : undefined;
-      },
-      getBrowserAccessibleActiveAgentRevision() {
-        return (
-          overrides.authorize?.({ agent, revision, denied, mode: "admin" }) ??
-          Promise.reject(denied)
-        );
-      },
-      selectedDriver: () => ({
-        id: "compute_test",
-        implementation: "native-admin-reset-test",
-        getGatewayBrowserRequest: async () => ({
-          endpoint: "wss://gateway.example.test",
-          subject: "test:native-actor-1",
-          headers: {},
-        }),
-      }),
-    }),
-    selectedIAMDriver: () => ({
-      id: "iam_test",
-      async lookupIdentity() {
-        return {
-          kind: "principal",
-          id: "actor_1",
-          issuer: "https://issuer.example",
-          subject: "user-1",
-        };
-      },
-    }),
-    getContext: () => undefined,
-    getAdmission: () => undefined,
-    auth: {
-      sharedCookieDomain: "example.com",
-      admissionVerifier: {
-        async verify() {
-          if (overrides.admissionError) {
-            throw overrides.admissionError;
-          }
-          return {
-            method: "session",
-            decisionId: "dec_1",
-            admittedScope: { installationId },
-            externalIdentity: { issuer: "https://issuer.example", subject: "user-1" },
-            session: {
-              id: "sess_1",
-              userId: "user-1",
-              expiresAt: new Date(Date.now() + 60_000).toISOString(),
-            },
-          };
-        },
-      },
+  return {
+    access: registerAccess(input),
+    emitUpgrade(request, socket, head) {
+      app.server.emit("upgrade", request, socket, head);
     },
-    nativeAdmin: { enabled: true, domain },
-    nativeAdminGatewayApiKey: overrides.transport ?? (async () => "synthetic"),
-    webSocketLeaseIntervalMs: undefined,
-    auditSink: { append: appendAudit },
-  });
-}
-
-/** @param {import("./native-admin-upgrade-transport-fixture.ts").PendingResetRegistration} input */
-function registerPendingReset({
-  app,
-  installationId,
-  agent,
-  domain,
-  admit,
-  gatewayEndpoint,
-  gatewayKey,
-}) {
-  createNativeAdminAccess({
-    app,
-    installationId,
-    publicOrigin: "https://console.example.com",
-    factory: {
-      create(input) {
-        return input;
-      },
-    },
-    getController() {
-      return {
-        async resolveAgentReference(predicate) {
-          return predicate(agent) ? agent : undefined;
-        },
-        getBrowserAccessibleActiveAgentRevision() {
-          return admit();
-        },
-        selectedDriver() {
-          return {
-            id: "compute_test",
-            implementation: "native-admin-reset-test",
-            getGatewayBrowserRequest: async () => ({
-              endpoint: gatewayEndpoint(),
-              subject: "test:native-actor-1",
-              headers: {},
-            }),
-          };
-        },
-      };
-    },
-    selectedIAMDriver() {
-      return {
-        id: "iam_test",
-        async lookupIdentity() {
-          return {
-            kind: "principal",
-            id: "actor_1",
-            issuer: "https://issuer.example",
-            subject: "user-1",
-          };
-        },
-      };
-    },
-    getContext() {
-      return undefined;
-    },
-    getAdmission() {
-      return undefined;
-    },
-    auth: {
-      sharedCookieDomain: "example.com",
-      admissionVerifier: {
-        async verify() {
-          return {
-            method: "session",
-            decisionId: "dec_1",
-            admittedScope: { installationId },
-            externalIdentity: { issuer: "https://issuer.example", subject: "user-1" },
-            session: {
-              id: "sess_1",
-              userId: "user-1",
-              expiresAt: new Date(Date.now() + 60_000).toISOString(),
-            },
-          };
-        },
-      },
-    },
-    nativeAdmin: { enabled: true, domain },
-    nativeAdminGatewayApiKey() {
-      return gatewayKey();
-    },
-    webSocketLeaseIntervalMs: undefined,
-    auditSink: { async append() {} },
-  });
+  };
 }
 
 const auditFixture = {
-  transportOwner: createTransportOwner(registerTransport),
+  transportOwner: createTransportOwner(registerAccess),
   within,
   settleCallbacks,
 };
@@ -307,5 +130,5 @@ test(
 
 for (const phase of ["admission", "gateway key"]) {
   test(`a client reset while the native-admin ${phase} is pending never opens the Agent gateway`, () =>
-    clientResetWhilePending(phase, registerPendingReset));
+    clientResetWhilePending(phase, registerAccess));
 }

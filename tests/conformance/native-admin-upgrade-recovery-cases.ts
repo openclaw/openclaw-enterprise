@@ -20,11 +20,13 @@ import { NativeIAMDriver, type NativeIAMState } from "../../packages/iam/src/ind
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { waitUntil } from "../helpers/wait-for.ts";
+import type { Selection } from "./native-admin-upgrade-audit-cases.ts";
 import {
   gatewayEndpoint,
   nativeAdminScenario,
+  writeUpgradeRequest,
   type PendingResetPhase,
-  type PendingResetRegistration,
+  type AccessRegistration,
 } from "./native-admin-upgrade-transport-fixture.ts";
 import {
   registerDelayedDenialAppendCase,
@@ -34,20 +36,10 @@ import {
 
 export { AdmissionSocket } from "./native-admin-upgrade-denial-cases.ts";
 
-type BrowserSelection = Awaited<
-  ReturnType<OpenClawController["getBrowserAccessibleActiveAgentRevision"]>
->;
-
-type AdmissionSelection = {
-  readonly agent: Pick<BrowserSelection["agent"], "id" | "namespaceId" | "desiredRuntimeState">;
-  readonly revision: Pick<BrowserSelection["revision"], "id" | "compute" | "configuration">;
-  readonly mode: BrowserSelection["mode"];
-};
-
-type AuthorizationInput = AdmissionSelection & { readonly denied: Error };
+type AuthorizationInput = Selection & { readonly denied: Error };
 
 export interface DenialOverrides {
-  readonly authorize?: (input: AuthorizationInput) => Promise<AdmissionSelection>;
+  readonly authorize?: (input: AuthorizationInput) => Promise<Selection>;
   readonly append?: (event: AuditEventCreationInput) => Promise<void>;
   readonly transport?: () => Promise<string>;
   readonly admissionError?: Error;
@@ -180,7 +172,7 @@ export function registerUpgradeAdmissionRecoveryCases(fixture: RecoveryFixture):
 
   for (const boundary of ["timeout", "disconnect", "shutdown"]) {
     test(`native-admin denial ownership never opens a gateway after ${boundary}`, async (t) => {
-      const admission = Promise.withResolvers<AdmissionSelection>();
+      const admission = Promise.withResolvers<Selection>();
       let selection: AuthorizationInput | undefined;
       const owner = await denialOwner(t, {
         authorize(input) {
@@ -703,10 +695,10 @@ export async function clientResetDuringPendingDenial(t: TestContext): Promise<vo
 
 export async function clientResetWhilePending(
   phase: PendingResetPhase,
-  register: (input: PendingResetRegistration) => void,
+  register: (input: AccessRegistration) => void,
 ): Promise<void> {
   const scenario = nativeAdminScenario("inst_native_admin_upgrade");
-  const { host, origin, selection } = scenario;
+  const { selection } = scenario;
   // An Agent gateway that only counts connection attempts.
   const gatewayConnections: net.Socket[] = [];
   const gateway = net.createServer((connection) => {
@@ -734,6 +726,8 @@ export async function clientResetWhilePending(
     admit: () => (phase === "admission" ? gated("admission", selection) : selection),
     gatewayEndpoint: () => gatewayEndpoint(gateway),
     gatewayKey: () => gated("gateway key", "gateway-test-key"),
+    leaseIntervalMs: undefined,
+    async appendAudit() {},
   });
   await app.listen({ host: "127.0.0.1", port: 0 });
   const address = app.server.address();
@@ -745,11 +739,7 @@ export async function clientResetWhilePending(
       const socket = net.connect(address.port, "127.0.0.1");
       socket.on("error", reject);
       socket.on("connect", () => {
-        socket.write(
-          `GET / HTTP/1.1\r\nHost: ${host}\r\nOrigin: ${origin}\r\nConnection: Upgrade\r\n` +
-            "Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n" +
-            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
-        );
+        writeUpgradeRequest(socket, scenario);
         const phaseDeadline = Date.now() + 1000;
         const waitForPhase = () => {
           if (entered[phase] || Date.now() > phaseDeadline) {
