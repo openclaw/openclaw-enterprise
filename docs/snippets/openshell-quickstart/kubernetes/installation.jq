@@ -80,7 +80,7 @@
           },
           "namespace": {
             "quota": {
-              "pods": "10"
+              "pods": "20"
             },
             "containerDefaults": {
               "requests": {
