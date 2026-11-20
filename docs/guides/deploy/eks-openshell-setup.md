@@ -121,30 +121,24 @@ Confirm the account and role, then test Kubernetes TLS from the operator host. S
 
 ### Refresh API network policies after the node groups join
 
-EKS control-plane addresses can change after initial setup. Once both node groups are ready, collect the current addresses below. Repeat this check immediately before installing or upgrading OCC, and when webhook admission times out.
+After both node groups are ready, set `EKS_CLUSTER_ARN` to the intended cluster
+ARN from your infrastructure outputs. Repeat this collection before installing
+or upgrading OCC, and when webhook admission times out.
 
 ```bash
-# API clients can reach the Service IP or a backing endpoint.
-api_service=$(kubectl --context "$CONTEXT" -n default get service kubernetes -o json |
-  jq -er '.spec.clusterIP')
-API_CIDRS=$(kubectl --context "$CONTEXT" -n default get endpointslices \
-  -l kubernetes.io/service-name=kubernetes -o json |
-  jq -ce --arg svc "$api_service" '[.items[] | select(.addressType=="IPv4") |
-    .endpoints[].addresses[]] | select(length > 0) | . + [$svc] | unique | map(. + "/32")')
+inventory=$(node scripts/diagnose-kubernetes-prerequisites.ts \
+  --inventory-eks "${EKS_CLUSTER_ARN:?Set the intended EKS cluster ARN}" \
+  --kubeconfig "$KUBECONFIG" --context "$CONTEXT")
+API_CIDRS=$(jq -ce '.apiCidrs' <<<"$inventory")
+webhook_cidrs=$(jq -ce '.eks.webhookCidrs' <<<"$inventory")
 export API_CIDRS
-
-# Webhook callers can use any control-plane interface for this cluster.
-vpc_config=$(aws eks describe-cluster --region "$AWS_REGION" --name "$EKS_CLUSTER" \
-  --query cluster.resourcesVpcConfig --output json)
-vpc_id=$(jq -er .vpcId <<<"$vpc_config")
-cluster_sg=$(jq -er .clusterSecurityGroupId <<<"$vpc_config")
-webhook_cidrs=$(aws ec2 describe-network-interfaces --region "$AWS_REGION" \
-  --filters "Name=vpc-id,Values=$vpc_id" "Name=group-id,Values=$cluster_sg" \
-  "Name=description,Values=Amazon EKS $EKS_CLUSTER" --output json |
-  jq -ce '[.NetworkInterfaces[].PrivateIpAddresses[].PrivateIpAddress] |
-    select(length > 0) | unique | map(. + "/32")')
 printf 'API egress: %s\nWebhook ingress: %s\n' "$API_CIDRS" "$webhook_cidrs"
 ```
+
+Use AWS CLI credentials in the cluster's account and the selected Kubernetes
+operator credentials. If any read fails or the target differs, the command
+exits nonzero without printing CIDRs. See [EKS address collection](prerequisite-diagnosis.md#collect-eks-addresses)
+for inputs and permissions.
 
 Update and apply the affected prerequisite NetworkPolicies through the infrastructure workflow. Use the API CIDRs for clients that need Kubernetes API egress, including controllers, certificate Jobs and storage components. Allow the verified control-plane interface CIDRs to reach every installed prerequisite webhook, including the AWS Load Balancer Controller when used. Match each webhook's actual port and Pod labels. Use the refreshed `API_CIDRS` when rendering OCC values.
 
