@@ -2,6 +2,7 @@ import {
   assertInvalidInlinePlan,
   invalidInlinePlans,
 } from "./occ-api-inline-provisioning-cases.ts";
+import * as firstDeploymentCases from "./occ-api-first-deployment-cases.ts";
 import { runBackendAssociations, runBackendIdCharacterRule } from "./occ-api-backend-cases.ts";
 import {
   registerAuthorizationDecisionCases,
@@ -45,7 +46,7 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { isDeepStrictEqual, promisify } from "node:util";
+import { promisify } from "node:util";
 import { realpathSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -519,136 +520,11 @@ test("direct first-deployment intent boundary rejects malformed values before I/
 });
 
 test("direct first-deployment captures intent for exact current receipt authority", async (t) => {
-  const { controller, namespace, agent, path, intent, work, secretDriver } =
-    await firstDeploymentFixture();
-  const { fixture } = controller;
-  const actorId = fixture.principal.id;
-  const input = { namespaceId: namespace.id, agentId: agent.id };
-  const configurationB = await createConfiguration(controller, namespace.id);
-  const admitted = await controller.request("POST", `${path}/deploy-first`, { body: intent });
-  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
-
-  // This actor owns the known A receipt. Replace its broad grant with exact
-  // Agent deploy and Configuration A/B read grants, then revoke only A read.
-  fixture.state.roles[0].permissions = [];
-  const role = {
-    id: "receipt-exact-reader",
-    namespaceId: namespace.id,
-    permissions: [
-      { action: "deploy", resourceKind: "agent" },
-      { action: "read", resourceKind: "configuration" },
-    ],
-  };
-  fixture.state.roles.push(role);
-  for (const [kind, id] of [
-    ["agent", agent.id],
-    ["configuration", agent.configurationId],
-    ["configuration", configurationB.id],
-  ]) {
-    fixture.state.bindings.push({
-      id: `receipt-${id}`,
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: actorId,
-      roleId: role.id,
-      resourceKind: kind,
-      resourceId: id,
-    });
-  }
-  const checks = [];
-  const iam = fixture.iamDriver;
-  const authorize = iam.authorize.bind(iam);
-  t.mock.method(iam, "authorize", async (request) => {
-    const decision = await authorize(request);
-    checks.push({
-      action: request.action,
-      resource: { ...request.resource },
-      allowed: decision.allowed,
-    });
-    return decision;
-  });
-  const invoke = (method, body) =>
-    fixture.controller[method](actorId, input, body, resolveApprovedDevelopmentHarness);
-  const expectedChecks = (configurationId, allowed) => [
-    {
-      action: "deploy",
-      resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
-      allowed: true,
-    },
-    {
-      action: "read",
-      resource: { kind: "configuration", id: configurationId, namespaceId: namespace.id },
-      allowed,
-    },
-  ];
-  const methods = ["deployAgentFirst", "recoverAgentFirstDeployment"];
-  for (const method of methods) {
-    checks.length = 0;
-    assert.deepEqual(await invoke(method, { ...intent }), admitted.data);
-    assert.deepEqual(checks, expectedChecks(agent.configurationId, true));
-  }
-  const bindingA = fixture.state.bindings.find(
-    (binding) => binding.id === `receipt-${agent.configurationId}`,
+  await firstDeploymentCases.runDirectReceiptAuthority(
+    t,
+    AuthorizationDeniedError,
+    ResourceStateConflictError,
   );
-  assert.ok(bindingA);
-  fixture.state.bindings.splice(fixture.state.bindings.indexOf(bindingA), 1);
-  const beforeAudit = fixture.auditSink.events.length;
-  const beforeWork = structuredClone(work());
-  const beforeSecrets = secretDriver.calls.length;
-  const beforeRevisions = await fixture.platformState.read((view) =>
-    view.revisions.listRevisions(namespace.id, agent.id),
-  );
-  for (const method of methods) {
-    for (const mutate of [false, true]) {
-      const label = mutate ? "immediate A-to-B mutation" : "stable A";
-      await t.test(`${method}: ${label} denies the known receipt`, async () => {
-        checks.length = 0;
-        const body = { ...intent };
-        const pending = invoke(method, body);
-        if (mutate) {
-          body.expectedConfigurationId = configurationB.id;
-        }
-        // Check the outcome as well as effects: a leaked receipt creates no work.
-        const outcome = await pending.then(
-          (value) => ({ value }),
-          (error) => ({ error }),
-        );
-        assert.deepEqual(
-          {
-            authorizationTrace: checks,
-            denied: outcome.error instanceof AuthorizationDeniedError,
-            returnedKnownReceipt: isDeepStrictEqual(outcome.value, admitted.data),
-            returnedConfigurationId: outcome.value?.configurationId,
-          },
-          {
-            authorizationTrace: expectedChecks(agent.configurationId, false),
-            denied: true,
-            returnedKnownReceipt: false,
-            returnedConfigurationId: undefined,
-          },
-        );
-      });
-    }
-    await t.test(`${method}: allowed B has no matching receipt`, async () => {
-      checks.length = 0;
-      const pending = invoke(method, { ...intent, expectedConfigurationId: configurationB.id });
-      if (method === "recoverAgentFirstDeployment") {
-        assert.equal(await pending, null);
-      } else {
-        await assert.rejects(pending, ResourceStateConflictError);
-      }
-      assert.deepEqual(checks, expectedChecks(configurationB.id, true));
-    });
-  }
-  assert.deepEqual(
-    await fixture.platformState.read((view) =>
-      view.revisions.listRevisions(namespace.id, agent.id),
-    ),
-    beforeRevisions,
-  );
-  assert.deepEqual(work(), beforeWork);
-  assert.equal(secretDriver.calls.length, beforeSecrets);
-  assert.equal(fixture.auditSink.events.length, beforeAudit);
 });
 
 test("direct first-deployment captures scalars once for fresh admission and recovery", async (t) => {
@@ -747,181 +623,11 @@ test("direct first-deployment captures scalars once for fresh admission and reco
 });
 
 test("guarded first deployment propagates snapshot read failures without entering admission", async () => {
-  const { controller, namespace, agent, intent, work, secretDriver } =
-    await firstDeploymentFixture();
-  const state = controller.fixture.platformState;
-  const read = state.read.bind(state);
-  state.read = (operation) =>
-    read((unit) =>
-      operation({
-        ...unit,
-        configurations: {
-          ...unit.configurations,
-          findConfiguration: async () => {
-            throw new Error("synthetic snapshot read failure");
-          },
-        },
-      }),
-    );
-  state.transact = async () => assert.fail("a failed read must not enter admission");
-  await assert.rejects(
-    controller.fixture.controller.deployAgentFirst(
-      controller.fixture.principal.id,
-      { namespaceId: namespace.id, agentId: agent.id },
-      intent,
-      resolveApprovedDevelopmentHarness,
-    ),
-    { message: "synthetic snapshot read failure" },
-  );
-  assert.equal(secretDriver.calls.length, 0);
-  assert.equal(work().length, 0);
+  await firstDeploymentCases.runSnapshotReadFailure();
 });
 
 test("guarded first deployment admits enabled Slack over real HTTP and recovers without I/O", async (t) => {
-  for (const [enabled, route] of [
-    [true, "deploy-first"],
-    [false, "deploy-first"],
-    [true, "deploy"],
-  ]) {
-    const deployment = await slackFirstDeploymentFixture(enabled);
-    const { controller, namespace, path, intent, secretDriver, work, providerCalls } = deployment;
-    const app = controller.fixture.createApp(undefined, createFastifyApp);
-    try {
-      const url = await app.listen({ host: "127.0.0.1", port: 0 });
-      const send = (method, suffix, options = {}) =>
-        request(url, method, `${path}/${suffix}`, {
-          session: app.defaultSession,
-          ...options,
-        });
-      const before = controller.fixture.auditSink.events.length;
-      const result = await send("POST", route, route === "deploy-first" ? { body: intent } : {});
-      assert.equal(result.status, 202, JSON.stringify(result.body));
-      assert.equal(work().length, 1);
-      const revisions = await deployment.listRevisionMetadata();
-      assert.equal(revisions.length, 1);
-      assert.equal(controller.fixture.auditSink.events.length - before, 1);
-      assert.equal(providerCalls(), enabled ? 1 : 0);
-      assert.equal(
-        secretDriver.calls.filter((call) => call.operation === "withValue").length,
-        enabled ? 1 : 0,
-      );
-      assert.equal(secretDriver.calls.filter((call) => call.operation === "resolve").length, 2);
-      const calls = structuredClone(secretDriver.calls);
-      if (route === "deploy-first") {
-        assert.deepEqual(Object.keys(result.data).sort(), [
-          "agentId",
-          "configurationGeneration",
-          "configurationId",
-          "createdAt",
-          "namespaceId",
-          "revisionId",
-        ]);
-        // Poison the fresh-only dependency after commit. Recovery must not consult it.
-        controller.fixture.configurationDriver.read = async () =>
-          assert.fail("Recovery read Configuration storage");
-        const recovered = await send(
-          "GET",
-          `deploy-first/${intent.key}/${intent.expectedConfigurationId}/${intent.expectedGeneration}`,
-        );
-        const replay = await send("POST", "deploy-first", { body: intent });
-        assert.equal(recovered.status, 200, JSON.stringify(recovered.body));
-        assert.equal(recovered.headers.get("cache-control"), "no-store");
-        assert.equal(replay.status, 202, JSON.stringify(replay.body));
-        assert.deepEqual(recovered.data, result.data);
-        assert.deepEqual(replay.data, result.data);
-        assert.deepEqual(secretDriver.calls, calls);
-        assert.equal(providerCalls(), enabled ? 1 : 0);
-        assert.equal(work().length, 1);
-        assert.equal(controller.fixture.auditSink.events.length - before, 1);
-
-        // A receipt is private even to its original actor once current draft-read authority
-        // is revoked. Use the real IAM policy for both HTTP recovery and POST replay.
-        const restrictions = controller.fixture.state.restrictions;
-        const beforeRevocation = controller.fixture.auditSink.events.length;
-        restrictions.push({
-          id: "revoke-first-deployment-configuration-read",
-          namespaceId: namespace.id,
-          effect: "deny",
-          action: "read",
-          resourceKind: "configuration",
-          resourceId: intent.expectedConfigurationId,
-        });
-        const deniedRecovery = await send(
-          "GET",
-          `deploy-first/${intent.key}/${intent.expectedConfigurationId}/${intent.expectedGeneration}`,
-        );
-        const deniedReplay = await send("POST", "deploy-first", { body: intent });
-        for (const denied of [deniedRecovery, deniedReplay]) {
-          assert.equal(denied.status, 403, JSON.stringify(denied.body));
-          assert.equal(denied.data, undefined);
-          assert.equal(JSON.stringify(denied.body).includes(result.data.revisionId), false);
-        }
-        const denials = controller.fixture.auditSink.events.slice(beforeRevocation);
-        assert.equal(denials.length, 2);
-        for (const denial of denials) {
-          assert.equal(denial.kind, "authorization_denial");
-          assert.equal(denial.actor.principalId, controller.fixture.principal.id);
-          assert.deepEqual(denial.authorization, {
-            principalId: controller.fixture.principal.id,
-            action: "read",
-            resource: {
-              kind: "configuration",
-              id: intent.expectedConfigurationId,
-              namespaceId: namespace.id,
-            },
-          });
-        }
-        assert.deepEqual(secretDriver.calls, calls);
-        assert.equal(providerCalls(), enabled ? 1 : 0);
-        assert.equal(work().length, 1);
-        assert.deepEqual(await deployment.listRevisionMetadata(), revisions);
-        restrictions.pop();
-        const restored = await send(
-          "GET",
-          `deploy-first/${intent.key}/${intent.expectedConfigurationId}/${intent.expectedGeneration}`,
-        );
-        assert.equal(restored.status, 200, JSON.stringify(restored.body));
-        assert.deepEqual(restored.data, result.data);
-
-        // Accepting deletion fences fresh admission, but the original committed receipt
-        // remains readable until teardown removes the Agent and its revisions.
-        const deletion = await request(url, "DELETE", path, { session: app.defaultSession });
-        assert.equal(deletion.status, 202, JSON.stringify(deletion.body));
-        assert.equal(deletion.data.status, "deleting");
-        const deletionWork = controller.fixture.platformState.pendingOperations();
-        const deletionAuditCount = controller.fixture.auditSink.events.length;
-        const afterDeletion = await send(
-          "GET",
-          `deploy-first/${intent.key}/${intent.expectedConfigurationId}/${intent.expectedGeneration}`,
-        );
-        const afterDeletionReplay = await send("POST", "deploy-first", { body: intent });
-        assert.equal(afterDeletion.status, 200, JSON.stringify(afterDeletion.body));
-        assert.equal(afterDeletionReplay.status, 202, JSON.stringify(afterDeletionReplay.body));
-        assert.deepEqual(afterDeletion.data, result.data);
-        assert.deepEqual(afterDeletionReplay.data, result.data);
-        assert.deepEqual(controller.fixture.platformState.pendingOperations(), deletionWork);
-        assert.equal(controller.fixture.auditSink.events.length, deletionAuditCount);
-        assert.deepEqual(secretDriver.calls, calls);
-        assert.equal(providerCalls(), enabled ? 1 : 0);
-      } else {
-        assert.equal(result.data.revision, 1);
-      }
-      t.diagnostic(
-        JSON.stringify({
-          enabled,
-          route,
-          revisions: revisions.length,
-          work: work().length,
-          audit: controller.fixture.auditSink.events.length - before,
-          sender: providerCalls(),
-          withValue: calls.filter((call) => call.operation === "withValue").length,
-          resolve: calls.filter((call) => call.operation === "resolve").length,
-        }),
-      );
-    } finally {
-      await app.close();
-    }
-  }
+  await firstDeploymentCases.runSlackLoopback(t);
 });
 
 test("first-deployment CLI recovers a lost committed response with the original caller and intent", async (t) => {
@@ -932,8 +638,7 @@ test("first-deployment CLI recovers a lost committed response with the original 
   for (const reply of ["dropped", "malformed"]) {
     await t.test(`${reply} committed reply`, async (t) => {
       const deployment = await firstDeploymentFixture();
-      const { controller, namespace, agent, path, intent, work, secretDriver, providerCalls } =
-        deployment;
+      const { controller, namespace } = deployment;
       const fixture = controller.fixture;
       // Provision an automation identity in the actual native IAM fixture. The HTTP auth
       // service issues its key; the CLI never impersonates the administrator's session.
@@ -967,161 +672,20 @@ test("first-deployment CLI recovers a lost committed response with the original 
         await writeFile(keyFile, JSON.stringify({ data: issued.data }), { mode: 0o600 });
         const forwarded = [];
         const relayErrors = [];
-        let committed;
-        let recovered;
-        relay = createServer(async (incoming, outgoing) => {
-          try {
-            const chunks = [];
-            for await (const chunk of incoming) {
-              chunks.push(chunk);
-            }
-            forwarded.push({ method: incoming.method, path: incoming.url });
-            const response = await fetchLoopback(`${origin}${incoming.url}`, {
-              method: incoming.method,
-              headers: {
-                host: "console.oce.localhost",
-                "x-api-key": incoming.headers["x-api-key"],
-                ...(incoming.headers["content-type"] === undefined
-                  ? {}
-                  : { "content-type": incoming.headers["content-type"] }),
-              },
-              ...(chunks.length === 0 ? {} : { body: Buffer.concat(chunks) }),
-            });
-            const body = await response.text();
-            if (incoming.method === "POST" && response.status === 202) {
-              // OCC really committed. The relay loses or corrupts only its response; the
-              // next GET must recover the true receipt from the unchanged application.
-              const envelope = JSON.parse(body);
-              committed = envelope.data;
-              if (reply === "dropped") {
-                outgoing.destroy();
-              } else {
-                outgoing.writeHead(response.status, { "content-type": "application/json" });
-                outgoing.end(JSON.stringify({ ...envelope, data: {} }));
-              }
-              return;
-            }
-            if (incoming.method === "GET" && response.status === 200) {
-              recovered = JSON.parse(body).data;
-            }
-            outgoing.writeHead(response.status, { "content-type": "application/json" });
-            outgoing.end(body);
-          } catch (error) {
-            relayErrors.push(error);
-            outgoing.destroy();
-          }
-        });
-        relay.listen(0, "127.0.0.1");
-        await once(relay, "listening");
-        const relayOrigin = `http://127.0.0.1:${relay.address().port}`;
-        const args = [
-          "--url",
-          relayOrigin,
-          "--service-key-file",
+        relay = createServer();
+        await firstDeploymentCases.runCliRecovery(t, {
+          deployment,
+          cli,
+          directory,
+          execute,
+          reply,
+          origin,
           keyFile,
-          "--ca-bundle",
-          "",
-          "--timeout-seconds",
-          "5",
-          "--namespace",
-          namespace.id,
-          "agent",
-          "deploy-first",
-          agent.id,
-          "--key",
-          intent.key,
-          "--configuration",
-          intent.expectedConfigurationId,
-          "--generation",
-          String(intent.expectedGeneration),
-        ];
-        let failure;
-        try {
-          failure = { code: 0, ...(await execute(cli, args)) };
-        } catch (error) {
-          failure = error;
-        }
-        assert.deepEqual(relayErrors, []);
-        assert.ok(committed, "the uncertain response must follow a real committed admission");
-        assert.deepEqual(
           forwarded,
-          [{ method: "POST", path: `${path}/deploy-first` }],
-          "the CLI must not automatically replay an uncertain mutation",
-        );
-        const revisions = await deployment.listRevisionMetadata();
-        assert.equal(revisions.length, 1);
-        assert.equal(revisions[0].id, committed.revisionId);
-        assert.equal(work().length, 1);
-        const calls = structuredClone(secretDriver.calls);
-        const audit = structuredClone(fixture.auditSink.events);
-        const deployments = audit.filter(
-          (event) => event.action === "openclaw.agents.deploy" && event.outcome === "success",
-        );
-        assert.equal(deployments.length, 1);
-        assert.equal(deployments[0].actor.principalId, automation.id);
-        t.diagnostic(
-          JSON.stringify({
-            reply,
-            cliExit: failure.code,
-            posts: forwarded.length,
-            revisions: revisions.length,
-            work: work().length,
-            sender: providerCalls(),
-          }),
-        );
-        assert.equal(failure.code, 1, "an unusable receipt must leave the CLI outcome uncertain");
-        assert.equal(failure.stdout, "");
-        assert.match(failure.stderr, reply === "dropped" ? /EOF/ : /invalid.*receipt/i);
-        assert.match(failure.stderr, /same caller/);
-        const recoveryCommand = failure.stderr
-          .split("\n")
-          .map((line) => line.trim())
-          .find((line) => line.startsWith("occ "));
-        assert.ok(
-          recoveryCommand,
-          "the uncertain result must print an executable recovery command",
-        );
-        for (const expected of [
-          relayOrigin,
-          keyFile,
-          `--namespace ${namespace.id}`,
-          `agent recover-first-deployment ${agent.id}`,
-          `--key ${intent.key}`,
-          `--configuration ${intent.expectedConfigurationId}`,
-          `--generation ${intent.expectedGeneration}`,
-        ]) {
-          assert.ok(recoveryCommand.includes(expected), `recovery command must retain ${expected}`);
-        }
-        // Execute exactly the printed command, including its quoted path with spaces.
-        const recovery = await execute("/bin/sh", ["-c", recoveryCommand], {
-          env: { ...process.env, PATH: `${directory}:${process.env.PATH}` },
+          relayErrors,
+          relay,
+          automationId: automation.id,
         });
-        assert.deepEqual(relayErrors, []);
-        assert.deepEqual(recovered, committed);
-        assert.ok(recovery.stdout.includes(committed.revisionId));
-        assert.deepEqual(forwarded, [
-          { method: "POST", path: `${path}/deploy-first` },
-          {
-            method: "GET",
-            path: `${path}/deploy-first/${intent.key}/${intent.expectedConfigurationId}/${intent.expectedGeneration}`,
-          },
-        ]);
-        assert.equal(work().length, 1);
-        assert.deepEqual(await deployment.listRevisionMetadata(), revisions);
-        assert.deepEqual(secretDriver.calls, calls);
-        assert.equal(providerCalls(), 0);
-        assert.deepEqual(fixture.auditSink.events, audit);
-        t.diagnostic(
-          JSON.stringify({
-            reply,
-            recovered: true,
-            posts: 1,
-            gets: 1,
-            revisions: revisions.length,
-            work: work().length,
-            deploymentAudits: deployments.length,
-          }),
-        );
       } finally {
         if (relay?.listening) {
           await new Promise((resolve, reject) =>

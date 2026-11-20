@@ -20,10 +20,13 @@ import { runDocker } from "./runtime-image-docker.ts";
 import { image, imageTestOptions, gatewayStateVolume } from "./runtime-image-startup.ts";
 import {
   runStartupProbeScenario,
-  observedValue,
-  phaseAt,
   withStartupProbeEvidence,
 } from "./runtime-image-startup-probe.mjs";
+import {
+  observedValue,
+  phaseAt,
+  type StartupProbeSnapshot,
+} from "./runtime-image-startup-probe-observation.ts";
 
 // The probe files' one-core cap kept the Gateway CPU-throttled for these whole
 // cases; the production example allows up to four cores.
@@ -255,7 +258,7 @@ export function uncleanStopRestartTest(
       podOwner,
       gatewayManagedMode,
       cpus: restartGatewayCpus,
-      until: ({ events }: { events: unknown[] }) => events.some(observedValue("ready", true)),
+      until: ({ events }: StartupProbeSnapshot) => events.some(observedValue("ready", true)),
       act: async ({ containerName }: { containerName: string }) => {
         firstTurn = await sendFirstTurn(containerName);
         if (compute) {
@@ -309,7 +312,7 @@ export function uncleanStopRestartTest(
       podOwner,
       gatewayManagedMode,
       cpus: restartGatewayCpus,
-      until: ({ phases }: { phases: unknown[] }) => phaseAt(phases, "native-spawn") !== undefined,
+      until: ({ phases }: StartupProbeSnapshot) => phaseAt(phases, "native-spawn") !== undefined,
       act: async ({ containerName }: { containerName: string }) => {
         // A failed exec is reported with the wrapper output below.
         turn = await sendFirstTurn(containerName).catch((error: unknown) => ({
@@ -552,7 +555,7 @@ export function stoppedStarterReplacementTest(title: string, role: string | null
       podOwner: undefined,
       gatewayManagedMode: false,
       cpus: restartGatewayCpus,
-      until: ({ phases }: { phases: unknown[] }) => phaseAt(phases, "native-spawn") !== undefined,
+      until: ({ phases }: StartupProbeSnapshot) => phaseAt(phases, "native-spawn") !== undefined,
       act: async ({
         containerName,
         exited,
@@ -615,7 +618,7 @@ export function stoppedStarterReplacementTest(title: string, role: string | null
       podOwner: undefined,
       gatewayManagedMode: false,
       cpus: restartGatewayCpus,
-      until: ({ events, output }: { events: unknown[]; output: string }) =>
+      until: ({ events, output }: StartupProbeSnapshot) =>
         events.some(observedValue("ready", true)) || unverifiableOwner.test(output),
       act: undefined,
     });
@@ -654,7 +657,7 @@ export function liveHolderKeepsStateTest(title: string): void {
     } as const;
     const live = await runStartupProbeScenario(t, {
       ...scenario,
-      until: ({ events }: { events: unknown[] }) => events.some(observedValue("ready", true)),
+      until: ({ events }: StartupProbeSnapshot) => events.some(observedValue("ready", true)),
       act: undefined,
     });
     const readLock = async () => {
