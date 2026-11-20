@@ -16,6 +16,7 @@ import {
   hasFocus,
   holdRequests,
   inViewport,
+  isRecord,
   login,
   nativeValues,
   newPage,
@@ -27,6 +28,7 @@ import {
 } from "./console-agents-browser-helpers.ts";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { confirmAgentAction, responseTo } from "./console-action-helpers.ts";
+import { createNativeConsoleFixture, nativeBrowserSupported } from "./console-native-ingress.ts";
 import {
   fulfillMethod,
   refocus,
@@ -822,6 +824,116 @@ test("a refused Request deletion again names the Agent, not the API's denial", a
   assert.equal(await row.getByText("Not authorized:").count(), 0);
   // A grant refusal keeps the repeat unavailable, described by the alert, as for a first Delete.
   await expectReachableReason(page, repeat, (await alert.textContent())?.trim() ?? "");
+});
+
+test("deletion retry stays unavailable after a lost delete grant until permission returns", async (t) => {
+  if (!nativeBrowserSupported(t)) {
+    return;
+  }
+  const name = "Deletion grant withdrawn";
+  let gatewayKeyRequested = false;
+  t.after(() => {
+    assert.equal(gatewayKeyRequested, false, "Deletion must not request a native gateway key");
+  });
+  const { fixture, browserOptions } = await createNativeConsoleFixture(t, {
+    async nativeAdminGatewayApiKey(): Promise<string> {
+      gatewayKeyRequested = true;
+      throw new Error("Deletion must not request a native gateway key");
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace(name, { ready: true });
+  const agent = await fixture.createAgent(namespace.id, name, nativeValues("deletion-grant"));
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const agentUrl = `${fixture.origin}${agentPath}`;
+  const permissionsUrl = `${agentUrl}/permissions`;
+  const url = detailUrl(fixture, namespace.id, agent.id).href;
+  // The fixture administrator starts deletion and performs both repeats in the browser.
+  assert.equal((await fixture.request("DELETE", agentPath)).status, 202);
+  const { page } = await newPage(t, fixture, browserOptions);
+  const requests = apiRequests(page, fixture.origin);
+  const deletes = () => pathRequests(requests, "DELETE", agentPath).length;
+  const initialPermission = responseTo(page, "GET", permissionsUrl);
+  await login(page, fixture, url);
+  const initial = await initialPermission;
+  assert.equal(initial.status(), 200);
+  const initialBody: unknown = await initial.json();
+  assert.ok(isRecord(initialBody) && isRecord(initialBody.data));
+  assert.equal(initialBody.data.delete, true);
+
+  const row = page.getByRole("region", { name: "Delete Agent", exact: true });
+  const repeatLabel = "Request deletion again";
+  const repeat = row.getByRole("button", { name: repeatLabel, exact: true });
+  const refresh = row.getByRole("button", { name: "Refresh deletion status", exact: true });
+  const alert = row.getByRole("alert");
+  const dialog = page.getByRole("dialog", { name: `Request deletion again for ${name}?` });
+  const confirm = dialog.getByRole("button", { name: repeatLabel, exact: true });
+
+  // Revoke only delete for this Agent. The administrator can still read its status.
+  const restriction = restrict(fixture.policy, "delete", "agent", {
+    namespaceId: namespace.id,
+    resourceId: agent.id,
+  });
+  await repeat.click();
+  const refused = responseTo(page, "DELETE", agentUrl);
+  await confirm.click();
+  const denial = await refused;
+  assert.equal(denial.status(), 403);
+  const denialBody: unknown = await denial.json();
+  assert.ok(isRecord(denialBody) && isRecord(denialBody.error));
+  assert.equal(denialBody.error.message, callerDenied("Agent delete", `Agent ${agent.id}`));
+  const requestId = denial.headers()["x-request-id"];
+  assert.ok(requestId);
+  await alert.getByText(deleteRefused(name), { exact: true }).waitFor();
+  await alert.getByText(`Request ID: ${requestId}`, { exact: true }).waitFor();
+  assert.equal(await repeat.getAttribute("aria-disabled"), "true");
+
+  // Manual Refresh returns the same Agent in the deleting state.
+  const status = responseTo(page, "GET", agentUrl);
+  await refresh.click();
+  const refreshed = await status;
+  assert.equal(refreshed.status(), 200);
+  const refreshedBody: unknown = await refreshed.json();
+  assert.ok(isRecord(refreshedBody) && isRecord(refreshedBody.data));
+  const { id, namespaceId, status: lifecycle } = refreshedBody.data;
+  assert.deepEqual(
+    { id, namespaceId, lifecycle },
+    { id: agent.id, namespaceId: namespace.id, lifecycle: "deleting" },
+  );
+  await waitForEnabled(refresh);
+  assert.equal(page.url(), url);
+  assert.equal(
+    (await repeat.getAttribute("aria-disabled")) === "true",
+    true,
+    "manual status must not revive a denied deletion retry",
+  );
+  await alert.getByText(deleteRefused(name), { exact: true }).waitFor();
+  await alert.getByText(`Request ID: ${requestId}`, { exact: true }).waitFor();
+  await expectReachableReason(page, repeat, (await alert.textContent())?.trim() ?? "");
+  assert.equal(deletes(), 1, "refresh and disabled activation send no extra DELETE");
+
+  // Reload the same deleting Agent to read the restored permission.
+  liftRestriction(fixture.policy, restriction);
+  const permission = responseTo(page, "GET", permissionsUrl);
+  await page.reload();
+  const allowed = await permission;
+  assert.equal(allowed.status(), 200);
+  const allowedBody: unknown = await allowed.json();
+  assert.ok(isRecord(allowedBody) && isRecord(allowedBody.data));
+  assert.equal(allowedBody.data.delete, true);
+  await waitForEnabled(repeat);
+  assert.equal(await accessibleDescription(repeat), "");
+  await repeat.click();
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await settlePageRequests(page);
+  assert.equal(deletes(), 1, "cancelling sends no DELETE");
+  await repeat.click();
+  const retry = responseTo(page, "DELETE", agentUrl);
+  await confirm.click();
+  assert.equal((await retry).status(), 202);
+  await dialog.waitFor({ state: "hidden" });
+  await settlePageRequests(page);
+  assert.equal(deletes(), 2, "one confirmed retry sends one DELETE");
 });
 
 // A row refusal that is not about grants is kept for a refocus that rebuilds the list (finding

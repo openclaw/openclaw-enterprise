@@ -1806,6 +1806,43 @@ const authoredScenarios = {
     description:
       "A manual repeated deletion requires confirmation. Queued or running cleanup remains unchanged, and separate cleanup commands stay collapsed until opened.",
   } satisfies LocalScenario,
+  deletionRetryDenied: {
+    group: "Components/Deletion",
+    name: "Repeat deletion grant denied after status refresh",
+    path: draft,
+    deleting: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "DELETE",
+        status: 403,
+        code: "FORBIDDEN",
+        message:
+          "Not authorized: this needs Agent delete on Agent agt_00000000-0000-4000-8000-000000000001. Ask an Installation administrator to grant it.",
+        once: true,
+      },
+      {
+        suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "GET",
+        skip: 1,
+        delayMs: 1300,
+      },
+    ],
+    actions: [
+      click("Request deletion again"),
+      { selector: ".agent-delete-dialog button.danger", click: true },
+      { selector: "#agent-deletion-refusal" },
+      click("Refresh deletion status"),
+      { text: "Refresh deletion status" },
+    ],
+    description:
+      "The repeated deletion is denied for a missing Agent delete grant. A completed status read still finds the Agent deleting and does not restore permission.",
+    steps: [
+      "Tab to Request deletion again. It remains unavailable and is described by the refusal; the Request ID remains visible. Enter, Space or a click sends no deletion request.",
+      "In a live Console, after an administrator restores Agent delete, reload the Agent page to obtain an affirmative permission response before opening the confirmation again.",
+    ],
+    gap: "The fixture simulates the refusal and status response. It does not change IAM grants or demonstrate recovery after a real grant is restored.",
+  } satisfies LocalScenario,
   deletionRetryAccessEnded: {
     group: "Components/Deletion",
     name: "Status access ends during repeat confirmation",
