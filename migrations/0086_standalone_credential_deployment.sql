@@ -122,6 +122,13 @@ DECLARE
   item jsonb;
   port_range jsonb;
   request jsonb;
+  path text;
+  path_bytes bytea;
+  decoded_path text;
+  segment text;
+  normalized_segment text;
+  path_offset integer;
+  path_character text;
 BEGIN
   IF jsonb_typeof(matches) IS DISTINCT FROM 'array' THEN RETURN false; END IF;
   IF jsonb_array_length(matches) = 0 THEN RETURN false; END IF;
@@ -132,9 +139,10 @@ BEGIN
       OR jsonb_typeof(item->'binary') IS DISTINCT FROM 'string'
       OR char_length(item->>'binary') NOT BETWEEN 2 AND 512
       OR (item->>'binary') !~ '^/[^[:space:][:cntrl:]]+$'
+      OR (item->>'binary') ~ '//|/\.{1,2}(/|$)|/$'
       OR jsonb_typeof(item->'host') IS DISTINCT FROM 'string'
       OR char_length(item->>'host') NOT BETWEEN 1 AND 253
-      OR (item->>'host') !~ '^(\*\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$'
+      OR (item->>'host') !~ '^(\*\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$'
       OR jsonb_typeof(item->'ports') IS DISTINCT FROM 'array' THEN
       RETURN false;
     END IF;
@@ -159,6 +167,37 @@ BEGIN
         OR jsonb_typeof(request->'path') IS DISTINCT FROM 'string'
         OR left(request->>'path', 1) IS DISTINCT FROM '/'
         OR position('//' IN request->>'path') > 0 THEN RETURN false; END IF;
+      path := request->>'path';
+      IF request->>'type' = 'http' AND right(path, 3) = '/**' THEN
+        path := left(path, length(path) - 3);
+      END IF;
+      -- Preserve the original wire path: only spaces and UTF-8 bytes may be escaped.
+      IF path !~ '^([A-Za-z0-9._~!$&''()+,:=@/-]|%20|%[89A-F][0-9A-F])*$' THEN
+        RETURN false;
+      END IF;
+      path_bytes := ''::bytea;
+      path_offset := 1;
+      WHILE path_offset <= length(path) LOOP
+        path_character := substring(path FROM path_offset FOR 1);
+        IF path_character = '%' THEN
+          path_bytes := path_bytes || decode(substring(path FROM path_offset + 1 FOR 2), 'hex');
+          path_offset := path_offset + 3;
+        ELSE
+          path_bytes := path_bytes || convert_to(path_character, 'UTF8');
+          path_offset := path_offset + 1;
+        END IF;
+      END LOOP;
+      BEGIN
+        decoded_path := convert_from(path_bytes, 'UTF8');
+      EXCEPTION WHEN character_not_in_repertoire OR untranslatable_character THEN
+        RETURN false;
+      END;
+      FOREACH segment IN ARRAY string_to_array(decoded_path, '/') LOOP
+        normalized_segment := normalize(segment, NFKC);
+        IF normalized_segment IN ('.', '..') OR normalized_segment ~ '[/%\\?#;*[:cntrl:]]' THEN
+          RETURN false;
+        END IF;
+      END LOOP;
       IF request->>'type' = 'http' THEN
         IF request - 'type' - 'method' - 'path' <> '{}'::jsonb
           OR (request->>'method') !~ '^[A-Za-z0-9!#$%&''+.^_`|~-]+$' THEN RETURN false; END IF;
@@ -173,6 +212,42 @@ BEGIN
       END IF;
     END IF;
   END LOOP;
+  -- Different selector kinds cannot overlap on traffic the enforcing Driver may not separate.
+  IF EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements(matches) WITH ORDINALITY AS a(value, ordinal)
+    JOIN jsonb_array_elements(matches) WITH ORDINALITY AS b(value, ordinal)
+      ON a.ordinal < b.ordinal
+    WHERE a.value->>'binary' = b.value->>'binary'
+      AND (a.value #>> '{requestPolicy,type}') IS DISTINCT FROM (b.value #>> '{requestPolicy,type}')
+      AND (
+        a.value->>'host' = b.value->>'host'
+        OR (left(a.value->>'host', 2) = '*.' AND left(b.value->>'host', 2) <> '*.'
+          AND position('.' IN b.value->>'host') > 0
+          AND substring(b.value->>'host' FROM position('.' IN b.value->>'host'))
+            = substring(a.value->>'host' FROM 2))
+        OR (left(b.value->>'host', 2) = '*.' AND left(a.value->>'host', 2) <> '*.'
+          AND position('.' IN a.value->>'host') > 0
+          AND substring(a.value->>'host' FROM position('.' IN a.value->>'host'))
+            = substring(b.value->>'host' FROM 2))
+      )
+      AND EXISTS (
+        SELECT 1 FROM jsonb_array_elements(a.value->'ports') ap(value)
+        CROSS JOIN jsonb_array_elements(b.value->'ports') bp(value)
+        WHERE (ap.value->>'from')::integer <= (bp.value->>'to')::integer
+          AND (bp.value->>'from')::integer <= (ap.value->>'to')::integer
+      )
+      AND (
+        NOT (a.value ? 'requestPolicy') OR NOT (b.value ? 'requestPolicy')
+        OR a.value #>> '{requestPolicy,path}' = b.value #>> '{requestPolicy,path}'
+        OR (right(a.value #>> '{requestPolicy,path}', 3) = '/**'
+          AND (b.value #>> '{requestPolicy,path}' = left(a.value #>> '{requestPolicy,path}', -3)
+            OR starts_with(b.value #>> '{requestPolicy,path}', left(a.value #>> '{requestPolicy,path}', -3) || '/')))
+        OR (right(b.value #>> '{requestPolicy,path}', 3) = '/**'
+          AND (a.value #>> '{requestPolicy,path}' = left(b.value #>> '{requestPolicy,path}', -3)
+            OR starts_with(a.value #>> '{requestPolicy,path}', left(b.value #>> '{requestPolicy,path}', -3) || '/')))
+      )
+  ) THEN RETURN false; END IF;
   RETURN true;
 END;
 $$;
@@ -194,6 +269,8 @@ DECLARE
   covered boolean;
 BEGIN
   IF spec ? 'repository_credentials'
+    OR jsonb_typeof(spec->'sandbox_driver_id') IS DISTINCT FROM 'string'
+    OR COALESCE(btrim(spec->>'sandbox_driver_id'), '') = ''
     OR jsonb_typeof(policy) IS DISTINCT FROM 'object'
     OR NOT (policy ?& ARRAY['driver', 'proxyDriverId', 'networkAccessPolicy', 'bindings', 'injectionPolicies'])
     OR policy - 'driver' - 'proxyDriverId' - 'networkAccessPolicy' - 'bindings' - 'injectionPolicies' <> '{}'::jsonb

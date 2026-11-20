@@ -1255,6 +1255,7 @@ const COMPUTE_PRIVATE_STATUS_ENVIRONMENT = new Set([
 ]);
 const AGENT_REVISION_ANNOTATION = "openclaw.dev/agent-revision";
 const AGENT_REVISION_ID_ANNOTATION = "openclaw.dev/agent-revision-id";
+const CREDENTIAL_DEPLOYMENT_SANDBOX_ANNOTATION = "openclaw.dev/credential-deployment-sandbox-id";
 const APPLY_CONTENT_TYPE = "application/apply-patch+yaml";
 const MERGE_PATCH_CONTENT_TYPE = "application/merge-patch+json";
 const GATEWAY_API_VERSION = "gateway.networking.k8s.io/v1";
@@ -7627,13 +7628,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
           attachments,
           this.scratchAdmission(revision).binding,
         );
-        const releaseKey =
+        const releaseNamespace =
           proxyWiring === undefined && staged === undefined
             ? undefined
-            : await this.executionReleaseKey(
-                revision,
-                await this.controlNamespace(revision.namespaceId),
-              );
+            : await this.controlNamespace(revision.namespaceId);
+        const releaseKey =
+          releaseNamespace === undefined
+            ? undefined
+            : await this.executionReleaseKey(revision, releaseNamespace);
         const requirements = {
           ...preparedRequirements,
           ...(proxyWiring === undefined ? {} : { proxyWiring }),
@@ -7745,6 +7747,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
             sandbox = await this.prepareRevisionStage("sandbox_provision", () =>
               harnessRuntime.prepare(harnessContext),
             );
+          } else if (nodeEnrolled) {
+            // Provisioning has no enrollment input and may recreate the startup status route.
+            // Finish an uncertain first withdrawal, then recover only the retained exact target.
+            await withdrawProviderExposure();
+            const sandboxId = await this.credentialDeploymentSandboxId(revision, releaseNamespace!);
+            if (sandboxId === undefined) {
+              throw new DependencyUnavailableError(
+                "The enrolled staged Sandbox has no retained deployment target.",
+              );
+            }
+            expected = {
+              targetRef: { ...deployment, sandboxId },
+              configurationId: revision.configurationId,
+            };
           } else {
             const stagedProxy = await this.prepareRevisionStage("sandbox_provision", () =>
               proxy!.deployProxy(proxyContext, {
@@ -7763,33 +7779,25 @@ export class KubernetesComputeDriver implements ComputeDriver {
               proxyWiring: _wiring,
               ...workload
             } = requirements;
-            const targetRef = await this.prepareRevisionStage("sandbox_provision", async () => {
-              try {
-                return await stagedSandbox!.provisionHarness(
-                  {
-                    deployment,
-                    workload,
-                    restrictions: [
-                      {
-                        role: "harness",
-                        image: workload.image,
-                        mounts: workload.workspaceMounts.map(({ mountPath, readOnly }) => ({
-                          path: mountPath,
-                          readOnly,
-                        })),
-                      },
-                    ],
-                  },
-                  sandboxContext.signal,
-                );
-              } finally {
-                // Staged provisioning cannot carry the enrollment flag and may recreate
-                // startup exposure even if its reply is lost or provisioning fails.
-                if (nodeEnrolled) {
-                  await withdrawProviderExposure();
-                }
-              }
-            });
+            const targetRef = await this.prepareRevisionStage("sandbox_provision", () =>
+              stagedSandbox!.provisionHarness(
+                {
+                  deployment,
+                  workload,
+                  restrictions: [
+                    {
+                      role: "harness",
+                      image: workload.image,
+                      mounts: workload.workspaceMounts.map(({ mountPath, readOnly }) => ({
+                        path: mountPath,
+                        readOnly,
+                      })),
+                    },
+                  ],
+                },
+                sandboxContext.signal,
+              ),
+            );
             if (
               targetRef.namespaceId !== deployment.namespaceId ||
               targetRef.agentId !== deployment.agentId ||
@@ -7799,6 +7807,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
               throw new OwnershipFailure("The staged Sandbox returned another deployment target.");
             }
             expected = { targetRef, configurationId: revision.configurationId };
+            await this.credentialDeploymentSandboxId(
+              revision,
+              releaseNamespace!,
+              targetRef.sandboxId,
+            );
           }
         } catch (error) {
           if (staged !== undefined && !nodeEnrolled && expected === undefined) {
@@ -17199,6 +17212,72 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       this.operationSignal().throwIfAborted();
       throw privateWriteFailure("Compute execution release key is unavailable.", error);
     }
+  }
+
+  /** The revision-owned signer Secret is never projected. Its immutable data keeps the key;
+   * CAS-protected metadata retains the provider's exact incarnation so an enrolled retry can
+   * observe it without provisioning and reopening the startup status route. */
+  private async credentialDeploymentSandboxId(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+    provisionedSandboxId?: string,
+  ): Promise<string | undefined> {
+    const name = this.executionReleaseSecretName(revision);
+    const ownership = this.pluginRuntimeOwnership(revision);
+    const secret = await this.getOwned("Secret", name, namespace, ownership);
+    if (
+      secret?.immutable !== true ||
+      !secret.metadata.uid ||
+      !secret.metadata.resourceVersion ||
+      secret.metadata.deletionTimestamp ||
+      !secret.data?.signer
+    ) {
+      throw new DependencyUnavailableError("The Compute execution release Secret is unavailable.");
+    }
+    const retained = secret.metadata.annotations?.[CREDENTIAL_DEPLOYMENT_SANDBOX_ANNOTATION];
+    if (retained !== undefined && !isNonEmptyString(retained)) {
+      throw new OwnershipFailure("The retained staged Sandbox target is invalid.");
+    }
+    if (provisionedSandboxId === undefined) {
+      return retained;
+    }
+    if (retained !== undefined) {
+      if (retained !== provisionedSandboxId) {
+        throw new OwnershipFailure("The staged Sandbox changed its retained deployment target.");
+      }
+      return retained;
+    }
+    const clients = await this.clients(namespace.plane);
+    await this.request(
+      () =>
+        clients.core.replaceNamespacedSecret({
+          name,
+          namespace: namespace.name,
+          body: {
+            ...secret,
+            metadata: {
+              ...secret.metadata,
+              annotations: {
+                ...secret.metadata.annotations,
+                [CREDENTIAL_DEPLOYMENT_SANDBOX_ANNOTATION]: provisionedSandboxId,
+              },
+            },
+          },
+        }),
+      { mutating: true },
+    );
+    const observed = await this.getOwned("Secret", name, namespace, ownership);
+    if (
+      observed?.metadata.uid !== secret.metadata.uid ||
+      observed.metadata.resourceVersion === secret.metadata.resourceVersion ||
+      observed.immutable !== true ||
+      observed.data?.signer !== secret.data.signer ||
+      observed.metadata.annotations?.[CREDENTIAL_DEPLOYMENT_SANDBOX_ANNOTATION] !==
+        provisionedSandboxId
+    ) {
+      throw new DependencyUnavailableError("The staged Sandbox target was not retained.");
+    }
+    return provisionedSandboxId;
   }
 
   private executionReleaseSecretName(revision: AgentRevision): string {

@@ -2071,6 +2071,7 @@ test(
           const spec = {
             ...original.admitted_spec,
             execution_admission: { version: 8, mode: "standalone" },
+            sandbox_driver_id: "sandbox",
             harness_auth: { method: "credential_source", ...source },
             credential_sources: [source],
             credential_deployment: {
@@ -2108,17 +2109,89 @@ test(
               [`rev_${randomUUID()}`, number, JSON.stringify(value), original.id],
             );
           await insert(spec, 2);
+          // Canonical escaped UTF-8 and spaces remain valid wire-path segments.
+          const escapedPath = structuredClone(spec);
+          escapedPath.credential_deployment.injectionPolicies[0].allowedRequests[0].requestPolicy.path =
+            "/v1/caf%C3%A9%20responses";
+          escapedPath.credential_deployment.networkAccessPolicy.allowed.push({
+            binary: request.binary,
+            host: "*.openai.com",
+            ports: [{ from: 600, to: 600 }],
+          });
+          await insert(escapedPath, 3);
+          // The Worker requires an admitted Sandbox, and runtime policy validation refuses
+          // dot segments, normalized Unicode dots, escaped punctuation, and invalid UTF-8.
+          const missingSandbox = structuredClone(spec);
+          delete missingSandbox.sandbox_driver_id;
+          await assert.rejects(insert(missingSandbox, 4), {
+            code: "23514",
+            constraint: "agent_revisions_execution_admission",
+          });
+          await assert.rejects(insert({ ...spec, sandbox_driver_id: " " }, 4), {
+            code: "23514",
+          });
+          for (const path of [
+            "/v1/../responses",
+            "/v1/%EF%BC%8E/responses",
+            "/v1/%2E/responses",
+            "/v1/%C3/responses",
+          ]) {
+            const malformedPath = structuredClone(spec);
+            malformedPath.credential_deployment.injectionPolicies[0].allowedRequests[0].requestPolicy.path =
+              path;
+            await assert.rejects(insert(malformedPath, 4), {
+              code: "23514",
+              constraint: "agent_revisions_execution_admission",
+            });
+          }
+          // Keep injection coverage intact so these refusals distinguish malformed match shape.
+          for (const binary of ["/app/../model-client", "/app//model-client", "/app/"]) {
+            const malformedBinary = structuredClone(spec);
+            for (const allowed of malformedBinary.credential_deployment.networkAccessPolicy
+              .allowed) {
+              allowed.binary = binary;
+            }
+            malformedBinary.credential_deployment.injectionPolicies[0].allowedRequests[0].binary =
+              binary;
+            await assert.rejects(insert(malformedBinary, 4), {
+              code: "23514",
+              constraint: "agent_revisions_execution_admission",
+            });
+          }
+          const malformedHost = structuredClone(spec);
+          for (const allowed of malformedHost.credential_deployment.networkAccessPolicy.allowed) {
+            allowed.host = "api..openai.com";
+          }
+          malformedHost.credential_deployment.injectionPolicies[0].allowedRequests[0].host =
+            "api..openai.com";
+          await assert.rejects(insert(malformedHost, 4), {
+            code: "23514",
+            constraint: "agent_revisions_execution_admission",
+          });
+          // A raw allowance overlapping an HTTP allowance would weaken its request restriction.
+          const mixedSelectors = structuredClone(spec);
+          const { binary, host, ports } =
+            mixedSelectors.credential_deployment.networkAccessPolicy.allowed[0];
+          mixedSelectors.credential_deployment.networkAccessPolicy.allowed.push({
+            binary,
+            host,
+            ports,
+          });
+          await assert.rejects(insert(mixedSelectors, 4), {
+            code: "23514",
+            constraint: "agent_revisions_execution_admission",
+          });
           // The app role cannot insert a revision without its exact durable delivery owner.
           const malformedOwner = structuredClone(spec);
           malformedOwner.credential_deployment.driver.configurationId = "not-a-digest";
-          await assert.rejects(insert(malformedOwner, 3), {
+          await assert.rejects(insert(malformedOwner, 4), {
             code: "23514",
             constraint: "agent_revisions_execution_admission",
           });
           const uncovered = structuredClone(spec);
           uncovered.credential_deployment.injectionPolicies[0].allowedRequests[0].host =
             "unapproved.example.test";
-          await assert.rejects(insert(uncovered, 3), {
+          await assert.rejects(insert(uncovered, 4), {
             code: "23514",
             constraint: "agent_revisions_execution_admission",
           });
@@ -2143,7 +2216,7 @@ test(
             ).rows[0].valid,
             true,
           );
-          await assert.rejects(insert({ ...spec, repository_credentials: repository }, 3), {
+          await assert.rejects(insert({ ...spec, repository_credentials: repository }, 4), {
             code: "23514",
             constraint: "agent_revisions_execution_admission",
           });

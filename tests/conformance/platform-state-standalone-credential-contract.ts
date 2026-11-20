@@ -164,6 +164,15 @@ export async function verifyStandaloneCredentialStateContract(
     "An AgentRevision requires valid Configuration metadata, a native document, and pinned Harness and Compute descriptors.",
     postgresOwnershipViolation,
   );
+  // The Worker cannot dispatch standalone delivery without the admitted Sandbox identity.
+  await assert.rejects(
+    store.transact(async (transaction) => {
+      const revision = await standaloneRevision(transaction, seed);
+      Reflect.deleteProperty(revision, "sandboxDriverId");
+      await transaction.revisions.createRevision(revision);
+    }),
+    refusal,
+  );
   // A generic policy can describe Plugins, but standalone v8 currently admits only one model.
   await assert.rejects(
     store.transact(async (transaction) => {

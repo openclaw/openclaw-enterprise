@@ -1212,6 +1212,7 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
       (typeof revision.compute.runtimeInputs !== "string" ||
         !/^[\x20-\x7e]{1,4096}$/.test(revision.compute.runtimeInputs))) ||
     (revision.sandboxDriverId !== undefined && !isNonEmptyString(revision.sandboxDriverId)) ||
+    (revision.executionAdmission.mode === "standalone" && revision.sandboxDriverId === undefined) ||
     (revision.secretDriverId !== undefined && !isNonEmptyString(revision.secretDriverId)) ||
     Object.hasOwn(revision, "serviceAccount") ||
     !validHarnessAuthSnapshot(revision.harnessAuth, revision.namespaceId) ||

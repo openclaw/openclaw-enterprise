@@ -63,7 +63,7 @@ OCC checks `credential_source:operate` for existing bindings without requiring a
 
 `packages/occ/src/index.ts:deployAgent`, `packages/occ/src/state/platform-state.ts:assertRevisionAuthAvailable`
 
-OCC rechecks the caller's and Agent's source grants, requires a Sandbox and an offered owner type, then freezes source ID, type, owner Driver, and Harness login mode in the Agent revision. A selected Proxy cannot replace a withdrawn Gateway type or change an existing source's owner. For a standalone TokenService source, OCC checks its instance and `provider_preset` under the source lock, matches an explicit `openai/<model>` configuration, and derives the deployment network and injection policies from saved Sandbox grants. OCC requires the delivery capability and Sandbox to belong to the same installed Driver and rechecks their selection before commit. A qualified v8 revision stores the policy, delivery capability ID, installed Driver registration reference, and source instance. State enforces one model source, one model binding, no repository delivery, and network coverage for injection requests; PostgreSQL holds ordered Namespace, Agent, and source locks through commit. Without qualification, deployment returns `409` and queues no work.
+OCC rechecks the caller's and Agent's source grants, requires a Sandbox and an offered owner type, then freezes source ID, type, owner Driver, and Harness login mode in the Agent revision. A selected Proxy cannot replace a withdrawn Gateway type or change an existing source's owner. For a standalone TokenService source, OCC checks its instance and `provider_preset` under the source lock, matches an explicit `openai/<model>` configuration, and derives the deployment network and injection policies from saved Sandbox grants. OCC requires the delivery capability and Sandbox to belong to the same installed Driver and rechecks their selection before commit. A qualified v8 revision stores the policy, delivery capability ID, installed Driver registration reference, and source instance. State requires a pinned Sandbox identity and enforces one model source, one model binding, no repository delivery, and network coverage for valid injection requests; PostgreSQL holds ordered Namespace, Agent, and source locks through commit. Without qualification, deployment returns `409` and queues no work.
 
 ### 4. Resolve the source at dispatch
 
@@ -78,6 +78,8 @@ The worker rechecks actor and Agent grants, selected Driver identity, live sourc
 The staged native Proxy accepts a trusted admitted binding, exact target, and source-bound resolver. It rejects a mismatched target before resolving material. First use transfers material into an OpenShell Provider delivery copy and attaches it with a Sandbox resource-version precondition; compatible reuse does not resolve or repair material. The OpenShell Gateway API client validates the receipt and returned Sandbox, and the Proxy checks Provider identity/version and final membership before returning a runtime placeholder projection.
 
 When OCC TokenService is selected, composition registers `credential_proxy_delivery` on the selected Sandbox owner. Worker and Compute use that exact selection for deployment, configuration, status, and cleanup. The worker rechecks source identity, permission, withdrawal, and the held target before giving the Driver a source-bound resolver, then repeats the release checks after configuration. Status fails closed because current source-version authority and exact native executable enforcement remain unqualified. A same-name replacement with the same resource version can still receive the Provider before the Proxy rejects its ID ([OpenShell issue](https://github.com/NVIDIA/OpenShell/issues/5794)). The native RPC rejects malformed receipts and sanitizes errors; legacy serving keeps its separate Attach operation.
+
+Compute records the provider-returned Sandbox ID on its revision-owned release-key Secret before enrollment. An enrolled retry verifies the ID and observes the existing target. Missing or mismatched state fails without provisioning, so retry cannot reopen startup exposure.
 
 ### 5. Withdraw or delete a source
 
@@ -106,6 +108,7 @@ Inspect source `status`, worker reason codes, and withdrawal state. `CREDENTIAL_
 
 ## Changelog
 
+- 2026-11-20: Document enrolled retry target identity and v8 State admission. (01a1ec21-b384-7472-887f-945ae0ab16fc)
 - 2026-11-20 10:13: Name the serving protected source owner as the legacy egress Driver. (01a1f7ec-0d9e-7803-96c3-eb88548e3788 - b02e93892)
 - 2026-11-20 09:05: Connect staged Agent callers to the selected native delivery Driver and distinguish readiness qualification. (01a1ec21-b384-7472-887f-945ae0ab16fc)
 - 2026-11-20 08:10: Clarify serving and internal custody, registration checks, dispatch, and deletion retry behavior. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - 6c7aeed58)

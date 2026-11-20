@@ -814,6 +814,7 @@ test("staged Compute release requires both ready observations, this held acknowl
   const stagedSandbox = {
     async provisionHarness({ deployment, workload }) {
       // The staged contract does not communicate previous enrollment to its provider.
+      events.push("provision");
       startupExposure = true;
       if (provisionFailure !== undefined) {
         throw provisionFailure;
@@ -987,7 +988,7 @@ test("staged Compute release requires both ready observations, this held acknowl
   );
   assert.equal(events.includes("sandbox-cleanup"), false);
 
-  const { driver, gatewayName, markReady, namespace, prepare, read, revision, state } =
+  const { driver, gatewayName, markReady, namespace, prepare, read, revision, save, state } =
     dedicatedFirstDeployFixture({
       sandboxDriver,
       credentialDeliveryRegistration: selectedOwner,
@@ -1047,23 +1048,35 @@ test("staged Compute release requires both ready observations, this held acknowl
     revision.id,
   );
   assert.equal(startupExposure, false, "first enrollment withdraws the startup exposure");
+  const provisionsAtEnrollment = events.filter((event) => event === "provision").length;
+  // A provider that is asked to provision again would reopen the startup route before throwing.
+  // Enrolled retries must use the exact saved incarnation without calling it at all.
   provisionFailure = new Error("provider failed after recreating exposure");
-  await assert.rejects(prepare(), /provider failed after recreating exposure/);
-  assert.equal(startupExposure, false, "failed provisioning still withdraws enrolled exposure");
-  assert.equal(events.includes("remove-unbound"), false, "the enrolled Proxy may already be bound");
-  provisionFailure = undefined;
+  const releaseSecret = read("Secret", driver.executionReleaseSecretName(revision));
+  const annotation = "openclaw.dev/credential-deployment-sandbox-id";
+  assert.equal(releaseSecret.metadata.annotations[annotation], startup.targetRef.sandboxId);
+  const missingTarget = structuredClone(releaseSecret);
+  delete missingTarget.metadata.annotations[annotation];
+  save(missingTarget);
+  await assert.rejects(prepare(), /no retained deployment target/);
+  const mismatchedTarget = structuredClone(releaseSecret);
+  mismatchedTarget.metadata.annotations[annotation] = "another-sandbox";
+  save(mismatchedTarget);
+  await assert.rejects(prepare(), /reported another startup/);
+  save(releaseSecret);
   proxyReady = false;
   withdrawalFailure = new Error("exposure withdrawal did not confirm");
   await assert.rejects(prepare(), /exposure withdrawal did not confirm/);
-  assert.equal(startupExposure, true, "a failed withdrawal keeps the enrolled retry unready");
+  assert.equal(startupExposure, false, "a retry never restored the withdrawn startup route");
   assert.equal(events.includes("remove-unbound"), false, "withdrawal failure preserves the Proxy");
   withdrawalFailure = undefined;
   assert.equal((await prepare()).ready, false, "pending Proxy status keeps the retry unready");
-  assert.equal(startupExposure, false, "an enrolled retry withdraws exposure before returning");
+  assert.equal(startupExposure, false, "an enrolled retry never restores startup exposure");
   proxyReady = true;
   markReady(gatewayName);
   state.gatewayWorkspaceNodeId = "node-1";
   assert.equal((await prepare()).ready, true, "a serving retry adopts the enrolled node");
+  assert.equal(events.filter((event) => event === "provision").length, provisionsAtEnrollment);
   assert.equal(events.filter((event) => event === "configure").length, configured);
   assert.equal(events.filter((event) => event === "release").length, 1);
 });
