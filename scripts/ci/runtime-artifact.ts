@@ -682,7 +682,7 @@ async function build(directory: string) {
       "deploy/runtime/Dockerfile",
       ".",
     ],
-    180 * 60_000,
+    40 * 60_000,
   );
   if (process.env.GITHUB_ACTIONS === "true") {
     console.log(

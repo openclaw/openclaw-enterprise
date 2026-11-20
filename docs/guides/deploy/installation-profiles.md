@@ -369,8 +369,9 @@ the install as ready:
 - For Codex, the configured localhost seccomp profile installed and verified on
   every node selected by `runtime.nodeSelector`.
 - For Slack, [managed channel egress](../../reference/drivers/kubernetes-compute/channel-egress.md)
-  with EnvoyPatchPolicy support. `channels.managedEgress: true` and
-  `channels.excludedCidrs` produce matching Helm and Compute settings. Supply
+  with EnvoyPatchPolicy support. `channels.managedEgress` defaults to true;
+  explicit false disables the fleet. `channels.excludedCidrs` produces matching
+  Helm and Compute settings. Supply
   actual Pod, Service and node ranges, including public node addresses. Rendering
   the fleet does not enable channel consumers. Slack Agents require dedicated
   Codex execution; customer upstream proxies are not supported.

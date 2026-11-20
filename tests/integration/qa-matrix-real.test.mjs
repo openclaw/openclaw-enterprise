@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -134,6 +136,36 @@ test(
     context.diagnostic(`QA evidence: ${artifacts}`);
     for (const exclusion of selection.exclusions) {
       context.diagnostic(`Excluded: ${exclusion}`);
+    }
+    if (selection.channelUpgrade) {
+      await stage(
+        context,
+        "kubernetes/Codex",
+        "one-off channel upgrade through the regular Agent workflow",
+        async () => {
+          const result = await promisify(execFile)(
+            process.execPath,
+            [
+              "--test",
+              "--test-concurrency=1",
+              "tests/integration/channel-egress-disabled-helm-real.test.ts",
+              "tests/integration/channel-egress-upgrade-helm-real.test.ts",
+            ],
+            {
+              env: {
+                ...process.env,
+                OCC_TEST_SLACK_LIVE: "1",
+                OCC_TEST_CHANNEL_EGRESS_UPGRADE: "1",
+              },
+              timeout: 1_800_000,
+              maxBuffer: 8 * 1024 * 1024,
+            },
+          );
+          assert.match(result.stdout, /(?:skipped|skip) 0/);
+          context.diagnostic(result.stdout);
+        },
+        "channel-egress-upgrade",
+      );
     }
     if (selection.nativeRestart) {
       const { arrangeProductionTopology, assertInterruptedGatewayTurnResumes } =

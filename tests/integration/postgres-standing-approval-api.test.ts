@@ -236,8 +236,7 @@ test(
       url: string,
       payload?: unknown,
       actorSession = session,
-    ): ReturnType<typeof app.inject> =>
-      injectJson(app, method, url, { body: payload, session: actorSession });
+    ) => injectJson(app, method, url, { body: payload, session: actorSession });
     // The ready Namespace fixture does not grant standing approval.
     await state.transact((unit) =>
       unit.namespaces.createNamespace({
