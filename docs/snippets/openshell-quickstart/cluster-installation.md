@@ -42,6 +42,10 @@ jq -n --arg cluster "$CLUSTER_NAME" --arg controller "${CONTROLLER_IMAGE:?}" --a
   --argjson apiCidrs "${API_CIDRS:?}" -f "$assets/values.jq" > "$RUN_DIR/values.json"
 ```
 
+These templates disable channels. To use Slack, [enable managed channel
+egress](channel-egress.md#enable-channels-in-the-kubernetes-and-eks-quickstarts)
+in these generated files and verify its dependencies **before** continuing.
+
 <a id="set-the-production-browser-origins-before-installing-occ"></a>
 
 Check browser values **before** the first Helm install. Keep port 18443 in the Console origin and laptop forward. Browser origins differ from the private Envoy hostname. For existing HTTPS ingress, follow the [native-admin ingress requirements](native-admin.md#production-requirements) for Console and wildcard Agent hosts.

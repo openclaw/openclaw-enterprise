@@ -58,6 +58,10 @@
                     "group": "Add Capabilities",
                     "pages": [
                       {
+                        "page": "guides/integrations/channels",
+                        "label": "Channels"
+                      },
+                      {
                         "page": "guides/repository-credentials/openshell-git-push",
                         "label": "Git"
                       },
