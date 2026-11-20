@@ -977,7 +977,11 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
     return failure(409, "RESOURCE_CONFLICT", "The requested platform resource already exists.");
   }
   if (error instanceof TokenServiceSourceInputError) {
-    return failure(400, "INVALID_REQUEST", "The TokenService rejected the source input.");
+    return failure(
+      400,
+      "INVALID_REQUEST",
+      "Static sources accept only the optional provider_preset=openai configuration. Supply one nonempty UTF-8 credential without NUL; its encoded value must fit the Secret storage limit.",
+    );
   }
   if (
     error instanceof ScopeViolationError ||

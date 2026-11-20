@@ -171,6 +171,10 @@ test(
     );
     assert.equal(invalidSource.statusCode, 400, invalidSource.body);
     assert.equal(invalidSource.json().error.code, "INVALID_REQUEST");
+    assert.equal(
+      invalidSource.json().error.message,
+      "Static sources accept only the optional provider_preset=openai configuration. Supply one nonempty UTF-8 credential without NUL; its encoded value must fit the Secret storage limit.",
+    );
     assert.deepEqual((await inject("GET", `${base}/credential-sources`)).json().data, []);
     // Enrollment must reach the selected concrete TokenService through the supported Source route.
     const createdSource = remember(
