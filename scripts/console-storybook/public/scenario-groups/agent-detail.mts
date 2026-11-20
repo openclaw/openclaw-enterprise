@@ -552,7 +552,8 @@ export function createAgentDetailScenarios({
           "Grant an existing person access to this Agent's full native Gateway. Other Agents and OCE administration remain separate.",
         steps: [
           "Enter prn_person-demo as the existing Principal ID.",
-          "Review the native-access disclosure, acknowledge it, and share.",
+          "Review the native-access disclosure and acknowledge it.",
+          "Tab to Share Agent, press Enter once, and confirm focus remains on Share Agent when Agent access is shared.",
           "Remove the direct binding with the red-edged destructive Remove binding button (it acts at once, with no confirmation); Namespace discovery remains available.",
         ],
       },
