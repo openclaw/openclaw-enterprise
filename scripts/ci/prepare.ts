@@ -94,7 +94,7 @@ import {
   nativeProfileUpgradeFile,
   selectsNativeProfileUpgrade,
   withNativeProfileBaseline,
-} from "./native-profile-upgrade.mjs";
+} from "./native-profile-upgrade.ts";
 import { runPreparationCli } from "./prepare-cli.ts";
 import {
   assertLane,
