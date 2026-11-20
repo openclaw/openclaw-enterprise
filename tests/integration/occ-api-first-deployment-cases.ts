@@ -493,6 +493,7 @@ export async function runCliRecovery(t: TestContext, options: CliRecoveryOptions
   const fixture = controller.fixture;
   let committed: FirstDeploymentReceipt | undefined;
   let recovered: FirstDeploymentReceipt | undefined;
+  let callerKey: string | undefined;
   relay.on("request", async (incoming, outgoing) => {
     try {
       const chunks: Buffer[] = [];
@@ -505,6 +506,11 @@ export async function runCliRecovery(t: TestContext, options: CliRecoveryOptions
       assert(incoming.method && incoming.url, "the CLI request must have a method and path");
       const apiKey = incoming.headers["x-api-key"];
       assert(typeof apiKey === "string", "the CLI request must carry a service key");
+      if (callerKey === undefined) {
+        callerKey = apiKey;
+      } else {
+        assert(apiKey === callerKey, "recovery must authenticate as the original caller");
+      }
       const contentType = incoming.headers["content-type"];
       assert(contentType === undefined || typeof contentType === "string");
       const response = await fetchLoopback(`${origin}${incoming.url}`, {
@@ -584,6 +590,7 @@ export async function runCliRecovery(t: TestContext, options: CliRecoveryOptions
   assert(isExecFailure(failure), "the CLI must return a structured subprocess failure");
   assert.deepEqual(relayErrors, []);
   assert.ok(committed, "the uncertain response must follow a real committed admission");
+  assert(callerKey, "the committed request must authenticate with a service key");
   assert.deepEqual(
     forwarded,
     [{ method: "POST", path: `${path}/deploy-first` }],
@@ -617,6 +624,10 @@ export async function runCliRecovery(t: TestContext, options: CliRecoveryOptions
   );
   assert.equal(failure.code, 1, "an unusable receipt must leave the CLI outcome uncertain");
   assert.equal(failure.stdout, "");
+  assert(
+    !failure.stderr.includes(callerKey),
+    "the uncertain result must not print the service key",
+  );
   assert.match(failure.stderr, reply === "dropped" ? /EOF/ : /invalid.*receipt/i);
   assert.match(failure.stderr, /same caller/);
   const recoveryCommand = failure.stderr
@@ -641,6 +652,10 @@ export async function runCliRecovery(t: TestContext, options: CliRecoveryOptions
   });
   assert.deepEqual(relayErrors, []);
   assert.deepEqual(recovered, committed);
+  assert(
+    !recovery.stdout.includes(callerKey) && !recovery.stderr.includes(callerKey),
+    "recovery must not print the service key",
+  );
   assert.ok(recovery.stdout.includes(committed.revisionId));
   assert.deepEqual(forwarded, [
     { method: "POST", path: `${path}/deploy-first` },
