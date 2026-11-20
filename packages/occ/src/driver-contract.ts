@@ -69,6 +69,15 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
       "removeSource",
     ].every((operation) => typeof candidate[operation] === "function");
   }
+  if (driver.capability === "credential_proxy_delivery") {
+    return (
+      ["deployProxy", "configureDeployment", "getDeploymentStatus", "removeDeployment"].every(
+        (operation) => typeof candidate[operation] === "function",
+      ) &&
+      (candidate.notifyCredentialUpdated === undefined ||
+        typeof candidate.notifyCredentialUpdated === "function")
+    );
+  }
   if (driver.capability === "credential_proxy") {
     const control = asRecord(candidate.sourceControl);
     const reduction = asRecord(candidate.policyReduction);

@@ -604,8 +604,16 @@ export interface OpenShellGatewayClient
     credentialKey: string,
     signal: AbortSignal,
   ): Promise<{ readonly value: string; readonly expirationTime?: string }>;
-  /** Adds an existing Provider; returns validated attachment intent when the Gateway supplies it. */
+  /** Adds an existing Provider; the caller reads back membership before starting the Sandbox. */
   attachSandboxProvider(
+    workspace: string,
+    sandbox: string,
+    provider: string,
+    signal: AbortSignal,
+    conditional: { readonly expectedResourceVersion: string; readonly requestId: string },
+  ): Promise<void>;
+  /** Native delivery requires correlated ATTACH receipt evidence before it can proceed. */
+  attachSandboxProviderWithReceipt?(
     workspace: string,
     sandbox: string,
     provider: string,
@@ -2550,23 +2558,66 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     provider: string,
     signal: AbortSignal,
     conditional: { readonly expectedResourceVersion: string; readonly requestId: string },
+  ): Promise<void> {
+    if (!/^[1-9]\d*$/.test(conditional.expectedResourceVersion) || !conditional.requestId) {
+      throw new OpenShellGatewayFailure(
+        "A conditional attach requires a resource version and request ID.",
+      );
+    }
+    await this.unary(
+      "AttachSandboxProvider",
+      {
+        sandbox: nonempty(sandbox, "OpenShell Sandbox name"),
+        provider: nonempty(provider, "OpenShell provider name"),
+        workspace_scope: { workspace },
+        expected_resource_version: conditional.expectedResourceVersion,
+        request_id: conditional.requestId,
+      },
+      signal,
+    );
+  }
+
+  async attachSandboxProviderWithReceipt(
+    workspace: string,
+    sandbox: string,
+    provider: string,
+    signal: AbortSignal,
+    conditional: { readonly expectedResourceVersion: string; readonly requestId: string },
   ): Promise<OpenShellProviderAttachResult | undefined> {
     if (!/^[1-9]\d*$/.test(conditional.expectedResourceVersion) || !conditional.requestId) {
       throw new OpenShellGatewayFailure(
         "A conditional attach requires a resource version and request ID.",
       );
     }
-    const response = await this.unary(
-      "AttachSandboxProvider",
-      {
-        sandbox: nonempty(sandbox, "OpenShell Sandbox name"),
-        provider: nonempty(provider, "OpenShell provider name"),
-        expected_resource_version: conditional.expectedResourceVersion,
-        workspace_scope: { workspace: nonempty(workspace, "OpenShell Workspace name") },
-        request_id: conditional.requestId,
-      },
-      signal,
-    );
+    let response: RecordValue;
+    try {
+      response = await this.unary(
+        "AttachSandboxProvider",
+        {
+          sandbox: nonempty(sandbox, "OpenShell Sandbox name"),
+          provider: nonempty(provider, "OpenShell provider name"),
+          expected_resource_version: conditional.expectedResourceVersion,
+          workspace_scope: { workspace: nonempty(workspace, "OpenShell Workspace name") },
+          request_id: conditional.requestId,
+        },
+        signal,
+      );
+    } catch (error) {
+      signal.throwIfAborted();
+      if (error instanceof OpenShellAdmissionLimitError) {
+        throw new OpenShellAdmissionLimitError(
+          "AttachSandboxProvider",
+          gatewayRequestFailure("AttachSandboxProvider", error.cause),
+        );
+      }
+      if (
+        error instanceof OpenShellGatewayRequestFailure ||
+        error instanceof OpenShellGatewayUnavailableError
+      ) {
+        throw error;
+      }
+      throw gatewayRequestFailure("AttachSandboxProvider", error);
+    }
     const receipt = asRecord(response.receipt);
     const desired = asRecord(receipt?.desired);
     if (
@@ -2905,25 +2956,14 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
             if (error !== null) {
               const details = asRecord(error)?.details;
               const code = statusCode(error);
-              // Attach is replay-admitted, but its backend details can contain credentials.
+              // Refresh and plaintext-read errors must not expose credential backend messages.
               if (
-                method === "AttachSandboxProvider" &&
-                code === grpc.status.RESOURCE_EXHAUSTED &&
-                typeof details === "string" &&
-                details.startsWith(ADMISSION_LIMIT_DETAILS)
-              ) {
-                reject(
-                  new OpenShellAdmissionLimitError(method, gatewayRequestFailure(method, error)),
-                );
-              } else if (
-                // Credential operations must not expose credential backend messages.
                 [
                   "GetProviderCredentials",
                   "ConfigureProviderRefresh",
                   "RotateProviderCredential",
                   "GetProviderRefreshStatus",
                   "DeleteProviderRefresh",
-                  "AttachSandboxProvider",
                 ].includes(method)
               ) {
                 reject(gatewayRequestFailure(method, error));

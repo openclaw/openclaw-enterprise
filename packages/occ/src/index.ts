@@ -2576,6 +2576,17 @@ export class OpenClawController {
   }
 
   async validateBackendConfiguration(): Promise<void> {
+    const delivery = this.selections.get("credential_proxy_delivery");
+    if (
+      delivery !== undefined &&
+      (!delivery.owner ||
+        delivery.owner !== this.selections.get("sandbox")?.owner ||
+        delivery.owner.require("credential_proxy_delivery") !== delivery.driver)
+    ) {
+      throw new DriverSelectionError(
+        "Credential delivery and Sandbox must come from the same registered Driver.",
+      );
+    }
     const selected = Object.fromEntries(
       [...this.selections.entries()].map(([capability, selection]) => [
         capability,

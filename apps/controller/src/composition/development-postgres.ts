@@ -4,6 +4,7 @@ import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
 import { installTokenServiceDriver } from "./token-service.ts";
+import { installSelectedSandboxDrivers } from "./sandbox-drivers.ts";
 import {
   CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS,
   controlPlaneAuditDatabaseOptions,
@@ -210,12 +211,7 @@ export async function composePostgresDevelopment(
     controller.selectDriver("compute", computeDriver.id);
     controller.registerDriver(channelDriver);
     controller.selectDriver("channel", channelDriver.id);
-    if (protectedDriver !== undefined) {
-      controller.installDriver(protectedDriver, ["sandbox", "credential_proxy"]);
-    } else if (sandboxDriver !== undefined) {
-      controller.registerDriver(sandboxDriver);
-      controller.selectDriver("sandbox", sandboxDriver.id);
-    }
+    installSelectedSandboxDrivers(controller, drivers ?? { sandboxDriver, protectedDriver });
     if (credentialGatewayDriver !== undefined) {
       controller.registerDriver(credentialGatewayDriver);
       controller.selectDriver("credential_gateway", credentialGatewayDriver.id);

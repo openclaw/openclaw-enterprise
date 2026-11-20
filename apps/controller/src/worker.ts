@@ -25,6 +25,7 @@ import { isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { OAuthAccountTokens } from "./backends/token-service/oauth-connection.ts";
+import { installSelectedSandboxDrivers } from "./composition/sandbox-drivers.ts";
 import { isSandboxFacet, normalizeSecretBindings } from "@openclaw-enterprise/contracts";
 import type {
   Agent,
@@ -1246,6 +1247,7 @@ export class ControllerWorker {
   private nextClientCleanup = 0;
   private readonly proxyDriver: CredentialProxyDriver | undefined;
   private readonly protectedDriver: InstalledDriver | undefined;
+  private readonly credentialDeliveryRegistration: InstalledDriver | undefined;
   private readonly preparedTokens: InstallationRuntimeDrivers["tokenService"];
   private readonly backends: readonly BackendDefinition[];
   private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
@@ -1398,6 +1400,7 @@ export class ControllerWorker {
       throw new Error("The selected Configuration Driver exposes invalid lifecycle hooks.");
     }
     this.protectedDriver = drivers?.protectedDriver;
+    this.credentialDeliveryRegistration = drivers?.credentialDeliveryRegistration;
     this.preparedTokens = drivers?.tokenService;
     this.sandbox =
       this.protectedDriver?.require("sandbox") ?? drivers?.sandboxDriver ?? options.sandboxDriver;
@@ -1549,13 +1552,15 @@ export class ControllerWorker {
         ),
       );
     }
-    const protectedDriver = this.protectedDriver;
-    if (protectedDriver !== undefined) {
-      provisioning.installDriver(protectedDriver, ["sandbox", "credential_proxy"]);
-    }
+    const sandboxOwner = this.protectedDriver ?? this.credentialDeliveryRegistration;
+    installSelectedSandboxDrivers(provisioning, {
+      sandboxDriver: this.sandbox,
+      protectedDriver: this.protectedDriver,
+      credentialDeliveryRegistration: this.credentialDeliveryRegistration,
+    });
     for (const driver of [
       this.configuration,
-      ...(protectedDriver ? [] : [this.sandbox, this.proxyDriver]),
+      ...(sandboxOwner ? [] : [this.proxyDriver]),
       this.credentialGateway,
       this.credentialRefresh,
       this.iam,

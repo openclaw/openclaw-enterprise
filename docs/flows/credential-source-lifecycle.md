@@ -72,11 +72,11 @@ The worker rechecks actor and Agent grants, selected Driver identity, live sourc
 
 #### Pending native integration
 
-`apps/controller/src/drivers/egress-proxy/openshell.ts:configureDeployment`, `apps/controller/src/drivers/sandbox/openshell-gateway-client.ts:attachSandboxProvider`
+`apps/controller/src/drivers/credential-proxy/openshell.ts:configureDeployment`, `apps/controller/src/drivers/sandbox/openshell-gateway-client.ts:attachSandboxProviderWithReceipt`
 
 The staged native Proxy accepts a trusted admitted binding, exact target, and source-bound resolver. It rejects a mismatched target before resolving material. First use transfers material into an OpenShell Provider delivery copy and attaches it with a Sandbox resource-version precondition; compatible reuse does not resolve or repair material. The OpenShell Gateway API client validates the receipt and returned Sandbox, and the Proxy checks Provider identity/version and final membership before returning a runtime placeholder projection.
 
-The regular Agent workflow does not call this path. Status fails closed because its signature lacks the admitted binding and exact native executable enforcement remains unqualified. A same-name replacement with the same resource version can still receive the Provider before the Proxy rejects its ID ([OpenShell issue](https://github.com/NVIDIA/OpenShell/issues/5794)). Malformed receipts yield no staged result; legacy serving ignores that result, and RPC errors are sanitized.
+When OCC TokenService is selected, composition pairs `credential_proxy_delivery` with the Sandbox; the regular Agent workflow does not call it. Status fails closed because current source-version authority and exact native executable enforcement remain unqualified. A same-name replacement with the same resource version can still receive the Provider before the Proxy rejects its ID ([OpenShell issue](https://github.com/NVIDIA/OpenShell/issues/5794)). The native RPC rejects malformed receipts and sanitizes errors; legacy serving keeps its separate Attach operation.
 
 ### 5. Withdraw or delete a source
 

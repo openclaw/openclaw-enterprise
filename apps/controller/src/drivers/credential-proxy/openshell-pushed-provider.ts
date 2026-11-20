@@ -5,7 +5,7 @@ import type {
   CredentialDeploymentConfiguration,
   CredentialDeploymentRef,
   DeploymentRequestMatch,
-  ProxyRevisionContext,
+  CredentialDeploymentContext,
   ResolvedCredential,
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
@@ -267,13 +267,8 @@ export async function prepareOpenShellPushedProvider(input: {
 // The staged Sandbox and its final policy revision use the same nonsecret configuration identity.
 const OPENSHELL_CONFIGURATION_ANNOTATION = "openclaw.dev/configuration-id";
 
-export type OpenShellDeploymentContext = Pick<
-  ProxyRevisionContext,
-  "namespace" | "revision" | "signal"
->;
-
 export function assertOpenShellDeploymentContext(
-  context: OpenShellDeploymentContext,
+  context: CredentialDeploymentContext,
   sandboxDriverId: string,
 ): void {
   context.signal.throwIfAborted();
@@ -323,7 +318,7 @@ export function assertOpenShellInjectionPolicy(
 }
 
 export function assertOpenShellPushedBinding(
-  context: OpenShellDeploymentContext,
+  context: CredentialDeploymentContext,
   binding: DeploymentCredentialBinding,
   policies: readonly CredentialInjectionPolicy[],
 ): void {
@@ -344,7 +339,7 @@ export function assertOpenShellPushedBinding(
 }
 
 export function assertOpenShellDeploymentRef(
-  context: OpenShellDeploymentContext,
+  context: CredentialDeploymentContext,
   requested: CredentialDeploymentRef,
 ): void {
   if (
@@ -357,7 +352,7 @@ export function assertOpenShellDeploymentRef(
 }
 
 export function assertOpenShellDeploymentConfiguration(
-  context: OpenShellDeploymentContext,
+  context: CredentialDeploymentContext,
   expected: CredentialDeploymentConfiguration,
 ): void {
   assertOpenShellDeploymentRef(context, expected.targetRef);

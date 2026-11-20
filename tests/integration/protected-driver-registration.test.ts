@@ -29,6 +29,7 @@ import { join } from "node:path";
 import test, { afterEach, type TestContext } from "node:test";
 import type {
   AgentRevision,
+  CredentialDeploymentProxyDriver,
   EgressInstallation,
   Namespace,
   ProtectedRepositoryGitAuthority,
@@ -54,6 +55,40 @@ import { listen } from "../helpers/listen.ts";
 
 // Every field the OpenShell Git runtime emits reaches the worker log (finding 2244).
 afterEach(() => assert.deepEqual(takeUnloggedRuntimeFields(), []));
+
+test("incomplete credential delivery Driver registration is refused before selection", () => {
+  // An installed package can return a malformed capability despite the static contract.
+  const incomplete = {
+    id: "delivery",
+    implementation: "openshell",
+    capability: "credential_proxy_delivery",
+    async deployProxy() {
+      return {};
+    },
+    async configureDeployment() {
+      return { credentialProjections: [] };
+    },
+    async removeDeployment() {},
+  } as unknown as CredentialDeploymentProxyDriver;
+  assert.throws(
+    () =>
+      new InstalledDriver(
+        { id: incomplete.id, implementation: incomplete.implementation, configuration: {} },
+        { capabilities: { credential_proxy_delivery: incomplete } },
+      ),
+    /exact selected capability contracts/,
+  );
+  const controller = new OpenClawController({
+    id: "installation",
+    name: "installation",
+    createdAt: "2026-10-01T00:00:00Z",
+  });
+  assert.throws(() => controller.registerDriver(incomplete), /exact capability contract/);
+  assert.throws(
+    () => controller.selectDriver("credential_proxy_delivery", incomplete.id),
+    /No registered Driver matches/,
+  );
+});
 
 test("one installed Driver owns both protected capabilities, lifecycle and verified release", async (t) => {
   const id = "release-fixture";
