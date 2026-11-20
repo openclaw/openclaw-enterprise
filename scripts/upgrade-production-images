@@ -1581,6 +1581,7 @@ run_preflight_jobs() {
       logs=$(read_preflight_logs "$log_container" "$pod" "$evidence_dir/preflight-$component-logs.err") ||
         logs_status=$?
       if ! child=$(read_preflight_child "$component" "$job" "$job_uid" "$pod_uid" 30s) || [[ -z "$child" ]]; then
+        identity_valid=0
         logs=
         message="cannot bind the $component startup preflight logs to the original child Pod; discarded unconfirmed output. No ${writer_qualifier}OCC writer was stopped."
       else
@@ -1598,6 +1599,9 @@ run_preflight_jobs() {
           message="cannot read the $component startup preflight logs; no ${writer_qualifier}OCC writer was stopped."
         fi
       fi
+    fi
+    if (( ! identity_valid )) && [[ "$phase" == Pending:* ]]; then
+      message+=" Last scheduler report for the original Pod: ${phase#Pending:}"
     fi
     if [[ -z "$message" ]]; then
       case "$phase" in
@@ -2134,10 +2138,12 @@ require_settled_initializers() {
 
 require_unchanged_helm_status() {
   helm status "$release" "${helm_args[@]}" --output json >"$1"
+  # Helm 4 includes live resources that change during quiescence. Compare
+  # every other release field before this attempt writes candidate settings.
   jq -e --slurpfile observed "$evidence_dir/current-helm-status.json" '
-    . == $observed[0]
+    (del(.info.resources)) == ($observed[0] | del(.info.resources))
   ' "$1" >/dev/null ||
-    die "the Helm release changed before submission; investigate before continuing."
+    die "the Helm release changed before submission; API and worker remain stopped; this attempt made no candidate writes; investigate before continuing."
 }
 
 migration_secret_identities() {
@@ -3215,6 +3221,10 @@ if ((helm_complete == 0)); then
     die "API and worker stopped for the separate database deployment. Keep other writers and autoscalers stopped. $migration_instruction After verification, resume the original run with --migration-history-checked. The Helm hook independently requires the complete candidate schema." 3
   fi
 
+  if [[ "$repository_enabled" == true ]]; then
+    verify_pair_nodes
+  fi
+  require_unchanged_helm_status "$evidence_dir/before-helm-submission.json"
   if ((separate_handoff)) && [[ "$migration_progress" != "{}" ]]; then
     recheck_migration_release pre-resume "$evidence_dir/before-helm-status.json"
   fi
@@ -3238,16 +3248,12 @@ PYTHON
           >"$evidence_dir/installation-secret-apply.txt"
     fi
   fi
-  # The marker precedes the request, so a crash cannot turn an unknown Helm
-  # outcome into an automatic retry or an unsafe return to the old image.
-  if [[ "$repository_enabled" == true ]]; then
-    verify_pair_nodes
-  fi
-  require_unchanged_helm_status "$evidence_dir/before-helm-submission.json"
   if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]]; then
     verify_installation_switch
   fi
   recheck_prepared_migration_secrets
+  # The marker precedes the request, so a crash cannot turn an unknown Helm
+  # outcome into an automatic retry or an unsafe return to the old image.
   python3 scripts/upgrade-helm-state.py record "$evidence_dir" "$helm_attempt"
   # Open stdout before entering the native failure handler.
   helm_status=0

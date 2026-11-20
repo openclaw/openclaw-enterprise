@@ -1,9 +1,54 @@
-// @ts-check
 import assert from "node:assert/strict";
 
-/** @import { CredentialGatewayDriver, CredentialRefreshDriver, CredentialSourceContext } from "../../packages/contracts/src/index.ts" */
-/** @typedef {{operation: string, sourceId: string}} DeviceCredentialCall */
-/** @typedef {Map<string, "pending" | "ready">} DeviceCredentialSources */
+import type {
+  CredentialGatewayDriver,
+  CredentialRefreshDriver,
+  CredentialSourceContext,
+  CredentialSourceStatus,
+} from "../../packages/contracts/src/index.ts";
+
+type DeviceCredentialOperation = Extract<
+  keyof CredentialGatewayDriver | keyof CredentialRefreshDriver,
+  | "registerSource"
+  | "withSourceToken"
+  | "sourceStatus"
+  | "removeSource"
+  | "updateSource"
+  | "attachForRevision"
+  | "attachmentStatus"
+  | "withdraw"
+  | "startDeviceAuthorization"
+  | "pollDeviceAuthorization"
+  | "configureRefresh"
+  | "rotate"
+  | "refreshStatus"
+  | "removeRefresh"
+>;
+type DeviceCredentialSourceId = CredentialSourceContext["source"]["id"];
+type DeviceCredentialState = Extract<CredentialSourceStatus["state"], "pending" | "ready">;
+
+interface DeviceCredentialCall {
+  operation: DeviceCredentialOperation;
+  sourceId: DeviceCredentialSourceId;
+}
+
+interface DeviceCredentialTelemetry {
+  calls: DeviceCredentialCall[];
+  operations: DeviceCredentialOperation[];
+  sources: Map<DeviceCredentialSourceId, DeviceCredentialState>;
+}
+
+interface DeviceCredentialDriverOptions {
+  now?: () => number;
+  approve?: () => Promise<boolean>;
+  beforePoll?: () => Promise<void>;
+  startError?: unknown;
+  formatExpiresAt?: (at: number) => string;
+}
+
+function isStartErrorFactory(value: unknown): value is () => unknown {
+  return typeof value === "function";
+}
 
 export const DEVICE_ACCESS_TOKEN = "device-access-private-fixture";
 export const DEVICE_ACCOUNT_ID = "workspace-fixture";
@@ -12,7 +57,6 @@ export const DEVICE_ACCOUNT_ID = "workspace-fixture";
  * Simulates only the external Credential Gateway and Refresh contracts. OCC still owns source
  * registration, IAM, login-session fencing, and Agent bindings in the callers.
  * This fixture does not prove provider exchange, refresh, or runtime injection.
- * @param {{ now?: () => number, approve?: () => Promise<boolean>, beforePoll?: () => Promise<void>, startError?: unknown, formatExpiresAt?: (at: number) => string }} [options]
  */
 export function createDeviceCredentialDrivers({
   now = () => Date.now(),
@@ -20,21 +64,15 @@ export function createDeviceCredentialDrivers({
   beforePoll = async () => {},
   startError,
   formatExpiresAt = (at) => new Date(at).toISOString(),
-} = {}) {
-  /** @type {DeviceCredentialCall[]} */
-  const calls = [];
-  /** @type {string[]} */
-  const operations = [];
-  /** @type {DeviceCredentialSources} */
-  const sources = new Map();
-  /** @type {Map<string, string>} */
-  const handles = new Map();
-  /** @param {string} operation @param {CredentialSourceContext} context */
-  const record = (operation, context) => {
+}: DeviceCredentialDriverOptions = {}) {
+  const calls: DeviceCredentialCall[] = [];
+  const operations: DeviceCredentialOperation[] = [];
+  const sources = new Map<DeviceCredentialSourceId, DeviceCredentialState>();
+  const handles = new Map<DeviceCredentialSourceId, string>();
+  const record = (operation: DeviceCredentialOperation, context: CredentialSourceContext) => {
     operations.push(operation);
     calls.push({ operation, sourceId: context.source.id });
   };
-  /** @satisfies {CredentialGatewayDriver & Record<string, unknown>} */
   const gateway = {
     id: "device-credential-gateway",
     capability: "credential_gateway",
@@ -96,16 +134,14 @@ export function createDeviceCredentialDrivers({
       operations.push("withdraw");
       assert.fail("closing a login must not withdraw runtime credentials");
     },
-  };
-  /** @satisfies {CredentialRefreshDriver} */
+  } satisfies CredentialGatewayDriver & DeviceCredentialTelemetry;
   const refresh = {
     id: "device-credential-refresh",
     capability: "credential_refresh",
     implementation: "test-external-device-service",
     async startDeviceAuthorization(context) {
       record("startDeviceAuthorization", context);
-      /** @type {unknown} */
-      const error = typeof startError === "function" ? startError() : startError;
+      const error = isStartErrorFactory(startError) ? startError() : startError;
       if (error !== undefined) {
         throw error;
       }
@@ -148,6 +184,6 @@ export function createDeviceCredentialDrivers({
       record("removeRefresh", context);
       handles.delete(context.source.id);
     },
-  };
+  } satisfies CredentialRefreshDriver;
   return { gateway, refresh };
 }

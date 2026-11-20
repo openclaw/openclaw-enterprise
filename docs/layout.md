@@ -54,6 +54,7 @@ owns their deployment, workspace resource rendering, and image import.
 | `apps/controller/src/auth/`                               | Authentication integrations.                                                                                 |
 | `apps/controller/src/composition/`                        | Runtime assembly and wiring of selected implementations.                                                     |
 | `apps/controller/src/drivers/`                            | Bundled infrastructure Driver implementations, organized by capability.                                      |
+| `apps/controller/src/drivers/credential-proxy/`           | Native credential delivery Driver and its private OpenShell Provider handling.                               |
 | `apps/controller/src/drivers/plugin/google-workspace/`    | Google Workspace operation loading and request authorization for the shared plugin guard.                    |
 | `apps/controller/src/backends/`                           | Backend implementations.                                                                                     |
 | `apps/controller/src/gateway/`                            | Agent gateway transport and workspace access.                                                                |

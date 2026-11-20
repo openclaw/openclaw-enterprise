@@ -22,7 +22,7 @@ const (
 	openShellVersion            = "0.1.9"
 	openShellSourceSHA256       = "e92705150f012d8d0b080db9af3c2c38df3425782cc68355b9179342e59531ba"
 	agentSandboxManifestSHA256  = "230ee446d6035f631577e1c6b857f6973a8f09a0a853675d3cc34ebfe47abd6b"
-	openShellSourceArchiveURL   = "https://codeload.github.com/ai-openshell/openshell/tar.gz/refs/tags/v" + openShellVersion
+	openShellSourceArchiveURL   = "https://github.com/ai-openshell/openshell/archive/refs/tags/v" + openShellVersion + ".tar.gz"
 	agentSandboxManifestURL     = "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.5.2/sandbox.yaml"
 )
 

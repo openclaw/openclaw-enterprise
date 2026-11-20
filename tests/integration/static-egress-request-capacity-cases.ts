@@ -31,6 +31,7 @@ import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
 import { requestId } from "../helpers/static-egress-request-id.ts";
 import { staticEgressWireFixture, wireTime } from "../helpers/static-egress.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import { registerStaticEgressResponsesWireCases } from "./static-egress-responses-wire-cases.ts";
 
 function heldRequests(t: TestContext, release: () => void) {
   const cancellation = new AbortController();
@@ -846,3 +847,22 @@ export function registerStaticEgressRequestCapacityCases(): void {
     assert.equal(checks, 3);
   });
 }
+
+export function registerStaticEgressResponsesAndCapacityCases(
+  unicodeEscapes: (text: string) => string,
+): void {
+  registerStaticEgressResponsesWireCases(unicodeEscapes);
+  registerStaticEgressRequestCapacityCases();
+}
+
+export {
+  runStaticEgressElapsedDeadlineCase,
+  runStaticEgressReceiptCapacityCase,
+} from "./static-egress-receipt-capacity-cases.ts";
+export {
+  runStaticEgressCredentialRejectionCase,
+  runStaticEgressReceiptAuthorizationFailureCase,
+  runStaticEgressReceiptRestartCase,
+  runStaticEgressResponseCommitCase,
+} from "./static-egress-receipt-persistence-cases.ts";
+export { createReceiptPersistenceFaults } from "./static-egress-receipt-support.ts";
