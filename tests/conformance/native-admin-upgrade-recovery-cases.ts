@@ -17,11 +17,7 @@ import {
 } from "../../packages/audit/src/index.ts";
 import type { Agent } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver, type NativeIAMState } from "../../packages/iam/src/index.ts";
-import {
-  AuthorizationDeniedError,
-  InMemoryPlatformState,
-  OpenClawController,
-} from "../../packages/occ/src/index.ts";
+import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { waitUntil } from "../helpers/wait-for.ts";
 
@@ -567,12 +563,19 @@ export async function clientResetDuringPendingDenial(t: TestContext): Promise<vo
   const controller = new OpenClawController(installation, { state });
   controller.registerDriver(iam);
   controller.selectDriver("iam", iam.id);
-  const admission = Promise.withResolvers<never>();
+  // Delay the real selected IAM decision until after the TCP reset.
+  const admission = Promise.withResolvers<void>();
+  const browserAccess = controller.getBrowserAccessibleActiveAgentRevision.bind(controller);
   let admissionEntered = false;
-  t.mock.method(controller, "getBrowserAccessibleActiveAgentRevision", () => {
-    admissionEntered = true;
-    return admission.promise;
-  });
+  t.mock.method(
+    controller,
+    "getBrowserAccessibleActiveAgentRevision",
+    async (...args: Parameters<OpenClawController["getBrowserAccessibleActiveAgentRevision"]>) => {
+      admissionEntered = true;
+      await admission.promise;
+      return browserAccess(...args);
+    },
+  );
   const controllerAuth = auth();
   t.mock.method(controllerAuth.admissionVerifier, "verify", async (): Promise<AdmittedCaller> => ({
     method: "session",
@@ -587,6 +590,7 @@ export async function clientResetDuringPendingDenial(t: TestContext): Promise<vo
   }));
   const host = deriveNativeAdminHost(installation.id, agent, domain);
   const audits: AuditEvent[] = [];
+  let gatewayKeyRequests = 0;
   await withUpgradeServer(
     options(controllerAuth, {
       publicOrigin: consoleOrigin,
@@ -594,6 +598,7 @@ export async function clientResetDuringPendingDenial(t: TestContext): Promise<vo
       selectedIAMDriver: () => iam,
       nativeAdmin: { enabled: true, domain },
       nativeAdminGatewayApiKey: async () => {
+        gatewayKeyRequests += 1;
         throw new Error("a denied upgrade must not request the gateway key");
       },
       auditSink: {
@@ -613,34 +618,23 @@ export async function clientResetDuringPendingDenial(t: TestContext): Promise<vo
           socket.resetAndDestroy();
           await delay(50);
         });
-        admission.reject(
-          new AuthorizationDeniedError(
-            undefined,
-            undefined,
-            {
-              action: "administer",
-              resource: { kind: "agent", id: agent.id, namespaceId: agent.namespaceId },
-            },
-            identity.id,
-          ),
-        );
+        admission.resolve();
         await waitUntil("the denial audit", () => audits.length > 0, { timeoutMs: 1_000 });
         assert.equal(admissionEntered, true);
         await settleCallbacks();
       } finally {
-        if (admissionEntered) {
-          admission.reject(new Error("authorization fixture cleanup"));
-        }
+        admission.resolve();
       }
     },
   );
+  assert.equal(gatewayKeyRequests, 0);
   assert.equal(audits.length, 1);
   const [denial] = audits;
   assert.ok(denial);
   assert.equal(denial.kind, "authorization_denial");
   assert.equal(denial.actor?.principalId, identity.id);
   assert.equal(denial.action, "openclaw.agents.native_admin.proxy.authorize");
-  assert.equal(denial.authorization?.action, "administer");
+  assert.equal(denial.authorization?.action, "operate");
   assert.deepEqual(denial.authorization?.resource, {
     kind: "agent",
     id: agent.id,
