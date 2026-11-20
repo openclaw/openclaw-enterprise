@@ -2,12 +2,14 @@ import { isDeepStrictEqual } from "node:util";
 import {
   admitRepositoryNetworkPolicy,
   admitSandboxRepositoryNetworkPolicy,
+  assertExecutionAdmission,
   ConfigurationValidationError,
   freezeAgentRevision,
   RepositoryNetworkPolicyAdmissionError,
   validateSandboxNetworkGrants,
   type AgentRevision,
   type ComputeDriver,
+  type ProxyPlan,
   type RepositoryNetworkGrant,
   type RepositoryNetworkPolicyCeiling,
   type SandboxDriver,
@@ -23,6 +25,33 @@ import {
 
 export const GATEWAY_MANAGED_MODE_UNSUPPORTED =
   "Agent setting gatewayManagedMode is not supported by the selected Compute Driver.";
+
+export function deploymentExecution(
+  egressPlan: ProxyPlan | undefined,
+): Pick<AgentRevision, "executionAdmission" | "egressPlan"> {
+  const execution: Pick<AgentRevision, "executionAdmission" | "egressPlan"> =
+    egressPlan === undefined
+      ? { executionAdmission: { version: 2, mode: "unprotected" } }
+      : {
+          executionAdmission: { version: protectedExecutionVersion(egressPlan), mode: "protected" },
+          egressPlan,
+        };
+  assertExecutionAdmission(execution);
+  return execution;
+}
+
+function protectedExecutionVersion(plan: ProxyPlan): 3 | 4 | 5 | 6 | 7 {
+  if (plan.repositoryGit && plan.policyReductionVersion === 2) {
+    return 7;
+  }
+  if (plan.repositoryGitAuthorization === "request-hook-observed") {
+    return 6;
+  }
+  if (plan.repositoryGitAuthorization === "online-request") {
+    return 5;
+  }
+  return plan.repositoryGit ? 4 : 3;
+}
 
 export function admitDeploymentRepositoryPolicy(
   sandboxPolicy: SandboxPolicySnapshot | undefined,

@@ -16,6 +16,7 @@ import {
   admitDeploymentRepositoryPolicy,
   checkedSandboxPolicySnapshot,
   defaultDeploymentSandboxPolicy,
+  deploymentExecution,
   sandboxPolicyRefused,
   unsupportedComputeRepositoryPolicy,
 } from "./deployment-policy.ts";
@@ -37,6 +38,7 @@ export {
 import {
   eligibleRepositoryApprovalScope,
   repositoryApprovalFingerprint,
+  repositoryCredentialsWithStandingApproval,
 } from "./repository-approval.ts";
 
 export {
@@ -72,7 +74,6 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { EgressSendReceipts } from "./egress-send-receipts.ts";
 import type {
-  ExecutionAdmission,
   StaticEgressSource,
   ProxyPlan,
   EgressRefusal,
@@ -1688,7 +1689,7 @@ class ProvisioningConfigurationSettlingError extends DependencyUnavailableError 
 }
 
 /**
- * Standing repository approval refusals (finding 2536). Agent update and deploy raise them after
+ * Standing repository approval refusals (finding 2536). Agent update raises them after
  * the caller's grant on the Agent; approving needs Agent administer. None names an approval ID
  * or a repository, so a caller without Agent administer learns only that an approval blocks.
  */
@@ -1701,10 +1702,6 @@ const STANDING_APPROVAL_REFUSALS = Object.freeze({
     "Team policy does not permit this standing approval: it must last until removed and name one of the Agent's repository bindings that the Installation allows standing approval for. Ask an Installation administrator to allow it.",
   scopeChanged:
     "The standing approval scope changed since you reviewed it. Read the current scope from repository-approval-scopes, review it, then approve again with its scopeFingerprint as expectedScopeFingerprint.",
-  deployOneBinding:
-    "This Agent has a standing repository approval but not exactly one repository binding. Keep one binding, or remove the approval (this needs Agent administer on the Agent), then deploy again.",
-  policyChanged:
-    "This Agent's standing repository approval no longer matches team policy. Remove it (this needs Agent administer on the Agent) and approve the current scope again, or deploy after an Installation administrator restores the policy.",
 });
 
 /**
@@ -13314,7 +13311,7 @@ export class OpenClawController {
       const namespace = await this.lockNamespace(state, target.namespaceId);
       // AccessBinding deletes hold this lock: authorize again so a revocation that committed
       // while this deploy waited stops it before it writes Agent grants.
-      let authorization = await this.authorize(principalId, "deploy", target);
+      const lockedAuthorization = await this.authorize(principalId, "deploy", target);
       const agent = await state.agents.findAgent(namespace.id, target.id);
       if (!agent) {
         throw new ScopeViolationError(
@@ -13333,21 +13330,11 @@ export class OpenClawController {
       if (!lockedAgent) {
         throw new ScopeViolationError("The Agent does not belong to the exact Namespace.");
       }
-      let prepared = ordinaryPreparation;
-      if (prepared !== undefined) {
-        this.assertPreparedDeploymentDrivers(prepared);
-        if (lockedAgent.configurationId !== prepared.configuration.id) {
-          throw new ResourceStateConflictError(
-            "The Agent Configuration changed after credential validation. Review the current binding before deploying.",
-          );
-        }
-      }
+      const authorization =
+        first === undefined
+          ? lockedAuthorization
+          : await this.authorizeFirstDeploymentReceipt(principalId, input, first.intent);
       if (first !== undefined) {
-        authorization = await this.authorizeFirstDeploymentReceipt(
-          principalId,
-          input,
-          first.intent,
-        );
         const receipt = await state.revisions.findFirstDeploymentReceipt(
           namespace.id,
           lockedAgent.id,
@@ -13359,11 +13346,21 @@ export class OpenClawController {
         if (lockedAgent.status !== "active") {
           throw new AgentDeletingError();
         }
-        if ("error" in first.preparation) {
-          throw first.preparation.error;
-        }
-        prepared = first.preparation.prepared;
+      }
+      const firstPreparation = first?.preparation;
+      if (firstPreparation !== undefined && "error" in firstPreparation) {
+        throw firstPreparation.error;
+      }
+      const prepared = firstPreparation?.prepared ?? ordinaryPreparation;
+      if (prepared !== undefined) {
         this.assertPreparedDeploymentDrivers(prepared);
+        if (first === undefined && lockedAgent.configurationId !== prepared.configuration.id) {
+          throw new ResourceStateConflictError(
+            "The Agent Configuration changed after credential validation. Review the current binding before deploying.",
+          );
+        }
+      }
+      if (first !== undefined) {
         if (lockedAgent.configurationId !== first.intent.expectedConfigurationId) {
           throw new ResourceStateConflictError(
             "The Agent uses a different Configuration. Recover the original first-deployment receipt after an uncertain result, then review the current binding before deploying.",
@@ -13382,7 +13379,7 @@ export class OpenClawController {
           );
         }
         if (
-          prepared.configuration.id !== first.intent.expectedConfigurationId ||
+          prepared?.configuration.id !== first.intent.expectedConfigurationId ||
           prepared.configuration.generation !== first.intent.expectedGeneration
         ) {
           throw new ResourceStateConflictError(
@@ -13630,58 +13627,28 @@ export class OpenClawController {
       // nothing created), because the worker must decode them all to stop or retire them.
       const previous = await state.revisions.listRevisions(namespace.id, lockedAgent.id);
       const createdAt = this.timestamp();
-      let repositoryCredentials = this.admitRepositoryCredentials(
+      const admittedRepositoryCredentials = this.admitRepositoryCredentials(
         lockedAgent,
         compute,
         { ...approvedHarness, mode: lockedAgent.executionMode },
         sandbox?.id,
         Date.parse(createdAt),
       );
-      if (repositoryCredentials !== undefined) {
+      if (admittedRepositoryCredentials !== undefined) {
         this.validateRepositoryBrokerNetworkProxy(revisionHarness, admittedConfiguration, sandbox);
       }
-      if (
-        repositoryCredentials?.bindings.length !== 1 &&
-        (await state.repositorySessions.listStandingApprovals(namespace.id, lockedAgent.id)).some(
-          (a) => !a.revokedAt,
-        )
-      ) {
-        throw new ResourceStateConflictError(STANDING_APPROVAL_REFUSALS.deployOneBinding);
-      }
-      if (repositoryCredentials?.bindings.length === 1) {
-        const binding = repositoryCredentials.bindings[0]!;
-        const approval = await state.repositorySessions.findStandingApproval(
-          namespace.id,
-          lockedAgent.id,
-          binding.repositoryRef,
-        );
-        if (approval) {
-          const resolved = this.resolveRepositoryBindings(
+      const repositoryCredentials = await repositoryCredentialsWithStandingApproval(
+        state.repositorySessions,
+        { namespaceId: namespace.id, agentId: lockedAgent.id },
+        admittedRepositoryCredentials,
+        ({ repositoryRef, profile }) =>
+          this.resolveRepositoryBindings(
             namespace.id,
-            [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
+            [{ repositoryRef, profile }],
             "saved",
             this.installationRepositoryAdmission,
-          )!;
-          const scope = eligibleRepositoryApprovalScope(resolved.driver, {
-            namespaceId: namespace.id,
-            binding,
-          });
-          if (
-            !scope ||
-            !isDeepStrictEqual(resolved.resolution.bindings[0], binding) ||
-            !isDeepStrictEqual(approval.binding, binding) ||
-            !isDeepStrictEqual(approval.scope, scope)
-          ) {
-            throw new ResourceStateConflictError(STANDING_APPROVAL_REFUSALS.policyChanged);
-          }
-          repositoryCredentials = {
-            ...repositoryCredentials,
-            standingApprovalId: approval.id,
-            standingApprovalGeneration: approval.generation,
-            standingApprovalScopeFingerprint: approval.scopeFingerprint,
-          };
-        }
-      }
+          )!,
+      );
       // PostgreSQL restamps createdAt on its own clock; the response carries the stored value.
       // The repository credential deadline above stays on this controller's clock.
       const revisionId = this.nextIdentifier("agent_revision");
@@ -13696,27 +13663,7 @@ export class OpenClawController {
         revisionHarness.configuration,
       );
       const egressPlan = proxyAdmission?.plan;
-      let executionAdmission: ExecutionAdmission;
-      if (egressPlan === undefined) {
-        executionAdmission = { version: 2, mode: "unprotected" };
-      } else {
-        let version: 3 | 4 | 5 | 6 | 7 = 3;
-        if (egressPlan.repositoryGit) {
-          version = 4;
-        }
-        if (egressPlan.repositoryGitAuthorization === "online-request") {
-          version = 5;
-        }
-        if (egressPlan.repositoryGitAuthorization === "request-hook-observed") {
-          version = 6;
-        }
-        if (egressPlan.repositoryGit && egressPlan.policyReductionVersion === 2) {
-          version = 7;
-        }
-        executionAdmission = { version, mode: "protected" };
-      }
-      const execution = { executionAdmission, ...(egressPlan === undefined ? {} : { egressPlan }) };
-      assertExecutionAdmission(execution);
+      const execution = deploymentExecution(egressPlan);
       try {
         if (compute.validateExecutionAdmission === undefined) {
           assertExecutionReleaseAllowed(execution);
