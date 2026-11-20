@@ -166,6 +166,8 @@ Retain these values for image publication. Builder login does not authorize node
 
 [Build the controller and runtime](production-installation.md#build-and-publish-production-images) from one release or [copy verified images](private-registry-images.md) into a registry the nodes can pull from. Set `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` to the resulting immutable references. The templates target AMD64 nodes, OpenShell 0.1.9 and Codex 0.164.0. Mirror the stock Gateway, supervisor and Sandbox runtime AMD64 manifests into the repository selected below, retaining their digests. Set `OPENSHELL_CHART` and `OCE_CHART` to the matching absolute chart archives or directories, `ENVOY_IMAGE` to the qualified proxy image, and `SANDBOX_REGISTRY`/`SANDBOX_REPOSITORY` to the stock-image mirror. Set `ADMIN_EMAIL`, `DATABASE_CIDRS` and `API_CIDRS` from the owner and network inventory. Create the system namespace before its policies and chart jobs. Use the source commit and image digests in the publication receipt.
 
+For an existing Gateway, follow the [OpenShell Gateway upgrade recovery warning](kubernetes-setup.md#openshell-gateway-upgrade-recovery).
+
 Register the GatewayClass before installing OCC. Installing the Envoy Gateway controller does not create a class named `eg`. On a fresh cluster, create the class only when absent. Stop if an existing class belongs to another controller.
 
 ```bash
