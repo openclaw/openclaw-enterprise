@@ -120,11 +120,14 @@ EKS_CLUSTER=$(jq -er '.name' <<<"$cluster")
 export EKS_CLUSTER_ARN AWS_REGION EKS_CLUSTER
 ```
 
-When generating the profile, use `{"oce-role":"control"}` for
-`controlPlane.nodeSelector` and `runtime.gatewayNodeSelector`,
-`{"oce-role":"agents"}` for `runtime.nodeSelector`, `encrypted-gp3` for
-`runtime.gatewayStorageClassName`, and the refreshed `API_CIDRS` for
-`controlPlane.clusterCidrs`. Continue with [configuration](#configure-the-installation).
+Inspect the target's placement fields, then use them when generating the profile.
+Set `controlPlane.clusterCidrs` separately from the refreshed `API_CIDRS`.
+
+```bash
+terraform -chdir="$TF_TARGET_DIR" output -json oce_placement
+```
+
+Continue with [configuration](#configure-the-installation).
 Run prerequisite diagnosis after [creating the controller Namespace](#prepare-workspace-access).
 
 ## Configure the Installation
