@@ -1721,6 +1721,12 @@ export type {
   RepositoryGitOnlineAllow,
   RepositoryGitOnlineDecision,
   RepositoryGitSendPermit,
+  GitHubRequestView,
+  GitHubRequestOperation,
+  GitHubRequestReasonCode,
+  GitHubRequestRefusal,
+  GitHubRequestDecision,
+  RepositoryGitRequests,
 } from "./protected-repository-git.ts";
 
 export type {

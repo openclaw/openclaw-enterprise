@@ -24,6 +24,7 @@ import {
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
 import { bindRepositoryGitTransport } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
+import { createRepositoryGitRequests } from "../../apps/controller/src/drivers/repo/github/access/protected-requests.ts";
 import { repositoryGitAuthority } from "../../apps/controller/src/composition/repository-credentials/custody-selection.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { signComputeExecutionRelease } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
@@ -3200,7 +3201,7 @@ test("external Git reduction authenticates and observes exact policy without mut
       },
     },
   ) as import("../../packages/contracts/src/index.ts").ProtectedRepositoryGitAuthority;
-  const binding = await proxy.bindRepositoryGit!(authority);
+  const binding = await proxy.bindRepositoryGit!(authority, createRepositoryGitRequests(authority));
   t.after(() => binding.close());
   const reducer = proxy.policyReduction!;
   assert.equal(reducer.version, 2);
