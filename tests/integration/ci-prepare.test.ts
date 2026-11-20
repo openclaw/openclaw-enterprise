@@ -23,6 +23,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { describe, test } from "node:test";
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.ts";
 import { defaultK3sImage, prepareLane, prepareFile } from "../../scripts/ci/prepare.ts";
+import { registerNativeProfileUpgradeCases } from "./ci-prepare-native-profile-upgrade-cases.ts";
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { listen } from "../helpers/listen.ts";
 import {
@@ -63,6 +64,8 @@ const preparePath = join(repositoryRoot, "scripts/ci/prepare.ts");
 const packagingNodeBaseImage = JSON.parse(
   await readFile(join(repositoryRoot, "scripts/ci/test-suites/images-packaging.json"), "utf8"),
 ).prepare.defaultEnv.NODE_BASE_IMAGE;
+
+registerNativeProfileUpgradeCases({ repositoryRoot, writeState });
 
 async function writeState(path: string, state: unknown) {
   await writeFile(path, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
@@ -2755,7 +2758,11 @@ if (args[0] === "pull") {
       // Real Git identifies this checkout; Docker, PostgreSQL and k3d are command
       // fixtures. This proves fail-closed orchestration, not image or model execution.
       await symlink("/usr/bin/git", join(dirname(commands.statePath), "bin", "git"));
-      const prepared = await commands.prepare();
+      const prepared = await commands.prepare(
+        lane === "gateway-routing"
+          ? ["--selected-file", "tests/integration/harness-topology-k3d-routing-real.test.mjs"]
+          : [],
+      );
       assert.equal(prepared.status, 1, lane);
       assertStderrMatch(prepared.stderr, /Runtime artifact source differs from checkout/, lane);
       assert.deepEqual(modelPreparationNotices(prepared.stderr), []);
