@@ -4,6 +4,8 @@ import { createOccApi, exportTenants, importTenants } from "../../scripts/split-
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 import {
   registerRepositoryAccessUpdateCases,
@@ -12,11 +14,16 @@ import {
 } from "./repository-credentials-agent-access-cases.ts";
 import { registerRepositoryCredentialsDeploymentAdmissionCases } from "./repository-credentials-deployment-admission-cases.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
+import {
+  installationControllerOptions,
+  loadInstallationConfiguration,
+} from "../../apps/controller/src/composition/installation-config.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { harnessEgressEnrollment } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
+import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
@@ -29,7 +36,10 @@ import {
   createGitHubRepositoryDeliveryResolver,
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
-import { assertExecutionAdmission } from "../../packages/contracts/src/index.ts";
+import {
+  admitRepositoryNetworkPolicy,
+  assertExecutionAdmission,
+} from "../../packages/contracts/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
@@ -40,6 +50,7 @@ import {
   InstalledDriver,
   OpenClawController,
   RepositoryGitSenderUnqualifiedError,
+  ResourceStateConflictError,
   SandboxNetworkPolicyConflictError,
 } from "../../packages/occ/src/index.ts";
 import {
@@ -48,7 +59,9 @@ import {
 } from "../helpers/auth-session.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { grantRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import {
   callerDenied,
@@ -262,6 +275,7 @@ async function fixture(
     controllerOptions = {},
     extraRepositories = [],
     installationAccess = false,
+    bindRepositoryAdmission = false,
   } = {},
 ) {
   const installation = {
@@ -307,19 +321,26 @@ async function fixture(
    * @param {typeof GitHubRepositoryPolicy} [Driver]
    */
   async function compose(registry, Driver) {
-    const controller = new OpenClawController(installation, {
+    const options = {
       state,
       backends,
       ...controllerOptions,
-    });
+    };
+    const repository = registry === undefined ? undefined : repositoryDriver(registry, Driver);
+    const controller =
+      bindRepositoryAdmission && repository !== undefined
+        ? OpenClawController.forInstallation(installation, options, {
+            policy: repository,
+            backendId,
+          })
+        : new OpenClawController(installation, options);
     for (const driver of [iam, compute, configurationDriver, secretDriver]) {
       controller.registerDriver(driver);
       controller.selectDriver(driver.capability, driver.id);
     }
-    if (registry !== undefined) {
-      const driver = repositoryDriver(registry, Driver);
-      controller.registerDriver(driver);
-      controller.selectDriver(driver.capability, driver.id);
+    if (repository !== undefined) {
+      controller.registerDriver(repository);
+      controller.selectDriver(repository.capability, repository.id);
     }
     if (registry !== undefined || !repositories) {
       await controller.validateBackendConfiguration();
@@ -846,6 +867,481 @@ test("Provisioning refuses repository bindings on a topology Agent create refuse
   assert.equal(refused.error.code, "RESOURCE_CONFLICT");
   assert.equal(refused.error.message, created.error.message);
   assert.deepEqual((await f.request("GET", f.collection)).data, []);
+});
+
+test("the SandboxPolicy API refuses unsupported repository grants and keeps saved grants revocable", async (t) => {
+  const repositoryNetworkPolicyCeiling = /** @type {const} */ ([
+    { repository: "example/manual", access: "read" },
+    { repository: "example/project", access: "write" },
+  ]);
+  const foreignGrant = /** @type {const} */ ({
+    repository: "example/foreign-project",
+    access: "write",
+  });
+  const path = join(await temporaryDirectory(t, "occ-repository-ceiling-"), "installation.yaml");
+  await writeFile(
+    path,
+    JSON.stringify({
+      ...createInstallationDriverConfiguration(),
+      repositoryNetworkPolicyCeiling: [...repositoryNetworkPolicyCeiling, foreignGrant],
+    }),
+  );
+  const loaded = await loadInstallationConfiguration({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: path },
+  });
+  assert.ok(loaded);
+  const f = await fixture(t, {
+    harness: "codex",
+    bindRepositoryAdmission: true,
+    extraRepositories: ["manual"],
+    controllerOptions: {
+      ...installationControllerOptions(loaded.installation),
+      driverConfigurations: [sandboxRegistration("repository-admission-openshell")],
+    },
+  });
+  const sandbox = repositorySandbox();
+  Object.assign(sandbox, {
+    namespaceLifecycleHooks: sandboxNamespaceLifecycleBinding(
+      f.controller.selectedDriver("compute"),
+      sandbox,
+    ).hooks,
+  });
+  f.controller.registerDriver(sandbox);
+  f.controller.selectDriver("sandbox", sandbox.id);
+  const agent = await f.createAgent({ executionMode: "dedicated" });
+  const policyPath = `${f.collection}/${agent.id}/sandbox-policy/networking`;
+  const editingPath = `${policyPath}/editing`;
+  await f.prepareDeployment(agent);
+  const initial = await f.request("GET", policyPath);
+  assert.equal(initial.status, 200, JSON.stringify(initial));
+  assert.equal(initial.data.repositoryNetworkPolicySaveSupported, false);
+  assert.deepEqual(initial.data.repositoryNetworkPolicyCeiling, repositoryNetworkPolicyCeiling);
+  const repository = f.controller.selectedDriver("repo");
+
+  function installApproval(descriptor) {
+    const key = "repositoryNetworkPolicyAllows";
+    const original = Object.getOwnPropertyDescriptor(repository, key);
+    Object.defineProperty(repository, key, { configurable: true, ...descriptor });
+    return () => {
+      if (original) {
+        Object.defineProperty(repository, key, original);
+      } else {
+        Reflect.deleteProperty(repository, key);
+      }
+    };
+  }
+
+  await t.test("keeps the approved read fallback within the configured ceiling", async (t) => {
+    t.after(
+      installApproval({
+        value: ({ grant }) => {
+          if (grant.repository !== "example/project" || grant.access !== "read") {
+            return false;
+          }
+          // A Driver may approve the read fallback but cannot change what it delegates.
+          Reflect.set(grant, "repository", "example/outside");
+          Reflect.set(grant, "access", "write");
+          return true;
+        },
+      }),
+    );
+    const current = await f.request("GET", policyPath);
+    assert.equal(current.status, 200, JSON.stringify(current));
+    assert.deepEqual(current.data.repositoryNetworkPolicyCeiling, [
+      { repository: "example/project", access: "read" },
+    ]);
+  });
+
+  // The Console's policy readback must omit grants when the Driver violates its synchronous contract.
+  const approval = t.mock.fn(() => Promise.resolve(false));
+  const restoreApproval = installApproval({ value: (input) => approval(input) });
+  try {
+    const denied = await f.request("GET", policyPath);
+    assert.equal(denied.status, 200, JSON.stringify(denied));
+    assert.deepEqual(denied.data.repositoryNetworkPolicyCeiling, [], "async denial");
+
+    approval.mock.mockImplementation(() => Promise.reject(new Error("synthetic approval failure")));
+    const rejected = await f.request("GET", policyPath);
+    assert.equal(rejected.status, 200, JSON.stringify(rejected));
+    assert.deepEqual(rejected.data.repositoryNetworkPolicyCeiling, [], "async rejection");
+
+    // Discard approvals if the selected policy replaces the method while filtering the ceiling.
+    approval.mock.mockImplementation(() => {
+      Object.defineProperty(repository, "repositoryNetworkPolicyAllows", {
+        value: () => false,
+      });
+      return true;
+    });
+    const replaced = await f.request("GET", policyPath);
+    assert.equal(replaced.status, 200, JSON.stringify(replaced));
+    assert.deepEqual(replaced.data.repositoryNetworkPolicyCeiling, [], "method replacement");
+  } finally {
+    restoreApproval();
+  }
+
+  const scope = { namespaceId: f.namespace.id, resourceId: initial.data.policy.id };
+  const unsupported = {
+    id: "sandbox-without-network-policy",
+    capability: "sandbox",
+    implementation: "test-sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    facets: ["networking", "filesystem", "process"],
+    async cleanup() {},
+  };
+  f.controller.registerDriver(unsupported);
+  f.controller.selectDriver("sandbox", unsupported.id);
+  const unreadable = restrict(f.iamState, "read", "sandbox_policy", scope);
+  const hidden = await f.request("GET", policyPath);
+  assert.equal(hidden.status, 403, JSON.stringify(hidden));
+  assert.equal(hidden.data, undefined);
+  const hiddenEditingWithoutList = await f.request("PATCH", editingPath, { enabled: true });
+  liftRestriction(f.iamState, unreadable);
+  const unsupportedEdit = await f.request("PATCH", editingPath, { enabled: true });
+  assert.equal(unsupportedEdit.status, 409, JSON.stringify(unsupportedEdit));
+  assert.equal(unsupportedEdit.error.code, "RESOURCE_CONFLICT");
+
+  f.controller.selectDriver("sandbox", sandbox.id);
+  const enabled = await f.request("PATCH", editingPath, { enabled: true });
+  assert.equal(enabled.status, 200, JSON.stringify(enabled));
+  // Saving even an empty list commits future revisions to enforcing it.
+  const first = { expectedVersion: initial.data.policy.version, additions: [] };
+  for (const repositoryNetworkPolicy of [[], repositoryNetworkPolicyCeiling]) {
+    const refused = await f.request("PUT", policyPath, { ...first, repositoryNetworkPolicy });
+    assert.equal(refused.status, 409, JSON.stringify(refused));
+    assert.equal(refused.error.code, "RESOURCE_CONFLICT");
+    assert.match(refused.error.message, /cannot deploy a repository network policy/i);
+  }
+  assert.deepEqual((await f.request("GET", policyPath)).data.policy, initial.data.policy);
+  const channel = new SlackChannelDriver(async () => assert.fail("Unexpected provider request"));
+  const validateCredentials = t.mock.method(channel, "validateCredentials", async () => {});
+  f.controller.registerDriver(channel);
+  f.controller.selectDriver("channel", channel.id);
+  const firstIntent = {
+    key: "first-deployment",
+    expectedConfigurationId: f.configuration.id,
+    expectedGeneration: f.configuration.generation,
+  };
+  const firstDeployPath = `${f.collection}/${agent.id}/deploy-first`;
+  const deployed = await f.request("POST", firstDeployPath, firstIntent);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed));
+  assert.equal(validateCredentials.mock.callCount(), 1);
+  const revisionId = deployed.data.revisionId;
+  await f.state.transact((unit) =>
+    unit.agents.compareAndSetActiveRevision(f.namespace.id, agent.id, undefined, revisionId),
+  );
+  const response = await f.request("GET", policyPath);
+  assert.equal(response.status, 200, JSON.stringify(response));
+  // The Installation delegates a third repository to another Namespace. This Agent cannot see it.
+  assert.deepEqual(response.data.repositoryNetworkPolicyCeiling, repositoryNetworkPolicyCeiling);
+  assert.equal(Object.hasOwn(response.data.policy, "repositoryNetworkPolicy"), false);
+  assert.deepEqual(response.data.policy.additions, []);
+  assert.equal(response.data.configuration.actions.apply.available, true);
+
+  // Supply an inconsistent historical snapshot at the State read boundary. Current
+  // persistence admits a revision's repository list only with a matching desired list.
+  const admittedRevisionPolicy = admitRepositoryNetworkPolicy([], []);
+  assert.ok(admittedRevisionPolicy);
+  const transact = f.state.transact.bind(f.state);
+  /** @type {typeof f.state.transact} */
+  const withLegacyRevision = (work) =>
+    transact((unit) =>
+      work({
+        ...unit,
+        revisions: {
+          ...unit.revisions,
+          async findRevision(...scope) {
+            const revision = await unit.revisions.findRevision(...scope);
+            if (revision?.id === revisionId && revision.sandboxPolicy !== undefined) {
+              return {
+                ...revision,
+                sandboxPolicy: {
+                  ...revision.sandboxPolicy,
+                  repositoryNetworkPolicy: admittedRevisionPolicy,
+                },
+              };
+            }
+            return revision;
+          },
+        },
+      }),
+    );
+  const legacyRevision = t.mock.method(f.state, "transact", withLegacyRevision);
+  try {
+    const expectedWork = await f.state.read((view) => view.operations.list());
+    const apply = { expectedVersion: response.data.policy.version, revisionId };
+    for (const body of [apply, { ...apply, additions: [] }]) {
+      const refused = await f.request("POST", `${policyPath}/apply`, body);
+      assert.equal(refused.status, 409, JSON.stringify(refused));
+      assert.equal(refused.error.code, "RESOURCE_CONFLICT");
+      assert.equal(
+        refused.error.message,
+        "The active revision has a repository network policy that is missing from the saved policy. Stop the Agent and confirm its workload has stopped before investigating the mismatch.",
+      );
+      assert.equal(refused.data, undefined);
+      const current = await f.request("GET", policyPath);
+      assert.equal(current.status, 200, JSON.stringify(current));
+      assert.deepEqual(current.data.policy, response.data.policy);
+      assert.deepEqual(await f.state.read((view) => view.operations.list()), expectedWork);
+    }
+  } finally {
+    legacyRevision.mock.restore();
+  }
+
+  /** @param {import("../../packages/contracts/src/index.ts").SandboxPolicyViewWire["policy"]} policy */
+  async function assertSavedPolicyApplyRefused(policy) {
+    // Both wire shapes must refuse without saving a new version or queuing work.
+    const apply = { expectedVersion: policy.version, revisionId };
+    for (const body of [apply, { ...apply, additions: [] }]) {
+      const refused = await f.request("POST", `${policyPath}/apply`, body);
+      assert.equal(refused.status, 409, JSON.stringify(refused));
+      assert.equal(refused.error.code, "RESOURCE_CONFLICT");
+      assert.equal(
+        refused.error.message,
+        "Live application is unavailable for the saved repository network policy. To end current access, stop the Agent and confirm its workload has stopped. Applying the saved policy requires a deployment that can enforce it.",
+      );
+      const current = await f.request("GET", policyPath);
+      assert.equal(current.status, 200, JSON.stringify(current));
+      assert.deepEqual(current.data.policy, policy);
+      assert.equal(current.data.configuration.actions.apply.available, false);
+    }
+  }
+
+  const desired = { expectedVersion: response.data.policy.version, additions: [] };
+  const readDenied = restrict(f.iamState, "read", "sandbox_policy", scope);
+  const hiddenClearWithoutList = await f.request("PUT", policyPath, {
+    ...desired,
+    repositoryNetworkPolicy: [],
+  });
+  liftRestriction(f.iamState, readDenied);
+  const uneditable = restrict(f.iamState, "update", "sandbox_policy", scope);
+  const denied = await f.request("PUT", policyPath, { ...desired, repositoryNetworkPolicy: [] });
+  assert.equal(denied.status, 403, JSON.stringify(denied));
+  liftRestriction(f.iamState, uneditable);
+
+  const invalid = await f.request("PUT", policyPath, {
+    ...desired,
+    repositoryNetworkPolicy: [{ repository: "example/manual", access: "admin" }],
+  });
+  assert.equal(invalid.status, 400, JSON.stringify(invalid));
+
+  // The refusal cannot distinguish in-ceiling, out-of-ceiling, and foreign grants.
+  const authorized = await f.request("PUT", policyPath, {
+    ...desired,
+    repositoryNetworkPolicy: repositoryNetworkPolicyCeiling,
+  });
+  assert.equal(authorized.status, 409, JSON.stringify(authorized));
+  for (const repositoryNetworkPolicy of [
+    [{ repository: "example/manual", access: "write" }],
+    [foreignGrant],
+    [{ ...foreignGrant, repository: "example/unknown" }],
+  ]) {
+    const refused = await f.request("PUT", policyPath, { ...desired, repositoryNetworkPolicy });
+    assert.equal(refused.status, 409, JSON.stringify(refused));
+    assert.deepEqual(refused.error, authorized.error);
+  }
+  const afterRefusals = await f.request("GET", policyPath);
+  assert.equal(afterRefusals.status, 200, JSON.stringify(afterRefusals));
+  assert.deepEqual(afterRefusals.data.policy, response.data.policy);
+
+  // An Installation can lose the Drivers that enforced an existing policy. Start from
+  // the saved row and exercise withdrawal and deployment through the HTTP API.
+  const seedGrants = (agentId) =>
+    f.state.transact(async (unit) => {
+      const policy = await unit.sandboxPolicies.find(f.namespace.id, agentId);
+      assert.ok(policy);
+      return unit.sandboxPolicies.save(
+        {
+          ...policy,
+          version: policy.version + 1,
+          repositoryNetworkPolicy: repositoryNetworkPolicyCeiling,
+        },
+        policy.version,
+      );
+    });
+  const saved = await seedGrants(agent.id);
+  assert.ok(saved);
+  await assertSavedPolicyApplyRefused(saved);
+  const deployPath = `${f.collection}/${agent.id}/deploy`;
+  const revisions = () =>
+    f.state.transact((unit) => unit.revisions.listRevisionMetadata(f.namespace.id, agent.id));
+  const before = await revisions();
+  async function assertDeployRefused() {
+    const blocked = await f.request("POST", deployPath);
+    assert.equal(blocked.status, 409, JSON.stringify(blocked));
+    assert.equal(blocked.error.code, "RESOURCE_CONFLICT");
+    assert.match(blocked.error.message, /repository network policy/i);
+    assert.deepEqual(await revisions(), before);
+    assert.equal(validateCredentials.mock.callCount(), 1);
+  }
+  await assertDeployRefused();
+
+  const draft = await f.createAgent({ executionMode: "dedicated" });
+  await f.prepareDeployment(draft);
+  assert.ok(await seedGrants(draft.id));
+  const firstDeploy = await f.request("POST", `${f.collection}/${draft.id}/deploy-first`, {
+    ...firstIntent,
+    key: "saved-repository-policy",
+  });
+  assert.equal(firstDeploy.status, 409, JSON.stringify(firstDeploy));
+  assert.equal(firstDeploy.error.code, "RESOURCE_CONFLICT");
+  assert.match(firstDeploy.error.message, /repository network policy/i);
+  assert.equal(validateCredentials.mock.callCount(), 1);
+  assert.deepEqual(
+    await f.state.transact((unit) => unit.revisions.listRevisionMetadata(f.namespace.id, draft.id)),
+    [],
+  );
+
+  // An additions-only save keeps the earlier grants without revealing them to a write-only caller.
+  const next = { ...desired, expectedVersion: saved.version };
+  const concealed = restrict(f.iamState, "read", "sandbox_policy", scope);
+  const hiddenDeploy = await f.request("POST", deployPath);
+  assert.equal(hiddenDeploy.status, 403, JSON.stringify(hiddenDeploy));
+  const hiddenApply = await f.request("POST", `${policyPath}/apply`, {
+    expectedVersion: saved.version,
+    revisionId,
+  });
+  assert.equal(hiddenApply.status, 403, JSON.stringify(hiddenApply));
+  assert.equal(hiddenApply.data, undefined);
+  const recovered = await f.request("POST", firstDeployPath, firstIntent);
+  assert.equal(recovered.status, 202, JSON.stringify(recovered));
+  assert.deepEqual(recovered.data, deployed.data);
+  assert.deepEqual(await revisions(), before);
+  assert.equal(validateCredentials.mock.callCount(), 1);
+  const hiddenClearWithList = await f.request("PUT", policyPath, {
+    ...next,
+    repositoryNetworkPolicy: [],
+  });
+  assert.equal(hiddenClearWithList.status, 403, JSON.stringify(hiddenClearWithList));
+  assert.equal(hiddenClearWithoutList.status, 403, JSON.stringify(hiddenClearWithoutList));
+  assert.deepEqual(hiddenClearWithList.error, hiddenClearWithoutList.error);
+  const retained = await f.request("PUT", policyPath, next);
+  assert.equal(retained.status, 200, JSON.stringify(retained));
+  assert.equal(retained.data.version, next.expectedVersion + 1);
+  assert.equal(Object.hasOwn(retained.data, "repositoryNetworkPolicy"), false);
+  liftRestriction(f.iamState, concealed);
+  const afterOmission = await f.request("GET", policyPath);
+  assert.equal(afterOmission.status, 200, JSON.stringify(afterOmission));
+  assert.equal(afterOmission.data.policy.version, retained.data.version);
+  assert.deepEqual(
+    afterOmission.data.policy.repositoryNetworkPolicy,
+    repositoryNetworkPolicyCeiling,
+  );
+
+  const stale = await f.request("PUT", policyPath, { ...next, repositoryNetworkPolicy: [] });
+  assert.equal(stale.status, 409, JSON.stringify(stale));
+  // Withdrawal survives losing the entire network policy capability, even when
+  // an administrator needs to re-enable editing after the change.
+  const disabled = await f.request("PATCH", editingPath, { enabled: false });
+  assert.equal(disabled.status, 200, JSON.stringify(disabled));
+  f.controller.selectDriver("sandbox", unsupported.id);
+  const editReadDenied = restrict(f.iamState, "read", "sandbox_policy", scope);
+  const hiddenEditingWithList = await f.request("PATCH", editingPath, { enabled: true });
+  assert.equal(hiddenEditingWithList.status, 403, JSON.stringify(hiddenEditingWithList));
+  assert.equal(hiddenEditingWithoutList.status, 403, JSON.stringify(hiddenEditingWithoutList));
+  assert.deepEqual(hiddenEditingWithList.error, hiddenEditingWithoutList.error);
+  liftRestriction(f.iamState, editReadDenied);
+  const view = await f.request("GET", policyPath);
+  assert.equal(view.status, 200, JSON.stringify(view));
+  assert.equal(view.data.capability, null);
+  assert.equal(view.data.repositoryNetworkPolicySaveSupported, true);
+  assert.equal(view.data.editingEnabled, false);
+
+  const approvalFailure = new ResourceStateConflictError("synthetic repository Driver diagnostic");
+  async function assertWithdrawalReadback() {
+    const current = await f.request("GET", policyPath);
+    assert.equal(current.status, 200, JSON.stringify(current));
+    assert.deepEqual(current.data.policy, view.data.policy);
+    assert.deepEqual(current.data.repositoryNetworkPolicyCeiling, []);
+    assert.equal(current.data.repositoryNetworkPolicySaveSupported, true);
+  }
+
+  await t.test(
+    "discards earlier approvals if the Driver throws and preserves saved grants",
+    async (t) => {
+      const approval = t.mock.fn(({ grant }) => {
+        if (grant.repository === "example/project") {
+          throw approvalFailure;
+        }
+        return true;
+      });
+      t.after(installApproval({ value: (input) => approval(input) }));
+      const readDenied = restrict(f.iamState, "read", "sandbox_policy", scope);
+      try {
+        const hidden = await f.request("GET", policyPath);
+        assert.equal(hidden.status, 403, JSON.stringify(hidden));
+        assert.equal(hidden.data, undefined);
+        assert.equal(approval.mock.callCount(), 0);
+      } finally {
+        liftRestriction(f.iamState, readDenied);
+      }
+      await assertWithdrawalReadback();
+    },
+  );
+
+  await t.test("preserves withdrawal readback if the approval getter throws", async (t) => {
+    t.after(
+      installApproval({
+        get() {
+          throw approvalFailure;
+        },
+      }),
+    );
+    await assertWithdrawalReadback();
+  });
+
+  await t.test("ignores an approval getter that replaces itself on the final read", async (t) => {
+    const approve = () => true;
+    let reads = 0;
+    t.after(
+      installApproval({
+        get() {
+          // The second read can return the captured approval while installing a denial.
+          if (++reads === 2) {
+            Object.defineProperty(repository, "repositoryNetworkPolicyAllows", {
+              value: () => false,
+            });
+          }
+          return approve;
+        },
+      }),
+    );
+    await assertWithdrawalReadback();
+    assert.equal(reads, 0);
+  });
+
+  const reenabled = await f.request("PATCH", editingPath, { enabled: true });
+  assert.equal(reenabled.status, 200, JSON.stringify(reenabled));
+  const withdrawal = {
+    expectedVersion: retained.data.version,
+    additions: [],
+    repositoryNetworkPolicy: [],
+  };
+  const mixed = await f.request("PUT", policyPath, {
+    ...withdrawal,
+    additions: [
+      { id: "docs", binary: "/usr/bin/git", host: "example.com", ports: [{ from: 443, to: 443 }] },
+    ],
+  });
+  assert.equal(mixed.status, 409, JSON.stringify(mixed));
+  assert.equal(mixed.error.message, view.data.unavailableReason);
+  const cleared = await f.request("PUT", policyPath, withdrawal);
+  assert.equal(cleared.status, 200, JSON.stringify(cleared));
+  assert.equal(cleared.data.version, retained.data.version + 1);
+  assert.deepEqual(cleared.data.repositoryNetworkPolicy, []);
+  f.controller.selectDriver("sandbox", sandbox.id);
+  await assertSavedPolicyApplyRefused(cleared.data);
+  await assertDeployRefused();
+  const restored = await f.request("PUT", policyPath, {
+    expectedVersion: cleared.data.version,
+    additions: [],
+    repositoryNetworkPolicy: repositoryNetworkPolicyCeiling,
+  });
+  assert.equal(restored.status, 409, JSON.stringify(restored));
+
+  const after = await f.request("GET", policyPath);
+  assert.equal(after.status, 200, JSON.stringify(after));
+  assert.deepEqual(after.data.policy, cleared.data);
 });
 
 test("OpenShell Git refuses an Agent network grant to the Git hosts at save, binding and deploy", async (t) => {

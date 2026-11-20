@@ -3111,12 +3111,19 @@ function networkPolicyGrant() {
   };
 }
 
-async function networkPolicyFixture(t, { admitRevision = true } = {}) {
+async function networkPolicyFixture(
+  t,
+  { admitRevision = true, repositoryNetworkPolicyCeiling } = {},
+) {
   const grant = networkPolicyGrant();
   const f = await staticEgressFixture(t, {
     admitRevision,
     appFactory: (context, options) =>
-      createConsoleAppFixture(context, { ...options, sandboxNetworkPolicyCeiling: [grant] }),
+      createConsoleAppFixture(context, {
+        ...options,
+        sandboxNetworkPolicyCeiling: [grant],
+        repositoryNetworkPolicyCeiling,
+      }),
   });
   return { f, grant };
 }
@@ -3174,7 +3181,10 @@ test("protected admission refuses an Agent's network policy additions instead of
 test("the policy endpoint refuses additions and live application while the active revision is protected", async (t) => {
   // Fail early: the same rule createRevision and the worker enforce is refused at save and
   // apply time, with the Credential Proxy named, and the policy view says so up front.
-  const { f, grant } = await networkPolicyFixture(t);
+  const repositoryGrant = /** @type {const} */ ({ repository: "example/project", access: "read" });
+  const { f, grant } = await networkPolicyFixture(t, {
+    repositoryNetworkPolicyCeiling: [repositoryGrant],
+  });
   assert.equal(f.revision.executionAdmission.mode, "protected");
   const { base, view } = await enableNetworkPolicyEditing(f);
   assert.equal(view.editingEnabled, true);
@@ -3191,8 +3201,23 @@ test("the policy endpoint refuses additions and live application while the activ
     refused.body.error.message,
     /^Protected execution.*Credential Proxy.*additions are refused/,
   );
-  // Nothing was saved, and an empty policy can still be written.
-  assert.equal((await f.request("GET", base)).body.data.policy.version, version);
+  // Both explicit repository policy shapes would make the next protected deploy fail.
+  for (const repositoryNetworkPolicy of [[repositoryGrant], []]) {
+    const repositorySave = await f.request("PUT", base, {
+      body: { expectedVersion: version, additions: [], repositoryNetworkPolicy },
+    });
+    assert.equal(repositorySave.status, 409, JSON.stringify(repositorySave.body));
+    assert.equal(repositorySave.body.error.code, "SANDBOX_POLICY_PROTECTED_EXECUTION");
+    assert.match(
+      repositorySave.body.error.message,
+      /To withdraw an existing repository list, send empty arrays for additions and repositoryNetworkPolicy\./,
+    );
+    const current = await f.request("GET", base);
+    assert.equal(current.status, 200, JSON.stringify(current.body));
+    assert.deepEqual(current.body.data.policy, view.policy);
+  }
+  assert.deepEqual(view.repositoryNetworkPolicyCeiling, []);
+  // Omitting the repository field keeps the ordinary additions-only clear available.
   const cleared = await f.request("PUT", base, {
     body: { expectedVersion: version, additions: [] },
   });
@@ -3208,6 +3233,23 @@ test("the policy endpoint refuses additions and live application while the activ
     /protected execution.*Credential Proxy.*application is refused/,
   );
   assert.equal((await f.request("GET", base)).body.data.policy.application, undefined);
+  // A policy saved before enforcement support was withdrawn must stay revocable.
+  const saved = await f.controller.transact(async (unit) => {
+    const policy = await unit.sandboxPolicies.find(f.namespace.id, f.agent.id);
+    assert.ok(policy);
+    return unit.sandboxPolicies.save(
+      { ...policy, version: policy.version + 1, repositoryNetworkPolicy: [repositoryGrant] },
+      policy.version,
+    );
+  });
+  assert.ok(saved);
+  const withdrawn = await f.request("PUT", base, {
+    body: { expectedVersion: saved.version, additions: [], repositoryNetworkPolicy: [] },
+  });
+  assert.equal(withdrawn.status, 200, JSON.stringify(withdrawn.body));
+  assert.deepEqual(withdrawn.body.data.repositoryNetworkPolicy, []);
+  assert.equal(withdrawn.body.data.version, saved.version + 1);
+  assert.deepEqual((await f.request("GET", base)).body.data.policy, withdrawn.body.data);
 });
 
 test("the policy endpoint refuses additions before an Agent's first protected deploy", async (t) => {
