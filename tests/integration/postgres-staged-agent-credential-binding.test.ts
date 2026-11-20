@@ -233,6 +233,18 @@ test(
       });
     const authorGrant = await grantSource(authorId);
     assert.equal(authorGrant.statusCode, 201, authorGrant.body);
+
+    // Exact source authorization does not permit a staged source to be attached for an
+    // unreviewed consumer. Agent drafts can select it only for Harness authentication.
+    const unattached = await memberRequest("POST", `${base}/agents`, {
+      name: `Unattached source ${randomUUID()}`,
+      configurationId,
+      harnessAuth: null,
+      credentialSources: [{ sourceId }],
+    });
+    assert.equal(unattached.statusCode, 409, unattached.body);
+    assert.match(unattached.json().error.message, /must authenticate the selected Agent Harness/i);
+
     const createdAgent = await createAgent();
     assert.equal(createdAgent.statusCode, 201, createdAgent.body);
     const agent = createdAgent.json().data;

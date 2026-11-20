@@ -1,7 +1,7 @@
 ---
 created: "2026-11-20"
 updated: 2026-11-20
-last_updated_session: authoring-run/8c4ffb5f-88b8-465b-8e80-8b9fe00ece27
+last_updated_session: authoring-run/922d4131-eefa-4719-8498-697c4e791e10
 ---
 
 # Internal static TokenService custody flow
@@ -94,9 +94,11 @@ Inspect `token_service_instance_id`, `registration`, and
 dispatch state. The [PostgreSQL lifecycle test](../../tests/integration/postgres-static-token-service-lifecycle.test.ts)
 uses direct controller calls, Native IAM, PostgreSQL, and concrete Drivers with a
 simulated Kubernetes API transport. Startup installs the Driver, but no production
-caller creates these sources. Public source routes hide or reject them, and Agent
-admission and delivery do not consume them. The test does not prove live Secret
-storage or Agent delivery.
+caller creates these sources. Public source routes hide or reject them.
+[Agent draft admission](native-service-account-credential-delivery.md) can save a
+ready source for Harness authentication; deployment refuses it before saving a
+revision or queuing work. The test does not prove live Secret storage or Agent
+delivery.
 
 ## Related docs
 
@@ -109,6 +111,8 @@ storage or Agent delivery.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 15:38: Distinguish Agent draft admission from unavailable TokenService delivery. (authoring-run/922d4131-eefa-4719-8498-697c4e791e10 - fbbcd30f4a327a476e2135757713c06ebd921bac)
 
 - 2026-11-20 07:27: Clarify source and material ownership, normal lifecycle, failure recovery, and staged caller limits. (authoring-run/8c4ffb5f-88b8-465b-8e80-8b9fe00ece27 - 37424ee93acd777b7358f8b09674a3bfe4e6e5c2)
 
