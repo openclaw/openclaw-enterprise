@@ -19,9 +19,10 @@ import {
   waitForProvisioningFailure,
 } from "./console-agents-ui-test-support.ts";
 
-// Create Agent's provisioning step meter (provisioning-progress.mts). Steps come only from the
-// polled job's status, phase and recorded revision; the current step's marker is an
-// indeterminate throbber, static under reduced motion, and the elapsed line stays silent.
+// Create Agent's provisioning status line (provisioning-progress.mts). The message names only
+// the last checkpoint the polled job's own reply confirms — the job's `phase` names the last
+// phase the worker completed — and a poll whose phase is unreadable keeps the last confirmed
+// message. The elapsed line stays silent.
 
 const browser = fileBrowser();
 
@@ -41,7 +42,7 @@ assert.equal(
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 
 declare global {
-  var meterPaints: { states: string[]; elapsed: string }[];
+  var statusPaints: { phase: string; elapsed: string }[];
 }
 
 async function readyNamespace(fixture: ConsoleFixture, name: string) {
@@ -81,12 +82,12 @@ async function openCreateForm(t: TestContext, fixture: ConsoleFixture, namespace
   return page;
 }
 
-// The meter's live answer: the current step line, its failure reason and each step's state.
+// The status line's live answer: its message, its failure reason and its placement.
 function meterState(page: Page) {
   return page.evaluate(() => {
     const section = globalThis.document.querySelector(".provisioning-progress");
     if (!(section instanceof HTMLElement)) {
-      throw new Error("Expected the provisioning step meter");
+      throw new Error("Expected the provisioning status line");
     }
     return {
       hidden: section.hidden,
@@ -99,17 +100,13 @@ function meterState(page: Page) {
       phaseRole: section.querySelector(".provisioning-phase")?.getAttribute("role"),
       elapsed: section.querySelector(".provisioning-elapsed")?.textContent ?? null,
       elapsedRole: section.querySelector(".provisioning-elapsed")?.getAttribute("role"),
-      steps: [...section.querySelectorAll(".provisioning-step")].map((item) => ({
-        state: item.getAttribute("data-state"),
-        current: item.getAttribute("aria-current"),
-        label: item.querySelector(".provisioning-step-label")?.textContent ?? null,
-      })),
+      steps: [...section.querySelectorAll(".provisioning-step")],
     };
   });
 }
 
-// The sticky bar's answer for a finished request: whether the meter, its reason and the Retry
-// button all sit inside the same bar, on screen without scrolling.
+// The sticky bar's answer for a finished request: whether the status line, its reason and the
+// Retry button all sit inside the same bar, on screen without scrolling.
 function barState(page: Page) {
   return page.evaluate(() => {
     const meter = globalThis.document.querySelector(".provisioning-progress");
@@ -138,55 +135,37 @@ function barState(page: Page) {
   });
 }
 
-// Records each step-state layout the meter paints, with the elapsed line beside it, so one run
-// can assert the whole progression. runProvisioningPolls pauses the page clock, so each layout
-// is deterministic; the elapsed values only need to move forward. A layout the meter repaints
+// Records each message the status line paints, with the elapsed line beside it, so one run can
+// assert the whole progression. runProvisioningPolls pauses the page clock, so each paint is
+// deterministic; the elapsed values only need to move forward. A message the line repaints
 // unchanged is not recorded twice.
 async function recordMeterPaints(page: Page) {
   await page.evaluate(() => {
-    globalThis.meterPaints = [];
+    globalThis.statusPaints = [];
     const snapshot = () => {
       const section = globalThis.document.querySelector(".provisioning-progress");
       if (!(section instanceof HTMLElement) || section.hidden) {
         return;
       }
-      const states = [...section.querySelectorAll(".provisioning-step")].map(
-        (item) => item.getAttribute("data-state") ?? "",
-      );
-      const last = globalThis.meterPaints.at(-1);
-      if (last?.states.join() === states.join()) {
+      const phase = section.querySelector(".provisioning-phase")?.textContent ?? "";
+      const last = globalThis.statusPaints.at(-1);
+      if (last?.phase === phase) {
         return;
       }
-      globalThis.meterPaints.push({
-        states,
+      globalThis.statusPaints.push({
+        phase,
         elapsed: section.querySelector(".provisioning-elapsed")?.textContent ?? "",
       });
     };
     new globalThis.MutationObserver(snapshot).observe(globalThis.document.body, {
       subtree: true,
       childList: true,
-      attributes: true,
-      attributeFilter: ["data-state"],
+      characterData: true,
     });
   });
 }
 
-function stepStates(states: readonly string[]) {
-  const labels = [
-    "Waiting for the controller worker",
-    "Creating the Configuration and Agent",
-    "Creating runtime credentials",
-    "Starting the first deployment",
-    "Agent ready",
-  ];
-  return states.map((state, index) => ({
-    state,
-    current: state === "current" ? "step" : null,
-    label: labels[index],
-  }));
-}
-
-test("Create Agent advances the provisioning step meter through each reported phase", async (t) => {
+test("Create Agent's status line names each checkpoint the job's reply confirms", async (t) => {
   const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
   await fixture.bootstrap();
   const namespace = await readyNamespace(fixture, "Progress phases");
@@ -195,11 +174,10 @@ test("Create Agent advances the provisioning step meter through each reported ph
   const agentId = "agt_00000000-0000-4000-8000-00000000b637";
   const revisionId = "rev_00000000-0000-4000-8000-00000000b637";
   const handedOff = { agentId, configurationId: "cfg_progress", revisionId };
-  // One phase per poll: the worker step, the Configuration and Agent, runtime credentials, the
-  // first deployment, then success. The job's phase names the last completed phase, so the
-  // meter must stay one step behind it. The queued read after handoff is the normal deferral
-  // between worker checks: it keeps its completed phases and revision, so the meter must not
-  // repaint every step pending.
+  // One phase per poll: admission, the Configuration and Agent, runtime credentials, then
+  // handoff and success. The line names only what the reply confirms, so it must never claim
+  // the next checkpoint started. The queued read after handoff is the normal deferral between
+  // worker checks: it keeps its completed phases and revision, so the message must not move.
   const reads = [
     work.job("running", { phase: "admitted" }),
     work.job("running", { phase: "configuration" }),
@@ -231,28 +209,31 @@ test("Create Agent advances the provisioning step meter through each reported ph
     reads.length,
   );
   assert.equal(served.reads, reads.length);
-  // Success opens the created Agent, so the meter's final paint is only in the record.
+  // Success opens the created Agent, so the line's final paint is only in the record.
   await page.waitForURL((url) => new URL(url).searchParams.get("revision") === revisionId);
-  const paints = await page.evaluate(() => globalThis.meterPaints);
+  const paints = await page.evaluate(() => globalThis.statusPaints);
   assert.deepEqual(
-    paints.map((paint) => paint.states),
+    paints.map((paint) => paint.phase),
     [
-      ["current", "pending", "pending", "pending", "pending"],
-      ["done", "current", "pending", "pending", "pending"],
-      ["done", "done", "current", "pending", "pending"],
-      ["done", "done", "done", "current", "pending"],
-      ["done", "done", "done", "done", "done"],
+      "Waiting for the controller worker…",
+      "Provisioning request admitted.",
+      "Configuration and Agent created.",
+      "Runtime credentials created.",
+      "First deployment handed off.",
+      "Agent ready.",
     ],
   );
+  // The queued re-read after handoff confirms nothing new, so it repaints nothing: the record
+  // holds exactly one paint per confirmed checkpoint.
   // The elapsed line counts the same polls and moves with them, silently.
   const first = paints[0];
   const last = paints.at(-1);
-  assert.ok(first && last, "Expected the meter's first and final paints");
+  assert.ok(first && last, "Expected the line's first and final paints");
   assert.match(first.elapsed, /^Elapsed \d+:\d\d$/u);
   assert.notEqual(first.elapsed, last.elapsed);
 });
 
-test("a failed provisioning job marks its step failed and a retry starts the meter over", async (t) => {
+test("a failed provisioning job names its last confirmed checkpoint and a retry starts the line over", async (t) => {
   const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
   await fixture.bootstrap();
   const namespace = await readyNamespace(fixture, "Progress failure");
@@ -300,22 +281,23 @@ test("a failed provisioning job marks its step failed and a retry starts the met
   );
   await waitForProvisioningFailure(page);
   assert.equal(served.reads, reads.length);
-  // The failure marks the step the job was on; the error line below owns the reason (finding
-  // 2423), so the meter itself never says provisioning failed.
+  // The error line below owns the reason (finding 2423), so the status line itself never says
+  // provisioning failed while the request runs.
   const failed = await meterState(page);
   assert.equal(failed.hidden, false);
   assert.equal(failed.label, "Agent provisioning progress");
   assert.equal(failed.outcome, "failed");
-  // The meter stays in the sticky action bar, where the reader selected Create Agent, and its
-  // heading names the failure and the step it failed on, with the job's own reason beside it.
+  // The line stays in the sticky action bar, where the reader selected Create Agent, and its
+  // heading names the failure after the last checkpoint the job confirmed — without implying
+  // runtime-credential creation had started — with the job's own reason beside it.
   assert.equal(failed.inActionBar, true);
-  assert.equal(failed.phase, "Failed while creating runtime credentials.");
+  assert.equal(failed.phase, "Agent provisioning failed after Configuration and Agent created.");
   assert.equal(failed.reason, PROVISIONING_NOT_COMPLETED);
   assert.equal(failed.reasonHidden, false);
   assert.equal(failed.phaseRole, "status");
   assert.equal(failed.elapsedRole, null);
   assert.match(failed.elapsed ?? "", /^Elapsed \d+:\d\d$/u);
-  assert.deepEqual(failed.steps, stepStates(["done", "done", "failed", "pending", "pending"]));
+  assert.deepEqual(failed.steps, []);
   // The reason and the Retry button sit in the same sticky bar, on screen without scrolling.
   const bar = await barState(page);
   assert.equal(bar.reasonInBar, true);
@@ -325,13 +307,13 @@ test("a failed provisioning job marks its step failed and a retry starts the met
   assert.ok(bar.retry.top >= 0 && bar.retry.bottom <= bar.viewportHeight, "Retry off screen");
   assert.ok(bar.meter.top >= 0 && bar.meter.bottom <= bar.viewportHeight, "meter off screen");
 
-  // The retry resets the meter on the click itself — not only the first submission, whose
+  // The retry resets the line on the click itself — not only the first submission, whose
   // layout this recorder also holds — so its record starts over here. Retry is offered only
   // now that the request ended; the retried request hides it again for its own run.
   const retryButton = page.getByRole("button", { name: "Retry provisioning request" });
   assert.equal(await retryButton.isVisible(), true);
   await page.evaluate(() => {
-    globalThis.meterPaints = [];
+    globalThis.statusPaints = [];
   });
   await retryButton.click();
   assert.equal(await retryButton.isVisible(), false);
@@ -339,10 +321,6 @@ test("a failed provisioning job marks its step failed and a retry starts the met
   const reset = await meterState(page);
   assert.equal(reset.phase, "Waiting for the controller worker…");
   assert.equal(reset.elapsed, "Elapsed 0:00");
-  assert.deepEqual(
-    reset.steps,
-    stepStates(["current", "pending", "pending", "pending", "pending"]),
-  );
   releaseRetry?.(null);
   await runProvisioningPolls(page, () => Promise.resolve(), work.url, reads.length + 1);
   await waitForProvisioningFailure(page);
@@ -354,20 +332,20 @@ test("a failed provisioning job marks its step failed and a retry starts the met
     await page.getByRole("button", { name: "Create Agent", exact: true }).getAttribute("aria-busy"),
     "false",
   );
-  const paints = await page.evaluate(() => globalThis.meterPaints);
-  const layouts = paints.map((paint) => paint.states.join());
-  // The record starts at the retry click: its first layout is the retry's own reset, then the
+  const paints = await page.evaluate(() => globalThis.statusPaints);
+  const messages = paints.map((paint) => paint.phase);
+  // The record starts at the retry click: its first message is the retry's own reset, then the
   // queued answer resumes at the Configuration phase the retry kept, before the refailure.
-  assert.equal(layouts[0], "current,pending,pending,pending,pending");
+  assert.equal(messages[0], "Waiting for the controller worker…");
   assert.ok(
-    layouts.includes("done,done,current,pending,pending"),
+    messages.includes("Configuration and Agent created."),
     "the retry resumes at the Configuration phase it kept",
   );
-  assert.equal(layouts.at(-1), "done,done,failed,pending,pending");
+  assert.equal(messages.at(-1), "Agent provisioning failed after Configuration and Agent created.");
 });
 
 for (const failureAt of ["admission", "first poll", "after transport"] as const) {
-  test(`a failed reply without a phase at ${failureAt} keeps only confirmed steps`, async (t) => {
+  test(`a failed reply without a phase at ${failureAt} keeps only the confirmed message`, async (t) => {
     const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
     await fixture.bootstrap();
     const namespace = await readyNamespace(fixture, "Failure without a phase");
@@ -425,14 +403,13 @@ for (const failureAt of ["admission", "first poll", "after transport"] as const)
     await waitForProvisioningFailure(page);
     const state = await meterState(page);
     assert.equal(state.outcome, "failed");
-    assert.equal(state.phase, "Agent provisioning failed.");
-    assert.deepEqual(
-      state.steps,
-      stepStates(
-        failureAt === "after transport"
-          ? ["done", "done", "done", "pending", "pending"]
-          : ["pending", "pending", "pending", "pending", "pending"],
-      ),
+    // Without a confirmed checkpoint the heading cannot name one, and it must not guess: the
+    // reply confirmed no phase, so the heading stays generic.
+    assert.equal(
+      state.phase,
+      failureAt === "after transport"
+        ? "Agent provisioning failed after runtime credentials were created."
+        : "Agent provisioning failed.",
     );
     assert.equal(state.reason, PROVISIONING_NOT_COMPLETED);
     assert.equal(state.reasonHidden, false);
@@ -444,7 +421,7 @@ for (const failureAt of ["admission", "first poll", "after transport"] as const)
   });
 }
 
-test("a superseded first deployment keeps its own meter outcome", async (t) => {
+test("a superseded first deployment keeps its own status outcome", async (t) => {
   const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
   await fixture.bootstrap();
   const namespace = await readyNamespace(fixture, "Progress superseded");
@@ -487,21 +464,21 @@ test("a superseded first deployment keeps its own meter outcome", async (t) => {
   );
   const state = await meterState(page);
   assert.equal(state.outcome, "superseded");
-  assert.equal(state.phase, "Superseded while starting the first deployment.");
+  assert.equal(state.phase, "Superseded after the first deployment was handed off.");
   assert.equal(state.reason, "");
   assert.equal(state.reasonHidden, true);
-  assert.deepEqual(state.steps, stepStates(["done", "done", "done", "superseded", "pending"]));
+  assert.deepEqual(state.steps, []);
 });
 
-test("an unreadable phase keeps the meter's confirmed steps", async (t) => {
+test("an unreadable phase keeps the status line's last confirmed message", async (t) => {
   const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
   await fixture.bootstrap();
   const namespace = await readyNamespace(fixture, "Progress unreadable phase");
   const page = await openCreateForm(t, fixture, namespace);
   const work = provisioningJob(namespace.id, "work_progress_unreadable");
   // The first poll confirms runtime credentials; the second reports the same running job with
-  // no readable phase and no revision. The meter must keep the confirmed steps and switch to
-  // the generic running heading instead of naming an earlier step again.
+  // no readable phase and no revision. The line must keep the last confirmed message — it must
+  // not infer the next checkpoint started, repaint the message generic, or move it backward.
   const reads = [
     work.job("running", { phase: "transport" }),
     work.job("running", { phase: undefined }),
@@ -516,14 +493,17 @@ test("an unreadable phase keeps the meter's confirmed steps", async (t) => {
     reads.length,
   );
   const state = await meterState(page);
-  assert.equal(state.phase, "Provisioning Agent…");
-  assert.deepEqual(state.steps, stepStates(["done", "done", "done", "current", "pending"]));
-  const paints = await page.evaluate(() => globalThis.meterPaints);
-  const layouts = paints.map((paint) => paint.states.join());
-  assert.equal(layouts.at(-1), "done,done,done,current,pending");
+  assert.equal(state.phase, "Runtime credentials created.");
+  const paints = await page.evaluate(() => globalThis.statusPaints);
+  const messages = paints.map((paint) => paint.phase);
+  // The unreadable poll repaints nothing: the record ends on the confirmed message.
+  assert.deepEqual(messages, [
+    "Waiting for the controller worker…",
+    "Runtime credentials created.",
+  ]);
 });
 
-test("a refused provisioning request shows no step meter", async (t) => {
+test("a refused provisioning request shows no status line", async (t) => {
   const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
   await fixture.bootstrap();
   const namespace = await readyNamespace(fixture, "Progress refusal");
@@ -546,17 +526,16 @@ test("a refused provisioning request shows no step meter", async (t) => {
   assert.equal((await meterState(page)).hidden, true);
 });
 
-test("the meter's throbber is static under reduced motion", async (t) => {
+test("the status line pins in the sticky action bar while the request runs", async (t) => {
   const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
   await fixture.bootstrap();
-  const namespace = await readyNamespace(fixture, "Progress reduced motion");
+  const namespace = await readyNamespace(fixture, "Progress sticky bar");
   const page = await openCreateForm(t, fixture, namespace);
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  const work = provisioningJob(namespace.id, "work_progress_reduced_motion");
+  const work = provisioningJob(namespace.id, "work_progress_sticky");
   // The last read repeats, so the job stays running while the page is inspected.
   await routeProvisioningJob(page, fixture, work, [work.job("running", { phase: "admitted" })]);
-  // The taller sticky bar must raise the page's focus-scroll clearance while the meter is in
-  // it: the meter-specific rule wins the cascade over the base html:has(#create-agent-form).
+  // The taller sticky bar must raise the page's focus-scroll clearance while the line is in
+  // it: the line-specific rule wins the cascade over the base html:has(#create-agent-form).
   const clearanceBefore = await page.evaluate(() =>
     parseFloat(
       globalThis.getComputedStyle(globalThis.document.documentElement).scrollPaddingBottom,
@@ -566,7 +545,7 @@ test("the meter's throbber is static under reduced motion", async (t) => {
   await page.waitForFunction(
     () =>
       globalThis.document.querySelector(".provisioning-phase")?.textContent ===
-      "Creating the Configuration and Agent…",
+      "Provisioning request admitted.",
   );
   const state = await meterState(page);
   assert.equal(state.phaseRole, "status");
@@ -578,9 +557,9 @@ test("the meter's throbber is static under reduced motion", async (t) => {
   );
   assert.ok(
     clearanceAfter - clearanceBefore >= 200,
-    `scroll clearance grew only ${clearanceAfter - clearanceBefore}px with the meter visible`,
+    `scroll clearance grew only ${clearanceAfter - clearanceBefore}px with the line visible`,
   );
-  // The meter pins in the sticky action bar (the bar the reader selected Create Agent from),
+  // The line pins in the sticky action bar (the bar the reader selected Create Agent from),
   // and Retry stays hidden while the request is still in flight.
   assert.equal(state.inActionBar, true);
   const bar = await page.evaluate(() => {
@@ -593,13 +572,4 @@ test("the meter's throbber is static under reduced motion", async (t) => {
     await page.getByRole("button", { name: "Retry provisioning request" }).isVisible(),
     false,
   );
-  assert.deepEqual(state.steps, stepStates(["done", "current", "pending", "pending", "pending"]));
-  // prefers-reduced-motion keeps the current step's marker a static ring, not a spin.
-  const animation = await page.evaluate(() => {
-    const marker = globalThis.document.querySelector(
-      ".provisioning-step[data-state='current'] .provisioning-step-marker",
-    );
-    return marker instanceof Element ? globalThis.getComputedStyle(marker).animationName : null;
-  });
-  assert.equal(animation, "none");
 });

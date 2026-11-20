@@ -885,10 +885,10 @@ export const createAgentProvisioningScenarios = {
     },
     provisioningNamesDeploymentWait: true,
     description:
-      "Each status read reports the next completed phase, so the meter advances one step at a time: waiting for the worker, creating the Configuration and Agent, creating runtime credentials, then starting the first deployment. The meter pins in the sticky action bar beside Create Agent and the status line carries the last confirmed checkpoint. Once the job hands off its revision and the deployment reads back, Create opens that version's Deployment tab, which owns progress from there. No percentage is shown, because the job reports phases, not fractions.",
+      "Each status read reports the next completed phase, so the line names each checkpoint as the job's own reply confirms it: the request admitted, Configuration and Agent created, runtime credentials created, then the first deployment handed off. It never infers the next checkpoint has started. The line pins in the sticky action bar beside Create Agent. Once the job hands off its revision and the deployment reads back, Create opens that version's Deployment tab, which owns progress from there. No percentage is shown, because the job reports checkpoints, not fractions.",
     steps: [
-      "Click Create Agent. The meter appears with the first step current and the elapsed time counting.",
-      "Watch each later step become current as its phase completes; at handoff the page opens the new Agent's Deployment tab.",
+      "Click Create Agent. The line appears waiting for the controller worker, with the elapsed time counting.",
+      "Watch the message advance as each phase completes; at handoff the page opens the new Agent's Deployment tab.",
     ],
     gap: "Simulated UI proof: the phases and deployment wait are fixture answers, not a real controller or cluster.",
   },
@@ -899,7 +899,7 @@ export const createAgentProvisioningScenarios = {
     rules: [{ suffix: "/agents/provision", method: "POST", hold: true }],
     actions: [...readyForm, click("Create Agent")],
     description:
-      "The provisioning request is held, so Create Agent stays disabled and busy: it sets aria-busy and shows the progress pointer (finding 1961). The step meter appears with its first step current, its marker spinning while no job answer can advance it.",
+      "The provisioning request is held, so Create Agent stays disabled and busy: it sets aria-busy and shows the progress pointer (finding 1961). The status line appears waiting for the controller worker while no job answer can advance it.",
     steps: ["Hover Create Agent: the pointer is progress, not not-allowed."],
     gap: "The real client gives up after 15 seconds and reports an unknown outcome, which ends the busy state; reset the story to replay it. Other controls' requests disable Create without marking it busy; the browser tests cover that, not this story.",
   },
@@ -979,10 +979,10 @@ export const createAgentProvisioningScenarios = {
     actions: readyForm,
     provisionedDeploymentStatus: "failed",
     description:
-      "The original provisioning request reports its first-deployment failure. The meter in the sticky bar names the failed step and the job's reason; the error line below links to the existing Agent and revision. This failure handed off a version, so the form offers no retry that would create another Agent; Create Agent submits a new request instead.",
+      "The original provisioning request reports its first-deployment failure. The status line in the sticky bar names the failure after the last confirmed checkpoint, with the job's reason; the error line below links to the existing Agent and revision. This failure handed off a version, so the form offers no retry that would create another Agent; Create Agent submits a new request instead.",
     steps: [
       "Click Create Agent and wait for the credential initialization failure.",
-      "Confirm the meter's heading names the failure and its reason stays in the sticky bar, and open the existing Agent link; confirm the form offers no retry that would create another Agent.",
+      "Confirm the line's heading names the failure and its reason stays in the sticky bar, and open the existing Agent link; confirm the form offers no retry that would create another Agent.",
     ],
   },
   createProvisioningFailedRetryable: {
@@ -994,10 +994,10 @@ export const createAgentProvisioningScenarios = {
     provisionedDeploymentStatus: "failed",
     provisioningFailsBeforeDeployment: true,
     description:
-      "The job fails before it hands off a version, so its failure is retryable. The meter in the sticky bar names the failed step and the job's reason, and Retry provisioning request sits beside it; Create Agent stays disabled until the reader retries or starts over.",
+      "The job fails before it hands off a version, so its failure is retryable. The status line in the sticky bar names the failure after the last confirmed checkpoint, with the job's reason, and Retry provisioning request sits beside it; Create Agent stays disabled until the reader retries or starts over.",
     steps: [
       "Click Create Agent and wait for the failure.",
-      "Confirm the meter's heading, its reason and Retry provisioning request all stay in the sticky bar without scrolling, and that Create Agent stays disabled.",
+      "Confirm the line's heading, its reason and Retry provisioning request all stay in the sticky bar without scrolling, and that Create Agent stays disabled.",
     ],
     gap: "Simulated UI proof: the failure and retry are fixture answers, not a real controller outage.",
   },
@@ -1049,7 +1049,7 @@ export const createAgentProvisioningScenarios = {
     actions: readyForm,
     provisioningCancelledByStop: true,
     description:
-      "Someone stopped the new Agent before its first version was admitted. Provisioning is cancelled, but the stopped Agent keeps its name, so the page links it instead of offering a new Agent. The meter's heading names the stop and the step it ended on, marked stopped, not failed.",
+      "Someone stopped the new Agent before its first version was admitted. Provisioning is cancelled, but the stopped Agent keeps its name, so the page links it instead of offering a new Agent. The status line's heading names the stop after the last confirmed checkpoint, marked stopped, not failed.",
     steps: [
       "Click Create Agent and wait for the cancelled provisioning.",
       "Confirm the page says Provisioning stopped, asks for no new Agent, and links the kept Agent.",
@@ -1063,7 +1063,7 @@ export const createAgentProvisioningScenarios = {
     provisionedDeploymentStatus: "failed",
     provisionedDeploymentStopped: true,
     description:
-      "Someone stopped the new Agent while its first deployment was rolling out. The request names the stop and asks for no repair; the meter marks the deployment step stopped, not failed.",
+      "Someone stopped the new Agent while its first deployment was rolling out. The request names the stop and asks for no repair; the status line names the stop after the handoff it confirmed, marked stopped, not failed.",
     steps: [
       "Click Create Agent and wait for the stopped first deployment.",
       "Confirm the message names the stop without asking to correct a cause, and open the existing Agent link.",

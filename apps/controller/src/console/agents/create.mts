@@ -637,7 +637,8 @@ async function waitForProvisioning({
           status: current.status,
           error: current.error?.code === undefined ? null : { code: current.error.code },
         });
-  // The meter marks where the job ended; the error line below owns the reason and the action.
+  // The status line names where the job ended; the error line below owns the reason and the
+  // action.
   progress.finish(
     current,
     current?.status === "succeeded"
@@ -2174,8 +2175,8 @@ function renderAgentForm(
   let stagedChannelSecrets = draft.stagedChannelSecrets ?? [];
   const feedback = element("p", { className: "error", role: "alert" });
   const savedStatus = element("p", { className: "hint", role: "status" });
-  // The step meter for a provisioning request in flight. It reads only the polled job's own
-  // status and phase; the lines below keep their sentences (findings 1424, 2423).
+  // The live status line for a provisioning request in flight. It reads only the polled job's
+  // own status and phase; the lines below keep their sentences (findings 1424, 2423).
   const provisioningMeter = createProvisioningProgress();
   // Create's refusals show in the danger status block (UX plan C1). The line above keeps its
   // markup so open changes to the lines around it still merge.
@@ -2415,9 +2416,9 @@ function renderAgentForm(
   const actions = element(
     "div",
     { className: "form-actions" },
-    // The meter shares the sticky action bar (finding 2098 keeps Create Agent in view there),
-    // so the reader who just selected it sees provisioning without scrolling: it pins above
-    // the buttons while the request runs and leaves the bar when it ends or is refused.
+    // The status line shares the sticky action bar (finding 2098 keeps Create Agent in view
+    // there), so the reader who just selected it sees provisioning without scrolling: it pins
+    // above the buttons while the request runs and leaves the bar when it ends or is refused.
     provisioningMeter.section,
     // Cancel is the explicit discard; other exits keep the draft (finding 1902).
     button("Cancel", () => {
