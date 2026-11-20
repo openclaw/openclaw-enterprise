@@ -793,6 +793,14 @@
                     "label": "Image Upgrades"
                   },
                   {
+                    "page": "guides/deploy/one-off-upgrades",
+                    "label": "One Off Upgrades"
+                  },
+                  {
+                    "page": "guides/deploy/channel-egress",
+                    "label": "Channel Egress Setup"
+                  },
+                  {
                     "page": "guides/deploy/production-upgrade-command",
                     "label": "Upgrade Commands"
                   },
