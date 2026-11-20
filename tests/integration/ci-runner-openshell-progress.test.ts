@@ -416,11 +416,9 @@ const requestProgress = [
   ]),
   "replacement:started",
   "redeploy-request",
-  "replacement:failed",
 ];
-const requestBeforeFailure = [...requestStart, ...requestProgress];
 
-async function observeRequest(root: string) {
+async function observeRequest(root: string, entry: string, progress: readonly string[]) {
   const observer = join(root, "request-observer.ts");
   const reporterUrl = new URL("scripts/ci/reporter.ts", repositoryUrl);
   const processUrl = new URL("scripts/ci/runner-process.ts", repositoryUrl).href;
@@ -459,10 +457,10 @@ async function observeRequest(root: string) {
 
      export default async function* requestReporter(source: Parameters<typeof reporter>[0]) {
        const root = process.cwd();
-       const entry = join(root, upstreamOutageCase.entry);
+       const entry = ${JSON.stringify(entry)};
        const declaration = join(root, upstreamOutageCase.declaration);
        const order = join(root, ${JSON.stringify(requestReceipts.order)});
-       const progress = ${JSON.stringify(requestProgress)};
+       const progress = ${JSON.stringify(progress)};
        let count = 0;
        function record(step: string) {
          // The only persisted fields are these closed lifecycle and progress labels.
@@ -601,7 +599,13 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
       const fileTimeoutMs = runnerDeadline ? runnerTimeoutMs : 10000;
       const pendingActivation = caseDeadline || controlledDeadline;
       const sameRevision = mode === "same-revision";
-      const observedRequest = mode === "request" || sameRevision;
+      const observedRequest = mode === "request" || sameRevision || mode === "activation";
+      const observedProgress = [
+        ...requestProgress,
+        ...(mode === "activation" ? ["activation"] : []),
+        "replacement:failed",
+      ];
+      const beforeFailure = [...requestStart, ...observedProgress];
       const success = mode === "success";
       const name = mode === "wrong-case" ? "another case" : title;
       const upstreamLane = mode === "reconciliation" ? "openshell" : "openshell-installers";
@@ -655,7 +659,7 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
         mode,
         requestOrderPath: requestReceipts.order,
         requestStart: requestStart.join("\n") + "\n",
-        requestBeforeFailure: requestBeforeFailure.join("\n") + "\n",
+        requestBeforeFailure: beforeFailure.join("\n") + "\n",
         requestAttempted: requestReceipts.attempted,
         sameRevisionRefusal: requestReceipts.sameRevisionRefusal,
         activationPoll,
@@ -679,7 +683,7 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
       });
       let execArgv = runnerDeadline ? observeDeadline(controlledDeadline) : [];
       if (observedRequest) {
-        execArgv = await observeRequest(root);
+        execArgv = await observeRequest(root, join(runnerRoot, file), observedProgress);
       }
       const runner = await runRunnerAsync(
         laneArgs(runnerRoot, lane, state, results),
@@ -834,7 +838,7 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
           context,
         );
         assert.deepEqual(order.trim().split("\n"), [
-          ...requestBeforeFailure,
+          ...beforeFailure,
           "case:complete",
           "case:fail",
           "file:complete",
