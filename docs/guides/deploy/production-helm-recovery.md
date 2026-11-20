@@ -48,7 +48,11 @@ Missing, deleting, failed or mismatched objects stop recovery. Added commands,
 inputs, mounts, probes or lifecycle handlers also stop recovery. Pod and container
 security settings must match exactly; absent or null settings match an empty
 context. Admission rewrites refuse recovery, even copying an inherited setting
-to a container without changing its effect. Declared CPU and memory
+to a container without changing its effect. One exception applies to the
+retained Pod only. Admission can add an SELinux `level` with two different
+categories and one supplemental group equal to the chart's `runAsGroup`, when
+the chart leaves those fields unset. Any other group, level or SELinux field
+still stops recovery. Declared CPU and memory
 requests and limits compare by value, so `1.5Gi` and `1536Mi` are equivalent.
 These checks allow API defaults on otherwise unspecified fields; they do not
 prove that no admission mutation occurred.

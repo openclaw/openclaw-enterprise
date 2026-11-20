@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-19"
-last_updated_session: "authoring-run/aed0a2bc-9691-4859-8bd6-1e7b3549c9b4"
+last_updated_session: "authoring-run/62a4c901-7066-4e94-bb84-e010a1f89f1d"
 ---
 
 # Production image upgrade flow
@@ -217,10 +217,13 @@ Pods, and both Deployments before protected writes.
 A failed expected revision follows the usual checked retry.
 
 For [same-candidate recovery](../guides/deploy/production-helm-recovery.md),
-`scripts/upgrade-helm-state.py:recover` checks Helm payload, ownership, completed
-Job/Pod and exact security contexts. `pod_matches` compares requests/limits through
-Compute's `resource-quantities.ts`. Reads use manifest namespaces and release
-ownership. `check-recovery` validates the original attempt before preflight Jobs;
+`scripts/upgrade-helm-state.py:recover` checks Helm payload, ownership and the
+completed Job/Pod through `verify_hook`, which `verify_installation_consumers`
+also uses. Security contexts are exact, except that the retained Pod can carry an
+admission-assigned Pod-level SELinux level and one supplemental group equal to
+the template `runAsGroup` when the template omits them. `pod_matches` compares
+requests/limits through Compute's `resource-quantities.ts`. Reads use manifest
+namespaces and release ownership. `check-recovery` validates the original attempt before preflight Jobs;
 both application identities must pass before a new rollback. `recover` repeats
 admission before exclusive intent and dispatch. Accepted/uncertain recovery stays
 readback-only.
@@ -371,6 +374,8 @@ requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 20:33: Accept an admission-assigned SELinux level and Pod group on the retained initializer Pod. (authoring-run/62a4c901-7066-4e94-bb84-e010a1f89f1d - 46b193ba5b9a45386faa747c53886c43f08ccc7b)
 
 - 2026-11-19 19:15: Trace the stopped writers check before Helm retry. (authoring-run/aed0a2bc-9691-4859-8bd6-1e7b3549c9b4 - d976da889bdeca6e9208821a5b4ea79a49033b0f)
 

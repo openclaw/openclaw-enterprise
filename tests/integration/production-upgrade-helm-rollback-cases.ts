@@ -792,5 +792,87 @@ export function registerHelmRollbackCases({ fixture }: { fixture: RecoveryFixtur
         await assertRecoveryRefusedBeforeRollback(f, state, /Pod identity/);
       });
     }
+    // Recovery accepts one narrow admission result on the retained Pod: a Pod
+    // SELinux level with two distinct categories and one supplemental group equal
+    // to the template runAsGroup. Each refusal starts from that shape and breaks
+    // one field, so a wider exception or a coupled check fails here.
+    const { f, state: original } = await interruptedUpgradeWithCompletedHook(t);
+    const level = { level: "s0:c34,c12" };
+    const refusals: [string, (spec: Record<string, unknown>) => void][] = [
+      [
+        "Pod SELinux type",
+        (spec) => {
+          spec.seLinuxOptions = { ...level, type: "spc_t" };
+        },
+      ],
+      [
+        "Pod extra group",
+        (spec) => {
+          spec.supplementalGroups = [1000, 0];
+        },
+      ],
+      [
+        "Pod group other than the template group",
+        (spec) => {
+          spec.supplementalGroups = [1001];
+        },
+      ],
+    ];
+    for (const [change, mutate] of refusals) {
+      await t.test(change, async () => {
+        const state = structuredClone(original);
+        const context = requiredRecord(
+          requiredRecord(state.recoveryPod.spec, "expected the initializer Pod spec")
+            .securityContext,
+          "expected the Pod security context",
+        );
+        context.seLinuxOptions = level;
+        context.supplementalGroups = [1000];
+        mutate(context);
+        await assertRecoveryRefusedBeforeRollback(f, state, /Pod identity/);
+      });
+    }
+    await t.test("container SELinux level", async () => {
+      const state = structuredClone(original);
+      const spec = requiredRecord(state.recoveryPod.spec, "expected the initializer Pod spec");
+      const context = requiredRecord(spec.securityContext, "expected the Pod security context");
+      context.seLinuxOptions = level;
+      context.supplementalGroups = [1000];
+      requiredRecord(
+        firstContainer(spec, "containers").securityContext,
+        "expected the container security context",
+      ).seLinuxOptions = level;
+      await assertRecoveryRefusedBeforeRollback(f, state, /Pod identity/);
+    });
+  });
+
+  test("recovery accepts an admission-assigned Pod SELinux level or template group alone", async (t) => {
+    // Admission can assign only one of the two fields, so neither exception may
+    // depend on the other. The fixture stands in for admission: this proves the
+    // decision through the real recovery command, not live admission.
+    const admitted: [string, Record<string, unknown>][] = [
+      // Ascending categories here; the Installation completion case accepts a
+      // descending pair, so the check cannot depend on category order.
+      ["SELinux level", { seLinuxOptions: { level: "s0:c12,c34" } }],
+      ["template group", { supplementalGroups: [1000] }],
+    ];
+    for (const [name, fields] of admitted) {
+      await t.test(name, async (subtest) => {
+        const { f, state } = await interruptedUpgradeWithCompletedHook(subtest);
+        // state.recoveryPod is also the stored Pod resource, so one edit
+        // updates both reads the recovery makes.
+        Object.assign(
+          requiredRecord(
+            requiredRecord(state.recoveryPod.spec, "expected the initializer Pod spec")
+              .securityContext,
+            "expected the Pod security context",
+          ),
+          fields,
+        );
+        await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+        await f.run(...recoverHelm);
+        assert.equal((await f.state()).rollbackSubmissions, 1);
+      });
+    }
   });
 }
