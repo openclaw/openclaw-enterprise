@@ -1,0 +1,27 @@
+{
+  "requiredEnv": [
+    "OPENAI_API_KEY",
+    "OCC_TEST_OPENAI_MODEL",
+    "OCC_TEST_OPENSHELL_SAVED_AGENT_ACL",
+    "OCC_DEVELOPMENT_CONTROLLER_IMAGE",
+    "OCC_KUBERNETES_RUNTIME_IMAGE"
+  ],
+  "env": {
+    "OCC_TEST_OPENSHELL_K3D_REAL": "1",
+    "OCC_TEST_LOCAL_FIRST_AGENT_REAL": "1"
+  },
+  "optionalEnv": [
+    "OCC_TEST_OPENSHELL_SAVED_AGENT_AC5",
+    "OCC_TEST_OPENSHELL_SAVED_AGENT_REST",
+    "OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER"
+  ],
+  "prepare": {},
+  "files": [
+    {
+      "path": "tests/integration/openshell-saved-agent-git-policy-real.test.ts",
+      "expectedTests": [
+        "An Administrator deploys and downgrades saved Git network grants on the same OpenShell Agent"
+      ]
+    }
+  ]
+}

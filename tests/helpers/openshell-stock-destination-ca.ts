@@ -31,17 +31,26 @@ export function destinationCaCertificate(pem: string): X509Certificate {
 }
 
 /** Prepare the stock chart's certificate-only destination trust input. */
-export function stockDestinationCa(namespace: string, name: string, pem: string) {
+export function stockDestinationCa(
+  namespace: string,
+  name: string,
+  pem: string,
+  workspaceCa?: string,
+) {
   assert.match(namespace, /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/u);
   assert.match(name, /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/u);
   destinationCaCertificate(pem);
+  if (workspaceCa !== undefined) {
+    destinationCaCertificate(workspaceCa);
+  }
+  const bundle = workspaceCa === undefined ? pem : pem.trimEnd() + "\n" + workspaceCa;
   return {
     configMap: {
       apiVersion: "v1",
       kind: "ConfigMap",
       metadata: { namespace, name },
       immutable: true,
-      data: { "ca.crt": pem },
+      data: { "ca.crt": bundle },
     },
     network: { additionalCaConfigMapName: name },
   };
