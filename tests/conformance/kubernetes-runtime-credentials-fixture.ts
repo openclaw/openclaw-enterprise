@@ -15,7 +15,7 @@ import type {
   LoggingLevel,
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/objects.ts";
-import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.ts";
 
 export const namespace = Object.freeze({
   id: "ns_runtime_00000000-0000-4000-8000-000000000001",
@@ -231,7 +231,6 @@ function options(runtime: boolean, twoCluster: boolean): KubernetesComputeDriver
           runtime: {
             transportSecretPrefix: "transport",
             gatewayStorageClassName: "local-path",
-            channels: { proxyUrl: "http://10.42.0.15:3128" },
           },
         }
       : {}),

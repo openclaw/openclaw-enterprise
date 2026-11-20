@@ -28,17 +28,17 @@ import {
   fileConsoleApp,
 } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.ts";
+import { STOP_REQUESTED_FIRST_DEPLOYMENT } from "../helpers/refusal-text.mjs";
 import {
   LOG_TEXT_DENIED,
   RUNTIME_STATUS_DENIED,
   RUNTIME_STATUS_OPERATE_DENIED,
   RUNTIME_STATUS_VERSION_UNREADABLE,
-  STOP_REQUESTED_FIRST_DEPLOYMENT,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-access.ts";
 import {
   createProviderSandboxDriver,
   createRuntimeLogComputeDriver,
-} from "../helpers/runtime-logs.mjs";
+} from "../helpers/runtime-logs.ts";
 import {
   deploymentStatusResponse,
   routeFailedDeployment,

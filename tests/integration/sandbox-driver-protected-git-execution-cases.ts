@@ -1,3 +1,7 @@
+import {
+  assertGitExecutionContinuity,
+  verifyManagedGitReplacement,
+} from "./sandbox-driver-managed-git-cases.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -87,6 +91,10 @@ function enrolledRequirements(
   return {
     ...requirements,
     proxyWiring,
+    labels: {
+      "openclaw.dev/revision": proxyWiring.plan.execution.revisionId,
+      "openclaw.dev/agent": proxyWiring.plan.execution.agentId,
+    },
     files: [
       {
         ...manifest,
@@ -138,6 +146,7 @@ export async function verifyProtectedOpenShellGitExecution(
     inferenceProvider,
     gateway,
     getCreated,
+    restoreCreated,
     registry,
     sandboxConfiguration,
     workspaceMountPath,
@@ -269,6 +278,12 @@ export async function verifyProtectedOpenShellGitExecution(
     }),
     undefined,
   );
+  await assertGitExecutionContinuity(
+    sandbox,
+    ctx,
+    gateway.sandboxes.get(result.resourceName),
+    false,
+  );
   const created = getCreated();
   assert.ok(created);
   // Check the final launch environment, after all provider and Sandbox composition.
@@ -326,6 +341,19 @@ export async function verifyProtectedOpenShellGitExecution(
     },
   );
   assert.deepEqual(result.proxyWiring?.plan, plan);
+  await verifyManagedGitReplacement(subtest, {
+    sandbox,
+    gateway,
+    registry,
+    rev,
+    ctx,
+    required,
+    plan,
+    inferenceProvider,
+    created,
+    restoreCreated,
+    proxy,
+  });
   await verifyProtectedGitNetworkPolicy({
     sandboxConfiguration,
     backend,

@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { registerStreamReceiptPersistenceCases } from "./credential-proxy-stream-lease-cases.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
-import {
-  encodeSyntheticEvents,
-  outputWithIndependentCitation,
-} from "../fixtures/synthetic-egress-provider.mjs";
-import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { readFileSync } from "node:fs";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
@@ -16,9 +12,6 @@ import { OpenShellEgressIdentity } from "../../apps/controller/src/drivers/egres
 import {
   CredentialProxy,
   OPERATION_SANDBOX_SHARE,
-  STREAM_LEASE_CEILING_MS,
-  STREAM_LEASE_IDLE_MS,
-  STREAM_LEASE_RECHECK_MS,
   egressInjectionDigest,
 } from "../../packages/occ/src/credential-proxy.ts";
 import { deploymentErrorForWork } from "../../packages/occ/src/state/controller-work.ts";
@@ -37,7 +30,11 @@ import {
 } from "../helpers/static-egress.mjs";
 
 import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
-import { registerStaticEgressRequestCapacityCases } from "./static-egress-request-capacity-cases.ts";
+import { registerStaticEgressResponsesAndCapacityCases } from "./static-egress-request-capacity-cases.ts";
+import {
+  registerStaticEgressResponsesPrefixCases,
+  runStaticEgressNativeAgentMessageCase,
+} from "./static-egress-responses-wire-cases.ts";
 
 const retirementError = {
   code: "RESOURCE_CONFLICT",
@@ -175,6 +172,35 @@ test("bundled OpenShell startup refuses mixed static CREATE before material or r
       assert.equal(f.countSecretReads(), updateBefore.secretReads + 1);
       assert.deepEqual(f.gatewayEffects, [...updateBefore.gatewayEffects, "updateSource"]);
       assert.deepEqual(f.providerRequests, []);
+
+      // A bound source must be unbound before adoption, even without a Proxy.
+      const config = await f.createConfiguration(f.namespace.id, {
+        agents: {
+          defaults: {
+            model: { primary: "codex/fixture-model" },
+            models: { "codex/fixture-model": { agentRuntime: { id: "codex" } } },
+          },
+        },
+      });
+      const agent = await f.request("POST", `/namespaces/${f.namespace.id}/agents`, {
+        body: {
+          name: "bound-model",
+          configurationId: config.id,
+          executionMode: "dedicated",
+          harnessAuth: { method: "credential_source", sourceId: original.id },
+          credentialSources: [{ sourceId: original.id }],
+        },
+      });
+      assert.equal(agent.status, 201, JSON.stringify(agent.body));
+      const prior = await admissionSnapshot(f);
+      const bound = await f.request("PATCH", `${f.path}/${original.id}`, {
+        body: { adoption: "live", authorityScope: "execution" },
+      });
+      assert.deepEqual(
+        { status: bound.status, reason: bound.body.error?.message },
+        { status: 409, reason: "Protected source changes require an unbound source." },
+      );
+      await assertAdmissionUnchanged(f, prior);
     }
   }
 });
@@ -753,6 +779,87 @@ test("legacy approved copies survive Secret rotation and failed live adoption; o
   assert.equal((await f.request("GET", path)).data.egress, undefined);
   assert.deepEqual([...f.providers.values()], before);
   f.observed.available = true;
+  // A provider that needs managed login tokens cannot adopt a static key.
+  const proxy = f.controller.selectedDriver("credential_proxy");
+  const control = proxy.sourceControl;
+  const original = control.providers.find((entry) => entry.sourceType.type === "openai");
+  assert.ok(original);
+  const providerType = structuredClone(original.sourceType);
+  const gateway = f.controller.selectedDriver("credential_gateway");
+  const listTypes = gateway.listSourceTypes;
+  let gatewayType;
+  let changeDuringAdmission;
+  const reads = f.secretReads;
+  try {
+    // Simulate a Driver returning a retained mutable catalog entry. Keep the
+    // real catalog, peer availability check, and Secret transport.
+    gateway.listSourceTypes = async (...args) => {
+      const catalog = await listTypes.apply(gateway, args);
+      return catalog.map((entry) => {
+        if (entry.type !== "openai") {
+          return entry;
+        }
+        gatewayType ??= structuredClone(entry);
+        return gatewayType;
+      });
+    };
+    assert.ok(
+      Reflect.set(proxy, "sourceControl", {
+        ...control,
+        providers: control.providers.map((p) =>
+          p === original ? { ...p, sourceType: providerType } : p,
+        ),
+        async assertAvailable(signal) {
+          await control.assertAvailable(signal);
+          if (changeDuringAdmission) {
+            changeDuringAdmission.harnessAuth.loginMode = "chatgptAuthTokens";
+          }
+        },
+      }),
+    );
+    assert.equal(providerType.harnessAuth.loginMode, "api_key");
+    providerType.harnessAuth.loginMode = "chatgptAuthTokens";
+    const catalog = await f.request("GET", `/namespaces/${f.namespace.id}/agent-capabilities`);
+    assert.equal(catalog.status, 200);
+    const offered = catalog.data.capabilities.credentialSources.types.some(
+      (entry) => entry.type === "openai",
+    );
+    const create = await f.request("POST", f.path, {
+      body: {
+        name: "incompatible-lifecycle",
+        type: "openai",
+        config: { authorized_base_url: f.modelProvider.baseUrl },
+        secrets: { api_key: f.secret.ref },
+      },
+    });
+    const patch = await f.request("PATCH", path, { body: consent });
+    assert.deepEqual(
+      { offered, create: create.status, patch: patch.status, reads: f.secretReads - reads },
+      { offered: false, create: 409, patch: 409, reads: 0 },
+    );
+    providerType.harnessAuth.loginMode = "api_key";
+    for (const [side, type] of [
+      ["Proxy", providerType],
+      ["Gateway", gatewayType],
+    ]) {
+      // Change one declaration across the await while its counterpart stays static.
+      assert.equal(type.harnessAuth.loginMode, "api_key");
+      changeDuringAdmission = type;
+      const raced = await f.request("PATCH", path, { body: consent });
+      assert.equal(type.harnessAuth.loginMode, "chatgptAuthTokens");
+      assert.deepEqual(
+        { status: raced.status, reads: f.secretReads - reads },
+        { status: 409, reads: 0 },
+        side + " lifecycle changed before Secret access",
+      );
+      type.harnessAuth.loginMode = "api_key";
+      assert.equal((await f.request("GET", path)).data.egress, undefined);
+      assert.deepEqual([...f.providers.values()], before);
+    }
+  } finally {
+    gateway.listSourceTypes = listTypes;
+    Reflect.set(proxy, "sourceControl", control);
+  }
   const adopted = await f.request("PATCH", path, { body: consent });
   assert.equal(adopted.status, 200, JSON.stringify(adopted.body));
   assert.deepEqual(adopted.data.egress, { adoption: "live", retention: "none" });
@@ -836,6 +943,46 @@ test("current supplier evidence is required at access and send; stored receipts 
     f.controller.transact((unit) => unit.credentialSources.recordEgressInstallation(replacement)),
     /already bound/,
   );
+});
+
+test("retained Sandbox policy versions are independent of plan generation but still fence installation", async (t) => {
+  const f = await staticEgressFixture(t, { recordInstallation: false });
+  assert.equal(f.context.plan.generation, 1);
+  f.observed.policyVersion = 4;
+  f.observed.activePolicyVersion = 4;
+  f.observed.evidence.policy_version = 4;
+  const installed = await f.egress.wiringStatus(f.context, f.attachment);
+  assert.ok(installed, "matching loaded policy must enroll after retained-Sandbox updates");
+  assert.equal(await f.egress.verifyInstallation(f.context, installed), true);
+
+  // Independent supplier fields must agree; none can borrow the OCE generation
+  // or claim readiness for a policy that is still loading or failed.
+  for (const change of [
+    { policyVersion: 1 },
+    { activePolicyVersion: 1 },
+    { policyStatus: 1 },
+    { policyStatus: 3 },
+    { policyVersion: 0, activePolicyVersion: 0 },
+  ]) {
+    Object.assign(f.observed, change);
+    assert.equal(await f.egress.wiringStatus(f.context, f.attachment), undefined);
+    assert.equal(await f.egress.verifyInstallation(f.context, installed), false);
+    Object.assign(f.observed, { policyVersion: 4, activePolicyVersion: 4, policyStatus: 2 });
+  }
+  f.observed.evidence.policy_version = 1;
+  assert.equal(await f.egress.wiringStatus(f.context, f.attachment), undefined);
+  assert.equal(await f.egress.verifyInstallation(f.context, installed), false);
+
+  // Even unchanged policy content at a new supplier version invalidates the
+  // earlier receipt; changing the comparison must not remove that fence.
+  f.observed.policyVersion = 5;
+  f.observed.activePolicyVersion = 5;
+  f.observed.evidence.policy_version = 5;
+  assert.equal(await f.egress.verifyInstallation(f.context, installed), false);
+  const replacement = await f.egress.wiringStatus(f.context, f.attachment);
+  assert.ok(replacement);
+  assert.notEqual(replacement.enforcement.configurationId, installed.enforcement.configurationId);
+  assert.equal(await f.egress.verifyInstallation(f.context, replacement), true);
 });
 
 test("V1 permits only the exact inert runtime rule and fences both policies before Secret access and send", async (t) => {
@@ -934,1310 +1081,19 @@ test("V1 permits only the exact inert runtime rule and fences both policies befo
   assert.equal(f.providerRequests.length, 0, "send-side widening must not permit a provider send");
 });
 
-const wire = JSON.parse(
-  readFileSync(new URL("../fixtures/static-egress/codex-responses.json", import.meta.url)),
-);
-const responseEvents = () => structuredClone(wire.responseEvents);
-const encode = (events) => encodeSyntheticEvents(events).toString("utf8");
-const selectedMaterial = "synthetic-key-initial";
-const reflectedMaterial = [selectedMaterial, Buffer.from(selectedMaterial).toString("base64")];
-
-function splitText(text) {
-  const middle = Math.floor(text.length / 2);
-  return [text.slice(0, middle), text.slice(middle)];
-}
-
-function outputTextParts(...texts) {
-  return texts.map((text) => ({ type: "output_text", text, annotations: [] }));
-}
-
 function unicodeEscapes(text) {
   return [...text]
     .map((character) => "\\u" + character.charCodeAt(0).toString(16).padStart(4, "0"))
     .join("");
 }
 
-// Exercise the actual protected exchange in both directions. A denied response must
-// release no messages (including its head); an allowed response must arrive byte-for-byte.
-function responseChecks(f) {
-  async function check(
-    rawBody,
-    { blocked, label, stream = true, request = { ...wire.request, stream } } = {},
-  ) {
-    const contentType = stream ? "text/event-stream" : "application/json";
-    const result = await f.exchangeResponse({ status: 200, contentType, rawBody }, request);
-    if (blocked) {
-      assert.equal(result.blocked, true, label);
-    } else {
-      assert.equal(result.response_complete, true, label);
-      assert.equal(result.body?.toString(), rawBody, label);
-    }
-    return rawBody;
-  }
-  return {
-    wireBody: check,
-    events(events, blocked, label, stream = true, request) {
-      const body = stream ? encode(events) : JSON.stringify(events.at(-1).response);
-      return check(body, { blocked, label, stream, request });
-    },
-  };
-}
-
-test("shipped exchange withholds material split across one reasoning part", async (t) => {
-  const f = await staticEgressFixture(t);
-  const [prefix, suffix] = splitText(selectedMaterial);
-  const part = (index, text = "") => ({
-    type: "response.reasoning_summary_part.added",
-    item_id: "rs_exchange",
-    output_index: 0,
-    summary_index: index,
-    part: { type: "summary_text", text },
-  });
-  const summaryDelta = (index, text) => ({
-    type: "response.reasoning_summary_text.delta",
-    item_id: "rs_exchange",
-    output_index: 0,
-    summary_index: index,
-    delta: text,
-  });
-  const textDelta = (index, text) => ({
-    type: "response.reasoning_text.delta",
-    item_id: "rs_exchange",
-    output_index: 0,
-    content_index: index,
-    delta: text,
-  });
-  const textDone = (index, text) => ({
-    type: "response.reasoning_text.done",
-    item_id: "rs_exchange",
-    output_index: 0,
-    content_index: index,
-    text,
-  });
-  const stream = (inner, doneSummary) => {
-    let sequence = 0;
-    const numbered = (event) => ({ sequence_number: sequence++, ...event });
-    const reasoning = { type: "reasoning", id: "rs_exchange", summary: [] };
-    const response = (status) => ({
-      id: "resp_reasoning_exchange",
-      object: "response",
-      model: wire.request.model,
-      created_at: 1791985502,
-      status,
-      output: status === "completed" ? [{ type: "reasoning", summary: doneSummary }] : [],
-    });
-    return [
-      numbered({ type: "response.created", response: response("in_progress") }),
-      numbered({ type: "response.output_item.added", output_index: 0, item: reasoning }),
-      ...inner.map((event) => numbered(event)),
-      numbered({
-        type: "response.output_item.done",
-        output_index: 0,
-        item: { ...reasoning, summary: doneSummary },
-      }),
-      numbered({ type: "response.completed", response: response("completed") }),
-    ];
-  };
-  const redacted = [
-    { type: "summary_text", text: "redacted" },
-    { type: "summary_text", text: "aside" },
-  ];
-  const cases = [
-    {
-      label: "harmless-summary",
-      blocked: false,
-      events: stream(
-        [
-          part(0),
-          summaryDelta(0, "hello "),
-          part(1),
-          summaryDelta(1, "aside"),
-          summaryDelta(0, "world"),
-        ],
-        [
-          { type: "summary_text", text: "hello world" },
-          { type: "summary_text", text: "aside" },
-        ],
-      ),
-    },
-    {
-      label: "harmless-reasoning-text-completion",
-      blocked: false,
-      events: stream([textDelta(0, "ordinary response"), textDone(0, "ordinary response")], []),
-    },
-    {
-      label: "withheld-skipped-summary-index",
-      blocked: true,
-      // Summary parts append: skipping index zero cannot open a later part.
-      events: stream([part(1, "ok")], []),
-    },
-    {
-      label: "withheld-unopened-reasoning-text-completion",
-      blocked: true,
-      // A completion may finish an open index, but cannot open the next one.
-      events: stream([textDelta(0, "ordinary response"), textDone(1, "aside")], []),
-    },
-    {
-      label: "withheld-summary",
-      blocked: true,
-      events: stream(
-        [
-          part(0),
-          summaryDelta(0, prefix),
-          part(1),
-          summaryDelta(1, "aside"),
-          summaryDelta(0, suffix),
-        ],
-        redacted,
-      ),
-    },
-    {
-      label: "withheld-reasoning-text",
-      blocked: true,
-      events: stream([textDelta(0, prefix), textDelta(1, "aside"), textDelta(0, suffix)], redacted),
-    },
-  ];
-  for (const entry of cases) {
-    const rawBody = encode(entry.events);
-    const result = await f.exchangeResponse(
-      { status: 200, contentType: "text/event-stream", rawBody },
-      wire.request,
-    );
-    const released = result.blocked ? 0 : Buffer.byteLength(result.body ?? "");
-    console.log(
-      `exchange ${entry.label}: ${result.blocked ? "withheld" : "delivered"} released_bytes=${released}`,
-    );
-    if (entry.blocked) {
-      assert.equal(result.blocked, true, entry.label);
-      assert.equal(released, 0, entry.label);
-    } else {
-      assert.equal(result.response_complete, true, entry.label);
-      assert.equal(result.body?.toString(), rawBody, entry.label);
-      assert.equal(released, Buffer.byteLength(rawBody), entry.label);
-    }
-  }
-});
-
-test("Responses output text assembled across parts and messages cannot reveal selected material", async (t) => {
-  const f = await staticEgressFixture(t);
-  const check = responseChecks(f);
-  const message = (id, parts) => ({
-    type: "message",
-    id,
-    status: "completed",
-    role: "assistant",
-    content: outputTextParts(...parts),
-  });
-  // Deltas and completed items stay harmless. Only the terminal envelope contains
-  // the candidate, so protecting an earlier projection cannot mask this test.
-  for (const stream of [false, true]) {
-    for (const acrossMessages of [false, true]) {
-      for (const text of [...reflectedMaterial, "ordinary response"]) {
-        const parts = splitText(text);
-        const events = responseEvents();
-        events.at(-1).response.output = acrossMessages
-          ? parts.map((part, i) => message(`msg_${i}`, [part]))
-          : [message("msg_0", parts)];
-        await check.events(
-          events,
-          reflectedMaterial.includes(text),
-          `stream=${stream}, acrossMessages=${acrossMessages}`,
-          stream,
-          stream ? wire.request : { model: "fixture-model", input: "hello", store: false },
-        );
-      }
-    }
-  }
-});
-
-test("Responses refusal parts pass as assistant content and cannot reveal selected material", async (t) => {
-  const f = await staticEgressFixture(t);
-  const check = responseChecks(f);
-  // A provider safety refusal streams as a `refusal` content part with refusal deltas.
-  const refusalEvents = (refusal) => {
-    const events = responseEvents();
-    const [prefix, suffix] = splitText(refusal);
-    return events.flatMap((event) => {
-      const next = structuredClone(event);
-      if (next.part) {
-        next.part = { type: "refusal", refusal: event.type.endsWith(".added") ? "" : refusal };
-      }
-      if (next.type === "response.output_text.delta") {
-        return [
-          { ...next, type: "response.refusal.delta", delta: prefix },
-          { ...next, type: "response.refusal.delta", delta: suffix },
-        ];
-      }
-      if (next.type === "response.output_text.done") {
-        delete next.text;
-        return [{ ...next, type: "response.refusal.done", refusal }];
-      }
-      for (const item of [next.item, ...(next.response?.output ?? [])]) {
-        if (item?.type === "message" && item.content.length > 0) {
-          item.content = [{ type: "refusal", refusal }];
-        }
-      }
-      return [next];
-    });
-  };
-  for (const stream of [false, true]) {
-    const request = stream
-      ? wire.request
-      : { model: "fixture-model", input: "hello", store: false };
-    await check.events(
-      refusalEvents("I can't help with that."),
-      false,
-      `refusal passes, stream=${stream}`,
-      stream,
-      request,
-    );
-    for (const material of reflectedMaterial) {
-      await check.events(
-        refusalEvents(`I can't help with ${material}.`),
-        true,
-        `refusal reflecting material, stream=${stream}`,
-        stream,
-        request,
-      );
-    }
-  }
-  // Split across an output_text delta and a refusal delta in the next part: the consumer may
-  // join both, so the assistant stream protects their concatenation.
-  const mixed = (text) => {
-    const [created, item, part, delta, ...rest] = responseEvents();
-    const [prefix, suffix] = splitText(text);
-    return [
-      created,
-      item,
-      part,
-      { ...delta, delta: prefix },
-      { ...part, content_index: 1, part: { type: "refusal", refusal: "" } },
-      {
-        ...delta,
-        type: "response.refusal.delta",
-        content_index: 1,
-        delta: suffix,
-      },
-      ...rest,
-    ];
-  };
-  await check.events(mixed("ordinary response"), false, "benign output_text and refusal deltas");
-  for (const material of reflectedMaterial) {
-    await check.events(mixed(material), true, "output_text and refusal deltas assembling material");
-  }
-  // Split across refusal deltas only: the terminal snapshot stays harmless.
-  for (const material of reflectedMaterial) {
-    const events = refusalEvents(material).map((event) => {
-      if (event.type === "response.refusal.done") {
-        return { ...event, refusal: "redacted" };
-      }
-      if (event.part?.refusal) {
-        return { ...event, part: { ...event.part, refusal: "redacted" } };
-      }
-      for (const item of [event.item, ...(event.response?.output ?? [])]) {
-        if (item?.type === "message" && item.content.length > 0) {
-          item.content = [{ type: "refusal", refusal: "redacted" }];
-        }
-      }
-      return event;
-    });
-    await check.events(events, true, "refusal deltas assembling the material");
-  }
-});
-
-test("Responses assistant projections protect independent items and seeded deltas", async (t) => {
-  const f = await staticEgressFixture(t);
-  const check = responseChecks(f);
-  const parts = (text) => outputTextParts(...splitText(text));
-  function eventsFor(text, kind) {
-    const events = responseEvents();
-    if (kind === "done") {
-      // Change only this independent item. Deltas and terminal output stay READY.
-      events[6].item.content = parts(text);
-    } else if (kind === "envelope") {
-      events[7].response.output[0].content = parts(text);
-    } else if (kind === "added") {
-      events[1].item.content = parts(text);
-      // Seeded parts already occupy indexes 0 and 1; no duplicate append.
-      events.splice(2, 1);
-    } else if (kind === "deltas") {
-      const [left, right] = parts(text);
-      events.splice(3, 1, { ...events[3], delta: left.text }, { ...events[3], delta: right.text });
-    } else {
-      // Split the seed across two parts, then finish via an ID-free delta.
-      // No single indexed SDK snapshot contains the full candidate.
-      // Split inside the citation opener when present, so neither event has it.
-      const citation = text.indexOf("citation");
-      const boundary = citation === -1 ? Math.floor(text.length / 2) : citation + 3;
-      const seed = parts(text.slice(0, boundary));
-      events[3].delta = text.slice(boundary);
-      if (kind === "seed") {
-        events[1].item.content = seed;
-        events.splice(2, 1);
-      } else {
-        // The delta names the first item, but the assistant consumer sends it
-        // to the most recently added message. Both wire items remain valid.
-        const active = structuredClone(events[1]);
-        active.output_index = 1;
-        active.item.id = "msg_active";
-        active.item.content = seed;
-        events.splice(3, 0, active);
-        const done = structuredClone(events.at(-2));
-        done.output_index = 1;
-        done.item.id = "msg_active";
-        events.splice(events.length - 1, 0, done);
-      }
-    }
-    return events;
-  }
-  // Retain both encodings on the two independent item surfaces. Other cases
-  // each exercise a distinct consumer boundary rather than a Cartesian matrix.
-  for (const kind of ["done", "added", "seed"]) {
-    for (const candidate of reflectedMaterial) {
-      await check.events(eventsFor(candidate, kind), true, kind);
-    }
-  }
-  const collapsed = "synthetic-key-<oai-mem-citation>note</oai-mem-citation>initial";
-  for (const kind of ["done", "added", "envelope", "deltas", "seed", "active"]) {
-    // protect() also asserts zero response messages, including the head.
-    await check.events(eventsFor(collapsed, kind), true, kind);
-  }
-  await check.events(eventsFor(collapsed, "envelope"), true, "JSON envelope", false);
-  // An open citation in one message cannot hide visible text in the next.
-  // The preceding stream events remain benign, isolating the terminal envelope check.
-  for (const streaming of [false, true]) {
-    for (const text of [...reflectedMaterial, "ordinary response"]) {
-      const events = responseEvents();
-      const response = events.at(-1).response;
-      response.output = outputWithIndependentCitation(response.output[0], text);
-      const rawBody = await check.events(
-        events,
-        reflectedMaterial.includes(text),
-        "citation in an independent message",
-        streaming,
-      );
-      assert.equal(rawBody.includes(text), false, "text should be split by a citation");
-    }
-  }
-  for (const [kind, candidate] of [
-    ["done", "Answer.<oai-mem-citation>source</oai-mem-citation>"],
-    ["added", "Hello <oai-mem-citation>source</oai-mem-citation> world"],
-    ["envelope", "Intro\n<proposed_plan>\n- step\n</proposed_plan>\nDone"],
-    ["seed", "Hello <oai-mem-citation>source</oai-mem-citation> world"],
-    ["active", "Hello <oai-mem-citation>source</oai-mem-citation> world"],
-    ["deltas", "Intro\n\u0085<proposed_plan>\u0085\n- step\n</proposed_plan>\nDone"],
-    ["seed", "Intro\n<proposed_plan>\n- step\n</proposed_plan>\nDone"],
-    ["done", "ordinary <oai-mem-citation>unclosed"],
-    ["done", "ordinary <proposed_plan>inline</proposed_plan>"],
-    ["done", "synthetic-key-&lt;oai-mem-citation&gt;note&lt;/oai-mem-citation&gt;initial"],
-  ]) {
-    await check.events(eventsFor(candidate, kind), false, `benign ${kind}`);
-  }
-  // Switching consumers must inspect the previous run before discarding it.
-  for (const item of [
-    { type: "message", role: "assistant", id: "msg_next", content: [] },
-    { type: "reasoning", id: "rs_next", summary: [] },
-  ]) {
-    for (const malicious of [false, true]) {
-      const events = eventsFor(
-        malicious ? collapsed : "Hello <oai-mem-citation>source</oai-mem-citation> world",
-        "seed",
-      );
-      const delta = events.findIndex((event) => event.type === "response.output_text.delta");
-      events.splice(delta + 1, 0, { type: "response.output_item.added", output_index: 1, item });
-      events.splice(events.length - 1, 0, {
-        type: "response.output_item.done",
-        output_index: 1,
-        item,
-      });
-      await check.events(events, malicious, `switch to ${item.type}`);
-    }
-  }
-  const safeEnvelope = eventsFor("Answer.<oai-mem-citation>source</oai-mem-citation>", "envelope");
-  await check.events(safeEnvelope, false, "safe JSON envelope", false);
-  // Hidden data still receives raw and citation-only protection in either mode.
-  for (const candidate of [
-    "<oai-mem-citation>synthetic-key-initial</oai-mem-citation>",
-    "<proposed_plan>\nsynthetic-key-initial\n</proposed_plan>",
-    "<proposed_plan>\n" + collapsed + "\n</proposed_plan>",
-  ]) {
-    await check.events(eventsFor(candidate, "seed"), true, "hidden data");
-  }
-  // Assistant projections must not reinterpret local tool data.
-  const tool = {
-    type: "function_call",
-    id: "fc_markup",
-    call_id: "call_markup",
-    name: "fixture_function_0",
-    arguments: JSON.stringify({ text: "<oai-mem-citation>note" }),
-  };
-  const nonMessage = [
-    structuredClone(wire.responseEvents[0]),
-    { type: "response.output_item.added", output_index: 0, item: tool },
-    { type: "response.output_item.done", output_index: 0, item: tool },
-    {
-      type: "response.completed",
-      response: { ...wire.responseEvents.at(-1).response, output: [tool] },
-    },
-  ];
-  await check.events(nonMessage, false, "local tool markup");
-});
-
-test("signed Responses Plan projections protect completed and response-wide streamed text", async (t) => {
-  const f = await staticEgressFixture(t);
-  const check = responseChecks(f);
-  const added = (index, text) => ({
-    type: "response.output_item.added",
-    output_index: index,
-    item: {
-      type: "message",
-      id: `msg_plan_${index}`,
-      role: "assistant",
-      content: outputTextParts(text),
-    },
-  });
-  const done = (event, text = "READY") => ({
-    ...event,
-    type: "response.output_item.done",
-    item: { ...event.item, content: outputTextParts(text) },
-  });
-  const response = (...events) => [wire.responseEvents[0], ...events, wire.responseEvents.at(-1)];
-  for (const unsafe of [false, true]) {
-    const expected = unsafe ? ["synthetic", "key", "initial"].join("-") : "ready to proceed";
-    const split = expected.lastIndexOf(unsafe ? "-" : " ") + 1;
-    const left = expected.slice(0, split);
-    const right = expected.slice(split);
-    // Completed Plan extracts the raw block before stripping its citations.
-    // Ordinary citation-visible text and the terminal envelope stay harmless.
-    const completed = responseEvents();
-    const markup = `<oai-mem-citation>outer\n<proposed_plan>\n${left}<oai-mem-citation>note</oai-mem-citation>${right}\n</proposed_plan>\n`;
-    completed[6].item.content = outputTextParts(markup);
-    assert.ok(!encode(completed).includes(expected));
-    await check.events(completed, unsafe, "completed Plan and benign twin");
-    // Each completed message owns its Plan; a later safe message must not
-    // erase an unsafe earlier message from the response-envelope projection.
-    const envelope = responseEvents();
-    envelope.at(-1).response.output = [
-      { ...completed[6].item, content: outputTextParts(markup) },
-      {
-        ...completed[6].item,
-        id: "msg_later_plan",
-        content: outputTextParts("<proposed_plan>\nSafe final message\n</proposed_plan>"),
-      },
-    ];
-    await check.events(envelope, unsafe, "independent completed Plan in envelope");
-    // The response has one streamed Plan, even though each seed has its own
-    // assistant parser and both completed messages independently say READY.
-    const a = added(0, `<proposed_plan>\n${left}`);
-    const b = added(1, `<proposed_plan>\n${right}`);
-    const streamed = response(a, done(a), b, done(b));
-    assert.ok(!encode(streamed).includes(expected));
-    await check.events(streamed, unsafe, "cross-message Plan and benign twin");
-  }
-  assert.equal(wire.responseEvents.length, 8);
-  await check.events(wire.responseEvents, false, "captured finite eight-event response");
-  const generated =
-    "Intro\n<proposed_plan>\n- Inspect <oai-mem-citation>source</oai-mem-citation>code\n</proposed_plan>\nDone";
-  for (const split of [false, true]) {
-    const events = responseEvents();
-    events[4].text = generated;
-    events[5].part.text = generated;
-    events[6].item.content = outputTextParts(generated);
-    events[7].response.output[0].content = outputTextParts(generated);
-    events.splice(
-      3,
-      1,
-      ...(split
-        ? [
-            "Intro\n<pro",
-            "posed_plan>\n- Inspect <oai-mem-",
-            "citation>source</oai-mem-citation>code\n</proposed_plan>\nDone",
-          ]
-        : [generated]
-      ).map((delta) => ({ ...wire.responseEvents[3], delta })),
-    );
-    await check.events(events, false, `coherent generated plan, split=${split}`);
-  }
-  // These opposite verdicts distinguish the actual stream from a last-block,
-  // per-message, close-completes, or raw-before-citations approximation.
-  const a = added(0, "<proposed_plan>\nsynthetic-key-");
-  const b = added(1, "<proposed_plan>\ninitial");
-  await check.events(
-    response(a, done(a, "<proposed_plan>\nfinished\n</proposed_plan>"), b, done(b)),
-    false,
-    "completed Plan stops later Plan deltas",
-  );
-  const spanning = added(0, "<proposed_plan>\nsynthetic-key-");
-  const delta = (text) => ({ ...wire.responseEvents[3], item_id: spanning.item.id, delta: text });
-  await check.events(
-    response(
-      spanning,
-      delta(
-        "<oai-mem-citation>\n</proposed_plan>\nignored\n<proposed_plan>\n</oai-mem-citation>initial",
-      ),
-      done(spanning),
-    ),
-    true,
-    "stream strips citations before recognizing tags",
-  );
-  // A partial citation opener stays buffered when another assistant or
-  // reasoning item displaces its owner. Flushing early would insert the opener
-  // between the credential halves and miss the actual streamed Plan text.
-  for (const next of [
-    b,
-    {
-      type: "response.output_item.added",
-      output_index: 1,
-      item: { type: "reasoning", id: "rs_plan", summary: [] },
-    },
-  ]) {
-    const tail = added(0, "<proposed_plan>\nsynthetic-key-<oai-mem-");
-    const suffix = next.item.type === "message" ? [] : [added(2, "<proposed_plan>\ninitial")];
-    const endNext =
-      next.item.type === "message" ? done(next) : { ...next, type: "response.output_item.done" };
-    // done(tail) flushes the currently active, unrelated assistant first.
-    await check.events(
-      response(tail, next, ...suffix, done(tail), endNext, ...suffix.map((event) => done(event))),
-      true,
-      `deferred citation tail after ${next.item.type}`,
-    );
-  }
-  const tail = added(0, "<proposed_plan>\nsynthetic-key-<oai-mem-");
-  await check.events(
-    response(tail, done(tail), b, done(b)),
-    false,
-    "done before displacement really flushes the partial opener",
-  );
-  const blocks = added(0, "<proposed_plan>\n</proposed_plan>\n<proposed_plan>\nsynthetic-key-");
-  await check.events(
-    response(blocks, done(blocks), b, done(b)),
-    true,
-    "closing a block does not complete the streamed Plan",
-  );
-  // Completed Plan selects the last raw block, not every prior block. Ordinary
-  // citation-visible text stays harmless while the earlier Plan would be unsafe.
-  const last = responseEvents();
-  last[6].item.content = outputTextParts(
-    "<oai-mem-citation>outer\n<proposed_plan>\nsynthetic-key-<oai-mem-citation>note</oai-mem-citation>initial\n</proposed_plan>\n<proposed_plan>\nfinal safe plan\n</proposed_plan>",
-  );
-  await check.events(last, false, "completed Plan selects only the last block");
-});
-
-test("Responses incremental text snapshots cannot reveal selected material", async (t) => {
-  const f = await staticEgressFixture(t);
-  const check = responseChecks(f);
-  const events = (candidate, kind) => {
-    const [created, item, part, delta, ...rest] = responseEvents();
-    const [prefix, suffix] = splitText(candidate);
-    if (kind === "item") {
-      item.item.content = [{ ...part.part, text: prefix }];
-      return [created, item, { ...delta, delta: suffix }, ...rest];
-    }
-    if (kind === "parts") {
-      return [
-        created,
-        item,
-        part,
-        { ...delta, delta: prefix },
-        { ...part, content_index: 1 },
-        { ...delta, content_index: 1, delta: "distraction" },
-        { ...delta, delta: suffix },
-        ...rest,
-      ];
-    }
-    if (kind === "duplicate") {
-      part.part.text = prefix;
-      return [
-        created,
-        item,
-        part,
-        { ...part, part: { ...part.part, text: "distraction" } },
-        { ...delta, delta: suffix },
-        ...rest,
-      ];
-    }
-    if (kind === "initial") {
-      created.response.output = [{ ...item.item, content: [{ ...part.part, text: prefix }] }];
-      return [created, item, part, { ...delta, delta: suffix }, ...rest];
-    }
-    part.part.text = prefix;
-    return [created, item, part, { ...delta, delta: suffix }, ...rest];
-  };
-  // A harmless terminal response cannot erase a credential exposed in an earlier
-  // SDK snapshot assembled from an added part and later indexed deltas.
-  for (const kind of ["part", "item", "parts", "duplicate", "initial"]) {
-    for (const candidate of reflectedMaterial) {
-      await check.events(events(candidate, kind), true, `${kind} snapshot must be withheld`);
-    }
-  }
-  for (const kind of ["part", "item", "parts"]) {
-    await check.events(events("ordinary response", kind), false, `benign ${kind}`);
-  }
-  const laterProgress = events("ordinary response", "part");
-  const progress = structuredClone(laterProgress[0]);
-  progress.type = "response.in_progress";
-  progress.response.output = [structuredClone(laterProgress.at(-2).item)];
-  laterProgress.splice(2, 0, progress);
-  await check.events(laterProgress, false, "later in_progress snapshot");
-});
-
-test("Responses follow-up replays assistant text with empty provider metadata", async (t) => {
-  const f = await staticEgressFixture(t);
-  const check = responseChecks(f);
-  const events = responseEvents();
-  const assistant = events.at(-1).response.output[0];
-  assistant.content[0].logprobs = [];
-  const tool = {
-    type: "custom_tool_call",
-    id: "ct_local",
-    call_id: "call_local",
-    name: "fixture_custom_0",
-    input: "fixture input",
-  };
-  events.splice(
-    -1,
-    0,
-    { type: "response.output_item.added", output_index: 1, item: { ...tool, input: "" } },
-    { type: "response.output_item.done", output_index: 1, item: tool },
-  );
-  events.at(-1).response.output.push(tool);
-  const initial = {
-    ...wire.request,
-    tools: [...wire.request.tools, { type: "custom", name: tool.name }],
-  };
-  // The local tool call and assistant message must pass the response policy before replay.
-  await check.events(events, false, "the first exchange releases a local call", true, initial);
-
-  const output = {
-    type: "custom_tool_call_output",
-    call_id: tool.call_id,
-    output: [{ type: "input_text", text: "fixture result" }],
-  };
-  const followup = {
-    ...initial,
-    input: [...initial.input, assistant, tool, output],
-  };
-  await check.events(responseEvents(), false, "the follow-up admits the replay", true, followup);
-  assert.deepEqual(f.providerRequests.at(-1).body, followup);
-
-  const [part] = assistant.content;
-  const withPart = (content) => ({ ...assistant, content: [content] });
-  // Keep the metadata confined to replayed assistant output text.
-  const deniedInputs = [
-    ...["system", "developer", "user"].map((role) => [{ ...assistant, role }, tool, output]),
-    [assistant, tool, { ...output, output: [part] }],
-    [withPart({ ...part, type: "input_text" }), tool, output],
-    [withPart({ ...part, annotations: [{}] }), tool, output],
-    [withPart({ ...part, logprobs: [{}] }), tool, output],
-    [withPart({ ...part, annotations: null }), tool, output],
-    [withPart({ ...part, logprobs: null }), tool, output],
-    [withPart({ ...part, unknown: [] }), tool, output],
-  ];
-  const reads = f.secretReads;
-  const sends = f.providerRequests.length;
-  for (const input of deniedInputs) {
-    const request = { ...followup, input: [...initial.input, ...input] };
-    assert.ok((await f.resolve(f.capture(request))).refused);
-  }
-  assert.equal(f.secretReads, reads, "unsupported metadata cannot read credentials");
-  assert.equal(f.providerRequests.length, sends, "unsupported metadata cannot send");
-});
+registerStaticEgressResponsesPrefixCases();
 
 test("Responses admits bounded native agent messages", async (t) => {
-  const f = await staticEgressFixture(t);
-  const check = responseChecks(f);
-  const message = {
-    type: "agent_message",
-    id: "amsg_fixture",
-    author: "/root",
-    recipient: "/root/worker",
-    content: [{ type: "input_text", text: "Synthetic task" }],
-  };
-  const encrypted = { type: "encrypted_content", encrypted_content: "synthetic-ciphertext" };
-  const requestWith = (item) => ({ ...wire.request, input: [...wire.request.input, item] });
-
-  for (const content of [message.content, [...message.content, encrypted]]) {
-    const request = requestWith({ ...message, content });
-    await check.events(responseEvents(), false, "native agent input completes", true, request);
-    assert.deepEqual(f.providerRequests.at(-1).body, request);
-  }
-
-  const reads = f.secretReads;
-  const sends = f.providerRequests.length;
-  for (const item of [
-    { ...message, author: "https://example.invalid/agent" },
-    { ...message, recipient: "/other/worker" },
-    { ...message, recipient: "/root/../other" },
-    { ...message, tools: [{ type: "web_search" }] },
-    { ...message, content: [] },
-    { ...message, content: [encrypted] },
-    { ...message, content: [...message.content, encrypted, encrypted] },
-    { ...message, content: [{ type: "input_image", image_url: "https://example.invalid/image" }] },
-    { ...message, content: [...message.content, { ...encrypted, encrypted_content: {} }] },
-  ]) {
-    assert.ok((await f.resolve(f.capture(requestWith(item)))).refused);
-  }
-  assert.equal(f.secretReads, reads, "unsupported agent messages cannot read credentials");
-  assert.equal(f.providerRequests.length, sends, "unsupported agent messages cannot send");
+  await runStaticEgressNativeAgentMessageCase(t);
 });
 
-test("Codex manual compaction forwards its closed metadata through protected inference", async (t) => {
-  const f = await staticEgressFixture(t);
-  const key = "x-codex-turn-metadata";
-  const metadata = JSON.parse(wire.request.client_metadata[key]);
-  const compaction = {
-    trigger: "manual",
-    reason: "user_requested",
-    implementation: "responses",
-    phase: "standalone_turn",
-    strategy: "memento",
-  };
-  function request(record, kind = "compaction") {
-    return {
-      ...wire.request,
-      client_metadata: {
-        ...wire.request.client_metadata,
-        [key]: JSON.stringify({ ...metadata, request_kind: kind, compaction: record }),
-      },
-    };
-  }
-  const manual = request(compaction);
-  const check = responseChecks(f);
-  await check.events(responseEvents(), false, "manual compaction", true, manual);
-  assert.deepEqual(f.providerRequests.at(-1).body, manual);
-
-  // Codex serializes reasoning content as null when a prior provider item omitted it.
-  const reasoning = {
-    type: "reasoning",
-    id: "rs_fixture",
-    summary: [{ type: "summary_text", text: "Earlier reasoning" }],
-    content: null,
-    encrypted_content: "opaque reasoning fixture",
-  };
-  const replay = { ...manual, input: [...manual.input, reasoning] };
-  await check.events(responseEvents(), false, "manual compaction replays reasoning", true, replay);
-  assert.deepEqual(f.providerRequests.at(-1).body, replay);
-
-  const reads = f.secretReads;
-  const sends = f.providerRequests.length;
-  for (const invalid of [
-    request({ ...compaction, strategy: "unknown" }),
-    request({ ...compaction, phase: undefined }),
-    request({ ...compaction, authority: "owner" }),
-    request(compaction, "turn"),
-    { ...manual, tools: [{ type: "web_search" }] },
-    { ...manual, model: "outside-the-grant" },
-    ...[{}, "text", [{ type: "input_text", text: "unexpected" }]].map((content) => ({
-      ...replay,
-      input: [...manual.input, { ...reasoning, content }],
-    })),
-    { ...replay, input: [...manual.input, { ...reasoning, unknown: null }] },
-  ]) {
-    assert.ok((await f.resolve(f.capture(invalid))).refused);
-  }
-  assert.equal(f.secretReads, reads);
-  assert.equal(f.providerRequests.length, sends);
-});
-
-test("selected Codex Responses wire admits local tools and finite SSE while rejecting remote tools and unprotected events", async (t) => {
-  const f = await staticEgressFixture(t);
-  // Sanitized packaged 0.163.0-alpha.2 request and synthetic response consumed by that
-  // binary. This exercises OCE's real transport, not a model provider or installed Harness.
-  const check = responseChecks(f);
-  const body = encode(wire.responseEvents);
-  await check.wireBody(body);
-  assert.deepEqual(f.providerRequests[0].body, wire.request);
-  await check.wireBody(body.replaceAll("\n", "\r\n"), { label: "CRLF" });
-
-  // A reduced, sanitized packaged-client capture uses developer input for local tools.
-  // Its format header participates in the signed request. This proves the OCE
-  // contract with a fixture sender, not native relay or model-provider support.
-  const inline = JSON.parse(
-    readFileSync(new URL("../fixtures/static-egress/codex-inline-tools.json", import.meta.url)),
-  );
-  inline.request.client_metadata.mcp_attribution = JSON.stringify({ status: "none" });
-  const metadataKey = "x-codex-turn-metadata";
-  const turnMetadata = JSON.parse(inline.request.client_metadata[metadataKey]);
-  const repositoryRoot = "/workspace/repository";
-  const origin = "https://example.invalid/owner/repository.git";
-  // Extend the sanitized request with the metadata Codex sends from a Git checkout.
-  const workspace = {
-    latest_git_commit_hash: "a".repeat(40),
-    has_changes: false,
-    associated_remote_urls: {
-      origin,
-      mirror: "git@example.invalid:owner/repository.git",
-    },
-  };
-  const captureInline = (request) => {
-    const captured = f.capture(request);
-    captured.request.headers.push(
-      ...Object.entries(inline.headers).map(([name, value]) => ({ name, value })),
-    );
-    return captured;
-  };
-  // Captured native requests paired telemetry "ultra" with wire "xhigh". Preserve each field's
-  // supported spelling through authorization and the actual TLS provider request.
-  for (const [effort, metadata] of [
-    [inline.request.reasoning.effort, turnMetadata],
-    [
-      inline.request.reasoning.effort,
-      { ...turnMetadata, workspaces: { [repositoryRoot]: workspace } },
-    ],
-    ["high", { ...turnMetadata, reasoning_effort: "high" }],
-    ["xhigh", { ...turnMetadata, reasoning_effort: "ultra" }],
-    ["max", { ...turnMetadata, reasoning_effort: "max" }],
-  ]) {
-    inline.request.reasoning.effort = effort;
-    inline.request.client_metadata[metadataKey] = JSON.stringify(metadata);
-    const captured = captureInline(inline.request);
-    const { ready } = await f.resolve(captured);
-    assert.ok(ready, "native metadata and inline tools resolve through the installed provider");
-    assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
-    f.setResponse({ status: 200, contentType: "text/event-stream", rawBody: body });
-    const protectedReply = await f.protect(captured, await f.send(captured, ready));
-    assert.equal(protectedReply.response_complete, true);
-    assert.equal(protectedReply.body.toString(), body);
-    assert.deepEqual(f.providerRequests.at(-1).body, inline.request);
-  }
-
-  // Inline declarations cannot expand the admitted local-tool grant or let
-  // client metadata select authority. Refuse before another Secret read/send.
-  const inlineReads = f.secretReads;
-  const inlineSends = f.providerRequests.length;
-  const mutations = [
-    ...[
-      { status: "none" },
-      " ".repeat(8192) + '{"status":"none"}',
-      '{"status":"none","status":"none"}',
-      '{"status":"active"}',
-      '{"status":"none","server":"https://remote.example.test"}',
-    ].map((attribution) => (request) => {
-      request.client_metadata.mcp_attribution = attribution;
-    }),
-    ...["system", "user", "assistant"].map((role) => (request) => {
-      request.input[0].role = role;
-    }),
-    (request) => {
-      request.input[0].tools.push({ type: "web_search" });
-    },
-    (request) => {
-      request.input[0].tools[0].tools.push({ type: "web_search" });
-    },
-    (request) => {
-      request.input[0].authority = "owner";
-    },
-    (request) => {
-      request.input[0].tools[1].tools[0].parameters.properties.message.encrypted = false;
-    },
-    (request) => {
-      request.input[0].tools[1].tools[0].parameters.properties.message.type = "number";
-    },
-    (request) => {
-      const metadata = JSON.parse(request.client_metadata[metadataKey]);
-      metadata.reasoning_effort = "unrecognized";
-      request.client_metadata[metadataKey] = JSON.stringify(metadata);
-    },
-    ...["ultra", "unrecognized"].map((effort) => (request) => {
-      request.reasoning.effort = effort;
-    }),
-    ...[
-      { relative: workspace },
-      { ["/".repeat(4097)]: workspace },
-      { ["/workspace/line\nbreak"]: workspace },
-      { [repositoryRoot]: workspace, "/workspace/another-repository": workspace },
-      { [repositoryRoot]: {} },
-      { [repositoryRoot]: { namespace_id: f.namespace.id } },
-      { [repositoryRoot]: { latest_git_commit_hash: "1234" } },
-      { [repositoryRoot]: { has_changes: "false" } },
-      ...[
-        {},
-        { "up\u017ftream": origin },
-        { origin: "https://\u212A.example.invalid/owner/repository.git" },
-        { origin: "https://example.invalid/owner/repo\u017fitory.git" },
-        {
-          origin: syntheticCredentialUrl({
-            username: "fixture-user",
-            password: "fixture-password",
-            host: "example.invalid",
-            pathname: "/owner/repository.git",
-          }),
-        },
-        { origin: origin + "?query=value" },
-        { origin: origin + "#fragment" },
-        { origin: "ssh://git@example.invalid/owner/repository.git" },
-        { origin: "fixture-user@example.invalid:owner/repository.git" },
-        { origin: "helper::git@example.invalid:owner/repository.git" },
-        { origin: "https://example.invalid/" + "a".repeat(2048) },
-        Object.fromEntries(Array.from({ length: 17 }, (_, index) => [index, origin])),
-      ].map((associated_remote_urls) => ({
-        [repositoryRoot]: { associated_remote_urls },
-      })),
-    ].map((workspaces) => (request) => {
-      request.client_metadata[metadataKey] = JSON.stringify({ ...turnMetadata, workspaces });
-    }),
-    (request) => {
-      request.client_metadata[metadataKey] =
-        '{"workspaces":{"/workspace/repository":{"has_changes":false,"has_changes":true}}}';
-    },
-    (request) => {
-      request.client_metadata.namespace_id = f.namespace.id;
-    },
-    (request) => {
-      request.model = "model-outside-the-inference-grant";
-    },
-    (request) => {
-      request.text.format = {
-        type: "json_schema",
-        name: "output",
-        schema: { type: "string", encrypted: true },
-      };
-    },
-    (request) => {
-      request.store = true;
-    },
-  ];
-  for (const mutate of mutations) {
-    const request = structuredClone(inline.request);
-    mutate(request);
-    assert.ok((await f.resolve(captureInline(request))).refused);
-  }
-  assert.equal(f.secretReads, inlineReads, "unsupported inline requests cannot read credentials");
-  assert.equal(f.providerRequests.length, inlineSends, "unsupported inline requests cannot send");
-  const beforeReads = f.secretReads;
-  for (const body of [
-    { ...wire.request, tools: [...wire.request.tools, ...wire.refusedTools] },
-    { ...wire.request, tools: [{ type: "mcp", server_url: "https://remote.example.test" }] },
-    { ...wire.request, tools: [{ type: "namespace", name: "remote", tools: wire.refusedTools }] },
-    { ...wire.request, tools: [{ ...wire.request.tools[0], strict: null }] },
-    { ...wire.request, previous_response_id: "unadmitted-state" },
-    {
-      ...wire.request,
-      input: [
-        {
-          type: "message",
-          role: "user",
-          content: [{ type: "input_image", image_url: "https://remote.example.test/image" }],
-        },
-      ],
-    },
-    { ...wire.request, client_metadata: { namespace_id: f.namespace.id } },
-  ]) {
-    assert.ok((await f.resolve(f.capture(body))).refused);
-  }
-  assert.equal(
-    f.secretReads,
-    beforeReads,
-    "unsupported provider operations cannot read credentials",
-  );
-
-  const split = responseEvents();
-  const deltaIndex = split.findIndex((event) => event.type === "response.output_text.delta");
-  const delta = split[deltaIndex];
-  split.splice(
-    deltaIndex,
-    1,
-    { ...delta, delta: "synthetic-key-" },
-    { ...delta, delta: "initial" },
-  );
-  const switched = responseEvents();
-  const firstMessage = switched
-    .slice(1, -1)
-    .map((event) => JSON.parse(JSON.stringify(event).replaceAll("READY", "synthetic-key-")));
-  const secondMessage = switched.slice(1, -1).map((event) => ({
-    ...JSON.parse(
-      JSON.stringify(event)
-        .replaceAll("READY", "initial")
-        .replaceAll("msg_runtime_probe", "msg_second"),
-    ),
-    output_index: 1,
-  }));
-  switched.splice(1, switched.length - 2, ...firstMessage, ...secondMessage);
-  // Keep the terminal snapshot harmless so only cross-item deltas trigger refusal.
-  await check.events(
-    switched,
-    true,
-    "OutputTextDelta drops item IDs, so the consumer-observable concatenation must be scanned",
-  );
-  // Function arguments have a protocol-defined JSON layer, including when
-  // unicode escapes straddle deltas. A harmless terminal snapshot cannot erase
-  // arguments that a local tool consumer already accumulated.
-  const functionEvents = (argumentsText) => {
-    const item = {
-      type: "function_call",
-      id: "fc_local",
-      call_id: "call_local",
-      name: "fixture_function_0",
-      arguments: argumentsText,
-      status: "completed",
-    };
-    const end = structuredClone(wire.responseEvents.at(-1));
-    end.response.output = [item];
-    return [
-      structuredClone(wire.responseEvents[0]),
-      {
-        type: "response.output_item.added",
-        output_index: 0,
-        item: { ...item, arguments: "", status: "in_progress" },
-      },
-      ...splitText(argumentsText).map((delta) => ({
-        type: "response.function_call_arguments.delta",
-        output_index: 0,
-        item_id: item.id,
-        delta,
-      })),
-      {
-        type: "response.function_call_arguments.done",
-        output_index: 0,
-        item_id: item.id,
-        arguments: argumentsText,
-      },
-      { type: "response.output_item.done", output_index: 0, item },
-      end,
-    ];
-  };
-  const safeFunction = functionEvents('{"cmd":"printf READY"}');
-  await check.events(safeFunction, false, "ordinary Harness-local function tools remain supported");
-  // Providers can omit argument deltas. The two completion events must still agree
-  // on which arguments the Harness would execute.
-  const withoutDeltas = structuredClone(safeFunction);
-  withoutDeltas.splice(2, 2);
-  await check.events(withoutDeltas, false, "function call without argument deltas");
-  withoutDeltas[2].arguments = '{"cmd":"different arguments"}';
-  await check.events(
-    withoutDeltas,
-    true,
-    "function_call_arguments.done and output_item.done cannot disagree about the arguments",
-  );
-  const escapedCredential = unicodeEscapes("synthetic-key-initial");
-  const escapedFunction = functionEvents('{"cmd":"' + escapedCredential + '"}');
-  const disguisedFunction = structuredClone(escapedFunction);
-  disguisedFunction.splice(4, 1);
-  disguisedFunction.at(-2).item.arguments = '{"cmd":"printf READY"}';
-  disguisedFunction.at(-1).response.output = [];
-  const wrongAssociation = structuredClone(safeFunction);
-  wrongAssociation[3].item_id = "fc_unassociated";
-  const afterDone = structuredClone(safeFunction);
-  afterDone.splice(-1, 0, safeFunction[2]);
-  for (const events of [
-    escapedFunction,
-    disguisedFunction,
-    wrongAssociation,
-    afterDone,
-    functionEvents('{"cmd":"unterminated'),
-    functionEvents('{"cmd":"ok","cmd":"other"}'),
-  ]) {
-    await check.events(
-      events,
-      true,
-      "argument decoding, item association and completion all precede release",
-    );
-  }
-  const remote = responseEvents();
-  remote[1].item = { type: "web_search_call", id: "remote-effect", status: "completed" };
-  const wrongModel = responseEvents();
-  wrongModel.at(-1).response.model = "unadmitted-model";
-  for (const unsafe of [
-    encode(wire.responseEvents.slice(0, -1)),
-    encode(split),
-    encode(remote),
-    encode(wrongModel),
-    body + 'event: response.future_event\ndata: {"type":"response.future_event"}\n\n',
-    body.replace('"delta":"READY"', '"delta":"synthetic-key-initial","delta":"READY"'),
-    body.replace("event: response.created", "event: response.completed"),
-    ":ignored\rcomment\n" + body,
-    body.replace("\n\n", "\n\n\n"),
-    body.replace(/\n\n$/, "\n"),
-  ]) {
-    await check.wireBody(unsafe, { blocked: true });
-  }
-});
-
-// A streamed response from the provider carries its full documented envelope on
-// response.created, response.in_progress and response.completed. The shape follows
-// openai-python src/openai/types/responses/response.py at
-// 0f73f1d519f8719b226e9084d78c8bdb4a60e48f (2026-10-12) for the request fields the
-// bounded inference policy admits; the fixture envelope only ever carried the minimum.
-function liveResponsesEnvelope(status) {
-  return {
-    id: "resp_live_shaped",
-    object: "response",
-    created_at: 1791985502.0,
-    status,
-    background: false,
-    billing: { payer: "developer" },
-    completed_at: status === "completed" ? 1791985503.0 : null,
-    conversation: null,
-    error: null,
-    incomplete_details: null,
-    instructions: null,
-    max_output_tokens: null,
-    max_tool_calls: null,
-    model: wire.request.model,
-    output: [],
-    parallel_tool_calls: true,
-    previous_response_id: null,
-    prompt_cache_key: wire.request.prompt_cache_key,
-    prompt_cache_retention: null,
-    reasoning: { effort: "medium", summary: "auto" },
-    safety_identifier: null,
-    service_tier: "default",
-    store: false,
-    temperature: 1.0,
-    text: { format: { type: "text" }, verbosity: "medium" },
-    tool_choice: "auto",
-    tools: wire.request.tools,
-    top_logprobs: 0,
-    top_p: 1.0,
-    truncation: "disabled",
-    usage: null,
-    user: null,
-    metadata: {},
-  };
-}
-
-test("live-shaped Responses envelopes pass while undeclared or credential-bearing envelope fields refuse", async (t) => {
-  const f = await staticEgressFixture(t);
-  const check = responseChecks(f);
-  const base = responseEvents();
-  const completed = structuredClone(base.at(-1));
-  completed.response = {
-    ...liveResponsesEnvelope("completed"),
-    output: completed.response.output,
-    usage: {
-      ...completed.response.usage,
-      input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
-    },
-  };
-  const live = [
-    {
-      type: "response.created",
-      sequence_number: 0,
-      response: liveResponsesEnvelope("in_progress"),
-    },
-    {
-      type: "response.in_progress",
-      sequence_number: 1,
-      response: liveResponsesEnvelope("in_progress"),
-    },
-    ...base.slice(1, -1).map((event, index) => ({ ...event, sequence_number: index + 2 })),
-    { ...completed, sequence_number: base.length + 1 },
-  ];
-  await check.events(live, false, "documented envelope fields on every envelope event");
-  // The provider reports its effective image policy even when the request omits it.
-  // Check each envelope event and preserve its original bytes through signed egress.
-  const withImage = (image) =>
-    live.map((event) =>
-      event.response ? { ...event, response: { ...event.response, image } } : event,
-    );
-  for (const context_compression of ["enabled", "disabled"]) {
-    await check.events(
-      withImage({ context_compression }),
-      false,
-      `documented image context compression: ${context_compression}`,
-    );
-  }
-  for (const [label, image] of [
-    ["null image policy", null],
-    ["missing image context compression", {}],
-    ["request-only automatic image policy", { context_compression: "auto" }],
-    ["wrong image context compression type", { context_compression: true }],
-    ["unknown image policy member", { context_compression: "enabled", extra: false }],
-    ["image policy reflects selected material", { context_compression: selectedMaterial }],
-  ]) {
-    await check.events(withImage(image), true, label);
-  }
-  // The admitted local declarations omit optional fields. Responses may echo their
-  // documented null defaults; they must not turn an otherwise valid turn into a 502.
-  const functionTool = {
-    type: "function",
-    name: "fixture_local",
-    parameters: { type: "object", properties: {} },
-  };
-  const customTool = { type: "custom", name: "fixture_custom" };
-  const localTools = [
-    functionTool,
-    customTool,
-    { type: "namespace", name: "fixture_namespace", tools: [functionTool, customTool] },
-  ];
-  const localRequest = { ...wire.request, tools: localTools };
-  const responseFunction = {
-    ...functionTool,
-    description: null,
-    strict: null,
-    defer_loading: null,
-  };
-  const responseCustom = { ...customTool, description: null, defer_loading: null, format: null };
-  const echoedTools = [
-    responseFunction,
-    responseCustom,
-    { ...localTools[2], tools: [responseFunction, responseCustom] },
-  ];
-  const withTools = (tools) =>
-    live.map((event) =>
-      event.response ? { ...event, response: { ...event.response, tools } } : event,
-    );
-  await check.events(
-    withTools(echoedTools),
-    false,
-    "nullable local-tool response defaults",
-    true,
-    localRequest,
-  );
-  for (const [label, tools] of [
-    ["wrong strict type", [{ ...responseFunction, strict: "false" }]],
-    ["wrong description type", [{ ...responseCustom, description: {} }]],
-    ["wrong defer_loading type", [{ ...responseFunction, defer_loading: 0 }]],
-    ["unknown custom format", [{ ...responseCustom, format: { type: "remote" } }]],
-    ["unknown function field", [{ ...responseFunction, remote_execution: true }]],
-    ["hosted tool", [{ type: "web_search" }]],
-    ["nested hosted tool", [{ ...localTools[2], tools: [{ type: "web_search" }] }]],
-  ]) {
-    await check.events(withTools(tools), true, label, true, localRequest);
-  }
-  // Documented fields that the admitted request cannot ask for still have to be absent,
-  // and documented optional structures are typed, not free-form.
-  const nullableStructures = structuredClone(live);
-  Object.assign(nullableStructures.at(-1).response, {
-    access_programs: { cyber: "standard" },
-    prompt_cache_diagnostics: { type: "cache_hit" },
-    prompt_cache_options: { mode: "implicit", ttl: "30m", comparison_response_id: null },
-    reasoning: null,
-    incomplete_details: { reason: null },
-    error: null,
-    text: null,
-    moderation: null,
-    prompt: null,
-  });
-  await check.events(nullableStructures, false, "typed optional envelope structures");
-  const withEnvelope = (fields) => {
-    const events = structuredClone(live);
-    Object.assign(events[0].response, fields);
-    return events;
-  };
-  for (const [label, fields] of [
-    ["undeclared envelope field", { x_future_field: 0 }],
-    ["undeclared field carrying the selected material", { debug: selectedMaterial }],
-    [
-      "declared text field reflecting the selected material",
-      { safety_identifier: selectedMaterial },
-    ],
-    ["declared text field reflecting encoded material", { user: reflectedMaterial[1] }],
-    ["undeclared structure member", { billing: { payer: "developer", token: "x" } }],
-    ["undeclared conversation state", { conversation: { id: "conv_unadmitted" } }],
-    ["undeclared prior response state", { previous_response_id: "resp_unadmitted" }],
-    ["prompt template reference", { prompt: { id: "pmpt_unadmitted" } }],
-    ["moderation result", { moderation: { input: { type: "error", code: "x", message: "y" } } }],
-    ["wrong top_logprobs type", { top_logprobs: "0" }],
-    ["unknown access program", { access_programs: { cyber: "unknown" } }],
-    ["unknown cache diagnostic", { prompt_cache_diagnostics: { type: "future" } }],
-    ["background execution", { background: true }],
-  ]) {
-    await check.events(withEnvelope(fields), true, label);
-  }
-});
-
-registerStaticEgressRequestCapacityCases();
+registerStaticEgressResponsesAndCapacityCases(unicodeEscapes);
 
 const saturated = { kind: "refused", error: { kind: "unavailable", code: "resolver" } };
 
@@ -2552,310 +1408,7 @@ for (const stage of ["check", "read"]) {
   });
 }
 
-// A permitted model stream outlives the 30-second operation deadline only through the
-// renewable lease: progress renews it, idling and the ceiling end it, and current
-// policy is checked on renewal and again before release. The test clock advances; nothing sleeps.
-async function leasedStreamFixture(t, overrides = () => ({}), peerLifetimeMs = 3_600_000) {
-  const receipts = new EgressSendReceipts(new InMemoryPlatformState());
-  const f = await syntheticDispatchFixture(t, receipts);
-  const peer = await f.ports.exchangeOwner.verify("synthetic-peer");
-  const longLived = { ...peer, expiresAt: new Date(f.ports.now() + peerLifetimeMs).toISOString() };
-  const proxy = new CredentialProxy({
-    ...f.ports,
-    exchangeOwner: { ...f.ports.exchangeOwner, verify: async () => longLived },
-    ...overrides(f),
-  });
-  const sandboxId = f.association.installation.sandboxId;
-  const controller = new AbortController();
-  const { signal } = controller;
-  const ready = await proxy.resolve("synthetic-peer", sandboxId, f.request, signal);
-  assert.equal(ready.kind, "ready");
-  const decision = await proxy.authorizeSend(
-    "synthetic-peer",
-    sandboxId,
-    f.request.id,
-    ready.handle,
-    ready.evidence,
-    ready.injectionDigest,
-    f.request.deadlineAt,
-    signal,
-  );
-  assert.equal(decision.kind, "allow");
-  const safeBody = JSON.stringify({ output: "fixture answer" });
-  return {
-    f,
-    receipts,
-    createdAt: Date.parse(f.startedAt),
-    deadline: Date.parse(f.request.deadlineAt),
-    renew: (bodyBytes, headReceived = true) =>
-      proxy.renewResponse("synthetic-peer", sandboxId, f.request.id, { headReceived, bodyBytes }),
-    async complete() {
-      const handle = await proxy.beginResponse("synthetic-peer", sandboxId, f.request.id);
-      if (!handle) {
-        return undefined;
-      }
-      const response = await proxy.protectResponse(
-        handle,
-        {
-          status: 200,
-          headers: [["content-type", "application/json"]],
-          body: Buffer.from(safeBody),
-          trailers: [],
-        },
-        signal,
-        true,
-      );
-      return response && Buffer.from(response.body).toString();
-    },
-    safeBody,
-    abort: () => controller.abort(),
-    async observation() {
-      const stored = await receipts.recover(f.sender, {
-        sender: f.sender,
-        instanceId: peer.instanceId,
-        useId: f.request.id,
-        attemptId: f.request.id,
-        material: ready.evidence,
-        deadlineAt: f.request.deadlineAt,
-      });
-      return stored?.observation;
-    },
-  };
-}
-
-test("a renewed model stream completes after the operation deadline", async (t) => {
-  const s = await leasedStreamFixture(t);
-  s.f.advance(20_000);
-  const first = await s.renew(0);
-  assert.deepEqual(first, {
-    renewBy: new Date(s.f.ports.now() + STREAM_LEASE_IDLE_MS).toISOString(),
-    expiresAt: new Date(s.createdAt + STREAM_LEASE_CEILING_MS).toISOString(),
-  });
-  s.f.advance(40_000);
-  assert.ok(s.f.ports.now() > s.deadline, "the stream is now past the original deadline");
-  const second = await s.renew(1024);
-  assert.equal(second.renewBy, new Date(s.f.ports.now() + STREAM_LEASE_IDLE_MS).toISOString());
-  s.f.advance(100_000);
-  assert.equal(await s.complete(), s.safeBody, "the complete stream is released after 160 s");
-  assert.deepEqual(await s.observation(), { kind: "response", dispatch: "confirmed", status: 200 });
-  assert.equal(await s.renew(2048), undefined, "a released operation has nothing to renew");
-});
-
-test("without progress the operation deadline still bounds the first response byte", async (t) => {
-  const s = await leasedStreamFixture(t);
-  s.f.advance(s.deadline - s.f.ports.now());
-  assert.equal(await s.renew(0), undefined, "no renewal starts at the deadline");
-  assert.equal(await s.complete(), undefined);
-  assert.equal(await s.observation(), null);
-  const headless = await leasedStreamFixture(t);
-  headless.f.advance(10_000);
-  assert.equal(await headless.renew(0, false), undefined, "progress needs the response head");
-  assert.equal(await headless.complete(), undefined, "a head-less frame discards the operation");
-});
-
-test("a model stream idle past the lease horizon expires", async (t) => {
-  const s = await leasedStreamFixture(t);
-  s.f.advance(10_000);
-  assert.ok(await s.renew(10));
-  s.f.advance(STREAM_LEASE_IDLE_MS + 1);
-  assert.equal(await s.renew(20), undefined);
-  assert.equal(await s.complete(), undefined);
-  assert.equal(await s.observation(), null, "expiry settles nothing; the attempt stays uncertain");
-});
-
-test("progress without new bytes keeps the lease but cannot extend it", async (t) => {
-  const s = await leasedStreamFixture(t);
-  s.f.advance(10_000);
-  const lease = await s.renew(100);
-  s.f.advance(200_000);
-  assert.deepEqual(await s.renew(100), lease, "the same byte count returns the unchanged lease");
-  assert.deepEqual(await s.renew(99), lease);
-  s.f.advance(STREAM_LEASE_IDLE_MS - 200_000 + 1);
-  assert.equal(await s.renew(200), undefined, "the unextended lease expired");
-  assert.equal(await s.complete(), undefined);
-});
-
-test("the stream ceiling holds against continued progress", async (t) => {
-  const s = await leasedStreamFixture(t);
-  const ceiling = s.createdAt + STREAM_LEASE_CEILING_MS;
-  let bytes = 0;
-  let lease;
-  s.f.advance(10_000);
-  while (s.f.ports.now() < ceiling) {
-    lease = await s.renew(++bytes);
-    assert.ok(lease, `progress at ${(s.f.ports.now() - s.createdAt) / 1000} s renews`);
-    assert.ok(Date.parse(lease.renewBy) <= ceiling);
-    assert.equal(Date.parse(lease.expiresAt), ceiling);
-    s.f.advance(Math.min(250_000, ceiling - s.f.ports.now()));
-  }
-  assert.equal(Date.parse(lease.renewBy), ceiling, "the last lease ends at the ceiling");
-  assert.equal(await s.renew(bytes + 1), undefined, "no progress extends past the ceiling");
-  assert.equal(await s.complete(), undefined);
-});
-
-test("the stream ceiling is also the peer's expiry", async (t) => {
-  const s = await leasedStreamFixture(t, () => ({}), 120_000);
-  s.f.advance(10_000);
-  const lease = await s.renew(1);
-  assert.equal(Date.parse(lease.renewBy), s.createdAt + 120_000);
-  assert.equal(Date.parse(lease.expiresAt), s.createdAt + 120_000);
-});
-
-test("progress sooner than the recheck interval keeps the lease unchanged", async (t) => {
-  let checks = 0;
-  const s = await leasedStreamFixture(t, (f) => ({
-    check: async (...args) => {
-      checks += args[2] ? 1 : 0;
-      return f.ports.check(...args);
-    },
-  }));
-  s.f.advance(10_000);
-  const lease = await s.renew(1);
-  assert.equal(checks, 1);
-  s.f.advance(STREAM_LEASE_RECHECK_MS - 1);
-  assert.deepEqual(await s.renew(2), lease, "no second policy check inside the interval");
-  assert.equal(checks, 1);
-  s.f.advance(1);
-  const extended = await s.renew(3);
-  assert.equal(checks, 2);
-  assert.ok(Date.parse(extended.renewBy) > Date.parse(lease.renewBy));
-});
-
-test("an unavailable authority leaves the lease unchanged instead of cutting the stream", async (t) => {
-  let outage = false;
-  const s = await leasedStreamFixture(t, (f) => ({
-    check: async (...args) => {
-      if (outage && args[2]) {
-        throw new Error("synthetic policy outage");
-      }
-      return f.ports.check(...args);
-    },
-  }));
-  s.f.advance(10_000);
-  const lease = await s.renew(1);
-  outage = true;
-  s.f.advance(STREAM_LEASE_RECHECK_MS);
-  assert.deepEqual(await s.renew(2), lease, "the bound stands; it is not extended");
-  assert.equal(await s.observation(), null);
-  outage = false;
-  s.f.advance(STREAM_LEASE_RECHECK_MS);
-  assert.ok(Date.parse((await s.renew(3)).renewBy) > Date.parse(lease.renewBy));
-  assert.equal(await s.complete(), s.safeBody);
-});
-
-test("a withdrawal cuts a model stream at its next renewal", async (t) => {
-  let withdrawn = false;
-  const s = await leasedStreamFixture(t, (f) => ({
-    check: async (use, evidence, stream) =>
-      withdrawn && stream
-        ? { kind: "denied", code: "withdrawn" }
-        : f.ports.check(use, evidence, stream),
-  }));
-  s.f.advance(10_000);
-  assert.ok(await s.renew(0));
-  withdrawn = true;
-  s.f.advance(20_000);
-  assert.equal(await s.renew(100), undefined);
-  assert.equal(await s.complete(), undefined, "the withdrawn stream releases no bytes");
-  assert.deepEqual(await s.observation(), {
-    kind: "response_blocked",
-    dispatch: "confirmed",
-    code: "response_policy",
-  });
-});
-
-for (const policy of ["withdrawn", "source changed", "unavailable", "never available"]) {
-  test(`a quiet stream cannot release bytes if policy is ${policy} during receipt persistence`, async (t) => {
-    let persisting = false;
-    let checkedUntil;
-    const s = await leasedStreamFixture(t, (f) => ({
-      check: async (use, evidence, stream) => {
-        const source = await f.ports.check(use, evidence, stream);
-        if (!stream || (!persisting && policy !== "never available")) {
-          return source;
-        }
-        checkedUntil = stream.until;
-        if (policy === "withdrawn") {
-          return { kind: "denied", code: "withdrawn" };
-        }
-        if (policy === "source changed") {
-          return { ...source, materialRefId: "replacement" };
-        }
-        throw new Error("synthetic policy outage");
-      },
-    }));
-    const lease = await s.renew(s.safeBody.length);
-    assert.ok(lease);
-    const saving = Promise.withResolvers();
-    const resume = Promise.withResolvers();
-    const observe = s.receipts.observe.bind(s.receipts);
-    t.mock.method(s.receipts, "observe", async (...args) => {
-      saving.resolve();
-      await resume.promise;
-      return observe(...args);
-    });
-
-    // No more progress. Finish inside the recheck interval, then change policy while
-    // the observation is pending and the proxy still holds the complete response.
-    s.f.advance(STREAM_LEASE_RECHECK_MS - 1);
-    const response = s.complete();
-    await saving.promise;
-    persisting = true;
-    resume.resolve();
-    assert.equal(await response, undefined, "the upstream response must not be released");
-    assert.equal(checkedUntil, lease.renewBy, "release uses the current lease deadline");
-    assert.deepEqual(await s.observation(), {
-      kind: "response",
-      dispatch: "confirmed",
-      status: 200,
-    });
-    assert.equal(await s.complete(), undefined, "the observed response cannot be claimed again");
-  });
-}
-
-for (const loss of ["lease expires", "exchange closes", "owner changes"]) {
-  test(`a final policy check cannot release the response after the ${loss}`, async (t) => {
-    const checking = Promise.withResolvers();
-    const resume = Promise.withResolvers();
-    let finishing = false;
-    const s = await leasedStreamFixture(t, (f) => ({
-      check: async (...args) => {
-        if (finishing && args[2]) {
-          checking.resolve();
-          await resume.promise;
-        }
-        return f.ports.check(...args);
-      },
-    }));
-    const lease = await s.renew(s.safeBody.length);
-    finishing = true;
-    const response = s.complete();
-    await checking.promise;
-    if (loss === "lease expires") {
-      s.f.advance(Date.parse(lease.renewBy) - s.f.ports.now());
-    }
-    if (loss === "exchange closes") {
-      s.abort();
-    }
-    if (loss === "owner changes") {
-      s.f.replaceCustody();
-    }
-    resume.resolve();
-    assert.equal(await response, undefined);
-    assert.deepEqual(await s.observation(), {
-      kind: "response",
-      dispatch: "confirmed",
-      status: 200,
-    });
-  });
-}
-
-test("stream progress beyond the response bound is refused", async (t) => {
-  const s = await leasedStreamFixture(t);
-  s.f.advance(10_000);
-  assert.equal(await s.renew(4 * 1024 * 1024 + 1), undefined);
-  assert.equal(await s.complete(), undefined);
-});
+registerStreamReceiptPersistenceCases(() => new EgressSendReceipts(new InMemoryPlatformState()));
 
 test("authenticated sender receipts survive authority restart without replay permission and distinguish observations", async (t) => {
   const f = await staticEgressFixture(t);

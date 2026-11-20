@@ -37,7 +37,7 @@ import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { cookieHeaderFromSetCookie, signInToControllerApp } from "../helpers/auth-session.mjs";
-import { injectJson } from "../helpers/inject-json.mjs";
+import { injectJson } from "../helpers/inject-json.ts";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import {
   STANDING_APPROVAL_BINDING_LOCKED,
@@ -45,7 +45,7 @@ import {
   STANDING_APPROVAL_ONE_BINDING,
   STANDING_APPROVAL_POLICY_CHANGED,
   STANDING_APPROVAL_SCOPE_CHANGED,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-credential-admission.ts";
 
 const authSecret = "standing-approval-source-test-auth-secret-32";
 // Proves registered HTTP/IAM/State behavior with controlled Compute credential preparation.
@@ -234,8 +234,7 @@ test(
       url: string,
       payload?: unknown,
       actorSession = session,
-    ): ReturnType<typeof app.inject> =>
-      injectJson(app, method, url, { body: payload, session: actorSession });
+    ) => injectJson(app, method, url, { body: payload, session: actorSession });
     // The ready Namespace fixture does not grant standing approval.
     await state.transact((unit) =>
       unit.namespaces.createNamespace({

@@ -205,8 +205,14 @@
                     "page": "reference/console/create-and-deploy",
                     "label": "Create and Deploy in the Console"
                   },
-                  { "page": "guides/agent-http-chat", "label": "HTTP Chat" },
-                  { "page": "reference/agent-http-chat", "label": "HTTP Chat Contract" },
+                  {
+                    "page": "guides/agent-http-chat",
+                    "label": "HTTP Chat"
+                  },
+                  {
+                    "page": "reference/agent-http-chat",
+                    "label": "HTTP Chat Contract"
+                  },
                   {
                     "page": "reference/agent-native-admin",
                     "label": "Native Admin UI"
@@ -419,6 +425,10 @@
                             "label": "Networking and Isolation"
                           },
                           {
+                            "page": "reference/drivers/kubernetes-compute/channel-egress",
+                            "label": "Channel Egress"
+                          },
+                          {
                             "page": "reference/drivers/kubernetes-compute/gateway-authentication",
                             "label": "Gateway Authentication"
                           },
@@ -443,6 +453,10 @@
                             "label": "Preprovisioned Namespace"
                           }
                         ]
+                      },
+                      {
+                        "page": "reference/drivers/kubernetes-openshell-compute",
+                        "label": "Kubernetes + OpenShell"
                       },
                       {
                         "page": "reference/drivers/ssh-compute",
@@ -783,6 +797,14 @@
                     "label": "Image Upgrades"
                   },
                   {
+                    "page": "guides/deploy/one-off-upgrades",
+                    "label": "One Off Upgrades"
+                  },
+                  {
+                    "page": "guides/deploy/channel-egress",
+                    "label": "Channel Egress Setup"
+                  },
+                  {
                     "page": "guides/deploy/production-upgrade-command",
                     "label": "Upgrade Commands"
                   },
@@ -1012,6 +1034,8 @@
               "testing/slack",
               "testing/plugins",
               "testing/openshell",
+              "testing/openshell-git-replacement",
+              "testing/openshell-managed",
               "testing/openshell-oauth",
               "testing/openshell-coverage",
               "testing/openshell-permission-diagnostics",
@@ -1083,7 +1107,7 @@
                   },
                   {
                     "page": "contributing/credential-proxy-driver",
-                    "label": "Implement a Credential Proxy Driver"
+                    "label": "Legacy Egress Driver"
                   },
                   {
                     "group": "Driver Contracts",
@@ -1318,11 +1342,14 @@
               "flows/compute-driver-lifecycle-hooks",
               "flows/openshell-sandbox-provisioning",
               "flows/connection-templates",
+              "flows/openshell-managed-workload",
               "flows/credential-source-lifecycle",
+              "flows/token-service-static-custody",
               "flows/credential-source-refresh",
               "flows/driver-plugin-loading",
               "flows/agent-plugins",
               "flows/agent-channel-directory",
+              "flows/channel-egress",
               "flows/agent-plugin-approvals",
               "flows/agent-provisioning",
               "flows/agent-native-admin",

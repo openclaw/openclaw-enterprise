@@ -30,6 +30,8 @@
     "tests/integration/postgres-namespace-iam-policy.test.ts",
     "tests/integration/postgres-agent-update-authority.test.ts",
     "tests/integration/postgres-connection-templates.test.ts",
+    "tests/integration/postgres-static-token-service-lifecycle.test.ts",
+    "tests/integration/postgres-staged-agent-credential-binding.test.ts",
     "tests/integration/workspace-setup-worker.test.ts",
     "tests/integration/postgres-repository-sessions.test.ts",
     "tests/integration/postgres-secret-state.test.ts",
@@ -80,7 +82,8 @@
     "tests/integration/postgres-preset-template-validation.test.ts",
     "tests/integration/postgres-readiness-capacity.test.ts",
     "tests/integration/postgres-private-secret-create.test.ts",
-    "tests/integration/postgres-iam-durable-authority.test.ts"
+    "tests/integration/postgres-iam-durable-authority.test.ts",
+    "tests/integration/postgres-egress-replacement.test.ts"
   ],
   "files": [
     {
@@ -191,6 +194,18 @@
       "expectedTests": ["PostgreSQL controller work requires exactly one complete target shape"]
     },
     {
+      "path": "tests/integration/postgres-static-token-service-lifecycle.test.ts",
+      "expectedTests": [
+        "staged TokenService lifecycle keeps private custody, audit, and exact update authority"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-staged-agent-credential-binding.test.ts",
+      "expectedTests": [
+        "Agent drafts authorize the staged source and refuse unsupported revision delivery"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-connection-templates.test.ts",
       "expectedTests": [
         "the Installation starts with an editable Google OAuth template and preserves saved destination versions",
@@ -295,6 +310,7 @@
         "a provisioning failure takes the Namespace lock before its claimed work row",
         "provisioning worker reauthorizes after admission and revoked authority creates no backend effects",
         "failed provisioning can retry through the API and resume without duplicating the Agent",
+        "Guarded stop protects a queued successor and stops the exact deployed Agent",
         "Stop and Delete cancel failed pre-handoff provisioning Agents without deployment resurrection",
         "Stop during an interrupted runtime-credential write lets the Agent deploy once the claim's lease ends",
         "Stop after failed provisioning left its runtime-credential write unsettled lets the Agent deploy",
@@ -478,6 +494,7 @@
       "expectedTests": [
         "only the installed Git recipient owner may use its material or retire its ended admission",
         "changing between repository and installation scope waits for the previous owner to settle its token",
+        "a replacement Git Driver waits out a disposed standing predecessor without taking its custody",
         "OpenShell preparation refuses historical custody and preserves v6 observed-hook custody",
         "selected repository set retires after B session across owner restart",
         "selected repository set retires after B replacement across owner restart",
@@ -579,7 +596,7 @@
       "path": "tests/integration/postgres-openshell-standing-cold-worker.test.ts",
       "expectedTests": [
         "a cold worker persists redeploy-required standing Git status without renewing it",
-        "a cold worker after session expiry checks expired-original-pods",
+        "a cold worker after session expiry checks expired-original-execution",
         "a cold worker after session expiry checks expired-replaced-supervisor"
       ]
     },
@@ -801,6 +818,9 @@
       "expectedTests": [
         "durable authority writes order configured-policy withdrawal at the real callers"
       ]
+    },
+    {
+      "path": "tests/integration/postgres-egress-replacement.test.ts"
     }
   ]
 }
