@@ -357,7 +357,7 @@ export async function assertReadyGateway(
       items: [{ key: "openclaw.json", path: "openclaw.json" }],
       optional: false,
     });
-    const container = array(podSpec.containers)[0];
+    const container = field(podSpec.containers, "0");
     const unmanaged = snapshot.gatewayManagedMode === false;
     assert.deepEqual(
       array(field(container, "volumeMounts")).find(
@@ -408,10 +408,9 @@ export async function assertReadyGateway(
   );
   if (snapshot !== undefined) {
     const podName = field(field(gatewayPod, "metadata"), "name");
-    assertString(podName);
     const mountedDocument = await kubectlRead(
       "exec",
-      podName,
+      String(podName),
       "--namespace",
       namespaceName,
       "--",

@@ -451,7 +451,7 @@ test(
           const target: object = Object(volume);
           const reference: unknown = Reflect.get(target, "persistentVolumeClaim");
           if (reference === null || reference === undefined) {
-            return false;
+            return harnessClaim.metadata.name === undefined;
           }
           const claim: object = Object(reference);
           const claimName: unknown = Reflect.get(claim, "claimName");
