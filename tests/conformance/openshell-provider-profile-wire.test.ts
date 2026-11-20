@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import { ensureOpenShellProviderProfile } from "../../apps/controller/src/backends/openshell.ts";
 import {
   GrpcOpenShellGatewayClient,
   type OpenShellProviderProfile,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { workspaceNodeNetworkPolicy } from "../../apps/controller/src/drivers/sandbox/openshell-workspace-node-policy.ts";
 import {
   checkOpenShellGitProviders,
   OpenShellGitRouteError,
@@ -507,7 +509,63 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
   assert.equal(installed.policyHash, hash);
   const predecessor = () =>
     prepared.observePredecessor(binding, installed, AbortSignal.timeout(10_000));
-  assert.equal(await predecessor(), true);
+  assert.deepEqual(await predecessor(), installed);
+
+  await t.test("Workspace TLS-skip prevents current and predecessor observation", async () => {
+    function reportWorkspaceRule(host: string, tls: boolean, sibling = false) {
+      const workspaceRules = workspaceNodeNetworkPolicy({
+        host,
+        port: 443,
+        path: "/namespaces/ns1/agents/agent1/node",
+        tls,
+      });
+      const rule = asRecord(workspaceRules["workspace-node-enrollment"]);
+      assert.ok(rule);
+      const rules = sibling ? { sibling: { ...rule, name: "sibling" } } : workspaceRules;
+      const source = {
+        ...stockSource,
+        network_policies: { ...stockSource.network_policies, ...rules },
+      };
+      overrides = { source, sandboxPolicy: source, effective: { ...expected, ...rules } };
+    }
+    reportWorkspaceRule("workspace.example.test", false);
+    assert.ok(await observe());
+    assert.deepEqual(await predecessor(), installed);
+    for (const host of ["github.com", "api.github.com", "workspace.example.test"]) {
+      for (const sibling of [false, true]) {
+        // The reports agree on the rule and generation, so shape and TLS are decisive.
+        reportWorkspaceRule(host, true, sibling);
+        assert.equal(await observe(), undefined, host);
+        assert.equal(await predecessor(), undefined, host);
+      }
+    }
+  });
+
+  await t.test("an exact sibling profile still cannot allow uninspected credentials", async () => {
+    const unsafe = {
+      ...modelRule,
+      endpoints: modelRule.endpoints.map((endpoint) => ({
+        ...endpoint,
+        allow_uninspected_credentials: true,
+      })),
+    };
+    const matchingProfile = new OpenShellPreparedGitProvider(client, {
+      ...scope,
+      expectedProviders: [
+        { name: "model", providerId: modelId, rule: unsafe },
+        { name: runtime, rule: runtimeRule },
+      ],
+    });
+    overrides = { effective: { ...expected, [modelRule.name]: unsafe } };
+    assert.equal(
+      await matchingProfile.observe(binding, "sandbox-id", AbortSignal.timeout(10_000)),
+      undefined,
+    );
+    assert.equal(
+      await matchingProfile.observePredecessor(binding, installed, AbortSignal.timeout(10_000)),
+      undefined,
+    );
+  });
 
   await t.test(
     "ready sibling model generation gains a literal HTTPS REST destination",
@@ -528,7 +586,7 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
       };
       assert.deepEqual(
         { active: (await observe()) !== undefined, predecessor: await predecessor() },
-        { active: false, predecessor: false },
+        { active: false, predecessor: undefined },
       );
     },
   );
@@ -546,7 +604,7 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
       },
     };
     assert.equal(await observe(), undefined);
-    assert.equal(await predecessor(), false);
+    assert.equal(await predecessor(), undefined);
   });
 
   await t.test("ACL observation requires an independently selected model Provider ID", async () => {
@@ -564,7 +622,7 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
     );
     assert.equal(
       await unbound.observePredecessor(binding, installed, AbortSignal.timeout(10_000)),
-      false,
+      undefined,
     );
   });
 
@@ -578,7 +636,7 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
     );
     assert.equal(
       await unbound.observePredecessor(binding, installed, AbortSignal.timeout(10_000)),
-      false,
+      undefined,
     );
   });
 
@@ -600,7 +658,7 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
     };
     assert.deepEqual(
       { active: (await observe()) !== undefined, predecessor: await predecessor() },
-      { active: false, predecessor: false },
+      { active: false, predecessor: undefined },
     );
   });
 
@@ -731,7 +789,7 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
     await t.test(label, async () => {
       overrides = { effective: expected, ...evidence };
       assert.equal(await observe(), undefined);
-      assert.equal(await predecessor(), false);
+      assert.equal(await predecessor(), undefined);
     });
   }
 
@@ -748,7 +806,7 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
       },
     };
     assert.equal(await observe(), undefined);
-    assert.equal(await predecessor(), false);
+    assert.equal(await predecessor(), undefined);
   });
 
   await t.test("matching observation expires during effective policy readback", async (t) => {
@@ -766,7 +824,7 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
     async () => {
       overrides = { effective: expected, ageDuringReadback: true };
       elapsedReadbackMs = 0;
-      assert.equal(await predecessor(), false);
+      assert.equal(await predecessor(), undefined);
       assert.equal(elapsedReadbackMs, 2_000);
     },
   );

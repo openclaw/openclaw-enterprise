@@ -873,6 +873,13 @@
         "old attached v5 provider cleanup preserves unrelated resources",
         "a failed withdrawal still refuses its original route after local collection",
         "fresh repository Git v5 holds and releases one verified launch",
+        "ACL Git sends no release when installed credentials expire during signing",
+        "ACL Git sends no release after same-turn revision withdrawal",
+        "ACL Git sends no release after same-turn Namespace withdrawal",
+        "ACL Git blocks a release when the POST acknowledgment is lost",
+        "ACL rotation never reaches the Gateway after local withdrawal during authentication",
+        "ACL rotation never reaches the Gateway after durable withdrawal during authentication",
+        "Compute retries an unsent release after the final recipient observation expires",
         "bundled live Git refuses historical v5 installation scope before any effect",
         "selected v5 retries classified reads before reservation, then prepares the exact execution once",
         "selected provider read refusal after reservation is terminal, not legacy cancel/retry",
@@ -993,6 +1000,8 @@
       "path": "tests/conformance/openshell-prepared-git-provider.test.ts",
       "expectedTests": [
         "prepared Git static token and rotation use released fields without returning credentials or readiness",
+        "prepared Git records an unsent update when its write budget expires during authentication",
+        "prepared Git records an unsent update after write timeout with empty bearer during authentication",
         "prepared Git bootstraps without privilege and distinguishes accepted rotation from exact installed state",
         "prepared Git refuses stale, partial, mismatched and unavailable installation observations"
       ]

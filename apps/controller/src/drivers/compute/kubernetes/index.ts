@@ -46,6 +46,8 @@ import {
   COMPUTE_RELEASE_PUBLIC_KEY,
   computeReleasePublicKey,
   signComputeExecutionRelease,
+  signComputeRepositoryGitProbe,
+  repositoryGitStartupProbePath,
 } from "../egress-enrollment.ts";
 import { forwardMethod } from "../../../backends/token-service/forward-method.ts";
 import { ProtectedExecutionDriver } from "../protected-execution-driver.ts";
@@ -6517,6 +6519,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     this.validateExecutionAdmission(revision, "stored");
+    if (
+      revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined &&
+      this.nodeEnrollment !== undefined &&
+      this.options.gatewayRouting !== undefined
+    ) {
+      // TODO: Qualify inspected WSS across supported Workspace operations before enabling it.
+      throw new ConfigurationFailure(
+        "Protected repository network policy cannot share Workspace node enrollment over WSS.",
+      );
+    }
     const plan = revision.egressPlan;
     if (!plan) {
       return;
@@ -7507,6 +7519,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 revision,
                 await this.controlNamespace(revision.namespaceId),
               );
+        const repositoryProbePath = repositoryGitStartupProbePath(revision);
         const requirements = {
           ...preparedRequirements,
           ...(proxyWiring === undefined ? {} : { proxyWiring }),
@@ -7587,8 +7600,24 @@ export class KubernetesComputeDriver implements ComputeDriver {
               }),
               (startupId, committed) => {
                 this.operationSignal().throwIfAborted();
-                return signComputeExecutionRelease(releaseKey!, startupId, committed);
+                return signComputeExecutionRelease(
+                  releaseKey!,
+                  startupId,
+                  committed,
+                  repositoryProbePath,
+                );
               },
+              repositoryProbePath === undefined
+                ? undefined
+                : (startupId, probeNonce) => {
+                    this.operationSignal().throwIfAborted();
+                    return signComputeRepositoryGitProbe(
+                      releaseKey!,
+                      startupId,
+                      repositoryProbePath,
+                      probeNonce,
+                    );
+                  },
             ),
           );
           if (!enrolled) {
@@ -15193,6 +15222,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             ? "pat"
             : "ordinary",
       }),
+      ...(repositoryGitStartupProbePath(revision) !== undefined && { repositoryGitProbe: true }),
     };
   }
 

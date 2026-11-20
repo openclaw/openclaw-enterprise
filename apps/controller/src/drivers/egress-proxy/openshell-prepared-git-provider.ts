@@ -16,9 +16,11 @@ import {
   openShellExpectedProviderRule,
   verifyOpenShellRepositoryPolicy,
   type OpenShellExpectedProviderRule,
+  type OpenShellGitSandboxVerifier,
 } from "./openshell-repository-policy-readback.ts";
 import { isGitHubWireCredential } from "../repo/github/access/wire-credential.ts";
 import {
+  OpenShellGatewayDispatchRefusedError,
   openShellProfileEndpoint,
   type OpenShellGatewayClient,
   type OpenShellProviderProfile,
@@ -43,6 +45,8 @@ export type OpenShellPreparedGitScope = OpenShellGitNetworkInput & {
   readonly executionId: string;
   /** Sibling Provider rules derived from the same locally selected revision profiles. */
   readonly expectedProviders?: readonly OpenShellExpectedProviderRule[];
+  /** Verify the current revision's policy on a managed Sandbox. */
+  readonly managedSandbox?: true;
 };
 
 /** Only the credential worker supplies this value; no App signing key or OAuth material. */
@@ -176,9 +180,15 @@ function readFailure(
  * explicit restricted-dogfood risks. Provider endpoints do not enforce refs or PR bodies.
  */
 export class OpenShellPreparedGitProvider {
+  readonly hasRepositoryNetworkPolicy: boolean;
   private readonly client: OpenShellGatewayClient;
   private readonly scope: OpenShellPreparedGitScope;
   private readonly fingerprint: string;
+  // Process-local evidence expires independently of the persisted installation identity.
+  private readonly repositoryPolicyLeases = new WeakMap<
+    OpenShellPreparedGitInstalled,
+    () => boolean
+  >();
   private receipt?: { version: string; id?: string; complete?: true };
 
   private refreshReceipt?: { version: string; id?: string; complete?: true };
@@ -203,6 +213,7 @@ export class OpenShellPreparedGitProvider {
       refuse();
     }
     const repositoryNetworkPolicy = network.grants;
+    this.hasRepositoryNetworkPolicy = repositoryNetworkPolicy !== undefined;
     this.client = client;
     this.scope = Object.freeze({
       ...scope,
@@ -596,9 +607,49 @@ export class OpenShellPreparedGitProvider {
     return true;
   }
 
+  /** A launcher receipt changes no field verified by the policy observation. */
+  withEnrollment(
+    installation: OpenShellPreparedGitInstalled,
+    enrollment: OpenShellPreparedGitInstalled["enrollment"],
+  ): OpenShellPreparedGitInstalled {
+    const { enrollment: _previous, ...identity } = installation;
+    const updated = Object.freeze({ ...identity, ...(enrollment && { enrollment }) });
+    const lease = this.repositoryPolicyLeases.get(installation);
+    if (lease) {
+      this.repositoryPolicyLeases.set(updated, lease);
+    }
+    return updated;
+  }
+
   /** The Provider profile's credential-bearing rule before the Gateway adds token-grant owners. */
   previewNetworkRule() {
     return openShellExpectedProviderRule(this.provider, this.profile).rule;
+  }
+
+  private async verifyRepositoryPolicy(
+    installation: OpenShellPreparedGitInstalled,
+    signal: AbortSignal,
+    verify?: OpenShellGitSandboxVerifier,
+  ): Promise<boolean> {
+    const verifyManagedSandbox = this.scope.managedSandbox ? verify : undefined;
+    if (this.scope.managedSandbox && !verifyManagedSandbox) {
+      return false;
+    }
+    return verifyOpenShellRepositoryPolicy(
+      this.client,
+      installation,
+      this.previewNetworkRule(),
+      this.scope.expectedProviders,
+      signal,
+      verifyManagedSandbox,
+    );
+  }
+
+  repositoryPolicyIsFresh(installation: OpenShellPreparedGitInstalled): boolean {
+    return (
+      this.scope.repositoryNetworkPolicy === undefined ||
+      this.repositoryPolicyLeases.get(installation)?.() === true
+    );
   }
 
   /**
@@ -615,6 +666,7 @@ export class OpenShellPreparedGitProvider {
     sandboxId: string,
     signal: AbortSignal,
     installed?: OpenShellPreparedGitInstalled,
+    verify?: OpenShellGitSandboxVerifier,
   ): Promise<OpenShellPreparedGitInstalled | undefined> {
     binding = Object.freeze({ ...binding });
     if (
@@ -757,20 +809,19 @@ export class OpenShellPreparedGitProvider {
         processInstanceId: observed.processInstanceId,
         networkInstanceId: status.networkInstanceId,
       });
-      if (
-        repositoryAcl &&
-        (!(await verifyOpenShellRepositoryPolicy(
-          this.client,
-          currentInstallation,
-          this.previewNetworkRule(),
-          this.scope.expectedProviders,
-          signal,
-        )) ||
-          // Conservatively charge the full RPC and readback time to the supervisor lease.
-          evaluatedAt - observedAt + (performance.now() - readStartedAt) >= 15_000 ||
-          (binding.credentialState === "active" && !(Date.parse(binding.expiresAt) > Date.now())))
-      ) {
-        return undefined;
+      if (repositoryAcl) {
+        // Conservatively charge the full RPC and readback time to the supervisor lease.
+        // Date.parse loses submillisecond wire precision.
+        const deadline = readStartedAt + 14_999 - (evaluatedAt - observedAt);
+        const isFresh = () => performance.now() < deadline;
+        if (
+          !(await this.verifyRepositoryPolicy(currentInstallation, signal, verify)) ||
+          !isFresh() ||
+          (binding.credentialState === "active" && !(Date.parse(binding.expiresAt) > Date.now()))
+        ) {
+          return undefined;
+        }
+        this.repositoryPolicyLeases.set(currentInstallation, isFresh);
       }
       return currentInstallation;
     } catch {
@@ -784,7 +835,8 @@ export class OpenShellPreparedGitProvider {
     binding: OpenShellPreparedGitBinding,
     previous: OpenShellPreparedGitInstalled,
     signal: AbortSignal,
-  ): Promise<boolean> {
+    verify?: OpenShellGitSandboxVerifier,
+  ): Promise<OpenShellPreparedGitInstalled | undefined> {
     if (
       !this.owns(binding) ||
       binding.credentialState !== "active" ||
@@ -797,29 +849,32 @@ export class OpenShellPreparedGitProvider {
       previous.providerResourceVersion !== binding.resourceVersion ||
       previous.profileVersion !== binding.profileVersion
     ) {
-      return false;
+      return;
     }
     await this.workspace(signal);
     await this.profileVersion(signal, binding.profileVersion);
     const current = await this.client.getProvider(this.scope.workspace, this.provider, signal);
     if (current?.id !== binding.providerId || current.resourceVersion !== binding.resourceVersion) {
-      return false;
+      return;
     }
     this.binding(current, binding.profileVersion, binding.expiresAt);
     if (
       this.scope.repositoryNetworkPolicy !== undefined &&
-      !(await verifyOpenShellRepositoryPolicy(
-        this.client,
-        previous,
-        this.previewNetworkRule(),
-        this.scope.expectedProviders,
-        signal,
-      ))
+      !(await this.verifyRepositoryPolicy(previous, signal, verify))
     ) {
-      return false;
+      return;
     }
     // Observe the same generation after readback so the reads cannot consume its lease.
-    return observeOpenShellGitPredecessor(this.client, previous, signal);
+    const lease = await observeOpenShellGitPredecessor(this.client, previous, signal);
+    if (!lease) {
+      return;
+    }
+    if (this.scope.repositoryNetworkPolicy === undefined) {
+      return previous;
+    }
+    const installation = Object.freeze({ ...previous });
+    this.repositoryPolicyLeases.set(installation, () => process.hrtime.bigint() < lease.validUntil);
+    return this.repositoryPolicyIsFresh(installation) ? installation : undefined;
   }
 
   /**
@@ -851,7 +906,7 @@ export class OpenShellPreparedGitProvider {
 
   async rotate(
     previous: OpenShellPreparedGitBinding,
-    release: () => Promise<OpenShellPreparedGitToken | undefined>,
+    release: () => Promise<(OpenShellPreparedGitToken & { isCurrent?: () => boolean }) | undefined>,
     signal: AbortSignal,
   ): Promise<OpenShellPreparedGitBinding | undefined> {
     previous = Object.freeze({ ...previous });
@@ -871,8 +926,15 @@ export class OpenShellPreparedGitProvider {
         refuse();
       }
       this.binding(current, previous.profileVersion, previous.expiresAt);
-      // This is the last await before the conditional write. Release checks the owner's current
-      // approval, execution, session and material. It cannot recall a write already handed off.
+      // Prepare authentication before releasing material so the final owner checks
+      // run after the bearer file read. The Gateway checks the synchronous guard at send.
+      let update = this.client.updateProviderCredentialsConditionally.bind(this.client);
+      if (this.scope.repositoryNetworkPolicy !== undefined) {
+        if (!this.client.prepareProviderCredentialUpdate) {
+          refuse();
+        }
+        update = await this.client.prepareProviderCredentialUpdate(signal);
+      }
       phase = "release";
       const token = await release();
       phase = "reading";
@@ -880,10 +942,13 @@ export class OpenShellPreparedGitProvider {
         return;
       }
       this.token(token);
+      if (token.isCurrent && !token.isCurrent()) {
+        return;
+      }
       phase = "writing";
       // The write runs to its own deadline, not the caller's remaining read budget (finding 2211).
       const write = AbortSignal.timeout(WRITE_TIMEOUT_MS);
-      const updated = await this.client.updateProviderCredentialsConditionally(
+      const updated = await update(
         {
           workspace: this.scope.workspace,
           name: this.provider,
@@ -894,6 +959,7 @@ export class OpenShellPreparedGitProvider {
         },
         previous.resourceVersion,
         write,
+        token.isCurrent,
       );
       if (
         updated.id !== previous.providerId ||
@@ -931,6 +997,9 @@ export class OpenShellPreparedGitProvider {
     } catch (error) {
       // Refused before the write for a read the gateway did not answer, the rotation is
       // observed again later; an unknown write is never retried (finding 2136).
+      if (error instanceof OpenShellGatewayDispatchRefusedError) {
+        return;
+      }
       if (phase === "release") {
         throw error; // The local authority failed before this writer could send anything.
       }

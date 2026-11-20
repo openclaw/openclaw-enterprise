@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   OpenShellSandboxAlreadyExistsError,
   type OpenShellSandboxCreateRequest,
@@ -31,6 +32,7 @@ import { buildSandboxInstallation } from "./sandbox-driver-startup-installation-
 import {
   codexRequirements,
   dedicatedRevision,
+  harnessRuntimeCommand,
   harnessService,
   namespaceContext,
   ownedWorkspace,
@@ -47,6 +49,104 @@ function record(value: unknown): Record<string, unknown> {
 
 function structFields(value: unknown): Record<string, unknown> {
   return record(record(record(value).structValue).fields);
+}
+
+export async function verifyLegacyPackedSandboxAdoption(): Promise<void> {
+  let existing: OpenShellSandboxResponse | undefined;
+  let creates = 0;
+  const gateway = workspaceGatewayClient();
+  gateway.createSandbox = async (request) => {
+    creates++;
+    existing = storedSandbox(structuredClone(request), { serviceUrls: {} });
+    return existing;
+  };
+  gateway.getSandbox = async () => existing;
+  const driver = openShellDriver(gateway);
+  const {
+    context,
+    revision: fixtureRevision,
+    requirements,
+  } = runtimeSandboxFixture(driver, {
+    harnessId: "openclaw",
+  });
+  const revision = completeSandboxRevision(fixtureRevision);
+  const chunks = Array.from({ length: 1510 }, (_, index) =>
+    createHash("sha256").update(String(index)).digest(),
+  );
+  const command = harnessRuntimeCommand(
+    "const fixture = " + JSON.stringify(Buffer.concat(chunks).toString("base64")) + ";",
+  );
+  assert.ok(Buffer.byteLength(JSON.stringify(command)) < 65_536);
+  const workload = { ...context, revision, requirements: { ...requirements, command } };
+  await driver.ensureNamespace(context);
+  const original = await driver.provisionHarness(workload);
+  assert.ok(existing?.spec);
+  const stored = existing.spec.command;
+  // This fixture crosses the bound only after the Driver adds its prelude.
+  assert.ok(Array.isArray(stored));
+  const loader = command.find((argument) => argument.includes("inflateRawSync"));
+  assert.ok(loader);
+  assert.ok(stored.includes(loader), "the prelude must have been packed into the program");
+  // The digest was captured from the DEFLATE-based Driver's CreateSandbox request.
+  assert.equal(
+    createHash("sha256").update(JSON.stringify(stored)).digest("hex"),
+    "68ee8498984f9ec6615361186d6299d70826db65e2263283987be5973e8f5c34",
+  );
+  // A matching installed Sandbox spec must adopt without sending another CreateSandbox.
+  assert.deepEqual(await driver.provisionHarness(workload), original);
+  assert.equal(creates, 1);
+}
+
+/** The base Driver's profile ownership digest includes the original field order. */
+export async function verifyLegacyRuntimeProfileAdoption(
+  harnessId: "codex" | "openclaw",
+  ownershipDigest: string,
+): Promise<void> {
+  const gateway = workspaceGatewayClient();
+  const profileId = `oce-${harnessId}-runtime`;
+  gateway.profiles.set(profileId, {
+    id: profileId,
+    resourceVersion: "27",
+    annotations: { "openclaw.dev/managed-by": `openclaw-enterprise:${ownershipDigest}` },
+  });
+  let updates = 0;
+  let imports = 0;
+  const update = gateway.updateProviderProfile;
+  gateway.updateProviderProfile = async (...args) => {
+    updates++;
+    return update(...args);
+  };
+  const importProfile = gateway.importProviderProfile;
+  gateway.importProviderProfile = async (...args) => {
+    imports++;
+    return importProfile(...args);
+  };
+  const serviceUrl = "http://native.example.test:8080/";
+  let creates = 0;
+  gateway.createSandbox = async (request) => {
+    creates++;
+    const sandbox = storedSandbox(request, {
+      serviceUrls: harnessId === "codex" ? { "": serviceUrl } : {},
+    });
+    gateway.sandboxes.set(sandbox.name, sandbox);
+    return sandbox;
+  };
+  gateway.getService = async (_workspace, name, service) =>
+    harnessService(name, service, harnessId === "codex" ? serviceUrl : undefined);
+  const driver = openShellDriver(gateway);
+  const { context, revision, requirements } = runtimeSandboxFixture(driver, { harnessId });
+  await driver.ensureNamespace(context);
+  const workload = { ...context, revision: completeSandboxRevision(revision), requirements };
+  const installed = await driver.provisionHarness(workload);
+  assert.deepEqual(await driver.provisionHarness(workload), installed);
+  assert.equal(creates, 1);
+  assert.equal(imports, 0);
+  assert.equal(
+    updates,
+    0,
+    "adopting the shared runtime-files Provider profile must not rewrite it",
+  );
+  assert.equal(gateway.profiles.get(profileId)?.resourceVersion, "27");
 }
 
 export async function verifyNativeOpenClawProvisioning(): Promise<void> {

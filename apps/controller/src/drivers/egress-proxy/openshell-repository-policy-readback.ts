@@ -4,6 +4,7 @@ import {
   openShellProfileEndpoint,
   type OpenShellGatewayClient,
   type OpenShellProviderProfile,
+  type OpenShellSandboxResponse,
 } from "../sandbox/openshell-gateway-client.ts";
 import type { OpenShellPreparedGitInstalled } from "./openshell-prepared-git-provider.ts";
 import { withOpenShellProviderTokenGrantOwners } from "./openshell-token-grant-owner.ts";
@@ -29,7 +30,57 @@ export function openShellExpectedProviderRule(
   };
 }
 
-export type OpenShellExpectedProviderRule = ReturnType<typeof openShellExpectedProviderRule>;
+export interface OpenShellExpectedProviderRule {
+  readonly name: string;
+  readonly providerId?: string;
+  readonly rule: {
+    readonly name: string;
+    readonly binaries: readonly unknown[];
+    readonly endpoints: readonly { readonly host: string }[];
+  };
+}
+
+/** Capture the selected credential profile's stock wire fields before Sandbox creation. */
+export function openShellExpectedWireProviderRule(
+  name: string,
+  providerId: string,
+  profile: {
+    readonly binaries: readonly unknown[];
+    readonly endpoints: readonly unknown[];
+    readonly credentials: readonly unknown[];
+  },
+): OpenShellExpectedProviderRule | undefined {
+  const endpoints = [];
+  for (const raw of profile.endpoints) {
+    const endpoint = asRecord(raw);
+    if (!endpoint || typeof endpoint.host !== "string" || !endpoint.host) {
+      return;
+    }
+    const { host, provider_credentialed: _ignored, ...configured } = endpoint;
+    endpoints.push({
+      ...configured,
+      host,
+      ...(profile.credentials.length > 0 && { provider_credentialed: true }),
+    });
+  }
+  return {
+    name,
+    providerId,
+    rule: {
+      name: "_provider_" + name.replaceAll("-", "_"),
+      binaries: profile.binaries,
+      endpoints,
+    },
+  };
+}
+
+/** The Sandbox Driver binds this verifier to the launch spec it derived locally. */
+export type OpenShellGitSandboxVerifier = (
+  sandbox: OpenShellSandboxResponse,
+  signal: AbortSignal,
+  sourcePolicy?: Readonly<Record<string, unknown>>,
+) => void | Promise<void>;
+
 type GitRule = OpenShellExpectedProviderRule["rule"];
 
 // Stock OpenShell can relay SQL in audit mode without inspecting the stream.
@@ -56,6 +107,8 @@ function hasOnlyInspectedNonGitEndpoints(rule: unknown, gitRule: GitRule): boole
         typeof endpoint.protocol === "string" &&
         inspectedProtocols.has(endpoint.protocol) &&
         (endpoint.tls === undefined || endpoint.tls === "NETWORK_TLS_MODE_UNSPECIFIED") &&
+        (endpoint.allow_uninspected_credentials === undefined ||
+          endpoint.allow_uninspected_credentials === false) &&
         (endpoint.allowed_ips === undefined ||
           (Array.isArray(endpoint.allowed_ips) && endpoint.allowed_ips.length === 0))
       );
@@ -119,6 +172,7 @@ export async function verifyOpenShellRepositoryPolicy(
   gitRule: GitRule,
   expectedProviders: readonly OpenShellExpectedProviderRule[] | undefined,
   signal: AbortSignal,
+  verifyManagedSandbox?: OpenShellGitSandboxVerifier,
 ): Promise<boolean> {
   if (!expectedProviders || !client.getSandboxPolicyStatus || !client.getSandboxConfig) {
     return false;
@@ -159,15 +213,10 @@ export async function verifyOpenShellRepositoryPolicy(
   // Resolve the name again after the reads. A replacement must not inherit this observation.
   const box = await client.getSandbox({ workspace, name: sandbox }, signal);
   const admission = box?.configurationAdmission;
-  // The Sandbox Driver verifies this spec against the admitted AgentRevision. The
-  // two live policy reads can agree after a policy update that changed that baseline.
-  const admittedPolicy = asRecord(box?.spec?.policy);
   const providers = box?.spec?.providers;
   const expectedNames = new Set([installed.provider, ...expectedProviders.map(({ name }) => name)]);
-  return (
+  const matchesInstallation =
     !signal.aborted &&
-    admittedPolicy !== undefined &&
-    isDeepStrictEqual(wirePolicy(source), wirePolicy(admittedPolicy)) &&
     box?.id === sandboxId &&
     box.name === sandbox &&
     box.workspace === workspace &&
@@ -185,6 +234,23 @@ export async function verifyOpenShellRepositoryPolicy(
     admission.policy_hash === policyHash &&
     admission.config_revision === installed.configRevision &&
     admission.provider_env_revision === installed.providerEnvRevision &&
-    !admission.error
+    !admission.error;
+  if (!matchesInstallation || !box) {
+    return false;
+  }
+  if (verifyManagedSandbox) {
+    // A retained Sandbox's creation spec may predate this revision. Verify the
+    // actual loaded source against the locally admitted launch, including its owner.
+    try {
+      await verifyManagedSandbox(box, signal, source);
+      return !signal.aborted;
+    } catch {
+      return false;
+    }
+  }
+  const admittedPolicy = asRecord(box.spec?.policy);
+  return (
+    admittedPolicy !== undefined &&
+    isDeepStrictEqual(wirePolicy(source), wirePolicy(admittedPolicy))
   );
 }

@@ -160,7 +160,17 @@ export {
   SandboxNetworkGrantsSchema,
   SandboxNetworkPolicyConfiguration,
   validateSandboxNetworkGrants,
+  admitSandboxRepositoryNetworkPolicy,
 } from "./sandbox-policy.ts";
+export type {
+  RepositoryNetworkGrant,
+  RepositoryNetworkPolicy,
+  RepositoryNetworkPolicyCeiling,
+} from "./repository-network-policy.ts";
+export {
+  admitRepositoryNetworkPolicy,
+  RepositoryNetworkPolicyAdmissionError,
+} from "./repository-network-policy.ts";
 
 export type {
   OAuthClient,
@@ -1234,6 +1244,9 @@ export function freezeAgentRevision(revision: AgentRevision): Readonly<AgentRevi
       ? {}
       : { egressPlan: immutableCopy(revision.egressPlan) }),
     configuration: immutableCopy(revision.configuration),
+    ...(revision.sandboxPolicy === undefined
+      ? {}
+      : { sandboxPolicy: immutableCopy(revision.sandboxPolicy) }),
     ...(revision.secretBindings === undefined
       ? {}
       : { secretBindings: immutableCopy(revision.secretBindings) }),

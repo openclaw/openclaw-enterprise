@@ -150,12 +150,12 @@ names and do not cover `ghcr.io` or `githubusercontent.com`.
 Keep HTTPS, hostname verification, and authenticated Gateway JWTs. Leave
 `allow_insecure_transport` disabled. Qualification also requires runtime evidence.
 
-Before release, the protected Git request hook checks the bound Git Provider's
-endpoint owners. OCE derives each owner from the Provider record ID, rule, and
-endpoint position. When the runtime supplies a repository network policy, OCE
-also checks the loaded Sandbox policy against all selected Provider rules and
-their endpoint owners. For profiles with endpoints, an unavailable ID,
-unsupported rule, or owner mismatch withholds release.
+Before release, OCE checks Git endpoint owners derived from the Provider ID,
+rule, and endpoint position. Repository network policy also requires the exact loaded
+source and all selected Provider rules and endpoint owners. A managed Sandbox
+must load the policy for the current Agent revision, including after replacement.
+Missing Provider IDs for endpoint rules, unsupported rules, or owner mismatches
+withhold release.
 
 ## Grant access to a GitHub App installation
 
@@ -298,7 +298,12 @@ Git-only removal. Identity changes, GitHub overlap or failed observation can req
 retirement. The worker reuses one conditional detach request while Git remains attached.
 A moved Sandbox version or unknown Gateway outcome retires the runtime. Empty profile
 workspaces select the platform profile. Files-only profiles may omit endpoint and
-credential lists; identity and overlap checks still apply.
+credential lists. Identity and overlap checks still apply.
+
+For repository network policies, the worker checks route ownership and credential
+material after Gateway authentication. Before sending the update it checks local
+withdrawal, credential expiry and the supervisor lease. The worker clears an unsent
+reservation while it owns the open route.
 
 Standing succession requires a fresh `WITHHELD / CREDENTIAL_EXPIRED` report matching
 the predecessor and generation, then rechecks Sandbox readiness and main-process identity.

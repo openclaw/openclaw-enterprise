@@ -1,7 +1,26 @@
 import assert from "node:assert/strict";
-import { randomBytes, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { generateKeyPairSync, randomBytes, randomUUID, verify } from "node:crypto";
+import { constants } from "node:fs";
+import { link, open, rename } from "node:fs/promises";
+import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
+import {
+  COMPUTE_RELEASE_PROFILE,
+  HARNESS_EGRESS_ENROLLMENT_PATH,
+  harnessEgressEnrollment,
+  repositoryGitStartupProbePath,
+  signComputeExecutionRelease,
+  signComputeRepositoryGitProbe,
+} from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
+import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { HARNESS_REPOSITORY_GIT_PROBE_HEADER } from "../../apps/controller/src/drivers/compute/harness-egress-enrollment.ts";
+import {
+  OpenShellGateway,
+  openShellProviderName,
+} from "../../apps/controller/src/backends/openshell.ts";
+import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import {
   OpenShellGitRouteBlockedError,
@@ -11,6 +30,7 @@ import {
   OpenShellPreparedGitProviderError,
   type OpenShellPreparedGitProvider,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
+import { openShellProviderTokenGrantOwners } from "../../apps/controller/src/drivers/egress-proxy/openshell-token-grant-owner.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
@@ -18,14 +38,32 @@ import {
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts";
-import type { AgentRevision, SandboxDriver } from "../../packages/contracts/src/index.ts";
+import {
+  admitRepositoryNetworkPolicy,
+  type AgentRevision,
+  type EgressInstallation,
+  type ProxyPlan,
+  type ProxyWiring,
+  type SandboxDriver,
+} from "../../packages/contracts/src/index.ts";
 import {
   DependencyUnavailableError,
   SandboxGatewayUnavailableError,
 } from "../../packages/occ/src/errors.ts";
+import { InstalledDriver } from "../../packages/occ/src/index.ts";
+import { buildSandboxInstallation } from "../integration/sandbox-driver-startup-installation-fixture.ts";
+import { backendFor } from "../integration/sandbox-driver-openshell-fixture.ts";
+import {
+  harnessService,
+  runtimeSandboxFixture,
+} from "../integration/sandbox-driver-startup-orchestration.ts";
+import { workspaceGatewayClient } from "../integration/sandbox-workspace-gateway-fixture.ts";
 import { selectOpenShellGitWithdrawalDenials } from "../../scripts/ci/openshell-git-retention.mjs";
 import { routeStore } from "../fixtures/openshell-git-route-store.ts";
 import { deferred } from "../helpers/deferred.ts";
+import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import { signal, token, wire } from "./openshell-prepared-git-wire.ts";
 import {
   bootstrappingOpenShellGitRuntimeFixture,
   openShellGitRuntimeFixture,
@@ -58,13 +96,130 @@ function resolverPort(runtime: Runtime): {
 } {
   return runtime as unknown as { resolveDelivery: Runtime["resolveDelivery"] };
 }
-async function selectedV5(t: TestContext) {
+const runtimeFilesProvider = "oce-runtime-" + "a".repeat(16);
+const managedModelBinary = "/usr/local/bin/codex";
+const credentialGatewayId = "openshell-credentials";
+const modelEndpoint = { host: "api.openai.com", port: 443, protocol: "rest" };
+const managedModelEndpoint = {
+  ...modelEndpoint,
+  path: "/v1/**",
+  enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+  access: "NETWORK_ACCESS_PRESET_READ_WRITE",
+};
+
+async function selectedV5(t: TestContext, acl = false, modelSourceId?: string) {
+  const modelProvider = modelSourceId ? openShellProviderName(modelSourceId) : "openai";
+  const repository = registry.repositories[0]!;
+  const repositories = [
+    repository,
+    {
+      ...repository,
+      repositoryRef: "delivery",
+      repositoryId: "34568",
+      repository: "example/delivery",
+    },
+  ];
+  const selectedRegistry =
+    acl &&
+    validateGitHubRepositoryRegistry(
+      {
+        ...registry,
+        repositories: repositories.map((repo) => ({
+          ...repo,
+          namespaces: [
+            {
+              namespaceId: "namespace-a",
+              profiles: ["github-repository"],
+              permissions: { metadata: "read", contents: "write" },
+            },
+          ],
+        })),
+      },
+      registry.backendId,
+    );
   const store = routeStore();
   const options: FixtureOptions = {
     store,
     audience: "preview",
+    ...(selectedRegistry && {
+      resolveDelivery: createGitHubRepositoryDeliveryResolver(selectedRegistry),
+    }),
   };
   const f = bootstrappingOpenShellGitRuntimeFixture(options);
+  let modelProviderId = "model-id";
+  if (acl) {
+    const client = fixtureClient(f);
+    const getProfile = client.getProviderProfile.bind(client);
+    if (modelSourceId) {
+      const workspace = f.sandbox.workspace;
+      const { client: registrationClient } = await gitExpiryGateway(t, {
+        model: "operator-model",
+        workspace,
+        sandbox: f.sandbox.name,
+        revisionId: f.revision.id,
+        deadline: new Date(f.revision.repositoryCredentials!.deadlineWallMs).toISOString(),
+        platformProfile: false,
+      });
+      const credentialGateway = new OpenShellCredentialGatewayDriver(
+        { binaries: [managedModelBinary] },
+        { id: credentialGatewayId, backend: backendFor(registrationClient) },
+      );
+      const createdAt = new Date().toISOString();
+      const namespace = {
+        id: f.revision.namespaceId,
+        name: workspace,
+        status: "ready",
+        createdAt,
+      } as const;
+      const type = "openai";
+      const config = {};
+      const result = await credentialGateway.registerSource(
+        {
+          namespace,
+          source: {
+            id: modelSourceId,
+            name: "Model credential",
+            namespaceId: namespace.id,
+            ownerCapability: "credential_gateway",
+            driverId: credentialGatewayId,
+            type,
+            config,
+            secrets: {
+              api_key: { kind: "secret", id: "fixture-secret", namespaceId: namespace.id },
+            },
+            state: "registering",
+            createdAt,
+          },
+          signal: t.signal,
+        },
+        { type, config, secrets: { api_key: "synthetic-model-key" } },
+      );
+      assert.equal(result.state, "ready");
+      const provider = await registrationClient.getProvider(workspace, modelProvider, t.signal);
+      assert.ok(provider?.id);
+      assert.equal(provider.profileWorkspace, workspace);
+      modelProviderId = provider.id;
+      const getProvider = client.getProvider.bind(client);
+      client.getProvider = async (workspace, name, signal) =>
+        name === modelProvider
+          ? registrationClient.getProvider(workspace, name, signal)
+          : getProvider(workspace, name, signal);
+      client.getProviderProfile = async (workspace, id, signal) => {
+        if (id === modelProvider) {
+          assert.equal(workspace, f.sandbox.workspace);
+          return registrationClient.getProviderProfile(workspace, id, signal);
+        }
+        return getProfile(workspace, id, signal);
+      };
+    } else {
+      client.getProviderProfile = async (workspace, id, signal) => {
+        const profile = await getProfile(workspace, id, signal);
+        return id === modelProvider && profile?.definition
+          ? { ...profile, definition: { ...profile.definition, endpoints: [modelEndpoint] } }
+          : profile;
+      };
+    }
+  }
   f.owner.material = {
     ...f.owner.material,
     preparationAttemptId: randomUUID(),
@@ -98,25 +253,70 @@ async function selectedV5(t: TestContext) {
       mandatoryEnforcement: f.runtime.mandatoryEnforcement.bind(f.runtime),
     },
   );
-  const admitted = await proxy.sourceControl.assertAvailable(t.signal, "repository_git");
+  const profile = acl ? "github_repository" : "repository_git";
+  const admitted = await proxy.sourceControl.assertAvailable(t.signal, profile);
   assert.deepEqual(admitted, {
-    profile: "repository_git",
+    profile,
     authorization: "online-request",
   });
   assert.ok(admitted);
   const executionId = randomBytes(24).toString("base64url");
+  const bindings = selectedRegistry
+    ? repositories.map(({ repositoryRef }) =>
+        resolveGitHubRepositoryBinding(selectedRegistry, {
+          namespaceId: f.revision.namespaceId,
+          repositoryRef,
+          profile: "github-repository",
+        }),
+      )
+    : f.revision.repositoryCredentials!.bindings;
+  const repositoryCredentials = { ...f.revision.repositoryCredentials!, bindings };
+  const grants = [
+    { repository: repositories[0]!.repository, access: "read" },
+    { repository: repositories[1]!.repository, access: "write" },
+  ] as const;
+  if (selectedRegistry) {
+    f.owner.readOpenShellMaterial = async (_revisionId, _signal, _route, scope) => {
+      assert.equal(scope, "github-repository");
+      f.calls.material += 1;
+      return {
+        ...f.owner.material,
+        grantId: bindings[0]!.grant.grantId,
+        scope: "github-repository",
+        installationId: selectedRegistry.githubInstallationId,
+        repositories: repositories.map(({ repository, repositoryId }) => ({
+          repository,
+          repositoryId,
+        })),
+      };
+    };
+  }
   const revision = {
     ...f.revision,
+    repositoryCredentials,
+    ...(acl && {
+      sandboxPolicy: {
+        driverId: "openshell",
+        implementation: "openshell",
+        version: 1,
+        defaults: {},
+        additions: [],
+        repositoryNetworkPolicy: admitRepositoryNetworkPolicy(grants, grants),
+      },
+    }),
     executionAdmission: { version: 5, mode: "protected" },
     egressPlan: {
       driver: { id: "openshell" },
       execution: { executionId },
       repositoryGitAuthorization: admitted.authorization,
-      repositoryGit: f.revision.repositoryCredentials,
+      repositoryGit: repositoryCredentials,
     },
   } as unknown as AgentRevision;
-  assert.equal(revision.repositoryCredentials!.bindings.length, 1);
-  assert.equal(revision.repositoryCredentials!.bindings[0]!.profile, "git-write");
+  assert.equal(revision.repositoryCredentials!.bindings.length, acl ? 2 : 1);
+  assert.equal(
+    revision.repositoryCredentials!.bindings[0]!.profile,
+    acl ? "github-repository" : "git-write",
+  );
   const prepare = (runtime = f.runtime, otherHosts: readonly string[] = []) =>
     runtime.prepare(
       revision,
@@ -125,8 +325,18 @@ async function selectedV5(t: TestContext) {
       f.sandbox.name,
       t.signal,
       "/sandbox/enterprise",
-      ["openai"],
+      [modelProvider],
       otherHosts,
+      acl
+        ? {
+            name: runtimeFilesProvider,
+            rule: {
+              name: "_provider_" + runtimeFilesProvider.replaceAll("-", "_"),
+              binaries: [],
+              endpoints: [],
+            },
+          }
+        : undefined,
     );
   const replacement = () => {
     const before = structuredClone(store.rows.get(revision.id));
@@ -147,6 +357,8 @@ async function selectedV5(t: TestContext) {
     store,
     revision,
     executionId,
+    modelProvider,
+    modelProviderId,
     prepare,
     replacement,
     noCredentials,
@@ -155,9 +367,9 @@ async function selectedV5(t: TestContext) {
 const updateReceipt = (version: string) => `git-update-${version}`;
 const updateMutation = (version: string) => `git-mutation-${version}`;
 
-async function heldGit(t: TestContext) {
-  const selected = await selectedV5(t);
-  const { f, store, revision, executionId, prepare } = selected;
+async function heldGit(t: TestContext, acl = false, modelSourceId?: string) {
+  const selected = await selectedV5(t, acl, modelSourceId);
+  const { f, store, revision, executionId, modelProvider, modelProviderId, prepare } = selected;
   const activity = { updates: 0, releases: 0, probes: 0 };
   const createProvider = f.client.createProvider;
   f.client.createProvider = async (...args) => {
@@ -176,6 +388,11 @@ async function heldGit(t: TestContext) {
   assert.ok(preview);
   assert.equal(preview.mandatory, true);
   const originalBinding = structuredClone(entry.binding);
+  const runtimeProvider: OpenShellPreparedGitProvider = entry.provider;
+  const gitRule = runtimeProvider.previewNetworkRule();
+  assert.ok(gitRule);
+  const aclOrLegacyEndpoint = gitRule.endpoints.find((endpoint) => endpoint.host === "github.com");
+  assert.ok(aclOrLegacyEndpoint);
   const gitRuleName = "_provider_" + prepared.provider.replaceAll("-", "_");
   // These owner values come from the OpenShell protobuf and policy_identity.rs
   // framing for the fixture Provider ID and both endpoints.
@@ -190,43 +407,67 @@ async function heldGit(t: TestContext) {
     token_grant_owner:
       "grant-owner:v1:635fecf5c5e34feba91b4102c557ee2fa1deb6d67e9fd124aa5669d927967fe7",
   };
-  const runtimeFilesProvider = "oce-runtime-" + "a".repeat(16);
   const sourcePolicy = { network_policies: {} };
+  const aclModelEndpoint =
+    modelProvider === "openai"
+      ? modelEndpoint
+      : { ...managedModelEndpoint, provider_credentialed: true };
+  const modelRule = {
+    name: "_provider_" + modelProvider.replaceAll("-", "_"),
+    binaries: modelSourceId ? [{ path: managedModelBinary }] : [],
+    endpoints: [acl ? aclModelEndpoint : { host: "api.openai.com", port: 443 }],
+  };
+  // The Gateway fixture stamps token-grant owners. The independent wire test
+  // covers the encoding for known OpenShell Provider IDs and rules.
+  const stampOwners = <T extends typeof gitRule | typeof modelRule>(
+    rule: T,
+    providerId: string,
+  ) => {
+    const owners = openShellProviderTokenGrantOwners(providerId, rule);
+    assert.ok(owners);
+    return {
+      ...rule,
+      endpoints: rule.endpoints.map((endpoint, i) => ({
+        ...endpoint,
+        token_grant_owner: owners[i],
+      })),
+    };
+  };
+  const effectiveModelRule = acl ? stampOwners(modelRule, modelProviderId) : modelRule;
   const effectivePolicy = {
     network_policies: {
-      [gitRuleName]: {
-        name: gitRuleName,
-        binaries: [
-          "/usr/bin/git",
-          "/usr/lib/git-core/git-remote-https",
-          "/usr/lib/git-core/git-remote-http",
-          "/usr/libexec/git-core/git-remote-https",
-          "/usr/libexec/git-core/git-remote-http",
-          "/usr/bin/curl",
-          "/usr/local/bin/node",
-          "/usr/bin/node",
-        ].map((path) => ({ path })),
-        endpoints: [
-          gitEndpoint,
-          {
-            ...gitEndpoint,
-            host: "api.github.com",
-            path: "/repos/example/application/pulls",
-            token_grant_owner:
-              "grant-owner:v1:4f3ae41cf9ed4cc8cdfd7088b586a59acaf5b91339e7eebf42734fde0e760e90",
+      [gitRule.name]: acl
+        ? stampOwners(gitRule, originalBinding.providerId)
+        : {
+            name: gitRuleName,
+            binaries: [
+              "/usr/bin/git",
+              "/usr/lib/git-core/git-remote-https",
+              "/usr/lib/git-core/git-remote-http",
+              "/usr/libexec/git-core/git-remote-https",
+              "/usr/libexec/git-core/git-remote-http",
+              "/usr/bin/curl",
+              "/usr/local/bin/node",
+              "/usr/bin/node",
+            ].map((path) => ({ path })),
+            endpoints: [
+              gitEndpoint,
+              {
+                ...gitEndpoint,
+                host: "api.github.com",
+                path: "/repos/example/application/pulls",
+                token_grant_owner:
+                  "grant-owner:v1:4f3ae41cf9ed4cc8cdfd7088b586a59acaf5b91339e7eebf42734fde0e760e90",
+              },
+            ],
           },
-        ],
-      },
-      _provider_openai: {
-        name: "_provider_openai",
-        endpoints: [{ host: "api.openai.com", port: 443 }],
-      },
+      [modelRule.name]: effectiveModelRule,
       ["_provider_" + runtimeFilesProvider.replaceAll("-", "_")]: {
         name: "_provider_" + runtimeFilesProvider.replaceAll("-", "_"),
       },
     },
   };
-  const providers = ["openai", runtimeFilesProvider, prepared.provider];
+  const providers = [modelProvider, runtimeFilesProvider, prepared.provider];
   const started = new Date().toISOString();
   const spec = Object.assign(f.sandbox.spec, {
     policy: sourcePolicy,
@@ -261,19 +502,45 @@ async function heldGit(t: TestContext) {
       configurationAdmission: {
         state: 2,
         instance_id: "configuration",
-        policy_version: "1",
+        policy_version: acl ? 1 : "1",
         policy_hash: g.policyHash,
         config_revision: g.configRevision,
         provider_env_revision: g.providerEnvRevision,
       },
     };
   };
+  let loaded = true;
+  let allowUninspectedCredentials = false;
+  let observationAgeMs = 0;
+  let readWorkload: () => void | Promise<void> = () => {};
+  const setPolicyLoaded = (value: boolean) => {
+    loaded = value;
+  };
+  client.getSandboxPolicyStatus = async () => ({
+    revision: {
+      version: 1,
+      status: loaded ? "POLICY_STATUS_LOADED" : "POLICY_STATUS_FAILED",
+      policy: sourcePolicy,
+    },
+    active_version: 1,
+  });
   client.getGatewayInfo = async () => assert.fail("qualification must use recipient evidence");
   client.getSandboxConfig = async () => {
     const g = generation();
     return {
-      policy: effectivePolicy,
-      version: "1",
+      policy: {
+        network_policies: {
+          ...effectivePolicy.network_policies,
+          [modelRule.name]: {
+            ...effectiveModelRule,
+            endpoints: effectiveModelRule.endpoints.map((endpoint) => ({
+              ...endpoint,
+              ...(allowUninspectedCredentials && { allow_uninspected_credentials: true }),
+            })),
+          },
+        },
+      },
+      version: acl ? 1 : "1",
       workspace: f.sandbox.workspace,
       configuration_instance_id: "configuration",
       policy_source: 1,
@@ -298,8 +565,8 @@ async function heldGit(t: TestContext) {
   };
   const receiptReads: { provider: string; operation: string | undefined }[] = [];
   client.getSandboxProviderStatus = async (workspace, sandbox, name, _signal, operation) => {
-    assert.ok(name === prepared.provider || name === "openai");
-    const model = name === "openai";
+    assert.ok(name === prepared.provider || name === modelProvider);
+    const model = name === modelProvider;
     const active = provider.resourceVersion !== originalBinding.resourceVersion;
     const id = model
       ? "model-observe"
@@ -327,7 +594,7 @@ async function heldGit(t: TestContext) {
           ...g,
           sandboxId: f.sandbox.id,
           sandbox,
-          providerId: model ? "model-id" : originalBinding.providerId,
+          providerId: model ? modelProviderId : originalBinding.providerId,
           providerResourceVersion: model ? "1" : String(provider.resourceVersion),
         },
       },
@@ -343,10 +610,17 @@ async function heldGit(t: TestContext) {
         reason: "PROVIDER_READINESS_REASON_UNSPECIFIED",
       },
       networkInstanceId: f.supervisor.networkInstanceId,
-      observedTime: now,
+      observedTime: new Date(Date.parse(now) - (model ? 0 : observationAgeMs)).toISOString(),
       evaluatedTime: now,
     };
   };
+  if (acl) {
+    client.prepareProviderCredentialUpdate = async () => {
+      const update = client.updateProviderCredentialsConditionally;
+      assert.ok(update);
+      return update.bind(client);
+    };
+  }
   client.updateProviderCredentialsConditionally = async (request, expectedVersion) => {
     assert.equal(request.name, prepared.provider);
     assert.equal(expectedVersion, provider.resourceVersion);
@@ -375,7 +649,6 @@ async function heldGit(t: TestContext) {
       ],
     };
   };
-  const runtimeProvider: OpenShellPreparedGitProvider = entry.provider;
   const rotate = runtimeProvider.rotate.bind(runtimeProvider);
   runtimeProvider.rotate = async (...args) => {
     f.calls.rotate += 1;
@@ -387,11 +660,12 @@ async function heldGit(t: TestContext) {
       assert.equal(box.id, f.sandbox.id);
     },
     {
-      model: "openai",
+      model: modelProvider,
       runtime: runtimeFilesProvider,
       policy: async () => sourcePolicy,
       execution: async (box) => {
         assert.equal(box.id, f.sandbox.id);
+        await readWorkload();
         return "original-pods";
       },
     },
@@ -407,10 +681,16 @@ async function heldGit(t: TestContext) {
   assert.equal(await lookup(), undefined);
   const startupId = randomUUID();
   assert.equal(
-    await f.runtime.observeHeldPreview(revision.id, startupId, t.signal, async (path) => {
+    await f.runtime.observeHeldPreview(revision.id, startupId, t.signal, async (path, nonce) => {
       activity.probes += 1;
-      assert.ok(path.startsWith(String(gitEndpoint.path).slice(0, -2)));
-      assert.match(path, /\/oce-observe-request\/[a-f0-9]{32}\.git\/info\/refs$/);
+      if (acl) {
+        assert.equal(path, "/example/application.git/info/refs");
+        assert.match(nonce!, /^[a-f0-9]{32}$/);
+      } else {
+        assert.ok(path.startsWith(String(aclOrLegacyEndpoint.path).slice(0, -2)));
+        assert.match(path, /\/oce-observe-request\/[a-f0-9]{32}\.git\/info\/refs$/);
+        assert.equal(nonce, undefined);
+      }
       assert.equal(f.calls.material, 0);
       const request: OpenShellOnlineHttpRequest = {
         ...f.identity,
@@ -424,7 +704,7 @@ async function heldGit(t: TestContext) {
           path,
           query: "service=git-upload-pack",
         },
-        headers: [],
+        headers: nonce === undefined ? [] : [[HARNESS_REPOSITORY_GIT_PROBE_HEADER, nonce]],
         body: new Uint8Array(),
         deadlineAt: new Date(Date.now() + 5000).toISOString(),
       };
@@ -435,7 +715,7 @@ async function heldGit(t: TestContext) {
       const reasonCode = preview.deny(request, f.sandbox.id);
       assert.match(reasonCode!, /^oce_hook_/);
       assert.equal(preview.deny(request, f.sandbox.id), undefined, "challenge is one-use");
-      return { startupId, probePath: path, reasonCode };
+      return { startupId, probePath: path, ...(nonce && { probeNonce: nonce }), reasonCode };
     }),
     "held",
   );
@@ -449,14 +729,29 @@ async function heldGit(t: TestContext) {
     preview,
     client,
     runtimeFilesProvider,
+    gitRule,
     receiptReads,
     gitEndpoint,
     environment,
+    setPolicyLoaded,
+    setAllowUninspectedCredentials: (value: boolean) => {
+      allowUninspectedCredentials = value;
+    },
+    setObservationAge: (ms: number) => {
+      observationAgeMs = ms;
+    },
+    onWorkloadRead: (read: () => void | Promise<void>) => {
+      readWorkload = read;
+    },
     reconcile,
     sandbox,
     startupId,
     provider,
   };
+}
+
+function releaseAttempt(deliver: () => Promise<boolean>) {
+  return { prepare: async () => {}, deliver };
 }
 
 async function heldReleased(t: TestContext) {
@@ -498,12 +793,16 @@ async function releaseHeldGit(
   );
   assert.ok(receiptReads.some((r) => r.provider === "openai" && r.operation === "model-observe"));
   assert.equal(await lookup(), undefined, "installed material is held until launch ACK");
-  await f.runtime.releasePreview(revision.id, startupId, async () => {
-    activity.releases += 1;
-    assert.equal(preview.release, "sending");
-    assert.equal(await lookup(), undefined, "sending is not acknowledged");
-    return true;
-  });
+  await f.runtime.releasePreview(
+    revision.id,
+    startupId,
+    releaseAttempt(async () => {
+      activity.releases += 1;
+      assert.equal(preview.release, "sending");
+      assert.equal(await lookup(), undefined, "sending is not acknowledged");
+      return true;
+    }),
+  );
   assert.equal(preview.release, "acknowledged");
   const scope = await lookup();
   assert.ok(scope);
@@ -514,10 +813,14 @@ async function releaseHeldGit(
   assert.equal(scope.repositoryId, revision.repositoryCredentials!.bindings[0]!.grant.repositoryId);
   assert.equal(scope.pushRef, "refs/heads/review/task");
   await assert.rejects(
-    f.runtime.releasePreview(revision.id, startupId, async () => {
-      activity.releases += 1;
-      return true;
-    }),
+    f.runtime.releasePreview(
+      revision.id,
+      startupId,
+      releaseAttempt(async () => {
+        activity.releases += 1;
+        return true;
+      }),
+    ),
     /Cannot release this preview startup/,
   );
   assert.equal(
@@ -739,8 +1042,12 @@ test("mandatory Git request-hook release refuses a different Provider's token-gr
   assert.equal(await lookup(), undefined);
   assert.equal(f.calls.rotate, 0);
   await assert.rejects(
-    f.runtime.releasePreview(revision.id, startupId, async () =>
-      assert.fail("The unchanged route with a different owner must remain held."),
+    f.runtime.releasePreview(
+      revision.id,
+      startupId,
+      releaseAttempt(async () =>
+        assert.fail("The unchanged route with a different owner must remain held."),
+      ),
     ),
     /Cannot release this preview startup/,
   );
@@ -838,6 +1145,772 @@ test("bundled live Git refuses historical v5 installation scope before any effec
   assert.deepEqual(store.calls, storeBefore);
   assert.equal(f.runtime["entries"].size, 0);
   assert.deepEqual([f.calls.providerWrites, f.calls.material, f.calls.rotate], [0, 0, 0]);
+});
+
+test("Git runtime binds the admitted repository policy to bootstrap and removal", async (t) => {
+  const { revision: selected } = await selectedV5(t);
+  const repository = registry.repositories[0]!;
+  const selectedRegistry = validateGitHubRepositoryRegistry(
+    {
+      ...registry,
+      repositories: [
+        {
+          ...repository,
+          namespaces: [
+            {
+              namespaceId: selected.namespaceId,
+              profiles: ["github-repository"],
+              permissions: { metadata: "read", contents: "read" },
+            },
+          ],
+        },
+      ],
+    },
+    registry.backendId,
+  );
+  const binding = resolveGitHubRepositoryBinding(selectedRegistry, {
+    namespaceId: selected.namespaceId,
+    repositoryRef: repository.repositoryRef,
+    profile: "github-repository",
+  });
+  const store = routeStore();
+  const f = bootstrappingOpenShellGitRuntimeFixture({
+    store,
+    resolveDelivery: createGitHubRepositoryDeliveryResolver(selectedRegistry),
+  });
+  t.after(() => f.runtime.close());
+  const client = fixtureClient(f);
+  const { workspace, name } = f.sandbox;
+  const credentials = { ...selected.repositoryCredentials!, bindings: [binding] };
+  const grant = { repository: repository.repository, access: "read" } as const;
+  const otherGrant = { repository: "example/unauthorized", access: "read" } as const;
+  const revisionFor = (grants: readonly (typeof grant)[]): AgentRevision => ({
+    ...selected,
+    repositoryCredentials: credentials,
+    egressPlan: { ...selected.egressPlan!, repositoryGit: credentials },
+    sandboxPolicy: {
+      driverId: "openshell",
+      implementation: "openshell",
+      version: 1,
+      defaults: {},
+      additions: [],
+      repositoryNetworkPolicy: admitRepositoryNetworkPolicy(grants, [grant, otherGrant])!,
+    },
+  });
+  const prepare = (revision: AgentRevision) =>
+    f.runtime.prepare(revision, client, workspace, name, t.signal, "/sandbox/enterprise");
+
+  // An empty ACL must refuse before reservation or Gateway IO.
+  const gateway = t.mock.fn(() => undefined);
+  f.faults.gatewayCall = gateway;
+  const before = { ...store.calls };
+  const denyAll = revisionFor([]);
+  await assert.rejects(prepare(denyAll), /requires a nonempty admitted repository network policy/);
+  await f.runtime.removeProvider(denyAll, client, workspace, name, [], t.signal);
+  await assert.rejects(
+    prepare(revisionFor([otherGrant])),
+    /repository network grants must fit the selected Git credential/,
+  );
+  assert.equal(gateway.mock.callCount(), 0);
+  assert.deepEqual(store.calls, before);
+  assert.equal(store.rows.size, 0);
+
+  const metadataRegistry = validateGitHubRepositoryRegistry(
+    {
+      ...registry,
+      repositories: [
+        {
+          ...repository,
+          namespaces: [
+            {
+              namespaceId: selected.namespaceId,
+              profiles: ["github-repository"],
+              permissions: { metadata: "read" },
+            },
+          ],
+        },
+      ],
+    },
+    registry.backendId,
+  );
+  const metadataBinding = resolveGitHubRepositoryBinding(metadataRegistry, {
+    namespaceId: selected.namespaceId,
+    repositoryRef: repository.repositoryRef,
+    profile: "github-repository",
+  });
+  const metadataStore = routeStore();
+  const metadata = bootstrappingOpenShellGitRuntimeFixture({
+    store: metadataStore,
+    resolveDelivery: createGitHubRepositoryDeliveryResolver(metadataRegistry),
+  });
+  t.after(() => metadata.runtime.close());
+  const metadataCredentials = { ...credentials, bindings: [metadataBinding] };
+  const readRevision = revisionFor([grant]);
+  const metadataRevision = {
+    ...readRevision,
+    repositoryCredentials: metadataCredentials,
+    egressPlan: { ...readRevision.egressPlan!, repositoryGit: metadataCredentials },
+  };
+  metadata.faults.gatewayCall = gateway;
+  await assert.rejects(
+    metadata.runtime.prepare(
+      metadataRevision,
+      fixtureClient(metadata),
+      metadata.sandbox.workspace,
+      metadata.sandbox.name,
+      t.signal,
+      "/sandbox/enterprise",
+    ),
+    /repository network grants must fit the selected Git credential/,
+  );
+  assert.equal(gateway.mock.callCount(), 0);
+  assert.equal(metadataStore.rows.size, 0);
+  assert.equal(metadata.calls.providerWrites, 0);
+
+  // Read the profile the runtime actually emitted. A legacy installation profile would also
+  // allow wildcard Git and the GitHub API, and a write grant would add receive-pack.
+  const revision = revisionFor([grant]);
+  const prepared = await prepare(revision);
+  const profile = await client.getProviderProfile(workspace, prepared.provider, t.signal);
+  assert.deepEqual(profile?.definition?.endpoints, [
+    {
+      host: "github.com",
+      port: 443,
+      protocol: "rest",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      rules: [
+        {
+          allow: {
+            method: "GET",
+            path: "/example/application.git/info/refs",
+            query: { service: { glob: "git-upload-pack" } },
+          },
+        },
+        { allow: { method: "POST", path: "/example/application.git/git-upload-pack" } },
+      ],
+    },
+  ]);
+
+  // With the Sandbox absent and no captured attachments, a cold owner must derive the same name.
+  const deletes: string[] = [];
+  client.deleteProvider = async (_workspace, provider) => {
+    deletes.push(provider);
+  };
+  client.deleteProviderProfile = async (_workspace, profileId) => {
+    deletes.push(profileId);
+  };
+  const cold = openShellGitRuntimeFixture({ resolveDelivery: f.resolveDelivery });
+  t.after(() => cold.runtime.close());
+  await cold.runtime.removeProvider(revision, client, workspace, name, [], t.signal);
+  assert.deepEqual(deletes, [prepared.provider, prepared.provider]);
+});
+
+test("ACL Git reads the loaded policy again before releasing its selected-repository launch", async (t) => {
+  const held = await heldGit(t, true);
+  const {
+    f,
+    revision,
+    reconcile,
+    startupId,
+    activity,
+    lookup,
+    setPolicyLoaded,
+    setAllowUninspectedCredentials,
+    gitRule,
+  } = held;
+  // The one credential can push both repositories. The loaded policy allows a push
+  // only to the repository with a write grant and exposes no GitHub API endpoint.
+  assert.deepEqual(
+    gitRule.endpoints.map((endpoint) => ({
+      host: endpoint.host,
+      paths: "rules" in endpoint ? endpoint.rules.map(({ allow }) => allow.path) : [],
+    })),
+    [
+      {
+        host: "github.com",
+        paths: [
+          "/example/application.git/info/refs",
+          "/example/application.git/git-upload-pack",
+          "/example/delivery.git/info/refs",
+          "/example/delivery.git/git-upload-pack",
+          "/example/delivery.git/info/refs",
+          "/example/delivery.git/git-receive-pack",
+        ],
+      },
+    ],
+  );
+  // An inspected REST model endpoint with the bypass bit set must close both generations.
+  setAllowUninspectedCredentials(true);
+  await reconcile();
+  assert.equal(activity.updates, 0);
+  assert.equal(f.calls.material, 0);
+  setAllowUninspectedCredentials(false);
+  await reconcile();
+  assert.equal(activity.updates, 1);
+  assert.equal(f.runtime.route(revision.id).state, "installed");
+  assert.equal(await lookup(), undefined, "no authorization while the launcher is held");
+
+  // A previously verified policy must not authorize release after it stops being loaded.
+  setPolicyLoaded(false);
+  const deliver = async () => {
+    activity.releases += 1;
+    return true;
+  };
+  await assert.rejects(
+    f.runtime.releasePreview(revision.id, startupId, releaseAttempt(deliver), t.signal),
+    /Cannot release this preview startup/,
+  );
+  assert.equal(activity.releases, 0);
+  assert.equal(await lookup(), undefined);
+  setPolicyLoaded(true);
+  setAllowUninspectedCredentials(true);
+  await assert.rejects(
+    f.runtime.releasePreview(revision.id, startupId, releaseAttempt(deliver), t.signal),
+    /Cannot release this preview startup/,
+  );
+  assert.equal(activity.releases, 0);
+  setAllowUninspectedCredentials(false);
+  await f.runtime.releasePreview(revision.id, startupId, releaseAttempt(deliver), t.signal);
+  assert.equal(activity.releases, 1);
+  const scope = await lookup();
+  assert.equal(scope?.scope, "github-repository");
+  assert.deepEqual(scope.repositories, [
+    { repository: "example/application", repositoryId: "34567" },
+    { repository: "example/delivery", repositoryId: "34568" },
+  ]);
+});
+
+test("ACL Git refuses credentials and launcher release when the supervisor lease expires during recipient reads", async (t) => {
+  const { f, revision, reconcile, startupId, activity, setObservationAge, onWorkloadRead } =
+    await heldGit(t, true);
+  const realNow = performance.now.bind(performance);
+  let elapsed = 0;
+  t.mock.method(performance, "now", () => realNow() + elapsed);
+  setObservationAge(14_000);
+  onWorkloadRead(() => {
+    elapsed += 2_000;
+  });
+  await reconcile();
+  assert.ok(elapsed >= 2_000, "time advances during a recipient read");
+  assert.equal(activity.updates, 0);
+  assert.equal(f.calls.material, 0);
+
+  onWorkloadRead(() => {});
+  const selectMaterial = f.owner.readOpenShellMaterial.bind(f.owner);
+  f.owner.readOpenShellMaterial = async (...args) => {
+    const material = await selectMaterial(...args);
+    if (f.calls.material === 2) {
+      elapsed += 2_000;
+    }
+    return material;
+  };
+  await reconcile();
+  assert.equal(f.calls.material, 2, "the lease expires during final material selection");
+  assert.equal(activity.updates, 0);
+  f.owner.readOpenShellMaterial = selectMaterial;
+
+  setObservationAge(0);
+  await reconcile();
+  assert.equal(activity.updates, 1);
+  assert.equal(f.runtime.route(revision.id).state, "installed");
+
+  setObservationAge(14_000);
+  onWorkloadRead(() => {
+    elapsed += 2_000;
+  });
+  await assert.rejects(
+    f.runtime.releasePreview(
+      revision.id,
+      startupId,
+      releaseAttempt(async () => {
+        activity.releases += 1;
+        return true;
+      }),
+      t.signal,
+    ),
+    /Cannot release this preview startup/,
+  );
+  assert.equal(activity.releases, 0);
+
+  // The launcher document is signed after a fresh read. Its sender must check the
+  // same lease after that asynchronous work, and an unsent release can try again.
+  onWorkloadRead(() => {});
+  await assert.rejects(
+    f.runtime.releasePreview(
+      revision.id,
+      startupId,
+      {
+        prepare: async () => {
+          elapsed += 2_000;
+        },
+        deliver: async () => {
+          activity.releases += 1;
+          return true;
+        },
+      },
+      t.signal,
+    ),
+    /Cannot release this preview startup/,
+  );
+  assert.equal(activity.releases, 0);
+  setObservationAge(0);
+  await f.runtime.releasePreview(
+    revision.id,
+    startupId,
+    releaseAttempt(async () => {
+      activity.releases += 1;
+      return true;
+    }),
+    t.signal,
+  );
+  assert.equal(activity.releases, 1);
+});
+
+test("ACL Git sends no release when installed credentials expire during signing", async (t) => {
+  const { f, revision, startupId, reconcile, setObservationAge } = await heldGit(t, true);
+  const expiresAt = Date.parse(f.owner.material.expiresAt);
+  await reconcile();
+  assert.equal(f.runtime.route(revision.id).state, "installed");
+  setObservationAge(0);
+
+  const wallClock = t.mock.method(Date, "now");
+  let prepared = false;
+  let posts = 0;
+  await assert.rejects(
+    f.runtime.releasePreview(
+      revision.id,
+      startupId,
+      {
+        prepare: async () => {
+          assert.ok(Date.now() < expiresAt);
+          // Move only the credential's wall clock. The supervisor lease stays fresh.
+          wallClock.mock.mockImplementation(() => expiresAt);
+          prepared = true;
+        },
+        deliver: async () => {
+          posts++;
+          return true;
+        },
+      },
+      t.signal,
+    ),
+    /Cannot release this preview startup/,
+  );
+  assert.equal(prepared, true);
+  assert.equal(posts, 0);
+  assert.equal(f.runtime.previewReleased(revision.id), false);
+});
+
+for (const scope of ["revision", "Namespace"] as const) {
+  test(`ACL Git sends no release after same-turn ${scope} withdrawal`, async (t) => {
+    const { f, revision, startupId, reconcile } = await heldGit(t, true);
+    await reconcile();
+    assert.equal(f.runtime.route(revision.id).state, "installed");
+
+    const signing = deferred();
+    const signed = deferred();
+    let posts = 0;
+    const release = f.runtime.releasePreview(
+      revision.id,
+      startupId,
+      {
+        prepare: () => {
+          signing.resolve();
+          return signed.promise;
+        },
+        deliver: async () => {
+          posts++;
+          return true;
+        },
+      },
+      t.signal,
+    );
+    const outcome = release.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    await Promise.race([signing.promise, outcome.then(() => assert.fail("signing did not start"))]);
+
+    // Wake the signing continuation first. Withdrawal in the same turn must
+    // already be visible when that continuation decides whether to send.
+    signed.resolve();
+    if (scope === "revision") {
+      f.runtime.withdraw(revision.id);
+    } else {
+      f.runtime.withdrawNamespace(revision.namespaceId);
+    }
+    const refusal = await outcome;
+    assert.equal(posts, 0);
+    assert.ok(refusal instanceof Error);
+    assert.match(refusal.message, /Cannot release this preview startup/);
+    assert.equal(f.runtime.previewReleased(revision.id), false);
+    assert.deepEqual(f.runtime.route(revision.id), { state: "blocked", reason: "withdrawn" });
+  });
+}
+
+test("ACL Git blocks a release when the POST acknowledgment is lost", async (t) => {
+  const { f, revision, startupId, reconcile, lookup } = await heldGit(t, true);
+  await reconcile();
+  assert.equal(f.runtime.route(revision.id).state, "installed");
+  let posts = 0;
+  const release = () =>
+    f.runtime.releasePreview(
+      revision.id,
+      startupId,
+      releaseAttempt(async () => {
+        posts++;
+        throw new Error("release transport lost its response");
+      }),
+      t.signal,
+    );
+  await assert.rejects(release(), /release transport lost its response/);
+  assert.deepEqual(f.runtime.route(revision.id), {
+    state: "blocked",
+    reason: "preview_release_unconfirmed",
+  });
+  assert.equal(await lookup(), undefined);
+  await assert.rejects(release(), /Cannot release this preview startup/);
+  assert.equal(posts, 1);
+});
+
+for (const withdrawal of ["local", "durable"] as const) {
+  test(`ACL rotation never reaches the Gateway after ${withdrawal} withdrawal during authentication`, async (t) => {
+    const { f, store, revision, client, entry, reconcile, lookup } = await heldGit(t, true);
+    const directory = await temporaryDirectory(t, "acl-git-auth-");
+    const bearer = join(directory, "bearer");
+    const regularBearer = join(directory, "regular-bearer");
+    await using bearerFile = await open(regularBearer, "wx", 0o600);
+    await bearerFile.writeFile("fixture-bearer");
+    await link(regularBearer, bearer);
+    const delayedBearer = join(directory, "delayed-bearer");
+    execFileSync("mkfifo", [delayedBearer]);
+
+    const { client: gateway, binding, state } = await wire(t, bearer);
+    await binding.prepare(token(), signal());
+    const provider = structuredClone(state.provider);
+    let appliedWithdrawal: Promise<void> | undefined;
+    const withHeldBearer = async <T>(authenticate: () => Promise<T>): Promise<T> => {
+      await rename(delayedBearer, bearer);
+      // The FIFO opens when the real Gateway client reads the bearer. Commit
+      // the withdrawal before that read finishes, with the supervisor still live.
+      let writerConnected = false;
+      let authenticationFinished = false;
+      const withdrawalDuringRead = open(bearer, constants.O_WRONLY | constants.O_NOFOLLOW).then(
+        async (handle) => {
+          await using output = handle;
+          writerConnected = true;
+          assert.equal(authenticationFinished, false, "Gateway must read the held bearer");
+          assert.equal(store.rows.get(revision.id)?.writePending, "rotate");
+          if (withdrawal === "local") {
+            f.runtime.withdraw(revision.id);
+            assert.equal(f.runtime.route(revision.id).state, "blocked");
+          } else {
+            await store.withdraw({ revisionId: revision.id });
+            assert.equal(entry.blocked, undefined, "only the store has observed withdrawal");
+          }
+          assert.equal(store.rows.get(revision.id)?.blocked, "withdrawn");
+          await output.writeFile("fixture-bearer");
+        },
+      );
+      appliedWithdrawal = withdrawalDuringRead;
+      const authentication = Promise.resolve()
+        .then(authenticate)
+        .finally(async () => {
+          authenticationFinished = true;
+          if (!writerConnected) {
+            // If authentication exits before reading the FIFO, release the writer and
+            // let its assertion report that the Gateway missed the controlled read.
+            await using _reader = await open(
+              bearer,
+              constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW,
+            );
+            await Promise.allSettled([withdrawalDuringRead]);
+          }
+        });
+      try {
+        const [result] = await Promise.all([authentication, withdrawalDuringRead]);
+        return result;
+      } finally {
+        await Promise.allSettled([authentication, withdrawalDuringRead]);
+        await rename(regularBearer, bearer);
+      }
+    };
+    // The runtime fixture supplies the selected Sandbox, provider and policy
+    // reads. Use the real gRPC client for the guarded credential update.
+    client.updateProviderCredentialsConditionally = (...args) =>
+      withHeldBearer(() => gateway.updateProviderCredentialsConditionally(...args));
+    const prepareUpdate = gateway.prepareProviderCredentialUpdate?.bind(gateway);
+    if (prepareUpdate) {
+      client.prepareProviderCredentialUpdate = (readSignal) =>
+        withHeldBearer(() => prepareUpdate(readSignal));
+    }
+
+    await reconcile();
+    assert.ok(appliedWithdrawal);
+    await appliedWithdrawal;
+    assert.equal(state.requests.filter(({ method }) => method === "UpdateProvider").length, 0);
+    assert.deepEqual(state.provider, provider);
+    assert.deepEqual(f.runtime.route(revision.id), { state: "blocked", reason: "withdrawn" });
+    assert.equal(await lookup(), undefined);
+  });
+}
+
+test("ACL rotation refuses a material snapshot returned after durable withdrawal", async (t) => {
+  const { f, store, revision, entry, reconcile, activity } = await heldGit(t, true);
+  const selectMaterial = f.owner.readOpenShellMaterial.bind(f.owner);
+  f.owner.readOpenShellMaterial = async (...args) => {
+    const material = await selectMaterial(...args);
+    if (f.calls.material === 2) {
+      // The final material read has selected a live snapshot, but the reply
+      // reaches the rotating worker only after a different worker withdraws it.
+      assert.ok(material && !("absent" in material));
+      await store.withdraw({ revisionId: revision.id });
+      assert.equal(entry.blocked, undefined);
+    }
+    return material;
+  };
+  await reconcile();
+  assert.equal(f.calls.material, 2);
+  assert.equal(store.rows.get(revision.id)?.blocked, "withdrawn");
+  assert.equal(activity.updates, 0);
+  assert.deepEqual(f.runtime.route(revision.id), { state: "blocked", reason: "withdrawn" });
+});
+
+async function checkComputeReleaseAfterRecipientRead(
+  t: TestContext,
+  interruption: "expiry" | "withdrawal",
+) {
+  const driverId = "openshell-sandbox";
+  const auth = {
+    method: "credential_source",
+    sourceId: "cs_test",
+    sourceType: "openai",
+    credentialGatewayId,
+    loginMode: "api_key",
+  } as const;
+  const modelProvider = openShellProviderName(auth.sourceId);
+  const {
+    f,
+    revision: selected,
+    client,
+    reconcile,
+    startupId,
+    store,
+    entry,
+    setObservationAge,
+    onWorkloadRead,
+  } = await heldGit(t, true, auth.sourceId);
+  await reconcile();
+  assert.equal(f.runtime.route(selected.id).state, "installed");
+
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const registration = "oce-prepared-git";
+  const serviceUrl = "http://held-codex.openshell.test/";
+  const posts: Readonly<Record<string, unknown>>[] = [];
+  let committed: EgressInstallation | undefined;
+  const gateway = workspaceGatewayClient();
+  gateway.getGatewayInfo = async () => ({
+    extensions: [{ configured_name: registration, kind: 4, protocol_major: 1 }],
+  });
+  gateway.getSandbox = async () => {
+    const sandbox = await client.getSandbox(f.sandbox, t.signal);
+    assert.ok(sandbox);
+    return {
+      ...sandbox,
+      annotations: {
+        ...sandbox.annotations,
+        "openclaw.dev/namespace-id": selected.namespaceId,
+        "openclaw.dev/agent-id": selected.agentId,
+      },
+    };
+  };
+  gateway.getSandboxPolicyStatus = async () => ({
+    active_version: 1,
+    revision: { version: 1, status: 2, policy: wiring.configuration },
+  });
+  gateway.getService = async (_workspace, name, service) =>
+    harnessService(name, service, serviceUrl);
+  const backend = backendFor(gateway);
+  const sandbox = new OpenShellSandboxDriver(
+    buildSandboxInstallation().drivers.sandbox.configuration,
+    { id: driverId, backend, openShellGit: f.runtime },
+  );
+  const proxyOptions = {
+    middlewareName: registration,
+    repositoryMiddlewareName: registration,
+    authorityScope: "execution",
+  } as const;
+  const proxy = new OpenShellCredentialProxyDriver(proxyOptions, {
+    id: driverId,
+    backend,
+    sandbox,
+    mandatoryEnforcement: f.runtime.mandatoryEnforcement.bind(f.runtime),
+  });
+  const owner = new InstalledDriver(
+    { id: driverId, implementation: "openshell", configuration: proxyOptions },
+    { capabilities: { sandbox, credential_proxy: proxy } },
+  );
+  const compute = new ProtectedExecutionDriver(owner);
+  const plan: ProxyPlan = {
+    id: randomUUID(),
+    generation: 1,
+    driver: owner.ref,
+    sandboxDriverId: driverId,
+    egressDriverId: driverId,
+    execution: {
+      installationId: "fixture-installation",
+      namespaceId: selected.namespaceId,
+      agentId: selected.agentId,
+      servicePrincipalId: "fixture-principal",
+      revisionId: selected.id,
+      executionId: selected.egressPlan!.execution.executionId,
+    },
+    routes: [],
+    harnessCredentialSource: auth,
+    repositoryGit: selected.repositoryCredentials!,
+    repositoryGitAuthorization: "online-request",
+  };
+  const revision: AgentRevision = {
+    ...selected,
+    harnessAuth: auth,
+    sandboxPolicy: { ...selected.sandboxPolicy!, driverId },
+    sandboxDriverId: driverId,
+    egressPlan: plan,
+  };
+  const fixture = runtimeSandboxFixture(sandbox);
+  const namespace = {
+    ...fixture.context.namespace,
+    id: selected.namespaceId,
+    name: f.sandbox.workspace,
+  };
+  const context = { namespace, revision, plan, signal: t.signal };
+  const wiring: ProxyWiring = await compute.configure(context);
+  const harness = {
+    ...fixture.context,
+    ...context,
+    requirements: {
+      ...fixture.requirements,
+      credentialAttachments: [{ sourceId: auth.sourceId, ref: modelProvider }],
+      loginMode: auth.loginMode,
+      proxyWiring: wiring,
+    },
+    transportToken: "fixture-bearer",
+  };
+  const probePath = repositoryGitStartupProbePath(revision)!;
+  const challenge = {
+    profile: COMPUTE_RELEASE_PROFILE,
+    startupId,
+    ...harnessEgressEnrollment(plan, probePath),
+  };
+  assert.equal(challenge.inference, "credential_source");
+  gateway.getServiceDocument = async (url, path) => {
+    assert.equal(url, serviceUrl);
+    assert.equal(path, HARNESS_EGRESS_ENROLLMENT_PATH);
+    return { status: 200, json: challenge };
+  };
+  gateway.postServiceDocument = async (url, path, _bearer, body) => {
+    assert.equal(url, serviceUrl);
+    assert.equal(path, HARNESS_EGRESS_ENROLLMENT_PATH);
+    posts.push(body);
+    return { status: 200, json: { enrolled: true, startupId } };
+  };
+  const realNow = performance.now.bind(performance);
+  let elapsed = 0;
+  t.mock.method(performance, "now", () => realNow() + elapsed);
+  let stale = true;
+  let finalReads = 0;
+  let recipientReads = 0;
+  let signatures = 0;
+  const custody = {
+    recordEgressInstallation: async (value: EgressInstallation) => {
+      committed = value;
+    },
+    currentEgressInstallation: async () => {
+      finalReads++;
+      if (interruption === "withdrawal") {
+        onWorkloadRead(async () => {
+          if (++recipientReads === 2) {
+            // Compute verifies the installation, then separately reads its
+            // recipient. Commit withdrawal during that final read with no local signal.
+            await store.withdraw({ revisionId: selected.id });
+            assert.equal(entry.blocked, undefined);
+          }
+        });
+      } else if (stale) {
+        // The launcher and custody receipt remain the same. Only the recipient read
+        // inside Compute's final verification crosses its supervisor lease.
+        setObservationAge(14_000);
+        onWorkloadRead(() => {
+          elapsed += 2_000;
+        });
+      }
+      return committed;
+    },
+  };
+  const enroll = () =>
+    compute.enroll(
+      context,
+      wiring,
+      custody,
+      async () => true,
+      async () => harness,
+      (id, installation) => {
+        signatures += 1;
+        return signComputeExecutionRelease(privateKey, id, installation, probePath);
+      },
+      (id, nonce) => signComputeRepositoryGitProbe(privateKey, id, probePath, nonce),
+    );
+  if (interruption === "withdrawal") {
+    const refusal = await enroll().catch((error: unknown) => error);
+    assert.equal(posts.length, 0, "a store-only withdrawal prevents the launcher POST");
+    assert.equal(finalReads, 1);
+    assert.equal(recipientReads, 2);
+    assert.equal(signatures, 1, "the signed release reached the dispatch check");
+    assert.equal(store.rows.get(revision.id)?.blocked, "withdrawn");
+    assert.ok(refusal instanceof Error);
+    assert.match(refusal.message, /OpenShell Git route was closed by another worker/);
+    assert.equal(entry.preview.release, undefined, "the attempt remains classified as unsent");
+    assert.equal(entry.blocked, undefined, "no local unconfirmed-release tombstone");
+    assert.equal(f.runtime.previewReleased(revision.id), false);
+    return;
+  }
+
+  await assert.rejects(
+    enroll(),
+    /Compute release requires the exact current committed installation/,
+  );
+  assert.equal(finalReads, 1);
+  assert.ok(elapsed >= 2_000, "the final recipient read crosses the lease");
+  assert.equal(posts.length, 0);
+  assert.equal(f.runtime.route(revision.id).state, "installed");
+  assert.equal(f.runtime.previewReleased(revision.id), false);
+
+  stale = false;
+  setObservationAge(0);
+  onWorkloadRead(() => {});
+  assert.equal(await enroll(), true);
+  assert.equal(finalReads, 2);
+  assert.equal(posts.length, 1);
+  const release = posts[0]!;
+  assert.deepEqual(release.challenge, challenge);
+  assert.equal(typeof release.signature, "string");
+  assert.ok(
+    verify(
+      null,
+      Buffer.from(JSON.stringify([release.challenge, release.installation, release.expiresAt])),
+      publicKey,
+      Buffer.from(String(release.signature), "base64url"),
+    ),
+  );
+  assert.equal(f.runtime.previewReleased(revision.id), true);
+}
+
+test("Compute retries an unsent release after the final recipient observation expires", async (t) => {
+  await checkComputeReleaseAfterRecipientRead(t, "expiry");
+});
+
+test("Compute sends no launcher release after durable withdrawal during the final recipient read", async (t) => {
+  await checkComputeReleaseAfterRecipientRead(t, "withdrawal");
 });
 
 // Preserve the admission checks on the supported selected-repository workflow.
@@ -2324,9 +3397,6 @@ for (const outcome of [
       assert.deepEqual(entry.authorization, authorization);
       if (outcome === "local withdrawal") {
         f.runtime.withdraw(revision.id);
-        // withdraw updates the local entry through its stored promise. Keep the
-        // admitted provider reply held until that local guard has taken effect.
-        await f.runtime["entries"].get(revision.id);
         assert.equal(entry.blocked, "withdrawn");
         assert.equal(entry.installed, undefined);
         assert.equal(store.rows.get(revision.id)?.blocked, "withdrawn");
