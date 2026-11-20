@@ -240,7 +240,11 @@ export function registerInstallationRecoveryCases({
       const stderr = commandStderr(error);
       assert.match(stderr, /Installation Secret .* is immutable/);
       assert.match(stderr, /prepared upgrade.*recorded Installation Secret/);
-      assert.match(stderr, /production-upgrade-recovery\.md/);
+      assert.match(stderr, /Keep the maintenance freeze/);
+      assert.match(
+        stderr,
+        /production-upgrade-command\.md#stop-when-the-recorded-installation-secret-is-immutable/,
+      );
       assert.doesNotMatch(stderr, /--candidate-values|stage a versioned immutable successor/i);
       return true;
     });

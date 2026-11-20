@@ -87,8 +87,8 @@ Follow that handoff before applying.
 
 If preparation needs different data in an immutable Installation Secret,
 [stage a successor](immutable-installation-upgrade.md) and select it with
-`--candidate-values`. For a prepared attempt, keep the recorded inputs and
-follow [upgrade recovery](production-upgrade-recovery.md).
+`--candidate-values`. If a prepared attempt still needs to write to the
+recorded immutable Secret, [keep the maintenance freeze and stop](#stop-when-the-recorded-installation-secret-is-immutable).
 
 If Certificate admission fails, inspect `preflight-certificates.err` in the
 attempt's protected evidence. For a webhook timeout, check the cert-manager
@@ -228,3 +228,15 @@ recovery. Before returning to an earlier controller, check its compatibility
 with committed database and authentication state.
 Follow [stopped authentication maintenance](auth-maintenance.md) for
 authentication changes.
+
+### Stop when the recorded Installation Secret is immutable
+
+If a prepared upgrade still needs to write different data to the recorded
+Installation Secret and that Secret is now immutable, stop. Resume requires the
+original candidate and recorded Secret UID, so replacing the Secret or changing
+the candidate cannot resolve the refusal.
+
+Keep the maintenance freeze and preserve the original inputs and evidence.
+The API or worker may already be stopped. Have the release owner reconcile
+the state of the writers, the Helm release, and the database migration before
+choosing a separate recovery.

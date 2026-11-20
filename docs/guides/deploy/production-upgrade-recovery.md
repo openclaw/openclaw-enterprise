@@ -15,6 +15,9 @@ reconcile its resources before deploying with fresh evidence and checks.
 
 Keep one operator and the freeze for unfinished deployments. Before
 `prepared`, writers and Helm are unchanged: reconcile, then use fresh evidence.
+
+For an [immutable Secret refusal](production-upgrade-command.md#stop-when-the-recorded-installation-secret-is-immutable), stop and reconcile.
+
 Then reconcile processes, release, migration, rollout and dispatch;
 add `--resume` with unchanged arguments, protected paths, kubeconfig contents,
 OCC URL, scripts, flow and chart. Keep candidates semantically unchanged.

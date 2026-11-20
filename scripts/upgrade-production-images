@@ -3052,7 +3052,7 @@ if ((helm_complete == 0)); then
   if [[ -f "$evidence_dir/installation-changed" ]] &&
     ! matches_yaml "$evidence_dir/current-live-installation.yaml" "$candidate_installation"; then
     require_mutable_installation_secret "$live_secret" \
-      "The prepared upgrade is bound to the recorded Installation Secret. Preserve the recorded inputs and evidence and follow docs/guides/deploy/production-upgrade-recovery.md."
+      "The prepared upgrade is bound to the recorded Installation Secret. Keep the maintenance freeze and preserve the original inputs and evidence. See docs/guides/deploy/production-upgrade-command.md#stop-when-the-recorded-installation-secret-is-immutable."
     replace_installation_secret=1
   fi
   if [[ -f "$evidence_dir/helm-started" ]]; then
