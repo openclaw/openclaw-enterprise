@@ -8,7 +8,7 @@ last_updated_session: 01a1eae9-8497-74d2-a9c7-9bc93809e94a
 
 ## Overview
 
-When a caller registers a CredentialSource, OpenClaw Control Plane (OCC) authorizes the action and stores its owner and references. The recorded Credential Gateway or Proxy owns the source; OpenShell holds Gateway-managed values. When an Agent deploys, OCC saves the source identity in its revision, and the worker rechecks authorization before delivery. Update, withdrawal, and deletion are separate operations.
+When a caller registers a CredentialSource, OpenClaw Control Plane (OCC) authorizes the action and records its owner and references. In the current serving path, the owner is a Credential Gateway or Proxy; OpenShell holds Gateway-managed values. Internal sources have separate [TokenService custody](token-service-static-custody.md). When an Agent deploys, OCC saves the source identity in its revision, and the worker rechecks authorization before delivery. Update, withdrawal, and deletion are separate operations.
 
 ## Entry Points
 
@@ -41,7 +41,7 @@ The dashed edge marks missing workflow integration, not a tested deployment.
 
 `packages/occ/src/index.ts:createCredentialSource`
 
-OCC authorizes `credential_source:create`, locks the ready Namespace, and checks the selected owner's catalog before reading Secrets or writing externally. Invalid fields return `400`; an unoffered type returns `409`. Secret references must belong to the Namespace, and the caller needs `secret:operate`. Gateway copies use SecretDriver `withValue`; protected static admission instead requires a versioned, nonretaining `readCredentialInput`. Unsupported or ambiguous providers fail before material resolution. See the [source reference](../reference/credential-sources.md) for accepted inputs and owner selection.
+OCC authorizes `credential_source:create`, locks the ready Namespace, and checks that the selected owner offers the requested source type before it reads a Secret or writes to a Driver. Invalid fields return `400`; an unoffered type returns `409`. Each Secret must belong to the Namespace, and the caller needs `secret:operate`. For a Gateway-managed source, OCC reads the Secret to copy its value to the Gateway. For a protected static source, OCC first checks that its selected provider is compatible and registered once, then verifies the credential format and its authoritative version without retaining the value. See the [source reference](../reference/credential-sources.md) for inputs and the [protected flow](credential-source-egress.md#1-admit-source-and-install-the-revision-plan) for admission details.
 
 `packages/occ/src/index.ts:abandonCredentialRegistration`, `apps/controller/src/drivers/credential-gateway/openshell.ts:registerSource`
 
@@ -67,7 +67,7 @@ OCC rechecks the caller's and Agent's source grants, requires a Sandbox and an o
 
 `apps/controller/src/worker.ts:authorizeRevision`, `apps/controller/src/worker.ts:resolveRevisionSecretContext`
 
-The worker rechecks actor and Agent grants, selected Driver identity, live source ownership, and withdrawal state before Compute prepares the Sandbox. Kubernetes rechecks catalog and Git-only restrictions before attachment or release. Existing serving uses the shared bundled attachment handler; OAuth passes a placeholder and trusted account metadata into ephemeral `auth.json`, never refresh tokens. Codex OAuth keeps its Gateway and Refresh owners after Git Proxy selection; the Git-only static model exception does not enroll OAuth. The [Sandbox flow](openshell-sandbox-provisioning.md) owns provisioning details.
+The worker rechecks actor and Agent grants, selected Driver identity, live source ownership, and withdrawal state before Compute prepares the Sandbox. Kubernetes checks the supported source type and deployment restrictions before attaching the Provider or releasing the Sandbox. The current serving path uses the bundled attachment handler; [OAuth delivery](credential-source-refresh.md#device-authorization-and-configuration) gives the workload a placeholder and account metadata, never refresh tokens. The [Sandbox flow](openshell-sandbox-provisioning.md) owns provisioning and Harness-specific restrictions.
 
 #### Pending native integration
 
@@ -83,7 +83,9 @@ The regular Agent workflow does not call this path. Status fails closed because 
 
 Withdrawal requires `agent:operate` and queues version-scoped work without deploying a revision. The worker rechecks each requester's grant; for OpenShell, Compute detaches the Provider and confirms its receipt. Denied requesters require replay. Unconfirmed revocation retries, and replay or maintenance recovers pending work. Deploy and repair never reattach a withdrawn source, including after a late Sandbox create.
 
-DELETE requires `credential_source:delete` and refuses Agent, revision, or pending-deployment references and unfinished withdrawal. OCC marks `deleting` and removes material through the recorded owner. Prepared sources first withdraw issuer tokens; an unsettled token blocks deletion. Refresh removes refresh state before the Gateway removes its owned Provider and profile. Credential-free sources have no material to remove. OCC then deletes the record and commits audit. Uncertain cleanup retains `deleting`. For Gateway or Proxy sources, a registration fence returns `503` with `Retry-After` for up to 70 seconds after creation; internal TokenService sources do not use that fence.
+DELETE requires `credential_source:delete` and refuses Agent, revision, or pending-deployment references and unfinished withdrawal. OCC marks `deleting` and removes material through the recorded owner. Prepared sources first withdraw issuer tokens; an unsettled token blocks deletion. Refresh removes refresh state before the Gateway removes its owned Provider and profile. Credential-free sources have no material to remove. OCC then deletes the record and commits audit. Uncertain cleanup retains `deleting`.
+
+A registration write can finish after deletion starts. To prevent that late write from recreating material after the source record is gone, OCC keeps a Gateway or Proxy source in `deleting` for up to 70 seconds after creation and returns `503` with `Retry-After`. Internal TokenService sources use a separate [dispatch-based wait](token-service-static-custody.md#5-recover-failures) when registration might have reached their owner without a receipt.
 
 ## Debugging and Verification
 
@@ -102,6 +104,7 @@ Inspect source `status`, worker reason codes, and withdrawal state. `CREDENTIAL_
 
 ## Changelog
 
+- 2026-11-20 08:10: Clarify serving and internal custody, registration checks, dispatch, and deletion retry behavior. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - 6c7aeed58)
 - 2026-11-20 07:59: Rewrite the serving lifecycle around source ownership, Agent delivery, and staged native limits. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - e76d323cb)
 
 [Earlier documentation history](credential-source-lifecycle/history.md) preserves the previous dated entries.
