@@ -19,6 +19,7 @@ import type { OpenShellGitRuntimeConfiguration } from "../../apps/controller/src
 import { formatStartupConfigurationFailure } from "../../apps/controller/src/startup-failure.ts";
 import type {
   BackendConfiguration,
+  ChatGPTBackendDefinition,
   ErrorDetail,
   GitHubRepositoryCredentialBackendDefinition,
 } from "../../packages/contracts/src/index.ts";
@@ -74,7 +75,7 @@ type BaseInstallation = ReturnType<typeof createInstallationDriverConfiguration>
 type ProxyInstallation = ReturnType<typeof createCredentialProxyInstallationConfiguration>;
 type RepositoryBackendInput = {
   -readonly [
-    K in keyof Pick<GitHubRepositoryCredentialBackendDefinition, "id" | "type" | "configuration">
+    K in keyof GitHubRepositoryCredentialBackendDefinition
   ]: GitHubRepositoryCredentialBackendDefinition[K];
 } & { configuration: { registryPath: string } };
 type RepositoryOptionsInput = {
@@ -97,7 +98,7 @@ type ProxyLifecycleInput = Omit<ProxyInstallation, "drivers"> & {
   };
 };
 type CombinedRepositoryInput = Omit<RepositoryStartupInput, "backend" | "drivers"> & {
-  backend: (RepositoryBackendInput | ChatGPTBackendInput)[];
+  backend: (RepositoryBackendInput | ChatGPTBackendDefinition)[];
   drivers: BaseInstallation["drivers"] & { service_account?: ChatGPTServiceAccountInput };
 };
 type ProtectedWorkerInput = Omit<ProxyInstallation, "backend" | "drivers"> & {
@@ -293,7 +294,7 @@ function assertDriverRefusal(
 }
 
 export function createChatGPTInstallation(installation: () => InstallationInput) {
-  const backend: [ChatGPTBackendInput, ...ChatGPTBackendInput[]] = [
+  const backend: [ChatGPTBackendDefinition, ...ChatGPTBackendDefinition[]] = [
     {
       id: "openai",
       type: "chatgpt",
@@ -310,7 +311,10 @@ export function createChatGPTInstallation(installation: () => InstallationInput)
 }
 
 type ChatGPTStartupInput = ReturnType<typeof createChatGPTInstallation>;
-type ChatGPTRefusal = [(input: ChatGPTStartupInput) => void, RegExp];
+type ChatGPTRefusalInput = Omit<ChatGPTStartupInput, "backend"> & {
+  backend: [ChatGPTBackendInput, ...ChatGPTBackendInput[]];
+};
+type ChatGPTRefusal = [(input: ChatGPTRefusalInput) => void, RegExp];
 
 function retiredChatGPTInstallation(installation: () => InstallationInput) {
   const { drivers, ...configuration } = installation();
@@ -368,13 +372,13 @@ export function registerChatGPTStartupRefusals(
 
     const refusals: ChatGPTRefusal[] = [
       [
-        (value: Partial<ChatGPTStartupInput>) => {
+        (value: Partial<ChatGPTRefusalInput>) => {
           delete value.backend;
         },
         /requires an owning backend/,
       ],
       [
-        ({ drivers }: { drivers: Partial<ChatGPTStartupInput["drivers"]> }) => {
+        ({ drivers }: { drivers: Partial<ChatGPTRefusalInput["drivers"]> }) => {
           delete drivers.service_account;
         },
         /requires drivers\.service_account/,
@@ -449,7 +453,7 @@ export function registerChatGPTStartupRefusals(
       ],
     ];
     for (const [mutate, expected] of refusals) {
-      const configuration = createChatGPTInstallation(installation);
+      const configuration: ChatGPTRefusalInput = createChatGPTInstallation(installation);
       mutate(configuration);
       await assert.rejects(
         loadInstallationConfiguration({
@@ -462,7 +466,7 @@ export function registerChatGPTStartupRefusals(
 
     // The stated rule's upper edge: 200 characters, interior whitespace allowed.
     const longest = createChatGPTInstallation(installation);
-    longest.backend[0].id = `open ${"a".repeat(195)}`;
+    longest.backend[0] = { ...longest.backend[0], id: `open ${"a".repeat(195)}` };
     const accepted = await loadInstallationConfiguration({
       mode: "production",
       environment: { OCC_CONFIG_PATH: await fixture(t, longest) },
