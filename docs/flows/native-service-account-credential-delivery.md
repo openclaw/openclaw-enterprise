@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-17
-last_updated_session: authoring-run/a1a47d55-3248-4349-81a2-ca786027b634
+updated: 2026-11-20
+last_updated_session: authoring-run/a5334b64-f17c-4030-bf48-74ef016aa7cd
 ---
 
 # Harness Authentication Binding Flow
@@ -37,7 +37,9 @@ graph TD
   R["Operator provisions protected host env"] --> B
   D -->|runtime| S["SSH starts embedded gateway using host env"]
   S --> T["Check gateway readiness; model auth remains unverified"]
-  B --> C["Authorize and freeze binding in Agent revision"]
+  TS["Internal TokenService registration"] --> B
+  B -->|TokenService delivery unavailable| TSX["409 before Agent revision"]
+  B -->|supported binding| C["Authorize and freeze binding in Agent revision"]
   C --> D["Worker rechecks grants and source ownership"]
   D -->|denied or changed source| E["Reject candidate before projection"]
   D -->|valid managed source| F["Kubernetes prepares explicit login mode and projections"]
@@ -95,13 +97,26 @@ Namespace locks serialize source reference changes against deletion. Missing or
 foreign sources fail closed. Binding never selects a different model, Backend,
 Harness, or execution mode and cannot issue an account credential.
 
+Agent create and PATCH can also save a ready, [internally registered TokenService source](token-service-static-custody.md).
+The caller must have exact source `operate`, the source must belong to the Agent's
+Namespace, and the selected TokenService must own its recorded instance. The same
+source must be selected by `harnessAuth` and listed in `credentialSources`; a
+TokenService source cannot be attached for another use. Public enrollment and
+picker discovery remain unavailable.
+
+When PATCH changes Harness authentication but keeps the source list, OCC checks
+the previous Harness source without taking a source row lock. If that source
+belongs to a TokenService, the caller must remove it from the list in the same
+update.
+
 The [Secret storage flow](secret-storage-and-delivery.md) owns value storage;
 [account issuance](service-account-driver-credential-delivery.md) owns upstream
 credentials and their private Backend binding.
 
 ### 2. Freeze the admitted source and compatibility
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent`, `admitHarnessAuth`
+`packages/occ/src/index.ts:OpenClawController.deployAgent`, `admitHarnessAuth`,
+`credentialSourceHarnessAuthSnapshot`
 
 Deployment requires a nonnull binding, exact Agent `deploy`, and Configuration
 `read`. For a key or service account token, OCC checks the actor's and Agent principal's exact Secret `operate`,
@@ -115,6 +130,14 @@ both imported and managed `codex_pat` sources. External ChatGPT sources require
 dedicated Codex and the paired Sandbox and Credential Gateway. Deployment and
 guided provisioning reject unsupported combinations before admitting work or
 stopping predecessors.
+
+For an internal TokenService source, deployment rechecks the caller's and Agent
+principal's exact source `operate`, then returns `409` before saving an Agent
+revision because this owner has no revision delivery path. When Native IAM gives
+the Agent principal a missing source grant during deployment, the refusal rolls
+back that grant, its Role if newly created, and its success audit. Agent save
+stores the source references only; it does not save a `DeploymentPolicy` or delivery
+snapshot. Gateway-backed sources keep their serving deployment path.
 
 Host credential changes can affect a runtime version after restart without
 redeployment; see the
@@ -265,6 +288,11 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
 
 ## Debugging and Verification
 
+- The [Agent credential-binding PostgreSQL test](../../tests/integration/postgres-staged-agent-credential-binding.test.ts)
+  exercises Fastify, PostgreSQL, Native IAM, and the concrete TokenService and
+  Secret Drivers. It checks exact draft authorization, partial PATCH behavior,
+  deployment refusal without revision or work, and detach after owner loss. The
+  Kubernetes API transport is simulated; this does not prove runtime delivery.
 - `node --test tests/conformance/plugin-compute.test.ts` checks the filtered
   Codex child environments, startup-derived listener hash, and retained wrapper
   token. The runtime-image startup test checks the native Codex shell without a
@@ -302,6 +330,10 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 06:28: Trace retained Harness source checks and failed deploy grant rollback. (authoring-run/a5334b64-f17c-4030-bf48-74ef016aa7cd - 0d220dfad528032b978eaa8e9cb55885686add44)
+
+- 2026-11-20 04:36: Document internal TokenService draft admission and deployment refusal. (authoring-run/bee5b125-46e3-42d4-b88e-01e64e7960c1 - 16c120736)
 
 - 2026-11-17 19:24: Correct device-login state ownership and polling. (authoring-run/a1a47d55-3248-4349-81a2-ca786027b634 - c5ddcd80cb4cfcd0b969a52ef5c4cafff552a8e8)
 
