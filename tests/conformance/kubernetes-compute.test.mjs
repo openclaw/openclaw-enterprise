@@ -120,6 +120,7 @@ import {
   checkActivationWithoutStatusProxy,
 } from "./kubernetes-workspace-node-activation-cases.ts";
 import { createEmbeddedReplacementKubernetesFixture } from "./kubernetes-embedded-replacement-fixture.ts";
+import { checkChannelPolicyDiagnostic } from "./kubernetes-channel-policy-diagnostic-case.ts";
 import {
   checkAccountSecretInput,
   checkAccountSecretRollback,
@@ -5430,6 +5431,11 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
 test(
   "account-token authentication grants only the exact Codex revision outbound HTTPS",
   checkExactAccountTokenEgress,
+);
+
+test(
+  "worker logs identify the policy allowing direct public egress from a channel Gateway",
+  checkChannelPolicyDiagnostic,
 );
 
 test("native channel settings require readable Secret bindings", async () => {
