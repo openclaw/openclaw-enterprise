@@ -8,7 +8,10 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { ProtectedEgressSource, EgressInstallation } from "@openclaw-enterprise/contracts";
-import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
+import type {
+  InstallationSandboxNetworkPolicyCeiling,
+  SandboxPolicy,
+} from "@openclaw-enterprise/contracts";
 import type {
   SandboxPolicyRepository,
   StoredCredentialWithdrawal,
@@ -1702,8 +1705,15 @@ export class PostgresPlatformState implements PlatformStateStore {
     );
   }
 
-  async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
-    return this.execute(false, async (state) => work(state));
+  async transact<T>(
+    work: (state: PlatformUnitOfWork) => Promise<T>,
+    options?: { readonly isolationLevel: "read committed" },
+  ): Promise<T> {
+    return this.execute(
+      false,
+      async (state) => work(state),
+      options?.isolationLevel === "read committed",
+    );
   }
 
   /** Observe changes committed while acquiring locks, regardless of the connection default. */
@@ -1910,10 +1920,13 @@ export class PostgresPlatformState implements PlatformStateStore {
       queue: Pick<PostgresWorkQueue, keyof PostgresWorkQueue>,
     ) => Promise<T>,
     options: PostgresWorkQueueOptions = {},
+    transaction?: { readonly isolationLevel: "read committed" },
   ): Promise<T> {
     const queueOptions = { ...this.queueOptions, ...options };
-    return this.execute(false, async (state, context) =>
-      work(state, this.bindQueue(context, queueOptions)),
+    return this.execute(
+      false,
+      async (state, context) => work(state, this.bindQueue(context, queueOptions)),
+      transaction?.isolationLevel === "read committed",
     );
   }
 
@@ -2192,6 +2205,73 @@ export class PostgresPlatformState implements PlatformStateStore {
     const queue = new PostgresWorkQueue(client, this.queueOptions);
 
     const installations: InstallationRepository = {
+      getBootstrapActor: async () => {
+        const result = await client.query(
+          "SELECT actor_id FROM occ.audit_events WHERE kind = 'bootstrap' AND resource_kind = 'installation' ORDER BY occurred_at, id LIMIT 1",
+        );
+        const row = rows(result.rows)[0];
+        return row === undefined ? undefined : text(row, "actor_id");
+      },
+      holdSandboxNetworkPolicyCeiling: async (mode) => {
+        await client.query(
+          mode === "shared"
+            ? "SELECT pg_advisory_xact_lock_shared(hashtextextended('occ.installation.sandbox-network-policy-ceiling', 0))"
+            : "SELECT pg_advisory_xact_lock(hashtextextended('occ.installation.sandbox-network-policy-ceiling', 0))",
+        );
+      },
+      getSandboxNetworkPolicyCeiling: async () => {
+        const installation = await this.currentInstallation(context);
+        if (installation === undefined) {
+          return undefined;
+        }
+        const result = await client.query(
+          "SELECT installation_id, version, rules, updated_at, updated_by FROM occ.installation_network_policy_ceiling WHERE installation_id = $1",
+          [installation.id],
+        );
+        const row = rows(result.rows)[0];
+        if (row === undefined) {
+          return undefined;
+        }
+        return immutableCopy({
+          installationId: text(row, "installation_id"),
+          version: Number(row.version),
+          rules: row.rules as InstallationSandboxNetworkPolicyCeiling["rules"],
+          updatedAt: timestamp(row, "updated_at"),
+          updatedBy: text(row, "updated_by"),
+        });
+      },
+      saveSandboxNetworkPolicyCeiling: async (ceiling, expectedVersion) => {
+        await this.requireInstallation(context, ceiling.installationId);
+        const result = await client.query(
+          `INSERT INTO occ.installation_network_policy_ceiling (installation_id, version, rules, updated_at, updated_by)
+          SELECT $1, $2, $3::jsonb, $4, $5 WHERE $6::integer = 0
+          ON CONFLICT (installation_id) DO NOTHING RETURNING installation_id`,
+          [
+            ceiling.installationId,
+            ceiling.version,
+            JSON.stringify(ceiling.rules),
+            ceiling.updatedAt,
+            ceiling.updatedBy,
+            expectedVersion,
+          ],
+        );
+        if (expectedVersion === 0) {
+          return result.rowCount === 1 ? immutableCopy(ceiling) : undefined;
+        }
+        const updated = await client.query(
+          `UPDATE occ.installation_network_policy_ceiling SET version = $2, rules = $3::jsonb, updated_at = $4, updated_by = $5
+          WHERE installation_id = $1 AND version = $6 AND $2::integer = $6::integer + 1 RETURNING installation_id`,
+          [
+            ceiling.installationId,
+            ceiling.version,
+            JSON.stringify(ceiling.rules),
+            ceiling.updatedAt,
+            ceiling.updatedBy,
+            expectedVersion,
+          ],
+        );
+        return updated.rowCount === 1 ? immutableCopy(ceiling) : undefined;
+      },
       findInstallation: async (installationId) => {
         const installation = await this.currentInstallation(context);
         return installation?.id === installationId ? immutableCopy(installation) : undefined;

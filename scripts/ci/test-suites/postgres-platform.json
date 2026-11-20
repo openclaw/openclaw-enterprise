@@ -85,6 +85,12 @@
   ],
   "files": [
     {
+      "path": "tests/integration/installation-network-policy-ceiling.test.ts",
+      "expectedTests": [
+        "Installation ceiling owner API preserves empty state and rejects stale saves"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-connection-auth.test.ts",
       "expectedTests": [
         "password authentication preserves the existing pg connection configuration",
@@ -627,7 +633,8 @@
         "policy admission cannot acquire grants from a Driver snapshot",
         "deployment cannot acquire grants from an empty Driver request",
         "Agent policy HTTP admission persists bounded grants without changing an admitted revision",
-        "interrupted terminal policy recovery rolls back queue failure and a restarted worker finalizes it"
+        "interrupted terminal policy recovery rolls back queue failure and a restarted worker finalizes it",
+        "worker rechecks saved ceiling after admission and fails closed on lost state"
       ]
     },
     {

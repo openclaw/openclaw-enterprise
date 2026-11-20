@@ -157,3 +157,33 @@ export const SandboxPolicyRecommendationsResponse = Type.Object(
   },
   { additionalProperties: false },
 );
+
+export const InstallationSandboxNetworkPolicyCeilingSchema = Type.Object(
+  {
+    installationId: Type.String(),
+    version: SandboxPolicyVersion,
+    rules: SandboxNetworkGrantsSchema,
+    updatedAt: Type.String(),
+    updatedBy: Type.String(),
+  },
+  { additionalProperties: false },
+);
+export const InstallationSandboxNetworkPolicyCeilingResponse = Type.Object(
+  {
+    data: InstallationSandboxNetworkPolicyCeilingSchema,
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+export const InstallationSandboxNetworkPolicyCeilingUpdateBody = Type.Object(
+  {
+    expectedVersion: SandboxPolicyVersion,
+    rules: SandboxNetworkGrantsSchema,
+  },
+  { additionalProperties: false },
+);
+
+export const InstallationSandboxNetworkPolicyCeilingValidateBody = Type.Object(
+  { expectedVersion: SandboxPolicyVersion, rules: Type.Unknown() },
+  { additionalProperties: false },
+);

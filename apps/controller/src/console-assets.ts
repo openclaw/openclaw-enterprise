@@ -3,6 +3,8 @@ import { stripTypeScriptTypes } from "node:module";
 import { promisify } from "node:util";
 import { brotliCompress, constants as zlib, gzip } from "node:zlib";
 
+import { SandboxNetworkGrantsSchema } from "@openclaw-enterprise/contracts";
+
 import { renderConsoleThemeShell, type ConsoleTheme } from "./console-theme.ts";
 
 export interface ConsoleAsset {
@@ -50,6 +52,7 @@ const CONSOLE_ASSETS = new Map([
       "oauth-deletion.mts",
       "oauth-client-registration.mts",
       "driver-configurations.mts",
+      "network-policy-ceiling.mts",
       "view-lifetime.mts",
       "request-turns.mts",
       "navigation.mts",
@@ -195,7 +198,7 @@ export const CONSOLE_CONTENT_SECURITY_POLICY = [
 
 /** The public files Storybook gets from the same reader as the controller. */
 export function consoleAssetPaths(): Iterable<string> {
-  return CONSOLE_ASSETS.keys();
+  return [...CONSOLE_ASSETS.keys(), "/console/network-policy-definition.mjs"];
 }
 
 const browserModules = new Map<string, { source: Buffer; javascript: Buffer }>();
@@ -263,6 +266,14 @@ export async function readConsoleAsset(
       encodedThemes.set(theme, cache);
     }
     return encodedAsset(pathname, asset.body, asset.contentType, acceptEncoding, cache);
+  }
+  if (pathname === "/console/network-policy-definition.mjs") {
+    return encodedAsset(
+      pathname,
+      Buffer.from(`export default ${JSON.stringify(SandboxNetworkGrantsSchema)};\n`),
+      "text/javascript; charset=utf-8",
+      acceptEncoding,
+    );
   }
   if (pathname === "/console/default-codex-preset.mjs") {
     const preset = JSON.parse(

@@ -1224,7 +1224,6 @@ export class ControllerWorker {
   private readonly state: PostgresPlatformState;
   private readonly driverConfigurations: readonly DriverConfigurationRegistration[];
   private readonly configurations = new DriverConfigurationRegistry();
-  private readonly policyCeiling: readonly import("@openclaw-enterprise/contracts").SandboxNetworkGrant[];
   private readonly queue: PostgresWorkQueue;
   private readonly compute: ComputeDriver;
   private readonly namespaceLifecycleBindings: InstallationRuntimeDrivers["namespaceLifecycleBindings"];
@@ -1336,7 +1335,6 @@ export class ControllerWorker {
     for (const definition of this.driverConfigurations) {
       this.configurations.register(definition);
     }
-    this.policyCeiling = drivers?.installation.sandboxNetworkPolicyCeiling ?? [];
     this.configuredServiceAccountDriverId = drivers?.installation.drivers.service_account?.id;
     this.nativeWorkerSupport = drivers?.installation.runtime?.nativeWorkerSupport;
     if (this.mode === "production" && drivers === undefined) {
@@ -1513,6 +1511,14 @@ export class ControllerWorker {
     if (installation === undefined) {
       throw new Error("The platform Installation must be bootstrapped before starting the worker.");
     }
+    const ceiling = await this.state.read((view) =>
+      view.installations.getSandboxNetworkPolicyCeiling(),
+    );
+    if (ceiling === undefined) {
+      throw new Error(
+        "The Installation network policy ceiling must be initialized by API startup before starting the worker.",
+      );
+    }
     this.installation = installation;
     this.startedAt = this.healthClock();
     validatePersistedNativeIAMState(await this.loadIAMState());
@@ -1521,7 +1527,6 @@ export class ControllerWorker {
       namespaceLifecycleBindings: this.namespaceLifecycleBindings,
       preparedTokens: this.preparedTokens,
       state: this.state,
-      sandboxNetworkPolicyCeiling: this.policyCeiling,
       driverConfigurations: this.driverConfigurations,
       backends: this.backends,
       recordOperations: true,
@@ -2791,7 +2796,6 @@ export class ControllerWorker {
           compute: this.compute,
           iam: this.iam,
           installationId: this.installation!.id,
-          ceiling: this.policyCeiling,
           configurations: this.configurations,
           signal: this.abort.signal,
           maxAttempts: this.maxAttempts,

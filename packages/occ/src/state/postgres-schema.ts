@@ -2886,3 +2886,20 @@ export const nativeBrowserHandles = occSchema.table(
     index("native_browser_handle_expiry").on(table.installationId, table.expiresAt),
   ],
 );
+
+export const installationNetworkPolicyCeiling = occSchema.table(
+  "installation_network_policy_ceiling",
+  {
+    installationId: text("installation_id")
+      .primaryKey()
+      .references(() => installation.id, { onDelete: "cascade", onUpdate: "restrict" }),
+    version: integer("version").notNull(),
+    rules: jsonb("rules").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+    updatedBy: text("updated_by").notNull(),
+  },
+  (table) => [
+    check("installation_ceiling_version", sql`${table.version} > 0`),
+    check("installation_ceiling_rules", sql`occ.sandbox_network_grants_are_valid(${table.rules})`),
+  ],
+);

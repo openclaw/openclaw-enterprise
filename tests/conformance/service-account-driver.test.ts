@@ -140,6 +140,7 @@ async function fixture({
     backends: selectServiceAccountDriver ? [backend] : [],
     ...(configuredServiceAccountDriverId === undefined ? {} : { configuredServiceAccountDriverId }),
   });
+  await controller.initializeSandboxNetworkPolicyCeiling(administrator);
   // Records the account-owned token Secrets a forced deletion removes through Compute.
   const deletedCredentialSecrets: Parameters<
     NonNullable<ComputeDriver["deleteServiceAccountCredential"]>

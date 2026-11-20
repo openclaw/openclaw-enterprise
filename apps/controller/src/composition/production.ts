@@ -137,8 +137,9 @@ export async function composeProduction(
   });
 
   let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
-  const close = (database: { close(): Promise<void> }) =>
-    closeResources(exchange, protectedDriver, preparedGitHub, database);
+  const close = async (database: { close(): Promise<void> }) => {
+    await closeResources(exchange, protectedDriver, preparedGitHub, database);
+  };
   try {
     const state = new PostgresPlatformState(pool, {
       ...(auditEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
@@ -225,6 +226,7 @@ export async function composeProduction(
       },
       config.drivers.repositoryAdmission,
     );
+    const ceilingInitialization = await controller.initializeSandboxNetworkPolicyCeiling();
     controller.registerDriver(iamDriver);
     controller.selectDriver("iam", driverId);
     controller.registerDriver(computeDriver);
@@ -393,7 +395,14 @@ export async function composeProduction(
     config.drivers.repositoryTransport?.connectRestartObservation?.(pool);
     await preparedGitHub?.connect(pool);
     exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
-    app.get("/healthz", async () => ({ status: "ok" }));
+    if (ceilingInitialization.seedIgnored) {
+      app.log.warn(
+        "The startup network policy ceiling is seed-only. Use Installation Settings to change the saved ceiling.",
+      );
+    }
+    app.get("/healthz", async () => {
+      return { status: "ok" };
+    });
     const checkDatabaseReadiness = createPostgresReadinessCheck(pool);
     app.get("/readyz", async () => {
       await checkDatabaseReadiness();

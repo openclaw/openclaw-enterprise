@@ -41,7 +41,8 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
   delete env.NODE_TEST_CONTEXT;
   let file = "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs";
   let expected = /ok 1 - OpenShell Agent network policy lifecycle/;
-  let outcome = "real Agent defaults, preview, save, apply, revoke and isolation";
+  let outcome =
+    "saved Installation ceiling, pending rechecks, Agent defaults, preview, save, apply, revoke and isolation";
   if (scenario === "namespace-lifecycle") {
     file = "tests/integration/namespace-driver-openshell-k3d-real.test.ts";
     expected = /ok 1 - bootstrap reconciles OpenShell gateways and Workspaces before any Agent/;

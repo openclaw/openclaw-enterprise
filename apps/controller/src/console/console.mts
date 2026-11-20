@@ -7,6 +7,7 @@ import type {
 import type { ConsolePageContext, LeaveGuard, TabNavigation } from "./page-context.mjs";
 import { renderOAuthClients } from "./oauth-clients.mjs";
 import { renderConnectionTemplates } from "./connection-templates.mjs";
+import { renderNetworkPolicyCeiling } from "./network-policy-ceiling.mjs";
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import {
   element,
@@ -2417,6 +2418,28 @@ async function loadPage({
     if (current.feature === "settings") {
       shell.view.append(settingsView(session.user));
       if (installationAdmin) {
+        const ceiling = renderNetworkPolicyCeiling({
+          request: viewRequest,
+          isCurrent: viewIsCurrent,
+          onAdministrationEnded: (handler) => viewState.administrationEnded.add(handler),
+        });
+        shell.view.querySelector(".settings-page")!.append(ceiling.section);
+        const guard: LeaveGuard = (options) => {
+          if (ceiling.writing()) {
+            return true;
+          }
+          if (options && ("pendingOnly" in options || "refresh" in options)) {
+            return false;
+          }
+          return (
+            ceiling.dirty() && !window.confirm("Discard the unsaved network policy ceiling draft?")
+          );
+        };
+        viewState.leaveGuard = guard;
+        leaveGuard = guard;
+        const unsavedCeiling = () => ceiling.writing() || ceiling.dirty();
+        viewState.writeInFlight = unsavedCeiling;
+        writeInFlight = unsavedCeiling;
         shell.view.append(
           renderInstallationConfigurations({
             request,

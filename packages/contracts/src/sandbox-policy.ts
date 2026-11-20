@@ -222,3 +222,12 @@ export type SandboxPolicyDecision = Type.Static<typeof SandboxPolicyDecisionSche
 export function validSandboxPolicyDecision(value: unknown): value is SandboxPolicyDecision {
   return Check(SandboxPolicyDecisionSchema, value);
 }
+
+/** Installation-owned admission limits. An empty rule list remains initialized state. */
+export interface InstallationSandboxNetworkPolicyCeiling {
+  readonly installationId: string;
+  readonly version: number;
+  readonly rules: readonly SandboxNetworkGrant[];
+  readonly updatedAt: string;
+  readonly updatedBy: string;
+}

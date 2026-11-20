@@ -909,6 +909,26 @@ test(
   async (context) => {
     const { environment } = await bootstrapExistingInstallation(context, "stored-name");
     const configurationRoot = await temporaryDirectory(context, "openclaw-bootstrap-stored-name-");
+    // Complete trusted API initialization before corrupting the name. The worker must
+    // reach the stored-name guard with its required saved ceiling already initialized.
+    const initializedApi = await composePostgresDevelopment(
+      {
+        mode: "development",
+        host: "127.0.0.1",
+        databaseUrl: environment.OCC_DATABASE_URL,
+        poolMax: 2,
+        logging: { level: "warn" },
+        authBaseURL: environment.OCC_AUTH_BASE_URL,
+        authSecret: environment.OCC_AUTH_SECRET,
+        nativeAdmin: { enabled: false, domain: environment.OCC_AGENT_NATIVE_ADMIN_DOMAIN },
+      },
+      await passiveDrivers(),
+    );
+    try {
+      await initializedApi.ready();
+    } finally {
+      await initializedApi.close();
+    }
     // An Installation stored before OCC applied the Name rule can hold a trailing NBSP:
     // PostgreSQL's name check accepts it.
     await withPool(migratorDatabaseUrl(), (pool: Pool) =>

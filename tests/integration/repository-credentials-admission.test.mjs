@@ -312,6 +312,7 @@ async function fixture(
       backends,
       ...controllerOptions,
     });
+    await controller.initializeSandboxNetworkPolicyCeiling(auth.seed.principal.id);
     for (const driver of [iam, compute, configurationDriver, secretDriver]) {
       controller.registerDriver(driver);
       controller.selectDriver(driver.capability, driver.id);
@@ -2031,6 +2032,15 @@ async function policyWorkerPass({
     additions: [grant],
     application,
   };
+  // Exercise the actual Installation state ports for the saved ceiling. The remaining
+  // controlled provider/queue observations isolate failure classification, not runtime proof.
+  const installationId = `ins_${randomUUID()}`;
+  const ceilingState = new InMemoryPlatformState();
+  const ceilingOwner = new OpenClawController(
+    { id: installationId, name: "Driver policy refusal", createdAt: new Date().toISOString() },
+    { state: ceilingState, sandboxNetworkPolicyCeiling: [grant] },
+  );
+  await ceilingOwner.initializeSandboxNetworkPolicyCeiling("principal");
   const outcomes = [];
   const unit = {
     namespaces: { lockNamespace: async () => ({ status: "ready" }) },
@@ -2078,7 +2088,10 @@ async function policyWorkerPass({
   const outcome = await reconcileSandboxPolicy(
     {
       configurations,
-      state: { transactWithQueue: (operation) => operation(unit, queue) },
+      state: {
+        transactWithQueue: (operation) =>
+          ceilingState.transact((actual) => operation({ ...actual, ...unit }, queue)),
+      },
       driver,
       compute: {
         id: "compute",
@@ -2086,8 +2099,7 @@ async function policyWorkerPass({
         resolveSandboxNamespace: async (namespace) => namespace,
       },
       iam: { id: "iam", authorize: async () => ({ allowed: true }) },
-      installationId: "ins-2144",
-      ceiling: [grant],
+      installationId,
       signal,
       maxAttempts: 5,
       deadlineMs: 600_000,

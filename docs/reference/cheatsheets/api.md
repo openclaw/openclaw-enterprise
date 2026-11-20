@@ -71,11 +71,14 @@
 - [`discoverInstallationConfigurations`](../api.md#get-installationdriverconfigurations): Inspect selected Driver accepted startup values and configuration schemas.
 - [`getInstallation`](../api.md#get-installation): Get the singleton Installation.
 - [`getInstallationDeploymentInventory`](../api.md#get-installationdeploymentinventory): Get the complete authorized Agent deployment inventory.
+- [`getInstallationSandboxNetworkPolicyCeiling`](../api.md#get-installationsandboxnetworkpolicyceiling): Get the Installation network policy ceiling.
 - [`getModelProvider`](../api.md#get-modelprovidersmodelproviderid): Read a model provider.
 - [`getObservability`](../api.md#get-observability): Get the configured external observability destination.
 - [`bootstrapInstallation`](../api.md#post-installationbootstrap): Bootstrap the singleton Installation.
 - [`createModelProvider`](../api.md#post-modelproviders): Create an Installation model provider.
+- [`updateInstallationSandboxNetworkPolicyCeiling`](../api.md#put-installationsandboxnetworkpolicyceiling): Update the Installation network policy ceiling.
 - [`updateModelProvider`](../api.md#put-modelprovidersmodelproviderid): Replace model provider settings if the saved fingerprint matches.
+- [`validateInstallationSandboxNetworkPolicyCeiling`](../api.md#post-installationsandboxnetworkpolicyceilingvalidate): Validate proposed Installation network policy ceiling rules.
 
 ### Namespaces
 

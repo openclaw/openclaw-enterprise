@@ -9,6 +9,9 @@ import { promisify } from "node:util";
 
 import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
+import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
+import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 import { jsonLines } from "../helpers/json-lines.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
@@ -127,6 +130,28 @@ test(
       installationName: "Worker process shutdown",
       inProcess: true,
     });
+    // Use the supported API owner path before launching the separate worker. Only
+    // startup initialization is needed here; no API listener or Agent is created.
+    const initializedApi = await composePostgresDevelopment(
+      {
+        mode: "development",
+        host: "127.0.0.1",
+        databaseUrl,
+        authSecret: "openclaw-worker-shutdown-auth-secret-minimum-32-bytes",
+        authBaseURL: "https://console.oce.localhost",
+        logging: { level: "warn" },
+        nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
+      },
+      {
+        computeDriver: createDevelopmentComputeDriver(),
+        configurationDriver: createTestConfigurationDriver(),
+      },
+    );
+    try {
+      await initializedApi.ready();
+    } finally {
+      await initializedApi.close();
+    }
     const directory = await temporaryDirectory(t, "occ-worker-process-shutdown-");
     const readinessPath = join(directory, "ready");
     const metrics = await reservePort();

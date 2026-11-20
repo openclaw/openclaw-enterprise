@@ -23,6 +23,16 @@ Stores the single OCC Installation record.
 - `name`
 - `created_at`
 
+### `installation_network_policy_ceiling`
+
+Stores the Installation's versioned [network policy ceiling](../sandbox-policies.md#installation-ceiling).
+
+- `installation_id`
+- `version`
+- `rules`
+- `updated_at`
+- `updated_by`
+
 ### `namespaces`
 
 Tracks platform Namespaces, their lifecycle status, and any existing Kubernetes namespace they use.

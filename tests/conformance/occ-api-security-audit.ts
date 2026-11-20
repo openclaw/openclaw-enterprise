@@ -76,6 +76,7 @@ export function registerMutationAuditCase() {
         .filter((event) => ["bootstrap", "mutation"].includes(event.kind))
         .map((event) => [event.kind, event.resource.kind]),
       [
+        ["mutation", "installation"],
         ["bootstrap", "installation"],
         ["mutation", "namespace"],
         ["mutation", "configuration"],

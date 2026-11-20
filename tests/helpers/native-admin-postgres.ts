@@ -278,6 +278,8 @@ export async function createApi(
     controller.registerDriver(driver);
     controller.selectDriver(driver.capability, driver.id);
   }
+  // This direct fixture performs trusted API initialization before admitting an Agent.
+  await controller.initializeSandboxNetworkPolicyCeiling();
   const app = createFastifyApp({
     controller,
     iamDriver,

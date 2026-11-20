@@ -2001,6 +2001,8 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
+      [85, "preInstallationNetworkPolicyCeiling"],
+      [86, "preDynamicInstallationNetworkPolicyCeiling"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2306,6 +2308,8 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
+      [85, "preInstallationNetworkPolicyCeiling"],
+      [86, "preDynamicInstallationNetworkPolicyCeiling"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2494,6 +2498,8 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
+      [85, "preInstallationNetworkPolicyCeiling"],
+      [86, "preDynamicInstallationNetworkPolicyCeiling"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2517,10 +2523,13 @@ test(
         // All three pending receipts, schema changes and main-row annotations roll back.
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         // 0078 replaces the custody guard in place; abort its CREATE FUNCTION statement.
+        // Ceiling creation grants access last; dynamic ownership removes columns in one ALTER.
         const rollbackTag =
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [86, "ALTER TABLE"],
+                [85, "GRANT"],
                 [83, "GRANT"],
                 [82, "CREATE TRIGGER"],
                 [81, "GRANT"],

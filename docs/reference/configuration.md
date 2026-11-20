@@ -55,11 +55,11 @@ Secret Driver operations do not include Installation management. Installed
 Drivers remain trusted, unsandboxed controller code. Invalid production YAML,
 unsupported settings, and unavailable Drivers stop startup before requests run.
 
-The optional `sandboxNetworkPolicyCeiling` array delegates bounded per-Agent
-network additions. It grants no default access; an absent or empty array delegates
-none. See
-[Sandbox policies](sandbox-policies.md#authority-and-admission) for
-its grant schema and authorization boundaries.
+`sandboxNetworkPolicyCeiling` seeds the persistent network ceiling once. Later
+starts preserve saved rules; administrators change them through the API or
+Console. The retired `sandboxNetworkPolicyCeilingOverwriteOnStartup` setting is
+rejected. See [Installation ceiling](sandbox-policies.md#installation-ceiling)
+for ownership, grant limits, and authorization.
 
 The optional `iam` block declares the
 [Default users](authorization/default-users.md#installation-iam-configuration)

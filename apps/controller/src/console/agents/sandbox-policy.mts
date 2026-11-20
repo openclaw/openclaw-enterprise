@@ -219,7 +219,7 @@ function pagination(total: number, page: number, size: number, change: (page: nu
   );
 }
 
-function ruleList(rules: readonly unknown[], actions?: (index: number) => Node) {
+export function ruleList(rules: readonly unknown[], actions?: (index: number) => Node) {
   const root = element("div", { className: "sandbox-rule-collection" });
   let page = 1;
   const search = element("input", {
@@ -299,7 +299,10 @@ function ruleList(rules: readonly unknown[], actions?: (index: number) => Node) 
 
 /** Logs, recommendations, and policy editing keep independent permissions and availability. */
 export function renderAgentSandboxPolicy(
-  context: Pick<NamespacePageContext, "request" | "isCurrent">,
+  context: Pick<NamespacePageContext, "request" | "isCurrent"> & {
+    installationAdmin?: boolean | null;
+    onAdministrationEnded?: (handler: () => void) => void;
+  },
   {
     agent,
     revisionId,
@@ -397,6 +400,11 @@ export function renderAgentSandboxPolicy(
     "aria-labelledby": limitsTitle.id,
   });
   let limitsInvoker: Element | null;
+  let installationAdmin = context.installationAdmin === true;
+  context.onAdministrationEnded?.(() => {
+    installationAdmin = false;
+    limitsBody.querySelector(".ceiling-settings-link")?.remove();
+  });
   limitsDialog.append(
     element(
       "div",
@@ -445,7 +453,7 @@ export function renderAgentSandboxPolicy(
       element(
         "p",
         { className: "hint" },
-        "These limits are set by Installation configuration. Turning policy editing on or off does not change them.",
+        "Installation administrators manage these limits in Settings. Turning policy editing on or off does not change them.",
       ),
       ...(view.ceiling.length
         ? [
@@ -469,6 +477,15 @@ export function renderAgentSandboxPolicy(
         "Policy changes must also meet Agent permissions and execution restrictions.",
       ),
     );
+    if (installationAdmin) {
+      limitsBody.append(
+        element(
+          "a",
+          { className: "ceiling-settings-link", href: "/console/settings#network-policy-ceiling" },
+          "Manage network policy ceiling in Settings",
+        ),
+      );
+    }
     limitsDialog.showModal();
   }
   const suggestions = element("section", { className: "agent-card" });
