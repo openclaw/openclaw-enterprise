@@ -1138,8 +1138,9 @@ type ProviderReadinessSource = Omit<ProviderReadinessFixture, "activate"> & {
   namespace: string;
 };
 
-function providerObservationFixture(): ProviderReadinessFixture {
-  const fixture: ProviderReadinessSource = providerReadinessFixture();
+function providerObservationFixture(factory: unknown): ProviderReadinessFixture {
+  assert.strictEqual(factory, providerReadinessFixture);
+  const fixture: ProviderReadinessSource = factory();
   return {
     labels: fixture.labels,
     pod: fixture.pod,
@@ -1211,8 +1212,8 @@ function readinessPod(
   return pod;
 }
 
-export async function checkExactProviderHarnessReadiness(t: TestContext) {
-  const fixture = providerObservationFixture();
+export async function checkExactProviderHarnessReadiness(t: TestContext, factory: unknown) {
+  const fixture = providerObservationFixture(factory);
   const ready = readinessPod(fixture, "harness-ready");
   const unready = readinessPod(fixture, "harness-starting", "False");
   const terminating = readinessPod(fixture, "harness-terminating");
@@ -1284,8 +1285,8 @@ export async function checkExactProviderHarnessReadiness(t: TestContext) {
   }
 }
 
-export async function checkProviderAssignedNetworkProfile() {
-  const fixture = providerObservationFixture();
+export async function checkProviderAssignedNetworkProfile(factory: unknown) {
+  const fixture = providerObservationFixture(factory);
   // The provider receives the provider-fenced profile, derived from the ordinary template.
   assert.equal(
     resourceLabels(fixture.labels, "fixture Harness labels")["openclaw.dev/network-profile"],

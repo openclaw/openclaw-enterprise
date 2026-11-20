@@ -68,7 +68,10 @@ import {
   labelSelectorLabels,
   selectorMatches,
 } from "../helpers/kubernetes-routed-scenarios.mjs";
-import { supervisorPeerLabels } from "../fixtures/kubernetes-provider-readiness.mjs";
+import {
+  providerReadinessFixture,
+  supervisorPeerLabels,
+} from "../fixtures/kubernetes-provider-readiness.mjs";
 import { writeSafeKubeconfig, writeUnsafeKubeconfigs } from "../helpers/unsafe-kubeconfigs.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { ControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -6576,8 +6579,11 @@ test("the OpenShell gateway allowlist admits every label Compute puts on a Harne
   );
 });
 
+/** @type {unknown} */
+const providerObservationFactory = providerReadinessFixture;
+
 test("provider Harness readiness requires exactly one live matching Pod", async (t) => {
-  await providerObservation.checkExactProviderHarnessReadiness(t);
+  await providerObservation.checkExactProviderHarnessReadiness(t, providerObservationFactory);
 });
 
 test(
@@ -6591,7 +6597,7 @@ test(
 );
 
 test("provider Harness requires its assigned network profile before readiness and activation", async () => {
-  await providerObservation.checkProviderAssignedNetworkProfile();
+  await providerObservation.checkProviderAssignedNetworkProfile(providerObservationFactory);
 });
 
 test("provider Harness public trust rejects invalid material and composes with execution trust", async (t) => {
