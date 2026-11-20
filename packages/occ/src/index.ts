@@ -12375,17 +12375,22 @@ export class OpenClawController {
     additions: readonly SandboxNetworkGrant[],
   ): Promise<Readonly<SandboxPolicy>> {
     this.requireNetworkPolicyFacet(facet);
-    await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
-    await this.authorize(principalId, "update", {
+    const agentResource = { kind: "agent", id: agentId, namespaceId } as const;
+    const sandboxPolicy = {
       kind: "sandbox_policy",
       id: `sbp_${agentId.slice(4)}`,
       namespaceId,
-    });
+    } as const;
+    await this.authorize(principalId, "manage_policy", agentResource);
+    await this.authorize(principalId, "update", sandboxPolicy);
     // The cause comes before the editing setting and version checks it would otherwise hide (D774).
     this.requireNetworkPolicyAvailable();
     return this.mutate(async (state) => {
       await this.lockNamespace(state, namespaceId);
       const agent = await state.agents.lockAgent(namespaceId, agentId);
+      // A grant may have been withdrawn while either owner lock was pending.
+      await this.authorize(principalId, "manage_policy", agentResource);
+      await this.authorize(principalId, "update", sandboxPolicy);
       const previous = await state.sandboxPolicies.find(namespaceId, agentId);
       if (agent?.status !== "active" || agent.sandboxPolicyEditing !== true) {
         throw new ResourceStateConflictError("Policy editing is disabled for this Agent.");
