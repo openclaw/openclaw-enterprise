@@ -506,11 +506,16 @@ function findNamed(items: readonly unknown[], name: string): unknown {
 
 function themePod(objects: readonly unknown[], component: string) {
   const deployment = objects.find((object) => {
+    assert.ok(object !== null && object !== undefined, "Expected a non-null Helm document");
     const resource = asRecord(object);
-    return (
-      resource?.kind === "Deployment" &&
-      asRecord(resource.metadata)?.name === `openclaw-enterprise-${component}`
+    if (resource?.kind !== "Deployment") {
+      return false;
+    }
+    assert.ok(
+      resource.metadata !== null && resource.metadata !== undefined,
+      "Expected Deployment metadata",
     );
+    return asRecord(resource.metadata)?.name === `openclaw-enterprise-${component}`;
   });
   const spec = asRecord(deployment)?.spec;
   assert.ok(Check(themeDeploymentSpec, spec), `Expected the ${component} Deployment pod template`);
