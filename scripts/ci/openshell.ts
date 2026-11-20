@@ -45,8 +45,8 @@ const k3sImage =
 const openShellChartArchive = `helm-chart-${openShellVersion}.tgz`;
 const openShellWorkspaceChartArchive = `openshell-workspace-${openShellVersion}.tgz`;
 const openShellSourceArchive = `openshell-v${openShellVersion}.tar.gz`;
-const openShellSourceRoot = `OpenShell-${openShellVersion}`;
-const openShellSourceSha256 = "b23e5620f6cef35f0f72932a054d97fa0bd8f8f4ef4e7c9c90a293e17b9790d6";
+const openShellSourceRoot = `openshell-${openShellVersion}`;
+const openShellSourceSha256 = "e92705150f012d8d0b080db9af3c2c38df3425782cc68355b9179342e59531ba";
 const agentSandboxManifestSha256 =
   "230ee446d6035f631577e1c6b857f6973a8f09a0a853675d3cc34ebfe47abd6b";
 const openShellGatewayImage = `ghcr.io/nvidia/openshell/gateway:${openShellVersion}@sha256:1fd9e1e807990e66c9486a28d3ce9d649fd7528df48d0e830d2de2148b52dfe5`;
@@ -114,7 +114,7 @@ async function ensurePrivateDirectory(path: string): Promise<void> {
 }
 
 function openShellSourceUrl() {
-  return `https://codeload.github.com/NVIDIA/OpenShell/tar.gz/refs/tags/v${openShellVersion}`;
+  return `https://codeload.github.com/ai-openshell/openshell/tar.gz/refs/tags/v${openShellVersion}`;
 }
 
 function agentSandboxManifestUrl() {
