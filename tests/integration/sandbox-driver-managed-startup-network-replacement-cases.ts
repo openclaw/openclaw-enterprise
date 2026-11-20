@@ -16,7 +16,7 @@ import { storedSandbox } from "./sandbox-driver-gateway-response-fixture.ts";
 import { backendFor } from "./sandbox-driver-openshell-fixture.ts";
 import { buildSandboxInstallation as sandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
 import { harnessService, runtimeSandboxFixture } from "./sandbox-driver-startup-orchestration.ts";
-import { completeSandboxRevision } from "./sandbox-driver-revision-fixture.ts";
+import { completeWorkspaceRevision } from "./sandbox-driver-revision-fixture.ts";
 import {
   assertManagedPolicy,
   assertManagedSandboxRequest,
@@ -62,7 +62,7 @@ export function registerManagedStartupNetworkReplacementCases(): void {
       });
     const original = makeDriver(options);
     const { context, revision: fixtureRevision, requirements } = runtimeSandboxFixture(original);
-    const revision = completeSandboxRevision(fixtureRevision);
+    const revision = completeWorkspaceRevision(fixtureRevision, requirements);
     requirements.workspaceMounts = [];
     let stored: StoredManagedSandbox | undefined;
     let policy: ManagedPolicy | undefined;
@@ -139,12 +139,14 @@ export function registerManagedStartupNetworkReplacementCases(): void {
       driver: ManagedOpenShellSandbox,
       id: string,
       overrides: Partial<HarnessWorkloadRequirements> = {},
-    ) =>
-      driver.provisionHarness({
+    ) => {
+      const effectiveRequirements = { ...requirements, ...overrides };
+      return driver.provisionHarness({
         ...context,
-        revision: { ...revision, id },
-        requirements: { ...requirements, ...overrides },
+        revision: { ...completeWorkspaceRevision(fixtureRevision, effectiveRequirements), id },
+        requirements: effectiveRequirements,
       });
+    };
     await original.ensureNamespace(context);
     await provision(original, revision.id);
     const baseline = structuredClone(currentSandbox().spec.policy);

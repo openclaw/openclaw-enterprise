@@ -13,7 +13,7 @@ import { storedSandbox } from "./sandbox-driver-gateway-response-fixture.ts";
 import { backendFor } from "./sandbox-driver-openshell-fixture.ts";
 import { buildSandboxInstallation as sandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
 import { harnessService, runtimeSandboxFixture } from "./sandbox-driver-startup-orchestration.ts";
-import { completeSandboxRevision } from "./sandbox-driver-revision-fixture.ts";
+import { completeWorkspaceRevision } from "./sandbox-driver-revision-fixture.ts";
 import {
   assertManagedSandboxRequest,
   type ManagedSandboxRequest,
@@ -39,7 +39,7 @@ export function registerManagedStartupNativeReplacementCases(): void {
     } = runtimeSandboxFixture(driver, {
       harnessId: "openclaw",
     });
-    const revision = completeSandboxRevision(fixtureRevision);
+    const revision = completeWorkspaceRevision(fixtureRevision, requirements);
     requirements.workspaceMounts = [];
     requirements.environment.push(
       { name: "APP_SERVER_PORT", value: "8080" },

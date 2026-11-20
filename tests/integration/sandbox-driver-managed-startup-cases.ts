@@ -25,6 +25,7 @@ import { buildSandboxInstallation as sandboxInstallation } from "./sandbox-drive
 import {
   dedicatedRevision,
   namespaceContext,
+  runtimeSandboxFixture,
   sandboxRecord,
 } from "./sandbox-driver-startup-orchestration.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
@@ -429,10 +430,18 @@ export function registerManagedOpenShellStartupCases(): void {
         });
         const ownedWorkspace = gateway.workspaces.get(workspace);
         assert.ok(ownedWorkspace);
+        const { runtimeManifest, codexConfig, nodeSetup } = runtimeSandboxFixture(sandbox);
+        // Seed the profile and nonsecret configuration managed Codex provisioning stores.
         gateway.providers.set(providerName, {
           name: providerName,
-          type: providerName,
-          config: {},
+          type: "oce-codex-runtime",
+          config: {
+            runtime_json: runtimeManifest,
+            config_toml: codexConfig,
+            node_setup_json: JSON.stringify(nodeSetup),
+            node_ca_pem: "",
+            oce_revision_id: revision.id,
+          },
           resourceVersion: "1",
           labels: {
             ...ownedWorkspace.labels,

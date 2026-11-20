@@ -10,12 +10,13 @@ import {
   type OpenShellSandboxCreateRequest,
   type OpenShellProviderResponse,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import type { HarnessWorkloadRequirements } from "../../packages/contracts/src/index.ts";
 import { grpc, loader, openShellService, type Grpc } from "../helpers/openshell-grpc-sdk.ts";
 import { storedSandbox } from "./sandbox-driver-gateway-response-fixture.ts";
 import { backendFor } from "./sandbox-driver-openshell-fixture.ts";
 import { buildSandboxInstallation as sandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
 import { harnessService, runtimeSandboxFixture } from "./sandbox-driver-startup-orchestration.ts";
-import { completeSandboxRevision } from "./sandbox-driver-revision-fixture.ts";
+import { completeWorkspaceRevision } from "./sandbox-driver-revision-fixture.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 
 export type ManagedSandboxPhase =
@@ -173,7 +174,7 @@ export function registerManagedStartupRenderingCases(): void {
     client.getService = async () =>
       harnessService(currentRequest().name, "", "http://codex.example.test:8080/");
     const { context, revision: fixtureRevision, requirements } = runtimeSandboxFixture(driver);
-    const revision = completeSandboxRevision(fixtureRevision);
+    const revision = completeWorkspaceRevision(fixtureRevision, requirements);
     requirements.environment = requirements.environment.filter(
       ({ name }) => name !== "OPENCLAW_NODE_CA_PEM",
     );
@@ -380,37 +381,43 @@ export function registerManagedStartupRenderingCases(): void {
           version += 1;
           return storedSandbox(currentRequest(), { phase, resourceVersion: String(version) });
         };
-        const provision = (id: string, source: string) =>
-          driver.provisionHarness({
+        const nextAttachment = { sourceId: "source-b", ref: sourceB };
+        const provision = (
+          id: string,
+          credentialAttachment: HarnessWorkloadRequirements["credentialAttachments"][number],
+        ) => {
+          const effectiveRequirements = {
+            ...requirements,
+            credentialAttachments: [credentialAttachment],
+          };
+          return driver.provisionHarness({
             ...context,
-            revision: { ...revision, id },
-            requirements: {
-              ...requirements,
-              credentialAttachments: [{ sourceId: source, ref: source }],
-            },
+            revision: { ...completeWorkspaceRevision(fixtureRevision, effectiveRequirements), id },
+            requirements: effectiveRequirements,
           });
+        };
         phase = "SANDBOX_PHASE_STOPPED";
-        await provision("rev_00000000-0000-4000-8000-000000000005", sourceA);
+        await provision("rev_00000000-0000-4000-8000-000000000005", attachment);
         assert.equal(phase, "SANDBOX_PHASE_READY");
         phase = "SANDBOX_PHASE_STOPPED";
         loseResponse = "detach";
         const next = "rev_00000000-0000-4000-8000-000000000006";
-        await assert.rejects(provision(next, sourceB), /lost mutation response/);
+        await assert.rejects(provision(next, nextAttachment), /lost mutation response/);
         assert.equal(phase, "SANDBOX_PHASE_STOPPED");
         assert.equal(currentRequest().spec.providers.includes(sourceA), false);
         loseResponse = "attach";
-        await assert.rejects(provision(next, sourceB), /lost mutation response/);
+        await assert.rejects(provision(next, nextAttachment), /lost mutation response/);
         assert.equal(phase, "SANDBOX_PHASE_STOPPED");
         // A retry with already-correct attachments must still check current policy;
         // membership alone cannot authorize starting the desired workload.
         client.getPolicyStatus = async () => policyStatus({ network_policies: {} });
         await assert.rejects(
-          provision(next, sourceB),
+          provision(next, nextAttachment),
           /static policy or non-Git middleware bindings/,
         );
         assert.equal(phase, "SANDBOX_PHASE_STOPPED");
         client.getPolicyStatus = async () => policyStatus(structuredClone(policy));
-        await provision(next, sourceB);
+        await provision(next, nextAttachment);
         assert.equal(phase, "SANDBOX_PHASE_READY");
         assert.deepEqual(mutations, [
           ["detach", sourceA],
