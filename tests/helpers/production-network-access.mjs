@@ -22,6 +22,8 @@ import { createDriver, fixtureComputeConfiguration } from "./kubernetes-compute-
 import { createManagementPolicyControls } from "./production-network-management-access.ts";
 import { createProductionNetworkProbe } from "./production-network-probe.ts";
 
+/** @import { ManagementTenant } from "./production-network-management-access.ts" */
+
 const execute = promisify(execFile);
 const componentLabel = "app.kubernetes.io/component";
 const instanceLabel = "app.kubernetes.io/instance";
@@ -33,6 +35,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
   const destinations = `${namespace}-destinations`;
   const envoyNamespace = `${namespace}-envoy`;
   const ownedNamespaces = [];
+  /** @param {...string} args */
   const kubectl = async (...args) =>
     (await kubectlGetJson(selection, args, { timeoutMs: 30_000 })) ??
     (await execute("kubectl", kubectlArguments(selection, args), { timeout: 30_000 })).stdout;
@@ -41,6 +44,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
     kubectl,
     waitTimeoutMs: 60_000,
   });
+  /** @returns {Promise<string>} */
   const kubectlWithInput = (args, object) =>
     new Promise((resolve, reject) => {
       const child = execFile(
@@ -270,6 +274,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
   );
   const runDir = await temporaryDirectory(t, "oce-network-");
   await symlink(join(quickstart, "kubernetes"), join(runDir, "kubernetes"));
+  /** @param {string} command @param {ManagementTenant} [tenant] */
   const runNetworkHelper = (command, tenant, path = process.env.PATH) =>
     execute(
       "bash",
@@ -305,7 +310,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
     metadata: { name, namespace: space },
     spec,
   });
-  /** @type {import("./production-network-management-access.ts").ManagementTenant[] | undefined} */
+  /** @type {ManagementTenant[] | undefined} */
   let managementTenants;
   let ownedApiDiscoveryPath;
   async function updateApiEndpointSlice(update) {
@@ -648,7 +653,6 @@ print(json.dumps(payload))
     },
     ...createManagementPolicyControls({
       system,
-      /** @returns {Promise<unknown>} */
       allowManagementPort: (name, port) =>
         apply([
           policy(name, system, {
