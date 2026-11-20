@@ -12272,6 +12272,7 @@ export class OpenClawController {
     try {
       // Detach once before inspecting: a Driver may return mutable data or accessors.
       // OCC owns the exact ordered grants; the Driver still owns opaque defaults.
+      // Repository ACLs require separate admission against the Installation ceiling.
       const snapshot = immutableCopy(returned);
       validateSandboxNetworkGrants(snapshot?.additions);
       if (
@@ -12281,7 +12282,8 @@ export class OpenClawController {
         snapshot.defaults === null ||
         typeof snapshot.defaults !== "object" ||
         Array.isArray(snapshot.defaults) ||
-        !isDeepStrictEqual(snapshot.additions, additions)
+        !isDeepStrictEqual(snapshot.additions, additions) ||
+        Object.hasOwn(snapshot, "repositoryNetworkPolicy")
       ) {
         throw refused();
       }
