@@ -39,7 +39,10 @@ import {
   SandboxWorkspaceSetupRefusedError,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
-import { captureNamespaceHint } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import {
+  captureNamespaceHint,
+  withYieldingComputeStop,
+} from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { normalizeSecretBindings } from "../../packages/contracts/src/index.ts";
 import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
@@ -613,7 +616,7 @@ function dedicatedFirstDeployFixture({
   sandboxDriver,
   openShellGit,
   credentialGatewayDriver,
-  credentialProxyDriver,
+  credentialDeliveryRegistration,
   context,
   splitCluster = false,
   revision: revisionOverrides = {},
@@ -645,7 +648,7 @@ function dedicatedFirstDeployFixture({
       sandboxDriver,
       ...(openShellGit === undefined ? {} : { openShellGit }),
       credentialGatewayDriver,
-      credentialProxyDriver,
+      credentialDeliveryRegistration,
       nodeEnrollment,
     },
   );
@@ -870,6 +873,9 @@ test("staged Compute release requires both ready observations, this held acknowl
     async provisionHarness() {
       assert.fail("a staged deployment cannot use ordinary Sandbox provisioning");
     },
+    async cleanup() {
+      events.push("sandbox-cleanup");
+    },
     async withdrawHarnessExposure({ workspaceNodeEnrolled }) {
       assert.equal(workspaceNodeEnrolled, true);
       events.push("withdraw");
@@ -883,8 +889,11 @@ test("staged Compute release requires both ready observations, this held acknowl
     },
   };
   const proxyDriver = {
-    id: "staged-proxy",
+    id: sandboxDriver.id,
+    implementation: sandboxDriver.implementation,
+    capability: "credential_proxy_delivery",
     async deployProxy() {
+      events.push("deploy");
       return {};
     },
     async configureDeployment() {
@@ -897,6 +906,16 @@ test("staged Compute release requires both ready observations, this held acknowl
       if (removal.unboundDeployment !== undefined) {
         events.push("remove-unbound");
       }
+    },
+  };
+  const selectedOwner = {
+    ref: {
+      id: sandboxDriver.id,
+      implementation: sandboxDriver.implementation,
+      configurationId: "a".repeat(64),
+    },
+    require(capability) {
+      return capability === "sandbox" ? sandboxDriver : proxyDriver;
     },
   };
   const context = {
@@ -919,6 +938,7 @@ test("staged Compute release requires both ready observations, this held acknowl
     executionAdmission: { version: 8, mode: "standalone" },
     credentialDeployment: {
       proxyDriverId: proxyDriver.id,
+      driver: selectedOwner.ref,
       networkAccessPolicy: { allowed: [request] },
       bindings: [binding],
       injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [request] }],
@@ -927,7 +947,7 @@ test("staged Compute release requires both ready observations, this held acknowl
   // The admitted consumer must identify the provider selected in the frozen Harness config.
   const mismatched = dedicatedFirstDeployFixture({
     sandboxDriver,
-    credentialProxyDriver: proxyDriver,
+    credentialDeliveryRegistration: selectedOwner,
     context,
     revision: {
       ...stagedRevision,
@@ -939,13 +959,50 @@ test("staged Compute release requires both ready observations, this held acknowl
   });
   await assert.rejects(mismatched.prepare(), /staged model binding does not match/);
 
+  // The same capability IDs under a different registered configuration cannot adopt this policy.
+  // Reject before Proxy deployment or the Worker configuration callback that can resolve a source.
+  const replacementOwner = {
+    ...selectedOwner,
+    ref: { ...selectedOwner.ref, configurationId: "b".repeat(64) },
+  };
+  const replacement = dedicatedFirstDeployFixture({
+    sandboxDriver,
+    credentialDeliveryRegistration: replacementOwner,
+    context,
+    revision: stagedRevision,
+  });
+  await assert.rejects(
+    replacement.prepare(),
+    /admitted staged credential composition is unavailable/,
+  );
+  assert.equal(events.includes("deploy"), false);
+  assert.equal(events.includes("configure"), false);
+  await assert.rejects(
+    withYieldingComputeStop(() => replacement.driver.stopRevision(replacement.revision)),
+    /pinned to another staged Driver registration/,
+  );
+  await assert.rejects(
+    replacement.driver.retireRevision(replacement.revision),
+    /pinned to another staged Driver registration/,
+  );
+  assert.equal(events.includes("sandbox-cleanup"), false);
+
   const { driver, gatewayName, markReady, namespace, prepare, read, revision, state } =
     dedicatedFirstDeployFixture({
       sandboxDriver,
-      credentialProxyDriver: proxyDriver,
+      credentialDeliveryRegistration: selectedOwner,
       context,
       revision: stagedRevision,
     });
+  assert.doesNotThrow(() => driver.validateExecutionAdmission(revision, selectedOwner));
+  assert.throws(
+    () =>
+      driver.validateExecutionAdmission(revision, {
+        ...selectedOwner,
+        require: () => sandboxDriver,
+      }),
+    /admitted staged credential composition is unavailable/,
+  );
   assert.equal((await prepare()).ready, false);
   markReady(gatewayName);
 

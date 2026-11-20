@@ -122,6 +122,11 @@ async function standaloneRevision(
       tokenServiceInstanceId: instance.id,
     })),
     credentialDeployment: {
+      driver: {
+        id: "sandbox-contract",
+        implementation: "openshell",
+        configurationId: "a".repeat(64),
+      },
       proxyDriverId: "proxy-contract",
       networkAccessPolicy: {
         allowed: [{ binary: request.binary, host: request.host, ports: request.ports }],

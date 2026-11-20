@@ -598,6 +598,7 @@ test("an admitted standalone credential policy cannot be retargeted through its 
     },
     credentialSources: [{ sourceId, tokenServiceInstanceId, sourceType: "static" }],
     credentialDeployment: {
+      driver: { id: "openshell", implementation: "openshell", configurationId: "a".repeat(64) },
       proxyDriverId: "native-proxy",
       networkAccessPolicy: { allowed: [request] },
       bindings: [binding],

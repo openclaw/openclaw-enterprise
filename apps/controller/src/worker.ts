@@ -8,7 +8,11 @@ import {
   isSourceProviderPresetId,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
 } from "@openclaw-enterprise/contracts";
-import type { CredentialProxyDriver } from "@openclaw-enterprise/contracts";
+import type {
+  CredentialDeploymentContext,
+  CredentialDeploymentProxyDriver,
+  CredentialProxyDriver,
+} from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { closeResources } from "./composition/close-resources.ts";
 import { installationDriverConfigurations } from "./composition/installation-config.ts";
@@ -1264,6 +1268,9 @@ export class ControllerWorker {
   private readonly proxyDriver: CredentialProxyDriver | undefined;
   private readonly protectedDriver: InstalledDriver | undefined;
   private readonly credentialDeliveryRegistration: InstalledDriver | undefined;
+  private get credentialDeploymentProxy(): CredentialDeploymentProxyDriver | undefined {
+    return this.credentialDeliveryRegistration?.require("credential_proxy_delivery");
+  }
   private readonly preparedTokens: InstallationRuntimeDrivers["tokenService"];
   private readonly tokenServiceDrivers:
     Pick<InstallationRuntimeDrivers, "installation" | "secretDriver"> | undefined;
@@ -1424,7 +1431,16 @@ export class ControllerWorker {
     this.tokenServiceDrivers = drivers;
     this.resolveCredentialDeploymentContext = drivers?.resolveCredentialDeploymentContext;
     this.sandbox =
-      this.protectedDriver?.require("sandbox") ?? drivers?.sandboxDriver ?? options.sandboxDriver;
+      this.protectedDriver?.require("sandbox") ??
+      this.credentialDeliveryRegistration?.require("sandbox") ??
+      drivers?.sandboxDriver ??
+      options.sandboxDriver;
+    if (
+      this.credentialDeliveryRegistration !== undefined &&
+      this.credentialDeliveryRegistration.require("sandbox") !== this.sandbox
+    ) {
+      throw new Error("Staged credential delivery requires the selected Sandbox owner.");
+    }
     this.credentialGateway = drivers?.credentialGatewayDriver ?? options.credentialGatewayDriver;
     this.credentialRefresh = drivers?.credentialRefreshDriver;
     this.proxyDriver =
@@ -5820,6 +5836,16 @@ export class ControllerWorker {
   }
 
   private validateExecutionAdmission(revision: AgentRevision): void {
+    if (
+      revision.executionAdmission.mode === "standalone" &&
+      (!this.credentialDeliveryRegistration ||
+        !isDeepStrictEqual(
+          revision.credentialDeployment?.driver,
+          this.credentialDeliveryRegistration.ref,
+        ))
+    ) {
+      throw new DependencyUnavailableError("The staged credential Driver registration changed.");
+    }
     if (this.compute.validateExecutionAdmission === undefined) {
       assertExecutionReleaseAllowed(revision);
     } else {
@@ -5866,7 +5892,8 @@ export class ControllerWorker {
       claim.namespaceId !== revision.namespaceId ||
       claim.agentId !== revision.agentId ||
       claim.revisionId !== revision.id ||
-      policy.proxyDriverId !== this.proxyDriver?.id ||
+      policy.proxyDriverId !== this.credentialDeploymentProxy?.id ||
+      !isDeepStrictEqual(policy.driver, this.credentialDeliveryRegistration?.ref) ||
       revision.sandboxDriverId !== this.sandbox?.id ||
       !this.resolveCredentialDeploymentContext ||
       !this.sandbox?.credentialDeployment ||
@@ -5989,8 +6016,8 @@ export class ControllerWorker {
     signal: AbortSignal,
   ) {
     const current = await this.currentCredentialDeployment(claim, revision, expected, signal);
-    const proxy = this.proxyDriver;
-    if (!proxy?.configureDeployment) {
+    const proxy = this.credentialDeploymentProxy;
+    if (proxy === undefined) {
       throw new DependencyUnavailableError(
         "The selected Credential Proxy cannot configure a staged target.",
       );
@@ -6005,7 +6032,11 @@ export class ControllerWorker {
     };
     try {
       const result = await proxy.configureDeployment(
-        { namespace: current.context.namespace, revision, signal },
+        {
+          namespace: current.context.namespace,
+          revision,
+          signal,
+        } satisfies CredentialDeploymentContext,
         {
           ...expected,
           injectionPolicies: current.policy.injectionPolicies,

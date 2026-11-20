@@ -108,9 +108,22 @@ export function registerDeploymentPolicyCases(): void {
     const { policy } = credentialPolicyFixture({ type: "http", method: "GET", path: "/events" });
     const staged = {
       executionAdmission: { version: 8, mode: "standalone" },
-      credentialDeployment: { ...policy, proxyDriverId: "proxy" },
+      credentialDeployment: {
+        ...policy,
+        driver: { id: "sandbox", implementation: "openshell", configurationId: "a".repeat(64) },
+        proxyDriverId: "proxy",
+      },
     } as const;
     assert.doesNotThrow(() => assertExecutionAdmission(staged));
+    assert.throws(() =>
+      assertExecutionAdmission({
+        ...staged,
+        credentialDeployment: {
+          ...staged.credentialDeployment,
+          driver: { ...staged.credentialDeployment.driver, configurationId: "not-a-digest" },
+        },
+      }),
+    );
     const sourceAuth = {
       method: "credential_source" as const,
       sourceId: "cs_work",

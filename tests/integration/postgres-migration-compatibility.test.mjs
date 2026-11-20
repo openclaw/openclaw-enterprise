@@ -2163,6 +2163,11 @@ test(
             harness_auth: { method: "credential_source", ...source },
             credential_sources: [source],
             credential_deployment: {
+              driver: {
+                id: "sandbox",
+                implementation: "openshell",
+                configurationId: "a".repeat(64),
+              },
               proxyDriverId: "staged-proxy",
               networkAccessPolicy: {
                 allowed: [400, 443].map((from, index) => ({
@@ -2192,6 +2197,13 @@ test(
               [`rev_${randomUUID()}`, number, JSON.stringify(value), original.id],
             );
           await insert(spec, 2);
+          // The app role cannot insert a revision without its exact durable delivery owner.
+          const malformedOwner = structuredClone(spec);
+          malformedOwner.credential_deployment.driver.configurationId = "not-a-digest";
+          await assert.rejects(insert(malformedOwner, 3), {
+            code: "23514",
+            constraint: "agent_revisions_execution_admission",
+          });
           const uncovered = structuredClone(spec);
           uncovered.credential_deployment.injectionPolicies[0].allowedRequests[0].host =
             "unapproved.example.test";

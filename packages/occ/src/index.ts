@@ -86,7 +86,7 @@ import type {
   DeploymentRequestMatch,
   NetworkPolicyCapabilities,
   CredentialInjectionCapabilities,
-  CredentialProxyDriver,
+  CredentialDeploymentProxyDriver,
 } from "@openclaw-enterprise/contracts";
 import {
   CredentialProxy,
@@ -861,7 +861,8 @@ interface PreparedModelCredentialDeployment {
   >;
   readonly preset: ModelCredentialPreset;
   readonly capabilities: CredentialDeploymentCapabilities;
-  readonly proxy: CredentialProxyDriver;
+  readonly owner: InstalledDriver;
+  readonly proxy: CredentialDeploymentProxyDriver;
 }
 
 export interface ControllerOptions {
@@ -882,7 +883,7 @@ export interface ControllerOptions {
   /** Code-only composition of the actual selected Sandbox and Proxy; absent means unsupported. */
   readonly credentialDeploymentCapabilities?: (input: {
     readonly sandbox: SandboxDriver;
-    readonly proxy: CredentialProxyDriver;
+    readonly proxy: CredentialDeploymentProxyDriver;
   }) => CredentialDeploymentCapabilities | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
@@ -2666,17 +2667,26 @@ export class OpenClawController {
     return owner;
   }
 
-  async validateBackendConfiguration(): Promise<void> {
+  private selectedCredentialDeliveryOwner(): InstalledDriver {
     const delivery = this.selections.get("credential_proxy_delivery");
+    const sandbox = this.selections.get("sandbox");
+    const owner = delivery?.owner;
     if (
-      delivery !== undefined &&
-      (!delivery.owner ||
-        delivery.owner !== this.selections.get("sandbox")?.owner ||
-        delivery.owner.require("credential_proxy_delivery") !== delivery.driver)
+      !owner ||
+      owner !== sandbox?.owner ||
+      owner.require("sandbox") !== sandbox.driver ||
+      owner.require("credential_proxy_delivery") !== delivery.driver
     ) {
       throw new DriverSelectionError(
         "Credential delivery and Sandbox must come from the same registered Driver.",
       );
+    }
+    return owner;
+  }
+
+  async validateBackendConfiguration(): Promise<void> {
+    if (this.selections.has("credential_proxy_delivery")) {
+      this.selectedCredentialDeliveryOwner();
     }
     const selected = Object.fromEntries(
       [...this.selections.entries()].map(([capability, selection]) => [
@@ -9013,6 +9023,15 @@ export class OpenClawController {
         );
       }
       if (
+        ownerUpdate !== undefined &&
+        (await state.credentialSources.hasReferences(ref.namespaceId, source.id))
+      ) {
+        // TODO(C6 source-update delivery): admit bound updates after source-scoped notification and retry can settle every delivery.
+        throw new ResourceStateConflictError(
+          "Bound credential source updates require supported delivery notification and retry.",
+        );
+      }
+      if (
         lockSource &&
         presetChanges &&
         (await state.credentialSources.hasReferences(ref.namespaceId, source.id))
@@ -14398,10 +14417,13 @@ export class OpenClawController {
           assertExecutionReleaseAllowed(execution);
         } else {
           const admission = { ...execution, harnessAuth, credentialSources, repositoryCredentials };
-          compute.validateExecutionAdmission(
-            admission,
-            (egressPlan || credentialDeployment) && this.selectedProxyOwner(),
-          );
+          let owner: InstalledDriver | undefined;
+          if (stagedModel !== undefined) {
+            owner = stagedModel.owner;
+          } else if (egressPlan !== undefined) {
+            owner = this.selectedProxyOwner();
+          }
+          compute.validateExecutionAdmission(admission, owner);
         }
       } catch {
         throw new DependencyUnavailableError(
@@ -14556,9 +14578,17 @@ export class OpenClawController {
       }
       if (stagedModel !== undefined) {
         this.ownedTokenServiceDriver(stagedModel.source.tokenServiceInstanceId);
+        let owner: InstalledDriver | undefined;
+        try {
+          owner = this.selectedCredentialDeliveryOwner();
+        } catch {
+          // A process-local selection can change while awaited Driver work is in progress.
+        }
         if (
-          this.sandboxDriver() !== sandbox ||
-          this.selectedProxyOwner().require("credential_proxy") !== stagedModel.proxy
+          owner === undefined ||
+          owner !== stagedModel.owner ||
+          owner.require("sandbox") !== sandbox ||
+          owner.require("credential_proxy_delivery") !== stagedModel.proxy
         ) {
           throw new DependencyUnavailableError(
             "The staged credential enforcing Drivers changed during admission.",
@@ -16315,31 +16345,40 @@ export class OpenClawController {
     }
     if (
       sandbox === undefined ||
-      !this.selections.has("credential_proxy") ||
+      !this.selections.has("credential_proxy_delivery") ||
       this.credentialDeploymentCapabilities === undefined
     ) {
       throw new ResourceStateConflictError(
         "The selected Sandbox and Credential Proxy have no qualified staged credential enforcement.",
       );
     }
-    let proxy: CredentialProxyDriver;
+    let owner: InstalledDriver | undefined;
+    let proxy: CredentialDeploymentProxyDriver | undefined;
     let capabilities: CredentialDeploymentCapabilities | undefined;
     try {
-      proxy = this.selectedProxyOwner().require("credential_proxy");
-      capabilities = this.credentialDeploymentCapabilities({ sandbox, proxy });
+      owner = this.selectedCredentialDeliveryOwner();
+      proxy = owner.require("credential_proxy_delivery");
+      if (owner.require("sandbox") === sandbox) {
+        capabilities = this.credentialDeploymentCapabilities({ sandbox, proxy });
+      }
     } catch {
       capabilities = undefined;
     }
-    if (capabilities === undefined || !capabilities.binary.startsWith("/")) {
+    if (
+      owner === undefined ||
+      proxy === undefined ||
+      capabilities === undefined ||
+      !capabilities.binary.startsWith("/")
+    ) {
       throw new ResourceStateConflictError(
         "The selected Sandbox and Credential Proxy have no qualified staged credential enforcement.",
       );
     }
-    return { source, preset, capabilities, proxy: proxy! };
+    return { source, preset, capabilities, owner, proxy };
   }
 
   private admitModelCredentialPolicy(
-    { source, preset, capabilities, proxy }: PreparedModelCredentialDeployment,
+    { source, preset, capabilities, owner, proxy }: PreparedModelCredentialDeployment,
     networkGrants: readonly SandboxNetworkGrant[],
   ): NonNullable<AgentRevision["credentialDeployment"]> {
     const destination = inferenceKeyDestination(preset.provider.baseUrl, preset.provider.protocol);
@@ -16384,7 +16423,7 @@ export class OpenClawController {
         details,
       );
     }
-    return immutableCopy({ ...deployment, proxyDriverId: proxy.id });
+    return immutableCopy({ ...deployment, driver: owner.ref, proxyDriverId: proxy.id });
   }
 
   /**
@@ -17979,12 +18018,16 @@ export class OpenClawController {
     if (auth.method === "credential_source") {
       this.requireCredentialSourceSandbox(sandbox);
       if (auth.tokenServiceInstanceId !== undefined) {
-        if (!this.selections.has("credential_proxy")) {
+        if (!this.selections.has("credential_proxy_delivery")) {
           throw new ResourceStateConflictError(
             "A staged credential deployment requires a selected Credential Proxy.",
           );
         }
-        this.selectedProxyOwner();
+        if (this.selectedCredentialDeliveryOwner().require("sandbox") !== sandbox) {
+          throw new ResourceStateConflictError(
+            "A staged credential deployment requires its selected Sandbox owner.",
+          );
+        }
       } else {
         this.credentialGatewayDriver(auth.credentialGatewayId);
       }

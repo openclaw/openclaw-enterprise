@@ -156,7 +156,8 @@ import type {
   ConfigurationValidationOptions,
   CredentialAttachmentStatus,
   CredentialGatewayDriver,
-  CredentialProxyDriver,
+  CredentialDeploymentContext,
+  CredentialDeploymentProxyDriver,
   CredentialSource,
   CredentialSourceAttachment,
   CredentialSourceType,
@@ -3638,7 +3639,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private readonly credentialGatewayDriver: CredentialGatewayDriver | undefined;
   private readonly openShellAttachments: OpenShellCredentialAttachments | undefined;
   private readonly protectedExecution: ProtectedExecutionDriver | undefined;
-  private readonly credentialProxyDriver: CredentialProxyDriver | undefined;
+  private readonly credentialDeliveryRegistration: SelectedDriverRegistration | undefined;
+
+  private get credentialDeploymentProxyDriver(): CredentialDeploymentProxyDriver | undefined {
+    return this.credentialDeliveryRegistration?.require("credential_proxy_delivery");
+  }
 
   private get proxyDriver() {
     return this.protectedExecution?.proxy;
@@ -4250,7 +4255,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       readonly preparedTokens?: TokenService;
       readonly preprovisionedNamespace?: PreprovisionedKubernetesNamespace | undefined;
       readonly credentialGatewayDriver?: CredentialGatewayDriver;
-      readonly credentialProxyDriver?: CredentialProxyDriver;
+      readonly credentialDeliveryRegistration?: SelectedDriverRegistration;
       /** Internal composition data for the exact built-in same-Backend pair. */
       readonly openShellAttachments?: {
         readonly sandboxDriver: SandboxDriver;
@@ -4291,7 +4296,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     this.protectedExecution =
       selection.protectedDriver && new ProtectedExecutionDriver(selection.protectedDriver);
-    this.credentialProxyDriver = selection.credentialProxyDriver;
+    this.credentialDeliveryRegistration = selection.credentialDeliveryRegistration;
     if (
       this.protectedExecution &&
       selection.sandboxDriver &&
@@ -4302,6 +4307,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     this.sandboxDriver = this.protectedExecution?.sandbox ?? selection.sandboxDriver;
+    if (
+      this.credentialDeliveryRegistration !== undefined &&
+      this.credentialDeliveryRegistration.require("sandbox") !== this.sandboxDriver
+    ) {
+      throw new ConfigurationFailure(
+        "Staged credential delivery requires the selected Sandbox owner.",
+      );
+    }
     const harnessResources: HarnessResources<ManagedKubernetesObject> = {
       ensureWorkspace: (owner, namespace) =>
         this.reconcile(
@@ -4880,12 +4893,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     if (auth.method === "credential_source") {
       if (auth.tokenServiceInstanceId !== undefined) {
-        const proxy = this.credentialProxyDriver;
+        const proxy = this.credentialDeploymentProxyDriver;
         if (
           !dedicated ||
           this.sandboxDriver?.provisionHarness === undefined ||
           this.sandboxDriver?.credentialDeployment === undefined ||
-          proxy?.deployProxy === undefined ||
+          proxy?.capability !== "credential_proxy_delivery" ||
+          proxy.deployProxy === undefined ||
           proxy.configureDeployment === undefined ||
           proxy.getDeploymentStatus === undefined ||
           proxy.removeDeployment === undefined
@@ -6530,13 +6544,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
   ): void {
     assertExecutionAdmission(revision);
     if (revision.executionAdmission.mode === "standalone") {
-      const proxy = this.credentialProxyDriver;
+      const proxy = this.credentialDeploymentProxyDriver;
       if (
+        (source !== "stored" && source !== this.credentialDeliveryRegistration) ||
+        !isDeepStrictEqual(
+          revision.credentialDeployment?.driver,
+          this.credentialDeliveryRegistration?.ref,
+        ) ||
         revision.executionAdmission.version !== 8 ||
         this.options.runtime === undefined ||
         revision.egressPlan !== undefined ||
         revision.credentialDeployment === undefined ||
-        proxy === undefined ||
+        proxy?.capability !== "credential_proxy_delivery" ||
         revision.credentialDeployment.proxyDriverId !== proxy.id ||
         proxy.deployProxy === undefined ||
         proxy.configureDeployment === undefined ||
@@ -7512,7 +7531,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (harnessRuntime.kind === "sandbox") {
         const sandboxDriver = harnessRuntime.sandbox;
         const staged = revision.credentialDeployment;
-        const proxy = staged === undefined ? undefined : this.credentialProxyDriver!;
+        const proxy = staged === undefined ? undefined : this.credentialDeploymentProxyDriver!;
         const sandboxContext = await this.sandboxNamespaceContext(
           this.sandboxNamespaceForRevision(revision, namespace),
           namespace,
@@ -7693,7 +7712,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           agentId: revision.agentId,
           revisionId: revision.id,
         };
-        const proxyContext = {
+        const proxyContext: CredentialDeploymentContext = {
           namespace: sandboxContext.namespace,
           revision,
           signal: sandboxContext.signal,
@@ -7728,7 +7747,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             );
           } else {
             const stagedProxy = await this.prepareRevisionStage("sandbox_provision", () =>
-              proxy!.deployProxy!(proxyContext, {
+              proxy!.deployProxy(proxyContext, {
                 deployment,
                 networkAccessPolicy: staged.networkAccessPolicy,
                 injectionPolicies: staged.injectionPolicies,
@@ -7783,7 +7802,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           }
         } catch (error) {
           if (staged !== undefined && !nodeEnrolled && expected === undefined) {
-            await proxy!.removeDeployment!(proxyContext, { unboundDeployment: deployment });
+            await proxy!.removeDeployment(proxyContext, { unboundDeployment: deployment });
           }
           if (sandboxDriver.repositoryAccess?.isRouteBlockedError(error)) {
             // The worker closed this revision's prepared Git route for good (a replaced
@@ -7844,7 +7863,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           const observeReadiness = async (): Promise<boolean> => {
             const [network, injection] = await Promise.all([
               stagedSandbox!.getNetworkStatus(configuration, signal),
-              proxy!.getDeploymentStatus!(proxyContext, configuration),
+              proxy!.getDeploymentStatus(proxyContext, configuration),
             ]);
             if (network.state === "failed" || injection.state === "failed") {
               throw new DependencyUnavailableError("The staged credential deployment failed.");
@@ -11246,6 +11265,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     if (revision.sandboxDriverId !== driver.id) {
       throw new ConfigurationFailure("AgentRevision is pinned to another SandboxDriver.");
+    }
+    if (
+      revision.executionAdmission.mode === "standalone" &&
+      (!this.credentialDeliveryRegistration ||
+        !isDeepStrictEqual(
+          revision.credentialDeployment?.driver,
+          this.credentialDeliveryRegistration.ref,
+        ))
+    ) {
+      throw new ConfigurationFailure(
+        "AgentRevision is pinned to another staged Driver registration.",
+      );
     }
     return driver;
   }

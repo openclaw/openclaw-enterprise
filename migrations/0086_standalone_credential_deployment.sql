@@ -195,8 +195,17 @@ DECLARE
 BEGIN
   IF spec ? 'repository_credentials'
     OR jsonb_typeof(policy) IS DISTINCT FROM 'object'
-    OR NOT (policy ?& ARRAY['proxyDriverId', 'networkAccessPolicy', 'bindings', 'injectionPolicies'])
-    OR policy - 'proxyDriverId' - 'networkAccessPolicy' - 'bindings' - 'injectionPolicies' <> '{}'::jsonb
+    OR NOT (policy ?& ARRAY['driver', 'proxyDriverId', 'networkAccessPolicy', 'bindings', 'injectionPolicies'])
+    OR policy - 'driver' - 'proxyDriverId' - 'networkAccessPolicy' - 'bindings' - 'injectionPolicies' <> '{}'::jsonb
+    OR jsonb_typeof(policy->'driver') IS DISTINCT FROM 'object'
+    OR NOT ((policy->'driver') ?& ARRAY['id', 'implementation', 'configurationId'])
+    OR (policy->'driver') - 'id' - 'implementation' - 'configurationId' <> '{}'::jsonb
+    OR jsonb_typeof(policy #> '{driver,id}') IS DISTINCT FROM 'string'
+    OR COALESCE(btrim(policy #>> '{driver,id}'), '') = ''
+    OR jsonb_typeof(policy #> '{driver,implementation}') IS DISTINCT FROM 'string'
+    OR COALESCE(btrim(policy #>> '{driver,implementation}'), '') = ''
+    OR jsonb_typeof(policy #> '{driver,configurationId}') IS DISTINCT FROM 'string'
+    OR (policy #>> '{driver,configurationId}') !~ '^[0-9a-f]{64}$'
     OR jsonb_typeof(policy->'proxyDriverId') IS DISTINCT FROM 'string'
     OR COALESCE(btrim(policy->>'proxyDriverId'), '') = ''
     OR jsonb_typeof(policy->'networkAccessPolicy') IS DISTINCT FROM 'object'

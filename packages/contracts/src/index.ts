@@ -6,7 +6,7 @@ import type {
   ComputeAgentProvisioningCapabilities,
   RepositoryWorkerRestartDisposition,
 } from "./drivers/compute/index.ts";
-import type { DriverCapability } from "./drivers/index.ts";
+import type { DriverCapability, DriverRegistrationRef } from "./drivers/index.ts";
 import type { TokenServiceRegistration } from "./drivers/token-service/index.ts";
 import type {
   ExecutionAdmission,
@@ -1211,7 +1211,10 @@ export interface AgentRevision extends Scope {
   readonly executionAdmission: ExecutionAdmission;
   readonly egressPlan?: ProxyPlan;
   /** Immutable staged credential and network authority for this revision's selected Proxy. */
-  readonly credentialDeployment?: DeploymentPolicy & { readonly proxyDriverId: string };
+  readonly credentialDeployment?: DeploymentPolicy & {
+    readonly driver: DriverRegistrationRef;
+    readonly proxyDriverId: string;
+  };
   readonly id: string;
   readonly namespaceId: string;
   readonly agentId: string;

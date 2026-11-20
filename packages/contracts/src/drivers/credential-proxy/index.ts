@@ -590,6 +590,14 @@ const deploymentConsumer = Type.Union([
 ]);
 const credentialDeploymentShape = Type.Object(
   {
+    driver: Type.Object(
+      {
+        id: nonemptyDeploymentString,
+        implementation: nonemptyDeploymentString,
+        configurationId: Type.String({ pattern: "^[0-9a-f]{64}$" }),
+      },
+      strictDeploymentShape,
+    ),
     proxyDriverId: nonemptyDeploymentString,
     networkAccessPolicy: Type.Object(
       { allowed: Type.Array(Type.Unknown()) },
