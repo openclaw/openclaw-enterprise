@@ -11,14 +11,17 @@ import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { staticEgressAdmissionFixture } from "../helpers/static-egress.mjs";
 
-type AdmissionFixture = Omit<
-  Awaited<ReturnType<typeof staticEgressAdmissionFixture>>,
-  "gatewayRequests" | "profiles" | "providers"
-> & {
+type FixtureCollections = {
   gatewayRequests: readonly unknown[];
   profiles: ReadonlyMap<unknown, unknown>;
   providers: Map<unknown, unknown>;
 };
+type WithFixtureCollections<T> = T extends unknown
+  ? Omit<T, keyof FixtureCollections> & FixtureCollections
+  : never;
+type AdmissionFixture = WithFixtureCollections<
+  Awaited<ReturnType<typeof staticEgressAdmissionFixture>>
+>;
 type HttpResponse = { status: number; body: unknown };
 
 function entries(map: ReadonlyMap<unknown, unknown>): [string, unknown][] {
