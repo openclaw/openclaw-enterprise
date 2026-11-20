@@ -110,6 +110,18 @@ async function configureProtectedOpenShellGit(t: TestContext) {
           },
         ],
       },
+      {
+        repositoryRef: "selected",
+        repositoryId: "43",
+        repository: "example/application",
+        namespaces: [
+          {
+            namespaceId: namespaceContext().namespace.id,
+            profiles: ["github-repository"],
+            permissions: { metadata: "read", contents: "read" },
+          },
+        ],
+      },
     ],
   } satisfies GitHubRepositoryRegistry;
   const registryPath = join(tls.directory, "registry.json");
@@ -139,9 +151,11 @@ async function configureProtectedOpenShellGit(t: TestContext) {
     configuration: { registryPath: path },
     drivers: { repo: "repository-credentials" },
   });
-  const network: typeof base.drivers.compute.configuration.network &
+  const { gatewayClients: _gatewayClients, ...networkDefaults } =
+    base.drivers.compute.configuration.network;
+  const network: typeof networkDefaults &
     Pick<KubernetesComputeDriverOptions["network"], "providerHarness" | "repositoryCredentials"> = {
-    ...base.drivers.compute.configuration.network,
+    ...networkDefaults,
     providerHarness,
   };
   const configuration = {
@@ -153,6 +167,12 @@ async function configureProtectedOpenShellGit(t: TestContext) {
         ...base.drivers.compute,
         configuration: {
           ...base.drivers.compute.configuration,
+          gatewayRouting: {
+            hostname: "workspace.example.test",
+            gatewayName: "oce-agent-gateways",
+            gatewayNamespace: "openclaw-system",
+            envoyNamespace: "envoy-gateway-system",
+          },
           network,
         },
       },

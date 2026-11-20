@@ -70,8 +70,9 @@ Prepare:
   runtime releases that can require data restoration.
 
 Upgrades ignore `bootstrap.password` and `bootstrap.serviceKey` from earlier charts.
-Their PVC is no longer mounted but may hold the initial administrator credentials;
-delete it once those are stored elsewhere.
+Keep the legacy PVC through [release verification](#verify-the-release).
+Before deleting it, confirm no workloads reference it and preserve any
+initial administrator credentials it holds.
 
 Repository-enabled releases require `--controller-image` and `--broker-image`,
 even for unchanged digests. Stage trusted images as UID 1000 on Linux with OpenSSL
@@ -87,13 +88,10 @@ Use an Installation-scoped OCC service key with Installation `read` and
 Agents with a selected revision and no pending deployment also require Agent
 `deploy` and selected AgentRevision `read`.
 
-Before shutdown, controller-only upgrades require readable saved Harness settings
-from `occ agent revision` and an accepted
-[repository restart disposition](../../reference/repository-credentials/worker-replacement.md)
-for each retained running Agent. Missing assessments, including from older
-controllers, block retention. Stop and settle affected Agents under an authorized
-interruption or plan normal runtime replacement. If the pre-stop inventory
-changes, prepare again. Check
+Before shutdown, controller-only upgrades require each retained running Agent's
+readable Harness settings (`occ agent revision`) and an accepted
+[restart assessment](../../reference/repository-credentials/worker-replacement.md).
+Missing assessments block retention. Prepare again if inventory changes. Check
 [Git session continuity](upgrade-checklist.md#record-the-starting-state) and
 [apply the release in order](upgrade-checklist.md#apply-the-release-in-dependency-order).
 
@@ -147,14 +145,13 @@ chmod 600 /secure/occ/candidate-values.yaml /secure/occ/candidate-installation.y
 ```
 
 Candidate values support [separate migrations](separate-database-upgrade.md) and [immutable Installation Secrets](immutable-installation-upgrade.md).
-These copies may change the
-[Slack directory proxy](../integrations/slack.md#configure-both-slack-proxies)
+These copies can change the [Slack directory proxy](../integrations/slack.md#configure-both-slack-proxies)
 and select the [curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
-An explicit candidate may also wrap an existing single `drivers.plugin`
-registration in a one-element array, preserving its `id` and `configuration`.
-Remove retired `agentNativeAdmin.sharedCookieDomain` whatever its value; keep
-`auth.baseUrl` and `agentNativeAdmin.domain`, which determine cookie scope, unchanged.
-The helper does not convert the baseline automatically. Other configuration changes are unsupported.
+A candidate can wrap one existing `drivers.plugin` registration in an array
+with the same `id` and `configuration`. Remove `agentNativeAdmin.sharedCookieDomain`
+and preserve `auth.baseUrl` and `agentNativeAdmin.domain` for cookie scope.
+The helper preserves the baseline during preparation. Other configuration
+changes are unsupported.
 Review image, draft and credential compatibility before maintenance; startup
 preflight does not prove external access.
 Candidate files cannot change IAM, authentication, Installation identity, database credentials,
@@ -217,19 +214,22 @@ Never overwrite a different ID; reconcile cluster and bootstrap records.
 ## Rehearse before the maintenance window
 
 Add `--preflight-only --evidence-dir "${UPGRADE_EVIDENCE}-preflight"` to either
-upgrade command. With writers active, it checks inputs, repository image pairs,
-Helm's server dry run, rendered Certificate admission, then startup and migration
-compatibility in temporary Jobs.
-The migration Job runs the candidate image's migration entry with `--check` and
-the initializer's migrator credential and CA. Recognized pending history
-is allowed; migrations are not applied. The Helm hook rechecks history; separate
-migrations require completion with `--require-current`.
+upgrade command. Preflight checks inputs, image pairs, Helm server dry run,
+Certificate admission, startup and migration compatibility while writers run.
+The migration Job uses the candidate image and the initializer's credential
+and CA. Hook mode uses `--check`. [Separate mode](separate-database-upgrade.md)
+checks Installation identity with `--check-for-installation`. Both allow
+recognized pending history. The separate Helm hook requires completed history.
+Pods retain chart security and NetworkPolicy labels. Cleanup confirms Jobs and
+Pods disappear before Secrets and NetworkPolicies.
 
-Pods retain chart security and NetworkPolicy labels. Upgrade waits for Jobs and
-Pods to disappear, then Secrets and NetworkPolicies.
+After checks and cleanup, control-plane preflight exits 1 if a retained
+revision requires its original worker. The upgrade remains blocked.
+Stop and settle affected Agents in an authorized interruption or plan a revision
+replacement. With `--verify-agent`, preflight observes the workload before the upgrade.
 
-With an immutable Installation Secret, keep the live configuration or
-[stage an immutable successor](immutable-installation-upgrade.md) before preflight.
+Keep the live immutable Installation Secret or
+[stage a successor](immutable-installation-upgrade.md) before preflight.
 
 After [preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources), begin the maintenance window.
 Freeze other Helm changes and disable automation that restarts or scales OCC

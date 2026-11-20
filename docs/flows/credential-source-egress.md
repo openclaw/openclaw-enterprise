@@ -60,19 +60,22 @@ graph TD
 
 ### 1. Admit source and install the revision plan
 
-Bundled OpenShell rejects new static OpenAI use via
-`InstalledDriver.assertNewStaticProviderUse`: source refusal precedes material
-reads; deployment refusal precedes counterpart probes. Retained revisions keep
-their provider, authorization, withdrawal and cleanup under the
+Bundled OpenShell's `InstalledDriver.assertNewStaticProviderUse` refuses new static
+OpenAI sources before material reads and deployments before counterpart probes.
+Retained revisions follow the
 [current Sandbox contract](../reference/credential-sources/protected-inference.md#bundled-openshell-admission).
 
-OCC checks source and Secret permissions; existing sources need opt-in. Version 3
-binds Sandbox and Proxy to one registered Driver.
-The plan records digest, execution, source generation, grant, and routes;
-empty routes deny all. `admitProxyPlan` derives routes from saved Harness settings
-and source consent. `checkEgressUseIn` rechecks before delivery and send authorization.
-`apps/controller/src/console/agents/detail.mts:requestedHarnessOverrides` captures
-settings at submission. OCC normalizes them and checks caller and Agent grants.
+Static admission hides incompatible types and returns 409 on creation or adoption.
+Refused adoption preserves the Gateway copy. `admitStaticEgressSource` checks both
+declarations before material access.
+
+OCC checks source and Secret grants; adoption requires consent. Version 3 binds
+Sandbox and Proxy to one Driver. `admitProxyPlan` uses Harness settings and consent.
+Empty routes deny all. Plans pin execution, digest, grant and source generation.
+Deployment verifies the unique compatible Provider before transport credentials or
+revision writes. `checkEgressUseIn` checks send and delivery. `createCredentialProxy`
+checks ownership between metadata and material reads. The Console submits settings
+through `apps/controller/src/console/agents/detail.mts:requestedHarnessOverrides`.
 
 For credential-free metadata, `packages/occ/src/index.ts:admitProxyPlan` rejects
 a Driver grant that differs from the source. Equivalent grants have the same
@@ -80,14 +83,12 @@ digest across property orders. Unprotected revisions remain v2. Only the bundled
 Driver recognizes historical protected plans by original capability IDs for stored
 release or custody settlement.
 
-Compute's `validateExecutionAdmission` requires pairing only for protected
-revisions. Workers recheck before launch. PostgreSQL rejects unknown decisions
-and mixed v2/v3 fields. Upgrade all writers before admitting v3.
+`validateExecutionAdmission` checks protected pairing before launch. PostgreSQL
+rejects unknown decisions and mixed v2/v3 fields. Upgrade writers before admitting v3.
 
-For each route, `apps/controller/src/drivers/compute/kubernetes/index.ts:preparedEgressReady`
-selects the issuer, projects the admitted source and checks readiness. Compute has
-observation methods, without token-read or lifecycle authority. Missing or mismatched
-owners refuse release; cold sources remain pending.
+`apps/controller/src/drivers/compute/kubernetes/index.ts:preparedEgressReady`
+selects the issuer and checks the source without token-read or lifecycle authority.
+Missing or mismatched owners withhold release. Cold sources remain pending.
 
 Deploy returns `409` for missing Git delivery profiles
 (`REPOSITORY_GIT_PROFILE_UNSUPPORTED`), bundled `git-write`
@@ -100,14 +101,11 @@ Codex without inference access. Preparation repeats both Git refusals.
 [Protected repository Git](../reference/drivers/selection.md#select-a-protected-sender)
 uses a separate worker binding and requires proof of the recipient before release.
 
-Compute passes Credential Proxy wiring to Sandbox. Protected sources require
-admission, API-key login and an exact source-key match. Only Gateway-owned sources
-receive their exact Gateway attachment and authentication environment.
+Sandbox receives Compute's Proxy wiring. Protected sources require admission,
+API-key login and a source-key match. Gateway attachments and auth require Gateway ownership.
 `apps/controller/src/drivers/egress-proxy/openshell.ts:openShellEgressConfiguration`
-emits `/**` on inference routes so any verified executable in the admitted
-execution can reach the model endpoint through credential middleware.
-The egress Driver compares the full prepared policy against the plan, including
-the explicit matcher.
+emits the explicit `/**` inference matcher to admit verified executables through
+credential middleware. The egress Driver checks the full policy against the plan.
 
 Authenticated [V1 evidence](../reference/credential-sources/protected-inference.md#loaded-enforcement)
 binds both policies to the Sandbox, instance, policy version, configuration and
@@ -138,11 +136,9 @@ credential lookup. Unmarked discovery uses regular Git authorization.
 [curl and response failures](../reference/repository-credentials/protected-openshell-git.md#worker-log).
 An unconfirmed probe blocks credential delivery and release with `bootstrap_failed`.
 
-`openshell-git-installation.ts:observeOpenShellGitInstallation` completes a model
-OBSERVE per active environment for observed Git routes, including rotations.
-`ObservedHookPreview.completedModelReceipt` caches completion per environment revision.
-Stale or incomplete model receipts keep the route pending without changing the
-original launch witness or startup acknowledgment.
+`openshell-git-installation.ts:observeOpenShellGitInstallation` requires a completed model
+OBSERVE per active environment, including rotations. Stale or incomplete receipts
+keep the route pending and preserve the launch records.
 
 ### 2. Capture identity, operation and first authority decision
 
@@ -348,8 +344,14 @@ None.
 ## Changelog
 
 - 2026-11-19 12:19: Qualify rotations. (authoring-run/224d5954-94cf-48c2-a7dd-15d94cd74df7 - 92fe533603b2ffd20853d8e4d39dcc22079974d5)
+
 - 2026-11-19 11:59: Recheck durable ownership at dispatch. (authoring-run/2b8fc8d2-014c-4fdd-8a8a-4b36f8f06904 - 6faced2cc2dd1b68171f9973d28416df77a42f58)
+
 - 2026-11-19 11:36: Fence credential dispatch and launcher release against withdrawal. (authoring-run/e5c553f7-737b-4f9e-a1bb-75ff8aa2e5cc - 88411a2c219e6903d8777d68013ae4b2330ca5a6)
+
+- 2026-11-19 10:37: Check admitted provider identity. (authoring-run/8062b878-7f8a-4aa8-a012-826e230839f4 - 6ff25175b)
+
+- 2026-11-19 09:31: Check static source lifecycles. (authoring-run/176872aa-dcf6-4c9b-9f11-31d19a4c5dcf - d3749595bd)
 
 - 2026-11-19 05:56: Cancel writes that expire before dispatch. (authoring-run/db1dbeb6-2423-4378-b292-8e694c9e97e0 - c495c2aa1bc0ab809a92cfe449e17a9d681efad1)
 
@@ -358,6 +360,8 @@ None.
 - 2026-11-19 04:52: Verify the Compute signature before sending the repository Git probe. (authoring-run/6d450558-148a-4118-8bc7-31483e18da22 - 52ffc8982)
 
 - 2026-11-19 04:41: Bind the Git probe to launcher enrollment. (authoring-run/0b7efadc-accd-4592-b3d1-65dbdcfbaa17 - 3b7d42bc3)
+
+- 2026-11-19 02:07: Fence static material reads. (authoring-run/5de05faa-098d-4671-b34e-4148f7a14d08 - cea7d46c69)
 
 - 2026-11-18 11:53: Require a delta to open a reasoning-text index; consolidate exchange regression coverage. (authoring-run/cd2d6ae9-eb3b-4896-b64b-ae7ecc119b99 - fe38bb0cb)
 

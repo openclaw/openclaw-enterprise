@@ -1,4 +1,5 @@
 import type { Static } from "typebox";
+
 import type { HarnessAuthBindingSchema } from "./api/common.ts";
 import type {
   ComputeAgentProvisioningCapabilities,
@@ -10,6 +11,12 @@ import type {
   ProtectedEgressSource,
   ProxyPlan,
 } from "./drivers/credential-proxy/index.ts";
+
+export type { NetworkDestinationRule } from "./network-destination.ts";
+export {
+  NetworkDestinationRuleSchema,
+  normalizeNetworkDestinationRules,
+} from "./network-destination.ts";
 
 export type {
   CredentialPolicyReduction,
@@ -153,7 +160,6 @@ export {
   SandboxNetworkGrantsSchema,
   SandboxNetworkPolicyConfiguration,
   validateSandboxNetworkGrants,
-  sandboxNetworkGrantsWithinCeiling,
   admitSandboxRepositoryNetworkPolicy,
 } from "./sandbox-policy.ts";
 export type {
@@ -1630,6 +1636,15 @@ export {
   StaticKeyConnectionTemplateVersionSchema,
 } from "./api/connection-templates.ts";
 export { ModelProviderSchema, ModelProviderModelSchema } from "./api/model-providers.ts";
+export {
+  RegisterTokenServiceSourceBody,
+  UpdateTokenServiceSourceBody,
+  TokenServiceSourceMetadata,
+} from "./api/token-service-sources.ts";
+export {
+  PushAgentCredentialsBody,
+  PushAgentCredentialsResponse,
+} from "./api/agent-credential-push.ts";
 export * from "./api/resources.ts";
 export * from "./api/routes.ts";
 
@@ -1716,6 +1731,7 @@ export type {
   TokenServiceSourceRef,
   InstallationClientSecretRef,
   TokenServiceRegistration,
+  TokenServiceSourceInstance,
   RegisteredTokenServiceSource,
   SourceLifecycleConfig,
   SourceRegistrationInput,
@@ -1725,6 +1741,20 @@ export type {
   SourceRefreshOperation,
   TokenServiceDriver,
 } from "./drivers/token-service/index.ts";
+
+export {
+  credentialProxyRoutingDetails,
+  networkGrantAdmissionDetails,
+  sandboxNetworkGrantsWithinCeiling,
+  validateDeploymentPolicy,
+} from "./deployment-policy.ts";
+export type {
+  CredentialBindingAuthority,
+  CredentialInjectionCapabilities,
+  DeploymentPolicy,
+  DeploymentPolicyValidationContext,
+  NetworkPolicyCapabilities,
+} from "./deployment-policy.ts";
 
 export type {
   BearerCredentialProjection,
@@ -1756,4 +1786,7 @@ export type {
   SandboxDeploymentContract,
 } from "./drivers/sandbox/deployment.ts";
 
-export type { CredentialProxyDeploymentContract } from "./drivers/credential-proxy/deployment.ts";
+export type {
+  CredentialUpdateNotification,
+  CredentialProxyDeploymentContract,
+} from "./drivers/credential-proxy/deployment.ts";

@@ -13,6 +13,11 @@ import { bindRepositoryGitTransport } from "../../apps/controller/src/compositio
 import { harnessEgressEnrollment } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
+import {
+  resolveGitHubRepositoryBinding,
+  validateGitHubRepositoryRegistry,
+} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import { admitSandboxRepositoryNetworkPolicy } from "../../packages/contracts/src/index.ts";
 import type {
   AgentRevision,
   HarnessWorkloadRequirements,
@@ -337,6 +342,65 @@ export async function verifyProtectedOpenShellGitExecution(
     sandboxes: gateway.sandboxes,
     getCreated,
   });
+
+  await subtest.test(
+    "repository policy refuses routed Workspace enrollment before provisioning",
+    async () => {
+      const compute = protectedGit.computeDriver;
+      const selected = resolveGitHubRepositoryBinding(validateGitHubRepositoryRegistry(registry), {
+        namespaceId: rev.namespaceId,
+        repositoryRef: "selected",
+        profile: "github-repository",
+      });
+      const repositoryCredentials = { ...revision.repositoryCredentials, bindings: [selected] };
+      const routedPlan = { ...plan, repositoryGit: repositoryCredentials };
+      const grants = [{ repository: "example/application", access: "read" }] as const;
+      const sandboxPolicy = admitSandboxRepositoryNetworkPolicy(
+        sandbox.admitProtectedCodexArtifactPolicy(3).snapshot,
+        grants,
+        grants,
+        sandbox,
+      );
+      const routed = {
+        ...rev,
+        compute: { ...rev.compute, admission: admitted },
+        egressPlan: routedPlan,
+        repositoryCredentials,
+        sandboxPolicy,
+      };
+      const providersBefore = [...gateway.providers.keys()];
+      const profilesBefore = [...gateway.profiles.keys()];
+      const read = subtest.mock.method(context.kubernetes, "read");
+      try {
+        await assert.rejects(
+          compute.prepareRevision(routed),
+          /cannot share Workspace node enrollment over WSS/,
+        );
+        assert.equal(
+          required.environment.some(({ name }) => name === "OPENCLAW_NODE_SETUP_CODE"),
+          true,
+          "the same rendered setup is supported by the legacy Git revision",
+        );
+        await assert.rejects(
+          sandbox.provisionHarness({
+            ...ctx,
+            revision: routed,
+            requirements: {
+              ...required,
+              proxyWiring: { ...required.proxyWiring!, plan: routedPlan },
+            },
+          }),
+          /cannot use OpenShell Workspace node enrollment/,
+        );
+        assert.equal(read.mock.callCount(), 0, "no projected setup Secret is read");
+        assert.deepEqual([...gateway.providers.keys()], providersBefore);
+        assert.deepEqual([...gateway.profiles.keys()], profilesBefore);
+        assert.equal(getCreated(), created, "no Sandbox is created");
+      } finally {
+        read.mock.restore();
+      }
+    },
+  );
 
   // Finding 2206: the revision's Git provider and its profile go with its Sandbox. Left
   // behind, they kept the Namespace's Workspace forever: OpenShell refuses DeleteWorkspace

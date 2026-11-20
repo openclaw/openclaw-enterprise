@@ -11,10 +11,12 @@ import {
   keptLocks,
   leaseHolder,
   lockFileHolder,
+  gatewayLockNamespaceRefusal,
   lockHoldLine,
   released,
+  validateLockRefusal,
 } from "../helpers/openclaw-state-lock.ts";
-import { property, record, required, text } from "./plugin-compute-fixtures.ts";
+import { property, record, required, text, waitForCondition } from "./plugin-compute-fixtures.ts";
 import { readReadyStatusFromHandler } from "./plugin-compute-status.ts";
 import {
   assertDeliberateRestart,
@@ -53,6 +55,39 @@ async function startRefusedGateway(t: test.TestContext, lockInspection = heldLoc
   gateway.serving = false;
   assert.equal((await readReadyStatusFromHandler(gateway.statusHandler)).status, 503);
   required(gateway.children[0]).exit(1, null);
+  return gateway;
+}
+
+// A container restarted after a kill: the tool policy step's config validate meets the lock
+// before any native Gateway starts.
+async function startValidateRefusedGateway(t: test.TestContext) {
+  const gateway: GatewaySupervisor = await startCodexGatewaySupervisor(t, {
+    runtimeStatus: true,
+    expectStart: false,
+  });
+  writableConfiguration(gateway);
+  gateway.validation = validateLockRefusal;
+  gateway.lockInspection = heldLock;
+  await waitForCondition("the held failure", () =>
+    property(gateway.runtimeStatus(), "runtimeFailure"),
+  );
+  assert.equal(heldCheck(gateway), "gateway-state-lock");
+  return gateway;
+}
+
+// A respawn for a changed Harness peer whose config validate meets the lock.
+async function startRespawnRefusedGateway(t: test.TestContext) {
+  const gateway: GatewaySupervisor = await startCodexGatewaySupervisor(t, { runtimeStatus: true });
+  writableConfiguration(gateway);
+  const first = required(gateway.children[0]);
+  gateway.validation = validateLockRefusal;
+  gateway.lockInspection = heldLock;
+  gateway.peerStatus = { ...gateway.peerStatus, startupId: "agent-startup-2" };
+  const respawn = gateway.pollPeer();
+  await waitForCondition("the stale Gateway stop", () => first.killed.length === 1);
+  first.exit(null, "SIGTERM");
+  await respawn;
+  assert.equal(heldCheck(gateway), "gateway-state-lock");
   return gateway;
 }
 
@@ -256,6 +291,68 @@ export function registerGatewayStateLockCases(): void {
     };
     recheck(gateway);
     assert.deepEqual(gateway.exits, [1]);
+  });
+
+  test("Kubernetes Gateway rechecks the state lock its config validate refused", async (t) => {
+    const gateway = await startValidateRefusedGateway(t);
+    assert.deepEqual(gateway.children, []);
+    assert.deepEqual(gateway.exits, []);
+    assert.ok(
+      gateway.logs.includes(lockHoldLine(gatewayLockNamespaceRefusal)),
+      JSON.stringify(gateway.logs),
+    );
+    // validate already named the holder; only the recheck inspects.
+    assert.deepEqual(gateway.lockInspectionCalls, []);
+    // No handler yet: SIGTERM ends the wrapper, and tini reports it as exit 0.
+    assert.equal(gateway.signalHandlers.SIGTERM, undefined);
+
+    recheck(gateway);
+    assert.deepEqual(gateway.exits, []);
+    assert.equal(heldCheck(gateway), "gateway-state-lock");
+
+    // An operator recovered the lock: the container restarts on purpose into a start that
+    // takes it. The wrapper itself only inspected.
+    gateway.lockInspection = freeLock;
+    recheck(gateway);
+    assert.deepEqual(gateway.exits, [DELIBERATE_RESTART]);
+    assertDeliberateRestart(gateway, "GATEWAY_STATE_LOCK_RELEASED");
+    assert.deepEqual(gateway.lockInspectionCalls, [expectedInspection, expectedInspection]);
+    assert.deepEqual(gateway.children, []);
+  });
+
+  test("Kubernetes Gateway held on the state lock its config validate refused exits 1 when it cannot inspect it", async (t) => {
+    const gateway = await startValidateRefusedGateway(t);
+    gateway.lockInspection = {
+      status: null,
+      error: new Error("spawnSync node ETIMEDOUT"),
+      stdout: "",
+    };
+    recheck(gateway);
+    assert.deepEqual(gateway.exits, [1]);
+  });
+
+  test("Kubernetes Gateway rechecks the state lock its respawn's config validate refused", async (t) => {
+    const gateway = await startRespawnRefusedGateway(t);
+    const peerRequestsBefore = gateway.peerRequests;
+    await gateway.pollPeer();
+    assert.equal(gateway.peerRequests, peerRequestsBefore, "a held Gateway skips the peer poll");
+    recheck(gateway);
+    assert.deepEqual(gateway.exits, []);
+    gateway.lockInspection = freeLock;
+    recheck(gateway);
+    assert.deepEqual(gateway.exits, [DELIBERATE_RESTART]);
+    assertDeliberateRestart(gateway, "GATEWAY_STATE_LOCK_RELEASED");
+    assert.equal(gateway.children.length, 1);
+  });
+
+  test("Kubernetes Gateway held on the state lock its respawn's config validate refused stops on SIGTERM", async (t) => {
+    const gateway = await startRespawnRefusedGateway(t);
+    required(gateway.signalHandlers.SIGTERM)();
+    assert.deepEqual(gateway.exits, [0]);
+    gateway.lockInspection = freeLock;
+    recheck(gateway);
+    assert.deepEqual(gateway.exits, [0]);
+    assert.deepEqual(gateway.lockInspectionCalls, []);
   });
 
   // Every other exit restarts the container as before. A failed or unreadable inspection is
