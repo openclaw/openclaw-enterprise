@@ -1553,13 +1553,22 @@ export class ControllerWorker {
       );
     }
     const sandboxOwner = this.protectedDriver ?? this.credentialDeliveryRegistration;
-    installSelectedSandboxDrivers(provisioning, {
+    const selectedSandboxDrivers = {
       sandboxDriver: this.sandbox,
       protectedDriver: this.protectedDriver,
       credentialDeliveryRegistration: this.credentialDeliveryRegistration,
-    });
+    };
+    if (sandboxOwner !== undefined) {
+      installSelectedSandboxDrivers(provisioning, selectedSandboxDrivers);
+    }
+    if (this.configuration !== undefined) {
+      provisioning.registerDriver(this.configuration);
+      provisioning.selectDriver(this.configuration.capability, this.configuration.id);
+    }
+    if (sandboxOwner === undefined) {
+      installSelectedSandboxDrivers(provisioning, selectedSandboxDrivers);
+    }
     for (const driver of [
-      this.configuration,
       ...(sandboxOwner ? [] : [this.proxyDriver]),
       this.credentialGateway,
       this.credentialRefresh,
