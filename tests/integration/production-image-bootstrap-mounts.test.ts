@@ -81,7 +81,7 @@ test(
       for (const path of paths) {
         const metadata = await lstat(path);
         assert.equal(metadata.isFile(), true);
-        assert.equal(metadata.mode & 0o777, 0o600);
+        assert.equal(metadata.mode & 0o7777, 0o600);
         assert.equal(metadata.uid, process.getuid());
         assert.equal(metadata.gid, process.getgid());
       }
@@ -135,7 +135,7 @@ test(
       try {
         const metadata = await input.stat();
         assert.equal(metadata.uid, hostUid);
-        assert.equal(metadata.mode & 0o777, 0o600);
+        assert.equal(metadata.mode & 0o7777, 0o600);
         assert.equal(
           (await input.readFile("utf8")) === (name === "admin-password" ? password : key),
           true,
