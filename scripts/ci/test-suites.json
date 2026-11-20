@@ -27,6 +27,7 @@
     "production-tui": "./test-suites/production-tui.json",
     "slack": "./test-suites/slack.json",
     "openshell": "./test-suites/openshell.json",
+    "openshell-provider-replacement": "./test-suites/openshell-provider-replacement.json",
     "openshell-linear": "./test-suites/openshell-linear.json",
     "provider-cutover": "./test-suites/provider-cutover.json",
     "strands-listener-replacement": "./test-suites/strands-listener-replacement.json",
