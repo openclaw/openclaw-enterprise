@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-20"
-last_updated_session: "authoring-run/2639107f-8cb3-469d-bf37-22b4465676de"
+last_updated_session: "authoring-run/c870c8bb-cf7e-4618-8f26-736ae6c6214d"
 ---
 
 # Agent sandbox policy flow
@@ -33,7 +33,7 @@ graph TD
   A --> P["PostgreSQL<br/>desired policy version"]
   P --> A1["Deployment admission<br/>recheck explicit policy authority"]
   A1 --> D["Freeze admitted policy"]
-  P -->|No explicit repository policy| W["Live application work<br/>exact running revision"]
+  P -->|No saved or active repository list| W["Live application work<br/>exact running revision"]
   W --> C["Persist provider CAS<br/>before mutation"]
   C --> S["Sandbox Driver<br/>apply canonical policy"]
   S --> V["Confirm matching<br/>loaded version"]
@@ -56,32 +56,30 @@ with URLs for the available facet actions. See
 [Installation inspection](driver-plugin-loading.md#4-load-current-policy-and-hand-off-lifecycle-ownership).
 
 Startup validates the YAML [repository ceiling](../reference/configuration.md).
-GET requires Agent and SandboxPolicy read. It returns the saved grants, storage
-support, and the Namespace ceiling. The bound repository policy owner limits
-which Installation grants appear and can reduce write to read. PUT uses the
-same ceiling. An unsupported adapter returns `409 RESOURCE_CONFLICT` for
-explicit lists. An empty list saves deny-all. Omission keeps the saved list
-and excludes it from the PUT response.
+GET requires Agent and SandboxPolicy read. It shows saved grants, withdrawal
+availability, and the ceiling narrowed by the Namespace's repository policy
+owner. PUT refuses first and nonempty lists.
+Omission preserves the saved list and conceals it in the PUT response.
 
 `validateAgentSandboxPolicy` checks authorization, editing, version, pending
-application, the shared schema, ceiling and Driver admission without writing.
-Empty or reversed port ranges fail admission. Mutations repeat these checks.
-Refusals identify the field and cause, including a ceiling or Driver
-capability limit. `internal/occclient/transport.go:APIError.Error` prints up to 32 safe
-details as escaped JSON and excludes records with Unicode control characters.
+work, schema, ceiling, and Driver admission without writing. Mutations repeat
+the checks. Empty or reversed port ranges fail. Refusals identify the field and
+cause. `internal/occclient/transport.go:APIError.Error` prints up to 32 escaped
+JSON details, excluding records with Unicode control characters.
 
-`packages/occ/src/index.ts:updateAgentSandboxPolicy` authorizes Agent
-`manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent, and
-checks editing, expected version, pending work, delegation, and Driver admission.
-Protected execution returns `409 SANDBOX_POLICY_PROTECTED_EXECUTION` for ordinary
-additions and explicit repository lists, including deny-all. An empty additions
-list with the repository field omitted clears ordinary additions. Protected
-execution also refuses live application and deployments with ordinary additions.
-Protected, dedicated Codex repository admission can carry the Sandbox Driver's explicitly acknowledged
+`packages/occ/src/index.ts:updateAgentSandboxPolicy` requires Agent
+`manage_policy` and SandboxPolicy `update`. It locks the Namespace and Agent,
+then checks editing, version, pending work, delegation, and Driver admission.
+Protected execution returns `409 SANDBOX_POLICY_PROTECTED_EXECUTION` for
+ordinary additions and new repository lists. Withdrawal to deny-all also
+requires SandboxPolicy read. An administrator needs that permission to enable
+withdrawal when the Driver lacks support. Clearing both lists needs no Driver.
+
+Protected execution refuses live application and deployments with ordinary additions.
+Dedicated Codex repository admission can carry the Sandbox Driver's acknowledged
 [artifact subset](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
-`checkedProtectedCodexArtifactPolicy` verifies its purpose, declared keys, Driver
-identity, version and empty additions before runtime credential provisioning.
-That immutable snapshot remains ineligible for live apply. The policy view reports
+`packages/occ/src/deployment-policy.ts:defaultDeploymentSandboxPolicy` checks the
+artifact snapshot before credential provisioning. The policy view reports
 `protectedExecution`.
 
 Protected Codex repository preparation compiles the revision's qualified artifact
@@ -159,9 +157,10 @@ Git access after the Compute Driver refuses the new policy.
 `update` and `read` before inspecting the saved policy. Both live apply request
 shapes return `409 RESOURCE_CONFLICT` before saving or queuing work if the
 desired policy or the active revision has an explicit repository list, including
-deny-all. A supported save preserves an existing list when the request omits
-the field. The active-revision check also protects the deployed policy if desired
-storage lacks the list. For host additions, live application requires the exact active
+deny-all. A saved list requires a deployment that can enforce it. If the list
+exists only on the active revision, the response directs the operator to stop
+the Agent, confirm shutdown, and investigate the mismatch. For host additions,
+live application requires the exact active
 revision and a supporting Driver. With reviewed additions, one transaction
 saves the policy version, records its pending application and queues Agent-target
 work. Omission retains the saved version. The worker confirms provider enforcement.
@@ -271,7 +270,13 @@ hides denial counts and controls.
 
 ## Changelog
 
+- 2026-11-20 03:05: Distinguish live-application refusals for saved and active-only repository lists. (authoring-run/c870c8bb-cf7e-4618-8f26-736ae6c6214d - d3f79c54ca30e3aff0aacacb36d93e347d5b1f11)
+
+- 2026-11-20 02:32: Preserve withdrawal-only saves and the locked credential handoff for stored policies. (authoring-run/450206ea-89f0-44e6-b847-1532d4235f55 - d3f79c54ca30e3aff0aacacb36d93e347d5b1f11)
+
 - 2026-11-20 02:20: Check repository policy authority before provisioning and at Channel credential handoff. (authoring-run/2639107f-8cb3-469d-bf37-22b4465676de - cfecf1c902552c2636f01e2669df168be5c2bcdb)
+
+- 2026-11-20 01:35: Refuse unsupported repository policies at save and deploy, and allow authorized withdrawal of existing grants. (authoring-run/34ec168d-3a0c-43f9-bdd1-d0538ec03f14 - a0b789e53181ed65aa00c94f161301d80af0d711)
 
 - 2026-11-19 23:00: Renew the work claim after validating repository policy and before Compute activation. (authoring-run/738fc0a1-e73c-4f82-98af-989a7c5273cc - 1cd1aae973ac4677d46ff8932436d50dc4dd3413)
 

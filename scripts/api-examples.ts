@@ -730,7 +730,7 @@ export const responseExamples = {
     protectedExecution: false,
     ceiling: [],
     repositoryNetworkPolicyCeiling: [],
-    repositoryNetworkPolicySaveSupported: true,
+    repositoryNetworkPolicySaveSupported: false,
     defaults: null,
     capability: null,
   },

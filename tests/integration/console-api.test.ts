@@ -2197,9 +2197,10 @@ async function setDesiredRepositoryPolicy(
   agentId: string,
   repositoryNetworkPolicy: readonly RepositoryNetworkGrant[],
 ) {
-  // Seed the saved policy so this cut exercises deployment admission independently.
+  // Use persisted policy to exercise deployment independently of first-save admission.
   return controller.transact(async (unit) => {
     await unit.namespaces.lockNamespace(namespaceId);
+    await unit.agents.lockAgent(namespaceId, agentId);
     const current = await unit.sandboxPolicies.find(namespaceId, agentId);
     assert.ok(current);
     const saved = await unit.sandboxPolicies.save(
@@ -2433,22 +2434,6 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
 
   const readPolicy = async (url: string) =>
     checkedResponse(fixture, await fixture.request("GET", url), SandboxPolicyViewResponse).data;
-  const savePolicy = async (
-    url: string,
-    expectedVersion: number,
-    repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[],
-  ) =>
-    checkedResponse(
-      fixture,
-      await fixture.request("PUT", url, {
-        body: {
-          expectedVersion,
-          additions: [],
-          ...(repositoryNetworkPolicy === undefined ? {} : { repositoryNetworkPolicy }),
-        },
-      }),
-      SandboxPolicyResponse,
-    ).data;
   const approvedPolicy = await readPolicy(policyPath);
   assert.deepEqual(approvedPolicy.repositoryNetworkPolicyCeiling, requested);
 
@@ -2478,7 +2463,7 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   assertSteps();
   assert.equal((await readRevisions()).length, 1);
 
-  const desired = await savePolicy(policyPath, approvedPolicy.policy.version, []);
+  const desired = await setDesiredRepositoryPolicy(controller, namespace.id, agent.id, []);
   const deniedRead = restrict(fixture.policy, "read", "sandbox_policy", {
     namespaceId: namespace.id,
     resourceId: desired.id,
@@ -2497,7 +2482,7 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   assertApiError(savedApply, 409, "RESOURCE_CONFLICT");
   assert.match(
     JSON.stringify(savedApply.body),
-    /Repository network policy changes require a deployment/,
+    /confirm its workload has stopped\. Applying the saved policy requires a deployment that can enforce it\./,
   );
 
   const deployed = await fixture.deployAgent(namespace.id, agent.id);
@@ -2527,15 +2512,21 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   assert.deepEqual(denyAllContext?.sandboxPolicy, revision?.sandboxPolicy);
 
   await fixture.activateRevision(namespace.id, agent.id, deployed.id, previous.revision.id);
-  const retained = await savePolicy(policyPath, desired.version);
+  checkedResponse(
+    fixture,
+    await fixture.request("PUT", policyPath, {
+      body: { expectedVersion: desired.version, additions: [] },
+    }),
+    SandboxPolicyResponse,
+  );
   assert.deepEqual((await readPolicy(policyPath)).policy.repositoryNetworkPolicy, []);
-  const approved = await savePolicy(policyPath, retained.version, requested);
+  const approved = await setDesiredRepositoryPolicy(controller, namespace.id, agent.id, requested);
   // Omission keeps the desired list; both the desired and deployed lists are explicit here.
   const activeApply = await apply(deployed.id, approved.version);
   assertApiError(activeApply, 409, "RESOURCE_CONFLICT");
   assert.match(
     JSON.stringify(activeApply.body),
-    /Repository network policy changes require a deployment/,
+    /confirm its workload has stopped\. Applying the saved policy requires a deployment that can enforce it\./,
   );
   assert.deepEqual(
     await controller.transact((unit) => unit.sandboxPolicies.find(namespace.id, agent.id)),
@@ -2574,7 +2565,13 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   });
   assert.equal(freshEnabled.status, 200);
   const freshPolicy = await readPolicy(freshPolicyPath);
-  const freshSaved = await savePolicy(freshPolicyPath, freshPolicy.policy.version, requested);
+  assert.equal(freshPolicy.repositoryNetworkPolicySaveSupported, false);
+  const freshSaved = await setDesiredRepositoryPolicy(
+    controller,
+    namespace.id,
+    freshAgent.id,
+    requested,
+  );
   const deployFresh = (guarded = false) =>
     guarded
       ? fixture.request("POST", `${freshPath}/deploy-first`, {
