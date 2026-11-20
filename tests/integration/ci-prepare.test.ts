@@ -2631,7 +2631,7 @@ if (args[0] === "pull") {
       OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: immutableImage,
     };
     for (const [name, version] of tuples([
-      ["stock", { OCC_TEST_OPENSHELL_CHART_VERSION: "0.1.8" }],
+      ["stock", { OCC_TEST_OPENSHELL_CHART_VERSION: "0.1.9" }],
       [
         "candidate",
         {

@@ -19,8 +19,8 @@ import (
 
 const (
 	agentSandboxControllerImage = "registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.2@sha256:dbbad861e6c2cc0df1f7ec37dd0e2827b3d2bc051eb45855e01f94e697440403"
-	openShellVersion            = "0.1.8"
-	openShellSourceSHA256       = "ea6c2dcb50b3ecb3c7bf3d8b5ae4ada71eee838a1a2b12f7a1d2ada76b0837b9"
+	openShellVersion            = "0.1.9"
+	openShellSourceSHA256       = "b23e5620f6cef35f0f72932a054d97fa0bd8f8f4ef4e7c9c90a293e17b9790d6"
 	agentSandboxManifestSHA256  = "230ee446d6035f631577e1c6b857f6973a8f09a0a853675d3cc34ebfe47abd6b"
 	openShellSourceArchiveURL   = "https://github.com/NVIDIA/OpenShell/archive/refs/tags/v" + openShellVersion + ".tar.gz"
 	agentSandboxManifestURL     = "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.5.2/sandbox.yaml"

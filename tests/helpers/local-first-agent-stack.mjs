@@ -562,6 +562,7 @@ export async function localFirstAgentStack(context, { modelCredential } = {}) {
   if (existing) {
     return {
       directory: selected,
+      ownsInstallation: false,
       environment: {
         ...testEnvironment,
         OCC_URL: await existingOrigin(selected, existing, testEnvironment),
@@ -706,5 +707,5 @@ export async function localFirstAgentStack(context, { modelCredential } = {}) {
       context,
     ),
   );
-  return { directory, environment };
+  return { directory, environment, ownsInstallation: true };
 }

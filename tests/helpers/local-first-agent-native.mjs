@@ -195,6 +195,9 @@ export async function collectNativeWorkerFailure({
   turnEvents = {},
   error,
   placementReadResponse = false,
+  journalTurn = /** @type {{ acknowledgement: { runId: string, status: string }, expectedRunId: string, gatewayBootId: string } | undefined} */ (
+    undefined
+  ),
 }) {
   const signal = AbortSignal.timeout(5_000);
   const read = async (method, params) => {
@@ -299,6 +302,31 @@ export async function collectNativeWorkerFailure({
     ...turn,
     ...turnEvents,
     providerStarted,
+    // A failure can advance the generation after dispatch. A later generation
+    // cannot establish that the node had no receipt for the earlier turn.
+    // These coordinates cross only the private controller-to-test pipe.
+    ...(journalTurn?.acknowledgement.status === "started" &&
+      journalTurn.acknowledgement.runId === runId &&
+      journalTurn.expectedRunId === runId &&
+      journalTurn.gatewayBootId &&
+      placementLookup === "fresh" &&
+      placement?.state === "active" &&
+      lastPlacement?.state === "active" &&
+      placement.environmentId &&
+      placement.environmentId === lastPlacement.environmentId &&
+      Number.isSafeInteger(placement.activeOwnerEpoch) &&
+      placement.activeOwnerEpoch === lastPlacement.activeOwnerEpoch &&
+      Number.isSafeInteger(placement.generation) &&
+      placement.generation === lastPlacement.generation && {
+        journalBinding: {
+          gatewayBootId: journalTurn.gatewayBootId,
+          environmentId: placement.environmentId,
+          sessionId: session.sessionId,
+          ownerEpoch: placement.activeOwnerEpoch,
+          generation: placement.generation,
+          runId,
+        },
+      }),
   };
 }
 
@@ -312,6 +340,8 @@ async function nativeWorkerProof({
   expectedNodeId,
   session: existingSession,
   sessionFile: retainedSessionFile,
+  credentialProxyScope,
+  retainJournalBinding,
 }) {
   const assert = (await import("node:assert/strict")).default;
   const { createHash, randomUUID } = await import("node:crypto");
@@ -337,6 +367,11 @@ async function nativeWorkerProof({
   let lastPlacement;
   let runId;
   let selectedTurn;
+  let sendAcknowledgement;
+  let sentAt;
+  let gatewayBootId;
+  let placementGatewayBootId;
+  let sentGatewayBootId;
   let outcome;
   const turnEvents = {};
   let historyPredicates;
@@ -345,6 +380,58 @@ async function nativeWorkerProof({
   const proofStarted = performance.now();
   const emit = (data) =>
     process.stdout.write("OCE_NATIVE_FIRST_AGENT_PROOF " + JSON.stringify(data) + "\n");
+  // The owned fixture issues one turn for this source and revision in the window.
+  // A missing row leaves provider dispatch unresolved.
+  async function observeCredentialProxyRefusal(failedAt) {
+    const databaseUrl = process.env.OCC_DATABASE_URL;
+    if (!databaseUrl) {
+      return { credentialProxyAudit: "unavailable" };
+    }
+    let pool;
+    try {
+      const { createPostgresPool } = await import(
+        pathToFileURL(require.resolve("@openclaw-enterprise/occ"))
+      );
+      pool = await createPostgresPool(databaseUrl, {
+        max: 1,
+        connectionTimeoutMillis: 2_000,
+        statement_timeout: 2_000,
+        query_timeout: 2_500,
+        options: "-c default_transaction_read_only=on",
+      });
+      const { actorId, sourceId, revisionId } = credentialProxyScope;
+      const { rows } = await pool.query(
+        `SELECT DISTINCT details->'classificationRule' AS rule
+         FROM occ.audit_events
+         WHERE namespace_id = $1 AND actor_id = $2 AND resource_id = $3
+           AND resource_kind = 'credential_source'
+           AND action = 'openclaw.egress.authorize' AND outcome = 'denied'
+           AND details->>'revisionId' = $4
+           AND occurred_at BETWEEN $5::timestamptz AND $6::timestamptz
+           AND details->>'code' = 'unsupported_operation'
+           AND details->>'phase' = 'before_access'
+         LIMIT 2`,
+        [namespaceId, actorId, sourceId, revisionId, sentAt, failedAt],
+      );
+      if (rows.length === 0) {
+        return { credentialProxyAudit: "not-observed" };
+      }
+      if (rows.length > 1) {
+        return { credentialProxyAudit: "ambiguous" };
+      }
+      const { rule } = rows[0];
+      return {
+        credentialProxyAudit: "unsupported-operation",
+        ...(Number.isSafeInteger(rule) && rule > 0 && rule <= 255
+          ? { credentialProxyRule: rule }
+          : {}),
+      };
+    } catch {
+      return { credentialProxyAudit: "unavailable" };
+    } finally {
+      await pool?.end().catch(() => undefined);
+    }
+  }
   try {
     const startup = loadYaml(await readFile(process.env.OCC_CONFIG_PATH, "utf8"));
     assert.equal(startup.runtime?.nativeWorkerSupport, undefined);
@@ -370,7 +457,10 @@ async function nativeWorkerProof({
       minProtocol: 4,
       maxProtocol: 4,
       edgeAuthHeaders: { "x-api-key": apiKey },
-      onHelloOk: connected.resolve,
+      onHelloOk: (hello) => {
+        gatewayBootId = hello.server?.bootId;
+        connected.resolve(hello);
+      },
       onConnectError: connected.reject,
       onEvent: (event) => {
         Object.assign(turnEvents, nativeWorkerTurnEventObservation(event, selectedTurn));
@@ -403,20 +493,33 @@ async function nativeWorkerProof({
       ) {
         proofRpcCode = error.code;
       }
+      const { journalBinding, ...worker } = await collectNativeWorkerFailure({
+        request: (method, params, options) => client.request(method, params, options),
+        session,
+        lastPlacement,
+        expectedNodeId,
+        elapsedMs: Math.round(performance.now() - proofStarted),
+        runId,
+        outcome,
+        turnEvents: runId === selectedTurn?.runId ? turnEvents : undefined,
+        error,
+        placementReadResponse: stage === "required-placement-describe-rejected" && proofRpcResponse,
+        journalTurn:
+          retainJournalBinding &&
+          stage === "model-outcome" &&
+          sentGatewayBootId &&
+          sentGatewayBootId === placementGatewayBootId &&
+          sentGatewayBootId === gatewayBootId
+            ? {
+                acknowledgement: sendAcknowledgement,
+                expectedRunId: selectedTurn.runId,
+                gatewayBootId: sentGatewayBootId,
+              }
+            : undefined,
+      });
       return {
-        ...(await collectNativeWorkerFailure({
-          request: (method, params, options) => client.request(method, params, options),
-          session,
-          lastPlacement,
-          expectedNodeId,
-          elapsedMs: Math.round(performance.now() - proofStarted),
-          runId,
-          outcome,
-          turnEvents: runId === selectedTurn?.runId ? turnEvents : undefined,
-          error,
-          placementReadResponse:
-            stage === "required-placement-describe-rejected" && proofRpcResponse,
-        })),
+        ...worker,
+        ...(journalBinding && sentGatewayBootId === gatewayBootId && { journalBinding }),
         ...historyPredicates,
         historySettleExpired: historySignal?.aborted === true,
         proofRpcCode,
@@ -472,8 +575,12 @@ async function nativeWorkerProof({
     assert.ok(session.key && session.sessionId);
     const { key } = session;
     stage = "session-identity";
+    const describeGatewayBootId = gatewayBootId;
     const described = await call("sessions.describe", { key, agentId: "main" });
     lastPlacement = nativeWorkerSessionPlacement(described, session.sessionId);
+    if (describeGatewayBootId === gatewayBootId) {
+      placementGatewayBootId = gatewayBootId;
+    }
     // A retained placement may recover when the next turn is sent. Check its
     // current directory after that turn, rather than trusting the old owner.
     const sessionFileContent = `FIRST_AGENT_SESSION_${randomUUID()}\n`;
@@ -498,15 +605,27 @@ async function nativeWorkerProof({
     const command = `node -e '${program.replaceAll("'", "'\\''")}'`;
     stage = "send";
     selectedTurn = { key, runId: randomUUID() };
-    const sent = await call("sessions.send", {
-      key,
-      agentId: "main",
-      idempotencyKey: selectedTurn.runId,
-      message: `Use exec to run exactly this command: ${command}. After exec succeeds, reply with exactly ${marker}. Do not print environment values or credentials.`,
-    });
+    sentAt = new Date().toISOString();
+    const sent = await client.request(
+      "sessions.send",
+      {
+        key,
+        agentId: "main",
+        idempotencyKey: selectedTurn.runId,
+        message: `Use exec to run exactly this command: ${command}. After exec succeeds, reply with exactly ${marker}. Do not print environment values or credentials.`,
+      },
+      {
+        signal,
+        timeoutMs: 30_000,
+        onSent: () => {
+          sentGatewayBootId = gatewayBootId;
+        },
+      },
+    );
     assert.ok(sent.runId);
     runId = sent.runId;
     assert.ok(!["error", "timeout"].includes(sent.status));
+    sendAcknowledgement = sent;
     stage = "model-and-exec";
     while (!signal.aborted) {
       const observation = await call("agent.wait", { runId, timeoutMs: 3_000 });
@@ -583,8 +702,12 @@ async function nativeWorkerProof({
   } catch (error) {
     // Dependency/RPC errors can include private headers. Preserve the failing
     // stage, never raw exceptions, keys, transcripts or controller output.
+    const audit =
+      stage === "model-outcome" && runId && credentialProxyScope
+        ? await observeCredentialProxyRefusal(new Date().toISOString())
+        : undefined;
     const worker = await collectFailure?.(error).catch(() => undefined);
-    emit({ verified: false, stage, worker });
+    emit({ verified: false, stage, worker: audit ? { ...worker, ...audit } : worker });
     process.exitCode = 1;
   } finally {
     clearTimeout(helloTimer);
@@ -605,6 +728,8 @@ export async function assertNativeWorkerProofInController(
     expectedNodeId,
     session,
     sessionFile,
+    credentialProxyScope,
+    observeJournal,
   },
 ) {
   context.signal.throwIfAborted();
@@ -617,7 +742,7 @@ export async function assertNativeWorkerProofInController(
   delete safeEnvironment.OPENAI_API_KEY_FILE;
   delete safeEnvironment.CODEX_ACCESS_TOKEN;
   delete safeEnvironment.CODEX_ACCESS_TOKEN_FILE;
-  const input = `const nativePlacementReadRetryable = (${nativePlacementReadRetryable.toString()});\nconst nativeWorkerProofProgram = (${nativeWorkerProofProgram.toString()});\nconst nativeWorkerHistoryEvidence = (${nativeWorkerHistoryEvidence.toString()});\nconst nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst nativeWorkerTurnEventObservation = (${nativeWorkerTurnEventObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
+  const input = `const nativePlacementReadRetryable = (${nativePlacementReadRetryable.toString()});\nconst nativeWorkerProofProgram = (${nativeWorkerProofProgram.toString()});\nconst nativeWorkerHistoryEvidence = (${nativeWorkerHistoryEvidence.toString()});\nconst nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst nativeWorkerTurnEventObservation = (${nativeWorkerTurnEventObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile, credentialProxyScope, retainJournalBinding: observeJournal !== undefined })});`;
   const command = state.deploymentMode === "k3d" ? "kubectl" : state.containerEngine;
   const args =
     state.deploymentMode === "k3d"
@@ -689,10 +814,18 @@ export async function assertNativeWorkerProofInController(
   if (result.code !== 0) {
     // Only the proof's explicit failure record and exit 1 identify its stage.
     // A controller exit without that evidence leaves the stage unknown.
-    const diagnostic =
-      result.code === 1 && result.proof?.verified === false
-        ? nativeFirstAgentProofDiagnostic(result.proof.stage, result.proof.worker)
-        : undefined;
+    const failed = result.code === 1 && result.proof?.verified === false;
+    let worker = result.proof?.worker;
+    if (failed && result.proof.stage === "model-outcome" && observeJournal) {
+      const { journalBinding, ...fields } = worker ?? {};
+      const journal = journalBinding
+        ? await observeJournal(journalBinding).catch(() => ({ nodeJournal: "unavailable" }))
+        : { nodeJournal: "unavailable" };
+      worker = { ...fields, ...journal };
+    }
+    const diagnostic = failed
+      ? nativeFirstAgentProofDiagnostic(result.proof.stage, worker)
+      : undefined;
     const at = diagnostic
       ? `during ${diagnostic.failureStage}`
       : "without a recognized failure stage";
