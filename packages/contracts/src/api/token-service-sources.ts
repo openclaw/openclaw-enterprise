@@ -27,7 +27,7 @@ export const RegisterTokenServiceSourceBody = Type.Object(
     $id: "RegisterTokenServiceSourceBody",
     additionalProperties: false,
     description:
-      "Staged managed static registration contract. The public route currently returns 501 NOT_IMPLEMENTED after authorization. When enabled, OCC allocates the identity and selects the TokenService owner.",
+      "Register a managed static Source. OCC allocates its identity and selects the TokenService owner.",
   },
 );
 
@@ -45,7 +45,7 @@ export const UpdateTokenServiceSourceBody = Type.Union(
   {
     $id: "UpdateTokenServiceSourceBody",
     description:
-      "Staged managed static update contract. Supply configuration, a credential value, or both. The public route currently returns 501 NOT_IMPLEMENTED after authorization. When enabled, OCC must dispatch by the persisted Source owner; omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Send these changes in separate operations; repeating the current preset with replacement material is allowed.",
+      "Update a managed static Source through its persisted owner. Supply configuration, a credential value, or both; omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Send these changes in separate operations; repeating the current preset with replacement material is allowed.",
   },
 );
 

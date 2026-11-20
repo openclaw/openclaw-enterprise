@@ -10659,10 +10659,10 @@ Example response
 | Operation | Summary |
 | --- | --- |
 | [`GET /namespaces/{namespaceId}/credential-sources`](#get-namespacesnamespaceidcredentialsources) | List readable credential sources without revealing credential values |
-| [`POST /namespaces/{namespaceId}/credential-sources`](#post-namespacesnamespaceidcredentialsources) | Register a Credential Gateway source; managed static registration is staged |
+| [`POST /namespaces/{namespaceId}/credential-sources`](#post-namespacesnamespaceidcredentialsources) | Register a credential source |
 | [`DELETE /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#delete-namespacesnamespaceidcredentialsourcescredentialsourceid) | Remove an unreferenced credential source |
 | [`GET /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#get-namespacesnamespaceidcredentialsourcescredentialsourceid) | Get one readable credential source and its available status |
-| [`PATCH /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#patch-namespacesnamespaceidcredentialsourcescredentialsourceid) | Update a Credential Gateway source; managed updates are staged |
+| [`PATCH /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#patch-namespacesnamespaceidcredentialsourcescredentialsourceid) | Update a Source through its recorded owner |
 | [`POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/rotate`](#post-namespacesnamespaceidcredentialsourcescredentialsourceidrotate) | Force the Credential Refresh Driver to mint a new token for a refresh-type source |
 
 #### `GET /namespaces/{namespaceId}/credential-sources`
@@ -10777,7 +10777,7 @@ Example response
 
 <span id="post-namespacesnamespaceidcredentialsources"></span>
 
-Register a Credential Gateway source; managed static registration is staged
+Register a credential source
 
 **Operation ID:** `createCredentialSource`
 
@@ -10811,7 +10811,7 @@ Register a Credential Gateway source; managed static registration is staged
 
 **RegisterTokenServiceSourceBody (required fields: `name`, `type`, `secret`)**
 
-Staged managed static registration contract. The public route currently returns 501 NOT_IMPLEMENTED after authorization. When enabled, OCC allocates the identity and selects the TokenService owner.
+Register a managed static Source. OCC allocates its identity and selects the TokenService owner.
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
@@ -10849,7 +10849,7 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `501` | Managed credential source enrollment is unavailable. |
+| `501` | The selected Driver does not support this operation. |
 | `503` | A required dependency is unavailable. |
 
 **`201` response body:** `application/json`
@@ -11049,7 +11049,7 @@ Example response
 
 <span id="patch-namespacesnamespaceidcredentialsourcescredentialsourceid"></span>
 
-Update a Credential Gateway source; managed updates are staged
+Update a Source through its recorded owner
 
 **Operation ID:** `updateCredentialSource`
 
@@ -11083,7 +11083,7 @@ Update a Credential Gateway source; managed updates are staged
 
 **UpdateTokenServiceSourceBody**
 
-Staged managed static update contract. Supply configuration, a credential value, or both. The public route currently returns 501 NOT_IMPLEMENTED after authorization. When enabled, OCC must dispatch by the persisted Source owner; omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Send these changes in separate operations; repeating the current preset with replacement material is allowed.
+Update a managed static Source through its persisted owner. Supply configuration, a credential value, or both; omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Send these changes in separate operations; repeating the current preset with replacement material is allowed.
 
 **Required fields: `config`**
 
@@ -11126,7 +11126,6 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `501` | Managed credential source enrollment is unavailable. |
 | `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
