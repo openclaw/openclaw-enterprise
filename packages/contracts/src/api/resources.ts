@@ -1679,6 +1679,20 @@ export const AgentDeploymentStatusSchema = Type.Object(
                         component: RuntimeFailureIdentifier,
                         check: RuntimeFailureIdentifier,
                         checkedAt: RuntimeEvidenceTimestamp,
+                        code: Type.Literal("AUTHENTICATION_FAILED"),
+                      },
+                      { additionalProperties: false },
+                    ),
+                  },
+                  { additionalProperties: false },
+                ),
+                Type.Object(
+                  {
+                    runtimeFailure: Type.Object(
+                      {
+                        component: RuntimeFailureIdentifier,
+                        check: RuntimeFailureIdentifier,
+                        checkedAt: RuntimeEvidenceTimestamp,
                         code: Type.Literal("MODEL_PROBE_FAILED"),
                         cause: Type.Optional(RuntimeFailureCauseSchema),
                       },
@@ -1695,7 +1709,7 @@ export const AgentDeploymentStatusSchema = Type.Object(
       ],
       {
         description:
-          "`null` unless deployment failed. A failure contains `code`, a fixed safe message, and optional data with known fields. `CONVERGENCE_DEADLINE_EXCEEDED` can include `data.timeoutMs` and `data.runtimeFailure` with startup failure details. A component, check, or code unknown to the runtime is shown as `UNRECOGNIZED`. `RUNTIME_MODEL_PROBE_FAILED` can include `data.runtimeFailure` with the cause of the failed startup model check. The response never includes native error text.",
+          "`null` unless deployment failed. A failure contains `code`, a fixed safe message, and optional data with known fields. `CONVERGENCE_DEADLINE_EXCEEDED` can include `data.timeoutMs` and `data.runtimeFailure` with startup failure details. A component, check, or code unknown to the runtime is shown as `UNRECOGNIZED`. `RUNTIME_MODEL_PROBE_FAILED` can include `data.runtimeFailure` with the cause of the failed startup model check. `RUNTIME_AUTHENTICATION_FAILED` can include `data.runtimeFailure` with the startup component, check, timestamp, and fixed runtime code. The response never includes native error text.",
       },
     ),
     warnings: Type.Array(

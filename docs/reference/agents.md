@@ -108,7 +108,10 @@ unspecified. Held failures end deployment early:
 `WORKSPACE_SETUP_REFUSED`; fix and redeploy. A dedicated gateway that refuses its
 own CLI fails with
 [`AGENT_GATEWAY_UNAUTHORIZED`](agents/deployment.md#pending-deployment-progress). `RUNTIME_MODEL_PROBE_FAILED` adds
-[`runtimeFailure`](agents/deployment.md#model-check-failure-cause). Success can include [plugin warnings](agent-plugins.md#lifecycle)
+[`runtimeFailure`](agents/deployment.md#model-check-failure-cause).
+A held `RUNTIME_AUTHENTICATION_FAILED` can also include `runtimeFailure` with
+the same four fields, so an operator can distinguish login from a model check.
+Success can include [plugin warnings](agent-plugins.md#lifecycle)
 with a closed code and `pluginId`.
 
 Polling reads only persisted state. Terminal results survive runtime deletion

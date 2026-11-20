@@ -25128,6 +25128,41 @@
                                         "runtimeFailure": {
                                           "additionalProperties": false,
                                           "properties": {
+                                            "check": {
+                                              "maxLength": 64,
+                                              "minLength": 1,
+                                              "pattern": "^[A-Za-z0-9._~:@-]{1,64}$",
+                                              "type": "string"
+                                            },
+                                            "checkedAt": {
+                                              "format": "date-time",
+                                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.][0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+                                              "type": "string"
+                                            },
+                                            "code": {
+                                              "const": "AUTHENTICATION_FAILED",
+                                              "type": "string"
+                                            },
+                                            "component": {
+                                              "maxLength": 64,
+                                              "minLength": 1,
+                                              "pattern": "^[A-Za-z0-9._~:@-]{1,64}$",
+                                              "type": "string"
+                                            }
+                                          },
+                                          "required": ["component", "check", "checkedAt", "code"],
+                                          "type": "object"
+                                        }
+                                      },
+                                      "required": ["runtimeFailure"],
+                                      "type": "object"
+                                    },
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "runtimeFailure": {
+                                          "additionalProperties": false,
+                                          "properties": {
                                             "cause": {
                                               "additionalProperties": false,
                                               "description": "Why the startup model check failed, classified by the runtime.",
@@ -25189,7 +25224,7 @@
                               "type": "object"
                             }
                           ],
-                          "description": "`null` unless deployment failed. A failure contains `code`, a fixed safe message, and optional data with known fields. `CONVERGENCE_DEADLINE_EXCEEDED` can include `data.timeoutMs` and `data.runtimeFailure` with startup failure details. A component, check, or code unknown to the runtime is shown as `UNRECOGNIZED`. `RUNTIME_MODEL_PROBE_FAILED` can include `data.runtimeFailure` with the cause of the failed startup model check. The response never includes native error text."
+                          "description": "`null` unless deployment failed. A failure contains `code`, a fixed safe message, and optional data with known fields. `CONVERGENCE_DEADLINE_EXCEEDED` can include `data.timeoutMs` and `data.runtimeFailure` with startup failure details. A component, check, or code unknown to the runtime is shown as `UNRECOGNIZED`. `RUNTIME_MODEL_PROBE_FAILED` can include `data.runtimeFailure` with the cause of the failed startup model check. `RUNTIME_AUTHENTICATION_FAILED` can include `data.runtimeFailure` with the startup component, check, timestamp, and fixed runtime code. The response never includes native error text."
                         },
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",

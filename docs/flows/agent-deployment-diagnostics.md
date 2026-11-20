@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-11-14
-last_updated_session: authoring-run/927cdccf-0c9c-45b7-9e7c-4e5e39a43260
+updated: 2026-11-20
+last_updated_session: authoring-run/6e783d06-773e-49df-b72d-42a7abe09189
 ---
 
 # Agent deployment diagnostics flow
@@ -211,25 +211,25 @@ state after admission.
   The Console names the model from the failed version. It directs editors to
   Configuration and tells other viewers to ask an editor to choose a model.
   If the viewer cannot redeploy the Agent, it tells them who can.
-- A dedicated Codex model check cause whose detail ends `-attempt2`, such as
-  `turn-failed-attempt2`, means the check was retried once, after a timeout, a
-  transient failure or a network or 5xx exit, and the second attempt failed that
-  way. A failure whose output names a credential, TLS error or limit is never
-  retried. Each failed access-token login attempt logs a `codex.login` line with
-  its number and output class. An unreachable
-  model provider is transient: each attempt waits out its 30-second limit, so
-  `error-event-attempt2` follows about a minute after the check starts. Codex
-  reports a refused port, an unresolvable host and a rejected TLS certificate
-  the same way, so a permanent mistake such as a wrong endpoint host or port
-  or a blocked egress route is also retried once before it is held. If Codex
-  reconnects and the model answers in the same attempt, the check passes.
+- A dedicated Codex model check detail ending in `-attempt2` means the retry
+  failed, for example `turn-failed-attempt2`. A timeout, transient failure,
+  network error, or 5xx triggers one retry. Credential errors, known TLS
+  errors, and limits end the check. The `codex.login` log gives each failed
+  access-token login's attempt number and output class. An unreachable provider
+  can take two 30-second attempts before reporting `error-event-attempt2`.
+  Codex reports refused ports, DNS failures, and rejected TLS certificates
+  alike, so an incorrect endpoint or blocked egress can also trigger one retry.
+  A reconnection and answer during the same attempt pass the check.
 - On an OpenShell Harness, the `agent` `runtime-status` check says nothing about
   its health; the `agent` `sandbox` check does. A failed one means the Sandbox
   is lost; [deploy the Agent again](../guides/topics/agent-troubleshoot.md#an-openshell-agent-stops-answering).
   A failed `HARNESS_RESTARTING` check instead means the Harness process keeps
   exiting while OpenShell restarts it; its Sandbox logs show why.
   A failed deployment's status names the held failure's code and cause, such as
-  `RUNTIME_MODEL_PROBE_FAILED`. While it holds a failure, the Harness answers
+  `RUNTIME_MODEL_PROBE_FAILED`. For `RUNTIME_AUTHENTICATION_FAILED`, the worker
+  records the held check, component, timestamp, and fixed code in
+  `error.data.runtimeFailure`. The API uses the same validation on readback.
+  While it holds a failure, the Harness answers
   the Agent Gateway's connection with `503` naming the held code, but the
   Gateway logs only `Unexpected server response: 503`; Compute's authenticated
   status read carries the code. The
@@ -252,6 +252,8 @@ state after admission.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 10:24: Retain the startup check in deployment authentication failures. (authoring-run/6e783d06-773e-49df-b72d-42a7abe09189 - 1d70401de2be339b0c75b0cb0de9bf6052759812)
 
 - 2026-11-18 03:40: Held `gateway-state-lock` fails as `RUNTIME_STATE_LOCK_UNVERIFIED`. (finding 3348)
 

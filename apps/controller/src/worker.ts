@@ -6309,8 +6309,11 @@ export class ControllerWorker {
       resolved = {
         outcome: "permanent",
         code: heldFailureCode,
-        // A failed model probe keeps its evidence and the runtime's classified cause.
-        ...(heldFailureCode === "RUNTIME_MODEL_PROBE_FAILED" ? { data: { runtimeFailure } } : {}),
+        // Preserve the failed startup check for model-probe and authentication failures.
+        ...(heldFailureCode === "RUNTIME_MODEL_PROBE_FAILED" ||
+        heldFailureCode === "RUNTIME_AUTHENTICATION_FAILED"
+          ? { data: { runtimeFailure } }
+          : {}),
       };
     } else if (expired && result.dependencyFailure !== undefined) {
       // The dependency was still failing at the deadline: name it, not the deadline.

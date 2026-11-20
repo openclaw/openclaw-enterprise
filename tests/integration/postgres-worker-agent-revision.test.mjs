@@ -1265,25 +1265,30 @@ revisionTest(
 // The default 900-second deadline stays in force: an unready runtime without
 // failure evidence remains pending, and the held rejection ends the deployment.
 for (const scenario of [
-  {
-    name: "rejected runtime credentials fail deployment before the convergence deadline",
-    label: "rejected-runtime",
-    pendingPasses: 1,
-    runtimeFailure: {
+  ...["login", "model-probe"].map((check) => {
+    const runtimeFailure = {
       component: "agent",
-      check: "model-probe",
+      check,
       checkedAt: "2026-09-29T08:00:00.000Z",
       code: "AUTHENTICATION_FAILED",
-    },
-    expected: {
-      preparations: 2,
-      activeRevisionId: null,
-      error: {
-        code: "RUNTIME_AUTHENTICATION_FAILED",
-        message: MODEL_CREDENTIAL_REJECTED_RECORDED,
+    };
+    return {
+      name: `a rejected credential records the runtime ${check} that failed`,
+      label: `rejected-runtime-${check}`,
+      pendingPasses: 1,
+      runtimeFailure,
+      expected: {
+        preparations: 2,
+        activeRevisionId: null,
+        resultData: { runtimeFailure },
+        error: {
+          code: "RUNTIME_AUTHENTICATION_FAILED",
+          message: MODEL_CREDENTIAL_REJECTED_RECORDED,
+          data: { runtimeFailure },
+        },
       },
-    },
-  },
+    };
+  }),
   {
     name: "a CPU-starved startup model probe fails deployment before the convergence deadline",
     label: "cpu-starved-runtime",
@@ -1326,7 +1331,7 @@ for (const scenario of [
 ]) {
   revisionTest(scenario.name, async (fixture) => {
     const [{ candidate }] = await runRuntimeFailureCases(fixture, [scenario]);
-    if (scenario.label === "rejected-runtime") {
+    if (scenario.label === "rejected-runtime-model-probe") {
       const evidence = await fixture.observerPool.query(
         `SELECT details->>'reasonCode' AS reason FROM occ.audit_events
          WHERE resource_id = $1 AND details->>'reasonCode' IN
@@ -1338,6 +1343,21 @@ for (const scenario of [
         evidence.rows.map(({ reason }) => reason),
         ["REVISION_INCOMPLETE", "RUNTIME_AUTHENTICATION_FAILED"],
       );
+      // An authentication failure may persist only the matching fixed fields.
+      for (const invalid of [
+        { ...scenario.runtimeFailure, code: "MODEL_PROBE_FAILED" },
+        { ...scenario.runtimeFailure, cause: { kind: "WRAPPER_ERROR" } },
+        { ...scenario.runtimeFailure, providerResponse: "synthetic raw provider rejection" },
+      ]) {
+        await assert.rejects(
+          fixture.observerPool.query(
+            "UPDATE occ.controller_work SET result_data = $2::jsonb WHERE idempotency_key = $1",
+            [candidate.idempotencyKey, JSON.stringify({ runtimeFailure: invalid })],
+          ),
+          (error) =>
+            error.code === "23514" && error.constraint === "controller_work_result_data_state",
+        );
+      }
     }
   });
 }

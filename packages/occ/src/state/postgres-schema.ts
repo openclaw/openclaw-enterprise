@@ -1458,7 +1458,7 @@ export const controllerWork = occSchema.table(
           )
           OR (
             ${table.state} = 'failed_permanent'
-            AND ${table.reasonCode} = 'RUNTIME_MODEL_PROBE_FAILED'
+            AND ${table.reasonCode} IN ('RUNTIME_MODEL_PROBE_FAILED', 'RUNTIME_AUTHENTICATION_FAILED')
             AND ${table.resultData} ? 'runtimeFailure'
             AND (${table.resultData} - 'runtimeFailure') = '{}'::jsonb
             AND jsonb_typeof(${table.resultData}->'runtimeFailure') = 'object'
@@ -1471,10 +1471,12 @@ export const controllerWork = occSchema.table(
             AND jsonb_typeof(${table.resultData} #> '{runtimeFailure,checkedAt}') = 'string'
             AND occ.iso_timestamp_is_valid(${table.resultData} #>> '{runtimeFailure,checkedAt}')
             AND jsonb_typeof(${table.resultData} #> '{runtimeFailure,code}') = 'string'
-            AND (${table.resultData} #>> '{runtimeFailure,code}') = 'MODEL_PROBE_FAILED'
+            AND (${table.resultData} #>> '{runtimeFailure,code}') = substring(${table.reasonCode} FROM 9)
             AND (
               NOT ((${table.resultData}->'runtimeFailure') ? 'cause')
               OR (
+                ${table.reasonCode} = 'RUNTIME_MODEL_PROBE_FAILED'
+                AND
                 jsonb_typeof(${table.resultData} #> '{runtimeFailure,cause}') = 'object'
                 AND (${table.resultData} #> '{runtimeFailure,cause}') ? 'kind'
                 AND ((${table.resultData} #> '{runtimeFailure,cause}') - 'kind' - 'detail') = '{}'::jsonb
