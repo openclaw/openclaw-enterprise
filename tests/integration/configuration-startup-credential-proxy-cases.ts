@@ -10,8 +10,10 @@ import { openShellRepositoryConfiguration } from "../../apps/controller/src/driv
 import { formatStartupConfigurationFailure } from "../../apps/controller/src/startup-failure.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.ts";
-import type { settled as settleChildren } from "../helpers/child-processes.mjs";
-import type { StartupProcessFixtures } from "./configuration-startup-resolution-cases.ts";
+import type {
+  StartupProcessFixtures,
+  StartupSiblingWait,
+} from "./configuration-startup-resolution-cases.ts";
 
 type StartupMode = Parameters<typeof loadInstallationConfiguration>[0]["mode"];
 type ExpectedFields = readonly (readonly [path: string, code: InstallationFieldDetail["code"]])[];
@@ -22,7 +24,7 @@ type StartupDiagnosticSource =
   | { readonly script: string; readonly event: null };
 
 type StartupCredentialProxyFixtures = StartupProcessFixtures & {
-  settled: typeof settleChildren;
+  settled: StartupSiblingWait;
 };
 
 const api = { script: "apps/controller/src/server.mjs", event: "startup-error" } as const;

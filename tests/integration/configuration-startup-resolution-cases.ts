@@ -30,6 +30,7 @@ type StartupProcessDependencies = {
   compileCache: string;
 };
 type StartupProcesses = ReturnType<typeof createStartupProcesses>;
+export type StartupSiblingWait = typeof waitForSiblings;
 export type StartupProcessFixtures = Pick<StartupProcesses, "boot" | "productionServer"> & {
   fixture: StartupFixture;
 };
