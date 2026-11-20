@@ -169,7 +169,7 @@ export async function runStaticEgressElapsedDeadlineCase(t: TestContext): Promis
   const f = await staticEgressFixture(t);
   const captured = f.capture();
   const before = f.secretReads;
-  const placement = f.pauseNamespaceVerification();
+  const placement: { reached: Promise<void>; release(): void } = f.pauseNamespaceVerification();
   t.after(placement.release);
   const pending = f.resolve(captured);
   await placement.reached;
