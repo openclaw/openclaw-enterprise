@@ -2213,10 +2213,9 @@ async function setDesiredRepositoryPolicy(
 
 test("deploy checks repository policy authority and freezes the selected Sandbox Driver result", async (t) => {
   const providerDefaults = { repositoryAccess: { state: "deny-all" } };
-  let repositoryAdmissions = 0;
-  let runtimeCredentialChecks = 0;
-  let runtimeCredentialsConfigured = true;
-  let runtimeCredentialProvisions = 0;
+  const deploymentSteps: string[] = [];
+  const assertSteps = (...expected: string[]) =>
+    assert.deepEqual(deploymentSteps.splice(0), expected);
   const sandbox: SandboxDriver = {
     id: "repository-policy-test-sandbox",
     implementation: "test",
@@ -2240,7 +2239,7 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
       };
     },
     admitRepositoryNetworkPolicy(policy, base) {
-      repositoryAdmissions++;
+      deploymentSteps.push("admit Sandbox repository policy");
       assert.ok(Object.isFrozen(policy.grants));
       assert.ok(Object.isFrozen(base.defaults));
       return policy.grants.length === 0
@@ -2350,24 +2349,11 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   controller.registerDriver(replacementPolicy);
   controller.selectDriver("repo", namespacePolicy.id);
   const compute = controller.selectedDriver("compute");
-  const deploymentSteps: string[] = [];
   const originalAdmitRevision = compute.admitRevision?.bind(compute);
   const originalSnapshotRuntimeInputs = compute.snapshotRuntimeInputs?.bind(compute);
-  const recordRevisionAdmission = (revision: Readonly<AgentRevision>) => {
-    deploymentSteps.push("admit revision");
-    assert.ok(Object.isFrozen(revision));
-    return originalAdmitRevision?.(revision);
-  };
-  let beforeComputeAdmission: (() => Promise<void>) | undefined;
-  let changeSandboxDuring: "credential status" | "credential provisioning" | undefined;
-  const computeContexts: ProtectedRepositoryNetworkPolicyContext[] = [];
-  const validateProtectedRepositoryNetworkPolicy = async (
-    context: ProtectedRepositoryNetworkPolicyContext,
-  ) => {
+  const validatePolicy = async (context: ProtectedRepositoryNetworkPolicyContext) => {
     deploymentSteps.push("validate policy");
     assert.ok(Object.isFrozen(context));
-    await beforeComputeAdmission?.();
-    computeContexts.push(context);
     if (
       context.sandboxDriverId !== sandbox.id ||
       context.sandboxPolicy?.driverId !== sandbox.id ||
@@ -2376,9 +2362,17 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
       throw new Error("Unsupported Sandbox and policy pairing.");
     }
   };
+  const validateProtectedRepositoryNetworkPolicy = t.mock.fn(validatePolicy);
+  const admitRevision = t.mock.fn((revision: Readonly<AgentRevision>) => {
+    deploymentSteps.push("admit revision");
+    assert.ok(Object.isFrozen(revision));
+    return originalAdmitRevision?.(revision);
+  });
+  const credentialStatus = t.mock.fn(async () => true);
+  const provisionCredentials = t.mock.fn(async () => true);
   Object.assign(compute, {
     validateProtectedRepositoryNetworkPolicy,
-    admitRevision: recordRevisionAdmission,
+    admitRevision,
     snapshotRuntimeInputs(revision: Readonly<AgentRevision>) {
       deploymentSteps.push("snapshot runtime inputs");
       assert.ok(Object.isFrozen(revision.compute));
@@ -2387,21 +2381,11 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
     requiresAgentRuntimeCredentials: true,
     async getAgentRuntimeCredentialStatus() {
       deploymentSteps.push("credential status");
-      runtimeCredentialChecks++;
-      if (changeSandboxDuring === "credential status") {
-        await Promise.resolve();
-        controller.selectDriver("sandbox", alternateSandbox.id);
-      }
-      return { transportConfigured: runtimeCredentialsConfigured };
+      return { transportConfigured: await credentialStatus() };
     },
     async provisionAgentRuntimeCredentials() {
       deploymentSteps.push("credential provisioning");
-      runtimeCredentialProvisions++;
-      if (changeSandboxDuring === "credential provisioning") {
-        await Promise.resolve();
-        controller.selectDriver("sandbox", alternateSandbox.id);
-      }
-      return { transportConfigured: true };
+      return { transportConfigured: await provisionCredentials() };
     },
   });
   const namespace = await fixture.createNamespace("Repository policy admission", { ready: true });
@@ -2416,13 +2400,8 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
     controller.transact((unit) => unit.revisions.listRevisions(namespace.id, agent.id));
   const previous = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   assert.equal((await readRevisions())[0]?.sandboxPolicy?.repositoryNetworkPolicy, undefined);
-  assert.equal(runtimeCredentialChecks, 1);
-  assert.equal(repositoryAdmissions, 0);
-  assert.deepEqual(deploymentSteps, [
-    "credential status",
-    "admit revision",
-    "snapshot runtime inputs",
-  ]);
+  // Ordinary admission checks credentials first; explicit policy must pass Compute first.
+  assertSteps("credential status", "admit revision", "snapshot runtime inputs");
   const enabled = await fixture.request("PATCH", `${policyPath}/editing`, {
     body: { enabled: true },
   });
@@ -2496,8 +2475,7 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
     ),
     [],
   );
-  assert.equal(repositoryAdmissions, 0);
-  assert.equal(runtimeCredentialChecks, 1);
+  assertSteps();
   assert.equal((await readRevisions()).length, 1);
 
   const desired = await savePolicy(policyPath, approvedPolicy.policy.version, []);
@@ -2508,8 +2486,7 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   const denied = await fixture.request("POST", `${path}/deploy`);
   assertApiError(denied, 403, "FORBIDDEN");
   assert.match(JSON.stringify(denied.body), /SandboxPolicy read/);
-  assert.equal(repositoryAdmissions, 0);
-  assert.equal(runtimeCredentialChecks, 1);
+  assertSteps();
   assert.equal((await readRevisions()).length, 1);
   liftRestriction(fixture.policy, deniedRead);
 
@@ -2538,8 +2515,16 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
       identity: '{"version":1,"grants":[]}',
     },
   });
-  assert.equal(repositoryAdmissions, 1);
-  assert.equal(runtimeCredentialChecks, 2);
+  const policyChecks = ["admit Sandbox repository policy", "validate policy"];
+  const beforeProvisioning = [
+    ...policyChecks,
+    "admit revision",
+    "snapshot runtime inputs",
+    "credential status",
+  ];
+  assertSteps(...beforeProvisioning);
+  const denyAllContext = validateProtectedRepositoryNetworkPolicy.mock.calls.at(-1)?.arguments[0];
+  assert.deepEqual(denyAllContext?.sandboxPolicy, revision?.sandboxPolicy);
 
   await fixture.activateRevision(namespace.id, agent.id, deployed.id, previous.revision.id);
   const retained = await savePolicy(policyPath, desired.version);
@@ -2576,9 +2561,10 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
       identity: '{"version":1,"grants":[{"repository":"example/approved","access":"read"}]}',
     },
   });
-  assert.equal(repositoryAdmissions, 2);
-  assert.equal(runtimeCredentialChecks, 3);
-  assert.equal(runtimeCredentialProvisions, 0);
+  assertSteps(...beforeProvisioning);
+  const acceptedContext = validateProtectedRepositoryNetworkPolicy.mock.calls.at(-1)?.arguments[0];
+  assert.deepEqual(acceptedContext?.sandboxPolicy, repositoryRevision?.sandboxPolicy);
+  assert.equal(acceptedContext?.sandboxDriverId, sandbox.id);
 
   const freshAgent = await createAgent(namespace.id, "Fresh policy admission Agent");
   const freshPath = `/namespaces/${namespace.id}/agents/${freshAgent.id}`;
@@ -2601,12 +2587,8 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
       : fixture.request("POST", `${freshPath}/deploy`);
   const readFreshRevisions = () =>
     controller.transact((unit) => unit.revisions.listRevisions(namespace.id, freshAgent.id));
-  const assertNoFreshEffects = async () => {
-    assert.equal(runtimeCredentialChecks, 3);
-    assert.equal(runtimeCredentialProvisions, 0);
-    assert.deepEqual(await readFreshRevisions(), []);
-  };
-  runtimeCredentialsConfigured = false;
+  // The fresh Agent has no credentials yet, so successful admission must provision them.
+  credentialStatus.mock.mockImplementation(async () => false);
   // Each revocation is independent. Read and ordinary deployment authority remain granted.
   for (const [action, kind, resourceId, guarded, message] of [
     ["manage_policy", "agent", freshAgent.id, false, /Agent manage_policy/],
@@ -2619,8 +2601,8 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
     const refused = await deployFresh(guarded);
     assertApiError(refused, 403, "FORBIDDEN");
     assert.match(JSON.stringify(refused.body), message);
-    assert.equal(repositoryAdmissions, 2);
-    await assertNoFreshEffects();
+    assertSteps();
+    assert.deepEqual(await readFreshRevisions(), []);
     liftRestriction(fixture.policy, revocation);
   }
 
@@ -2629,8 +2611,8 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   const unsupportedCompute = await deployFresh();
   assertApiError(unsupportedCompute, 409, "RESOURCE_CONFLICT");
   assert.match(JSON.stringify(unsupportedCompute.body), /Compute Driver cannot enforce/);
-  assert.equal(repositoryAdmissions, 3);
-  await assertNoFreshEffects();
+  assertSteps("admit Sandbox repository policy");
+  assert.deepEqual(await readFreshRevisions(), []);
 
   // The same Harness and grants now use another registered Sandbox. Its policy
   // admission succeeds, but Compute rejects the pairing asynchronously.
@@ -2639,10 +2621,7 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   const incompatibleSandbox = await deployFresh(true);
   assertApiError(incompatibleSandbox, 409, "RESOURCE_CONFLICT");
   assert.match(JSON.stringify(incompatibleSandbox.body), /Compute Driver cannot enforce/);
-  const [denyAllContext, acceptedContext, refusedContext] = computeContexts;
-  assert.deepEqual(denyAllContext?.sandboxPolicy, revision?.sandboxPolicy);
-  assert.deepEqual(acceptedContext?.sandboxPolicy, repositoryRevision?.sandboxPolicy);
-  assert.equal(acceptedContext?.sandboxDriverId, sandbox.id);
+  const refusedContext = validateProtectedRepositoryNetworkPolicy.mock.calls.at(-1)?.arguments[0];
   assert.equal(refusedContext?.sandboxDriverId, alternateSandbox.id);
   assert.equal(refusedContext?.sandboxPolicy?.driverId, alternateSandbox.id);
   assert.deepEqual(refusedContext?.harness, acceptedContext?.harness);
@@ -2650,90 +2629,62 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
     refusedContext?.sandboxPolicy?.repositoryNetworkPolicy,
     acceptedContext?.sandboxPolicy?.repositoryNetworkPolicy,
   );
-  assert.equal(repositoryAdmissions, 4);
-  await assertNoFreshEffects();
+  assertSteps(...policyChecks);
+  assert.deepEqual(await readFreshRevisions(), []);
 
   controller.selectDriver("sandbox", sandbox.id);
-  Object.assign(compute, {
-    admitRevision() {
-      throw new ResourceStateConflictError("Compute refused the candidate revision.");
-    },
+  admitRevision.mock.mockImplementationOnce(() => {
+    deploymentSteps.push("admit revision");
+    throw new ResourceStateConflictError("Compute refused the candidate revision.");
   });
   const incompatibleRevision = await deployFresh(true);
   assertApiError(incompatibleRevision, 409, "RESOURCE_CONFLICT");
   assert.match(JSON.stringify(incompatibleRevision.body), /Compute refused the candidate revision/);
-  assert.equal(repositoryAdmissions, 5);
-  await assertNoFreshEffects();
+  assertSteps(...policyChecks, "admit revision");
+  assert.deepEqual(await readFreshRevisions(), []);
 
-  Object.assign(compute, { admitRevision: recordRevisionAdmission });
-  const entered = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
-  beforeComputeAdmission = async () => {
-    entered.resolve();
-    await release.promise;
-  };
   // Replace the approving Repo Driver while Compute is validating that exact policy.
   // The request must refuse before touching the fresh Agent's runtime credentials.
-  const deploying = deployFresh();
-  try {
-    await Promise.race([
-      entered.promise,
-      deploying.then(({ status }) => assert.fail(`Deployment returned ${status} before admission`)),
-    ]);
+  validateProtectedRepositoryNetworkPolicy.mock.mockImplementationOnce(async (context) => {
+    await validatePolicy(context);
     controller.selectDriver("repo", replacementPolicy.id);
-  } finally {
-    release.resolve();
-  }
-  const changedOwner = await deploying;
+  });
+  const changedOwner = await deployFresh();
   assertApiError(changedOwner, 409, "RESOURCE_CONFLICT");
   assert.match(
     JSON.stringify(changedOwner.body),
     /Drivers changed during repository network policy admission/,
   );
-  await assertNoFreshEffects();
-
-  beforeComputeAdmission = undefined;
+  assertSteps(...policyChecks);
+  assert.deepEqual(await readFreshRevisions(), []);
   controller.selectDriver("repo", namespacePolicy.id);
-  const beforeProvisioning = [
-    "validate policy",
-    "admit revision",
-    "snapshot runtime inputs",
-    "credential status",
-  ];
 
   // Each awaited credential operation can invalidate the approved topology.
   // Refuse before the next effect even though the earlier Compute checks passed.
-  deploymentSteps.length = 0;
-  changeSandboxDuring = "credential status";
-  const changedBeforeProvisioning = await deployFresh();
-  assertApiError(changedBeforeProvisioning, 409, "RESOURCE_CONFLICT");
-  assert.match(
-    JSON.stringify(changedBeforeProvisioning.body),
-    /Drivers changed during repository network policy admission/,
-  );
-  assert.deepEqual(deploymentSteps, beforeProvisioning);
-  assert.deepEqual(await readFreshRevisions(), []);
-
-  deploymentSteps.length = 0;
-  controller.selectDriver("sandbox", sandbox.id);
-  changeSandboxDuring = "credential provisioning";
-  const changedBeforeWrite = await deployFresh();
-  assertApiError(changedBeforeWrite, 409, "RESOURCE_CONFLICT");
-  assert.match(
-    JSON.stringify(changedBeforeWrite.body),
-    /Drivers changed during repository network policy admission/,
-  );
-  assert.deepEqual(deploymentSteps, [...beforeProvisioning, "credential provisioning"]);
-  assert.deepEqual(await readFreshRevisions(), []);
+  const beforeWrite = [...beforeProvisioning, "credential provisioning"];
+  for (const [operation, configured, expectedSteps] of [
+    [credentialStatus, false, beforeProvisioning],
+    [provisionCredentials, true, beforeWrite],
+  ] as const) {
+    operation.mock.mockImplementationOnce(async () => {
+      await Promise.resolve();
+      controller.selectDriver("sandbox", alternateSandbox.id);
+      return configured;
+    });
+    const changedSandbox = await deployFresh();
+    assertApiError(changedSandbox, 409, "RESOURCE_CONFLICT");
+    assert.match(
+      JSON.stringify(changedSandbox.body),
+      /Drivers changed during repository network policy admission/,
+    );
+    assertSteps(...expectedSteps);
+    assert.deepEqual(await readFreshRevisions(), []);
+    controller.selectDriver("sandbox", sandbox.id);
+  }
 
   // With the original selection and the same permissions, the first deploy can write.
-  deploymentSteps.length = 0;
-  changeSandboxDuring = undefined;
-  controller.selectDriver("sandbox", sandbox.id);
   const confirmed = await fixture.deployAgent(namespace.id, freshAgent.id);
-  assert.equal(runtimeCredentialChecks, 6);
-  assert.equal(runtimeCredentialProvisions, 2);
-  assert.deepEqual(deploymentSteps, [...beforeProvisioning, "credential provisioning"]);
+  assertSteps(...beforeWrite);
   const freshRevisions = await readFreshRevisions();
   assert.deepEqual(
     freshRevisions.map(({ id }) => id),

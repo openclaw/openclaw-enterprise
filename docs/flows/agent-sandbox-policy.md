@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-11-19"
-last_updated_session: "authoring-run/738fc0a1-e73c-4f82-98af-989a7c5273cc"
+updated: "2026-11-20"
+last_updated_session: "authoring-run/2639107f-8cb3-469d-bf37-22b4465676de"
 ---
 
 # Agent sandbox policy flow
@@ -31,7 +31,8 @@ graph TD
   Preview -->|valid| U2["Review proposal"]
   U2 --> A["OCC save admission<br/>IAM, schema and ceiling"]
   A --> P["PostgreSQL<br/>desired policy version"]
-  P --> D["Explicit deployment<br/>immutable snapshot"]
+  P --> A1["Deployment admission<br/>recheck explicit policy authority"]
+  A1 --> D["Freeze admitted policy"]
   P -->|No explicit repository policy| W["Live application work<br/>exact running revision"]
   W --> C["Persist provider CAS<br/>before mutation"]
   C --> S["Sandbox Driver<br/>apply canonical policy"]
@@ -120,27 +121,26 @@ cleans its exact IAM access.
 
 ### 2. Freeze deployment or enqueue live application
 
-`packages/occ/src/index.ts:admitAgentDeployment` reads the desired policy under
-the Namespace and Agent locks. Saved host additions or an explicit repository
-list, including an empty list, require SandboxPolicy `read` before policy
-admission. An explicit list also requires current Agent `manage_policy` and
-SandboxPolicy `update` for ordinary deployment or fresh first deployment.
-Protected execution refuses an explicit repository list.
+`packages/occ/src/index.ts:prepareDeploymentChannels` checks SandboxPolicy
+`read` and `update` and Agent `manage_policy` before Channel preparation for an
+explicit list, including deny-all. After the backend read, OCC locks the
+Namespace to check current deployment authority, Secret `operate`, and Secret
+metadata together. It releases the lock before handing the value to the Channel
+Driver.
 
-For ordinary execution, OCC checks the list against the Installation ceiling.
-A nonempty list also requires approval for each grant from the Installation's
-repository policy owner for this Namespace.
-`packages/contracts/src/sandbox-policy.ts:admitSandboxRepositoryNetworkPolicy`
-requires the selected Driver to return an effective policy from the checked base
-snapshot, including for an empty list. OCC passes the selected Sandbox Driver
-ID, its policy snapshot, and the Harness to the Compute Driver. OCC waits for
-Compute to validate the pairing. After that wait, OCC checks that the admitting
-Compute and Sandbox Drivers and any approving repository policy owner are still
-current. OCC checks the same identities before provisioning runtime credentials
-and before creating the revision. A change returns `409 RESOURCE_CONFLICT`.
-OCC stores the effective policy and the canonical list identity in
-`AgentRevision.sandboxPolicy`. A refusal leaves no revision or queued
-deployment. Omission uses the ordinary Driver snapshot.
+`packages/occ/src/index.ts:admitAgentDeployment` rechecks under the Namespace
+lock before provisioning repair, grants, or runtime credentials. First deploy
+checks for a matching receipt before reauthorization under both locks.
+Saved host additions require SandboxPolicy `read` before policy admission.
+Protected execution refuses explicit lists.
+
+For ordinary execution, OCC checks each grant against the Installation ceiling
+and the repository policy owner's Namespace approval. A list requires an effective
+Sandbox Driver policy. Omission uses the ordinary snapshot. Compute validates the
+Sandbox Driver ID, snapshot, and Harness. OCC checks the two Driver selections
+and the approving policy owner before credential provisioning and revision
+creation. A change returns `409 RESOURCE_CONFLICT`. Success saves the effective
+policy and list identity in `AgentRevision.sandboxPolicy`.
 
 Before preparing a queued revision with an explicit list, including deny-all,
 `apps/controller/src/worker.ts:ControllerWorker.authorizeRevision` rechecks
@@ -270,6 +270,8 @@ hides denial counts and controls.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 02:20: Check repository policy authority before provisioning and at Channel credential handoff. (authoring-run/2639107f-8cb3-469d-bf37-22b4465676de - cfecf1c902552c2636f01e2669df168be5c2bcdb)
 
 - 2026-11-19 23:00: Renew the work claim after validating repository policy and before Compute activation. (authoring-run/738fc0a1-e73c-4f82-98af-989a7c5273cc - 1cd1aae973ac4677d46ff8932436d50dc4dd3413)
 

@@ -863,6 +863,220 @@ test("Provisioning refuses repository bindings on a topology Agent create refuse
   assert.deepEqual((await f.request("GET", f.collection)).data, []);
 });
 
+/**
+ * @param {Awaited<ReturnType<typeof fixture>>} f
+ * @param {{ id: string }} agent
+ */
+async function seedDenyAll(f, agent) {
+  return f.state.transact(async (unit) => {
+    await unit.namespaces.lockNamespace(f.namespace.id);
+    await unit.agents.lockAgent(f.namespace.id, agent.id);
+    const policy = await unit.sandboxPolicies.find(f.namespace.id, agent.id);
+    assert.ok(policy);
+    const saved = await unit.sandboxPolicies.save(
+      { ...policy, version: policy.version + 1, repositoryNetworkPolicy: [] },
+      policy.version,
+    );
+    assert.ok(saved);
+    return { namespaceId: f.namespace.id, resourceId: saved.id };
+  });
+}
+
+test("repository policy denies fresh deployment before Channel validation and preserves first receipts", async (t) => {
+  const f = await fixture(t);
+  const admitted = await f.createAgent();
+  const draft = await f.createAgent();
+  await f.prepareDeployment(admitted);
+  await f.prepareDeployment(draft);
+
+  const validateCredentials = t.mock.fn(async () => {});
+  const channel = {
+    capability: "channel",
+    id: "channel-policy-admission",
+    implementation: "test",
+    validateCredentials,
+    async lookupDirectory() {
+      return { candidates: [], complete: true };
+    },
+  };
+  f.controller.registerDriver(channel);
+  f.controller.selectDriver("channel", channel.id);
+
+  const deploy = (agent, route) =>
+    f.request(
+      "POST",
+      `${f.collection}/${agent.id}/${route}`,
+      route === "deploy-first"
+        ? {
+            key: "repository-policy-review",
+            expectedConfigurationId: agent.configurationId,
+            expectedGeneration: f.configuration.generation,
+          }
+        : undefined,
+    );
+  const accepted = await deploy(admitted, "deploy-first");
+  assert.equal(accepted.status, 202);
+  assert.equal(validateCredentials.mock.callCount(), 1);
+
+  const admittedPolicy = await seedDenyAll(f, admitted);
+  const draftPolicy = await seedDenyAll(f, draft);
+  for (const [agent, route, policy] of [
+    [admitted, "deploy", admittedPolicy],
+    [draft, "deploy-first", draftPolicy],
+  ]) {
+    for (const [action, kind, scope, message] of [
+      ["read", "sandbox_policy", policy, /SandboxPolicy read/],
+      [
+        "manage_policy",
+        "agent",
+        { namespaceId: f.namespace.id, resourceId: agent.id },
+        /Agent manage_policy/,
+      ],
+      ["update", "sandbox_policy", policy, /SandboxPolicy update/],
+    ]) {
+      const denied = restrict(f.iamState, action, kind, scope);
+      try {
+        const refused = await deploy(agent, route);
+        assert.equal(refused.status, 403);
+        assert.equal(refused.error.code, "FORBIDDEN");
+        assert.match(refused.error.message, message);
+        assert.equal(validateCredentials.mock.callCount(), 1);
+      } finally {
+        liftRestriction(f.iamState, denied);
+      }
+    }
+  }
+
+  const readDenied = restrict(f.iamState, "read", "sandbox_policy", admittedPolicy);
+  try {
+    const recovered = await deploy(admitted, "deploy-first");
+    assert.equal(recovered.status, 202);
+    assert.deepEqual(recovered.data, accepted.data);
+    assert.equal(validateCredentials.mock.callCount(), 1);
+  } finally {
+    liftRestriction(f.iamState, readDenied);
+  }
+});
+
+test("deployment checks policy and Secret authority at Channel credential handoff", async (t) => {
+  const f = await fixture(t);
+  await f.state.transact((unit) =>
+    unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
+  );
+  const marker = "synthetic-channel-credential";
+  const base = `/namespaces/${f.namespace.id}`;
+  const secret = await f.request("POST", `${base}/secrets`, { name: "channel", value: marker });
+  assert.equal(secret.status, 201, JSON.stringify(secret));
+  const saved = await f.request("PATCH", `${base}/configurations/${f.configuration.id}`, {
+    values: f.configuration.values,
+    secretBindings: { CHANNEL_TOKEN: { source: secret.data.ref, delivery: { type: "env" } } },
+  });
+  assert.equal(saved.status, 200, JSON.stringify(saved));
+
+  const storage = f.controller.selectedDriver("secret");
+  const withValue = storage.withValue?.bind(storage);
+  assert.ok(withValue);
+  const deliver = t.mock.fn(async (value) => assert.equal(value, marker));
+  const channel = {
+    capability: "channel",
+    id: "channel-policy-handoff",
+    implementation: "test",
+    /** @type {NonNullable<import("../../packages/contracts/src/index.ts").ChannelDriver["validateCredentials"]>} */
+    validateCredentials: async (_values, use) => use("CHANNEL_TOKEN", "channel", deliver),
+    async lookupDirectory() {
+      return { candidates: [], complete: true };
+    },
+  };
+  f.controller.registerDriver(channel);
+  f.controller.selectDriver("channel", channel.id);
+
+  /** @type {{ commit?: () => Promise<void> }} */
+  const pending = {};
+  const commit = async () => {
+    const save = pending.commit;
+    delete pending.commit;
+    await save?.();
+  };
+  const read = f.state.read.bind(f.state);
+  const transact = f.state.transact.bind(f.state);
+  // Let a competing writer commit at the final read of the bound Secret, or before
+  // the handoff transaction acquires its locks when the metadata read shares those locks.
+  t.mock.method(f.state, "read", (work) =>
+    read((state) =>
+      work({
+        ...state,
+        secrets: {
+          ...state.secrets,
+          async findSecret(namespaceId, secretId) {
+            if (secretId === secret.data.id) {
+              await commit();
+            }
+            return state.secrets.findSecret(namespaceId, secretId);
+          },
+        },
+      }),
+    ),
+  );
+  t.mock.method(f.state, "transact", async (work) => {
+    await commit();
+    return transact(work);
+  });
+
+  const secretScope = { namespaceId: f.namespace.id, resourceId: secret.data.id };
+  for (const [route, revoke] of [
+    ["deploy", "manage_policy"],
+    ["deploy-first", "manage_policy"],
+    ["deploy", "operate"],
+  ]) {
+    await t.test(`${route} after ${revoke} becomes required or denied`, async (routeTest) => {
+      const agent = await f.createAgent();
+      await f.prepareDeployment(agent);
+      if (revoke === "manage_policy") {
+        restrict(f.iamState, "manage_policy", "agent", {
+          namespaceId: f.namespace.id,
+          resourceId: agent.id,
+        });
+      }
+
+      const backend = routeTest.mock.method(storage, "withValue", (record, use) =>
+        withValue(record, (value) => {
+          assert.equal(record.id, secret.data.id);
+          assert.equal(value, marker);
+          pending.commit = async () => {
+            if (revoke === "manage_policy") {
+              await seedDenyAll(f, agent);
+            } else {
+              restrict(f.iamState, "operate", "secret", secretScope);
+            }
+          };
+          return use(value);
+        }),
+      );
+      deliver.mock.resetCalls();
+      const refused = await f.request(
+        "POST",
+        `${f.collection}/${agent.id}/${route}`,
+        route === "deploy-first"
+          ? {
+              key: "channel-credential-handoff",
+              expectedConfigurationId: saved.data.id,
+              expectedGeneration: saved.data.generation,
+            }
+          : undefined,
+      );
+      assert.equal(pending.commit, undefined);
+      assert.equal(backend.mock.callCount(), 1);
+      assert.equal(refused.status, 403);
+      assert.equal(refused.error.code, "FORBIDDEN");
+      assert.match(
+        refused.error.message,
+        revoke === "manage_policy" ? /Agent manage_policy/ : /Secret operate/i,
+      );
+      assert.equal(deliver.mock.callCount(), 0);
+    });
+  }
+});
+
 test("the SandboxPolicy API admits authorized repository grants and preserves explicit deny-all", async (t) => {
   const repositoryNetworkPolicyCeiling = /** @type {const} */ ([
     { repository: "example/manual", access: "read" },

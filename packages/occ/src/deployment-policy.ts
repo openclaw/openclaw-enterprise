@@ -24,56 +24,19 @@ import {
 export const GATEWAY_MANAGED_MODE_UNSUPPORTED =
   "Agent setting gatewayManagedMode is not supported by the selected Compute Driver.";
 
-type RepositoryPolicyOwner = {
-  readonly admission?:
-    | {
-        readonly policy: {
-          repositoryNetworkPolicyAllows?(input: {
-            readonly namespaceId: string;
-            readonly grant: RepositoryNetworkGrant;
-          }): boolean;
-        };
-      }
-    | undefined;
-  unchanged(): boolean;
-};
-
-interface RepositoryPolicyAdmission {
-  readonly sandboxPolicy: SandboxPolicySnapshot | undefined;
-  readonly repositoryOwner: RepositoryPolicyOwner | undefined;
-}
-
 export function admitDeploymentRepositoryPolicy(
   sandboxPolicy: SandboxPolicySnapshot | undefined,
   grants: readonly RepositoryNetworkGrant[] | undefined,
-  context: {
-    readonly ceiling: RepositoryNetworkPolicyCeiling;
-    readonly sandbox: SandboxDriver | undefined;
-    readonly namespaceId: string;
-    readonly repositoryOwner: () => RepositoryPolicyOwner | undefined;
-  },
-): RepositoryPolicyAdmission {
+  ceiling: RepositoryNetworkPolicyCeiling,
+  sandbox: SandboxDriver | undefined,
+  requireOwner: (grants: readonly RepositoryNetworkGrant[]) => () => boolean,
+) {
   if (grants === undefined) {
-    return { sandboxPolicy, repositoryOwner: undefined };
+    return { sandboxPolicy, ownerUnchanged: undefined };
   }
-  const { ceiling, sandbox, namespaceId } = context;
   try {
     const requested = admitRepositoryNetworkPolicy(grants, ceiling);
-    const requiresOwner = requested !== undefined && requested.grants.length > 0;
-    const repositoryOwner = requiresOwner ? context.repositoryOwner() : undefined;
-    const namespacePolicy = repositoryOwner?.admission?.policy;
-    if (
-      requiresOwner &&
-      (!requested.grants.every(
-        (grant) =>
-          namespacePolicy?.repositoryNetworkPolicyAllows?.({ namespaceId, grant }) === true,
-      ) ||
-        !repositoryOwner?.unchanged())
-    ) {
-      throw new ResourceStateConflictError(
-        "Cannot verify Namespace repository network grants. Review the Installation repository policy before deploying.",
-      );
-    }
+    const ownerUnchanged = requested?.grants.length ? requireOwner(requested.grants) : undefined;
     if (sandboxPolicy === undefined) {
       throw new RepositoryNetworkPolicyAdmissionError(
         "UNSUPPORTED_POLICY",
@@ -83,7 +46,7 @@ export function admitDeploymentRepositoryPolicy(
     }
     return {
       sandboxPolicy: admitSandboxRepositoryNetworkPolicy(sandboxPolicy, grants, ceiling, sandbox),
-      repositoryOwner,
+      ownerUnchanged,
     };
   } catch (error) {
     if (!(error instanceof RepositoryNetworkPolicyAdmissionError)) {
@@ -150,39 +113,41 @@ export function admitComputeRevision(
   });
 }
 
-export function checkedSandboxPolicySnapshot(
-  driver: SandboxDriver,
-  additions: readonly SandboxNetworkGrant[],
-  version: number,
-  defaults?: SandboxPolicySnapshot["defaults"],
-  scope?: { readonly repositoryCredentials: boolean },
-  producer?: () => SandboxPolicySnapshot,
-): SandboxPolicySnapshot {
-  const refused = () =>
-    new ResourceStateConflictError(
-      "The Sandbox Driver cannot enforce the complete requested policy.",
-      [
-        {
-          path: "",
-          code: "INVALID_VALUE",
-          message: "The selected Driver could not validate the configuration.",
-        },
-      ],
-    );
-  let returned: SandboxPolicySnapshot;
+export function sandboxPolicyRefused(): ResourceStateConflictError {
+  return new ResourceStateConflictError(
+    "The Sandbox Driver cannot enforce the complete requested policy.",
+    [
+      {
+        path: "",
+        code: "INVALID_VALUE",
+        message: "The selected Driver could not validate the configuration.",
+      },
+    ],
+  );
+}
+
+function produceSandboxPolicy(produce: () => SandboxPolicySnapshot): SandboxPolicySnapshot {
   try {
-    returned =
-      producer === undefined
-        ? driver.admitNetworkPolicy!(immutableCopy(additions), version, defaults, scope)
-        : producer();
+    return produce();
   } catch (error) {
     // Preserve structured producer diagnostics; unknown exceptions (including null)
     // fail immediately, without retrying or inspecting their contents.
     throw error instanceof ConfigurationValidationError ||
       error instanceof SandboxNetworkPolicyConflictError
       ? error
-      : refused();
+      : sandboxPolicyRefused();
   }
+}
+
+export function checkedSandboxPolicySnapshot(
+  driver: SandboxDriver,
+  additions: readonly SandboxNetworkGrant[],
+  version: number,
+  defaults?: SandboxPolicySnapshot["defaults"],
+  scope?: { readonly repositoryCredentials: boolean },
+  produce = () => driver.admitNetworkPolicy!(immutableCopy(additions), version, defaults, scope),
+): SandboxPolicySnapshot {
+  const returned = produceSandboxPolicy(produce);
   try {
     // Detach once before inspecting: a Driver may return mutable data or accessors.
     // OCC owns the exact ordered grants; the Driver still owns opaque defaults.
@@ -199,12 +164,12 @@ export function checkedSandboxPolicySnapshot(
       !isDeepStrictEqual(snapshot.additions, additions) ||
       Object.hasOwn(snapshot, "repositoryNetworkPolicy")
     ) {
-      throw refused();
+      throw sandboxPolicyRefused();
     }
     return snapshot;
   } catch {
     // Never include unknown Driver-returned values or exceptions in diagnostics.
-    throw refused();
+    throw sandboxPolicyRefused();
   }
 }
 
