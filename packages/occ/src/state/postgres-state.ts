@@ -3714,6 +3714,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     };
 
     const sandboxPolicies: SandboxPolicyRepository = {
+      supportsRepositoryNetworkPolicy: true,
       find: async (namespaceId, agentId) => {
         const row = rows(
           (

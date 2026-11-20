@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-11-19"
-last_updated_session: "authoring-run/a1d54016-87f5-4fbb-b7c2-43f2250e78a0"
+updated: "2026-11-20"
+last_updated_session: "authoring-run/7263c830-6404-45c8-9dc5-a4c9304385df"
 ---
 
 # Agent sandbox policy flow
@@ -75,18 +75,15 @@ MCP paths. Discovery can be credentialless; providers enforce OAuth scopes.
 `packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
 Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
 and checks editing, expected version, pending work, complete ceiling coverage,
-and registry-resolved Driver admission. The saved additions come from the
-admitted snapshot. While the active or next revision runs under protected
-execution (the Installation selects the Credential Proxy), additions are refused
-with `409 SANDBOX_POLICY_PROTECTED_EXECUTION`, as are live application to a
-protected revision and a protected deploy carrying them; protected
-revisions admit no ordinary Agent policy snapshot. Protected, dedicated Codex
-repository admission can carry the Sandbox Driver's explicitly acknowledged
-[artifact subset](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
-`checkedProtectedCodexArtifactPolicy` verifies its purpose, declared keys, Driver
-identity, version and empty additions before runtime credential provisioning.
-That immutable snapshot remains ineligible for live apply. The policy view reports
-`protectedExecution`.
+and registry-resolved Driver admission. OCC saves the admitted additions.
+When the active or next revision uses protected execution, saves with ordinary
+additions, live application, and protected deployments carrying additions fail
+with `409 SANDBOX_POLICY_PROTECTED_EXECUTION`. The policy view reports
+`protectedExecution`. Protected dedicated Codex repository admission can carry
+the Sandbox Driver's acknowledged [artifact subset](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
+`checkedProtectedCodexArtifactPolicy` checks its purpose, keys, Driver identity,
+version, and empty additions before credential provisioning. Live apply also
+refuses that snapshot.
 
 Protected Codex repository preparation compiles the revision's qualified artifact
 snapshot through `openshell-codex-artifacts.ts`; it never merges ambient defaults.
@@ -109,9 +106,8 @@ fail before network policy access. The temporary
 `TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing` requires
 Installation and Agent administration; Guardrails will replace this switch.
 
-Both state adapters return `sandboxPolicyEditing: false` at Agent creation,
-matching the PostgreSQL column default and subsequent reads. The separately
-authorized editing operation changes this flag.
+Both State adapters default `sandboxPolicyEditing` to `false`. The authorized
+editing operation changes this flag.
 
 `packages/occ/src/state/postgres-state.ts` performs versioned updates. Agent
 creation creates its one policy through a database trigger. Constraints enforce
@@ -134,11 +130,16 @@ validates the selected Driver's [repository network policy](../reference/sandbox
 before copying it into the immutable snapshot. It rejects pending results and
 arrays whose contents would change during JSON serialization.
 
-`applyAgentSandboxPolicy` authorizes Agent `manage_policy` and SandboxPolicy
-`update` and `read` before naming saved additions. Application requires the
-exact active revision and a supporting Driver. One transaction saves reviewed
-additions as a new policy version, records pending application and queues
-Agent-target work. Omitted additions retain the saved version. Enforcement requires worker confirmation.
+State saves desired grants and rejects scoped revision writes. PostgreSQL
+requires a marker that `packages/occ/src/state/postgres-state.ts:revisionFromRow`
+rejects. Drain incompatible Workers and let their claims clear before enabling
+scoped deployments.
+
+`applyAgentSandboxPolicy` requires Agent `manage_policy` and SandboxPolicy
+`update` and `read` before naming saved additions. It requires the active
+revision and a supporting Driver. One transaction saves a reviewed version,
+records pending application, and queues Agent work. Omitted additions retain
+the saved version. The worker confirms enforcement.
 
 ### 3. Reconcile provider effects
 
@@ -273,6 +274,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 04:23: Trace scoped revision refusal and Worker drain. (authoring-run/7263c830-6404-45c8-9dc5-a4c9304385df - f6f018182bc5b335701f7b2b5c1f6bfc3b31bf29)
 
 - 2026-11-19 10:41: Reconcile repository policy admission with source-bound credential acquisition. (authoring-run/a1d54016-87f5-4fbb-b7c2-43f2250e78a0 - 41bbfbee0cf3df3ed653389c70c86087e571f17b)
 
