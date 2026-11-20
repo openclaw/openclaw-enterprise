@@ -19,6 +19,9 @@ const API = "gateway.envoyproxy.io/v1alpha1";
 const RECORD = "openclaw.dev/channel-egress-binding";
 const FLEET = "openclaw.dev/channel-egress-fleet";
 export const CHANNEL_EGRESS_BINDING_LABEL = "openclaw.dev/channel-egress-binding";
+export const CHANNEL_GATEWAY_BOUNDARY_LABELS = {
+  "openshell.ai/boundary-role": "channel-gateway",
+} as const;
 
 interface Resource extends KubernetesObject {
   apiVersion: string;
@@ -573,6 +576,9 @@ export class KubernetesChannelEgress {
     const policyHash = sha256Hex(
       JSON.stringify({
         drivers: requirements.drivers,
+        // A Gateway created without these labels needs a separate binding:
+        // policy checks for the new Pod cannot establish isolation for the old one.
+        sourceLabels: CHANNEL_GATEWAY_BOUNDARY_LABELS,
         // Include the complete effective policy so an implementation or mandatory
         // restriction change also gets a separate generation and serving binding.
         filterChain: channelEgressFilterChain("policy", requirements.destinations, this.options),
@@ -890,6 +896,8 @@ export class KubernetesChannelEgress {
     const source = asRecord(
       asRecord(this.grants(binding)[0]!.spec?.podSelector)?.matchLabels,
     ) as Record<string, string>;
+    // reserve() binds this template label to the listener generation.
+    const sourcePodLabels = { ...source, ...CHANNEL_GATEWAY_BOUNDARY_LABELS };
     const isPrivateRange = (cidr: string): boolean => {
       const [address, prefix] = cidr.split("/");
       if (isIP(address ?? "") !== 4) {
@@ -917,7 +925,7 @@ export class KubernetesChannelEgress {
       for (const policy of policies.items) {
         // Kubernetes list entries can omit kind; the list operation fixes it.
         const spec = networkPolicyFields({ ...policy, kind: "NetworkPolicy" }, false).spec;
-        if (namespace === binding.namespace && maySelect(spec?.podSelector, source)) {
+        if (namespace === binding.namespace && maySelect(spec?.podSelector, sourcePodLabels)) {
           for (const raw of Array.isArray(spec?.egress) ? spec.egress : []) {
             const rule = asRecord(raw);
             const peers = Array.isArray(rule?.to) && rule.to.length > 0 ? rule.to : [{}];

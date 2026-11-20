@@ -1,7 +1,7 @@
 ---
 created: 2026-11-19
-updated: 2026-11-19
-last_updated_session: authoring-run/3d885bbf-20eb-48f1-9e9e-975b986c82ab
+updated: 2026-11-20
+last_updated_session: authoring-run/4c757ca1-5ac6-4c76-8a5e-6cfdea8e3a69
 ---
 
 # Channel egress flow
@@ -138,6 +138,13 @@ The worker reads every serving Pod's configuration through the read-only
 inspection listener. It requires the assigned actual TCP port, one matching listener, the intended
 active filter chain, no alternate or older draining chain, and a stable Pod set. It installs the exact Gateway
 source and Envoy ingress grants, then checks the complete additive policy sets.
+When it checks source egress, Compute uses the Gateway Pod template's fixed
+`openshell.ai/boundary-role=channel-gateway` label. The label is part of the
+binding's policy hash. A Gateway created before this label was introduced
+gets a separate binding on reconciliation, and its old binding retires after
+the previous Pod stops. A policy that selects
+OpenShell supervisors by role cannot select the channel Gateway. Selectors
+that depend on unknown labels can still match and undergo the same checks.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.deployment`
 
@@ -190,6 +197,8 @@ and remaining acceptance evidence.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 09:13: Use the channel Gateway Pod role to check overlap with additive egress policies (authoring-run/4c757ca1-5ac6-4c76-8a5e-6cfdea8e3a69 - d30b80e11f43b61183ee94d09a358449c2e0aa98)
 
 - 2026-11-19 20:41: Verify recorded Agent state before one-off completion and on resume (authoring-run/3d885bbf-20eb-48f1-9e9e-975b986c82ab - 87d5c0d63f6765816d0e4a6dee9cb20f8be1d5c1)
 

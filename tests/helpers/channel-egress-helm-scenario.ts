@@ -526,6 +526,18 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
     "the API Namespace to become ready",
     async () => (await api("GET", `/namespaces/${namespaceId}`)).status === "ready",
   );
+  // OpenShell supervisors in a shared Namespace can have their own direct
+  // egress. The managed channel Gateway must deploy without matching that policy.
+  await apply({
+    apiVersion: "networking.k8s.io/v1",
+    kind: "NetworkPolicy",
+    metadata: { name: "proof-supervisor-egress", namespace: tenant },
+    spec: {
+      podSelector: { matchLabels: { "openshell.ai/boundary-role": "supervisor" } },
+      policyTypes: ["Egress"],
+      egress: [{}],
+    },
+  });
   const saveSecret = (name: string, value: string) =>
     api("POST", `/namespaces/${namespaceId}/secrets`, { name, value }, 201);
   const model = await saveSecret("model", process.env.OPENAI_API_KEY);
@@ -1036,6 +1048,10 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
       .map(object)
       .find((pod) => object(object(pod.metadata).labels)["openclaw.dev/workload-role"] === "agent");
     assert.ok(gatewayPod && harnessPod);
+    assert.equal(
+      object(object(gatewayPod.metadata).labels)["openshell.ai/boundary-role"],
+      "channel-gateway",
+    );
     const gatewayEnv = array(array(object(gatewayPod.spec).containers)[0]!.env);
     const harnessEnv = array(array(object(harnessPod.spec).containers)[0]!.env);
     assert.ok(!gatewayEnv.some((entry) => entry.name === "OPENAI_API_KEY"));
