@@ -7,6 +7,7 @@ import { setTimeout } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { isOpenShellInstallerFile } from "../../scripts/ci/openshell-full-integration.ts";
 import {
   createRunnerFixture,
   laneArgs,
@@ -188,28 +189,37 @@ test(
     const first = "first.test.mjs";
     const second = "second.test.mjs";
     const files = [first, second].map((path) => ({ path }));
+    const state = "state/lane.jsonl";
     const resultsPath = join(root, "results/sample.json");
     await writeCleanupFixture(root);
-    await writeRunnerManifest(root, { lanes: { sample: { files } }, groups: {} });
-    await writeFile(
-      join(root, first),
-      'import test from "node:test";\ntest("private-case-canary", () => { throw new Error("::warning::private-message-canary"); });\n',
-    );
-    // Hold another failing file open to distinguish live reporting from a final summary.
+    await writeRunnerManifest(root, {
+      lanes: { sample: { files, fileConcurrency: 2, parallelFiles: [first, second] } },
+      groups: {},
+    });
+    const failingCase =
+      'import test from "node:test";\ntest("private-case-canary", () => { throw new Error("::warning::private-message-canary"); });\n';
+    const passingCase = 'import test from "node:test";\ntest("passing case", () => {});\n';
+    await writeFile(join(root, second), failingCase);
+    // Hold manifest file 1 open so file 2 fails first and reports while the lane is live.
     const release = join(root, "release");
     await writeFile(
-      join(root, second),
+      join(root, first),
       `import { existsSync } from "node:fs";
      import { setTimeout } from "node:timers/promises";
      import test from "node:test";
-     test("second failure", {timeout: 20000}, async () => {
+     test("later failure", {timeout: 20000}, async () => {
        while (!existsSync(${JSON.stringify(release)})) await setTimeout(50);
-       throw new Error("second failure");
+       throw new Error("later failure");
      });\n`,
     );
-    const args = laneArgs(root, "sample", "state/lane.jsonl", resultsPath);
+    const args = laneArgs(root, "sample", state, resultsPath);
+    const env = {
+      GITHUB_ACTIONS: "true",
+      CI_RUNNER_FILE_CONCURRENCY: "2",
+      OCC_CI_SUITE_VIEW: "default",
+    };
     const child = spawn(process.execPath, [runnerPath, ...args], {
-      env: runnerEnv({ GITHUB_ACTIONS: "true" }),
+      env: runnerEnv(env),
     });
     let stderr = "";
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
@@ -218,29 +228,140 @@ test(
     const closed = new Promise<number | null>((resolve, reject) => {
       child.once("error", reject).once("close", resolve);
     });
+    const failureCommand =
+      "::error title=Test lane failure::A test file reported failed tests and its cleanup passed. Final lane results will follow.";
+    const ordinalHint =
+      "::notice title=Test lane first failed file hint::Original manifest file ordinal";
+    const commands = (output: string) => output.match(/^::[^\n]*(?=\n)/gm) ?? [];
+    const firstFailureCommands = [failureCommand, `${ordinalHint} 2.`];
     let code: number | null;
-    const commands = () => stderr.match(/^::.*$/gm) ?? [];
     try {
-      // Match the entire workflow command: no child-controlled text or extra commands.
       const deadline = Date.now() + 10_000;
-      while (!/^::.*\n/m.test(stderr) && Date.now() < deadline) {
+      while (commands(stderr).length < firstFailureCommands.length && Date.now() < deadline) {
         await setTimeout(50);
       }
-      assert.match(stderr, /^::.*\n/m, "live workflow command");
-      assert.deepEqual(commands(), [
-        "::error title=Test lane failure::A test file reported failed tests and its cleanup passed. Final lane results will follow.",
-      ]);
+      assert.equal(commands(stderr)[0], failureCommand);
+      // This is file 2's cleanup, while the lane and its later cleanup are still pending.
+      assert.equal(await readFile(join(root, state), "utf8"), `${second}\n`);
       assert.equal(child.exitCode, null);
       assert.equal(existsSync(resultsPath), false);
+      assert.deepEqual(commands(stderr), firstFailureCommands);
     } finally {
       await writeFile(release, "");
       code = await closed;
     }
     assert.equal(code, 1);
-    assert.equal(commands().length, 1);
-    assert.equal(await readFile(join(root, "state/lane.jsonl"), "utf8"), `${first}\n${second}\n`);
+    // Match entire commands to exclude child-controlled text and repeated hints.
+    assert.deepEqual(commands(stderr), firstFailureCommands);
+    assert.equal(await readFile(join(root, state), "utf8"), `${second}\n${first}\n`);
     const result = await readSummary(resultsPath);
     assert.equal(result.counts.failed, 2);
+
+    const focused = await runRunnerAsync(
+      [
+        ...laneArgs(root, "sample", "state/focused.jsonl", "results/focused.json"),
+        "--file",
+        second,
+      ],
+      env,
+    );
+    assert.ifError(focused.error);
+    assert.equal(focused.status, 1);
+    assert.deepEqual(commands(focused.stderr), [failureCommand, `${ordinalHint} UNKNOWN.`]);
+
+    await writeFile(join(root, second), passingCase);
+    const green = await runRunnerAsync(
+      [...laneArgs(root, "sample", "state/green.jsonl", "results/green.json"), "--file", second],
+      env,
+    );
+    assert.ifError(green.error);
+    assert.equal(green.status, 0, green.stderr);
+    assert.deepEqual(commands(green.stderr), []);
+
+    // The first policy file follows all five installers in the original manifest.
+    const canonical = JSON.parse(
+      await readFile(
+        new URL("../../scripts/ci/test-suites/openshell.json", import.meta.url),
+        "utf8",
+      ),
+    ) as { files: { path: string }[] };
+    const installers = canonical.files
+      .filter(({ path }) => isOpenShellInstallerFile(path))
+      .map(({ path }) => ({ path }));
+    await writeRunnerManifest(root, {
+      lanes: { openshell: { files: [...installers, { path: first }] } },
+      groups: { full: ["openshell"] },
+    });
+    const splitEnv = { ...env, OCC_CI_SUITE_VIEW: "full-integration" };
+    const splitHint =
+      "::notice title=Test lane first failed split file hint::Split-lane file position";
+    const unknownOrdinalCommands = [failureCommand, `${ordinalHint} UNKNOWN.`];
+    await writeFile(join(root, first), failingCase);
+    const splitResults = join(root, "results/split.json");
+    const split = await runRunnerAsync(
+      laneArgs(root, "openshell-policy", "state/split.jsonl", splitResults),
+      splitEnv,
+    );
+    assert.ifError(split.error);
+    assert.equal(split.status, 1, split.stderr);
+    const splitSummary = await readSummary(splitResults);
+    assert.equal(splitSummary.counts.failed, 1);
+    const failedPolicy = onlyFile(splitSummary);
+    assert.equal(failedPolicy.path, first);
+    assert.equal(failedPolicy.cleanup.status, "passed");
+    assert.deepEqual(commands(split.stderr), [...unknownOrdinalCommands, `${splitHint} 1.`]);
+
+    // Even selecting the only policy file explicitly is a focused run.
+    const focusedSplit = await runRunnerAsync(
+      [
+        ...laneArgs(
+          root,
+          "openshell-policy",
+          "state/split-focused.jsonl",
+          "results/split-focused.json",
+        ),
+        "--file",
+        first,
+      ],
+      splitEnv,
+    );
+    assert.ifError(focusedSplit.error);
+    assert.equal(focusedSplit.status, 1, focusedSplit.stderr);
+    assert.deepEqual(commands(focusedSplit.stderr), unknownOrdinalCommands);
+
+    const installerFailure = installers[1];
+    assert.ok(installerFailure);
+    for (const installer of installers) {
+      await writeFile(
+        join(root, installer.path),
+        installer === installerFailure ? failingCase : passingCase,
+      );
+    }
+    const installerResults = join(root, "results/split-installers.json");
+    const installerSplit = await runRunnerAsync(
+      laneArgs(root, "openshell-installers", "state/split-installers.jsonl", installerResults),
+      splitEnv,
+    );
+    assert.ifError(installerSplit.error);
+    assert.equal(installerSplit.status, 1, installerSplit.stderr);
+    const installerSummary = await readSummary(installerResults);
+    assert.deepEqual(
+      installerSummary.files.filter(({ status }) => status === "failed").map(({ path }) => path),
+      [installerFailure.path],
+    );
+    assert.deepEqual(commands(installerSplit.stderr), [
+      ...unknownOrdinalCommands,
+      `${splitHint} 2.`,
+    ]);
+
+    await writeFile(join(root, first), passingCase);
+    const greenSplit = await runRunnerAsync(
+      laneArgs(root, "openshell-policy", "state/split-green.jsonl", "results/split-green.json"),
+      splitEnv,
+    );
+    assert.ifError(greenSplit.error);
+    assert.equal(greenSplit.status, 0, greenSplit.stderr);
+    assert.deepEqual(commands(greenSplit.stderr), []);
   },
 );
 

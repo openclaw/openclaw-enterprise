@@ -4,7 +4,12 @@ import { asRecord } from "../../packages/utils/src/index.ts";
 import { assertNodeBaseImage } from "./image-build-cache.ts";
 import { assertImmutableImageReference, immutableDigest } from "./k3d-image-admission.ts";
 import { isOpenShellLane } from "./openshell-full-integration.ts";
-import { openShellHarnessError, openShellRequiredEnv } from "./openshell-model-inputs.ts";
+import {
+  assertOpenShellModelId,
+  normalizeOpenShellModelId,
+  openShellHarnessError,
+  openShellRequiredEnv,
+} from "./openshell-model-inputs.ts";
 import { loadTestSuites } from "./test-suites.ts";
 
 export type Environment = NodeJS.ProcessEnv;
@@ -295,6 +300,9 @@ export function validateLaneInputsBeforeSideEffects(
         ]
       : openShellRequiredEnv(name, file, prepare.requireEnv, modelEnv);
   requireEnv(requiredInputs, effectiveEnv);
+  if (isOpenShellLane(name) && requiredInputs.includes("OCC_TEST_OPENAI_MODEL")) {
+    assertOpenShellModelId(normalizeOpenShellModelId(effectiveEnv.OCC_TEST_OPENAI_MODEL ?? ""));
+  }
   if (prepare.nodeBaseImage) {
     assertNodeBaseImage(effectiveEnv.NODE_BASE_IMAGE);
   }

@@ -7,6 +7,7 @@
 // helper as the startup probe files.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   INITIALIZE_EMBEDDED_GATEWAY_OWNER,
   type GatewayPidNamespace,
@@ -19,10 +20,13 @@ import { runDocker } from "./runtime-image-docker.ts";
 import { image, imageTestOptions, gatewayStateVolume } from "./runtime-image-startup.ts";
 import {
   runStartupProbeScenario,
-  observedValue,
-  phaseAt,
   withStartupProbeEvidence,
 } from "./runtime-image-startup-probe.mjs";
+import {
+  observedValue,
+  phaseAt,
+  type StartupProbeSnapshot,
+} from "./runtime-image-startup-probe-observation.ts";
 
 // The probe files' one-core cap kept the Gateway CPU-throttled for these whole
 // cases; the production example allows up to four cores.
@@ -189,7 +193,11 @@ async function gatewayContainer(compute: DockerComputeDriver, containerName: str
 // `recovery` selects how the restart recovers the killed owner: "Docker" (the
 // Docker Compute handoff), "Kubernetes" (a restarted container in the same Pod)
 // or "operator" (operator-confirmed lock recovery).
-export function uncleanStopRestartTest(recovery: Recovery, title: string): void {
+export function uncleanStopRestartTest(
+  recovery: Recovery,
+  title: string,
+  { midTurnCrash = false } = {},
+): void {
   test(title, { ...imageTestOptions, timeout: 900_000 }, async (t) => {
     assert.ok(image !== undefined, "the runtime image must be selected");
     const mountPath = recovery === "Docker" ? "/home/node/.openclaw" : "/home/node";
@@ -231,8 +239,8 @@ export function uncleanStopRestartTest(recovery: Recovery, title: string): void 
         INITIALIZE_EMBEDDED_GATEWAY_OWNER,
       ]);
     }
-    // The first Gateway answers a turn, so its agent database holds a lease,
-    // and is then killed with no chance to release it.
+    // The first Gateway answers a turn before the crash so its agent database
+    // already holds a lease.
     let firstTurn: FirstTurnResult | undefined;
     let terminatedGatewayNamespace: GatewayPidNamespace | undefined;
     const compute =
@@ -240,15 +248,17 @@ export function uncleanStopRestartTest(recovery: Recovery, title: string): void 
         ? new DockerComputeDriver({ images: { gateway: image, agent: image } })
         : undefined;
     const gatewayManagedMode = recovery === "Kubernetes";
+    const heldPrompt = midTurnCrash ? "OCE_GATEWAY_CRASH_TEST" : undefined;
     const first = await runStartupProbeScenario(t, {
       terminatedGatewayNamespace: undefined,
       kind: "gateway",
       mode: "answer",
+      heldPrompt,
       ...stateMount,
       podOwner,
       gatewayManagedMode,
       cpus: restartGatewayCpus,
-      until: ({ events }: { events: unknown[] }) => events.some(observedValue("ready", true)),
+      until: ({ events }: StartupProbeSnapshot) => events.some(observedValue("ready", true)),
       act: async ({ containerName }: { containerName: string }) => {
         firstTurn = await sendFirstTurn(containerName);
         if (compute) {
@@ -270,9 +280,13 @@ export function uncleanStopRestartTest(recovery: Recovery, title: string): void 
     await assertGatewayFirstTurnMemory(t, await gatewayMemoryPeak(first.containerName));
     const { stdout: id } = await runDocker(["inspect", "--format", "{{.Id}}", first.containerName]);
     const gatewayId = id.trim();
-    await runDocker(["kill", "--signal", "KILL", gatewayId]);
-    const stopped = await runDocker(["wait", gatewayId]);
-    assert.equal(stopped.stdout.trim(), "137", "Docker must confirm the killed Gateway exited");
+    if (heldPrompt === undefined) {
+      await runDocker(["kill", "--signal", "KILL", gatewayId]);
+      const stopped = await runDocker(["wait", gatewayId]);
+      assert.equal(stopped.stdout.trim(), "137", "Docker must confirm the killed Gateway exited");
+    } else {
+      await interruptGatewayTurn(first, heldPrompt);
+    }
     if (compute) {
       await compute["removeGateway"](
         first.containerName,
@@ -288,6 +302,8 @@ export function uncleanStopRestartTest(recovery: Recovery, title: string): void 
     }
     // The restart's first turn goes out as soon as the runtime reports ready.
     let turn: FirstTurnResult | undefined;
+    // The original HTTP client disconnected. The Gateway can still resume its
+    // stored turn after readiness, so let the provider answer resumed work too.
     const restarted = await runStartupProbeScenario(t, {
       terminatedGatewayNamespace,
       kind: "gateway",
@@ -296,7 +312,7 @@ export function uncleanStopRestartTest(recovery: Recovery, title: string): void 
       podOwner,
       gatewayManagedMode,
       cpus: restartGatewayCpus,
-      until: ({ phases }: { phases: unknown[] }) => phaseAt(phases, "native-spawn") !== undefined,
+      until: ({ phases }: StartupProbeSnapshot) => phaseAt(phases, "native-spawn") !== undefined,
       act: async ({ containerName }: { containerName: string }) => {
         // A failed exec is reported with the wrapper output below.
         turn = await sendFirstTurn(containerName).catch((error: unknown) => ({
@@ -308,21 +324,19 @@ export function uncleanStopRestartTest(recovery: Recovery, title: string): void 
       // Before the fix: HTTP 500 {"error":{"message":"internal error"}}.
       assert.equal(turn?.status, 200, `first turn after restart: ${JSON.stringify(turn)}`);
       assert.equal(turn?.content, "READY");
-      if (recovery !== "operator") {
-        assert.match(restarted.snapshot.output, /"recovered"\s*:\s*true/);
+      if (!midTurnCrash) {
+        if (recovery !== "operator") {
+          assert.match(restarted.snapshot.output, /"recovered"\s*:\s*true/);
+        }
+        // Killing the entire container leaves the database lease unproven.
+        // The next Gateway must gate readiness on its deferred integrity check.
+        assert.match(restarted.snapshot.output, /previous release not observed/);
+        assert.match(
+          restarted.snapshot.output,
+          /agent database integrity gate for [a-z-]+: reason=[a-z-]+, mode=deferred, outcome=pending/,
+        );
+        assert.match(restarted.snapshot.output, /recovered after background inspection/);
       }
-      // The restart did inspect the unreleased database in the background
-      // after its listener bound: the window this readiness must cover.
-      assert.match(restarted.snapshot.output, /previous release not observed/);
-      // The deferred integrity gate: the restart cannot prove from its own PID
-      // namespace that the killed owner is dead, so admission starts with the
-      // clean-close seal unproven and the gate settles in the background after
-      // the listener binds. The stale lease line above carries the refusal cause.
-      assert.match(
-        restarted.snapshot.output,
-        /agent database integrity gate for [a-z-]+: reason=[a-z-]+, mode=deferred, outcome=pending/,
-      );
-      assert.match(restarted.snapshot.output, /recovered after background inspection/);
       if (gatewayManagedMode) {
         // The launcher sets these only on its native Gateway child, including after a restart.
         await runDocker([
@@ -351,6 +365,72 @@ export function uncleanStopRestartTest(recovery: Recovery, title: string): void 
 // PID namespace cannot verify that holder. Its wrapper, the holder's parent in
 // the same namespace, now releases the records of the exited process.
 const gatewayStateLock = "/home/node/.openclaw/tmp/openclaw-1000/gateway.state.lock";
+
+async function interruptGatewayTurn(
+  scenario: Awaited<ReturnType<typeof runStartupProbeScenario>>,
+  prompt: string,
+): Promise<void> {
+  const { containerName, sidecar, wrapper, collect, exited } = scenario;
+  const auth = wrapper.environment.find((entry: string) =>
+    entry.startsWith("OPENCLAW_GATEWAY_PASSWORD="),
+  );
+  assert.ok(auth);
+  const password = auth.slice("OPENCLAW_GATEWAY_PASSWORD=".length);
+  const budgetMs = 60_000 * imageSmokeTimeoutMultiplier;
+  // The provider sidecar shares the Gateway's loopback and outlives its container,
+  // so the HTTP client can observe the interrupted response independently.
+  const request = inGatewayContainer(
+    sidecar,
+    async ({ prompt, password, timeoutMs }) => {
+      try {
+        const response = await fetch("http://127.0.0.1:8080/v1/chat/completions", {
+          method: "POST",
+          headers: { authorization: `Bearer ${password}`, "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "openclaw/default",
+            stream: false,
+            messages: [{ role: "user", content: prompt }],
+          }),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        await response.arrayBuffer();
+        process.stdout.write(JSON.stringify({ status: response.status }));
+      } catch (error) {
+        process.stdout.write(JSON.stringify({ error: error instanceof Error ? error.name : "" }));
+      }
+    },
+    { prompt, password, timeoutMs: budgetMs * 2 },
+    budgetMs * 2,
+  );
+  const crash = async () => {
+    const deadline = Date.now() + budgetMs;
+    while (
+      !(await collect()).events.some((event) => "event" in event && event.event === "turn-held")
+    ) {
+      assert.ok(Date.now() < deadline, "the provider did not receive the controlled turn");
+      await delay(50);
+    }
+    // Kill the serving child named by its state lock. PID 1 must observe the
+    // crash and exit on its own. SIGKILL avoids writing a core dump.
+    await inGatewayContainer(
+      containerName,
+      async ({ lockPath }) => {
+        const { readFileSync } = await import("node:fs");
+        const { pid, role } = JSON.parse(readFileSync(lockPath, "utf8"));
+        if (!Number.isSafeInteger(pid) || pid <= 1 || role !== "gateway") {
+          throw new Error("The state lock does not name the serving Gateway");
+        }
+        process.kill(pid, "SIGKILL");
+      },
+      { lockPath: gatewayStateLock },
+      budgetMs,
+    );
+    assert.ok(await exited(Date.now() + budgetMs), "the wrapper stayed alive after its child died");
+    assert.equal((await collect()).exitCode, 1, "the wrapper must signal an unexpected child exit");
+  };
+  const [{ stdout }] = await Promise.all([request, crash()]);
+  assert.deepEqual(JSON.parse(stdout), { error: "TypeError" }, "the client must see a disconnect");
+}
 
 // Runs in the Gateway container: stops the native Gateway as soon as its state
 // lock names it (with the given role, if any), so the test, not CPU timing,
@@ -475,7 +555,7 @@ export function stoppedStarterReplacementTest(title: string, role: string | null
       podOwner: undefined,
       gatewayManagedMode: false,
       cpus: restartGatewayCpus,
-      until: ({ phases }: { phases: unknown[] }) => phaseAt(phases, "native-spawn") !== undefined,
+      until: ({ phases }: StartupProbeSnapshot) => phaseAt(phases, "native-spawn") !== undefined,
       act: async ({
         containerName,
         exited,
@@ -538,7 +618,7 @@ export function stoppedStarterReplacementTest(title: string, role: string | null
       podOwner: undefined,
       gatewayManagedMode: false,
       cpus: restartGatewayCpus,
-      until: ({ events, output }: { events: unknown[]; output: string }) =>
+      until: ({ events, output }: StartupProbeSnapshot) =>
         events.some(observedValue("ready", true)) || unverifiableOwner.test(output),
       act: undefined,
     });
@@ -577,7 +657,7 @@ export function liveHolderKeepsStateTest(title: string): void {
     } as const;
     const live = await runStartupProbeScenario(t, {
       ...scenario,
-      until: ({ events }: { events: unknown[] }) => events.some(observedValue("ready", true)),
+      until: ({ events }: StartupProbeSnapshot) => events.some(observedValue("ready", true)),
       act: undefined,
     });
     const readLock = async () => {

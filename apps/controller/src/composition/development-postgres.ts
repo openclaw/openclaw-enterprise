@@ -3,6 +3,7 @@ import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.t
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
+import { installTokenServiceDriver } from "./token-service.ts";
 import {
   CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS,
   controlPlaneAuditDatabaseOptions,
@@ -179,7 +180,9 @@ export async function composePostgresDevelopment(
     });
 
     const loggingLevel = config.logging?.level ?? drivers?.installation.logging.level;
-    const channelDriver = new SlackChannelDriver();
+    const channelDriver =
+      drivers?.channelDrivers?.find(({ provider }) => provider === "slack")?.driver ??
+      new SlackChannelDriver(globalThis.fetch, undefined, { expectProxy: true });
     const controller = OpenClawController.forInstallation(
       persistedInstallation,
       {
@@ -236,6 +239,7 @@ export async function composePostgresDevelopment(
       controller.registerDriver(drivers.secretDriver);
       controller.selectDriver("secret", drivers.secretDriver.id);
     }
+    await installTokenServiceDriver(controller, drivers);
     controller.installPluginDrivers(drivers?.pluginDrivers ?? []);
     if (drivers?.repositoryPolicy !== undefined) {
       const driver = drivers.repositoryPolicy;

@@ -1,5 +1,15 @@
 import { isOpenShellLane } from "./openshell-full-integration.ts";
 
+export function normalizeOpenShellModelId(model: string): string {
+  return model.replace(/^(?:openai|codex)\//u, "");
+}
+
+export function assertOpenShellModelId(modelId: string): void {
+  if (modelId.trim() === "") {
+    throw new Error("OCC_TEST_OPENAI_MODEL must contain a nonempty model ID.");
+  }
+}
+
 const codexOnlyFiles = new Set([
   "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts",
   "tests/integration/openshell-refresh-real.test.ts",

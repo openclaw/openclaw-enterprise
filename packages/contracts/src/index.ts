@@ -1,15 +1,23 @@
 import type { Static } from "typebox";
+
 import type { HarnessAuthBindingSchema } from "./api/common.ts";
 import type {
   ComputeAgentProvisioningCapabilities,
   RepositoryWorkerRestartDisposition,
 } from "./drivers/compute/index.ts";
 import type { DriverCapability } from "./drivers/index.ts";
+import type { TokenServiceRegistration } from "./drivers/token-service/index.ts";
 import type {
   ExecutionAdmission,
   ProtectedEgressSource,
   ProxyPlan,
 } from "./drivers/credential-proxy/index.ts";
+
+export type { NetworkDestinationRule } from "./network-destination.ts";
+export {
+  NetworkDestinationRuleSchema,
+  normalizeNetworkDestinationRules,
+} from "./network-destination.ts";
 
 export type {
   CredentialPolicyReduction,
@@ -44,6 +52,7 @@ export type {
   ProxyRevisionContext,
   CredentialProviderDefinition,
   CredentialSourceControl,
+  CredentialUpdateNotification,
   CredentialProxyDriver,
 } from "./drivers/credential-proxy/index.ts";
 export type {
@@ -423,11 +432,14 @@ export type {
   ModelProviderView,
   ModelProviderModel,
   InferenceProtocol,
+  SourceProviderPresetId,
 } from "./model-providers.ts";
 export {
   inferenceKeyDestination,
+  isSourceProviderPresetId,
   modelProviderRequestApproved,
   normalizeInferenceBaseUrl,
+  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
 } from "./model-providers.ts";
 export interface Installation {
   readonly id: string;
@@ -571,7 +583,16 @@ type CredentialSourceOwner =
       readonly ownerCapability: "credential_gateway" | "credential_proxy";
       readonly driverId: string;
     }
-  | { readonly ownerCapability: "token_service"; readonly driverId?: never };
+  | {
+      readonly ownerCapability: "token_service";
+      readonly driverId?: never;
+      /** Present for registrations owned by an Installation-selected credential store. */
+      readonly tokenServiceInstanceId?: string;
+      /** Private owner receipt, recorded only after registration succeeds. */
+      readonly registration?: TokenServiceRegistration;
+      /** Durable dispatch fence for a registration whose owner write may be uncertain. */
+      readonly registrationDispatchedAt?: string;
+    };
 
 export type CredentialSourceOwnerCapability = CredentialSourceOwner["ownerCapability"];
 
@@ -1543,6 +1564,8 @@ export type {
   SandboxEnvironmentVariable,
   SandboxWorkloadFile,
   SandboxWorkloadIdentity,
+  HarnessRetainedDirectory,
+  HarnessLaunchDescription,
   HarnessWorkloadRequirements,
   SandboxResourceRef,
   SandboxHarnessEndpoint,
@@ -1765,8 +1788,3 @@ export type {
   HarnessStartupRef,
   SandboxDeploymentContract,
 } from "./drivers/sandbox/deployment.ts";
-
-export type {
-  CredentialUpdateNotification,
-  CredentialProxyDeploymentContract,
-} from "./drivers/credential-proxy/deployment.ts";

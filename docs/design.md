@@ -85,7 +85,10 @@ The API, console, durable worker, PostgreSQL persistence, and Kubernetes packagi
 are implemented. Single-cluster Kubernetes execution places Gateway and Harness in one tenant
 namespace with separate Pods, identities and storage. External access-gateway admission, workload
 token authentication to OCC, and general credential-free model inference remain
-planned. The two-cluster profile is experimental.
+planned. The two-cluster profile is experimental. The Kubernetes Compute Driver's experimental
+[managed OpenShell runtime](reference/drivers/kubernetes-openshell-compute.md)
+uses OpenShell-managed Harness namespaces and storage with a stable Sandbox per
+Agent. Its cluster integration and generation-fenced replacement remain unverified.
 
 <a id="current-limitations"></a>
 <a id="near-term-future-work"></a>
@@ -167,6 +170,12 @@ limits, and [Agent deployment](design/workloads.md#current-provisioning-sequence
 for the provisioning sequence.
 
 ## Drivers
+
+Channel Drivers declare provider destinations. Kubernetes Compute enforces each
+Agent's enabled-channel requirements through a dedicated Envoy egress fleet,
+separate from private workspace ingress. Protected listener ports select Agent
+policies until verified Gateway workload identities are available. See
+[channel egress](reference/drivers/kubernetes-compute/channel-egress.md).
 
 Installation configuration selects compute, configuration, IAM, and Secret
 implementations, plus channel and optional service-account, plugin, repository, Sandbox, and

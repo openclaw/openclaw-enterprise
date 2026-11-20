@@ -17,6 +17,7 @@ import {
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const browserFile = "tests/integration/dev-up-openshell-k3d-real.test.mjs";
+const invalidModelError = /OCC_TEST_OPENAI_MODEL must contain a nonempty model ID/u;
 
 type OpenShellLane = typeof openShellLane;
 
@@ -153,7 +154,8 @@ export function registerOpenShellAdmissionCases() {
               ...baseEnv,
               OCC_TEST_OPENSHELL_K3D_REAL: "1",
               OCC_TEST_OPENSHELL_HARNESS: "codex",
-              OCC_TEST_OPENAI_MODEL: "fixture-model",
+              // Omission uses the direct fixture's default model.
+              OCC_TEST_OPENAI_MODEL: endpoint ? "openai/fixture-model" : undefined,
               OCC_TEST_OPENSHELL_MODEL_BASE_URL: endpoint,
               [credential]: "synthetic-model-credential",
             },
@@ -169,6 +171,87 @@ export function registerOpenShellAdmissionCases() {
       }
     });
   }
+
+  test("OpenShell model normalization rejects blank IDs and preserves healthy names", async () => {
+    const { assertOpenShellModelId, normalizeOpenShellModelId } =
+      await import("../../scripts/ci/openshell-model-inputs.ts");
+    for (const value of ["", "  ", "codex/", "openai/", "codex/  ", "openai/  "]) {
+      assert.throws(
+        () => assertOpenShellModelId(normalizeOpenShellModelId(value)),
+        invalidModelError,
+      );
+    }
+    for (const [input, expected] of [
+      ["fixture-model", "fixture-model"],
+      ["codex/fixture-model", "fixture-model"],
+      ["openai/fixture-model", "fixture-model"],
+      ["other/fixture-model", "other/fixture-model"],
+      ["openai/codex/fixture-model", "codex/fixture-model"],
+    ] as const) {
+      const model = normalizeOpenShellModelId(input);
+      assert.doesNotThrow(() => assertOpenShellModelId(model));
+      assert.equal(model, expected);
+    }
+  });
+
+  test("OpenShell preparation refuses a blank provider model before lane and file setup", async (t) => {
+    const root = await fixture(t);
+    const state = join(root, "state/openshell.json");
+    const githubEnv = join(root, "state/openshell.env");
+    for (const [selection, model] of [
+      ["--selected-file", "codex/"],
+      ["--file", "openai/  "],
+    ] as const) {
+      const result = spawnSync(
+        process.execPath,
+        [
+          join(repositoryRoot, "scripts/ci/prepare.ts"),
+          "--lane",
+          "openshell",
+          "--state",
+          state,
+          "--github-env",
+          githubEnv,
+          selection,
+          "tests/integration/openshell-refresh-real.test.ts",
+        ],
+        {
+          encoding: "utf8",
+          env: {
+            PATH: root,
+            HOME: root,
+            TMPDIR: root,
+            OPENAI_API_KEY: "synthetic-model-key",
+            OCC_TEST_OPENAI_MODEL: model,
+            // A regressed check still stops at image admission before any setup.
+            OCC_TEST_KUBERNETES_GATEWAY_IMAGE: "fixture-image",
+          },
+        },
+      );
+      assert.equal(result.status, 1, result.stdout + result.stderr);
+      assert.match(result.stdout + result.stderr, invalidModelError);
+      await assert.rejects(stat(state), { code: "ENOENT" });
+      await assert.rejects(stat(githubEnv), { code: "ENOENT" });
+    }
+  });
+
+  test("direct OpenShell refresh refuses a blank provider model before fixture setup", async (t) => {
+    const root = await fixture(t);
+    const file = join(repositoryRoot, "tests/integration/openshell-refresh-real.test.ts");
+    const result = spawnSync(process.execPath, ["--test", file], {
+      encoding: "utf8",
+      env: {
+        PATH: root,
+        HOME: root,
+        TMPDIR: root,
+        OPENAI_API_KEY: "synthetic-model-key",
+        OCC_TEST_OPENSHELL_K3D_REAL: "1",
+        OCC_TEST_OPENAI_MODEL: "openai/",
+      },
+    });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout + result.stderr, invalidModelError);
+  });
 
   for (const selection of [
     { name: "declared", error: /must be an immutable image@sha256 reference/u },
@@ -667,7 +750,10 @@ test("receives selected model inputs", () => {
         );
         const message = summary.issues[0]?.message;
         assert.ok(typeof message === "string");
-        assert.match(message, /requires OCC_TEST_OPENSHELL_HARNESS=codex/);
+        assert.equal(
+          message,
+          `${value.file ?? scratch} requires OCC_TEST_OPENSHELL_HARNESS=codex. Unset the selector or select codex.`,
+        );
         assert.deepEqual(summary.files, []);
         continue;
       }

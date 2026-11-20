@@ -59,6 +59,16 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
         typeof candidate.readCredentialInput === "function")
     );
   }
+  if (driver.capability === "token_service") {
+    return [
+      "registerSource",
+      "updateSource",
+      "resolveCredential",
+      "forceRefresh",
+      "getRefreshStatus",
+      "removeSource",
+    ].every((operation) => typeof candidate[operation] === "function");
+  }
   if (driver.capability === "credential_proxy") {
     const control = asRecord(candidate.sourceControl);
     const reduction = asRecord(candidate.policyReduction);
@@ -169,6 +179,7 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
   }
   if (driver.capability === "channel") {
     return (
+      typeof candidate.enableRouting === "function" &&
       typeof candidate.lookupDirectory === "function" &&
       (candidate.validateCredentials === undefined ||
         typeof candidate.validateCredentials === "function")

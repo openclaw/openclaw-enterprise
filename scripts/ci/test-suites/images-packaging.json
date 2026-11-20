@@ -30,7 +30,7 @@
     "tests/integration/production-kubernetes-packaging.test.mjs",
     "tests/integration/production-kubernetes-network-policy.test.ts",
     "tests/integration/production-image-startup.test.mjs",
-    "tests/integration/production-image-bootstrap-mounts.test.mjs",
+    "tests/integration/production-image-bootstrap-mounts.test.ts",
     "tests/integration/container-registry-real.test.ts",
     "tests/integration/logging-packaging.test.ts",
     "tests/integration/repository-runtime-volume.test.ts",
@@ -78,7 +78,7 @@
       ]
     },
     {
-      "path": "tests/integration/production-image-bootstrap-mounts.test.mjs",
+      "path": "tests/integration/production-image-bootstrap-mounts.test.ts",
       "expectedTests": ["development bootstrap mount copies support a different reader UID"]
     },
     {
@@ -91,7 +91,12 @@
       ]
     },
     {
-      "path": "tests/integration/upgrade-preflight-state.test.ts"
+      "path": "tests/integration/upgrade-preflight-state.test.ts",
+      "expectedTests": [
+        "profiled upgrade checks and recovery bind Kubernetes requests to the approved target",
+        "CI tool launcher preserves proxy and certificate settings without exposing their values",
+        "CI setup action starts without caller shell startup and reuses pinned yq"
+      ]
     },
     {
       "path": "tests/integration/production-image-qualification.test.ts"

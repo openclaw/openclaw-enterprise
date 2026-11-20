@@ -21,7 +21,20 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { createModelProbeCertificates } from "./runtime-model-probe-certificates.ts";
-import { modelProbeDiagnostic } from "./runtime-model-probe-observation.ts";
+import {
+  containerStartedAt,
+  createStartupProbeFailure,
+  startupProbeObservationEvidence,
+} from "./runtime-image-startup-probe-observation.ts";
+
+export {
+  observedValue,
+  isModelTurn,
+  isTurnAnswer,
+  isRuntimeFailure,
+  heldFailure,
+  phaseAt,
+} from "./runtime-image-startup-probe-observation.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 import {
   execute,
@@ -37,6 +50,8 @@ import {
   runtimeImageModel,
   createAdmittedRuntimeImageConfiguration,
 } from "./runtime-image-startup.ts";
+
+const startupProbeFailure = createStartupProbeFailure(assert.AssertionError);
 
 // Startup model probes on Kubernetes. These tests run the real Codex Harness
 // and embedded Gateway wrappers, the image's own Codex and OpenClaw probes and
@@ -77,15 +92,6 @@ async function createStartupProbeMaterial(t) {
     await chmod(file(name), 0o644);
   }
   return directory;
-}
-
-// Docker reports RFC 3339; Podman reports "YYYY-MM-DD hh:mm:ss.nnnnnnnnn +0000 UTC".
-function containerStartedAt(value) {
-  const trimmed = value.trim();
-  const match = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.(\d+))?/.exec(trimmed);
-  assert.ok(match, `unrecognized container start time ${trimmed}`);
-  assert.match(trimmed, /Z$|\+0000 UTC$/, "container start time must be UTC");
-  return Date.parse(`${match[1]}T${match[2]}.${(match[3] ?? "0").padEnd(3, "0").slice(0, 3)}Z`);
 }
 
 // The wrapper environment the Kubernetes driver renders, including the private
@@ -203,17 +209,6 @@ function startupProbeWrapper(kind, gatewayManagedMode) {
   };
 }
 
-const probeEvents = new Set(["openclaw.model_probe", "codex.model_probe"]);
-const providerEvents = new Set([
-  "connection",
-  "secure",
-  "tls-error",
-  "request",
-  "prewarm",
-  "turn-answered",
-  "turn-closed",
-]);
-
 // The container's CPU accounting at failure (cgroup v2): usage, throttling and
 // pressure show whether the wrapper got the CPU its probe cap assumes.
 async function containerCpu(containerName) {
@@ -246,52 +241,8 @@ async function containerCpu(containerName) {
 // diagnostics report keeps the whole message. Wrapper times (probe, stages,
 // phases) count from wrapper start; provider times from container start.
 async function startupProbeEvidence(scenario, snapshot, loop) {
-  const entries = jsonLogEntries(snapshot.output);
-  const failures = snapshot.events.filter(
-    (event) => event.event === "observe" && event.key === "runtimeFailure",
-  );
   return {
-    probe: entries
-      .filter(({ event }) => probeEvents.has(event))
-      .map(
-        ({
-          event,
-          attempt,
-          code,
-          elapsedMs,
-          capMs,
-          cpuWaitMs,
-          pressureWaitMs,
-          throttledWaitMs,
-          cause,
-        }) => ({
-          event,
-          attempt,
-          code,
-          elapsedMs,
-          capMs,
-          cpuWaitMs,
-          pressureWaitMs,
-          throttledWaitMs,
-          cause,
-        }),
-      ),
-    stages: Object.fromEntries(
-      entries
-        .filter(({ event }) => event === "openclaw.model_probe_stage")
-        .map(({ stage, elapsedMs }) => [stage, elapsedMs]),
-    ),
-    provider: snapshot.events
-      .filter(({ event }) => providerEvents.has(event))
-      .map(({ event, ms, turn, transport, path, code }) =>
-        [`${event}@${ms}`, turn ? "turn" : undefined, transport, path, code]
-          .filter((value) => typeof value === "string")
-          .join(" "),
-      ),
-    runtimeFailure: failures.at(-1) && { value: failures.at(-1).value, ms: failures.at(-1).ms },
-    phases: snapshot.phases.map(({ phase, outcome, sinceStartMs }) =>
-      [phase, outcome, sinceStartMs].filter((value) => value !== undefined).join(" "),
-    ),
+    ...startupProbeObservationEvidence(snapshot),
     // Checks of the followed output (no docker CLI per check).
     checks: {
       count: loop.polls,
@@ -307,20 +258,6 @@ async function startupProbeEvidence(scenario, snapshot, loop) {
   };
 }
 
-// The scenario's failure: evidence first, then the raw wrapper output and
-// provider events. The structured diagnostic survives the job log's cut too.
-function startupProbeFailure(headline, reason, evidence, snapshot) {
-  const error = new assert.AssertionError({
-    message:
-      `${headline}\nevidence: ${JSON.stringify(evidence)}\n${failureTail(snapshot.output)}\n` +
-      JSON.stringify(snapshot.events),
-  });
-  // Locate the failure at the caller's throw, not inside this helper.
-  Error.captureStackTrace(error, startupProbeFailure);
-  error.openclawCiDiagnostic = modelProbeDiagnostic(snapshot, undefined, reason);
-  return error;
-}
-
 // Runs one wrapper start against the stand-in provider. `mode` is the
 // provider's behaviour: "answer" after `delayMs`, "reject" with HTTP 401, or
 // "hang". `until` returns true once the scenario has what it needs to check;
@@ -334,6 +271,7 @@ export async function runStartupProbeScenario(
     kind,
     mode,
     delayMs = 0,
+    heldPrompt = /** @type {string | undefined} */ (undefined),
     until,
     act,
     homeVolume,
@@ -382,6 +320,7 @@ export async function runStartupProbeScenario(
     `PROBE_ENDPOINT_MODE=${mode}`,
     "-e",
     `PROBE_ENDPOINT_DELAY_MS=${delayMs}`,
+    ...(heldPrompt === undefined ? [] : ["-e", `PROBE_ENDPOINT_HELD_PROMPT=${heldPrompt}`]),
     "-e",
     `PROBE_OBSERVE_NATIVE_PORT=${wrapper.nativePort}`,
     "-e",
@@ -511,6 +450,7 @@ export async function runStartupProbeScenario(
   const deadline = Date.now() + 300_000 * imageSmokeTimeoutMultiplier;
   const scenario = {
     containerName,
+    sidecar,
     startedAt,
     setupMs: startedAt - scenarioStartedAt,
     wrapper,
@@ -556,21 +496,6 @@ export async function runStartupProbeScenario(
       setTimeout(resolve, Math.max(0, pollStartedAt + 250 - Date.now())),
     );
   }
-}
-
-export const observedValue = (key, value) => (event) =>
-  event.event === "observe" && event.key === key && event.value === value;
-export const isModelTurn = (event) => event.event === "request" && event.turn === true;
-export const isTurnAnswer = (event) => event.event === "turn-answered";
-export const isRuntimeFailure = (event) =>
-  event.event === "observe" && event.key === "runtimeFailure" && event.value !== null;
-export const heldFailure =
-  (code) =>
-  ({ events }) =>
-    events.some(observedValue("runtimeFailure", code));
-
-export function phaseAt(phases, phase) {
-  return phases.find((entry) => entry.phase === phase);
 }
 
 // Attach the run's observations and wrapper output to a failed assertion.

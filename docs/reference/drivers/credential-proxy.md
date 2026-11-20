@@ -47,6 +47,8 @@ these operations:
 | `removeRevision(context)`                   | Revision cleanup removes the owned installation and returns a boolean completion result.                                                                                | Required; failure must not be reported as completed cleanup.                                             |
 | `policyReduction`                           | Withdrawal uses versioned `apply(context, reduction)`, then independent `observe(context, reduction)`.                                                                  | Optional on the interface; required when the plan records that capability.                               |
 
+Staged delivery declares optional `deployProxy`, `configureDeployment`, `getDeploymentStatus`, and `removeDeployment` directly on the Driver. Each receives a trusted Namespace, Agent revision, and signal and must reject a mismatched deployment or target. `notifyCredentialUpdated` is source-scoped and receives no revision. These declarations do not establish runtime support: the bundled Driver and regular Agent workflow do not yet implement them. See the proposed [worker configuration amendment](../../../specs/rfcs/0023-egress-proxy-credential-lifecycle/worker-credential-configuration.md).
+
 There is no `withdrawBinding` member in the current interface. Use OCC withdrawal
 and the admitted `policyReduction` capability, or runtime retirement, rather than
 adding a call under that older name. A reduction compares the registration,
@@ -130,6 +132,10 @@ and the same recipient may sign the startup release.
 
 Evidence includes the exact execution and plan, sender, Sandbox, enforcement
 instance, configuration and policy hash, with `authorityScope: "execution"`.
+An online Git recipient may bind the ongoing Sandbox execution and Provider
+attachment without pinning process and network IDs. Its Driver must verify current
+runtime readiness before use or startup release. Exact-dispatch and observed-hook
+recipients still require both IDs.
 For protected static inference, the principal is the whole admitted execution,
 including sibling processes; another execution of the same Agent cannot inherit it.
 Exact-dispatch profiles require a peer key; online repository profiles instead

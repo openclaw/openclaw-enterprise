@@ -36,7 +36,7 @@ import {
   waitForFocusedLabel,
 } from "./console-refocus-helpers.ts";
 import { withholdPermissionSummary } from "./console-agents-test-support.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import {
   AGENT_STOP_AND_DELETE_DENIED,

@@ -3,16 +3,13 @@ import type { Server } from "@grpc/grpc-js";
 import type { CredentialProxyDriver, EgressRef } from "@openclaw-enterprise/contracts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import { OpenShellEgressIdentity } from "./openshell-identity.ts";
-import {
-  bindOpenShellEgressAuthority,
-  createOpenShellEgressAuthority,
-} from "./openshell-authority.ts";
 
 export async function bindOpenShellExchange(
   configuration: EgressAuthorityConfiguration,
   sender: EgressRef,
   createCredentialProxy: Parameters<NonNullable<CredentialProxyDriver["bindExchange"]>>[0],
 ) {
+  const { createOpenShellEgressAuthority } = await import("./openshell-authority.ts");
   return bindOpenShellMiddleware(configuration, (publicKey) => {
     const identity = new OpenShellEgressIdentity({
       issuer: configuration.issuer,
@@ -29,6 +26,7 @@ export async function bindOpenShellMiddleware(
   configuration: EgressAuthorityConfiguration,
   createServer: (publicKey: Buffer) => Server,
 ) {
+  const { bindOpenShellEgressAuthority } = await import("./openshell-authority.ts");
   const [certificate, privateKey, publicKey] = await Promise.all([
     readFile(configuration.certificatePath),
     readFile(configuration.privateKeyPath),
