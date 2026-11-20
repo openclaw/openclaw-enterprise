@@ -1281,6 +1281,19 @@ export class SandboxWorkspaceSetupRefusedError extends Error {
 }
 
 /**
+ * A Sandbox Driver's temporary workspace preparation could not create its Pod because a
+ * Namespace ResourceQuota has no Pods left. Compute keeps the revision pending with its
+ * `NAMESPACE_POD_QUOTA_EXCEEDED` reason, as for its own refused Pods, until a Pod is free or
+ * the convergence deadline passes.
+ */
+export class SandboxPodQuotaExceededError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SandboxPodQuotaExceededError";
+  }
+}
+
+/**
  * A Sandbox Driver's code for a DeleteService or DeleteSandbox that found nothing where a read
  * had just found the target: the target went between the two (a failed candidate retired by the
  * next activation) or the identity lost sight of it. Neither is confirmed, so the caller keeps

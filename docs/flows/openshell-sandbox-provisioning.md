@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: "2026-11-19"
-last_updated_session: "authoring-run/3c318cd8-e481-47d2-9b58-d22f1fd3b01e"
+updated: "2026-11-20"
+last_updated_session: "authoring-run/275abc15-117c-45f0-920d-9ff2e08084c9"
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -255,7 +255,12 @@ owns state-child isolation, retained permissions and temporary paths.
 existing ones to be process-owned `0700`. Managed preparation uses a restricted
 revision Deployment for other subpaths. It checks ownership and mode before
 UID-fenced foreground deletion. Completed preparation exits successfully on
-SIGTERM. Sandbox creation waits for all writer Pods. Admission requires
+SIGTERM. Sandbox creation waits for all writer Pods. The wait stops early when
+the Deployment's `ReplicaFailure` names a Pod quota and a new read of that
+ResourceQuota shows no Pod left. It then removes the preparer and throws
+`SandboxPodQuotaExceededError`. Compute returns pending
+`NAMESPACE_POD_QUOTA_EXCEEDED`, and the worker's next pass prepares again. An
+unreadable quota keeps the 120-second wait. Admission requires
 `userNamespaces: false`, one optional operator-mode ServiceAccount, and the pinned
 Gateway's default identity. Preparation has no model credentials, ServiceAccount
 tokens, capabilities, or direct Pod creation.
@@ -420,6 +425,7 @@ setup, retry and restart under setgid parents. It excludes Kubernetes and model 
 
 ## Changelog
 
+- 2026-11-20 08:39: Stop native workspace preparation at a full Pod quota and report the pending quota reason. (authoring-run/275abc15-117c-45f0-920d-9ff2e08084c9 - e54145b9772eb083b2cb9a33ffef6274d99eb269)
 - 2026-11-19 10:42: Trace Sandbox startup refusal diagnostics. (authoring-run/3c318cd8-e481-47d2-9b58-d22f1fd3b01e - 6ff25175b2158ca12e49137cb980295af001a98c)
 
 - 2026-11-19 09:27: Trace the packaged tool grant and exact Sandbox adoption. (authoring-run/8bccbe00-7528-4259-ac29-fa076bc32b2a - ec602263727fa848a921a86d755cb38293bfab76)

@@ -158,7 +158,8 @@ While a version is not ready, deployment `progress.lastAttempt.code` says why
 when Compute knows. Kubernetes reports `REVISION_UNSCHEDULABLE` when a live
 Pod is `Unschedulable`, `REVISION_IMAGE_PULL_FAILED` when a container waits on
 `ErrImagePull` or `ImagePullBackOff`, `NAMESPACE_POD_QUOTA_EXCEEDED` when a
-Deployment for that version reports a full Pod quota in `ReplicaFailure`,
+Deployment for that version reports a full Pod quota in `ReplicaFailure`
+(including the OpenShell Sandbox's temporary workspace preparation Deployment),
 `WORKSPACE_SETUP_RETRYING` while restarting a failed workspace setup, and
 `WORKSPACE_NODE_PENDING` when only the workspace node's gateway connection is
 outstanding. Activation of a dedicated version reports

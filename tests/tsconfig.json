@@ -183,6 +183,7 @@
     "integration/sandbox-driver-operator-chart-case.ts",
     "integration/sandbox-driver-operator-kubernetes-cases.ts",
     "integration/sandbox-driver-preparer-cleanup-cases.ts",
+    "integration/sandbox-driver-preparer-quota-cases.ts",
     "integration/sandbox-driver-native-preparation-cases.ts",
     "integration/sandbox-driver-preparation-cases.ts",
     "integration/sandbox-driver-revision-fixture.ts",

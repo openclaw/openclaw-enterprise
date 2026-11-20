@@ -572,6 +572,7 @@ export {
   ProtectedExecutionNetworkPolicyError,
   SandboxNetworkPolicyConflictError,
   SandboxRevisionUnsupportedError,
+  SandboxPodQuotaExceededError,
   SandboxRepositoryRecipientUnverifiedError,
   SandboxWorkspaceSetupRefusedError,
   RepositorySessionWithdrawnError,
