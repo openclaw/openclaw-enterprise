@@ -13062,7 +13062,24 @@ export class OpenClawController {
               auth,
             );
       if (requestedSources === undefined && requestedAuth !== undefined) {
-        this.assertHarnessSourceListed(agent.credentialSources ?? [], requestedAuth);
+        const retained = agent.credentialSources ?? [];
+        this.assertHarnessSourceListed(retained, requestedAuth);
+        for (const { sourceId } of retained) {
+          if (
+            requestedAuth?.method === "credential_source" &&
+            requestedAuth.sourceId === sourceId
+          ) {
+            continue;
+          }
+          // Owner metadata is immutable and the Namespace fence excludes deletion. A
+          // nonlocking read avoids taking a source lock after a newly selected Secret.
+          const source = await state.credentialSources.findCredentialSource(namespace.id, sourceId);
+          if (isManagedTokenServiceSource(source)) {
+            throw new ResourceStateConflictError(
+              "This TokenService source must remain the selected Harness authentication source.",
+            );
+          }
+        }
       }
       // Unlike the Agent's own bindings above, the named Configuration's Secret bindings get the
       // full check even when `configurationId` is unchanged: deploy needs them usable, and only a
@@ -15715,17 +15732,23 @@ export class OpenClawController {
         namespaceId,
         id: binding.sourceId,
       });
-      this.assertCredentialGatewaySelected();
       const source = await state.credentialSources.lockCredentialSource(
         namespaceId,
         binding.sourceId,
       );
+      if (!isManagedTokenServiceSource(source)) {
+        this.assertCredentialGatewaySelected();
+      }
       if (source === undefined || source.state !== "ready") {
         throw new ScopeViolationError(
           "The Harness credential source is unavailable in the exact Namespace.",
         );
       }
-      this.ownedCredentialGatewayDriver(source);
+      if (isManagedTokenServiceSource(source)) {
+        this.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+      } else {
+        this.ownedCredentialGatewayDriver(source);
+      }
     } else {
       if (binding.source.namespaceId !== namespaceId) {
         throw new SecretBindingValidationError(SERVICE_ACCOUNT_CROSS_NAMESPACE);
@@ -15862,8 +15885,10 @@ export class OpenClawController {
         namespaceId,
         id: sourceId,
       });
-      this.assertCredentialSourceOwnerSelected();
       const source = await state.credentialSources.lockCredentialSource(namespaceId, sourceId);
+      if (!isManagedTokenServiceSource(source)) {
+        this.assertCredentialSourceOwnerSelected();
+      }
       if (source === undefined || source.state !== "ready") {
         throw new ScopeViolationError(
           "The credential source is unavailable in the exact Namespace.",
@@ -15878,11 +15903,20 @@ export class OpenClawController {
         // no source (finding 2536); resolving the missing owner answered a 500.
         throw new CredentialProxyAdmissionError("sourcesWithoutProxy");
       }
-      // TODO(Agent connection attachment): admit a saved account after verifying this Agent's grant.
-      if (source.ownerCapability === "token_service") {
-        throw new ResourceStateConflictError("This Agent has no grant for the saved account.");
+      if (isManagedTokenServiceSource(source)) {
+        this.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+        if (harnessAuth?.method !== "credential_source" || harnessAuth.sourceId !== source.id) {
+          throw new ResourceStateConflictError(
+            "This TokenService source must authenticate the selected Agent Harness.",
+          );
+        }
+      } else {
+        // TODO(Agent connection attachment): admit a saved account after verifying this Agent's grant.
+        if (source.ownerCapability === "token_service") {
+          throw new ResourceStateConflictError("This Agent has no grant for the saved account.");
+        }
+        this.credentialSourceOwner(source);
       }
-      this.credentialSourceOwner(source);
       sources.push(source);
     }
     this.assertHarnessSourceListed(bindings, harnessAuth);
@@ -17499,6 +17533,12 @@ export class OpenClawController {
     );
     if (source === undefined || source.state !== "ready") {
       throw new ScopeViolationError("The Harness credential source is unavailable.");
+    }
+    if (isManagedTokenServiceSource(source)) {
+      // TODO: Replace this refusal when revision delivery can freeze and dispatch this owner.
+      throw new ResourceStateConflictError(
+        "Agent revision delivery for this TokenService source is not available.",
+      );
     }
     const gateway = this.ownedCredentialGatewayDriver(source);
     const type = await this.credentialSourceType(gateway, source.type);
