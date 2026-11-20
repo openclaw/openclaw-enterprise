@@ -1,10 +1,10 @@
 import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { constants, existsSync, readFileSync } from "node:fs";
 import {
-  appendFile,
   chmod,
+  open,
   readdir,
   readFile,
   rename,
@@ -2959,11 +2959,19 @@ exec "$0.fixture" "$@"
             ],
             configurations: { cfg_agt_test: { channels } },
           };
-          const padding =
-            1024 * 1024 -
-            gzipSync(JSON.stringify(apiDraft)).length -
-            (await stat(installation)).size;
-          await appendFile(installation, "#" + " ".repeat(padding - 2) + "\n");
+          const installationFile = await open(
+            installation,
+            constants.O_WRONLY | constants.O_APPEND,
+          );
+          try {
+            const padding =
+              1024 * 1024 -
+              gzipSync(JSON.stringify(apiDraft)).length -
+              (await installationFile.stat()).size;
+            await installationFile.appendFile("#" + " ".repeat(padding - 2) + "\n");
+          } finally {
+            await installationFile.close();
+          }
         }
         const failure = await runForFailure(
           f.run,
