@@ -578,6 +578,11 @@ export function checkScratchRequirements(
   );
 }
 
+const createSiblingRevision: (
+  driver: KubernetesComputeDriver,
+  overrides: Required<Pick<AgentRevision, "agentId" | "sandboxDriverId">>,
+) => AgentRevision = routedRevision;
+
 export function checkPinnedScratchAdmission(
   scratchCompute: ScratchCompute,
   scratchRevision: (driver: KubernetesComputeDriver) => AgentRevision,
@@ -604,10 +609,12 @@ export function checkPinnedScratchAdmission(
     scratchAdmission(operations, scratchCompute(), admitted).runtime,
     scratchAdmission(operations, original, admitted).runtime,
   );
-  const sibling = routedRevision(original, {
+  const sibling = createSiblingRevision(original, {
     agentId: "sibling",
     sandboxDriverId: "scratch-openshell",
   });
+  assert.equal(sibling.agentId, "sibling");
+  assert.equal(sibling.sandboxDriverId, "scratch-openshell");
   assert.equal(scratchAdmission(operations, original, sibling).binding, undefined);
   assert.throws(
     () => scratchAdmission(operations, original, { ...admitted, namespaceId: "foreign" }),
