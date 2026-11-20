@@ -98,11 +98,24 @@ A skipped job does not verify the installed Agent workflow.
 Use the `qa-openshell-k3d` pull request label to select the Kubernetes
 [OpenShell test](../openshell.md#guided-native-openclaw-redeployment).
 It starts a disposable installation with a Sandbox Driver, enables the same
-audit setting, and sends a normal chat message to each of two dedicated
-OpenClaw revisions. For each reply, the test checks which worker ran the turn.
-It finds the start and result in the audit API by session ID and turn ID.
-It checks that PostgreSQL contains the same audit IDs. A separate check
-uses a tool and reads a file after redeployment.
+audit setting, and tests two revisions of a dedicated OpenClaw Agent. Each
+worker uses a tool and answers a chat message in the same session. The test
+checks the worker identity and compares the message ID in the audit event
+with the ID in chat history. It reads the original text through the audit API.
+After redeployment, the API must refuse to open the previous revision's message.
+
+For embedded OpenClaw and dedicated Codex, the smoke test sends two messages
+in one Gateway chat. A reader with `read_audit` can list the events. The
+message request must return HTTP 403. The test grants `read_audit_content` on
+the same Agent and opens the earlier event. Its message ID must match the ID
+in chat history. Its text must match the first message.
+
+For Codex, the test checks that PostgreSQL records the event ID when the
+reader opens its message. The test then makes PostgreSQL refuse the next
+disclosure record. The message request must return HTTP 503. The smoke also
+checks a message sent through the Gateway's HTTP chat endpoint. Codex links
+the saved message. For embedded OpenClaw, the event has no message ID and
+the message request must return HTTP 404.
 
 For embedded OpenClaw, the smoke test finds the model call and its result
 by turn ID. It then disables audit, deploys a new revision, and sends a

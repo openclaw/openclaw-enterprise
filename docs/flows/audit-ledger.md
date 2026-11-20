@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: "2026-11-19"
-last_updated_session: "authoring-run/4dfd652a-6550-45c4-b86a-ce9b35ec4705"
+last_updated_session: "authoring-run/bccca424-a66f-4ab2-ad5a-e639f845a228"
 ---
 
 # Audit ledger flow
@@ -70,6 +70,9 @@ graph TD
   Rows --> Decode["Decode envelope and<br/>recognized metadata"]
   Decode --> Result["Return immutable events"]
   Decode -->|invalid row or JSON| Error["Reject list"]
+  Linked["Open a linked turn"] -->|Both grants| Lookup["Read the saved message"]
+  Lookup -->|Recheck access| Disclose["Commit the disclosure"]
+  Disclose -->|Confirmed| Text["Return message text"]
 
   classDef storage fill:#EDF2F7,stroke:#879AB0,color:#25364A,stroke-width:1px
   classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
@@ -250,38 +253,56 @@ to the same session, Agent, and window.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:ensureGatewayRuntimeAudit`
 and `apps/controller/src/http/runtime-audit.ts`
 
-With audit and Helm-managed Gateway routing enabled, the chart creates a
-private HTTPS service. The OCC worker creates a Kubernetes Secret for the
-revision and saves the hash of its token in PostgreSQL. The Gateway mounts
-the Secret and the service's public CA certificate. A NetworkPolicy permits
-the Gateway to reach the audit listener. Compute withdraws the grant after
-the revision stops and removes the Secret when the revision retires.
+When audit and managed Gateway routing are enabled, Helm creates a private
+HTTPS listener. The OCC worker creates a token for the revision and saves its
+hash in PostgreSQL. The Gateway mounts the token Secret and the listener's
+public CA certificate. A NetworkPolicy permits this connection. Compute
+revokes the grant after the revision stops and deletes the Secret at retirement.
 
-Kubernetes Compute gives the Gateway the OCE plugin in
-`deploy/runtime/managed-runtime-audit/`. Compute adds the plugin to the Gateway configuration in a read-only
-Kubernetes volume. The base revision configuration stays available in that
-volume.
-The plugin reads the notifications that OpenClaw emits. See
-[Agent runtime activity](../guides/topics/audit-log.md#agent-runtime-activity)
-for the events available in each mode. The plugin observes work as it runs.
-It cannot stop the runtime before a turn starts.
-OCC checks the token and obtains the revision scope from the grant in the
-transaction that appends the event. A retry with the same event ID and values
-returns success and keeps one row. A retry with different values fails.
-The Agent audit API returns the approved runtime fields with the same grant
-and disclosure check as other Agent events.
+Compute enables the OCE plugin in a read-only volume with the Gateway
+configuration and the original revision configuration. The plugin reads
+[notifications from OpenClaw](../guides/topics/audit-log.md#agent-runtime-activity)
+as work runs. It saves each event in
+`/home/node/.openclaw/pending-runtime-audit/observations.sqlite` before delivery.
+The file holds up to 256 events and excludes credentials. If the queue is full,
+the plugin skips the new event and logs a warning. Chat continues during outages.
 
-Before it sends an observation, the managed Gateway saves its JSON in
-`/home/node/.openclaw/pending-runtime-audit/observations.sqlite`. When OCC
-confirms the write, the Gateway removes the local copy. If the Gateway
-process restarts in the same Pod, it can send the same event ID again.
-It checks the credential fingerprint, event source, and destination before
-each recovery. The file holds at most 256 pending observations. It contains
-no credential. Kubernetes removes it when it deletes the Pod.
+OCC checks the token, gets the revision from the grant, and appends the event
+in one transaction. After confirmation, the plugin deletes its copy. A permanent
+refusal produces a warning. After a restart in the same Pod, the plugin checks
+the credential fingerprint, source, and destination before retrying.
+OCC accepts retries with identical IDs and values once. Conflicting values
+fail. Kubernetes deletes the file with the Pod.
 
-If all 256 places are in use, the plugin reports a warning and omits the new
-observation. A permanent refusal from the listener also produces a warning.
-The Gateway continues to serve chat during an audit outage.
+### 8. An analyst opens the user message for a turn
+
+`deploy/runtime/managed-runtime-audit/index.mjs:recordInput`,
+`apps/controller/src/http/agent-audit.ts:getAgentAuditEventMessage` and
+`apps/controller/src/gateway/audit-message-client.ts:readAgentAuditMessage`
+
+The plugin adds `messageId` to a turn event when it can match a saved
+user message to the run. The text stays in the transcript. See
+[supported inputs](../guides/topics/audit-log.md#open-the-message-for-a-turn).
+
+1. The analyst supplies the audit event ID. In a PostgreSQL transaction,
+   `packages/occ/src/index.ts:selectAgentAuditMessage` checks the human
+   session and direct `read_audit` and `read_audit_content` grants on
+   this Agent. State selects a linked turn event from the preceding 24 hours.
+   Its revision must match `activeRevisionId`, and the Agent's desired state
+   must be `running`.
+2. After this transaction, OCC opens the [private path for the revision](../reference/gateway-routing.md#endpoint-and-route).
+   Envoy checks the OCC service key and sets the scope to `operator.sessions.read`.
+   OCC checks that the Gateway grants exactly this scope. OCC calls `sessions.resolve`
+   with the stored session ID, then calls `chat.message.get` with the
+   returned session key and the stored session and message IDs. OCC checks
+   the message ID, user role and turn ID. OCC accepts up to 64 KiB of
+   text from the visible message. Each API process allows four concurrent
+   lookups. The Gateway has five seconds to respond. Exceeding either limit
+   returns HTTP `503`.
+3. OCC repeats the first check in a new transaction. It records
+   `openclaw.audit.agent.message.read` with the analyst and event ID.
+   After PostgreSQL confirms the commit, OCC sends the event and the text
+   with `Cache-Control: no-store`.
 
 ## Debugging and Verification
 
@@ -315,6 +336,8 @@ The Gateway continues to serve chat during an audit outage.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 17:16: Trace how OCC links a turn to a saved chat message and authorizes the text read. (authoring-run/bccca424-a66f-4ab2-ad5a-e639f845a228 - 04dbfef7e367b86ee5b5275fb510c21798b759b5)
 
 - 2026-11-19 14:28: Record runtime observations through the OCE Gateway plugin. (authoring-run/4dfd652a-6550-45c4-b86a-ce9b35ec4705 - f637b353b485f8610c0f58df801eb5feb577f291)
 

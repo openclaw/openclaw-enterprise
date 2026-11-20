@@ -209,7 +209,7 @@ async function smoke() {
           "codex",
         );
         linkedEventId = first.turn.id;
-        await checkMessageDisclosure(stack, linkedEventId, codexReader.readMessage);
+        await checkMessageDisclosure(stack, linkedEventId, first.text, codexReader.readMessage);
         // Codex also annotates a saved user prompt for HTTP chat.
         assert.ok(http.turn.details.messageId);
         const detail = await codexReader.readMessage(http.turn.id);

@@ -477,13 +477,17 @@ function queryRevision(
 export async function checkMessageDisclosure(
   stack: InstalledAuditStack,
   eventId: string,
+  text: string,
   readMessage: (id: string) => Promise<unknown>,
 ) {
   const query = (sql: string) => queryAudit(stack, { event_id: eventId }, sql);
   const match = `action = 'openclaw.audit.agent.message.read' AND details->>'auditEventId' = :'event_id'`;
-  // The previous read delivered text. Its durable receipt must contain only the event ID.
+  // The receipt names the linked event. Neither its details nor its metadata may copy the text.
   const receipt = await query(`SELECT details FROM occ.audit_events WHERE ${match};`);
-  assert.deepEqual(JSON.parse(receipt), { auditEventId: eventId });
+  assert.ok(!receipt.includes(text), "the disclosure receipt contains the chat message");
+  const details = JSON.parse(receipt) as Record<string, unknown>;
+  delete details.__occAuditMetadata;
+  assert.deepEqual(details, { auditEventId: eventId });
   // Refuse only this message's next receipt. Fail closed despite valid grants and history.
   const constraint = `smoke_disclosure_${randomUUID().replaceAll("-", "")}`;
   await query(

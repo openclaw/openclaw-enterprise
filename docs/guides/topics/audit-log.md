@@ -264,9 +264,14 @@ the event. The text stays in chat history.
 The Gateway can link an ordinary browser chat in all three runtimes.
 Codex can also link an HTTP chat when it reports the ID of its saved input.
 If the ID arrives after the turn starts, check the completion event.
-An OpenClaw HTTP chat can have a turn ID and a message ID with no known
-connection. A turn can also combine several inputs, or start without a
-user message. Check for `details.messageId` before you offer **Open message**.
+If a policy blocks a turn after the Gateway saves the user message,
+the link can still open the original input.
+
+In both OpenClaw modes, `/v1/chat/completions` assigns unrelated IDs to
+the turn and its input. These events omit `messageId`. The link can also be
+missing if a turn combines inputs, has no saved user message, or ends after
+the Gateway loses its pending IDs. Check for `details.messageId` before
+you offer **Open message**.
 
 | Status | What to check                                                                                                                                                  |
 | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
