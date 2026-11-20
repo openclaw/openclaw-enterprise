@@ -124,8 +124,8 @@ test(
     });
     const createAudit = (ref: CredentialSourceReference, phase?: "registration_started") =>
       event(principal.id, "openclaw.credential_sources.create", ref, phase);
-    const register = (name: string, credential: string) =>
-      controller.registerManagedCredentialSource(
+    const createSource = (name: string, credential: string) =>
+      controller.createManagedCredentialSource(
         principal.id,
         namespaceId,
         { name, lifecycleConfig: { type: "static", settings: {} }, secret: { opaque: credential } },
@@ -159,7 +159,7 @@ test(
     const createsBefore = core.calls.createNamespacedSecret;
     // The owner resolves one static value; ambiguous material must fail before custody starts.
     await assert.rejects(
-      controller.registerManagedCredentialSource(
+      controller.createManagedCredentialSource(
         principal.id,
         namespaceId,
         {
@@ -171,7 +171,10 @@ test(
       ),
       /requires one nonempty UTF-8 credential value/,
     );
-    await assert.rejects(register("Oversized", "a".repeat(65_471)), /encoded credential exceeds/);
+    await assert.rejects(
+      createSource("Oversized", "a".repeat(65_471)),
+      /encoded credential exceeds/,
+    );
     assert.equal(core.calls.createNamespacedSecret, createsBefore);
     assert.deepEqual(await custodyRows(), [{ sources: 0, bindings: 0 }]);
 
@@ -179,7 +182,7 @@ test(
     // acknowledgment. Recovery must remove the undispatched hidden reservation and creator grant.
     proxy.arm();
     await assert.rejects(
-      register("Reservation acknowledgment lost", randomUUID()),
+      createSource("Reservation acknowledgment lost", randomUUID()),
       PostgresCommitOutcomeUnknownError,
     );
     assert.equal(proxy.observedCommit, true);
@@ -228,7 +231,10 @@ test(
       migrator,
       "openclaw.credential_sources.create.started",
       async () => {
-        await assert.rejects(register("Intent refused", randomUUID()), AuditAppendUnavailableError);
+        await assert.rejects(
+          createSource("Intent refused", randomUUID()),
+          AuditAppendUnavailableError,
+        );
       },
     );
     assert.equal(core.calls.createNamespacedSecret, createsBefore);
@@ -237,7 +243,7 @@ test(
     // The dependency applies the credential write but loses the acknowledgment; retain fencing and attributable intent.
     const unknownKey = randomUUID();
     core.createAppliedFailureCodes.push(503);
-    await assert.rejects(register("Unknown receipt", unknownKey), DependencyUnavailableError);
+    await assert.rejects(createSource("Unknown receipt", unknownKey), DependencyUnavailableError);
     const uncertain = (
       await pool.query(
         "SELECT id,state,registration,registration_dispatched_at FROM occ.credential_sources WHERE namespace_id=$1",
@@ -266,7 +272,7 @@ test(
     assert.deepEqual(await custodyRows(), [{ sources: 0, bindings: 0 }]);
 
     const key = randomUUID();
-    const source = await register("Private credential", key);
+    const source = await createSource("Private credential", key);
     const sourceId = source.id;
     const ref = source.ref;
     const persisted = await state.read((view) =>

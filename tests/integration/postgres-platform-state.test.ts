@@ -143,7 +143,7 @@ test(
         id: sourceId,
         namespaceId,
         name: "Managed source",
-        type: "openai",
+        type: "static",
         config: {},
         secrets: {},
         ownerCapability: "token_service",
@@ -174,10 +174,10 @@ test(
       false,
     );
     const ready = await state.transact((unit) =>
-      unit.credentialSources.markCredentialSourceReady(namespaceId, sourceId, {}, { region: "us" }),
+      unit.credentialSources.markCredentialSourceReady(namespaceId, sourceId, {}),
     );
     assert.equal(ready?.ownerCapability, "token_service");
-    assert.deepEqual(ready?.config, { region: "us" });
+    assert.deepEqual(ready?.config, {});
     assert.deepEqual(
       ready?.ownerCapability === "token_service" ? ready.registration : undefined,
       {},

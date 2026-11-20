@@ -8532,12 +8532,6 @@ export class OpenClawController {
     return { plan, assertProvidersCurrent };
   }
 
-  /**
-   * Registration records the source as `registering` before the gateway write, so an uncertain
-   * gateway outcome always leaves a record an operator can list and delete. `audit` builds the
-   * success event, committed with the transition to `ready`. `registrationAudit` records
-   * the initial `registering` row before any external effect, for multi-step callers.
-   */
   /** Bind the configured adapter to the actual durable credential store before use. */
   async activateTokenServiceInstance(driverId: string, storeIdentity: string): Promise<string> {
     if (!isNonEmptyString(driverId) || !isNonEmptyString(storeIdentity)) {
@@ -8581,7 +8575,7 @@ export class OpenClawController {
     return owner;
   }
 
-  async registerManagedCredentialSource(
+  async createManagedCredentialSource(
     principalId: string,
     namespaceId: string,
     input: Omit<SourceRegistrationInput, "sourceRef" | "tokenServiceInstanceId"> & {
@@ -8589,7 +8583,7 @@ export class OpenClawController {
     },
     audit: (resource: CredentialSourceReference, phase?: "registration_started") => AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata>> {
-    this.requireIndependentMutation("Credential source registration");
+    this.requireIndependentMutation("Credential source creation");
     this.namespaceIdentity(namespaceId);
     let reservation:
       | {
@@ -8778,9 +8772,10 @@ export class OpenClawController {
           }
           return { error };
         }
-        await state.credentialSources.markCredentialSourceDeleting(namespaceId, ref.id);
         if (!writeUnsent) {
-          if (registration === undefined) {
+          await state.credentialSources.markCredentialSourceDeleting(namespaceId, ref.id);
+          const receipt = registration;
+          if (receipt === undefined) {
             // A dispatched write without a receipt may still arrive. A later DELETE
             // waits for the registration fence before the owner can settle absence.
             return {
@@ -8796,7 +8791,7 @@ export class OpenClawController {
                   {
                     sourceRef: ref,
                     tokenServiceInstanceId: instanceId,
-                    ...(registration && { registration }),
+                    registration: receipt,
                   },
                   AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
                 ),
@@ -8813,7 +8808,6 @@ export class OpenClawController {
           }
         }
         // Either no write was issued or the recorded owner has confirmed removal.
-        await accessBindingsTargeting(state, namespaceId, "credential_source", ref.id);
         await state.credentialSources.deleteCredentialSource(namespaceId, ref.id);
         return { error };
       });
@@ -8911,6 +8905,12 @@ export class OpenClawController {
     });
   }
 
+  /**
+   * Registration records the source as `registering` before the gateway write, so an uncertain
+   * gateway outcome always leaves a record an operator can list and delete. `audit` builds the
+   * success event, committed with the transition to `ready`. `registrationAudit` records
+   * the initial `registering` row before any external effect, for multi-step callers.
+   */
   async createCredentialSource(
     principalId: string,
     input: CreateCredentialSourceInput,
