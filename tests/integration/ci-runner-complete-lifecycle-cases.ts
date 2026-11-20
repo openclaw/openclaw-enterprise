@@ -444,7 +444,7 @@ export function registerCompleteLifecycleCases() {
       });
       assert.equal(
         result.stderr,
-        "run-tests: cannot signal the owned process group; preparation not started.\n",
+        "run-tests: cannot signal the owned process group; preparation not started. Run this suite on a Linux host that permits process-group signaling.\n",
       );
       assert.deepEqual(summary.lifecycle.phases.cleanup, {
         status: "not-run",

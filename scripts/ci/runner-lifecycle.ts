@@ -372,7 +372,7 @@ export async function runCompleteLifecycle(
       phases.prepare.error.code === "phase-process-group-unavailable";
     if (preparationRefused) {
       process.stderr.write(
-        "run-tests: cannot signal the owned process group; preparation not started.\n",
+        "run-tests: cannot signal the owned process group; preparation not started. Run this suite on a Linux host that permits process-group signaling.\n",
       );
     }
     // Only a confirmed pre-import refusal in this fresh, stateless attempt can
