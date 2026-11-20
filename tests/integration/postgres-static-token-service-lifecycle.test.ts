@@ -23,11 +23,7 @@ import { auditEvent } from "./postgres-namespace-iam-fixture.ts";
 
 const migratorUrl = process.env.OCC_TEST_STATIC_TOKEN_SERVICE_MIGRATION_DATABASE_URL;
 
-async function withRejectedAuditRows<T>(
-  migrator: Pool,
-  action: string,
-  run: () => Promise<T>,
-) {
+async function withRejectedAuditRows<T>(migrator: Pool, action: string, run: () => Promise<T>) {
   // The disposable migrator role can refuse a new action without invalidating earlier ledger rows.
   await migrator.query(
     `ALTER TABLE occ.audit_events ADD CONSTRAINT reject_static_token_service_audit
