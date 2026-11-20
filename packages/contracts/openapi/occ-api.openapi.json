@@ -172,6 +172,16 @@
           "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
         }
       },
+      "SANDBOX_POLICY_RATE_LIMITED": {
+        "summary": "SANDBOX_POLICY_RATE_LIMITED",
+        "value": {
+          "error": {
+            "code": "SANDBOX_POLICY_RATE_LIMITED",
+            "message": "Too many requests. Wait for Retry-After and try again."
+          },
+          "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+        }
+      },
       "UNAUTHENTICATED": {
         "summary": "UNAUTHENTICATED",
         "value": {
@@ -1618,6 +1628,8 @@
                   { "const": "RUNTIME_LOGS_SOURCE_UNAVAILABLE", "type": "string" },
                   { "const": "NATIVE_ADMIN_RETURN_RATE_LIMITED", "type": "string" },
                   { "const": "RUNTIME_LOGS_RATE_LIMITED", "type": "string" },
+                  { "const": "SANDBOX_POLICY_RATE_LIMITED", "type": "string" },
+                  { "const": "RATE_LIMITED", "type": "string" },
                   { "const": "RUNTIME_LOGS_CLUSTER_RBAC", "type": "string" },
                   { "const": "RUNTIME_LOGS_SANDBOX_NOT_FOUND", "type": "string" },
                   { "const": "RUNTIME_LOGS_UNAVAILABLE", "type": "string" },
@@ -32353,7 +32365,7 @@
                             "required": ["id", "binary", "host", "ports"],
                             "type": "object"
                           },
-                          "maxItems": 32,
+                          "maxItems": 16384,
                           "title": "Network rules",
                           "type": "array"
                         },
@@ -32554,7 +32566,7 @@
                                 "required": ["id", "binary", "host", "ports"],
                                 "type": "object"
                               },
-                              "maxItems": 32,
+                              "maxItems": 16384,
                               "title": "Network rules",
                               "type": "array"
                             },
@@ -32860,7 +32872,7 @@
                       "required": ["id", "binary", "host", "ports"],
                       "type": "object"
                     },
-                    "maxItems": 32,
+                    "maxItems": 16384,
                     "title": "Network rules",
                     "type": "array"
                   },
@@ -32952,7 +32964,7 @@
                             "required": ["id", "binary", "host", "ports"],
                             "type": "object"
                           },
-                          "maxItems": 32,
+                          "maxItems": 16384,
                           "title": "Network rules",
                           "type": "array"
                         },
@@ -33112,6 +33124,17 @@
             },
             "description": "The request content type is not supported."
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/SANDBOX_POLICY_RATE_LIMITED" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Too many requests. Wait for Retry-After and try again."
+          },
           "500": {
             "content": {
               "application/json": {
@@ -33265,7 +33288,7 @@
                       "required": ["id", "binary", "host", "ports"],
                       "type": "object"
                     },
-                    "maxItems": 32,
+                    "maxItems": 16384,
                     "title": "Network rules",
                     "type": "array"
                   },
@@ -33370,7 +33393,7 @@
                             "required": ["id", "binary", "host", "ports"],
                             "type": "object"
                           },
-                          "maxItems": 32,
+                          "maxItems": 16384,
                           "title": "Network rules",
                           "type": "array"
                         },
@@ -33529,6 +33552,17 @@
               }
             },
             "description": "The request content type is not supported."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/SANDBOX_POLICY_RATE_LIMITED" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Too many requests. Wait for Retry-After and try again."
           },
           "500": {
             "content": {
@@ -34286,6 +34320,17 @@
               }
             },
             "description": "The request content type is not supported."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/SANDBOX_POLICY_RATE_LIMITED" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Too many requests. Wait for Retry-After and try again."
           },
           "500": {
             "content": {
@@ -35936,6 +35981,15 @@
             },
             "description": "The request content type is not supported."
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RATE_LIMITED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Too many requests. Wait for Retry-After and try again."
+          },
           "500": {
             "content": {
               "application/json": {
@@ -36730,6 +36784,15 @@
               }
             },
             "description": "The request content type is not supported."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RATE_LIMITED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Too many requests. Wait for Retry-After and try again."
           },
           "500": {
             "content": {
@@ -41783,6 +41846,15 @@
             },
             "description": "The request content type is not supported."
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RATE_LIMITED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Too many requests. Wait for Retry-After and try again."
+          },
           "500": {
             "content": {
               "application/json": {
@@ -42719,6 +42791,15 @@
               }
             },
             "description": "The request content type is not supported."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RATE_LIMITED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "Too many requests. Wait for Retry-After and try again."
           },
           "500": {
             "content": {

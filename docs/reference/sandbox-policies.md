@@ -75,8 +75,26 @@ exactly; a symlink or alternate interpreter path is a different executable.
 `*.example.com` covers one DNS label, not the apex or deeper subdomains. A
 wildcard addition requires that exact wildcard in the ceiling. Port coverage may
 combine adjacent ceiling ranges; gaps remain unauthorized. Drivers reject
-unsupported constraints. Policy documents allow at most 32 grants and 16 ranges
-per grant. OpenShell additionally limits each grant to 1024 distinct ports.
+unsupported constraints. An Installation delegation ceiling and an Agent's additions
+can each contain at most 16,384 grants, with at most 16 ranges per grant. Policy
+preview, update, and apply requests have a separate 32 MiB body limit; an explicit
+`maxBodyBytes` override still applies. JSON escaping and whitespace count toward
+that byte limit. Preview, update, and apply share a replica-local budget per principal:
+2 requests per second with a burst of 10 across Agents. A depleted budget returns
+`429 SANDBOX_POLICY_RATE_LIMITED` with `Retry-After` before reading the body. OpenShell additionally
+limits each grant to 1024 distinct ports. These writes also share the
+[early authorization budget](api-explorer.md#write-request-limits) with Preset and
+Configuration writes.
+
+The Helm deployment mounts the complete trusted startup document from one
+Kubernetes Secret shared by the API, worker and upgrade preflight. Its decoded
+data must fit Kubernetes' 1 MiB Secret limit, including all other startup fields.
+This byte limit can bind before the 16,384-entry schema limit; there is no fixed
+Helm entry count because executable paths, hostnames and port lists vary. Compact
+the document and measure its UTF-8 bytes before creating the Secret. For example,
+the 16,384-rule startup fixture's ceiling alone is 1,780,053 bytes and does not
+fit this deployment path. The file-based startup test proves schema capacity,
+not deployment of that fixture through Helm. See [Kubernetes Secret limits](https://kubernetes.io/docs/concepts/configuration/secret/#size-limit).
 
 Default rules, generated workspace access, model credential delivery, and Compute
 isolation remain controlled by their existing owners. Users cannot submit

@@ -46,7 +46,7 @@ export default {
         additionalProperties: false,
       },
       title: "Network rules",
-      maxItems: 32,
+      maxItems: 16_384,
     },
   },
   additionalProperties: false,

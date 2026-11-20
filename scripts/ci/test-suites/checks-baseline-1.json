@@ -164,7 +164,8 @@
     "tests/integration/protected-source-refusals.test.ts",
     "tests/integration/refusal-answers.test.ts",
     "tests/integration/namespace-deletion-console-api.test.ts",
-    "tests/integration/github-selected-repositories.test.ts"
+    "tests/integration/github-selected-repositories.test.ts",
+    "tests/integration/sandbox-policy-capacity.test.mjs"
   ],
   "files": [
     {
@@ -1102,6 +1103,9 @@
       "expectedTests": [
         "controller topology keeps API-only fixture inputs separate from the worker"
       ]
+    },
+    {
+      "path": "tests/integration/sandbox-policy-capacity.test.mjs"
     },
     {
       "path": "tests/integration/agent-http-chat.test.ts"

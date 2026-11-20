@@ -11849,6 +11849,30 @@ export class OpenClawController {
     };
   }
 
+  /** Authorize large policy requests before HTTP reads their body; admission repeats this check. */
+  async authorizeAgentSandboxPolicyWrite(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    facet: SandboxFacet,
+    operation: "save" | "apply" = "save",
+  ): Promise<void> {
+    this.requireNetworkPolicyFacet(facet);
+    await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
+    await this.authorize(principalId, "update", {
+      kind: "sandbox_policy",
+      id: `sbp_${agentId.slice(4)}`,
+      namespaceId,
+    });
+    if (operation === "apply") {
+      await this.authorize(principalId, "read", {
+        kind: "sandbox_policy",
+        id: `sbp_${agentId.slice(4)}`,
+        namespaceId,
+      });
+    }
+  }
+
   async validateAgentSandboxPolicy(
     principalId: string,
     namespaceId: string,

@@ -1,3 +1,4 @@
+import { retryWriteBudget } from "./write-budget-retry.ts";
 import { openShellNamespaceObjects } from "./openshell-workspace-protocol.ts";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
@@ -643,15 +644,20 @@ export async function createConsoleAppFixture(t, options = {}) {
   /**
    * @param {string} method
    * @param {string} path
-   * @param {{session?: RequestSession | null | undefined, headers?: Record<string, string>, body?: unknown}} [options]
+   * @param {{session?: RequestSession | null | undefined, headers?: Record<string, string>, body?: unknown, timeout?: number}} [options]
    */
-  async function request(method, path, { session = adminSession, headers = {}, body } = {}) {
+  async function request(
+    method,
+    path,
+    { session = adminSession, headers = {}, body, timeout } = {},
+  ) {
     const result = await rawRequest(method, path, {
       headers:
         session === null
           ? headers
           : authenticatedHeaders(session, { origin: new URL(authBaseURL).origin, ...headers }),
       body,
+      ...(timeout === undefined ? {} : { timeout }),
     });
     const payload = result.response.status === 204 ? {} : parseJson(result);
     return {
@@ -696,13 +702,17 @@ export async function createConsoleAppFixture(t, options = {}) {
    * @param {object} [values]
    */
   async function createConfiguration(namespaceId, values = {}, options = {}) {
-    const configuration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
-      body: {
-        kind: "agent",
-        values,
-        ...(options.secretBindings === undefined ? {} : { secretBindings: options.secretBindings }),
-      },
-    });
+    const configuration = await retryWriteBudget(() =>
+      request("POST", `/namespaces/${namespaceId}/configurations`, {
+        body: {
+          kind: "agent",
+          values,
+          ...(options.secretBindings === undefined
+            ? {}
+            : { secretBindings: options.secretBindings }),
+        },
+      }),
+    );
     return fixtureResponse(configuration, 201, ConfigurationResponse, "create Configuration").data;
   }
 

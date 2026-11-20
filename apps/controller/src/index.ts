@@ -25,6 +25,7 @@ import {
   ErrorResponse,
   isSecretHarnessAuth,
   isServiceAccountHarnessAuth,
+  isSandboxFacet,
   JsonValue,
   occApiRoutes,
   PluginApproversSchema,
@@ -53,6 +54,7 @@ import {
   type ResourceKind,
   type ResourceRef,
   type SandboxDriver,
+  type SandboxFacet,
   type SecretDriver,
   type SecretReference,
   type CredentialSourceReference,
@@ -93,6 +95,7 @@ import Fastify, {
   type HTTPMethods,
   type InjectOptions,
   type RouteGenericInterface,
+  type RouteOptions,
 } from "fastify";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -285,6 +288,9 @@ const resourceHandlers: ResourceHandlers = {
 };
 
 const DEFAULT_BODY_LIMIT = 64 * 1024;
+// Reserve room for 16,384 ordinary grants without raising limits on unrelated routes.
+// JSON whitespace/escaping still consumes this independent finite request budget.
+const SANDBOX_POLICY_BODY_LIMIT = 32 * 1024 * 1024;
 // Four 16 KiB documents can expand sixfold in JSON, plus the ordinary create fields.
 const AGENT_CREATE_BODY_LIMIT = 448 * 1024;
 // A bounded template may use six-byte JSON escapes; reserve space for its name and envelope.
@@ -474,13 +480,22 @@ function validateConfiguration(value: unknown, depth = 0, path = ""): void {
   }
 }
 
+function writesSandboxPolicy(operation: OccApiRoute): boolean {
+  return [
+    "validateAgentSandboxPolicy",
+    "updateAgentSandboxPolicy",
+    "applyAgentSandboxPolicy",
+  ].includes(operation.operationId);
+}
+
 /** Operations whose grant check runs before their body is read (see authorizeBeforeBody). */
 function authorizesBeforeBody(operation: OccApiRoute): boolean {
   return (
     operation.operationId === "createPreset" ||
     operation.operationId === "updatePreset" ||
     operation.operationId === "createConfiguration" ||
-    operation.operationId === "updateConfiguration"
+    operation.operationId === "updateConfiguration" ||
+    writesSandboxPolicy(operation)
   );
 }
 
@@ -1527,6 +1542,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     schema: {},
   })) as unknown as readonly OccApiRoute[];
   const runtimeLogLimiter = new RuntimeLogLimiter();
+  const sandboxPolicyRateLimit = new RequestRateLimiter(10, 2);
+  const preBodyAuthorizationRateLimit = new RequestRateLimiter(60, 5);
   const runtimeLogCursor =
     options.agentRuntimeLogs?.enabled === true
       ? createRuntimeLogCursorCodec(options.agentRuntimeLogs.cursorSecret)
@@ -2228,8 +2245,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   }
 
   /**
-   * Preset and Configuration writes accept bodies of about 6 MiB (PRESET_BODY_LIMIT,
-   * CONFIGURATION_BODY_LIMIT), far above the general limit. Their grant check needs only the
+   * Preset and Configuration writes accept about 6 MiB; policy preview/save accept 32 MiB.
+   * These routes exceed the general body limit. Their grant check needs only the
    * path and the caller, so it runs here, in onRequest, before the body is read: a caller
    * without the grant gets the same 403 or 404 and audit row as when the check ran in the
    * handler, and the controller never buffers the body. The handler repeats the check in its
@@ -2244,6 +2261,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
     }
     const params = request.params as Record<string, string>;
+    if (writesSandboxPolicy(operation)) {
+      if (!isSandboxFacet(params.facet)) {
+        throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+      }
+      await controller.authorizeAgentSandboxPolicyWrite(
+        context.actorId,
+        params.namespaceId!,
+        params.agentId!,
+        params.facet as SandboxFacet,
+        operation.operationId === "applyAgentSandboxPolicy" ? "apply" : "save",
+      );
+      return;
+    }
     if (
       operation.operationId === "createConfiguration" ||
       operation.operationId === "updateConfiguration"
@@ -4701,7 +4731,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ? { security: [{ sessionCookie: [] }] }
           : {}),
       } as DocumentedFastifySchema;
-      routes.route<RouteGenericInterface, { auditManagementRequest?: true }>({
+      const routeOptions: RouteOptions & {
+        config?: { auditManagementRequest?: true; rateLimit?: RequestRateLimiter };
+      } = {
         method: operation.method as HTTPMethods,
         url: operation.path,
         ...(routeAuditSink === undefined ? {} : { config: { auditManagementRequest: true } }),
@@ -4718,13 +4750,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   operation.operationId === "updateConfiguration"
                 ? { bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT }
                 : {}),
+        ...(writesSandboxPolicy(operation)
+          ? {
+              bodyLimit: options.maxBodyBytes ?? SANDBOX_POLICY_BODY_LIMIT,
+            }
+          : {}),
         schema,
         onRequest: async (request) => {
           await admit(request, operation);
-          if (authorizesBeforeBody(operation)) {
-            await resolveIdentity(request, operation);
-            await authorizeBeforeBody(request, operation);
-          }
         },
         preValidation: async (request) => {
           const hasRequestBody =
@@ -4816,7 +4849,78 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 return payload;
               },
             }),
-      });
+      };
+      if (authorizesBeforeBody(operation)) {
+        const { handler, ...bodyOptions } = routeOptions;
+        const writeOptions = {
+          ...bodyOptions,
+          config: { ...bodyOptions.config, rateLimit: preBodyAuthorizationRateLimit },
+          onRequest: async (request: FastifyRequest, reply: FastifyReply) => {
+            await admit(request, operation);
+            const admitted = admissions.get(request);
+            if (admitted === undefined) {
+              throw dependencyUnavailable();
+            }
+            // Bound identity resolution too, without sharing a budget across clients behind NAT.
+            const identityKey = JSON.stringify([
+              admitted.method,
+              admitted.externalIdentity.issuer,
+              admitted.externalIdentity.subject,
+            ]);
+            const authorizationRetryAfter = preBodyAuthorizationRateLimit.consume(identityKey);
+            if (authorizationRetryAfter !== undefined) {
+              reply.header("retry-after", String(authorizationRetryAfter));
+              throw failure(429, "RATE_LIMITED", "Too many write requests. Wait before retrying.");
+            }
+            await resolveIdentity(request, operation);
+            if (writesSandboxPolicy(operation)) {
+              const rateLimit = sandboxPolicyRateLimit;
+              const context = contexts.get(request);
+              if (context === undefined) {
+                throw dependencyUnavailable();
+              }
+              const retryAfter = rateLimit.consume(context.actorId);
+              if (retryAfter !== undefined) {
+                reply.header("retry-after", String(retryAfter));
+                throw failure(
+                  429,
+                  "SANDBOX_POLICY_RATE_LIMITED",
+                  "Too many network policy requests. Wait before retrying.",
+                );
+              }
+            }
+            await authorizeBeforeBody(request, operation);
+          },
+        };
+        // Keep the limiter configuration attached to the guarded write registration.
+        switch (operation.method) {
+          case "POST":
+            routes.post<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
+              operation.path,
+              writeOptions,
+              handler,
+            );
+            break;
+          case "PUT":
+            routes.put<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
+              operation.path,
+              writeOptions,
+              handler,
+            );
+            break;
+          case "PATCH":
+            routes.patch<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
+              operation.path,
+              writeOptions,
+              handler,
+            );
+            break;
+          default:
+            throw new Error("A body-gated write requires POST, PUT, or PATCH.");
+        }
+      } else {
+        routes.route(routeOptions);
+      }
     }
   });
 

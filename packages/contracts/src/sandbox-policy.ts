@@ -38,7 +38,7 @@ export const SandboxNetworkGrantSchema = Type.Object(
 
 export const SandboxNetworkGrantsSchema = Type.Array(SandboxNetworkGrantSchema, {
   title: "Network rules",
-  maxItems: 32,
+  maxItems: 16_384,
 });
 export type SandboxNetworkGrant = Type.Static<typeof SandboxNetworkGrantSchema>;
 
@@ -160,6 +160,106 @@ export const SandboxNetworkPolicyConfiguration = Object.freeze({
     return details;
   },
 });
+
+/** Snapshot a validated ceiling once; each lookup visits only its exact and single-label hosts. */
+export function createSandboxNetworkGrantChecker(
+  ceiling: readonly Pick<SandboxNetworkGrant, "binary" | "host" | "ports">[],
+): (grant: Pick<SandboxNetworkGrant, "binary" | "host" | "ports">) => boolean {
+  const binaries = new Map<
+    string,
+    Map<string, Pick<SandboxNetworkGrant, "binary" | "host" | "ports">>
+  >();
+  for (const grant of ceiling) {
+    let hosts = binaries.get(grant.binary);
+    if (hosts === undefined) {
+      hosts = new Map();
+      binaries.set(grant.binary, hosts);
+    }
+    let entry = hosts.get(grant.host);
+    if (entry === undefined) {
+      entry = { binary: grant.binary, host: grant.host, ports: [] };
+      hosts.set(grant.host, entry);
+    }
+    entry.ports.push(...grant.ports.map(({ from, to }) => ({ from, to })));
+  }
+  let cacheIntervalLimit = 0;
+  // Combine duplicate and adjacent ranges once, including grants with different rule IDs.
+  for (const hosts of binaries.values()) {
+    for (const entry of hosts.values()) {
+      const merged: SandboxNetworkGrant["ports"] = [];
+      for (const range of entry.ports.sort((a, b) => a.from - b.from)) {
+        const previous = merged.at(-1);
+        if (previous !== undefined && range.from <= previous.to + 1) {
+          previous.to = Math.max(previous.to, range.to);
+        } else {
+          merged.push(range);
+        }
+      }
+      entry.ports = merged;
+      cacheIntervalLimit += merged.length;
+    }
+  }
+  const coverage = new Map<string, readonly { from: number; to: number }[]>();
+  let cachedIntervals = 0;
+  return (grant) => {
+    if (grant.ports.length === 0 || grant.ports.some(({ from, to }) => from > to)) {
+      return false;
+    }
+    const hosts = binaries.get(grant.binary);
+    const exact = hosts?.get(grant.host);
+    const dot = grant.host.indexOf(".");
+    const wildcard =
+      !grant.host.startsWith("*.") && dot > 0 ? hosts?.get(`*${grant.host.slice(dot)}`) : undefined;
+    if (exact === undefined && wildcard === undefined) {
+      return false;
+    }
+    // Cache only ceiling-owned keys; arbitrary submitted hostnames cannot grow this index.
+    const key = JSON.stringify([grant.binary, exact?.host ?? wildcard!.host]);
+    let ranges = coverage.get(key);
+    if (exact === undefined || wildcard === undefined) {
+      // Share the immutable snapshot when no exact/wildcard union is needed.
+      ranges = (exact ?? wildcard)!.ports;
+    }
+    if (ranges === undefined) {
+      // Compile a missing union; it contains at most all ceiling intervals.
+      const merged: { from: number; to: number }[] = [];
+      for (const range of [...(exact?.ports ?? []), ...(wildcard?.ports ?? [])].sort(
+        (a, b) => a.from - b.from,
+      )) {
+        const previous = merged.at(-1);
+        if (previous !== undefined && range.from <= previous.to + 1) {
+          previous.to = Math.max(previous.to, range.to);
+        } else {
+          merged.push({ ...range });
+        }
+      }
+      ranges = merged;
+      // Bound total retained intervals, not just keys: many exact hosts can share
+      // a large wildcard set. Evict oldest unions before retaining another copy.
+      while (cachedIntervals + ranges.length > cacheIntervalLimit) {
+        const [oldestKey, oldestRanges] = coverage.entries().next().value!;
+        coverage.delete(oldestKey);
+        cachedIntervals -= oldestRanges.length;
+      }
+      coverage.set(key, ranges);
+      cachedIntervals += ranges.length;
+    }
+    return grant.ports.every(({ from, to }) => {
+      // Find the last interval starting at or before the requested range.
+      let low = 0;
+      let high = ranges.length;
+      while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        if (ranges[middle]!.from <= from) {
+          low = middle + 1;
+        } else {
+          high = middle;
+        }
+      }
+      return low > 0 && ranges[low - 1]!.to >= to;
+    });
+  };
+}
 
 export function validDnsHost(host: string): boolean {
   return (

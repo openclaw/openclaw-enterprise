@@ -27,6 +27,7 @@ import {
   ConfigurationValidationError,
   ConnectionTemplateValidationError,
   sandboxNetworkGrantsWithinCeiling,
+  createSandboxNetworkGrantChecker,
   validateSandboxNetworkGrants,
   type AgentRevision,
   type PluginApprovalMode,
@@ -163,6 +164,35 @@ test("network delegation covers every requested host label and port without broa
     ),
     false,
   );
+  // Exact-host and wildcard grants can jointly cover a range; indexing must retain that union.
+  assert.equal(
+    sandboxNetworkGrantsWithinCeiling([grant], [{ ...ceiling[0], host: grant.host }, ceiling[1]]),
+    true,
+  );
+  // Fragmented shared-host coverage must retain gaps and exact/wildcard union semantics.
+  const fragmented = Array.from({ length: 16_384 }, (_, index) => ({
+    ...grant,
+    id: `fragment-${index}`,
+    host: index % 2 === 0 ? grant.host : "*.example.org",
+    ports: [{ from: index * 3 + 1, to: index * 3 + 1 }],
+  }));
+  const fragmentedChecker = createSandboxNetworkGrantChecker(fragmented);
+  for (const entry of fragmented) {
+    assert.equal(fragmentedChecker({ ...entry, host: grant.host }), true);
+    assert.equal(
+      fragmentedChecker({
+        ...entry,
+        host: grant.host,
+        ports: [{ from: entry.ports[0]!.from + 1, to: entry.ports[0]!.from + 1 }],
+      }),
+      false,
+    );
+  }
+  const mutableCeiling = structuredClone(ceiling);
+  const admits = createSandboxNetworkGrantChecker(mutableCeiling);
+  mutableCeiling[0].ports[0]!.to = 443;
+  assert.equal(admits(grant), true, "compiled admission retains its ceiling snapshot");
+  assert.equal(sandboxNetworkGrantsWithinCeiling([grant], mutableCeiling), false);
   assert.equal(sandboxNetworkGrantsWithinCeiling([grant], []), false);
   // Coverage needs a port: an empty or reversed range never proves containment.
   for (const ports of [[], [{ from: 445, to: 443 }], [{ from: 65535, to: 1 }]]) {

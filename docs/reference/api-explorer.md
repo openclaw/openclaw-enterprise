@@ -14,3 +14,17 @@ blocks a cross-origin request, use the curl example; keep OCC's origin checks en
 Start with the [HTTP quickstart](../guides/http-api.md), or follow
 [create and deploy an Agent](../guides/http-api-agent.md). Session-only operations
 require human sign-in; OAuth examples need a real browser-bound attempt.
+
+## Write request limits
+
+Preset create/update, Configuration create/update, and Agent network policy
+preview/save/apply share an early authorization budget on each API replica. Each
+verified external identity gets 5 requests per second with a burst of 60 across
+these operations. The budget runs before IAM identity lookup and body reads;
+new sessions and target resources do not reset it. Exhaustion returns
+`429 RATE_LIMITED` with `Retry-After`.
+
+Network policy preview/save/apply also use the stricter
+[per-principal policy budget](sandbox-policies.md). When either budget is spent,
+wait for `Retry-After` before retrying. Other API operations retain their own
+admission and request limits.
