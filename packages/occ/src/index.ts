@@ -13924,6 +13924,7 @@ export class OpenClawController {
         throw new DependencyUnavailableError("The selected Harness descriptor is unavailable.");
       }
 
+      const proxySelection = this.selections.get("credential_proxy");
       const computeSelection = this.selections.get("compute");
       const sandboxSelection = this.selections.get("sandbox");
       const compute = this.deploymentComputeDriver();
@@ -14144,13 +14145,15 @@ export class OpenClawController {
       // nothing created), because the worker must decode them all to stop or retire them.
       const previous = await state.revisions.listRevisions(namespace.id, lockedAgent.id);
       const createdAt = this.timestamp();
-      const admittedRepository = this.admitRepositoryCredentials(
-        lockedAgent,
-        compute,
-        { ...approvedHarness, mode: lockedAgent.executionMode },
-        sandbox?.id,
-        Date.parse(createdAt),
-      );
+      const admitRepository = () =>
+        this.admitRepositoryCredentials(
+          lockedAgent,
+          compute,
+          { ...approvedHarness, mode: lockedAgent.executionMode },
+          sandbox?.id,
+          Date.parse(createdAt),
+        );
+      const admittedRepository = admitRepository();
       if (admittedRepository !== undefined) {
         this.validateRepositoryBrokerNetworkProxy(revisionHarness, admittedConfiguration, sandbox);
       }
@@ -14280,12 +14283,25 @@ export class OpenClawController {
             sandboxSelection === undefined ||
             this.selections.get("sandbox") !== sandboxSelection ||
             !this.unchangedDriver(sandboxSelection) ||
+            (protectedSandbox &&
+              (proxySelection === undefined ||
+                this.selections.get("credential_proxy") !== proxySelection ||
+                !this.unchangedDriver(proxySelection))) ||
             !policyCompute.unchanged() ||
             ownerUnchanged?.() === false)
         ) {
           throw new ResourceStateConflictError(
             "The selected Drivers changed during repository network policy admission. Review the Installation's Driver selections before deploying.",
           );
+        }
+        if (protectedSandbox && admittedRepository) {
+          const current = admitRepository();
+          assertSelectedRepositoryGrants(repositoryGrants, current?.selectedGrants);
+          if (!isDeepStrictEqual(current?.credentials, admittedRepository.credentials)) {
+            throw new ResourceStateConflictError(
+              "The selected repository credentials changed during deployment.",
+            );
+          }
         }
       };
       const policyAdmittedRevision = await policyCompute?.admit(
@@ -14302,6 +14318,7 @@ export class OpenClawController {
           );
         }
         const binding = { namespace, agent: lockedAgent };
+        assertRepositoryNetworkPolicyDrivers();
         const status = this.runtimeCredentialStatus(
           await this.runtimeCredentialOperation(() =>
             compute.getAgentRuntimeCredentialStatus!(binding),

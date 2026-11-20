@@ -38,6 +38,7 @@ import {
   type ComputeDriver,
   type ConfigurationDriver,
   type CreateAgentBody,
+  type CredentialProxyDriver,
   type Identity,
   type Namespace,
   type OpenClawConfigurationValue,
@@ -48,10 +49,10 @@ import {
   type SandboxPolicy,
   type SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
-import type {
-  InMemoryPlatformState,
+import {
   InstalledDriver,
-  OpenClawController,
+  type InMemoryPlatformState,
+  type OpenClawController,
 } from "../../packages/occ/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -1300,5 +1301,89 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
         }
       },
     );
+
+    const selectedProxy = f.controller.selectedDriver("credential_proxy");
+    const originalResolver = repo.resolveBindings;
+    const withdrawSelectedGrants: GitHubRepositoryPolicy["resolveBindings"] = (input) =>
+      Object.freeze({
+        ...originalResolver.call(repo, input),
+        selectedRepositoryNetworkGrants: Object.freeze([]),
+      });
+    const alternateProxyEffect = t.mock.fn(async (): Promise<never> => {
+      assert.fail("the alternate Credential Proxy must never perform an effect");
+    });
+    const alternateProxy: CredentialProxyDriver = {
+      capability: "credential_proxy",
+      id: "synthetic-alternate-proxy",
+      implementation: selectedProxy.implementation,
+      sourceControl: selectedProxy.sourceControl,
+      bindRepositoryGit: alternateProxyEffect,
+      configureRevision: alternateProxyEffect,
+      wiringStatus: alternateProxyEffect,
+      verifyInstallation: alternateProxyEffect,
+      removeRevision: alternateProxyEffect,
+    };
+    f.controller.registerDriver(
+      new InstalledDriver(
+        { id: alternateProxy.id, implementation: alternateProxy.implementation, configuration: {} },
+        { capabilities: { credential_proxy: alternateProxy } },
+      ),
+    );
+
+    const changes = [
+      {
+        name: "Repo withdraws the selected grant",
+        change: () => {
+          repo.resolveBindings = withdrawSelectedGrants;
+        },
+        restore: () => {
+          repo.resolveBindings = originalResolver;
+        },
+        message: /selected Git credential/,
+      },
+      {
+        name: "the selected Credential Proxy changes",
+        change: () => {
+          f.controller.selectDriver("credential_proxy", alternateProxy.id);
+        },
+        restore: () => {
+          f.controller.selectDriver("credential_proxy", selectedProxy.id);
+        },
+        message: /Drivers changed/,
+      },
+    ];
+    for (const { name, change, restore, message } of changes) {
+      await t.test(`Deploy refuses if ${name} during Compute validation`, async () => {
+        const path = await savedPolicyAgent();
+        const checks = credentialStatus.mock.callCount();
+        fixtureCompute.validateProtectedRepositoryNetworkPolicy = async (revision) => {
+          validate(revision);
+          assert.ok(revision.egressPlan?.repositoryGit);
+          assert.deepEqual(revision.egressPlan.routes, []);
+          await Promise.resolve();
+          change();
+        };
+        try {
+          const error = await verifyNoDeployment(path, message);
+          assert.equal(error.code, "RESOURCE_CONFLICT");
+          assert.equal(alternateProxyEffect.mock.callCount(), 0);
+        } finally {
+          restore();
+          fixtureCompute.validateProtectedRepositoryNetworkPolicy = validate;
+        }
+        const { data } = checkedEnvelope(
+          await f.request("POST", `${path}/deploy`),
+          AgentRevisionResponse,
+          202,
+        );
+        const stored = await f.state.read((view) =>
+          view.revisions.findRevision(f.namespace.id, data.agentId, data.id),
+        );
+        assert.deepEqual(stored?.sandboxPolicy?.repositoryNetworkPolicy?.grants, [selected]);
+        assert.deepEqual(stored?.egressPlan?.driver, f.protectedDriver.ref);
+        assert.equal(credentialStatus.mock.callCount(), checks + 1);
+        assert.equal(provisioned.mock.callCount(), 0);
+      });
+    }
   });
 }
