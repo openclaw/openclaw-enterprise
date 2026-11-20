@@ -11,7 +11,14 @@ import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { staticEgressAdmissionFixture } from "../helpers/static-egress.mjs";
 
-type AdmissionFixture = Awaited<ReturnType<typeof staticEgressAdmissionFixture>>;
+type AdmissionFixture = Omit<
+  Awaited<ReturnType<typeof staticEgressAdmissionFixture>>,
+  "gatewayRequests" | "profiles" | "providers"
+> & {
+  gatewayRequests: readonly unknown[];
+  profiles: ReadonlyMap<unknown, unknown>;
+  providers: Map<unknown, unknown>;
+};
 type HttpResponse = { status: number; body: unknown };
 
 function entries(map: ReadonlyMap<unknown, unknown>): [string, unknown][] {
@@ -82,7 +89,7 @@ async function assertAdmissionUnchanged(
 export function registerStartupAdmissionCases(): void {
   test("bundled OpenShell startup refuses mixed static CREATE before material or registration; Gateway-only CREATE and PATCH remain ordinary", async (t) => {
     for (const gatewayOnly of [false, true]) {
-      const f = await staticEgressAdmissionFixture(t, { gatewayOnly });
+      const f: AdmissionFixture = await staticEgressAdmissionFixture(t, { gatewayOnly });
       const controller = asRecord(f)?.controller;
       assert.ok(controller instanceof OpenClawController);
       assert.ok("fixtureResponse" in f, "console fixture response decoder");
@@ -251,7 +258,7 @@ export function registerStartupAdmissionCases(): void {
 
   test("bundled OpenShell startup refuses unbound legacy adoption; original Gateway DELETE remains available", async (t) => {
     let clock = Date.now();
-    const f = await staticEgressAdmissionFixture(t, {
+    const f: AdmissionFixture = await staticEgressAdmissionFixture(t, {
       includeLegacy: true,
       now: () => new Date(clock),
     });
