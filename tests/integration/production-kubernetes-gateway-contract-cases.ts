@@ -138,6 +138,24 @@ async function resources(stdout: string): Promise<ChartResource[]> {
   return decoded;
 }
 
+function yamlRecord(value: unknown): Record<string, unknown> | undefined {
+  if (value === null || value === undefined) {
+    throw new TypeError("Cannot read a field from a null Helm value");
+  }
+  return asRecord(value);
+}
+
+async function firstResource(stdout: string, kind: string, name?: string) {
+  const object = (await parseProductionChart(stdout)).find((document) => {
+    const resource = yamlRecord(document);
+    return (
+      resource?.kind === kind &&
+      (name === undefined || yamlRecord(resource.metadata)?.name === name)
+    );
+  });
+  return asRecord(object);
+}
+
 function resourceSpec<S extends TSchema>(
   objects: readonly ChartResource[],
   kind: string,
@@ -608,8 +626,8 @@ export function registerProductionGatewayNameCase(
       ["--set-string", `gatewayRouting.gatewayName=${sixtyThree}`],
       { maxBuffer: 2_000_000 },
     );
-    const gateway = (await resources(stdout)).find((object) => object.kind === "Gateway");
-    assert.equal(gateway?.metadata.name, sixtyThree);
+    const gateway = await firstResource(stdout, "Gateway");
+    assert.equal(gateway && yamlRecord(gateway.metadata)?.name, sixtyThree);
   });
 }
 
@@ -641,8 +659,8 @@ export function registerExecutionPortAndDnsCase(): void {
     tooling,
     async () => {
       const template = renderExecutionChart;
-      const proxyPolicy = async (stdout: string) =>
-        findResource(await resources(stdout), "NetworkPolicy", "oce-harness-proxy");
+      const proxyPolicy = (stdout: string) =>
+        firstResource(stdout, "NetworkPolicy", "oce-harness-proxy");
       // Compute validatePort takes integers from 1 to 65535; Sprig int would truncate 10443.5.
       // Sprig int turns a value too big for 64 bits into 0, which the lower bound catches.
       for (const port of ["0", "65536", "10443.5", "-1", "true", "99999999999999999999"]) {
@@ -701,10 +719,10 @@ export async function checkGatewayServiceTypes(): Promise<void> {
     );
   }
   for (const serviceType of ["LoadBalancer", "NodePort"]) {
-    const objects = await resources(
+    const envoy = await firstResource(
       (await render({ ...gatewayRoutingValues, "gatewayRouting.serviceType": serviceType })).stdout,
+      "EnvoyProxy",
     );
-    const envoy = objects.find(({ kind }) => kind === "EnvoyProxy");
     assert.ok(Check(envoyServiceTypeSpec, envoy?.spec), "Expected an EnvoyProxy service type");
     assert.equal(envoy.spec.provider.kubernetes.envoyService.type, serviceType);
   }
