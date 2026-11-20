@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { IncomingMessage } from "node:http";
 import { createServer, get as httpsGet, request as httpsRequest } from "node:https";
-import { checkServerIdentity } from "node:tls";
+import { checkServerIdentity, createSecureContext } from "node:tls";
 import { isIP } from "node:net";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -732,6 +732,7 @@ export async function startSkipperPrivateGitOrigin({
             assert.ok(method === "POST" ? typeof body === "string" : body === undefined);
             assert.ok(target === undefined || /^\/fixture\/[a-z0-9%._/?=&-]+$/iu.test(target));
             const path = method === "POST" ? service : `info/refs?service=${service}`;
+            const secureContext = createSecureContext({ ca: tls.ca ?? tls.cert });
             return new Promise((resolve, reject) => {
               const request = httpsRequest(
                 {
@@ -740,7 +741,7 @@ export async function startSkipperPrivateGitOrigin({
                   path: target ?? `/${repository}.git/${path}`,
                   method,
                   agent: false,
-                  ca: tls.ca ?? tls.cert,
+                  secureContext,
                   servername: isIP(advertisedHost) ? "" : advertisedHost,
                   checkServerIdentity: (_host, cert) => checkServerIdentity(advertisedHost, cert),
                   signal: AbortSignal.timeout(5000),
