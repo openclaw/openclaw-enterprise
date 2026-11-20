@@ -79,7 +79,7 @@ The staged native Proxy accepts a trusted admitted binding, exact target, and so
 
 When OCC TokenService is selected, composition registers `credential_proxy_delivery` on the selected Sandbox owner. Worker and Compute use that exact selection for deployment, configuration, status, and cleanup. The worker rechecks source identity, permission, withdrawal, and the held target before giving the Driver a source-bound resolver, then repeats the release checks after configuration. Status fails closed because current source-version authority and exact native executable enforcement remain unqualified. A same-name replacement with the same resource version can still receive the Provider before the Proxy rejects its ID ([OpenShell issue](https://github.com/NVIDIA/OpenShell/issues/5794)). The native RPC rejects malformed receipts and sanitizes errors; legacy serving keeps its separate Attach operation.
 
-Compute records dispatch, then the provider's exact Sandbox ID, on the Agent revision's release-key Secret. Every retry observes that target without another Proxy deployment or Sandbox provision. Pending startup stays unready; uncertain provisioning or mismatched identity fails closed. An enrolled retry also completes exposure withdrawal.
+Compute records dispatch, then the provider's exact Sandbox ID, on the revision's release-key Secret. Retries observe that target without redeploying or reprovisioning. Pending startup stays unready; uncertainty or identity mismatch fails closed. Enrolled retries complete exposure withdrawal.
 
 ### 5. Withdraw or delete a source
 
