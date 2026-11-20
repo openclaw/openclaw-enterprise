@@ -8,7 +8,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { followContainer } from "../helpers/docker-follow.ts";
-import { cpuScaledImageTimeoutMs } from "../helpers/image-smoke-timeout.mjs";
+import { cpuScaledImageTimeoutMs } from "../helpers/image-smoke-timeout.ts";
 import { runDocker } from "../helpers/runtime-image-docker.ts";
 import { image, imageTestOptions } from "../helpers/runtime-image-startup.ts";
 
