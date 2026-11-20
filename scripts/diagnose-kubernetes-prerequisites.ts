@@ -730,7 +730,8 @@ async function diagnose(
   if (config.mode === "inventory") {
     const incomplete = checks.find((check) => check.status !== "passed");
     if (incomplete) {
-      throw new DiagnosticError(`${incomplete.id}: ${incomplete.summary}`);
+      const next = incomplete.action ? `\n  Next: ${incomplete.action}` : "";
+      throw new DiagnosticError(`${incomplete.id}: ${incomplete.summary}${next}`);
     }
     if (!webhookCidrs) {
       throw new DiagnosticError("The EKS webhook interface inventory is incomplete.");

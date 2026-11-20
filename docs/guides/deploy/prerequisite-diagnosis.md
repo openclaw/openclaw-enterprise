@@ -30,8 +30,8 @@ Success prints JSON with `apiCidrs` for API egress and `eks.webhookCidrs` for
 webhook ingress. Each address has a `/32` prefix. Review the addresses against
 the infrastructure policies and use the reviewed values in the plan below.
 The reads take place in sequence. Repeat them if the infrastructure changes.
-A failed or incomplete read exits with status 2 and writes the reason to
-standard error.
+A failed or incomplete read exits with status 2 and leaves stdout empty. It
+writes the reason and any available `Next:` guidance to stderr.
 
 ## Select the resources and expected addresses
 

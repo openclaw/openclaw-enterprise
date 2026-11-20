@@ -138,6 +138,10 @@ test("EKS inventory refuses mixed-cluster and partial address observations", asy
       assert.equal(stdout, "");
       assert.match(stderr, expected);
       if (fault === "wrong-ca") {
+        assert.match(
+          stderr,
+          /^ +Next: Verify the named EKS cluster and selected kubeconfig endpoint or tunnel TLS server name;/m,
+        );
         // A mismatched CA must stop collection before any Kubernetes API read.
         await assert.rejects(readFile(log), { code: "ENOENT" });
       }
