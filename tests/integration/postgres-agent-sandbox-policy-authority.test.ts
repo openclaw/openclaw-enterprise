@@ -66,7 +66,7 @@ async function policyAuthorityApp(t: test.TestContext) {
   // the OpenShell runtime lane owns provider enforcement.
   const sandboxDriver = new OpenShellSandboxDriver(
     {
-      gateway: { workspaceMode: "operator" },
+      gateway: {},
       kubernetes: {
         serviceAccount: { mode: "gatewayConfigured" },
         sandboxDataMount: {
