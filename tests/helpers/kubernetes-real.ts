@@ -1114,6 +1114,7 @@ export function createRealKubernetesFixture({
     let stopping: Promise<void> | undefined;
     return {
       url,
+      hasExited: () => child.exitCode !== null || child.signalCode !== null,
       stop: () => {
         stopping ??= stopPortForward(child, target);
         return stopping;

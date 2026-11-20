@@ -942,6 +942,7 @@
       "path": "tests/integration/workspace-gateway-host-route.test.ts",
       "expectedTests": [
         "Linux Gateway routes reuse distinct bound ports and preserve the HTTPS Service target",
+        "Gateway TLS readiness fails when its forwarder exits after loopback readiness",
         "Gateway Service mapping failure retains forwarder cleanup and reports shutdown failure",
         "Gateway relay rejects a malformed HTTPS Service target before starting a forwarder"
       ]
