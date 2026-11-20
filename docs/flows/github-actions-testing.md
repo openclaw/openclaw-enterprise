@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: "2026-11-18 03:26"
-last_updated_session: "authoring-run/ac86eb9c-8f66-4c1a-b92a-ec70193e5fd5"
+updated: "2026-11-19 19:23"
+last_updated_session: "authoring-run/ca808f62-526d-4d1c-84db-c33c517e3954"
 ---
 
 # GitHub Actions testing flow
@@ -97,19 +97,17 @@ selecting tests or gating CI. Base-loaded policy cannot prevent PR workflow chan
 Focused jobs verify SHA and ordered PR parents. QA materializes only the
 [selected credential](../testing/ci/qa-advisory.md#trigger).
 
-Full Integration pins `github.sha`. [Scheduled admission](../testing/ci/full-integration.md#trigger)
-rechecks main, cadence and receipts under lock.
-`scripts/ci/full-integration-schedule-history.ts:readUnmarkedClock` requires explicit
-targeting to ignore live shared work.
-`scripts/ci/full-integration-preflight.ts:fetchGithubJson` distinguishes malformed
-JSON from request failures; diagnostics omit raw content.
-Manual dispatch verifies dispatcher, team and environment.
-Slack serializes channel/app access; installation and Skipper Git serialize per branch.
-Retries require [approved dispatch](../testing/ci/configuration.md#environments).
+[Scheduled admission](../testing/ci/full-integration.md#trigger) checks `github.sha`,
+cadence and receipts under lock. Cooldown skips coverage lookup.
+`readUnmarkedClock` skips explicitly targeted live work.
+Scheduled GETs share one 502/503/504 retry. `Retry-After` or zero quota suppresses it.
+“Scheduled preflight diagnostic” shows stage and allowlisted HTTP codes.
+Reruns require [fresh approved dispatch](../testing/ci/configuration.md#environments)
+(dispatcher, team, environment). Slack serializes per channel/app. Installation
+and Skipper Git serialize per branch.
 
-First-attempt `all` reuse requires completed execution
-(`scripts/ci/full-integration-reuse.ts:validateResults`). Success selects artifacts,
-skipping lanes. Failure uses preflight’s fresh fallback.
+First-attempt `all` reuses results accepted by `scripts/ci/full-integration-reuse.ts:validateResults`.
+Otherwise lanes run fresh.
 QA awaits Slack despite failure, stops on cancellation, and requires selected results.
 
 Migration and application suites own separate PostgreSQL servers. Kubernetes
@@ -294,6 +292,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 19:23: Retry reads and report failures. (authoring-run/ca808f62-526d-4d1c-84db-c33c517e3954 - ebcbd2f60535c36b3a9b63847a2d052363cd29a6)
 
 - 2026-11-18 03:26: Use TypeScript preparation. (authoring-run/ac86eb9c-8f66-4c1a-b92a-ec70193e5fd5 - f5ac2329754d41a36a6cc47950cd3a95eae1ebfc)
 

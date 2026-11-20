@@ -59,7 +59,6 @@
     "lib/**/*.ts",
     "../deploy/helm/src/*.ts",
     "../deploy/runtime/native-tools/fetch.ts",
-    "../deploy/runtime/node/verify.mts",
     "../deploy/runtime/with-pinned-matrix-sdk-crypto.mts",
     "../docs/snippets/openshell-quickstart/**/*.mts",
     "docs-site/compute-matrix.ts",
