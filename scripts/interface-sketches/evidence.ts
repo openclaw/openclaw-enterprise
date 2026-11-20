@@ -53,7 +53,7 @@ const coupling = (from: string, kind: CouplingEdge["kind"], to: string): Require
 const gitBinding = coupling(
   `${installed}#InstalledDriver.requireRepositoryGitTransport`,
   "binds",
-  `${driver}#CredentialProxyDriver.bindRepositoryGit`,
+  `${driver}#LegacyEgressProxyDriver.bindRepositoryGit`,
 );
 
 /** Explicit claims cover only these source relationships, never whole diagrams. */
@@ -155,7 +155,7 @@ export const evidenceCatalog: readonly EvidenceDiagram[] = [
           coupling(
             `${installation}#installEgressAuthority`,
             "calls",
-            `${driver}#CredentialProxyDriver.bindExchange`,
+            `${driver}#LegacyEgressProxyDriver.bindExchange`,
           ),
           coupling(
             `${installation}#installEgressAuthority`,

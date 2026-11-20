@@ -85,6 +85,7 @@
     "tests/integration/production-controller-security.test.ts",
     "tests/conformance/kubernetes-runtime-credentials.test.ts",
     "tests/conformance/openshell-gateway-wire.test.ts",
+    "tests/conformance/openshell-staged-credential-proxy.test.ts",
     "tests/conformance/openshell-provider-profile-wire.test.ts",
     "tests/conformance/oauth-connection.test.mjs",
     "tests/conformance/openshell-managed-bootstrap.test.ts",
@@ -355,6 +356,9 @@
     },
     {
       "path": "tests/conformance/openshell-gateway-wire.test.ts"
+    },
+    {
+      "path": "tests/conformance/openshell-staged-credential-proxy.test.ts"
     },
     {
       "path": "tests/conformance/openshell-provider-profile-wire.test.ts",
