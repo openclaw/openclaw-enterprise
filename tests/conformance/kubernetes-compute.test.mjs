@@ -3693,6 +3693,17 @@ test("HTTP completion resolution preserves scope, opt-out and revision-specific 
   );
 });
 
+// Whether the Gateway configuration this Driver deploys for `revision` refuses requests that
+// lack the x-openclaw-scopes ceiling header.
+function deploysScopeHeader(driver, revision) {
+  const rendered = driver["kubernetesGatewayConfigurationDocument"](
+    revision.configuration,
+    revision.compute.admission?.startsWith("http-chat:v1:") === true,
+  );
+  const headers = rendered.gateway?.auth?.trustedProxy?.requiredHeaders ?? [];
+  return headers.some((header) => header.toLowerCase() === "x-openclaw-scopes");
+}
+
 test("gateway chat routes enforce a distinct exact-Agent scope ceiling", () => {
   const driver = createKubernetesComputeDriver(routedOptions());
   const revision = routedRevision(driver);
@@ -3705,13 +3716,59 @@ test("gateway chat routes enforce a distinct exact-Agent scope ceiling", () => {
     enabled: true,
     scopes: ["operator.admin"],
   };
-  // Old saved profiles do not promise fail-closed native scope admission.
-  assert.equal(driver.getGatewayChatEndpoint(revision), undefined);
-  revision.configuration.gateway.auth.trustedProxy.requiredHeaders = ["x-openclaw-scopes"];
-  assert.equal(
-    driver.getGatewayChatEndpoint(revision),
-    `wss://${gatewayRouting.hostname}/native-chat/namespaces/${tenant.id}/agents/${revision.agentId}`,
+  const endpoint = `wss://${gatewayRouting.hostname}/native-chat/namespaces/${tenant.id}/agents/${revision.agentId}`;
+  // A Configuration saved before browser chat omits requiredHeaders. Routed rendering still
+  // deploys its Gateway with x-openclaw-scopes required, so chat judges that deployed policy and
+  // an upgrade needs no Configuration edit. Each case changes the inputs to the injection rule:
+  // saved headers, admitted humans, and HTTP chat admission and opt-out.
+  const runtimeDriver = createKubernetesComputeDriver(
+    routedOptions({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+    }),
   );
+  const httpChatRevision = routedRevision(runtimeDriver, {
+    configuration: structuredClone(revision.configuration),
+  });
+  assert.ok(httpChatRevision.compute.admission?.startsWith("http-chat:v1:"));
+  const cases = [
+    ["saved before browser chat", driver, revision],
+    ["saved with the header", driver, revision, { requiredHeaders: ["x-openclaw-scopes"] }],
+    ["saved with another header", driver, revision, { requiredHeaders: ["x-real-ip"] }],
+    [
+      "admitted human",
+      driver,
+      revision,
+      {
+        allowUsers: ["occ-workspace-files", "oidc:member-01"],
+        deviceAutoApprove: { enabled: true, scopes: ["operator.read"] },
+      },
+      { "oidc:member-01": ["operator.read"] },
+    ],
+    ["HTTP chat admitted", runtimeDriver, httpChatRevision],
+    [
+      "HTTP chat opted out",
+      runtimeDriver,
+      httpChatRevision,
+      undefined,
+      undefined,
+      { endpoints: { chatCompletions: { enabled: false } } },
+    ],
+  ];
+  for (const [label, caseDriver, base, trustedProxy, identityScopes, http] of cases) {
+    const candidate = structuredClone(base);
+    const auth = candidate.configuration.gateway.auth;
+    Object.assign(auth.trustedProxy, trustedProxy);
+    Object.assign(auth.identityScopes, identityScopes);
+    if (http !== undefined) {
+      candidate.configuration.gateway.http = http;
+    }
+    assert.equal(deploysScopeHeader(caseDriver, candidate), true, label);
+    assert.equal(caseDriver.getGatewayChatEndpoint(candidate), endpoint, label);
+  }
+  // A Configuration the Driver cannot render deploys nothing, so it offers no chat endpoint.
+  const unrenderable = structuredClone(revision);
+  unrenderable.configuration.gateway.auth.trustedProxy.requiredHeaders = [""];
+  assert.equal(driver.getGatewayChatEndpoint(unrenderable), undefined);
   const ownership = { namespaceId: tenant.id, agentId: revision.agentId };
   const namespace = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
   const service = driver.service("chat-gateway", ownership, namespace, {});
@@ -3769,16 +3826,19 @@ test("gateway chat routes enforce a distinct exact-Agent scope ceiling", () => {
       { type: "ReplacePrefixMatch", replacePrefixMatch: "/" },
     ],
   );
-  const unqualified = structuredClone(revision);
-  delete unqualified.configuration.gateway.auth.trustedProxy.requiredHeaders;
-  assert.equal(
-    driver.gatewayRoute(unqualified, ownership, namespace, service).spec.rules.length,
-    2,
-  );
-  assert.equal(
-    createKubernetesComputeDriver(options()).getGatewayChatEndpoint(revision),
-    undefined,
-  );
+  // Without the browser opt-in, the managed route carries no chat rules.
+  const notOptedIn = structuredClone(revision);
+  delete notOptedIn.configuration.gateway.controlUi;
+  assert.equal(driver.getGatewayChatEndpoint(notOptedIn), undefined);
+  assert.equal(driver.gatewayRoute(notOptedIn, ownership, namespace, service).spec.rules.length, 2);
+  // Without gateway routing and without humans or HTTP chat, rendering adds no scope header,
+  // and the Driver has no private endpoint to offer.
+  const unrouted = createKubernetesComputeDriver(options());
+  const unroutedRevision = routedRevision(unrouted, {
+    configuration: structuredClone(revision.configuration),
+  });
+  assert.equal(deploysScopeHeader(unrouted, unroutedRevision), false);
+  assert.equal(unrouted.getGatewayChatEndpoint(unroutedRevision), undefined);
 });
 
 test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", async () => {

@@ -171,7 +171,6 @@ A `200` response with `data.status: "unsupported"` can still include `data.host`
       "trustedProxy": {
         "userHeader": "x-occ-identity",
         "allowUsers": ["occ-workspace-files"],
-        "requiredHeaders": ["x-openclaw-scopes"],
         "deviceAutoApprove": {
           "enabled": true,
           "scopes": ["operator.read", "operator.write"]
@@ -189,7 +188,7 @@ A `200` response with `data.status: "unsupported"` can still include `data.host`
 }
 ```
 
-Keep existing model, Harness, channel, gateway, Secret reference, and allowed origin settings. Add the exact origin to any existing allowed origins and preserve other `requiredHeaders` when adding `x-openclaw-scopes`. Chat availability requires this saved scope-header policy and a runtime that enforces the [chat authority ceiling](../../reference/agent-native-admin.md#native-authority-and-drift). `publicOrigin` is optional for native admin access: set it to the same origin so links the Agent returns, such as embedded Diffs viewer links, open through this Agent host instead of the Gateway's private address. Review any other Agents sharing this Configuration before saving; they use its new values on their next deployment. Resolve explicitly disabled UI or device approval and conflicting authentication policy with the Configuration owner instead of silently overwriting them.
+Keep existing model, Harness, channel, gateway, Secret reference, and allowed origin settings. Add the exact origin to any existing allowed origins. Kubernetes Compute adds the `x-openclaw-scopes` requirement that chat needs to the deployed Gateway configuration; see the [native configuration requirements](../../reference/agent-native-admin.md#requirements). `publicOrigin` is optional for native admin access: set it to the same origin so links the Agent returns, such as embedded Diffs viewer links, open through this Agent host instead of the Gateway's private address. Review any other Agents sharing this Configuration before saving; they use its new values on their next deployment. Resolve explicitly disabled UI or device approval and conflicting authentication policy with the Configuration owner instead of silently overwriting them.
 
 The editor preserves Secret bindings. If someone saves a newer Configuration first, OCC refuses your stale save. Choose **Reload draft**, check your edits against the current values, then save only the changes you still intend. See [Configuration update conflicts](../../reference/configuration.md#create-read-update-and-delete) for the API contract.
 

@@ -70,7 +70,7 @@ Browser preparation does not change the creator's Agent permissions.
 - `OCC_AUTH_BASE_URL` set to the public OCC origin that serves the console, for example `https://console.oce.example.com`.
 - The Agent must be running with a selected version owned by the selected Compute Driver: both Driver ID and implementation must match the version. The [mode-specific endpoint](#agent-host-identity) must map from private `wss:` to private `https:`.
 - The native Agent configuration must keep the trusted-proxy `occ-workspace-files` identity with `operator.admin`, enable native `controlUi`, allow the derived Agent origin, and enable trusted-proxy device auto-approval. The machine identity grant supplies admin authority; device auto-approval can stay limited to read/write. The support check rejects token auth, disabled device auth, and host-header origin fallback.
-- Chat additionally requires `gateway.auth.trustedProxy.requiredHeaders` to include `x-openclaw-scopes` in the saved Configuration and a runtime that enforces the [chat authority ceiling](#native-authority-and-drift). Preserve other required headers when adding it.
+- Chat additionally requires the deployed Gateway configuration to require `x-openclaw-scopes`, which routed Kubernetes Compute adds, and a runtime that enforces the [chat authority ceiling](#native-authority-and-drift).
 
 Local development uses the existing loopback HTTPS proxy for Console sessions in
 Compose and Kubernetes-only profiles. Compose with Kubernetes Compute and

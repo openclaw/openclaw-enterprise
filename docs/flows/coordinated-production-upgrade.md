@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-19"
-last_updated_session: "authoring-run/aed0a2bc-9691-4859-8bd6-1e7b3549c9b4"
+last_updated_session: "authoring-run/46e7faa1-9506-4a85-bbae-e6ba22b99e17"
 ---
 
 # Production image upgrade flow
@@ -326,7 +326,8 @@ UIDs and completed init containers qualify. Eight results leave uniqueness unkno
 Previously running provider Harnesses must stay running. Failure retains
 observations without `completed`. Reconcile failed writes. Resume rechecks
 without repeating successful Helm. `completed` blocks resume.
-Verify routing, models, channels, credentials, workspaces and restores.
+Verify routing, models, channels, credentials, workspaces, restores and
+[native admin availability](../guides/deploy/upgrade-checklist.md#verify-the-retained-installation).
 The [served Console check](../release/container-promotion.md#verify-the-served-console)
 accepts an optional image-bound entry digest.
 
@@ -365,6 +366,8 @@ requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 17:53: Add native admin availability to application verification. (authoring-run/46e7faa1-9506-4a85-bbae-e6ba22b99e17 - 5d117f3c03c40372a0274deb0471ab508fc2702a)
 
 - 2026-11-19 19:15: Trace the stopped writers check before Helm retry. (authoring-run/aed0a2bc-9691-4859-8bd6-1e7b3549c9b4 - d976da889bdeca6e9208821a5b4ea79a49033b0f)
 

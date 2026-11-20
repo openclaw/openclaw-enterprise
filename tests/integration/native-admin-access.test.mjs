@@ -737,6 +737,59 @@ test("native browser status names why a Configuration is unsupported", async (t)
   }
 });
 
+// An Agent upgraded from a release before browser chat: its saved Configuration opts into
+// native access but omits gateway.auth.trustedProxy.requiredHeaders. Kubernetes Compute adds
+// x-openclaw-scopes to the Gateway configuration it deploys whenever gateway routing is on, so
+// that Gateway still refuses requests without the scope ceiling. Availability must judge the
+// deployed policy, not the saved spelling: administration and chat stay available after the
+// upgrade, with no Configuration edit. Without routing, the Driver neither adds the header nor
+// supplies a private endpoint, so access stays unsupported and chat never falls back to admin.
+test("native browser access judges the scope header that Kubernetes Compute deploys", async (t) => {
+  for (const routed of [true, false]) {
+    const fixture = await createConsoleAppFixture(t, {
+      publicOrigin,
+      authBaseURL,
+      development: { enabled: false },
+      nativeAdmin: { enabled: true, domain: nativeDomain },
+      nativeAdminGatewayApiKey: async () => nativeGatewayApiKey,
+      routed,
+    });
+    await fixture.bootstrap("Native admin deployed scope header test");
+    const namespace = await fixture.createNamespace("Native scope header", { ready: true });
+    const { agent, revision } = await createLiveNativeAgent(fixture, namespace, "Pre-chat Agent", {
+      configure(origin) {
+        const configuration = nativeAdminHarnessConfiguration(origin);
+        delete configuration.gateway.auth.trustedProxy.requiredHeaders;
+        return configuration;
+      },
+    });
+    const context = { fixture, namespace, agent };
+    const operatorSession = await createAgentPermissionSession(
+      context,
+      `pre-chat-operator-${routed}`,
+      { agent: ["operate"] },
+      { kind: "agent", id: agent.id },
+    );
+    const admin = await nativeStatus(context);
+    const chat = await nativeStatus(context, { session: operatorSession });
+    assert.equal(admin.status, 200);
+    assert.equal(chat.status, 200);
+    assert.equal(admin.data.mode, "admin");
+    assert.equal(chat.data.mode, "chat");
+    if (routed) {
+      assert.equal(admin.data.status, "available", JSON.stringify(admin.data.reason));
+      assert.equal(admin.data.activeRevisionId, revision.id);
+      assert.equal(chat.data.status, "available", JSON.stringify(chat.data.reason));
+      assert.equal(chat.data.activeRevisionId, revision.id);
+    } else {
+      for (const status of [admin, chat]) {
+        assert.equal(status.data.status, "unsupported");
+        assert.equal(status.data.reason, "compute");
+      }
+    }
+  }
+});
+
 test("native admin stays available before the shared stop boundary, then becomes unavailable", async (t) => {
   // Without exclusive replacement the active revision keeps serving during a redeploy.
   const shared = await createNativeAdminFixture(t);

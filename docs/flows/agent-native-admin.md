@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
 updated: 2026-11-19
-last_updated_session: authoring-run/08c23986-7eaa-48cf-aeff-d53da1475676
+last_updated_session: authoring-run/46e7faa1-9506-4a85-bbae-e6ba22b99e17
 ---
 
 # Agent Native Admin UI Flow
@@ -152,7 +152,7 @@ OCC derives the selected version's target. An administrator viewing a non-runnin
 
 The target accompanies an [`unsupported` reason](../reference/agent-native-admin.md#unsupported-reasons). `not-enabled` means the Configuration did not opt this Agent into browser chat. `configuration` means another native setting prevents access.
 
-Compute `id` and `implementation` must match `revision.compute`. A mismatch returns `503 DEPENDENCY_UNAVAILABLE` before endpoint or key lookup or transport. Chat uses `getGatewayChatEndpoint` with no fallback. Administration uses `getGatewayEndpoint`. A missing or invalid private `wss:` endpoint returns `unsupported` with reason `compute`. Only `available` carries `gatewayBase`, which `nativeAdminAvailabilityData` omits from browser responses.
+Compute `id` and `implementation` must match `revision.compute`. A mismatch returns `503 DEPENDENCY_UNAVAILABLE` before endpoint or key lookup or transport. Chat uses `getGatewayChatEndpoint` with no fallback. Kubernetes offers it, and its `/native-chat/` route rules, only when the Gateway configuration it deploys requires `x-openclaw-scopes`; routed rendering adds the header. Administration uses `getGatewayEndpoint`. A missing or invalid private `wss:` endpoint returns `unsupported` with reason `compute`. Only `available` carries `gatewayBase`, which `nativeAdminAvailabilityData` omits from browser responses.
 
 ### 4. OCC derives the isolated Agent host
 
@@ -330,6 +330,8 @@ admin Configuration remains Pod-local.
 
 ## Changelog
 
+- 2026-11-19 17:53: Judge the chat scope header in the Gateway configuration that Compute deploys. (authoring-run/46e7faa1-9506-4a85-bbae-e6ba22b99e17 - 5d117f3c03c40372a0274deb0471ab508fc2702a)
+
 - 2026-11-19 06:03: Add the **Agent unavailable** page. (authoring-run/08c23986-7eaa-48cf-aeff-d53da1475676 - 4c2da280f8ee1c143ac1d34c63b6e7fac6a3ac83)
 
 - 2026-11-19 01:23: A deployment in progress answers authorized Agent-host HTTP with `503`. (authoring-run/ef3e9c03-7ddd-43c6-a55f-0460c8daed7b - 50ba6e3c180341cddc63528b98c21da57508ad2b)
@@ -361,12 +363,5 @@ admin Configuration remains Pod-local.
 - 2026-11-10 08:30: Add named chat and stale-version browser recovery. (authoring-run/37c71df8-7e9c-4224-bc36-e4091f387620 - eef0b3f10d0e0f4ed09fd32086c84628c41f1b93)
 
 - 2026-11-09 14:07: Consolidate browser authorization and document current-cookie logout. (authoring-run/f217fd51-af6b-4d6a-a888-b2be4880aa91 - e39be9803)
-
-- 2026-11-09 12:12: Added OIDC sessions and scoped chat. (codex/oidc-agent-chat - f1ebda062)
-- 2026-11-06 07:57: Integrate host-only exchange, repeat launches and current session ownership in accompanying changes. (authoring-run/43cf1307-6d25-4d9d-951e-55fe09a514b8 - a4c2191e73337d73ee27e7fe2c9a51cef40d99f5)
-
-- 2026-11-03 12:55: Sign-in link for unactivated page loads. (fix/native-admin-signed-out-html-fallback)
-
-- 2026-11-02 09:55: Shorten provisioning prose and link shared status definitions after rebasing. (authoring-run/275c0d0a-d040-47d3-9e52-47ff86b87ab9 - 393b1585e4b10a3232abf10c60b766d8e55d85ce)
 
 [Agent native admin documentation history](agent-native-admin/history.md) preserves the older dated entries.

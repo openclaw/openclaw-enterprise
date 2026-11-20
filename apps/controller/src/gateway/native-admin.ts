@@ -76,6 +76,12 @@ export function nativeAdminTarget(input: {
   };
 }
 
+/**
+ * Whether the saved Configuration keeps the native browser opt-in for `origin`. The Gateway's
+ * `x-openclaw-scopes` requirement is not judged here: the Compute Driver owns the Gateway
+ * configuration it deploys, and its mode-specific endpoint reports whether that configuration
+ * enforces the chat authority ceiling.
+ */
 export function nativeAdminConfigurationSupported(
   revision: Readonly<AgentRevision>,
   origin: string,
@@ -90,8 +96,6 @@ export function nativeAdminConfigurationSupported(
     auth?.mode === "trusted-proxy" &&
     unsupportedNativeGatewayAuthFields(auth).length === 0 &&
     proxy?.userHeader === "x-occ-identity" &&
-    Array.isArray(proxy.requiredHeaders) &&
-    proxy.requiredHeaders.includes("x-openclaw-scopes") &&
     Array.isArray(proxy.allowUsers) &&
     proxy.allowUsers.includes("occ-workspace-files") &&
     Array.isArray(scopes) &&

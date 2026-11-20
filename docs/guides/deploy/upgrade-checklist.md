@@ -308,6 +308,9 @@ and database migrations to retained volumes and local profile state.
       downstream operation. Where plugin approval is required, verify approval
       and denial through the intended reviewer. See
       [workflow verification](production-handoff.md#verify-the-deployed-workflow).
+- [ ] For each running Agent with native admin UI access, a signed-in person's
+      `GET /namespaces/:ns/agents/:agent/native-admin` returns
+      `status: "available"`. Model turns and Doctor skip this route.
 - [ ] Where CredentialSources are enabled, confirm source status and Agent
       bindings and verify a real model reply through the selected Gateway.
 - [ ] Evidence contains the before/after inventory, rendered configuration,
