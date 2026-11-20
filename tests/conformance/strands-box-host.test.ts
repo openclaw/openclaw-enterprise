@@ -4,6 +4,8 @@ import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:c
 import { once } from "node:events";
 import {
   chmodSync,
+  constants,
+  copyFileSync,
   lstatSync,
   linkSync,
   mkdirSync,
@@ -26,7 +28,7 @@ import { dirname, join, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { connect as tlsConnect, createServer as tlsServer } from "node:tls";
 import { text } from "node:stream/consumers";
-import { test } from "node:test";
+import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
@@ -135,6 +137,22 @@ function gated<T extends { environment: Readonly<Record<string, string>> }>(inpu
 function temporary(): string {
   return mkdtempSync(join(realpathSync(tmpdir()), "oce-box-test-"));
 }
+
+let fixtureNode: string;
+before(() => {
+  if (unsupported) {
+    return;
+  }
+  // The launcher pins the executable mode. CI's Node installation can be group-writable.
+  fixtureNode = join(temporary(), "node");
+  copyFileSync(process.execPath, fixtureNode, constants.COPYFILE_FICLONE);
+  chmodSync(fixtureNode, 0o700);
+});
+after(() => {
+  if (fixtureNode !== undefined) {
+    rmSync(dirname(fixtureNode), { recursive: true, force: true });
+  }
+});
 
 /** What the host writes to its own stderr while `action` runs (the operator's log). */
 async function hostStderr(action: () => Promise<unknown>): Promise<string> {
@@ -833,6 +851,42 @@ test("host accepts genuine Compute packed command without replacing or truncatin
 });
 
 test(
+  "host configuration refuses group- or other-writable Box executables",
+  { skip: unsupported },
+  (t) => {
+    const root = temporary();
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const runtimeDir = join(root, "run");
+    const workspace = join(root, "workspace");
+    const agentBuildDir = join(root, "compiled");
+    for (const directory of [runtimeDir, workspace, agentBuildDir]) {
+      mkdirSync(directory, { mode: 0o700 });
+    }
+    for (const file of ["box-agent.js", "transport.js", "diagnostics.js"]) {
+      writeFileSync(join(agentBuildDir, file), "", { mode: 0o600 });
+    }
+    const boxBin = join(root, "box");
+    writeFileSync(boxBin, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const input = {
+      boxBin,
+      nodeBin: fixtureNode,
+      codexBin: fixtureNode,
+      agentBuildDir,
+      runtimeDir,
+      workspace,
+      read: [],
+      exec: [],
+      linuxPreview: true,
+    };
+    assert.equal(hostConfig(input).boxBin, boxBin);
+    for (const mode of [0o720, 0o702]) {
+      chmodSync(boxBin, mode);
+      assert.throws(() => hostConfig(input), { message: "phase=box-binary reason=invalid_binary" });
+    }
+  },
+);
+
+test(
   "owner home creation refuses a nonwritable parent with bounded diagnostics",
   { skip: unsupported },
   () => {
@@ -847,7 +901,7 @@ test(
     for (const file of ["box-agent.js", "transport.js", "diagnostics.js"]) {
       writeFileSync(join(agentBuildDir, file), "", { mode: 0o600 });
     }
-    const node = realpathSync(process.execPath);
+    const node = fixtureNode;
     const config = hostConfig({
       boxBin: node,
       nodeBin: node,
@@ -892,7 +946,7 @@ test("the agent's exec list never covers git or gh (finding 3325)", { skip: unsu
   for (const file of ["box-agent.js", "transport.js", "diagnostics.js"]) {
     writeFileSync(join(agentBuildDir, file), "", { mode: 0o600 });
   }
-  const node = realpathSync(process.execPath);
+  const node = fixtureNode;
   const config = (exec: string[]) =>
     hostConfig({
       boxBin: node,
@@ -1224,7 +1278,7 @@ test(
         "printf '%s\\n' 'fixture-private-stdout'\nsleep 0.1\nexit 2\n",
       { mode: 0o700 },
     );
-    const node = realpathSync(process.execPath);
+    const node = fixtureNode;
     const config = hostConfig({
       boxBin,
       nodeBin: node,
@@ -1381,7 +1435,7 @@ test(
     }
     const boxBin = join(directory, "fixture-box");
     writeFileSync(boxBin, "#!/bin/sh\ntouch ../spawned\nsleep 1\n", { mode: 0o700 });
-    const node = realpathSync(process.execPath);
+    const node = fixtureNode;
     const config = hostConfig({
       boxBin,
       nodeBin: node,
@@ -1842,7 +1896,7 @@ test(
         "sleep 2\nexit 2\n",
       { mode: 0o700 },
     );
-    const node = realpathSync(process.execPath);
+    const node = fixtureNode;
     const config = hostConfig({
       boxBin,
       nodeBin: node,
@@ -2410,7 +2464,7 @@ test(
           'cp -- "$(dirname "$3")/policy.dw" ../generated-policy.dw || exit 5\nexit 2\n',
         { mode: 0o700 },
       );
-      const node = realpathSync(process.execPath);
+      const node = fixtureNode;
       const config = hostConfig({
         boxBin,
         nodeBin: node,
@@ -2588,7 +2642,7 @@ test(
         "sleep 2\nexit 2\n",
       { mode: 0o700 },
     );
-    const node = realpathSync(process.execPath);
+    const node = fixtureNode;
     const config = hostConfig({
       boxBin,
       nodeBin: node,
@@ -2841,7 +2895,7 @@ test(
     for (const file of ["box-agent.js", "transport.js", "diagnostics.js"]) {
       writeFileSync(join(agentBuildDir, file), "", { mode: 0o600 });
     }
-    const node = realpathSync(process.execPath);
+    const node = fixtureNode;
     // Stands in for box-agent: read the staged input, wait for the gate, record its answer.
     const waiter = join(directory, "waiter.mjs");
     writeFileSync(

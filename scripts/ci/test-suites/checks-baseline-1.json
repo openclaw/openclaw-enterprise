@@ -34,9 +34,12 @@
     "tests/conformance/kubernetes-protected-workspace-endpoint.test.ts",
     "tests/conformance/strands-box-credential-source.test.ts",
     "tests/conformance/strands-box-driver.test.ts",
+    "tests/conformance/strands-box-git-model.test.ts",
     "tests/conformance/strands-box-harness-image.test.ts",
     "tests/conformance/strands-box-host.test.ts",
     "tests/conformance/strands-box-ingress.test.ts",
+    "tests/conformance/strands-box-model.test.ts",
+    "tests/conformance/strands-box-native-hook.test.ts",
     "tests/conformance/strands-box-ordinary-chat.test.ts",
     "tests/conformance/strands-box-warm-retry-deploy.test.ts",
     "tests/conformance/strands-box-warm-retry-host.test.ts",
@@ -287,13 +290,57 @@
       "path": "tests/conformance/strands-box-driver.test.ts"
     },
     {
+      "path": "tests/conformance/strands-box-git-model.test.ts",
+      "expectedTests": [
+        "the scripted dry-run model asks only for stock git and gh against GitHub's canonical URLs",
+        "the dry-run result line carries the exit code and Box's refusal code only",
+        "only the latest user prompt picks a step; an ordinary follow-up gets a plain reply",
+        "the stock-form steps cd into their clone and run bare git and gh, as a real model writes them",
+        "the admission checks: one permitted program and tamper lists decided command by command",
+        "the hook checks: a marker write and one no-progress call the dry-run model repeats",
+        "the outside-write step uses Codex's own patch tool to add one file under the Harness home",
+        "with key digests the dry-run model accepts only those bearers and records each digest, never a key",
+        "the model-sibling step asks only the planned URLs, with stock git and the placeholder by reference",
+        "with a path prefix the dry-run model also serves the Responses path below it, and nothing next to it"
+      ]
+    },
+    {
       "path": "tests/conformance/strands-box-harness-image.test.ts"
     },
     {
-      "path": "tests/conformance/strands-box-host.test.ts"
+      "path": "tests/conformance/strands-box-host.test.ts",
+      "expectedTests": ["host configuration refuses group- or other-writable Box executables"]
     },
     {
       "path": "tests/conformance/strands-box-ingress.test.ts"
+    },
+    {
+      "path": "tests/conformance/strands-box-model.test.ts",
+      "expectedTests": [
+        "the package's model Gateway keeps each source's key in its own Secret and never shows it",
+        "the model Gateway attaches exactly the dedicated Codex source for its route and withdraws only on the host's receipt",
+        "the host's model source relays only the target of POST <route>/responses, never the prompt",
+        "the host renders one model credential route: Box's source, the placeholder variable, POST /v1/responses only",
+        "the paired Driver admits the protected plan with exactly its one model attachment and the empty artifact policy",
+        "the Worker answers a Box model request from the package's Secret: bearer, live attachment, route, 4 s send-by; withdrawal, restart and rotation",
+        "a host that lies about its Namespace or source gets a refusal and no Secret read; only OCE's confirmed installation selects the key",
+        "the Worker answers the starting Harness's model asks from OCE's committed installation, before the revision is active, and never before the release or without the live Box",
+        "the Worker's own model rules refuse each ask a relay passes: bearer, route, deadline, revoke, source, retired recipient",
+        "a withdrawal without a live execution still leaves the host's receipt, and a restarted execution is refused",
+        "the model key store deletes only the Secret it checked, and updates only its own sources",
+        "the host buffers at most two of Box's largest model asks at once; more are refused unread",
+        "a model route below a path prefix still admits one exact POST path: host, Box tables, Worker"
+      ]
+    },
+    {
+      "path": "tests/conformance/strands-box-native-hook.test.ts",
+      "expectedTests": [
+        "the native hook permit admits exactly the Gateway's rendered hook command",
+        "the native hook runs as a leaf: relay package and credential directory, jitless, contained",
+        "box-agent refuses to start Codex unless the native hook command answers fail-closed",
+        "an expired node setup code is admitted only for a recorded device on the file node",
+        "the file node starts on an expired code only when its device is recorded"
+      ]
     },
     {
       "path": "tests/conformance/strands-box-ordinary-chat.test.ts"
