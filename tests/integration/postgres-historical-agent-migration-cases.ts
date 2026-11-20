@@ -543,23 +543,11 @@ type HistoricalRole = {
 };
 type PresetAction = "create" | "read" | "update" | "delete";
 type PresetPermission = { action: PresetAction; resourceKind: "preset" };
-type PresetPolicyInput = {
-  installationId: string;
-  namespaceId: string;
-  roles: unknown[];
-  stock: unknown;
-  reordered: unknown;
-  presetPermissions: unknown[];
-  principals: string[];
-};
 type PresetPolicyFixture = {
   installationId: string;
   namespaceId: string;
-  roles: HistoricalRole[];
-  stock: HistoricalRole;
-  reordered: HistoricalRole;
+  legacyPermissions: HistoricalPermission[];
   presetPermissions: PresetPermission[];
-  principals: [string, string];
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -593,17 +581,6 @@ function isHistoricalPermission(value: unknown): value is HistoricalPermission {
   );
 }
 
-function isHistoricalRole(value: unknown): value is HistoricalRole {
-  return (
-    isRecord(value) &&
-    typeof value.id === "string" &&
-    (value.namespace_id === null || typeof value.namespace_id === "string") &&
-    typeof value.name === "string" &&
-    isUnknownArray(value.permissions) &&
-    value.permissions.every(isHistoricalPermission)
-  );
-}
-
 function isPresetPermission(value: unknown): value is PresetPermission {
   return (
     isHistoricalPermission(value) &&
@@ -618,17 +595,55 @@ function assertPresetPolicyFixture(value: unknown): asserts value is PresetPolic
   assert.ok(isRecord(value));
   assert.equal(typeof value.installationId, "string");
   assert.equal(typeof value.namespaceId, "string");
-  assert.ok(isUnknownArray(value.roles) && value.roles.every(isHistoricalRole));
-  assert.ok(isHistoricalRole(value.stock));
-  assert.ok(isHistoricalRole(value.reordered));
+  assert.ok(
+    isUnknownArray(value.legacyPermissions) &&
+      value.legacyPermissions.every(isHistoricalPermission),
+  );
   assert.ok(
     isUnknownArray(value.presetPermissions) && value.presetPermissions.every(isPresetPermission),
   );
-  assert.ok(
-    isUnknownArray(value.principals) &&
-      value.principals.length === 2 &&
-      value.principals.every((principal) => typeof principal === "string"),
-  );
+}
+
+function historicalRole(
+  permissions: HistoricalPermission[],
+  overrides: Partial<HistoricalRole> = {},
+): HistoricalRole {
+  return {
+    id: `role_admin_${randomUUID()}`,
+    namespace_id: null,
+    name: "Installation administrator",
+    permissions,
+    ...overrides,
+  };
+}
+
+async function seedHistoricalRoles(
+  pool: Pool,
+  roles: HistoricalRole[],
+  boundRoles: HistoricalRole[],
+) {
+  for (const entry of roles) {
+    await pool.query("INSERT INTO occ.iam_roles VALUES ($1, $2, $3, $4::jsonb)", [
+      entry.id,
+      entry.namespace_id,
+      entry.name,
+      JSON.stringify(entry.permissions),
+    ]);
+  }
+  const principals: string[] = [];
+  for (const entry of boundRoles) {
+    const principalId = `prn_${randomUUID()}`;
+    principals.push(principalId);
+    await pool.query(
+      "INSERT INTO occ.iam_identities (id, kind, issuer, subject) VALUES ($1, 'principal', 'upgrade', $1)",
+      [principalId],
+    );
+    await pool.query(
+      "INSERT INTO occ.iam_access_bindings (id, identity_subject_id, role_id) VALUES ($1, $2, $3)",
+      [`binding_admin_${randomUUID()}`, principalId, entry.id],
+    );
+  }
+  return principals;
 }
 
 export async function assertDrizzleJournalPreserved(
@@ -749,11 +764,31 @@ export async function assertDrizzleJournalPreserved(
 export async function assertPresetPolicyUpgrade(
   pool: Pool,
   migrationsDirectory: string,
-  fixture: PresetPolicyInput,
+  fixture: unknown,
 ) {
   assertPresetPolicyFixture(fixture);
-  const { installationId, namespaceId, roles, stock, reordered, presetPermissions, principals } =
-    fixture;
+  const { installationId, namespaceId, legacyPermissions, presetPermissions } = fixture;
+  const presetRead = presetPermissions[1];
+  assert.ok(presetRead);
+  const stock = historicalRole(legacyPermissions);
+  const reordered = historicalRole(legacyPermissions, {
+    permissions: [...legacyPermissions].reverse(),
+  });
+  const reduced = historicalRole(legacyPermissions, { permissions: legacyPermissions.slice(1) });
+  const roles = [
+    stock,
+    reordered,
+    reduced,
+    historicalRole(legacyPermissions, {
+      permissions: [...legacyPermissions, { action: "update", resourceKind: "namespace" }],
+    }),
+    historicalRole(legacyPermissions, { name: "Custom administrator" }),
+    historicalRole(legacyPermissions, { id: `role_${randomUUID()}` }),
+    historicalRole(legacyPermissions, { namespace_id: namespaceId }),
+    historicalRole(legacyPermissions, { permissions: [...legacyPermissions, presetRead] }),
+  ];
+  const principals = await seedHistoricalRoles(pool, roles, [stock, reduced]);
+  assert.ok(principals[0] && principals[1]);
   const [{ NativeIAMDriver }, { PostgresPlatformState }] = await Promise.all([
     import("../../packages/iam/src/index.ts"),
     import("../../packages/occ/src/state/postgres-state.ts"),
@@ -1174,12 +1209,9 @@ type CredentialSourcePermission = {
 };
 type AdministratorFixture = {
   namespaceId: string;
-  roles: HistoricalRole[];
-  release: HistoricalRole;
-  reordered: HistoricalRole;
-  preCredentialSources: HistoricalRole;
+  presetSeed: HistoricalPermission[];
+  releaseSeed: HistoricalPermission[];
   currentGrants: CredentialSourcePermission[];
-  principals: [string, string, string];
 };
 
 function isCredentialSourcePermission(value: unknown): value is CredentialSourcePermission {
@@ -1193,17 +1225,10 @@ function isCredentialSourcePermission(value: unknown): value is CredentialSource
 function assertAdministratorFixture(value: unknown): asserts value is AdministratorFixture {
   assert.ok(isRecord(value));
   assert.equal(typeof value.namespaceId, "string");
-  assert.ok(isUnknownArray(value.roles) && value.roles.every(isHistoricalRole));
-  assert.ok(isHistoricalRole(value.release));
-  assert.ok(isHistoricalRole(value.reordered));
-  assert.ok(isHistoricalRole(value.preCredentialSources));
+  assert.ok(isUnknownArray(value.presetSeed) && value.presetSeed.every(isHistoricalPermission));
+  assert.ok(isUnknownArray(value.releaseSeed) && value.releaseSeed.every(isHistoricalPermission));
   assert.ok(
     isUnknownArray(value.currentGrants) && value.currentGrants.every(isCredentialSourcePermission),
-  );
-  assert.ok(
-    isUnknownArray(value.principals) &&
-      value.principals.length === 3 &&
-      value.principals.every((principal) => typeof principal === "string"),
   );
 }
 
@@ -1213,17 +1238,35 @@ export async function assertAdministratorGrantUpgrade(
   migration: string,
   fixture: unknown,
 ) {
-  assert.ok(pool instanceof pg.Pool);
   assertAdministratorFixture(fixture);
-  const {
-    namespaceId,
-    roles,
+  const { namespaceId, presetSeed, releaseSeed, currentGrants } = fixture;
+  const currentUpdate = currentGrants[2];
+  assert.ok(currentUpdate);
+  const release = historicalRole(releaseSeed);
+  const reordered = historicalRole(releaseSeed, { permissions: [...releaseSeed].reverse() });
+  const preCredentialSources = historicalRole(releaseSeed, { permissions: presetSeed });
+  const reduced = historicalRole(releaseSeed, { permissions: releaseSeed.slice(1) });
+  const current = historicalRole(releaseSeed, { permissions: [...releaseSeed, currentUpdate] });
+  const roles = [
     release,
     reordered,
     preCredentialSources,
-    currentGrants,
-    principals,
-  } = fixture;
+    reduced,
+    current,
+    historicalRole(releaseSeed, {
+      permissions: [...releaseSeed, { action: "update", resourceKind: "namespace" }],
+    }),
+    historicalRole(releaseSeed, { name: "Custom administrator" }),
+    historicalRole(releaseSeed, { id: `role_${randomUUID()}` }),
+    historicalRole(releaseSeed, { namespace_id: namespaceId }),
+  ];
+  const principals = await seedHistoricalRoles(pool, roles, [
+    release,
+    preCredentialSources,
+    reduced,
+  ]);
+  assert.ok(pool instanceof pg.Pool);
+  assert.ok(principals[0] && principals[1] && principals[2]);
   const [{ NativeIAMDriver }, { PostgresPlatformState }] = await Promise.all([
     import("../../packages/iam/src/index.ts"),
     import("../../packages/occ/src/state/postgres-state.ts"),
