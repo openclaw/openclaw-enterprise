@@ -1,8 +1,11 @@
 import { createReplacementNodeObservation } from "./openshell-workspace-node-observation.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { runOpenShellStage } from "./openshell-stage.ts";
-import { emitOpenShellReplacementCheckpoint } from "../../scripts/ci/openshell-progress.mjs";
 import { observeOpenShellPermissionRefusal } from "./openshell-permission-diagnostic.ts";
+import {
+  assertOpenShellModelId,
+  normalizeOpenShellModelId,
+} from "../../scripts/ci/openshell-model-inputs.ts";
 import { openShellTurnoverQualification } from "../../scripts/ci/reporter.ts";
 import {
   openShellGatewayGrpcChannel,
@@ -102,7 +105,10 @@ import {
   keycloakUserClient,
 } from "./keycloak-issuer-material.ts";
 import { defaultKeycloakImage, startKeycloak } from "./keycloak-real.mjs";
-import { pollReplacementActivation } from "./openshell-replacement-activation.ts";
+import {
+  pollReplacementActivation,
+  redeployOpenShellReplacement,
+} from "./openshell-replacement-activation.ts";
 import {
   diagnosticQuery,
   diagnosticQueryTimeoutMs,
@@ -160,9 +166,8 @@ const openShellSupervisorImage = process.env.OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE
 const openShellHelmPath = process.env.OCC_TEST_OPENSHELL_HELM;
 const openShellHelmChart = process.env.OCC_TEST_OPENSHELL_HELM_CHART;
 const openShellWorkspaceHelmChart = process.env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART;
-const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).replace(
-  /^(?:openai|codex)\//,
-  "",
+const providerModel = normalizeOpenShellModelId(
+  process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel,
 );
 const openShellModelBaseUrl = process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim() || undefined;
 const modelCredentialVariable =
@@ -1968,6 +1973,9 @@ async function prepareProductionInstallation(
     enableCompatibilityBridges = harnessId === "openclaw",
   } = {},
 ) {
+  if (process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1") {
+    assertOpenShellModelId(providerModel);
+  }
   const kubeconfig = await validateOpenShellPrerequisites();
   const policyFixtureUrl = process.env.OCC_TEST_OPENSHELL_POLICY_MIGRATION_DATABASE_URL;
   if (harnessId === "codex") {
@@ -8400,34 +8408,6 @@ export async function waitForReplacementActivation(
   }
 }
 
-export async function redeployOpenShellReplacement(
-  topology,
-  testContext,
-  reportProgress,
-  diagnose,
-) {
-  if (reportProgress) {
-    emitOpenShellReplacementCheckpoint("redeploy-request");
-  }
-  const redeployed = await topology.request(
-    "POST",
-    `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/deploy`,
-  );
-  assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
-  assert.notEqual(redeployed.data.id, topology.revision.id);
-  const revisionId = redeployed.data.id;
-  const observedAcceptance =
-    reportProgress && typeof revisionId === "string" && revisionId.length > 0;
-  if (observedAcceptance) {
-    emitOpenShellReplacementCheckpoint("activation");
-  }
-  await waitForReplacementActivation(topology, redeployed, testContext, undefined, diagnose);
-  if (observedAcceptance) {
-    emitOpenShellReplacementCheckpoint("reconciliation");
-  }
-  return redeployed;
-}
-
 async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(
   topology,
   testContext,
@@ -8463,7 +8443,9 @@ async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(
   );
   assert.equal(suspendedSandbox.spec.operatingMode, "Suspended");
 
-  const redeployed = await redeployOpenShellReplacement(topology, testContext, reportProgress);
+  const redeployed = await redeployOpenShellReplacement(topology, reportProgress, (response) =>
+    waitForReplacementActivation(topology, response, testContext),
+  );
   // Activation already required the replacement's workspace node to reconnect. Dedicated Codex
   // enrolls that node through OpenShell provider files, so the Pod carries no node-state mount.
   await waitForProviderHarnessPod(topology.placement, redeployed.data);

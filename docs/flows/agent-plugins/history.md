@@ -8,6 +8,7 @@ This record preserves the dated changes to the Agent plugin deployment flow. See
 
 ## Changelog
 
+- 2026-11-19 01:12: With the runtime pin at OpenClaw `44f24d8398`, dedicated Codex lists a pinned Skill Library skill by name and description with a note to read it through `skills_read` instead of its Gateway-only path. (authoring-run/0cdd91e7-47ea-4661-a124-c23fd4479805 - cea7d46c6956c59ba9604a710022159930eb5aa4)
 - 2026-11-18 22:08: Allow Gateway-side read-only `skills_search` and `skills_read` over session-eligible skills in the default Gateway tool policy, so a dedicated Harness can read skills whose files exist only in the Gateway, such as pinned Skill Library instructions. (authoring-run/19cca54a-1443-4e43-87cd-86a89718b7e4 - 715d7cfbc45f99abdfe9181049affc68218db2c2)
 - 2026-11-03 01:10: Describe hosted MCP packages and Driver-owned request policy. (authoring-run/1bd8c7a3-997a-45b2-93a4-e24d114c9ca8 - 4178b555ac5dc711c818055bd7fe34c3e4d4943b)
 

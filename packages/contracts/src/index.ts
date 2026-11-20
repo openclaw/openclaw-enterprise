@@ -1,15 +1,23 @@
 import type { Static } from "typebox";
+
 import type { HarnessAuthBindingSchema } from "./api/common.ts";
 import type {
   ComputeAgentProvisioningCapabilities,
   RepositoryWorkerRestartDisposition,
 } from "./drivers/compute/index.ts";
 import type { DriverCapability } from "./drivers/index.ts";
+import type { TokenServiceRegistration } from "./drivers/token-service/index.ts";
 import type {
   ExecutionAdmission,
   ProtectedEgressSource,
   ProxyPlan,
 } from "./drivers/credential-proxy/index.ts";
+
+export type { NetworkDestinationRule } from "./network-destination.ts";
+export {
+  NetworkDestinationRuleSchema,
+  normalizeNetworkDestinationRules,
+} from "./network-destination.ts";
 
 export type {
   CredentialPolicyReduction,
@@ -44,7 +52,10 @@ export type {
   ProxyRevisionContext,
   CredentialProviderDefinition,
   CredentialSourceControl,
+  CredentialUpdateNotification,
   CredentialProxyDriver,
+  LegacyEgressProxyDriver,
+  CredentialDeploymentContext,
 } from "./drivers/credential-proxy/index.ts";
 export type {
   CredentialProxyBinding,
@@ -153,7 +164,6 @@ export {
   SandboxNetworkGrantsSchema,
   SandboxNetworkPolicyConfiguration,
   validateSandboxNetworkGrants,
-  sandboxNetworkGrantsWithinCeiling,
 } from "./sandbox-policy.ts";
 
 export type {
@@ -323,7 +333,8 @@ export interface OpenShellBackendDefinition {
   readonly configuration: OpenShellBackendConfiguration;
   readonly drivers: {
     readonly sandbox: string;
-    readonly credential_gateway: string;
+    /** Legacy credential Source owner, when selected. The Gateway service is configured separately. */
+    readonly credential_gateway?: string;
     readonly credential_proxy?: string;
     /** Refreshes the gateway's refresh-type sources; absent when none are offered. */
     readonly credential_refresh?: string;
@@ -424,11 +435,14 @@ export type {
   ModelProviderView,
   ModelProviderModel,
   InferenceProtocol,
+  SourceProviderPresetId,
 } from "./model-providers.ts";
 export {
   inferenceKeyDestination,
+  isSourceProviderPresetId,
   modelProviderRequestApproved,
   normalizeInferenceBaseUrl,
+  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
 } from "./model-providers.ts";
 export interface Installation {
   readonly id: string;
@@ -572,7 +586,16 @@ type CredentialSourceOwner =
       readonly ownerCapability: "credential_gateway" | "credential_proxy";
       readonly driverId: string;
     }
-  | { readonly ownerCapability: "token_service"; readonly driverId?: never };
+  | {
+      readonly ownerCapability: "token_service";
+      readonly driverId?: never;
+      /** Present for registrations owned by an Installation-selected credential store. */
+      readonly tokenServiceInstanceId?: string;
+      /** Private owner receipt, recorded only after registration succeeds. */
+      readonly registration?: TokenServiceRegistration;
+      /** Durable dispatch fence for a registration whose owner write may be uncertain. */
+      readonly registrationDispatchedAt?: string;
+    };
 
 export type CredentialSourceOwnerCapability = CredentialSourceOwner["ownerCapability"];
 
@@ -1544,6 +1567,8 @@ export type {
   SandboxEnvironmentVariable,
   SandboxWorkloadFile,
   SandboxWorkloadIdentity,
+  HarnessRetainedDirectory,
+  HarnessLaunchDescription,
   HarnessWorkloadRequirements,
   SandboxResourceRef,
   SandboxHarnessEndpoint,
@@ -1617,6 +1642,15 @@ export {
   StaticKeyConnectionTemplateVersionSchema,
 } from "./api/connection-templates.ts";
 export { ModelProviderSchema, ModelProviderModelSchema } from "./api/model-providers.ts";
+export {
+  RegisterTokenServiceSourceBody,
+  UpdateTokenServiceSourceBody,
+  TokenServiceSourceMetadata,
+} from "./api/token-service-sources.ts";
+export {
+  PushAgentCredentialsBody,
+  PushAgentCredentialsResponse,
+} from "./api/agent-credential-push.ts";
 export * from "./api/resources.ts";
 export * from "./api/routes.ts";
 
@@ -1703,6 +1737,7 @@ export type {
   TokenServiceSourceRef,
   InstallationClientSecretRef,
   TokenServiceRegistration,
+  TokenServiceSourceInstance,
   RegisteredTokenServiceSource,
   SourceLifecycleConfig,
   SourceRegistrationInput,
@@ -1712,6 +1747,20 @@ export type {
   SourceRefreshOperation,
   TokenServiceDriver,
 } from "./drivers/token-service/index.ts";
+
+export {
+  credentialProxyRoutingDetails,
+  networkGrantAdmissionDetails,
+  sandboxNetworkGrantsWithinCeiling,
+  validateDeploymentPolicy,
+} from "./deployment-policy.ts";
+export type {
+  CredentialBindingAuthority,
+  CredentialInjectionCapabilities,
+  DeploymentPolicy,
+  DeploymentPolicyValidationContext,
+  NetworkPolicyCapabilities,
+} from "./deployment-policy.ts";
 
 export type {
   BearerCredentialProjection,
@@ -1742,5 +1791,3 @@ export type {
   HarnessStartupRef,
   SandboxDeploymentContract,
 } from "./drivers/sandbox/deployment.ts";
-
-export type { CredentialProxyDeploymentContract } from "./drivers/credential-proxy/deployment.ts";

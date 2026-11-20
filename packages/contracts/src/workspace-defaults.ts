@@ -1,6 +1,6 @@
 import type { InitialWorkspaceFileName } from "./workspace-setup.ts";
 
-// Rendered from OpenClaw f8727fdcd3a1f6152b9fdc110f3004a8e58f25e9
+// Rendered from OpenClaw 82b682c627ba8bfc2c2bd51cf46ad8f51c583857
 // docs/reference/templates, matching src/agents/workspace.ts.
 // Keep the pin, content, and identity together when updating the runtime release.
 export const WORKSPACE_DEFAULTS_VERSION = "2026.11.5";

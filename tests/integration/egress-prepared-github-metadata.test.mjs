@@ -9,7 +9,7 @@ import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import {
   CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES,
   credentialSourceFieldRequired,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-credential-admission.ts";
 import { createPreparedStore } from "../fixtures/repository-credentials/github/prepared-store.ts";
 import {
   startGitHubFixture,

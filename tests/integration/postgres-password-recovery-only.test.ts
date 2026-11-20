@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import {
   assertConsoleSignIn,
   assertProviderAttached,
@@ -19,7 +19,7 @@ import {
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { fakeGoogle, googleSignIn } from "../helpers/google-sign-in.ts";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { cookieHeaderFromSetCookie } from "../helpers/auth-session.ts";
 import {
   responseData,
   events,

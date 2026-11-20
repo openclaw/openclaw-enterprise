@@ -85,7 +85,10 @@ The API, console, durable worker, PostgreSQL persistence, and Kubernetes packagi
 are implemented. Single-cluster Kubernetes execution places Gateway and Harness in one tenant
 namespace with separate Pods, identities and storage. External access-gateway admission, workload
 token authentication to OCC, and general credential-free model inference remain
-planned. The two-cluster profile is experimental.
+planned. The two-cluster profile is experimental. The Kubernetes Compute Driver's experimental
+[managed OpenShell runtime](reference/drivers/kubernetes-openshell-compute.md)
+uses OpenShell-managed Harness namespaces and storage with a stable Sandbox per
+Agent. Its cluster integration and generation-fenced replacement remain unverified.
 
 <a id="current-limitations"></a>
 <a id="near-term-future-work"></a>
@@ -168,6 +171,12 @@ for the provisioning sequence.
 
 ## Drivers
 
+Channel Drivers declare provider destinations. Kubernetes Compute enforces each
+Agent's enabled-channel requirements through a dedicated Envoy egress fleet,
+separate from private workspace ingress. Protected listener ports select Agent
+policies until verified Gateway workload identities are available. See
+[channel egress](reference/drivers/kubernetes-compute/channel-egress.md).
+
 Installation configuration selects compute, configuration, IAM, and Secret
 implementations, plus channel and optional service-account, plugin, repository, Sandbox, and
 Credential Gateway integrations. [Driver development](contributing/driver-development.md)
@@ -228,12 +237,12 @@ release cannot enforce this path; qualify the exact pair before rollout.
 
 Human sessions with exact-Agent `operate` can enter native chat; `administer`
 selects the [stock OpenClaw admin UI](reference/agent-native-admin.md). OCC checks
-admission and session retention and selects an administrative route or a chat
-route capped at `operator.sessions.write` under the shared native identity.
-The runtime enforces that ceiling; OCC does not authorize or audit
-each native command. Users share the selected gateway’s exposed conversations,
-including channel conversations; this grants no access to another Agent or
-platform IAM.
+admission and session retention, then Compute delegates the OCE Principal and
+selected scope over a private browser route. The Gateway binds that identity to
+a native profile and applies native roles within the delegated ceiling.
+OCC does not authorize or audit each native command. Profiles do not isolate
+execution or data. Native session rules govern the Gateway’s exposed conversations,
+including channel conversations; access grants no authority over another Agent or platform IAM.
 
 Operators can provide a separate [human access path](reference/drivers/kubernetes-compute/gateway-authentication.md)
 to the shared Agent. This path does not grant OCC access.

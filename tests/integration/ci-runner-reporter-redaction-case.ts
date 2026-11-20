@@ -16,9 +16,10 @@ import {
   runRunnerSync,
   writeSingleFileRunnerLane,
 } from "../helpers/ci-runner-fixture.ts";
+import { nativeWorkerPlacementObservation } from "../helpers/local-first-agent-native-placement.ts";
 import {
   collectNativeWorkerFailure,
-  nativeWorkerPlacementObservation,
+  nativeWorkerTurnEventObservation,
   nativeWorkerTurnObservation,
 } from "../helpers/local-first-agent-native.mjs";
 import {
@@ -227,10 +228,62 @@ export async function checkReporterRedaction(t: TestContext) {
     assert.deepEqual(params, { sessionKey: nativeSession.key, limit: 30 });
     return { messages: [] };
   };
+  const selectedTurn = { key: nativeSession.key, runId: "selected-run" };
+  const identity = { sessionKey: selectedTurn.key, runId: selectedTurn.runId };
+  const lifecycle = (data: Record<string, unknown>) => ({
+    event: "agent",
+    payload: { ...identity, stream: "lifecycle", data },
+  });
+  const selectedTerminal = lifecycle({
+    phase: "error",
+    executionSettled: true,
+    providerStarted: true,
+    error: `Cloud worker result does not match its committed transcript acknowledgement (leaf=${nativePrivate})`,
+    transcript: `${nativePrivate}-transcript`,
+    token: `${nativePrivate}-token`,
+  });
+  const turnEvents = Object.assign(
+    {},
+    ...[
+      {
+        event: "chat",
+        payload: { ...identity, state: "status", phase: "starting_model", token: nativePrivate },
+      },
+      selectedTerminal,
+      {
+        event: "chat",
+        payload: { ...identity, state: "status", phase: nativePrivate },
+      },
+      lifecycle({
+        phase: "error",
+        executionSettled: false,
+        providerStarted: false,
+        error: nativePrivate,
+      }),
+      {
+        ...selectedTerminal,
+        payload: {
+          ...selectedTerminal.payload,
+          runId: "foreign-run",
+          data: { phase: "end", executionSettled: true, providerStarted: false },
+        },
+      },
+      {
+        ...selectedTerminal,
+        payload: {
+          ...selectedTerminal.payload,
+          sessionKey: "agent:main:foreign-session",
+          data: { phase: "end", executionSettled: true, providerStarted: false },
+        },
+      },
+    ].map((event) => nativeWorkerTurnEventObservation(event, selectedTurn)),
+  );
+  assert.doesNotMatch(JSON.stringify(turnEvents), new RegExp(nativePrivate));
   const collectedTurn: unknown = await collectNativeWorkerFailure({
     session: nativeSession,
-    runId: "selected-run",
-    outcome: { status: "error", error: `fetch failed: ${nativePrivate}` },
+    runId: selectedTurn.runId,
+    outcome: { status: "error", error: nativePrivate },
+    turnEvents,
     elapsedMs: undefined,
     lastPlacement: undefined,
     expectedNodeId: undefined,
@@ -250,6 +303,10 @@ export async function checkReporterRedaction(t: TestContext) {
     ["fetch failed", "network-connection"],
     ["Worker turn authority changed while preparing its launch", "worker-authority"],
     ["Worker tunnel does not support worker turns", "worker-transport"],
+    [
+      "Cloud worker could not preserve authoritative provider replay. Stop or reclaim the cloud worker, then retry locally.",
+      "worker-provider-replay",
+    ],
     ["HTTP 401", "http-unauthorized"],
     ["HTTP 403", "http-forbidden"],
     ["HTTP 429", "http-rate-limit"],
@@ -563,6 +620,10 @@ export async function checkReporterRedaction(t: TestContext) {
               session: nativePrivate,
               turnStatus: nativePrivate,
               turnError: { message: nativePrivate },
+              turnStartupPhase: nativePrivate,
+              turnLifecyclePhase: nativePrivate,
+              turnLifecycleError: nativePrivate,
+              providerStarted: nativePrivate,
               assistantError: nativePrivate,
               execError: nativePrivate,
               execResultCount: 4097,
@@ -598,7 +659,7 @@ export async function checkReporterRedaction(t: TestContext) {
           name: "collects native turn failure within the shared read budget",
           diagnostic: {
             kind: "native-first-agent-proof",
-            failureStage: "model-history",
+            failureStage: "model-outcome",
             worker: runnerRecord(collectedTurn, "collected native turn"),
           },
         },
@@ -827,6 +888,9 @@ export async function checkReporterRedaction(t: TestContext) {
     turnError: "other",
     assistantError: "other",
     execError: "other",
+    turnStartupPhase: "other",
+    turnLifecyclePhase: "other",
+    turnLifecycleError: "other",
     historyExecErrorFlag: "other",
   });
   for (const [, category] of turnCases) {
@@ -840,8 +904,26 @@ export async function checkReporterRedaction(t: TestContext) {
     assert.equal(turn.execFailureCount, 1);
   }
   const collected = workerFor("collects native turn failure within the shared read budget");
-  assert.equal(collected.turnError, "network-connection");
-  assert.equal(collected.historyLookup, "found");
+  assert.deepEqual(
+    {
+      turnError: collected.turnError,
+      turnStartupPhase: collected.turnStartupPhase,
+      turnLifecyclePhase: collected.turnLifecyclePhase,
+      turnLifecycleError: collected.turnLifecycleError,
+      providerStarted: collected.providerStarted,
+      historyLookup: collected.historyLookup,
+      execResultCount: collected.execResultCount,
+    },
+    {
+      turnError: "other",
+      turnStartupPhase: "starting_model",
+      turnLifecyclePhase: "error",
+      turnLifecycleError: "worker-transcript-settlement",
+      providerStarted: true,
+      historyLookup: "found",
+      execResultCount: 0,
+    },
+  );
   const wrapped = workerFor("retains wrapped native worker bootstrap causes through CI");
   assert.equal(wrapped.recoveryError, "worker-deploy-artifact-missing");
   assert.equal(wrapped.terminalReason, "bundle-install-failed");

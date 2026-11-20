@@ -35,6 +35,7 @@ import {
   type ServiceAccountReference,
   type SandboxNetworkGrant,
 } from "../../packages/contracts/src/index.ts";
+import { registerDeploymentPolicyCases } from "./contracts-deployment-policy-cases.ts";
 import { registerConfigurationCases } from "./contracts-configuration-cases.ts";
 import { registerRuntimeDiagnosticCases } from "./contracts-runtime-diagnostic-cases.ts";
 
@@ -213,6 +214,8 @@ test("the Driver contract exposes the supported platform capabilities", () => {
     "credential_gateway",
     "credential_refresh",
     "credential_proxy",
+    "credential_proxy_delivery",
+    "token_service",
   ]);
   assert.equal(Object.isFrozen(DRIVER_CAPABILITIES), true);
 
@@ -613,3 +616,4 @@ test("only a codex_pat Harness binding names a ServiceAccount source, and only e
 
 registerRuntimeDiagnosticCases();
 registerConfigurationCases();
+registerDeploymentPolicyCases();

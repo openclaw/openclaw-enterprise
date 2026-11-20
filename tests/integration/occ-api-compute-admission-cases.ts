@@ -24,7 +24,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { plaintextGatewayComputeDrivers } from "../helpers/plaintext-gateway-compute.ts";
 import {
   sshGatewayPasswordRefusal,

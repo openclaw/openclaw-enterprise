@@ -10,14 +10,11 @@ import {
 } from "../../packages/contracts/src/api/resources.ts";
 import type { AuditEvent } from "../../packages/contracts/src/index.ts";
 
-import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { grantRole, restrict } from "../helpers/iam-grants.ts";
-import {
-  CONSOLE_NAMESPACE_CREATE_DENIED,
-  NAMESPACE_NAME_CONFLICT,
-  NO_READABLE_NAMESPACES,
-} from "../helpers/refusal-text.mjs";
+import { NAMESPACE_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
+import { NO_READABLE_NAMESPACES } from "../helpers/refusal-access.ts";
 import {
   apiRequests,
   authorizationDenials,
@@ -31,6 +28,9 @@ import {
   settledView,
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
+
+const CONSOLE_NAMESPACE_CREATE_DENIED =
+  "Your access does not include creating Namespaces in this Installation. Only an Installation administrator can create Namespaces: ask one to create a Namespace or to give you access to an existing one.";
 
 const require = createRequire(new URL("../../packages/contracts/package.json", import.meta.url));
 const {

@@ -71,6 +71,10 @@ export const AgentDeploymentBody = Type.Object(
   { harnessOverrides: Type.Optional(HarnessSettings) },
   { additionalProperties: false },
 );
+export const AgentStopQuery = Type.Object(
+  { expectedActiveRevisionId: Type.Optional(RevisionId) },
+  { additionalProperties: false },
+);
 export const FirstDeploymentIntent = Type.Object(
   {
     key: Type.String({ minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._~-]*$" }),
@@ -394,7 +398,7 @@ export const AgentCredentialSourcesSchema = Type.Array(
     maxItems: MAX_AGENT_CREDENTIAL_SOURCES,
     uniqueItems: true,
     description:
-      "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+      "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
   },
 );
 
@@ -417,11 +421,12 @@ export const CredentialSourceType = Type.String({
   minLength: 1,
   maxLength: 64,
   pattern: "^[a-z][a-z0-9-]{0,63}$",
-  description: "Source type from the selected Credential Gateway catalog, for example `openai`.",
+  description:
+    "Source type accepted by the Driver registering the credential, for example `openai`.",
 });
 
 export const CredentialSourceConfig = Type.Record(
-  CredentialSourceFieldName,
+  Type.String(),
   Type.String({ minLength: 1, maxLength: 2048 }),
   {
     maxProperties: 32,
@@ -1366,3 +1371,4 @@ export const UpdatePresetBody = Type.Object(
 );
 
 export type FirstDeploymentIntent = Type.Static<typeof FirstDeploymentIntent>;
+export type AgentStopQuery = Type.Static<typeof AgentStopQuery>;
