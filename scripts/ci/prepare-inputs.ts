@@ -9,7 +9,7 @@ import {
   normalizeOpenShellModelId,
   openShellHarnessError,
   openShellRequiredEnv,
-} from "./openshell-model-inputs.mjs";
+} from "./openshell-model-inputs.ts";
 import { loadTestSuites } from "./test-suites.ts";
 
 export type Environment = NodeJS.ProcessEnv;

@@ -5,7 +5,7 @@ import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { connect } from "node:net";
 import { createServer } from "node:tls";
-import test from "node:test";
+import test, { after } from "node:test";
 import { promisify } from "node:util";
 import { Check } from "typebox/value";
 import { AgentId, NamespaceId } from "../../packages/contracts/src/index.ts";
@@ -17,6 +17,7 @@ import { canonicalizeDumpRows } from "../helpers/postgres-dump.ts";
 import {
   installObservabilityControlPlane,
   observabilitySelection,
+  waitForObservabilityNamespaces,
 } from "../helpers/production-observability-k3d.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -58,6 +59,9 @@ function deployment(value: unknown) {
     spec: { replicas: number(spec.replicas) },
   };
 }
+
+// The test's Namespaces, including the two OCC created, must be gone before the file passes.
+after(waitForObservabilityNamespaces);
 
 test(
   "separate migration Helm upgrades keep writers stopped until the database passes verification",
