@@ -716,6 +716,12 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- $routing := .Values.gatewayRouting -}}
 {{- $roles := list -}}
 {{- $roles = append $roles (list "backend.openshell.clientSecretName" .Values.backend.openshell.clientSecretName) -}}
+{{- if .Values.controlPlaneAudit.enabled -}}
+{{- if .Values.gatewayRouting.enabled -}}
+{{- $roles = append $roles (list "the generated runtime audit root" "openclaw-enterprise-runtime-audit-root") -}}
+{{- $roles = append $roles (list "the generated runtime audit TLS Secret" "openclaw-enterprise-runtime-audit-tls") -}}
+{{- end -}}
+{{- end -}}
 {{- if .Values.egressAuthority.enabled -}}
 {{- $roles = concat $roles (list (list "egressAuthority.tlsSecretName" .Values.egressAuthority.tlsSecretName) (list "egressAuthority.issuerSecretName" .Values.egressAuthority.issuerSecretName)) -}}
 {{- end -}}
@@ -898,6 +904,22 @@ capabilities:
 {{- fail (printf "%s must be at most 2147483647 milliseconds" .name) -}}
 {{- end -}}
 {{- $raw -}}
+{{- end -}}
+
+{{- define "openclaw.runtimeAuditPort" -}}
+{{- $ports := list (int .Values.api.port) -}}
+{{- if .Values.metrics.enabled -}}
+{{- $ports = append $ports (int .Values.metrics.port) -}}
+{{- end -}}
+{{- if .Values.egressAuthority.enabled -}}
+{{- $ports = append $ports (int .Values.egressAuthority.port) -}}
+{{- end -}}
+{{- range $candidate := list 10445 10446 10447 10448 -}}
+{{- if not (has $candidate $ports) -}}
+{{- $candidate -}}
+{{- break -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 
 {{/* Each listener the chart routes through a Service: its port, or disabled. API and worker

@@ -34,6 +34,8 @@ type DevelopmentApp = Awaited<ReturnType<typeof composePostgresDevelopmentApp>>;
 type IssuedServiceKey = Awaited<ReturnType<ControllerAuth["createServiceKey"]>>;
 type ServiceKeyVerification = Awaited<ReturnType<ControllerAuth["admissionVerifier"]["verify"]>>;
 
+const migrationUrl = process.env.OCC_TEST_SERVICE_API_KEYS_MIGRATION_DATABASE_URL;
+
 function stringField(value: unknown, field: string): string {
   return text(record(value)[field]);
 }
@@ -620,12 +622,13 @@ test(
       ).rows,
       [{ actor_id: principalId, key_id: key.id }],
     );
-    // The audit permission in this mixed Role applies only to human readers. The administrator
+    // The audit permissions in this mixed Role apply only to human readers. The administrator
     // needs the ordinary Agent read grant to issue or revoke the key for this ServicePrincipal.
     const agentReader = await admin("POST", `/namespaces/${teamId}/iam/roles`, {
       permissions: [
         { action: "read", resourceKind: "agent" },
         { action: "read_audit", resourceKind: "agent" },
+        { action: "read_audit_content", resourceKind: "agent" },
       ],
     });
     assert.equal(agentReader.statusCode, 201);
@@ -649,6 +652,11 @@ test(
     assert.equal((await withKey(secondKey.key, "GET", agentPath)).statusCode, 200);
     assert.equal(
       (await withKey(secondKey.key, "GET", `${agentPath}/audit-events`)).statusCode,
+      401,
+    );
+    assert.equal(
+      (await withKey(secondKey.key, "GET", `${agentPath}/audit-events/aud_${randomUUID()}/message`))
+        .statusCode,
       401,
     );
     assert.equal((await admin("DELETE", `/api/auth/service-keys/${secondKey.id}`)).statusCode, 200);
@@ -742,6 +750,102 @@ test(
       404,
     );
 
+    await t.test(
+      "ledger failure rolls back service API key issuance and revocation",
+      { skip: migrationUrl ? false : "Prepare the dedicated postgres-auth file fixture." },
+      async (lockTest) => {
+        assert.ok(migrationUrl && databaseUrl);
+        const appTarget = new URL(databaseUrl);
+        const migrationTarget = new URL(migrationUrl);
+        assert.equal(appTarget.host, migrationTarget.host);
+        assert.equal(appTarget.pathname, migrationTarget.pathname);
+        assert.notEqual(appTarget.username, migrationTarget.username);
+        const migrator = new pg.Pool({ connectionString: migrationUrl });
+        lockTest.after(() => migrator.end());
+        const applicationName = `service-key-audit-${randomUUID()}`;
+        appTarget.searchParams.set("application_name", applicationName);
+        appTarget.searchParams.set("options", "-c lock_timeout=2000ms");
+        // Keep semantic key auditing active and isolate it from the generic admission gate.
+        const bounded = await composePostgresDevelopment(
+          { ...config, databaseUrl: appTarget.toString(), controlPlaneAuditEnabled: false },
+          {
+            computeDriver: createDevelopmentComputeDriver(),
+            configurationDriver: createTestConfigurationDriver(),
+          },
+        );
+        lockTest.after(() => bounded.close());
+        const locker = await migrator.connect();
+        try {
+          await locker.query("BEGIN");
+          await locker.query("LOCK TABLE occ.audit_events IN SHARE MODE");
+
+          const newKeyName = "refused-issuance";
+          const pending = injectJson(bounded, "POST", "/api/auth/service-keys", {
+            session,
+            host,
+            body: { servicePrincipalId: principalId, namespaceId: teamId, name: newKeyName },
+          });
+          const existingKey = async () =>
+            observer.query("SELECT id FROM occ.apikey WHERE reference_id = $1 AND name = $2", [
+              principalId,
+              newKeyName,
+            ]);
+          try {
+            // Observe the real audit insert blocked by PostgreSQL. A separately committed
+            // key would be visible here even if a later compensation deletes it.
+            let waiting = false;
+            const deadline = Date.now() + 5_000;
+            while (!waiting && Date.now() < deadline) {
+              const { rows } = await observer.query(
+                `SELECT 1 FROM pg_stat_activity WHERE datname = current_database()
+                 AND application_name = $1 AND usename = current_user AND state = 'active'
+                 AND wait_event_type = 'Lock' AND query LIKE 'INSERT INTO occ.audit_events%'`,
+                [applicationName],
+              );
+              waiting = rows.length === 1;
+              if (!waiting) {
+                await delay(10);
+              }
+            }
+            assert.ok(
+              waiting,
+              "the key issuance audit must reach PostgreSQL and wait for the ledger",
+            );
+            assert.equal((await existingKey()).rowCount, 0, "an unaudited key became visible");
+            const refused = await pending;
+            assert.equal(refused.statusCode, 503);
+            assert.equal(record(parseJson(refused.body)).data, undefined);
+            assert.equal((await existingKey()).rowCount, 0);
+          } finally {
+            await Promise.allSettled([pending]);
+          }
+
+          const refused = await injectJson(bounded, "DELETE", `/api/auth/service-keys/${key.id}`, {
+            session,
+            host,
+          });
+          assert.equal(refused.statusCode, 503);
+          assert.equal(
+            stringField(record(parseJson(refused.body)).error, "code"),
+            "DEPENDENCY_UNAVAILABLE",
+          );
+          // The legitimate key still works after the attempted deletion was rolled back.
+          assert.equal(
+            (await injectJson(bounded, "GET", `/namespaces/${teamId}`, { key: key.key, host }))
+              .statusCode,
+            200,
+          );
+        } finally {
+          try {
+            await locker.query("ROLLBACK");
+          } finally {
+            locker.release();
+          }
+        }
+      },
+    );
+
+    // Retrying with the ledger available revokes the same key and records one success.
     const revoked = await admin("DELETE", `/api/auth/service-keys/${key.id}`);
     assert.equal(revoked.statusCode, 200);
     assert.equal((await withKey(key.key, "GET", `/namespaces/${teamId}`)).statusCode, 401);

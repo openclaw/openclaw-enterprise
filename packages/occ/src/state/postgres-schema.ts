@@ -1253,7 +1253,7 @@ export const iamRestrictions = occSchema.table(
   (table) => [
     check(
       "iam_restrictions_action_valid",
-      sql`${table.action} IN ('create', 'read', 'update', 'delete', 'deploy', 'operate', 'administer', 'read_logs', 'manage_policy', 'read_audit')`,
+      sql`${table.action} IN ('create', 'read', 'update', 'delete', 'deploy', 'operate', 'administer', 'read_logs', 'manage_policy', 'read_audit', 'read_audit_content')`,
     ),
     check(
       "iam_restrictions_resource_kind_valid",
@@ -1264,6 +1264,39 @@ export const iamRestrictions = occSchema.table(
       "iam_restrictions_resource_id_normalized",
       sql`${table.resourceId} IS NULL OR (${table.resourceId} = btrim(${table.resourceId}) AND char_length(${table.resourceId}) BETWEEN 1 AND 200)`,
     ),
+  ],
+);
+
+export const gatewayRuntimeAuditGrants = occSchema.table(
+  "gateway_runtime_audit_grants",
+  {
+    tokenDigest: text("token_digest").primaryKey(),
+    namespaceId: text("namespace_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    revisionId: text("revision_id").notNull(),
+    runtimeSource: text("runtime_source").notNull(),
+  },
+  (table) => [
+    check(
+      "gateway_runtime_audit_grants_token_digest_check",
+      sql`${table.tokenDigest} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      "gateway_runtime_audit_grants_runtime_source_check",
+      sql`${table.runtimeSource} IN ('openclaw', 'codex')`,
+    ),
+    unique("gateway_runtime_audit_grants_revision_unique").on(
+      table.namespaceId,
+      table.agentId,
+      table.revisionId,
+    ),
+    foreignKey({
+      name: "gateway_runtime_audit_grants_revision_owner",
+      columns: [table.namespaceId, table.agentId, table.revisionId],
+      foreignColumns: [agentRevisions.namespaceId, agentRevisions.agentId, agentRevisions.id],
+    })
+      .onDelete("cascade")
+      .onUpdate("restrict"),
   ],
 );
 
@@ -1304,6 +1337,9 @@ export const auditEvents = occSchema.table(
               AND ${table.details}->>'attemptId' IS NOT NULL)))`,
       ),
     check("audit_events_id_format", sql`${table.id} ~ ${identifierPatterns.audit}`),
+    index("audit_events_agent_runtime_page_idx")
+      .on(table.namespaceId, table.resourceId, table.occurredAt.desc(), table.id.desc())
+      .where(sql`${table.resourceKind} = 'agent' AND ${table.kind} = 'runtime_activity'`),
     check("audit_events_outcome_valid", sql`${table.outcome} IN ('success', 'denied', 'failure')`),
     check(
       "audit_events_details_object",

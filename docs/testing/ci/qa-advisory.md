@@ -9,9 +9,8 @@ last_verified: "2026-11-04"
 
 ## Overview
 
-QA covers Console Secrets, OpenShell security and lifecycle, local installation,
-OIDC Agent chat and native Agent browsing on disposable Compose/Kubernetes
-installations with real dependencies. Results gate neither merge nor publication.
+These advisory tests use real dependencies on disposable Compose and Kubernetes
+installations.
 
 <a id="when-it-runs"></a>
 
@@ -23,6 +22,7 @@ installations with real dependencies. Results gate neither merge nor publication
 | Manual run of `qa-advisory.yml` on `main`          | All four groups                                                                   |
 | Eligible PR with `full-qa`                         | All four groups                                                                   |
 | Eligible PR with only `qa-openshell-compose`       | Compose OpenShell first-Agent job only                                            |
+| Eligible PR with only `qa-openshell-k3d`           | Kubernetes OpenShell first-Agent job only                                         |
 | Eligible PR with `qa-keycloak-installation`        | Keycloak installation shard only                                                  |
 | Eligible PR with `qa-openclaw-model-ui`            | Kubernetes / OpenClaw / `model-ui` only                                           |
 | Push to `main`, when `QA_ADVISORY_ON_PUSH=true`    | QA matrix, native Agent browser and all OpenShell jobs; no local installation job |

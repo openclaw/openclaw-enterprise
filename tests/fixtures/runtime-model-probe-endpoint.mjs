@@ -27,6 +27,7 @@ const echoPattern =
 const observing = process.env.PROBE_OBSERVE_NATIVE_PORT !== undefined;
 const workspaceHistory = process.env.PROBE_ENDPOINT_WORKSPACE_HISTORY === "1";
 const publicReadJourney = process.env.PROBE_PUBLIC_READ_JOURNEY === "1";
+const codexAuditFailures = process.env.PROBE_CODEX_AUDIT_FAILURES === "1";
 const skipperFixture =
   process.env.PROBE_SKIPPER_PREPARED_COMPUTE === "1"
     ? (await import("./skipper-prepared-compute-model.mjs")).createSkipperPreparedComputeEvents(
@@ -105,10 +106,37 @@ function answerText(request) {
   return matches?.at(-1) ?? "READY";
 }
 
+const failedAuditNonces = new Set();
+
+function auditFault(transport, model, request, caller) {
+  if (!codexAuditFailures || caller !== "codex") {
+    return undefined;
+  }
+  const text = answerText(request);
+  const fault = /^OCE_SMOKE_(retry|cancel|restart)-[0-9a-f-]{36}$/u.exec(text)?.[1];
+  if (fault === undefined || (fault === "retry" && failedAuditNonces.has(text))) {
+    return undefined;
+  }
+  emit({ event: `audit-provider-${fault}`, transport, caller, text });
+  if (fault === "retry") {
+    failedAuditNonces.add(text);
+    return { fault };
+  }
+  const events = answerEvents(model, text);
+  const started = events[0];
+  const completed = events.at(-1);
+  const responseId = `resp_${text}`;
+  started.response.id = responseId;
+  completed.response.id = responseId;
+  completed.response.output = [];
+  return { fault, responseId, started, completed };
+}
+
 // A minimal Responses API stream: one assistant message saying READY, or the
 // caller's echoed nonce.
 function answerEvents(model, text) {
-  const id = "resp_runtime_probe";
+  const id =
+    codexAuditFailures && text.startsWith("OCE_SMOKE_") ? `resp_${text}` : "resp_runtime_probe";
   const message = {
     type: "message",
     id: "msg_runtime_probe",
@@ -315,7 +343,12 @@ function workspaceHistoryEvents(model, request) {
 
 // Answer one model turn after the configured delay, unless the caller left.
 function turn(transport, model, request, respond, closed, caller) {
-  emit({ event: "request", transport, turn: true });
+  const text = answerText(request);
+  const evidence = {
+    ...(caller === undefined ? {} : { caller }),
+    ...(echoPattern === undefined ? {} : { text }),
+  };
+  emit({ event: "request", transport, turn: true, ...evidence });
   if (heldPrompt !== undefined && request.includes(heldPrompt)) {
     emit({ event: "turn-held" });
     return;
@@ -323,7 +356,6 @@ function turn(transport, model, request, respond, closed, caller) {
   if (mode === "hang") {
     return;
   }
-  const text = answerText(request);
   setTimeout(() => {
     if (closed()) {
       return;
@@ -334,13 +366,7 @@ function turn(transport, model, request, respond, closed, caller) {
         workspaceHistoryEvents(model, request) ??
         answerEvents(model, text),
     );
-    emit({
-      event: "turn-answered",
-      transport,
-      status: 200,
-      ...(caller === undefined ? {} : { caller }),
-      ...(echoPattern === undefined ? {} : { text }),
-    });
+    emit({ event: "turn-answered", transport, status: 200, ...evidence });
   }, delayMs);
 }
 
@@ -396,6 +422,17 @@ const server = createServer(
         emit({ event: "turn-answered", transport: "https", status: 401 });
         return;
       }
+      const audit = auditFault("https", model, body, caller);
+      if (audit !== undefined) {
+        if (audit.fault === "retry") {
+          response.writeHead(503, { "content-type": "application/json" });
+          response.end(JSON.stringify({ error: { message: "Probe temporary unavailability" } }));
+          return;
+        }
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write(`event: ${audit.started.type}\ndata: ${JSON.stringify(audit.started)}\n\n`);
+        return;
+      }
       response.on("close", () => emit({ event: "turn-closed", transport: "https" }));
       turn(
         "https",
@@ -429,6 +466,7 @@ server.on("upgrade", (request, socket, head) => {
   }
   sockets.handleUpgrade(request, socket, head, (webSocket) => {
     let open = true;
+    let heldAudit;
     webSocket.on("close", () => {
       open = false;
       emit({ event: "turn-closed", transport: "websocket" });
@@ -438,6 +476,21 @@ server.on("upgrade", (request, socket, head) => {
       try {
         message = JSON.parse(String(data));
       } catch {
+        return;
+      }
+      if (
+        heldAudit?.fault === "cancel" &&
+        message.type === "response.interrupt" &&
+        message.response_id === heldAudit.responseId
+      ) {
+        webSocket.send(
+          JSON.stringify({
+            type: "response.interrupt.accepted",
+            response_id: heldAudit.responseId,
+          }),
+        );
+        webSocket.send(JSON.stringify(heldAudit.completed));
+        heldAudit = undefined;
         return;
       }
       if (message.type !== "response.create") {
@@ -460,6 +513,17 @@ server.on("upgrade", (request, socket, head) => {
           }),
         );
         emit({ event: "prewarm", transport: "websocket" });
+        return;
+      }
+      const audit = auditFault("websocket", message.model ?? "unknown", String(data), caller);
+      if (audit !== undefined) {
+        if (audit.fault === "retry") {
+          // Fail an actual Responses request after the upgrade and before a result.
+          webSocket.terminate();
+        } else {
+          heldAudit = audit;
+          webSocket.send(JSON.stringify(audit.started));
+        }
         return;
       }
       turn(

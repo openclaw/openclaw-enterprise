@@ -727,6 +727,7 @@ export type {
 export {
   PostgresCertificateRejectedError,
   PostgresPlatformState,
+  type GatewayRuntimeAuditGrant,
   type PersistedNativeIAMState,
   type PostgresClient,
   type PostgresPlatformStateOptions,
@@ -3597,13 +3598,17 @@ export class OpenClawController {
     });
   }
 
-  async listAgentAuditEvents(
+  private async withAgentAuditAuthority<T>(
     principalId: string,
     namespaceId: string,
     agentId: string,
-    selection: AgentAuditSelection,
     holdSession: AuthorityFence,
-    disclosure: (count: number, decision: DeployAgentAuthorization) => AuditEvent,
+    access: "metadata" | "message",
+    read: (
+      state: AgentAuditState<PlatformUnitOfWork>,
+      unit: PlatformUnitOfWork,
+      decision: DeployAgentAuthorization,
+    ) => Promise<{ result: T; disclosure?: AuditEvent }>,
   ) {
     const state = this.agentAuditState;
     const driver = this.authorizationAuthority(principalId);
@@ -3618,27 +3623,94 @@ export class OpenClawController {
       );
     }
     const target = { kind: "agent", id: agentId, namespaceId } as const;
+    const check = async () => {
+      const metadata = await this.authorize(principalId, "read_audit", target, driver, authorize);
+      if (access === "message") {
+        return this.authorize(principalId, "read_audit_content", target, driver, authorize);
+      }
+      return metadata;
+    };
     return state.transact(this.installation.id, async (unit) => {
       await holdSession(unit);
       // An unauthorized caller cannot lock Agent or Namespace records. Recheck after
       // taking the locks so no policy change can commit between approval and disclosure.
-      await this.authorize(principalId, "read_audit", target, driver, authorize);
+      await check();
       if (!(await state.holdResource(unit, this.installation.id, namespaceId, agentId))) {
         throw new ScopeViolationError(
           "The active Agent does not belong to the exact ready Namespace.",
         );
       }
-      const decision = await this.authorize(principalId, "read_audit", target, driver, authorize);
-      const entries = await state.list(unit, namespaceId, agentId, selection);
-      const events = entries.slice(0, selection.limit);
-      try {
-        await unit.audit.append(disclosure(events.length, decision));
-      } catch {
-        throw new AgentAuditDisclosureUnavailableError();
+      const { result, disclosure } = await read(state, unit, await check());
+      if (disclosure !== undefined) {
+        try {
+          await unit.audit.append(disclosure);
+        } catch {
+          throw new AgentAuditDisclosureUnavailableError();
+        }
       }
       await holdSession(unit);
-      return { events, hasNextPage: entries.length > selection.limit };
+      return result;
     });
+  }
+
+  async listAgentAuditEvents(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    selection: AgentAuditSelection,
+    holdSession: AuthorityFence,
+    disclosure: (count: number, decision: DeployAgentAuthorization) => AuditEvent,
+  ) {
+    return this.withAgentAuditAuthority(
+      principalId,
+      namespaceId,
+      agentId,
+      holdSession,
+      "metadata",
+      async (state, unit, decision) => {
+        const entries = await state.list(unit, namespaceId, agentId, selection);
+        const events = entries.slice(0, selection.limit);
+        return {
+          result: { events, hasNextPage: entries.length > selection.limit },
+          disclosure: disclosure(events.length, decision),
+        };
+      },
+    );
+  }
+
+  async selectAgentAuditMessage(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    auditEventId: string,
+    holdSession: AuthorityFence,
+    disclosure?: (decision: DeployAgentAuthorization) => AuditEvent,
+  ) {
+    return this.withAgentAuditAuthority(
+      principalId,
+      namespaceId,
+      agentId,
+      holdSession,
+      "message",
+      async (state, unit, decision) => {
+        const event = await state.findLinkedTurn(unit, namespaceId, agentId, auditEventId);
+        if (event === undefined) {
+          throw new ScopeViolationError("The Agent has no current message link for this event.");
+        }
+        const revision = await unit.revisions.findRevision(
+          namespaceId,
+          agentId,
+          event.details.agentRevisionId,
+        );
+        if (revision === undefined) {
+          throw new ScopeViolationError("The linked revision is unavailable.");
+        }
+        return {
+          result: { event, revision },
+          ...(disclosure === undefined ? {} : { disclosure: disclosure(decision) }),
+        };
+      },
+    );
   }
 
   async getAgentRuntimeImages(principalId: string, namespaceId: string, agentId: string) {
@@ -5336,7 +5408,7 @@ export class OpenClawController {
     sourceId: string,
     audit?: AuditEvent,
   ): Promise<void> {
-    await this.mutate(async (state) => {
+    const requestId = await this.mutate(async (state) => {
       await this.lockNamespace(state, namespaceId);
       const connection = await state.savedConnections.findSavedConnection(namespaceId, sourceId);
       if (connection?.ownerPrincipalId !== principalId) {
@@ -5365,12 +5437,18 @@ export class OpenClawController {
       await state.savedConnections.requestConnectionRevocation(namespaceId, sourceId, principalId);
       if (audit) {
         await state.audit.append(audit);
+        return audit.requestId;
       }
+      return undefined;
     });
-    await this.finishConnectionRevocation(namespaceId, sourceId);
+    await this.finishConnectionRevocation(namespaceId, sourceId, requestId);
   }
 
-  async finishConnectionRevocation(namespaceId: string, sourceId: string): Promise<void> {
+  async finishConnectionRevocation(
+    namespaceId: string,
+    sourceId: string,
+    requestId?: string,
+  ): Promise<void> {
     const pending = await this.read(async (state) => {
       const account = await state.savedConnections.findSavedConnection(namespaceId, sourceId);
       if (account?.revocationRequestedBy === undefined) {
@@ -5395,11 +5473,21 @@ export class OpenClawController {
         return;
       }
       if (!account.revokedAt) {
-        await state.savedConnections.confirmConnectionRevocation(
+        const occurredAt = this.timestamp();
+        await state.savedConnections.confirmConnectionRevocation(namespaceId, sourceId, occurredAt);
+        await state.audit.append({
+          id: `aud_${crypto.randomUUID()}`,
+          installationId: this.installation.id,
           namespaceId,
-          sourceId,
-          this.timestamp(),
-        );
+          occurredAt,
+          kind: "mutation",
+          actorId: account.revocationRequestedBy,
+          source: "occ",
+          ...(requestId === undefined ? {} : { requestId }),
+          action: "openclaw.namespaces.connections.disconnect.completed",
+          resource: { kind: "credential_source", id: sourceId, namespaceId },
+          outcome: "success",
+        });
       }
       if (await state.credentialSources.hasReferences(namespaceId, sourceId)) {
         return;
@@ -5956,6 +6044,7 @@ export class OpenClawController {
         if (!client) {
           return;
         }
+        let outcome: "success" | "failure" = "success";
         try {
           const { store, ref } = this.oauthClientSecret(client);
           await this.secretOperation(() => store.delete(ref));
@@ -5964,11 +6053,25 @@ export class OpenClawController {
             id,
             new Date(this.clock().getTime() + 60_000).toISOString(),
           );
-          return;
+          outcome = "failure";
         }
-        if (!(await state.connectionTemplates.deleteOAuthClient(id))) {
+        if (outcome === "success" && !(await state.connectionTemplates.deleteOAuthClient(id))) {
           throw new ResourceStateConflictError("The OAuth client is still referenced.");
         }
+        await state.audit.append({
+          id: `aud_${crypto.randomUUID()}`,
+          installationId: this.installation.id,
+          occurredAt: this.timestamp(),
+          kind: "mutation",
+          actorId: "unresolved",
+          actor: { unresolved: true },
+          source: "occ",
+          action: "openclaw.oauth_clients.cleanup",
+          resource: { kind: "installation", id: this.installation.id },
+          outcome,
+          ...(outcome === "failure" ? { reasonCode: "OAUTH_CLIENT_CLEANUP_RETRY" } : {}),
+          details: { oauthClientId: id },
+        });
       });
     }
   }

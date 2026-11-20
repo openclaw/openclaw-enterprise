@@ -1,7 +1,6 @@
 # Runtime image recipe
 
-Build the OpenClaw Enterprise runtime image for local quickstart and integration
-tests. The image provides these entrypoints.
+The runtime image provides three entrypoints.
 
 - OpenClaw gateway: `node /app/openclaw.mjs`.
 - Dedicated OpenClaw node: `node /app/openclaw.mjs connect --target-file <private-file> --ephemeral --pair-or-reconnect`.
@@ -10,6 +9,8 @@ tests. The image provides these entrypoints.
 `NPM_CONFIG_UPDATE_NOTIFIER=false` disables npm's background version check.
 Package installation and explicit network requests still use the configured
 network policy.
+
+Managed Gateways load the [OCE plugin](managed-runtime-audit/) when [runtime audit](../../docs/guides/topics/audit-log.md#agent-runtime-activity) is on.
 
 The Dockerfile uses a verified public OpenClaw archive, its pinned package
 manager, frozen lockfile, and upstream Docker assembly. A registry mirror

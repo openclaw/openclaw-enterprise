@@ -12,7 +12,7 @@ Use `POST /oauth-clients` with the selected `connectionTemplateId` and `connecti
 
 Open **Credentials → OAuth clients → Register OAuth client**. Select a saved template or choose **Create connection template**. The editor can discover an MCP server or accept manual settings. Saving a new template returns you to the registration. Register the displayed redirect URI with the provider, then enter the client details it issued. Choose the **Client type** registered at the provider. For **Public**, OCE sets **Token endpoint authentication method** to `none`. For **Confidential**, select the registered method and enter the secret. The first registration becomes the default for a template without a client. When a template already has a default, edit it to select a different registration.
 
-List clients with `GET /oauth-clients`. Use `POST /oauth-clients/{oauthClientId}/rotate-secret` to replace the current secret. OCC replaces the secret at the same private reference. New code exchanges and later refreshes for existing accounts use the current secret. If the response is lost, retry with the same secret. To remove a registration, select the trash icon beside it in **Credentials → OAuth clients** or use `DELETE /oauth-clients/{oauthClientId}`. A template version that still references the client blocks deletion, including an older version of a template.
+List clients with `GET /oauth-clients`. Use `POST /oauth-clients/{oauthClientId}/rotate-secret` to replace the current secret. OCC replaces the secret at the same private reference. New code exchanges and later refreshes for existing accounts use the current secret. If the response is lost, retry with the same secret. To remove a registration, select the trash icon beside it in **Credentials → OAuth clients** or use `DELETE /oauth-clients/{oauthClientId}`. A template version that still references the client blocks deletion, including an older version of a template. The controller worker removes a confidential client's stored secret after deletion and [records the cleanup outcome](../flows/connection-templates.md#2-register-and-maintain-the-oauth-client).
 
 When starting consent for an MCP template, send the nonempty `selectedScopes` the account owner chose. The choice must come from the approved version and include each scope in its resource challenge. Configured manual OAuth uses its fixed scopes. OCC keeps the selection with the private attempt and records it with the resulting grant.
 
@@ -68,5 +68,6 @@ the Token Service retries the same grant. If the provider rejects the user’s
 refresh grant, the user reconnects.
 
 Use `DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}` to
-disconnect the account. OCC records the request before retiring the credential
-and the worker can finish an interrupted disconnect.
+disconnect the account. OCC records the request before removing the stored grant.
+The worker can finish an interrupted disconnect. The completion audit event
+records the removal from OCC storage.

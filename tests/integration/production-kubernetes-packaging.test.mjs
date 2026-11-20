@@ -78,6 +78,83 @@ import {
 
 const execute = promisify(execFile);
 
+test("the single audit switch configures private Gateway HTTPS and scopes audit Secrets", async () => {
+  const cases = [
+    { audit: false, routing: true },
+    { audit: true, routing: true },
+    { audit: true, routing: true, apiPort: 10445 },
+    { audit: true, routing: false },
+  ];
+  for (const { audit, apiPort, routing } of cases) {
+    const privateAudit = audit && routing;
+    const objects = await resources(
+      (
+        await renderProductionChart({
+          ...(routing ? gatewayRoutingValues : {}),
+          "controlPlaneAudit.enabled": String(audit),
+          ...(apiPort === undefined ? {} : { "api.port": String(apiPort) }),
+        })
+      ).stdout,
+    );
+    const auditService = objects.find(
+      (resource) =>
+        resource.kind === "Service" &&
+        resource.metadata.name === "openclaw-enterprise-runtime-audit",
+    );
+    assert.equal(Boolean(auditService), privateAudit);
+    for (const component of ["api", "worker"]) {
+      const { spec } = findResource(objects, "Deployment", `openclaw-enterprise-${component}`);
+      const pod = spec.template.spec;
+      const container = pod.containers.find((item) => item.name === component);
+      const auditConfig = container.env.find((item) => item.name === "OCC_CHART_RUNTIME_AUDIT");
+      assert.equal(Boolean(auditConfig), privateAudit);
+      const tlsVolume = pod.volumes.find(({ name }) => name === "runtime-audit-tls");
+      const caVolume = pod.volumes.find(({ name }) => name === "runtime-audit-ca");
+      assert.equal(Boolean(tlsVolume), privateAudit && component === "api");
+      assert.equal(Boolean(caVolume), privateAudit && component === "worker");
+      if (privateAudit) {
+        const config = JSON.parse(auditConfig.value);
+        const port = apiPort === 10445 ? 10446 : 10445;
+        assert.equal(config.port, port);
+        assert.deepEqual(auditService.spec.ports, [
+          { name: "runtime-audit", port, targetPort: "runtime-audit" },
+        ]);
+        assert.equal(auditService.spec.type, "ClusterIP");
+        const leaf = findResource(objects, "Certificate", "openclaw-enterprise-runtime-audit-tls");
+        assert.deepEqual(leaf.spec.dnsNames, [
+          `openclaw-enterprise-runtime-audit.${config.namespace}.svc`,
+        ]);
+        const ingress = findResource(
+          objects,
+          "NetworkPolicy",
+          "openclaw-enterprise-runtime-audit-ingress",
+        );
+        assert.equal(ingress.spec.ingress.length, 1);
+        assert.equal(ingress.spec.ingress[0].from.length, 1);
+        assert.deepEqual(ingress.spec.ingress[0].from[0].podSelector.matchLabels, {
+          "app.kubernetes.io/managed-by": "openclaw-enterprise",
+          "openclaw.dev/workload-role": "gateway",
+        });
+        assert.ok(
+          ingress.spec.ingress[0].from[0].namespaceSelector.matchLabels[
+            "openclaw-enterprise.io/gateway"
+          ],
+        );
+        assert.deepEqual(ingress.spec.ingress[0].ports, [{ protocol: "TCP", port }]);
+        assert.deepEqual(
+          tlsVolume?.secret.items ?? caVolume.secret.items,
+          component === "api"
+            ? [
+                { key: "tls.crt", path: "tls.crt" },
+                { key: "tls.key", path: "tls.key" },
+              ]
+            : [{ key: "tls.crt", path: "ca.crt" }],
+        );
+      }
+    }
+  }
+});
+
 test("console themes mount only on the API and restart it when the checksum changes", async () => {
   const defaults = await resources((await renderProductionChart()).stdout);
   const themed = await resources(

@@ -21,7 +21,7 @@ concurrency:
     qa-advisory-${{ github.event_name }}-${{
       github.event_name == 'push' && github.sha ||
       github.event_name == 'pull_request' &&
-      (github.event.action != 'labeled' || github.event.label.name == 'full-qa' || github.event.label.name == 'qa-openshell-compose' || github.event.label.name == 'qa-keycloak-installation' || github.event.label.name == 'qa-openclaw-model-ui') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'full-qa' || github.event.label.name == 'qa-openshell-compose' || github.event.label.name == 'qa-openshell-k3d' || github.event.label.name == 'qa-keycloak-installation' || github.event.label.name == 'qa-openclaw-model-ui') &&
       format('pr-{0}', github.event.number) || format('run-{0}', github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -44,9 +44,10 @@ jobs:
       (github.event_name == 'pull_request' &&
         github.event.pull_request.head.repo.full_name == github.repository &&
         github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' &&
-        (github.event.action != 'labeled' || github.event.label.name == 'full-qa' || github.event.label.name == 'qa-openshell-compose' || github.event.label.name == 'qa-keycloak-installation' || github.event.label.name == 'qa-openclaw-model-ui') &&
+        (github.event.action != 'labeled' || github.event.label.name == 'full-qa' || github.event.label.name == 'qa-openshell-compose' || github.event.label.name == 'qa-openshell-k3d' || github.event.label.name == 'qa-keycloak-installation' || github.event.label.name == 'qa-openclaw-model-ui') &&
         (contains(github.event.pull_request.labels.*.name, 'full-qa') ||
          contains(github.event.pull_request.labels.*.name, 'qa-openshell-compose') ||
+         contains(github.event.pull_request.labels.*.name, 'qa-openshell-k3d') ||
          contains(github.event.pull_request.labels.*.name, 'qa-keycloak-installation') ||
          contains(github.event.pull_request.labels.*.name, 'qa-openclaw-model-ui')))
     runs-on: ubuntu-24.04
@@ -99,6 +100,9 @@ jobs:
           } else {
             if (labels.has('qa-openshell-compose')) {
               openshellFiles.push('tests/integration/local-first-agent-openshell-real.test.mjs');
+            }
+            if (labels.has('qa-openshell-k3d')) {
+              openshellFiles.push('tests/integration/local-first-agent-openshell-k3d-real.test.mjs');
             }
             if (labels.has('qa-keycloak-installation')) {
               installationFiles.push('tests/integration/dev-up-k3d-keycloak-real.test.ts');

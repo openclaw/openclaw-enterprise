@@ -1,7 +1,7 @@
 ---
 created: "2026-11-04"
 updated: "2026-11-18"
-last_updated_session: "authoring-run/0e501248-a309-4913-b4df-122e4c3783c2"
+last_updated_session: "authoring-run/bfca5ee7-a5d4-418a-baf4-8ab149c96558"
 ---
 
 # How OCC saves an OAuth connection template
@@ -27,6 +27,9 @@ graph TD
   Version -->|Register a confidential client| Secret["Secret Driver stores its secret"]
   Version -->|Register a public client| Publish["OCC publishes the registration"]
   Secret --> Publish
+  Publish -->|Delete a confidential client| Cleanup["Worker removes its private secret"]
+  Cleanup -->|Removal fails| Retry["OCC schedules and audits a retry"]
+  Cleanup -->|Removal succeeds| Removed["OCC removes the registration and records success"]
 ```
 
 ### Consent and token custody
@@ -39,6 +42,8 @@ graph TD
   Callback --> Custody["Token Service stores the grant"]
   Custody --> Account["OCC records the owner's saved account"]
   Account -->|Renewal due| Renew["Token Service refreshes at the pinned endpoint"]
+  Account -->|Disconnect requested| Retire["Token Service removes the stored grant"]
+  Retire --> Disconnected["OCC confirms and audits the disconnect"]
 ```
 
 ## Execution Trace
@@ -57,7 +62,7 @@ OCC checks Installation administration before it accepts manual settings or star
 
 A template can exist before its OAuth client. OCC takes the registration's availability and endpoints from the selected version. For a confidential client, it reserves a hidden row and asks the Installation's Secret Driver to store the secret under the registration ID. A public registration supplies a client ID and skips this private write. OCC rechecks the version, publishes the registration and records the audit. If the template lacked a client, that transaction also selects the new one.
 
-Rotation replaces the confidential client's secret at the same private reference. Code exchange and renewal read its current value. A template version that still references the client prevents deletion. On deletion or interrupted creation, the worker uses the hidden registration to retry private cleanup.
+Rotation replaces the confidential client's secret at the same private reference. Code exchange and renewal read its current value. A template version that still references the client prevents deletion. After deletion or interrupted creation, the worker uses the hidden registration to remove the private secret. An unsuccessful removal leaves the registration hidden and schedules a 60-second retry. OCC commits an `openclaw.oauth_clients.cleanup` audit event with the retry schedule or the completed removal. The event identifies the OCC registration ID and uses an unresolved actor because the hidden registration has no requester.
 
 ### 3. Authorize the account in the browser
 
@@ -81,6 +86,12 @@ When listing a manual account, OCC returns the current destinations from the sam
 
 OCC registers the returned grant under the Namespace and credential source ID. The worker renews due accounts. A trusted consumer resolves the same reference with a deadline and required remaining lifetime. If it needs a fresher token, the Token Service starts or joins renewal for that account. It rechecks that the account is active before releasing the committed token. On renewal, the Token Service checks the saved grant against its registration and reads the current client secret through OCC when required. A conditional write protects against concurrent renewal or disconnect. OCC records the next renewal and any narrower grant.
 
+### 6. Disconnect the account
+
+`packages/occ/src/index.ts:disconnectNamespaceConnection` and `packages/occ/src/index.ts:finishConnectionRevocation`
+
+OCC saves the requester on the connection and blocks new grant use. The Token Service removes the stored grant. The worker retries if the request ends before OCC confirms that step. OCC commits `openclaw.namespaces.connections.disconnect.completed` with the first confirmation. The event uses the saved requester. It includes the request ID when the original API call completes the disconnect. OCC retains the credential source while platform resources reference it. The completion event covers the removal of the grant from OCC storage.
+
 ## Debugging and Verification
 
 - If registration or rotation raises `ResourceConflictError` with `cannot run in a controller transaction`, call the lifecycle method outside that transaction. Preserve the independent reservation commit and any caller-supplied audit commit.
@@ -100,6 +111,8 @@ OCC registers the returned grant under the Namespace and credential source ID. T
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 17:37: Trace audit records for client cleanup and saved connection disconnect. (authoring-run/bfca5ee7-a5d4-418a-baf4-8ab149c96558 - 86265b4ed8e8b22ae3882889d4febccdef1b5f65)
 
 - 2026-11-18 16:20: Trace browser consent and expiry through shared OCC authentication state in the accompanying change. (authoring-run/0e501248-a309-4913-b4df-122e4c3783c2 - 5dfbd6c1db67024917c79790ee7b6155e6f753e1)
 

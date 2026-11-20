@@ -37,6 +37,17 @@ export function nativeWorkerTurnObservation({ outcome, error, messages, runId, h
     }
     const detail = value.slice(0, 4096);
     const patterns = [
+      ["workspace-discovery", /Remote workspace skill discovery failed/],
+      ["worker-model-output", /Runtime-local inference failed its output boundary/],
+      [
+        "worker-model-setup",
+        /(?:Invalid node-local inference startup configuration|Node-local inference (?:startup|workspace binding)|Native runtime (?:credential is unavailable|model selection is not configured|requires the exact selected local model|workspace does not match)|Worker-local inference cannot use)/,
+      ],
+      [
+        "worker-transcript-authority",
+        /Cloud worker (?:transcript (?:identity|authority)|placement authority changed)/,
+      ],
+      ["worker-turn-failed", /^(?:Error: )?(?:Cloud worker turn failed|Worker turn failed)$/i],
       [
         "session-read-changed",
         /^(?:Error: )?Session changed while preparing its description; retry the request$/,
@@ -308,6 +319,7 @@ async function nativeWorkerProof({
   namespaceId,
   agentId,
   timeout,
+  plainChat,
   workspaceFile,
   expectedNodeId,
   session: existingSession,
@@ -477,32 +489,34 @@ async function nativeWorkerProof({
     // A retained placement may recover when the next turn is sent. Check its
     // current directory after that turn, rather than trusting the old owner.
     const sessionFileContent = `FIRST_AGENT_SESSION_${randomUUID()}\n`;
-    const sessionFile =
-      existingSession === undefined
-        ? {
-            path: `.first-agent-native-${randomUUID()}.txt`,
-            sha256: createHash("sha256").update(sessionFileContent).digest("hex"),
-          }
-        : retainedSessionFile;
+    const sessionFile = retainedSessionFile ?? {
+      path: `.first-agent-native-${randomUUID()}.txt`,
+      sha256: createHash("sha256").update(sessionFileContent).digest("hex"),
+    };
     assert.match(sessionFile?.path ?? "", /^\.first-agent-native-[a-z0-9-]+\.txt$/);
     assert.match(sessionFile.sha256, /^[a-f0-9]{64}$/);
     const marker = `FIRST_AGENT_NATIVE_${randomUUID()}`;
     const toolPrefix = "FIRST_AGENT_NATIVE_TOOL ";
-    const program = nativeWorkerProofProgram({
-      sessionFile,
-      sessionFileContent,
-      workspaceFile,
-      toolPrefix,
-      createSessionFile: existingSession === undefined,
-    });
-    const command = `node -e '${program.replaceAll("'", "'\\''")}'`;
+    let command;
+    let message = `Reply with exactly ${marker}. Do not use tools.`;
+    if (!plainChat) {
+      const program = nativeWorkerProofProgram({
+        sessionFile,
+        sessionFileContent,
+        workspaceFile,
+        toolPrefix,
+        createSessionFile: retainedSessionFile === undefined,
+      });
+      command = `node -e '${program.replaceAll("'", "'\\''")}'`;
+      message = `Use exec to run exactly this command: ${command}. After exec succeeds, reply with exactly ${marker}. Do not print environment values or credentials.`;
+    }
     stage = "send";
     selectedTurn = { key, runId: randomUUID() };
-    const sent = await call("sessions.send", {
-      key,
+    const sent = await call(plainChat ? "chat.send" : "sessions.send", {
+      ...(plainChat ? { sessionKey: key } : { key }),
       agentId: "main",
       idempotencyKey: selectedTurn.runId,
-      message: `Use exec to run exactly this command: ${command}. After exec succeeds, reply with exactly ${marker}. Do not print environment values or credentials.`,
+      message,
     });
     assert.ok(sent.runId);
     runId = sent.runId;
@@ -518,7 +532,9 @@ async function nativeWorkerProof({
     }
     signal.throwIfAborted();
     stage = "model-outcome";
-    assert.equal(outcome.status, "ok");
+    if (!plainChat) {
+      assert.equal(outcome.status, "ok");
+    }
     // The model turn is already terminal. Allow history delivery to settle,
     // but do not spend the remaining model-execution budget on a missing proof.
     historySignal = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
@@ -538,13 +554,9 @@ async function nativeWorkerProof({
       });
       historyPredicates = evidence.observation;
       const { tool, final, messages } = evidence;
-      if (tool && final) {
-        stage = "exec-proof";
-        const output = evidence.output;
-        const line = output.split(/\r?\n/).find((line) => line.startsWith(toolPrefix));
-        assert.ok(line);
-        const proof = JSON.parse(line.slice(toolPrefix.length));
-        assert.ok(typeof proof.hostname === "string" && proof.hostname.length > 0);
+      // A failed model can still leave the submitted user message in history.
+      // Return its ID for the audit check. The caller checks the reply separately.
+      if (plainChat ? final || outcome.status !== "ok" : final && tool) {
         stage = "current-placement";
         const current = await call("sessions.describe", { key, agentId: "main" });
         assert.equal(current.session?.sessionId, session.sessionId);
@@ -554,6 +566,33 @@ async function nativeWorkerProof({
         assert.equal(placement.providerId, required.providerId);
         assert.equal(placement.inference, "worker");
         assert.ok(placement.environmentId && placement.remoteWorkspaceDir);
+        const verified = {
+          verified: true,
+          runId: sent.runId,
+          profileId: required.id,
+          providerId: required.providerId,
+          environmentId: placement.environmentId,
+          session,
+        };
+        if (plainChat) {
+          const input = history.messages.find(
+            (entry) => entry.role === "user" && entry.idempotencyKey === `${sent.runId}:user`,
+          );
+          const messageId = input?.__openclaw?.id;
+          assert.ok(typeof messageId === "string" && messageId.length > 0);
+          emit({
+            ...verified,
+            replied: outcome.status === "ok" && Boolean(final),
+            source: { messageId, text: message },
+          });
+          return;
+        }
+        stage = "exec-proof";
+        const output = evidence.output;
+        const line = output.split(/\r?\n/).find((line) => line.startsWith(toolPrefix));
+        assert.ok(line);
+        const proof = JSON.parse(line.slice(toolPrefix.length));
+        assert.ok(typeof proof.hostname === "string" && proof.hostname.length > 0);
         assert.equal(proof.cwd, placement.remoteWorkspaceDir);
         assert.equal(proof.modelCredentialPresent, false);
         assert.equal(proof.sessionFileSha256, sessionFile.sha256);
@@ -563,15 +602,7 @@ async function nativeWorkerProof({
             createHash("sha256").update(workspaceFile.content).digest("hex"),
           );
         }
-        emit({
-          verified: true,
-          profileId: required.id,
-          providerId: required.providerId,
-          environmentId: placement.environmentId,
-          hostname: proof.hostname,
-          session,
-          sessionFile,
-        });
+        emit({ ...verified, hostname: proof.hostname, sessionFile });
         return;
       }
       assert.ok(
@@ -601,6 +632,7 @@ export async function assertNativeWorkerProofInController(
     environment,
     namespaceId,
     agentId,
+    plainChat = false,
     workspaceFile,
     expectedNodeId,
     session,
@@ -617,7 +649,7 @@ export async function assertNativeWorkerProofInController(
   delete safeEnvironment.OPENAI_API_KEY_FILE;
   delete safeEnvironment.CODEX_ACCESS_TOKEN;
   delete safeEnvironment.CODEX_ACCESS_TOKEN_FILE;
-  const input = `const nativePlacementReadRetryable = (${nativePlacementReadRetryable.toString()});\nconst nativeWorkerProofProgram = (${nativeWorkerProofProgram.toString()});\nconst nativeWorkerHistoryEvidence = (${nativeWorkerHistoryEvidence.toString()});\nconst nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst nativeWorkerTurnEventObservation = (${nativeWorkerTurnEventObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
+  const input = `const nativePlacementReadRetryable = (${nativePlacementReadRetryable.toString()});\nconst nativeWorkerProofProgram = (${nativeWorkerProofProgram.toString()});\nconst nativeWorkerHistoryEvidence = (${nativeWorkerHistoryEvidence.toString()});\nconst nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst nativeWorkerTurnEventObservation = (${nativeWorkerTurnEventObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: plainChat ? 3 * 60_000 : nativeFirstAgentProofTimeout, plainChat, workspaceFile, expectedNodeId, session, sessionFile })});`;
   const command = state.deploymentMode === "k3d" ? "kubectl" : state.containerEngine;
   const args =
     state.deploymentMode === "k3d"
@@ -702,8 +734,10 @@ export async function assertNativeWorkerProofInController(
   }
   assert.equal(result.proof?.verified, true);
   assert.ok(result.proof.profileId && result.proof.providerId && result.proof.environmentId);
-  assert.ok(typeof result.proof.hostname === "string" && result.proof.hostname.length > 0);
   assert.ok(result.proof.session?.key && result.proof.session.sessionId);
-  assert.ok(result.proof.sessionFile?.path && result.proof.sessionFile.sha256);
+  if (!plainChat) {
+    assert.ok(typeof result.proof.hostname === "string" && result.proof.hostname.length > 0);
+    assert.ok(result.proof.sessionFile?.path && result.proof.sessionFile.sha256);
+  }
   return result.proof;
 }

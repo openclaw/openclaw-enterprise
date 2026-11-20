@@ -129,6 +129,12 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 83 && completedCount > 83) {
     return "preRevisionEgressInstallations";
   }
+  if (count === 85 && completedCount > 85) {
+    return "preRuntimeAudit";
+  }
+  if (count === 86 && completedCount > 86) {
+    return "preAuditMessageRead";
+  }
   if (count === completedCount) {
     return "completed";
   }

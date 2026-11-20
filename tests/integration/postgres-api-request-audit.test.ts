@@ -78,6 +78,11 @@ test(
     assert.equal(invalid.statusCode, 400, invalid.body);
     const invalidPath = await inject("GET", "/namespaces/invalid-resource-id");
     assert.equal(invalidPath.statusCode, 400, invalidPath.body);
+    // A known path with an unsupported method names neither an operation nor a target.
+    const methodNotAllowed = await inject("PATCH", "/namespaces?test=discarded-query");
+    assert.equal(methodNotAllowed.statusCode, 405, methodNotAllowed.body);
+    const unmatched = await inject("GET", "/unknown-control-plane-path");
+    assert.equal(unmatched.statusCode, 404, unmatched.body);
     const refuseAnonymous = () =>
       app.inject({
         method: "GET",
@@ -92,6 +97,51 @@ test(
 
     const { agent, namespace: agentNamespace, secretRef } = await deployAgent("API audit Agent");
     const agentPath = `/namespaces/${agentNamespace.id}/agents/${agent.id}`;
+    const nativeAdminRefused = await app.inject({
+      method: "GET",
+      url: `${agentPath}/native-admin`,
+      headers: { host: "127.0.0.1" },
+    });
+    assert.equal(nativeAdminRefused.statusCode, 401, nativeAdminRefused.body);
+    const sessionRead = await inject("GET", "/api/auth/session");
+    assert.equal(sessionRead.statusCode, 200, sessionRead.body);
+    assert.equal(sessionRead.json().data.authenticated, true);
+
+    // Issue and revoke a real API key through the hand-registered auth routes. The request
+    // receipts contain only bounded metadata. The mutation still owns exact credential evidence.
+    const automation = await inject(
+      "POST",
+      `/namespaces/${agentNamespace.id}/iam/service-principals`,
+      {},
+    );
+    assert.equal(automation.statusCode, 201, automation.body);
+    const invalidKey = await inject("POST", "/api/auth/service-keys", {});
+    assert.equal(invalidKey.statusCode, 400, invalidKey.body);
+    const keyInput = {
+      servicePrincipalId: automation.json().data.id,
+      namespaceId: agentNamespace.id,
+      name: "request-audit-key",
+    };
+    const issuedKey = await inject("POST", "/api/auth/service-keys", keyInput);
+    assert.equal(issuedKey.statusCode, 201);
+    const keyId = issuedKey.json().data.id;
+    const revokedKey = await inject("DELETE", `/api/auth/service-keys/${keyId}`);
+    assert.equal(revokedKey.statusCode, 200, revokedKey.body);
+    const blockedKeyName = randomUUID().slice(0, 32);
+    const blockedKey = await withPool(migrationUrl, (migrator: Pool) =>
+      withRejectedAuditRows(migrator, "action <> 'openclaw.api.request.admitted'", () =>
+        inject("POST", "/api/auth/service-keys", { ...keyInput, name: blockedKeyName }),
+      ),
+    );
+    assert.equal(
+      blockedKey.statusCode,
+      503,
+      "Key issuance must stop when request admission fails.",
+    );
+    assert.equal(
+      (await pool.query("SELECT id FROM occ.apikey WHERE name = $1", [blockedKeyName])).rowCount,
+      0,
+    );
     const agentRead = await inject("GET", agentPath);
     assert.equal(agentRead.statusCode, 200, agentRead.body);
     assert.equal(agentRead.json().data.id, agent.id);
@@ -192,6 +242,11 @@ test(
         .map(({ requestId, action, operationId }) => ({ requestId, action, operationId })),
       [
         {
+          requestId: blockedKey.headers["x-request-id"],
+          action: admittedAction,
+          operationId: "createServiceKey",
+        },
+        {
           requestId: blocked.headers["x-request-id"],
           action: admittedAction,
           operationId: "createNamespace",
@@ -225,7 +280,78 @@ test(
     const agentResource = { kind: "agent", id: agent.id, namespaceId: agentNamespace.id };
     const namespaceResource = { kind: "namespace", id: namespace.id, namespaceId: namespace.id };
     const secretResource = { kind: "secret", id: secretRef.id, namespaceId: agentNamespace.id };
+
+    // Exercise route admission for the actual documented API without invoking any handler.
+    // A header-only oversized request hits the early limit without allocating a large body.
+    const api = app.swagger();
+    assert.ok("openapi" in api);
+    assert.ok(api.paths);
+    const separatelyAuditedOperations = new Set([
+      "completeGoogleSignIn",
+      "completeOidcSignIn",
+      "getAgentDeploymentRuntimeLogs",
+    ]);
+    const routeRefusals = new Map<
+      string,
+      { operationId: string; method: string; hasRequestAudit: boolean }
+    >();
+    for (const [template, path] of Object.entries(api.paths)) {
+      for (const verb of [
+        "get",
+        "post",
+        "patch",
+        "put",
+        "delete",
+        "head",
+        "options",
+        "trace",
+      ] as const) {
+        const operation = path?.[verb];
+        if (operation === undefined) {
+          continue;
+        }
+        const method = verb.toUpperCase() as Uppercase<typeof verb>;
+        const { operationId } = operation;
+        assert.ok(operationId, `${method} ${template} needs an operation ID for audit.`);
+        const refusal = await app.inject({
+          method,
+          url: template.replace(/\{[^}]+\}/g, "unresolved"),
+          headers: { host: "127.0.0.1", "content-length": "99999999" },
+        });
+        assert.equal(refusal.statusCode, 413, operationId);
+        const requestId = refusal.headers["x-request-id"];
+        assert.ok(typeof requestId === "string");
+        routeRefusals.set(requestId, {
+          operationId,
+          method,
+          hasRequestAudit: !separatelyAuditedOperations.delete(operationId),
+        });
+      }
+    }
+    assert.deepEqual([...separatelyAuditedOperations], []);
+    assert.ok(routeRefusals.size > 0);
+
     const records = await state.transact((unit) => unit.audit.list());
+    const routeRecords = new Map<string, (typeof records)[number]>();
+    for (const event of records) {
+      if (event.kind === "api_request" && event.requestId && routeRefusals.has(event.requestId)) {
+        assert.equal(routeRecords.has(event.requestId), false);
+        routeRecords.set(event.requestId, event);
+      }
+    }
+    for (const [requestId, { operationId, method, hasRequestAudit }] of routeRefusals) {
+      const event = routeRecords.get(requestId);
+      if (!hasRequestAudit) {
+        assert.equal(event, undefined, operationId);
+        continue;
+      }
+      assert.equal(event?.action, resultAction, operationId);
+      assert.equal(event?.actorId, "unresolved", operationId);
+      assert.deepEqual(event?.resource, installationResource, operationId);
+      assert.equal(event?.outcome, "failure", operationId);
+      assert.deepEqual(event?.details, { operationId, method, statusCode: 413 });
+    }
+
     const forRequest = (response: Awaited<ReturnType<typeof inject>>) =>
       records.filter((event) => event.requestId === response.headers["x-request-id"]);
     for (const [
@@ -243,7 +369,14 @@ test(
       [head, "getNamespace", "HEAD", 200, principal.id, "success", true, namespaceResource],
       [invalid, "createNamespace", "POST", 400, "unresolved", "failure", false],
       [invalidPath, "getNamespace", "GET", 400, "unresolved", "failure", false],
+      [methodNotAllowed, "methodNotAllowed", "PATCH", 405, "unresolved", "failure", false],
       [refused, "listNamespaces", "GET", 401, "unresolved", "denied", false],
+      [nativeAdminRefused, "getAgentNativeAdmin", "GET", 401, "unresolved", "denied", false],
+      [sessionRead, "getAuthSession", "GET", 200, "unresolved", "success", false],
+      [invalidKey, "createServiceKey", "POST", 400, "unresolved", "failure", false],
+      [issuedKey, "createServiceKey", "POST", 201, principal.id, "success", true],
+      [blockedKey, "createServiceKey", "POST", 503, principal.id, "failure", false],
+      [revokedKey, "revokeServiceKey", "DELETE", 200, principal.id, "success", true],
       [agentRead, "getAgent", "GET", 200, principal.id, "success", true, agentResource],
       [agentHead, "getAgent", "HEAD", 200, principal.id, "success", true, agentResource],
       [secretRead, "getSecret", "GET", 200, principal.id, "success", true, secretResource],
@@ -274,6 +407,20 @@ test(
         assert.equal(admission.outcome, "success", operationId);
         assert.deepEqual(admission.details, { operationId, method });
       }
+    }
+    assert.deepEqual(forRequest(unmatched), []);
+    for (const [response, action] of [
+      [issuedKey, "openclaw.auth.service-keys.create"],
+      [revokedKey, "openclaw.auth.service-keys.revoke"],
+    ] as const) {
+      const requestRecords = forRequest(response);
+      assert.ok(
+        requestRecords.some(
+          (event) => event.action === action && event.details?.serviceKeyId === keyId,
+        ),
+        action,
+      );
+      assert.equal(JSON.stringify(requestRecords).includes(issuedKey.json().data.key), false);
     }
     assert.ok(
       forRequest(created).some(

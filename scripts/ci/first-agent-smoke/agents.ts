@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { defaultAgentModel } from "../../../apps/controller/src/console/agents/starter-model.mts";
+import type { AgentAuditPage } from "../../../packages/contracts/src/index.ts";
 import { createHarnessConfiguration } from "../../../tests/helpers/harness-configuration.mjs";
+import { mountsGatewayRevision } from "../../first-agent-model.ts";
 import {
   log,
   minute,
@@ -21,7 +23,9 @@ import {
   kubectl,
   modelEvents,
   podList,
+  signInConsole,
   wireField,
+  interruptRefusedObservation,
   type LocalSetup,
   type SmokeStack,
   type Pod,
@@ -30,6 +34,12 @@ import {
 
 async function assertModelAnswered(nonce: string, label: string) {
   const events = await modelEvents();
+  assert.ok(
+    events.some(
+      ({ event, text, caller }) => event === "request" && text === nonce && caller === label,
+    ),
+    `${label}: the provider recorded no arrival for ${nonce}`,
+  );
   const answered = events.find(
     ({ event, status, text, caller }) =>
       event === "turn-answered" && status === 200 && text === nonce && caller === label,
@@ -136,13 +146,10 @@ export async function readyGateway(
   revisionId: string,
 ): Promise<GatewayPod> {
   const pods = await agentPods(stack, agentId);
-  // Same revision match as scripts/first-agent-model.ts: the gateway Pod
-  // mounts its revision's configuration ConfigMap.
-  const configMap = `gateway-${idHash(agentId)}-rev-${idHash(revisionId)}`;
   const gateways = pods.filter(
     (pod) =>
       pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway" &&
-      pod.spec?.volumes?.some((volume) => volume.configMap?.name === configMap) &&
+      mountsGatewayRevision(pod, agentId, revisionId) &&
       pod.status?.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
   );
   assert.equal(
@@ -233,6 +240,512 @@ export async function chatTurn(stack: SmokeStack, agent: SmokeAgent, revisionId:
   assertChatReply(result, nonce, agent.label);
   const transport = await assertModelAnswered(nonce, agent.label);
   log(`${agent.label}: chat turn on ${revisionId} answered over ${transport}`);
+  return nonce;
+}
+
+export async function allowAgentAuditRead(
+  stack: Pick<LocalSetup, "directory" | "state"> & { namespaceId: string },
+  agent: Pick<SmokeAgent, "id">,
+  adminPassword: string,
+) {
+  const administrator = await signInConsole(stack, {
+    email: "admin@development.openclaw.invalid",
+    password: adminPassword,
+  });
+  const reader = {
+    email: `smoke-audit-${randomUUID()}@development.openclaw.invalid`,
+    password: randomUUID(),
+  };
+  // Provision the reader without an initial role. The response identifies its IAM Principal.
+  const account = await administrator("POST", "/api/auth/accounts", reader);
+  const principalId = wireField(account, "principalId");
+  assert.ok(
+    typeof principalId === "string" && principalId.startsWith("prn_"),
+    "missing Principal ID",
+  );
+  const base = `/namespaces/${stack.namespaceId}`;
+  const api = await signInConsole(stack, reader);
+  const path = `${base}/agents/${agent.id}/audit-events`;
+  const readAudit = async () => (await api("GET", `${path}?limit=100`)) as AgentAuditPage;
+  const readMessage = (id: string) => api("GET", `${path}/${id}/message`);
+  // The same human session gains access only after the direct Agent grant.
+  await assert.rejects(readAudit(), /HTTP 403$/);
+  async function grant(action: "read_audit" | "read_audit_content") {
+    const role = await administrator("POST", `${base}/iam/roles`, {
+      name: `First Agent ${action}`,
+      permissions: [{ action, resourceKind: "agent" }],
+    });
+    await administrator("POST", `${base}/iam/access-bindings`, {
+      subjectKind: "identity",
+      subjectId: principalId,
+      roleId: wireField(role, "id"),
+      resourceKind: "agent",
+      resourceId: agent.id,
+    });
+  }
+  await grant("read_audit");
+  return { readAudit, readMessage, grantContent: () => grant("read_audit_content") };
+}
+
+type AuditReader = Awaited<ReturnType<typeof allowAgentAuditRead>>;
+
+export async function assertAgentTurnAudit(
+  readAudit: () => Promise<AgentAuditPage>,
+  {
+    label,
+    revisionId,
+    runtimeSource,
+    sessionId,
+    turnId,
+    model,
+    responseIdHash,
+    previousIds,
+    requireSuccess = true,
+  }: {
+    label: string;
+    revisionId: string;
+    runtimeSource: "openclaw" | "codex";
+    sessionId?: string;
+    turnId?: string;
+    model?: string;
+    responseIdHash?: string;
+    previousIds?: ReadonlySet<string>;
+    requireSuccess?: boolean;
+  },
+) {
+  const event = await waitFor(
+    `${label} turn audit on ${revisionId}`,
+    async () => {
+      const page = await readAudit();
+      const events = page.events
+        .filter((event) => event.event === "runtime_activity")
+        .filter(
+          (event) =>
+            event.details.runtimeSource === runtimeSource &&
+            event.details.agentRevisionId === revisionId &&
+            !previousIds?.has(event.id) &&
+            (sessionId === undefined ||
+              ("sessionId" in event.details && event.details.sessionId === sessionId)),
+        );
+      const starts = events.filter((event) => event.action === "openclaw.runtime.turn.started");
+      const completes = events.filter(
+        (event) => event.action === "openclaw.runtime.turn.completed",
+      );
+      const modelStarts = events.filter(
+        (event) => event.action === "openclaw.runtime.model_call.started",
+      );
+      const modelResults = events.filter(
+        (event) => event.action === "openclaw.runtime.model_call.completed",
+      );
+      const value = completes.find(({ details: turn }) => {
+        const started = starts.some(
+          ({ details }) => details.sessionId === turn.sessionId && details.turnId === turn.turnId,
+        );
+        if (
+          !started ||
+          (requireSuccess && turn.outcome !== "succeeded") ||
+          (turnId !== undefined && turn.turnId !== turnId)
+        ) {
+          return false;
+        }
+        if (responseIdHash !== undefined) {
+          return events.some(
+            (event) =>
+              event.action === "openclaw.runtime.model_response.observed" &&
+              event.details.sessionId === turn.sessionId &&
+              event.details.turnId === turn.turnId &&
+              event.details.provider === "codex" &&
+              event.details.model === model &&
+              event.details.responseIdHash === responseIdHash,
+          );
+        }
+        if (model === undefined) {
+          return true;
+        }
+        return modelResults.some(({ details: result }) => {
+          if (
+            result.outcome !== "succeeded" ||
+            result.model !== model ||
+            result.sessionId !== turn.sessionId ||
+            result.turnId !== turn.turnId
+          ) {
+            return false;
+          }
+          return modelStarts.some(
+            ({ details: start }) =>
+              start.modelCallId === result.modelCallId &&
+              start.sessionId === result.sessionId &&
+              start.turnId === result.turnId &&
+              start.model === result.model &&
+              start.provider === result.provider,
+          );
+        });
+      });
+      return {
+        done: value !== undefined,
+        value,
+        state: { actions: events.map(({ action }) => action) },
+      };
+    },
+    minute,
+  );
+  assert.ok(event);
+  log(
+    `${label}: stored matching turn start and result (${event.details.outcome}) on ${revisionId}`,
+  );
+  return event;
+}
+
+export async function assertAgentAuditMessage(
+  { readMessage, grantContent }: AuditReader,
+  event: Awaited<ReturnType<typeof assertAgentTurnAudit>>,
+  source: { messageId: string; text: string },
+  { checkGrant = false } = {},
+) {
+  // The Gateway supplies the expected transcript ID, independently of the audit plugin.
+  assert.ok(source.messageId, "missing original user message in chat history");
+  assert.equal(event.details.messageId, source.messageId, "turn points to the wrong chat message");
+  assert.ok(!JSON.stringify(event).includes(source.text), "the audit list exposed message content");
+  if (checkGrant) {
+    // The same signed-in analyst can list this turn but needs a second grant to open it.
+    await assert.rejects(readMessage(event.id), /HTTP 403$/);
+    await grantContent();
+  }
+  const result = await readMessage(event.id);
+  assert.deepEqual(wireField(result, "event"), event);
+  const message = wireField(result, "message");
+  assert.equal(wireField(message, "role"), "user");
+  // Avoid putting the transcript in test logs if the response differs.
+  assert.ok(wireField(message, "text") === source.text, "the message differs from the original");
+}
+
+function codexResponse(nonce: string) {
+  const hash = createHash("sha256")
+    .update(`openclaw:codex:response-id:v1\0resp_${nonce}`)
+    .digest("hex");
+  return {
+    model: `openai-compatible/${defaultAgentModel}`,
+    responseIdHash: `sha256:${hash.slice(0, 16)}`,
+  };
+}
+
+export async function chatWithAudit(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  revisionId: string,
+  readAudit: () => Promise<AgentAuditPage>,
+  runtimeSource: "codex" | "openclaw",
+) {
+  const previousIds = new Set((await readAudit()).events.map(({ id }) => id));
+  const nonce = await chatTurn(stack, agent, revisionId);
+  const turn = await assertAgentTurnAudit(readAudit, {
+    label: agent.label,
+    revisionId,
+    runtimeSource,
+    ...(runtimeSource === "codex" ? codexResponse(nonce) : { model: defaultAgentModel }),
+    previousIds,
+  });
+  return { turn, nonce };
+}
+
+export function chatCodexWithAudit(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  revisionId: string,
+  readAudit: () => Promise<AgentAuditPage>,
+) {
+  return chatWithAudit(stack, agent, revisionId, readAudit, "codex");
+}
+
+async function gatewayRpc(
+  stack: LocalSetup,
+  { namespace, pod }: GatewayPod,
+  method: string,
+  params: Record<string, unknown>,
+): Promise<unknown> {
+  // The runtime CLI uses the Gateway's own credentials. Send the test input on stdin.
+  const input = `
+    import { execFileSync } from "node:child_process";
+    process.stdout.write(execFileSync(process.execPath, ["/app/openclaw.mjs", "gateway", "call",
+      ${JSON.stringify(method)}, "--params", ${JSON.stringify(JSON.stringify(params))},
+      "--json", "--timeout", "30000"], { timeout: 45000 }));
+  `;
+  const { stdout } = await kubectl(
+    stack,
+    ["exec", "-i", "-n", namespace, pod, "-c", "gateway", "--", "node", "--input-type=module", "-"],
+    { input, timeout: minute },
+  );
+  return JSON.parse(stdout) as unknown;
+}
+
+export async function checkLinkedChat(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  revisionId: string,
+  reader: AuditReader,
+  runtimeSource: "codex" | "openclaw",
+) {
+  const gateway = await readyGateway(stack, agent.id, revisionId);
+  const sessionKey = `agent:main:message-${randomUUID()}`;
+  async function send() {
+    const text = `Reply with exactly OCE_SMOKE_${randomUUID()} and no other text.`;
+    const sent = await gatewayRpc(stack, gateway, "chat.send", {
+      sessionKey,
+      idempotencyKey: randomUUID(),
+      message: text,
+    });
+    const turnId = wireField(sent, "runId");
+    assert.ok(typeof turnId === "string" && turnId.length > 0);
+    const turn = await assertAgentTurnAudit(reader.readAudit, {
+      revisionId,
+      runtimeSource,
+      label: agent.label,
+      turnId,
+    });
+    return { turn, text };
+  }
+  const first = await send();
+  await send();
+  // Opening the earlier event after a follow-up must return the first user message.
+  const history = await gatewayRpc(stack, gateway, "chat.history", { sessionKey, limit: 10 });
+  assert.equal(wireField(history, "sessionId"), first.turn.details.sessionId);
+  const messages = wireField(history, "messages");
+  assert.ok(Array.isArray(messages));
+  const users = messages.filter((message) => wireField(message, "role") === "user");
+  assert.equal(users.length, 2);
+  const messageId = wireField(wireField(users[0], "__openclaw"), "id");
+  assert.ok(typeof messageId === "string" && messageId.length > 0);
+  await assertAgentAuditMessage(
+    reader,
+    first.turn,
+    { messageId, text: first.text },
+    { checkGrant: true },
+  );
+  log(`${agent.label}: audit message matched the earlier chat after the content grant`);
+  return first;
+}
+
+export async function proveCodexAuditInterruptions(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  revisionId: string,
+  readAudit: () => Promise<AgentAuditPage>,
+) {
+  const gateway = await readyGateway(stack, agent.id, revisionId);
+  const rpc = (method: string, params: Record<string, unknown>) =>
+    gatewayRpc(stack, gateway, method, params);
+
+  async function start(fault: "retry" | "cancel" | "restart") {
+    const sessionKey = `agent:main:audit-${randomUUID()}`;
+    const nonce = `OCE_SMOKE_${fault}-${randomUUID()}`;
+    // A chat on a fresh key emits the native session-start hook.
+    const admitted = await rpc("chat.send", {
+      sessionKey,
+      idempotencyKey: randomUUID(),
+      message: `Reply with exactly ${nonce} and no other text. Do not use tools.`,
+    });
+    const runId = wireField(admitted, "runId");
+    assert.ok(typeof runId === "string" && runId.length > 0);
+    await waitFor(
+      `the ${fault} provider request`,
+      async () => ({
+        done: (await modelEvents()).some(
+          ({ event, caller, text }) =>
+            event === `audit-provider-${fault}` && caller === agent.label && text === nonce,
+        ),
+      }),
+      minute,
+    );
+    const history = await rpc("chat.history", { sessionKey, limit: 10 });
+    const sessionId = wireField(history, "sessionId");
+    assert.ok(typeof sessionId === "string" && sessionId.length > 0);
+    const events = async () =>
+      (await readAudit()).events
+        .filter((event) => event.event === "runtime_activity")
+        .filter(
+          ({ details }) =>
+            details.runtimeSource === "codex" &&
+            details.agentRevisionId === revisionId &&
+            "sessionId" in details &&
+            details.sessionId === sessionId,
+        );
+    return { sessionId, sessionKey, nonce, runId, events };
+  }
+
+  // A failed request followed by a successful response belongs to the same turn.
+  const retried = await start("retry");
+  await assertAgentTurnAudit(readAudit, {
+    label: agent.label,
+    revisionId,
+    runtimeSource: "codex",
+    sessionId: retried.sessionId,
+    turnId: retried.runId,
+    ...codexResponse(retried.nonce),
+  });
+  await assertModelAnswered(retried.nonce, agent.label);
+
+  // Match both explicit session hooks to the ID returned by chat.history.
+  await rpc("sessions.delete", { key: retried.sessionKey, expectedSessionId: retried.sessionId });
+  await waitFor(
+    "the session lifecycle of the deleted Codex session",
+    async () => {
+      const actions = (await retried.events()).map(({ action }) => action);
+      return {
+        done:
+          actions.includes("openclaw.runtime.session.started") &&
+          actions.includes("openclaw.runtime.session.ended"),
+        state: { actions },
+      };
+    },
+    minute,
+  );
+
+  // Cancellation uses the active run's native RPC while the provider is still held.
+  const cancel = await start("cancel");
+  const aborted = await rpc("chat.abort", {
+    sessionKey: cancel.sessionKey,
+    runId: cancel.runId,
+    userInitiated: true,
+  });
+  assert.equal(wireField(aborted, "aborted"), true);
+  await waitFor(
+    "the explicitly cancelled turn",
+    async () => {
+      const audit = await cancel.events();
+      return {
+        done:
+          audit.some(
+            (event) =>
+              event.action === "openclaw.runtime.turn.started" &&
+              event.details.turnId === cancel.runId,
+          ) &&
+          audit.some(
+            (event) =>
+              event.action === "openclaw.runtime.turn.completed" &&
+              event.details.turnId === cancel.runId &&
+              event.details.outcome === "cancelled",
+          ),
+        state: { actions: audit.map(({ action }) => action) },
+      };
+    },
+    minute,
+  );
+  log(`${agent.label}: stored cancellation of the active turn`);
+
+  const connectedNodeIds = async () => {
+    const nodes = wireField(await rpc("node.list", {}), "nodes");
+    assert.ok(Array.isArray(nodes));
+    return nodes
+      .filter((node) => wireField(node, "paired") === true && wireField(node, "connected") === true)
+      .map((node) => wireField(node, "nodeId"));
+  };
+  const nodes = await connectedNodeIds();
+  assert.equal(nodes.length, 1, "expected the dedicated Codex workspace node");
+  const [workspaceNodeId] = nodes;
+  assert.ok(typeof workspaceNodeId === "string" && workspaceNodeId.length > 0);
+
+  // Interrupt only the native Gateway lock-holder in this revision's test Pod.
+  // Its wrapper reaps the process, then kubelet restarts the Gateway container.
+  const restart = async () => {
+    const ownedPod = async () =>
+      (await agentPods(stack, agent.id)).find(
+        ({ metadata }) => metadata.name === gateway.pod && metadata.namespace === gateway.namespace,
+      );
+    const container = (pod: Pod | undefined) =>
+      pod?.status?.containerStatuses?.find(({ name }) => name === "gateway");
+    const before = await ownedPod();
+    const previous = container(before);
+    assert.ok(before?.metadata.uid && previous?.containerID);
+    await kubectl(
+      stack,
+      [
+        "exec",
+        "-i",
+        "-n",
+        gateway.namespace,
+        gateway.pod,
+        "-c",
+        "gateway",
+        "--",
+        "node",
+        "--input-type=module",
+        "-",
+      ],
+      {
+        input: `
+      import assert from "node:assert/strict";
+      import { spawn } from "node:child_process";
+      import { readFileSync } from "node:fs";
+      const { pid } = JSON.parse(readFileSync("/home/node/.openclaw/tmp/openclaw-1000/gateway.state.lock", "utf8"));
+      assert.ok(Number.isSafeInteger(pid) && pid > 1);
+      spawn(process.execPath, ["-e", "setTimeout(() => process.kill(Number(process.argv[1]), 'SIGKILL'), 500)", String(pid)],
+        { detached: true, stdio: "ignore" }).unref();
+    `,
+      },
+    );
+    await waitFor(
+      "the same revision Gateway to restart",
+      async () => {
+        const pod = await ownedPod();
+        const running = container(pod);
+        return {
+          done:
+            pod?.metadata.uid === before.metadata.uid &&
+            running?.containerID !== undefined &&
+            running.containerID !== previous.containerID &&
+            running.restartCount > previous.restartCount &&
+            pod.status?.conditions?.some(
+              ({ type, status }) => type === "Ready" && status === "True",
+            ),
+        };
+      },
+      3 * minute,
+    );
+  };
+  const { turn: interrupted, refusedId } = await interruptRefusedObservation(
+    stack,
+    revisionId,
+    () => start("restart"),
+    restart,
+  );
+  await waitForDeployment(stack, agent.id, revisionId, agent.label);
+  // The Gateway must accept connections before its workspace node can reconnect.
+  // A chat reads skills from that node, so wait for its live connection first.
+  await waitFor(
+    "the same Codex workspace node to reconnect to the restarted Gateway",
+    async () => ({ done: (await connectedNodeIds()).includes(workspaceNodeId) }),
+    2 * minute,
+  );
+  await chatCodexWithAudit(stack, agent, revisionId, readAudit);
+  const persisted = await waitFor(
+    "the original audit ID after the failed write and the Gateway restart",
+    async () => {
+      const audit = await interrupted.events();
+      return { done: audit.some(({ id }) => id === refusedId), value: audit };
+    },
+    minute,
+  );
+  assert.ok(persisted);
+  assert.deepEqual(
+    persisted
+      .filter(
+        (event) =>
+          event.action === "openclaw.runtime.turn.started" &&
+          event.details.turnId === interrupted.runId,
+      )
+      .map(({ id }) => id),
+    [refusedId],
+    "the restarted Gateway must deliver the original observation exactly once",
+  );
+  assert.ok(
+    !persisted.some(
+      (event) =>
+        event.action === "openclaw.runtime.turn.completed" &&
+        event.details.turnId === interrupted.runId,
+    ),
+    "the interrupted turn must have no completion without an observed terminal result",
+  );
+  log(`${agent.label}: same revision resumed writing audit records after Gateway restart`);
 }
 
 export async function readLogs(stack: SmokeStack, agent: SmokeAgent, source: "gateway" | "agent") {
@@ -383,6 +896,7 @@ export async function runFirstAgent(stack: SmokeStack, modelCredential: string) 
         OCC_DEVELOPMENT_STATE_DIRECTORY: stack.directory,
         OCC_SERVICE_KEY_FILE: stack.keyPath,
         OCC_URL: stack.origin,
+        OPENCLAW_FIRST_AGENT_MODEL: defaultAgentModel,
         OPENAI_API_KEY: modelCredential,
       },
       timeout: 15 * minute,

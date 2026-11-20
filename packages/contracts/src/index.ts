@@ -1,5 +1,6 @@
 import type { Static } from "typebox";
 
+import type { RuntimeAuditSource } from "./runtime-audit.ts";
 import type { HarnessAuthBindingSchema } from "./api/common.ts";
 import type {
   ComputeAgentProvisioningCapabilities,
@@ -1304,6 +1305,7 @@ export const PERMISSION_ACTIONS = Object.freeze([
   "read_logs",
   "manage_policy",
   "read_audit",
+  "read_audit_content",
 ] as const);
 
 export type PermissionAction = (typeof PERMISSION_ACTIONS)[number];
@@ -1335,6 +1337,7 @@ export const SUPPORTED_PERMISSION_ACTIONS: Readonly<
     "read_logs",
     "manage_policy",
     "read_audit",
+    "read_audit_content",
   ] as const),
   agent_revision: Object.freeze(["read"] as const),
 });
@@ -1451,7 +1454,7 @@ export type IdentityLookup = Scope &
 
 /** `access` records an audited read, such as viewing or downloading runtime log text. */
 export type AuditEventKind =
-  "bootstrap" | "mutation" | "access" | "authorization_denial" | "api_request";
+  "bootstrap" | "mutation" | "access" | "authorization_denial" | "api_request" | "runtime_activity";
 
 export type AuditOutcome = "success" | "denied" | "failure";
 
@@ -1487,7 +1490,7 @@ export interface AuditEvent extends Scope {
   readonly kind: AuditEventKind;
   readonly actorId: string;
   readonly schemaVersion?: number;
-  readonly source?: "occ";
+  readonly source?: "occ" | RuntimeAuditSource;
   readonly requestId?: string;
   readonly admissionDecisionId?: string;
   readonly actor?: {
@@ -1507,6 +1510,13 @@ export interface AuditEvent extends Scope {
   readonly outcome: AuditOutcome;
   readonly details?: Readonly<Record<string, unknown>>;
 }
+
+export {
+  RUNTIME_AUDIT_ACTIONS,
+  RuntimeAuditObservationSchema,
+  projectRuntimeAgentAuditDetails,
+} from "./runtime-audit.ts";
+export type { RuntimeAuditObservation, RuntimeAuditSource } from "./runtime-audit.ts";
 
 export { DRIVER_CAPABILITIES, isDriverCapability } from "./drivers/index.ts";
 export type {
@@ -1632,7 +1642,13 @@ export * from "./api/common.ts";
 export {
   AGENT_AUDIT_PAGE_LIMIT,
   AGENT_AUDIT_PROJECTION_VERSION,
+  AGENT_LIFECYCLE_AUDIT_ACTIONS,
+  projectAgentLifecycleAuditDetails,
   type AgentAuditEntry,
+  isAgentAuditLinkedTurn,
+  AGENT_AUDIT_MESSAGE_BYTES,
+  type AgentAuditLinkedTurn,
+  type AgentAuditMessage,
   type AgentAuditPage,
   type AgentAuditQuery,
 } from "./api/agent-audit.ts";

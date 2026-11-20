@@ -134,6 +134,7 @@ The quickstart’s shared operator-session helpers, Agent onboarding, cluster in
 | `deploy/helm/openclaw-execution/`                        | Execution-cluster access roles and authenticated Harness routing infrastructure.                 |
 | `deploy/helm/openclaw-plugin-request-guard/`             | Shared OpenShell request middleware for managed plugins in an execution cluster.                 |
 | `deploy/runtime/`, `deploy/logging/`, `deploy/examples/` | Runtime packaging, logging configuration, and deployment examples.                               |
+| `deploy/runtime/managed-runtime-audit/`                  | OCE Gateway plugin that sends runtime observations to the private audit listener.                |
 | `deploy/presets/`                                        | Installable Agent Preset requests; see [standard Codex](guides/topics/standard-codex-preset.md). |
 | `Dockerfile`, `compose*.yaml`                            | Controller image and local stack definitions or overlays.                                        |
 | `migrations/`, `drizzle.config.ts`                       | Database migrations and Drizzle tooling configuration.                                           |

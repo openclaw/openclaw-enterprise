@@ -506,6 +506,33 @@ test(
     core.failureCodes.deleteNamespacedSecret.push(403);
     await controller.cleanupOAuthClients();
     assert.equal(core.secrets.size, 1);
+    const cleanupAudit = async () =>
+      (
+        await pool.query(
+          `SELECT actor_id, resource_kind, resource_id, outcome,
+                  details - '__occAuditMetadata' AS details,
+                  details->'__occAuditMetadata'->'actor' AS actor,
+                  details->'__occAuditMetadata'->>'source' AS source,
+                  details->'__occAuditMetadata'->>'reasonCode' AS reason_code
+           FROM occ.audit_events WHERE action = 'openclaw.oauth_clients.cleanup'
+             AND details->>'oauthClientId' = $1 ORDER BY occurred_at, id`,
+          [client.id],
+        )
+      ).rows;
+    const cleanupEvidence = {
+      actor_id: "unresolved",
+      resource_kind: "installation",
+      resource_id: controller.installation.id,
+      details: { oauthClientId: client.id },
+      actor: { unresolved: true },
+      source: "occ",
+    };
+    const retry = {
+      ...cleanupEvidence,
+      outcome: "failure",
+      reason_code: "OAUTH_CLIENT_CLEANUP_RETRY",
+    };
+    assert.deepEqual(await cleanupAudit(), [retry]);
     const hidden = await inject("GET", "/oauth-clients");
     assert.equal(hidden.statusCode, 200, hidden.body);
     assert.ok(!hidden.json().data.some((row: { id: string }) => row.id === client.id));
@@ -516,6 +543,11 @@ test(
     assert.equal(due.rowCount, 1);
     await controller.cleanupOAuthClients();
     assert.equal(core.secrets.size, 0);
+    await controller.cleanupOAuthClients();
+    assert.deepEqual(await cleanupAudit(), [
+      retry,
+      { ...cleanupEvidence, outcome: "success", reason_code: null },
+    ]);
   },
 );
 
@@ -587,6 +619,15 @@ test(
       return remaining.rowCount === 0 ? true : undefined;
     });
     assert.equal(core.secrets.size, 1);
+    const cleanup = await pool.query(
+      `SELECT actor_id, outcome, details->'__occAuditMetadata'->>'requestId' AS request_id
+       FROM occ.audit_events WHERE action = 'openclaw.oauth_clients.cleanup'
+         AND details->>'oauthClientId' = $1`,
+      [expired.rows[0].id],
+    );
+    assert.deepEqual(cleanup.rows, [
+      { actor_id: "unresolved", outcome: "success", request_id: null },
+    ]);
     assert.equal(
       await recovered.withOAuthClientSecret(
         original.json().data,

@@ -1452,6 +1452,8 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
+      [85, "preRuntimeAudit"],
+      [86, "preAuditMessageRead"],
     ]) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1726,6 +1728,8 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
+      [85, "preRuntimeAudit"],
+      [86, "preAuditMessageRead"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2031,6 +2035,8 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
+      [85, "preRuntimeAudit"],
+      [86, "preAuditMessageRead"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2219,6 +2225,8 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
+      [85, "preRuntimeAudit"],
+      [86, "preAuditMessageRead"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2246,6 +2254,8 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [86, "CREATE TRIGGER"],
+                [85, "CREATE TABLE"],
                 [83, "GRANT"],
                 [82, "CREATE TRIGGER"],
                 [81, "GRANT"],

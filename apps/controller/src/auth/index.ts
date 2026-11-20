@@ -44,7 +44,9 @@ import { resolveOidcEnrollmentPolicy } from "./oidc-enrollment.ts";
 import { sessionBindingKey, sessionKeyHeader, sessionKeyMatches } from "./session-binding.ts";
 import { sessionAuthority } from "./session-authority.ts";
 import { createServiceKeyVerification } from "./service-key-verification.ts";
-import { passwordSignOut } from "./password-sign-out.ts";
+import { createServiceKeyMutations, type ServiceKeyAudit } from "./service-keys.ts";
+import { createPasswordSignOut } from "./password-sign-out.ts";
+import { createPasswordSessions } from "./password-sessions.ts";
 import {
   authLibraryFailureEvent,
   authLibraryLog,
@@ -207,7 +209,7 @@ type ControllerPlugins = (
   | ReturnType<typeof apiKey>
   | ReturnType<typeof createHumanLogin>["plugin"]
   | ReturnType<typeof createServiceKeyVerification>["plugin"]
-  | typeof passwordSignOut
+  | ReturnType<typeof createPasswordSignOut>
 )[];
 type ControllerBetterAuth = Auth<BetterAuthOptions & { plugins: ControllerPlugins }>;
 
@@ -218,6 +220,14 @@ export interface ServiceKey {
   readonly name: string;
   readonly expiresAt: string;
 }
+
+interface ServiceKeyIssue {
+  readonly principal: ServicePrincipal;
+  readonly name: string;
+  readonly expiresIn?: number;
+}
+
+type IssuedServiceKey = ServiceKey & { readonly key: string };
 
 export interface ControllerAuthOptions {
   readonly mode: "development" | "production";
@@ -258,12 +268,12 @@ export interface ControllerAuthOptions {
    */
   readonly knownDeviceState?: KnownDeviceAccountState;
   /**
-   * Password-only profile: audits each password sign-in Better Auth accepted (with the
-   * account) or refused (without it). The guarded profile audits in State itself.
+   * Password-only sign-in observations. PostgreSQL records successful sign-ins in the
+   * State transaction that creates the session.
    */
   readonly passwordSignInAudit?: {
-    accepted(userId: string): Promise<void>;
-    refused(): Promise<void>;
+    accepted?(userId: string): Promise<void>;
+    refused(requestId: string): Promise<void>;
   };
   /** Receives runtime operational events, such as a sign-in lane entering the slow lane. */
   readonly onOperationalEvent?: (event: Readonly<Record<string, unknown>>) => void;
@@ -454,13 +464,13 @@ export interface ControllerAuth {
     session: AuthenticatedSession,
     request: FastifyRequest,
   ): Promise<void>;
-  createServiceKey(input: {
-    readonly principal: ServicePrincipal;
-    readonly name: string;
-    readonly expiresIn?: number;
-  }): Promise<ServiceKey & { readonly key: string }>;
+  createServiceKey(input: ServiceKeyIssue): Promise<IssuedServiceKey>;
   getServiceKey(id: string): Promise<ServiceKey | undefined>;
   revokeServiceKey(key: ServiceKey): Promise<void>;
+  readonly serviceKeyMutations?: {
+    issue(input: ServiceKeyIssue, audit: ServiceKeyAudit): Promise<IssuedServiceKey>;
+    revoke(key: ServiceKey, event: AuditEvent): Promise<boolean>;
+  };
 }
 
 function authHeaders(headers: AdmissionHeaders | FastifyRequest["headers"] | undefined): Headers {
@@ -1069,7 +1079,13 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
   return controllerAuth(options);
 }
 
-function controllerAuth(options: ControllerAuthOptions, bootstrapKey?: string): ControllerAuth {
+function controllerAuth(
+  options: ControllerAuthOptions & {
+    readonly passwordSessions?: ReturnType<typeof createPasswordSessions>;
+    readonly serviceKeyState?: PostgresPlatformState;
+  },
+  bootstrapKey?: string,
+): ControllerAuth {
   if (options.mode !== "development" && options.mode !== "production") {
     throw new Error("Controller auth requires an explicit runtime mode.");
   }
@@ -1087,6 +1103,15 @@ function controllerAuth(options: ControllerAuthOptions, bootstrapKey?: string): 
   const hostBoundSession = sessionMode === "host-only-exchange";
   const sharedCookieDomain = hostBoundSession ? undefined : derivedCookieDomain;
   const humanLogin = options.humanLogin;
+  const passwordSessions = options.passwordSessions;
+  const serviceKeyMutations =
+    options.serviceKeyState === undefined
+      ? undefined
+      : createServiceKeyMutations(
+          options.serviceKeyState,
+          options.installationId,
+          SERVICE_KEY_CONFIG,
+        );
   if (
     hostBoundSession &&
     (humanLogin?.oidcProviderId === undefined || humanLogin.googleProviderId !== undefined)
@@ -1097,9 +1122,24 @@ function controllerAuth(options: ControllerAuthOptions, bootstrapKey?: string): 
   const sessionCookieName = `${hostBoundSession ? "__Host-" : "__Secure-"}${cookiePrefix}.session_token`;
   const issuer = betterAuthIssuer(options.installationId);
   const withSessionAuthority = sessionAuthority();
-  if (humanLogin !== undefined && typeof options.database !== "function") {
+  if (
+    (humanLogin !== undefined ||
+      passwordSessions !== undefined ||
+      serviceKeyMutations !== undefined) &&
+    typeof options.database !== "function"
+  ) {
     throw new Error("The human authentication profile requires its guarded State adapter.");
   }
+  const humanDatabase =
+    typeof options.database === "function"
+      ? (humanLogin?.database(options.database) ??
+        passwordSessions?.database(options.database) ??
+        options.database)
+      : options.database;
+  const database =
+    serviceKeyMutations !== undefined && typeof humanDatabase === "function"
+      ? serviceKeyMutations.database(humanDatabase)
+      : humanDatabase;
   const passwordHasher = options.passwordHasher ?? scryptPasswordHasher;
   const auth = betterAuth<BetterAuthOptions & { plugins: ControllerPlugins }>({
     appName: "OpenClaw Control Plane",
@@ -1107,9 +1147,7 @@ function controllerAuth(options: ControllerAuthOptions, bootstrapKey?: string): 
     basePath: "/auth",
     secret: options.secret,
     database:
-      (humanLogin && typeof options.database === "function"
-        ? humanLogin.database(options.database)
-        : options.database) ??
+      database ??
       memoryAdapter(
         options.memoryDatabase ?? {
           user: [],
@@ -1151,7 +1189,9 @@ function controllerAuth(options: ControllerAuthOptions, bootstrapKey?: string): 
       ? {}
       : { logger: { disabled: true }, onAPIError: { throw: true } }),
     plugins: [
-      ...(humanLogin === undefined ? [passwordSignOut] : [humanLogin.plugin]),
+      ...(humanLogin === undefined
+        ? [createPasswordSignOut(passwordSessions?.revoke)]
+        : [humanLogin.plugin]),
       apiKey({
         configId: SERVICE_KEY_CONFIG,
         ...(bootstrapKey === undefined ? {} : { customKeyGenerator: async () => bootstrapKey }),
@@ -1619,17 +1659,19 @@ function controllerAuth(options: ControllerAuthOptions, bootstrapKey?: string): 
             if (unstorableEmail !== undefined) {
               throw unstorableEmail;
             }
-            result = await api.signInEmail({
-              body: { ...body, rememberMe: true },
-              headers: authHeaders(request.headers),
-              asResponse: false,
-              returnHeaders: true,
-              returnStatus: true,
-            });
+            const signIn = () =>
+              api.signInEmail({
+                body: { ...body, rememberMe: true },
+                headers: authHeaders(request.headers),
+                asResponse: false,
+                returnHeaders: true,
+                returnStatus: true,
+              });
+            result = await (passwordSessions?.run(request.id, signIn) ?? signIn());
           } catch (error) {
             if (audit !== undefined && countsAsSignInFailure(error)) {
               try {
-                await audit.refused();
+                await audit.refused(request.id);
               } catch (auditError) {
                 // Denial audits fail closed (503), but the wrong password still spends budget.
                 throw new DenialAuditUnavailable(auditError);
@@ -1637,7 +1679,7 @@ function controllerAuth(options: ControllerAuthOptions, bootstrapKey?: string): 
             }
             throw error;
           }
-          if (audit !== undefined) {
+          if (audit?.accepted !== undefined) {
             try {
               await audit.accepted(result.response.user.id);
             } catch (error) {
@@ -1705,13 +1747,14 @@ function controllerAuth(options: ControllerAuthOptions, bootstrapKey?: string): 
           return runPrivateEndpoint(request, "/oce/sign-out");
         }
         const current = await resolveSession(request);
-        const revoke = () =>
+        const signOut = () =>
           api.signOut({
             headers,
             asResponse: false,
             returnHeaders: true,
             returnStatus: true,
           });
+        const revoke = () => passwordSessions?.run(request.id, signOut) ?? signOut();
         return current === undefined ? revoke() : withSessionAuthority(current.id, revoke);
       },
       (response) => response,
@@ -1767,6 +1810,41 @@ function controllerAuth(options: ControllerAuthOptions, bootstrapKey?: string): 
     return session;
   }
 
+  async function createServiceKey({
+    principal,
+    name,
+    expiresIn,
+  }: ServiceKeyIssue): Promise<IssuedServiceKey> {
+    // The server-only userId parameter is the plugin's referenceId. It identifies the
+    // existing IAM automation identity and creates no human account or session.
+    let created;
+    try {
+      created = await withAuthLogContext("create-service-key", undefined, () =>
+        api.createApiKey({
+          body: {
+            configId: SERVICE_KEY_CONFIG,
+            userId: principal.id,
+            name,
+            ...(expiresIn === undefined ? {} : { expiresIn }),
+            metadata: {
+              installationId: options.installationId,
+              ...(principal.namespaceId === undefined
+                ? {}
+                : { namespaceId: principal.namespaceId }),
+            },
+          },
+        }),
+      );
+    } catch (error) {
+      throw serviceKeyNameRefusal(error) ? new ServiceKeyNameRefused(error) : error;
+    }
+    const metadata = serviceKeyDetails(created, options.installationId);
+    if (metadata === undefined) {
+      throw new Error("Invalid service key metadata.");
+    }
+    return { ...metadata, key: created.key };
+  }
+
   return {
     auth,
     issuer,
@@ -1815,32 +1893,7 @@ function controllerAuth(options: ControllerAuthOptions, bootstrapKey?: string): 
         throw new CallerStateDeniedError("The assigning session is no longer current.");
       }
     },
-    async createServiceKey({ principal, name, expiresIn }) {
-      // The server-only userId parameter is the plugin's referenceId; no human
-      // account or session is created for this existing IAM automation identity.
-      let created;
-      try {
-        created = await withAuthLogContext("create-service-key", undefined, () =>
-          api.createApiKey({
-            body: {
-              configId: SERVICE_KEY_CONFIG,
-              userId: principal.id,
-              name,
-              ...(expiresIn === undefined ? {} : { expiresIn }),
-              metadata: {
-                installationId: options.installationId,
-                ...(principal.namespaceId === undefined
-                  ? {}
-                  : { namespaceId: principal.namespaceId }),
-              },
-            },
-          }),
-        );
-      } catch (error) {
-        throw serviceKeyNameRefusal(error) ? new ServiceKeyNameRefused(error) : error;
-      }
-      return { ...serviceKeyDetails(created, options.installationId)!, key: created.key };
-    },
+    createServiceKey,
     async getServiceKey(id) {
       const context = await auth.$context;
       const key = await context.adapter.findOne<ApiKey>({
@@ -1863,6 +1916,15 @@ function controllerAuth(options: ControllerAuthOptions, bootstrapKey?: string): 
         ],
       });
     },
+    ...(serviceKeyMutations === undefined
+      ? {}
+      : {
+          serviceKeyMutations: {
+            issue: (input: ServiceKeyIssue, audit: ServiceKeyAudit) =>
+              serviceKeyMutations.issue(audit, () => createServiceKey(input)),
+            revoke: serviceKeyMutations.revoke,
+          },
+        }),
   };
 }
 
@@ -2067,8 +2129,9 @@ export async function createPostgresControllerAuth(
           ...(onUnmatchedCallback === undefined ? {} : { onUnmatchedCallback }),
         },
       );
-  const auth = createControllerAuth({
+  const auth = controllerAuth({
     ...controllerOptions,
+    ...(state === undefined ? {} : { serviceKeyState: state }),
     ...(humanLogin === undefined ? {} : { humanLogin }),
     // Password-only: bind known-device entries to the password method's authentication
     // version, which the database bumps on every password change. The guarded profile's
@@ -2083,9 +2146,16 @@ export async function createPostgresControllerAuth(
     ...(humanLogin !== undefined || persistence === undefined
       ? {}
       : {
+          passwordSessions: createPasswordSessions(persistence),
           passwordSignInAudit: {
-            accepted: (userId: string) => persistence.recordPasswordLogin(userId),
-            refused: () => persistence.recordDenied("INVALID_CREDENTIALS"),
+            refused: (requestId: string) =>
+              persistence.recordDenied(
+                "INVALID_CREDENTIALS",
+                undefined,
+                undefined,
+                undefined,
+                requestId,
+              ),
           },
         }),
     database: await createOccAuthDatabase(pool),

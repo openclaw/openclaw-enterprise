@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-12"
-last_updated_session: "authoring-run/09158870-8481-4ef1-9ff0-f1e2d5ae4df9"
+updated: "2026-11-19"
+last_updated_session: "authoring-run/bccca424-a66f-4ab2-ad5a-e639f845a228"
 ---
 
 # Audit ledger flow
@@ -34,6 +34,7 @@ graph TD
   Admission -->|Saved| Request
   Admission -->|Write failed| Refused["Prepare HTTP 503"]
   HTTP -->|Rejected before handler| RefusedEarly["Prepare refusal"]
+  HTTP -->|Route records result only| Request
   Request --> HTTPResult["Prepare response"]
   Refused --> ResultEvent["Try to save request result"]
   RefusedEarly --> ResultEvent
@@ -69,6 +70,9 @@ graph TD
   Rows --> Decode["Decode envelope and<br/>recognized metadata"]
   Decode --> Result["Return immutable events"]
   Decode -->|invalid row or JSON| Error["Reject list"]
+  Linked["Open a linked turn"] -->|Both grants| Lookup["Read the saved message"]
+  Lookup -->|Recheck access| Disclose["Commit the disclosure"]
+  Disclose -->|Confirmed| Text["Return message text"]
 
   classDef storage fill:#EDF2F7,stroke:#879AB0,color:#25364A,stroke-width:1px
   classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
@@ -82,7 +86,7 @@ graph TD
 
 ### 1. The API records admission and the result
 
-`apps/controller/src/index.ts:appendRequestAudit` and
+`apps/controller/src/index.ts:requestAuditHooks` and
 `apps/controller/src/http/agents.ts:getAgent`
 
 When Control Plane audit is enabled and the Installation exists, the API saves
@@ -93,6 +97,13 @@ The event action is
 `openclaw.api.request.result` before sending the selected HTTP response.
 This includes rejections from request validation and authentication before the
 handler starts.
+
+The result hook also covers the registered account, service-key, sign-in,
+recovery, and native administration routes. Routes can record only a result
+when they use a separate check or recorder for the operation. A resource API
+request that returns `405` records a `methodNotAllowed` result. Google
+and OIDC sign-in callbacks use their own authentication recorder. Runtime
+log views and downloads use their own disclosure recorder.
 
 Both records carry the API-generated request ID, registered operation,
 HTTP method, and Installation ID. The result adds the HTTP status. The hook
@@ -144,11 +155,20 @@ different event with that ID fails.
 The caller can append alongside resource changes in one unit of work. The
 standalone PostgreSQL audit sink opens its own transaction. With Control Plane
 audit enabled, PostgreSQL limits each statement and lock wait in the API's
-standalone audit write to two seconds. Separately, the work queue commits queue
+standalone audit write to two seconds.
+
+For service API keys, `apps/controller/src/auth/service-keys.ts` commits the
+key change and audit record together. Issuance uses the Better Auth adapter on
+State's PostgreSQL connection. Revocation deletes the current key in State.
+
+Separately, the work queue commits queue
 and claim events with the corresponding change. The queue event records the API
 request ID when a request started the work. The claim event carries a distinct
 attempt ID. That ID also identifies later evidence for the same claim. A claim
 insert failure leaves the job available.
+Repository cleanup and maintenance recovery save a queue record when they create
+or reopen follow-up work. The queue change and its audit record belong to the
+same SQL statement.
 
 The worker uses `transactWithQueue` for some transitions. It also calls pool-backed
 stale-work recovery, which issues two separate SQL statements. Each statement is
@@ -220,11 +240,69 @@ grant again under these locks. The query selects approved event types for that
 Agent and limits the time window and page size.
 
 State builds the page from named fields. It derives a public work ID from the
-stored key and omits revision IDs. The same transaction appends
+stored key. Agent lifecycle records show the saved action. State includes a
+revision ID only when the revision belongs to the requested Agent. The same
+transaction appends
 `openclaw.audit.agent.read` with the actor, Agent, request ID, time window,
 projection version, and number of returned records. The API releases the
 page after it confirms commit. The next-page cursor is encrypted and bound
 to the same session, Agent, and window.
+
+### 7. A Gateway reports work for one revision
+
+`apps/controller/src/drivers/compute/kubernetes/index.ts:ensureGatewayRuntimeAudit`
+and `apps/controller/src/http/runtime-audit.ts`
+
+When audit and managed Gateway routing are enabled, Helm creates a private
+HTTPS listener. The OCC worker creates a token for the revision and saves its
+hash in PostgreSQL. The Gateway mounts the token Secret and the listener's
+public CA certificate. A NetworkPolicy permits this connection. Compute
+revokes the grant after the revision stops and deletes the Secret at retirement.
+
+Compute enables the OCE plugin in a read-only volume with the Gateway
+configuration and the original revision configuration. The plugin reads
+[notifications from OpenClaw](../guides/topics/audit-log.md#agent-runtime-activity)
+as work runs. It saves each event in
+`/home/node/.openclaw/pending-runtime-audit/observations.sqlite` before delivery.
+The file holds up to 256 events and excludes credentials. If the queue is full,
+the plugin skips the new event and logs a warning. Chat continues during outages.
+
+OCC checks the token, gets the revision from the grant, and appends the event
+in one transaction. After confirmation, the plugin deletes its copy. A permanent
+refusal produces a warning. After a restart in the same Pod, the plugin checks
+the credential fingerprint, source, and destination before retrying.
+OCC accepts retries with identical IDs and values once. Conflicting values
+fail. Kubernetes deletes the file with the Pod.
+
+### 8. An analyst opens the user message for a turn
+
+`deploy/runtime/managed-runtime-audit/index.mjs:recordInput`,
+`apps/controller/src/http/agent-audit.ts:getAgentAuditEventMessage` and
+`apps/controller/src/gateway/audit-message-client.ts:readAgentAuditMessage`
+
+The plugin adds `messageId` to a turn event when it can match a saved
+user message to the run. The text stays in the transcript. See
+[supported inputs](../guides/topics/audit-log.md#open-the-message-for-a-turn).
+
+1. The analyst supplies the audit event ID. In a PostgreSQL transaction,
+   `packages/occ/src/index.ts:selectAgentAuditMessage` checks the human
+   session and direct `read_audit` and `read_audit_content` grants on
+   this Agent. State selects a linked turn event from the preceding 24 hours.
+   Its revision must match `activeRevisionId`, and the Agent's desired state
+   must be `running`.
+2. After this transaction, OCC opens the [private path for the revision](../reference/gateway-routing.md#endpoint-and-route).
+   Envoy checks the OCC service key and sets the scope to `operator.sessions.read`.
+   OCC checks that the Gateway grants exactly this scope. OCC calls `sessions.resolve`
+   with the stored session ID, then calls `chat.message.get` with the
+   returned session key and the stored session and message IDs. OCC checks
+   the message ID, user role and turn ID. OCC accepts up to 64 KiB of
+   text from the visible message. Each API process allows four concurrent
+   lookups. The Gateway has five seconds to respond. Exceeding either limit
+   returns HTTP `503`.
+3. OCC repeats the first check in a new transaction. It records
+   `openclaw.audit.agent.message.read` with the analyst and event ID.
+   After PostgreSQL confirms the commit, OCC sends the event and the text
+   with `Cache-Control: no-store`.
 
 ## Debugging and Verification
 
@@ -259,6 +337,13 @@ to the same session, Agent, and window.
 
 ## Changelog
 
+- 2026-11-19 17:16: Trace how OCC links a turn to a saved chat message and authorizes the text read. (authoring-run/bccca424-a66f-4ab2-ad5a-e639f845a228 - 04dbfef7e367b86ee5b5275fb510c21798b759b5)
+
+- 2026-11-19 14:28: Record runtime observations through the OCE Gateway plugin. (authoring-run/4dfd652a-6550-45c4-b86a-ce9b35ec4705 - f637b353b485f8610c0f58df801eb5feb577f291)
+
+- 2026-11-19 10:04: Trace runtime enrollment, event delivery, and reads. (authoring-run/fe4ad3ff-b579-4d9b-a15e-622a822cd15f - d517d45f0ffdce32b9b7663efe062fc3e8a997bb)
+
+- 2026-11-18 17:35: Trace Agent lifecycle reads and additional control-plane audit sources. (authoring-run/d9552e4e-b5ce-4d02-aa1f-b9e2666a360d - 86265b4ed8e8b22ae3882889d4febccdef1b5f65)
 - 2026-11-12 16:19: Explain how Native IAM counts Agent audit grants for account and key management. (authoring-run/09158870-8481-4ef1-9ff0-f1e2d5ae4df9 - 9912bddae4ac3d94e9f4d22c6283d957a4cf1e9a)
 - 2026-11-12 16:19: Trace how composition supplies the Agent audit reader and verifies its IAM Driver. (authoring-run/0262148b-40f3-48c2-a3e1-546feb2e265b - 9912bddae4ac3d94e9f4d22c6283d957a4cf1e9a)
 - 2026-11-12 15:31: Trace how a successful Agent read saves the verified Agent and Namespace IDs. (authoring-run/bb7f16b1-d73b-4957-b5bb-212692e7ada9 - 8658496ea654b960bebabca40d18c7d71994db50)

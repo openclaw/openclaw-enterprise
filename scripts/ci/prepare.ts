@@ -2435,6 +2435,12 @@ async function prepareFileWithState({
     if (relativeFile === "tests/integration/postgres-api-request-audit.test.ts") {
       env.OCC_TEST_API_REQUEST_AUDIT_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
+    if (relativeFile === "tests/integration/postgres-auth-accounts.test.ts") {
+      env.OCC_TEST_AUTH_ACCOUNTS_MIGRATION_DATABASE_URL = database.migrationUrl;
+    }
+    if (relativeFile === "tests/integration/postgres-service-api-keys.test.ts") {
+      env.OCC_TEST_SERVICE_API_KEYS_MIGRATION_DATABASE_URL = database.migrationUrl;
+    }
     if (relativeFile === "tests/integration/postgres-static-token-service-lifecycle.test.ts") {
       env.OCC_TEST_STATIC_TOKEN_SERVICE_MIGRATION_DATABASE_URL = database.migrationUrl;
     }

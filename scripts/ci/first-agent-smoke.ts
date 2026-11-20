@@ -19,28 +19,42 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendFile, readFile, realpath, statfs } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 
 import { buildImages, writeReleaseSelection } from "./first-agent-smoke/images.ts";
 import { createStepRecorder, log, workDirectory } from "./first-agent-smoke/process.ts";
 import {
+  apiProcess,
+  expectNoRuntimeAuditGrant,
+  expectNoRuntimeAuditRows,
+  expectPersistedRuntimeAudit,
+  checkMessageDisclosure,
   clusterName,
   routeModelProvider,
+  setLocalSetupAudit,
   startLocalSetup,
+  wireField,
   type LocalSetup,
   type SmokeAgent,
   type SmokeStack,
 } from "./first-agent-smoke/setup.ts";
 import {
+  allowAgentAuditRead,
+  checkLinkedChat,
+  chatCodexWithAudit,
+  assertAgentTurnAudit,
+  chatWithAudit,
   chatTurn,
   createCodexAgent,
   deployAgent,
+  proveCodexAuditInterruptions,
   readLogs,
   runFirstAgent,
   stopAgent,
 } from "./first-agent-smoke/agents.ts";
 import {
+  configureSmokeInstallation,
   diagnostics,
-  enablePublicReader,
   proveRetirement,
   publicReadTurn,
 } from "./first-agent-smoke/reader.ts";
@@ -69,6 +83,7 @@ export {
   createApi,
   kubectl,
   routeModelProvider,
+  setLocalSetupAudit,
   startLocalSetup,
   watchCluster,
 } from "./first-agent-smoke/setup.ts";
@@ -90,8 +105,10 @@ async function smoke() {
     }
   }
   const modelDirectory = process.env.OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY;
+  const adminPassword = randomUUID();
   const environment: NodeJS.ProcessEnv & { OCC_DEVELOPMENT_STATE_DIRECTORY: string } = {
     ...process.env,
+    OPENCLAW_DEV_PASSWORD: adminPassword,
     OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
     OCC_DEVELOPMENT_CONTROL_PLANE: "kubernetes",
     OCC_DEVELOPMENT_SANDBOX_DRIVER: "none",
@@ -100,6 +117,7 @@ async function smoke() {
     OCC_DEVELOPMENT_KUBERNETES_CLUSTER: clusterName,
     OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS: "900",
   };
+  delete environment.OCC_DEVELOPMENT_SIGN_IN;
   delete environment.OPENAI_API_KEY;
   const modelCredentials = {
     embedded: `sk-oce-smoke-${randomUUID()}`,
@@ -113,6 +131,27 @@ async function smoke() {
     ]),
   );
   let diagnosticStack: (LocalSetup & Partial<SmokeStack>) | undefined;
+  const auditFailures: string[] = [];
+  // Keep a failed audit phase visible in the timing report. Finish every
+  // independent check before stopping Agents or changing the audit setting.
+  async function auditStep(
+    phase: Parameters<typeof smokeStep>[0],
+    ...checks: (() => Promise<void>)[]
+  ) {
+    try {
+      await smokeStep(phase, async () => {
+        const results = await Promise.allSettled(checks.map((check) => check()));
+        const errors = results.filter((result) => result.status === "rejected");
+        if (errors.length > 0) {
+          throw new Error(errors.map(({ reason }) => String(reason)).join("\n"));
+        }
+      });
+    } catch (error) {
+      const message = `${phase}: ${String(error)}`;
+      log(message);
+      auditFailures.push(message);
+    }
+  }
   try {
     const installed = await smokeStep("local-setup", () => startLocalSetup(environment));
     diagnosticStack = installed;
@@ -123,14 +162,29 @@ async function smoke() {
     const initialized = Object.assign(setup, { namespaceId });
     assert.ok(initialized.namespaceId, "Local Setup created no default Namespace");
     const stack = initialized as SmokeStack;
-    const reader = await smokeStep("install-reader", () => enablePublicReader(stack));
+    const reader = await smokeStep("install-reader", async () => {
+      const installedReader = await configureSmokeInstallation(stack);
+      // Gateway audit ingestion is available only on the chart's private listener.
+      const ordinaryAudit = await fetch(new URL("/internal/runtime-audit", stack.origin), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+        redirect: "error",
+        signal: AbortSignal.timeout(30_000),
+      });
+      await ordinaryAudit.body?.cancel();
+      assert.equal(ordinaryAudit.status, 404, "the ordinary API listener exposes audit ingestion");
+      return installedReader;
+    });
+    // Both Codex revisions must enroll after the serving API has started.
+    const servingApi = await apiProcess(stack);
     await smokeStep("route-model", () =>
       routeModelProvider(
         stack,
         modelDirectory,
         process.env.OCC_FIRST_AGENT_SMOKE_PROVIDER_IMAGE ||
           process.env.OCC_KUBERNETES_RUNTIME_IMAGE,
-        { credentialDigests },
+        { credentialDigests, auditFailures: true },
       ),
     );
     const [embedded, codex, control] = await initialAdmissions({
@@ -139,7 +193,50 @@ async function smoke() {
       control: () =>
         createCodexAgent(stack, reader, "reader-control", modelCredentials["reader-control"]),
     });
-    await smokeStep("codex-chat", () => chatTurn(stack, codex.agent, codex.revisionId));
+    const codexReader = await allowAgentAuditRead(stack, codex.agent, adminPassword);
+    const embeddedReader = await allowAgentAuditRead(stack, embedded.agent, adminPassword);
+    const readCodexAudit = codexReader.readAudit;
+    const readEmbeddedAudit = embeddedReader.readAudit;
+    let linkedEventId: string | undefined;
+    await Promise.all([
+      auditStep("codex-chat", async () => {
+        const http = await chatCodexWithAudit(stack, codex.agent, codex.revisionId, readCodexAudit);
+        const first = await checkLinkedChat(
+          stack,
+          codex.agent,
+          codex.revisionId,
+          codexReader,
+          "codex",
+        );
+        linkedEventId = first.turn.id;
+        await checkMessageDisclosure(stack, linkedEventId, first.text, codexReader.readMessage);
+        // Codex also annotates a saved user prompt for HTTP chat.
+        assert.ok(http.turn.details.messageId);
+        const detail = await codexReader.readMessage(http.turn.id);
+        const message = wireField(detail, "message");
+        assert.equal(
+          wireField(message, "text"),
+          `Reply with exactly this nonce and no other text: ${http.nonce}`,
+        );
+        await expectPersistedRuntimeAudit(stack, codex.revisionId, await readCodexAudit());
+      }),
+      auditStep("embedded-audit", async () => {
+        await assertAgentTurnAudit(readEmbeddedAudit, {
+          label: embedded.agent.label,
+          revisionId: embedded.revisionId,
+          runtimeSource: "openclaw",
+          model: defaultAgentModel,
+        });
+        await checkLinkedChat(
+          stack,
+          embedded.agent,
+          embedded.revisionId,
+          embeddedReader,
+          "openclaw",
+        );
+        await expectPersistedRuntimeAudit(stack, embedded.revisionId, await readEmbeddedAudit());
+      }),
+    ]);
     await smokeStep("public-read", () => publicReadTurn(stack, codex, reader));
     const retiredRevision = await smokeStep("reader-retirement", () =>
       proveRetirement(stack, codex, control, reader, proofResults),
@@ -149,20 +246,58 @@ async function smoke() {
       await readLogs(stack, codex.agent, "gateway");
       await readLogs(stack, codex.agent, "agent");
     });
-    await smokeStep("stop-agents", () =>
-      Promise.all([stopAgent(stack, embedded.agent), stopAgent(stack, codex.agent)]),
-    );
+    await smokeStep("stop-agents", async () => {
+      await Promise.all([stopAgent(stack, embedded.agent), stopAgent(stack, codex.agent)]);
+      for (const revisionId of [embedded.revisionId, codex.revisionId, retiredRevision]) {
+        await expectNoRuntimeAuditGrant(stack, revisionId);
+      }
+    });
     const [embeddedRevision, codexRevision] = await smokeStep("start-agents", () =>
       Promise.all([deployAgent(stack, embedded.agent), deployAgent(stack, codex.agent)]),
     );
     assert.notEqual(embeddedRevision, embedded.revisionId, "start must admit a new revision");
     assert.notEqual(codexRevision, retiredRevision, "start must admit a new revision");
-    await smokeStep("chat-after-start", () =>
-      Promise.all([
-        chatTurn(stack, embedded.agent, embeddedRevision),
-        chatTurn(stack, codex.agent, codexRevision),
-      ]),
+    await auditStep(
+      "chat-after-start",
+      async () => {
+        const http = await chatWithAudit(
+          stack,
+          embedded.agent,
+          embeddedRevision,
+          readEmbeddedAudit,
+          "openclaw",
+        );
+        // The embedded HTTP route has no confirmed mapping from this run to a user row.
+        assert.equal(http.turn.details.messageId, undefined);
+        await assert.rejects(embeddedReader.readMessage(http.turn.id), /HTTP 404$/);
+        await expectPersistedRuntimeAudit(stack, embeddedRevision, await readEmbeddedAudit());
+      },
+      async () => {
+        await chatCodexWithAudit(stack, codex.agent, codexRevision, readCodexAudit);
+        if (linkedEventId) {
+          // A serving replacement must never supply history for its predecessor's audit event.
+          await assert.rejects(codexReader.readMessage(linkedEventId), /HTTP 404$/);
+        }
+        await expectPersistedRuntimeAudit(stack, codexRevision, await readCodexAudit());
+      },
     );
+    assert.deepEqual(await apiProcess(stack), servingApi, "the API restarted during enrollment");
+    await auditStep("codex-audit-interruptions", async () => {
+      await proveCodexAuditInterruptions(stack, codex.agent, codexRevision, readCodexAudit);
+      assert.deepEqual(
+        await apiProcess(stack),
+        servingApi,
+        "the API restarted during Gateway recovery",
+      );
+    });
+    await smokeStep("audit-disabled", async () => {
+      await stopAgent(stack, embedded.agent);
+      await setLocalSetupAudit(stack, false);
+      const unauditedRevision = await deployAgent(stack, embedded.agent);
+      await chatTurn(stack, embedded.agent, unauditedRevision);
+      await expectNoRuntimeAuditRows(stack, unauditedRevision);
+    });
+    assert.equal(auditFailures.length, 0, auditFailures.join("\n"));
   } catch (error) {
     await diagnostics(diagnosticStack);
     throw error;

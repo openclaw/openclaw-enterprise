@@ -121,7 +121,8 @@ agentNativeAdmin:
 agentRuntimeLogs:
   enabled: true
 
-# Durable request and worker audit records, plus the authorized Agent audit API.
+# Durable audit records and the Agent audit API. With Gateway routing, also
+# configures a private receiver for audit events from managed Agent runtimes.
 controlPlaneAudit:
   enabled: false
 

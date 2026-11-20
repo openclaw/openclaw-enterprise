@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { createSecureContext } from "node:tls";
+import type { AgentAuditPage } from "../../../packages/contracts/src/index.ts";
 import { configureModelProviderDNS } from "../../../tests/helpers/runtime-model-provider.mjs";
 import {
   minute,
@@ -190,6 +194,7 @@ export interface Pod {
   metadata: {
     namespace: string;
     name: string;
+    uid: string;
     creationTimestamp: string;
     deletionTimestamp?: string | null;
     labels?: Record<string, string>;
@@ -200,6 +205,7 @@ export interface Pod {
   status?: {
     phase?: string;
     conditions?: { type: string; status: string }[];
+    containerStatuses?: { name: string; containerID?: string; restartCount: number }[];
   };
 }
 
@@ -215,6 +221,7 @@ interface LocalSetupState {
   keyPath: string;
   cluster: string;
   apiPort: number;
+  browserOrigin?: string;
   platformNamespace: string;
 }
 
@@ -237,6 +244,13 @@ export interface SmokeAgent {
 export interface SmokeStack extends LocalSetup {
   agents: SmokeAgent[];
   namespaceId: string;
+}
+
+function localApiOrigin(port: number): string {
+  assert.ok(Number.isInteger(port) && port > 0 && port <= 65535, "Invalid Local Setup API port");
+  const url = new URL("http://127.0.0.1");
+  url.port = String(port);
+  return url.origin;
 }
 
 export async function startLocalSetup(
@@ -264,6 +278,7 @@ export async function startLocalSetup(
   const directory = environment.OCC_DEVELOPMENT_STATE_DIRECTORY;
   const storedState: unknown = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
   const state = storedState as LocalSetupState;
+  const origin = localApiOrigin(state.apiPort);
   const key: unknown = JSON.parse(await readFile(state.keyPath, "utf8"));
   return {
     directory,
@@ -271,11 +286,8 @@ export async function startLocalSetup(
     keyPath: state.keyPath,
     kubeconfig: join(directory, "kubeconfig"),
     context: `k3d-${state.cluster}`,
-    origin: `http://127.0.0.1:${state.apiPort}`,
-    api: createApi(
-      `http://127.0.0.1:${state.apiPort}`,
-      wireField(wireField(key, "data"), "key") as string,
-    ),
+    origin,
+    api: createApi(origin, wireField(wireField(key, "data"), "key") as string),
   };
 }
 
@@ -290,6 +302,328 @@ export function kubectl(
   });
 }
 
+export async function signInConsole(
+  stack: Pick<LocalSetup, "directory" | "state">,
+  credentials: { email: string; password: string },
+): Promise<Api> {
+  const { cookieHeaderFromSetCookie } = await import("../../../packages/utils/src/index.ts");
+  assert.ok(stack.state.browserOrigin, "Local Setup did not record the Console origin");
+  const origin = new URL(stack.state.browserOrigin);
+  assert.equal(origin.protocol, "https:");
+  assert.equal(origin.hostname, `console.${stack.state.cluster}.oce.localhost`);
+  const agent = new HttpsAgent({
+    secureContext: createSecureContext({
+      ca: await readFile(join(stack.directory, "browser-ca.crt")),
+    }),
+  });
+  const signIn = "/api/auth/sign-in/email";
+  let cookie = "";
+  const api: Api = (method, path, body) => {
+    const url = new URL(path, origin);
+    assert.equal(url.origin, origin.origin, "refusing to send credentials outside the Console");
+    const content = body === undefined ? undefined : JSON.stringify(body);
+    return new Promise((resolveResponse, reject) => {
+      // Use the real Console ingress and verify its hostname against the Local Setup CA.
+      const request = httpsRequest(
+        {
+          hostname: "127.0.0.1",
+          servername: origin.hostname,
+          port: origin.port || 443,
+          path: url.pathname + url.search,
+          agent,
+          rejectUnauthorized: true,
+          method,
+          headers: {
+            host: origin.host,
+            origin: origin.origin,
+            ...(cookie === "" ? {} : { cookie }),
+            ...(content === undefined
+              ? {}
+              : {
+                  "content-type": "application/json",
+                  "content-length": Buffer.byteLength(content),
+                }),
+          },
+          signal: AbortSignal.timeout(30_000),
+        },
+        (response) => {
+          const chunks: Buffer[] = [];
+          response.on("data", (chunk: Buffer) => chunks.push(chunk));
+          response.once("error", reject);
+          response.once("end", () => {
+            const status = response.statusCode ?? 500;
+            if (status < 200 || status >= 300) {
+              reject(new Error(`${method} ${url.pathname}: HTTP ${status}`));
+              return;
+            }
+            if (path === signIn) {
+              cookie = cookieHeaderFromSetCookie(response.headers["set-cookie"]);
+              resolveResponse(undefined);
+              return;
+            }
+            try {
+              const envelope: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+              resolveResponse(wireField(envelope, "data"));
+            } catch {
+              reject(new Error(`${method} ${url.pathname}: invalid JSON response`));
+            }
+          });
+        },
+      );
+      request.once("error", reject);
+      request.end(content);
+    });
+  };
+  await api("POST", signIn, credentials);
+  assert.ok(cookie.length > 0, "Console sign-in returned no session cookie");
+  return api;
+}
+
+export async function setLocalSetupAudit(
+  stack: Pick<LocalSetup, "directory" | "context" | "kubeconfig" | "state">,
+  enabled: boolean,
+  options?: RunOptions,
+) {
+  await run(
+    "helm",
+    [
+      "upgrade",
+      "openclaw-enterprise",
+      "deploy/helm/openclaw-enterprise",
+      "--namespace",
+      stack.state.platformNamespace,
+      "--kubeconfig",
+      stack.kubeconfig,
+      "--kube-context",
+      stack.context,
+      "-f",
+      join(stack.directory, "helm-values.json"),
+      "--set",
+      `controlPlaneAudit.enabled=${enabled}`,
+      "--wait",
+      "--timeout",
+      "5m",
+    ],
+    { timeout: 6 * minute, ...options },
+  );
+
+  // Helm checks the Pod directly. Wait for the local proxy to reach the
+  // replacement API through its Service before sending the next request.
+  const ready = new URL("/readyz", localApiOrigin(stack.state.apiPort));
+  await waitFor(
+    "the local API after the audit setting changes",
+    async () => {
+      const timeout = AbortSignal.timeout(3000);
+      const signal = options?.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+      try {
+        const response = await fetch(ready, { redirect: "error", signal });
+        await response.body?.cancel();
+        return { done: response.status === 200, state: response.status };
+      } catch {
+        options?.signal?.throwIfAborted();
+        return { done: false, state: "unreachable" };
+      }
+    },
+    minute,
+  );
+}
+
+type InstalledAuditStack = Pick<LocalSetup, "kubeconfig" | "context" | "state">;
+
+async function queryAudit(
+  stack: InstalledAuditStack,
+  parameters: Record<string, string>,
+  query: string,
+  options?: RunOptions,
+) {
+  const { stdout } = await kubectl(
+    stack,
+    [
+      "-n",
+      stack.state.platformNamespace,
+      "exec",
+      "-i",
+      "statefulset/postgres",
+      "-c",
+      "postgres",
+      "--",
+      "psql",
+      "-X",
+      "-q",
+      "-t",
+      "-A",
+      "--set",
+      "ON_ERROR_STOP=1",
+      ...Object.entries(parameters).flatMap(([name, value]) => ["--set", `${name}=${value}`]),
+      "--username",
+      "postgres",
+      "--dbname",
+      "openclaw_enterprise",
+    ],
+    { ...options, input: query },
+  );
+  return stdout.trim();
+}
+
+function queryRevision(
+  stack: InstalledAuditStack,
+  revisionId: string,
+  query: string,
+  options?: RunOptions,
+) {
+  return queryAudit(stack, { revision_id: revisionId }, query, options);
+}
+
+export async function checkMessageDisclosure(
+  stack: InstalledAuditStack,
+  eventId: string,
+  text: string,
+  readMessage: (id: string) => Promise<unknown>,
+) {
+  const query = (sql: string) => queryAudit(stack, { event_id: eventId }, sql);
+  const match = `action = 'openclaw.audit.agent.message.read' AND details->>'auditEventId' = :'event_id'`;
+  // The receipt names the linked event. Neither its details nor its metadata may copy the text.
+  const receipt = await query(`SELECT details FROM occ.audit_events WHERE ${match};`);
+  assert.ok(!receipt.includes(text), "the disclosure receipt contains the chat message");
+  const details = JSON.parse(receipt) as Record<string, unknown>;
+  delete details.__occAuditMetadata;
+  assert.deepEqual(details, { auditEventId: eventId });
+  // Refuse only this message's next receipt. Fail closed despite valid grants and history.
+  const constraint = `smoke_disclosure_${randomUUID().replaceAll("-", "")}`;
+  await query(
+    `ALTER TABLE occ.audit_events ADD CONSTRAINT ${constraint} CHECK (NOT (${match})) NOT VALID;`,
+  );
+  try {
+    await assert.rejects(readMessage(eventId), /HTTP 503$/);
+  } finally {
+    await query(`ALTER TABLE occ.audit_events DROP CONSTRAINT ${constraint};`);
+  }
+}
+
+const runtimeRows = `FROM occ.audit_events
+  WHERE kind = 'runtime_activity' AND details->>'agentRevisionId' = :'revision_id'`;
+
+export async function interruptRefusedObservation<T>(
+  stack: InstalledAuditStack,
+  revisionId: string,
+  send: () => Promise<T>,
+  restart: () => Promise<void>,
+) {
+  const marker = `smoke_audit_${randomUUID().replaceAll("-", "")}`;
+  const query = (sql: string) => queryRevision(stack, revisionId, sql);
+  // The rejected transaction leaves its audit ID in the disposable database log.
+  // Compare that ID with the API record after the Gateway restarts and retries.
+  const pattern = new RegExp(`${marker} (aud_[a-f0-9-]{36})`);
+  try {
+    await query(`
+      BEGIN;
+      CREATE FUNCTION occ.${marker}() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION '% %', TG_NAME, NEW.id; END;
+      $$;
+      CREATE TRIGGER ${marker} BEFORE INSERT ON occ.audit_events FOR EACH ROW
+        WHEN (NEW.kind = 'runtime_activity'
+          AND NEW.details->>'agentRevisionId' = :'revision_id'
+          AND NEW.action = 'openclaw.runtime.turn.started')
+        EXECUTE FUNCTION occ.${marker}();
+      COMMIT;
+    `);
+    const turn = await send();
+    const refusedId = await waitFor(
+      `PostgreSQL to refuse the turn observation on ${revisionId}`,
+      async () => {
+        const { stdout } = await kubectl(stack, [
+          "logs",
+          "-n",
+          stack.state.platformNamespace,
+          "statefulset/postgres",
+          "-c",
+          "postgres",
+          "--since=2m",
+        ]);
+        const id = pattern.exec(stdout)?.[1];
+        return { done: id !== undefined, value: id };
+      },
+      minute,
+    );
+    assert.ok(refusedId);
+    await restart();
+    return { turn, refusedId };
+  } finally {
+    await query(`
+      BEGIN;
+      DROP TRIGGER IF EXISTS ${marker} ON occ.audit_events;
+      DROP FUNCTION IF EXISTS occ.${marker}();
+      COMMIT;
+    `);
+  }
+}
+
+export async function expectPersistedRuntimeAudit(
+  stack: InstalledAuditStack,
+  revisionId: string,
+  page: AgentAuditPage,
+  options?: RunOptions,
+) {
+  const events = page.events.filter(
+    (event) => event.event === "runtime_activity" && event.details.agentRevisionId === revisionId,
+  );
+  assert.ok(events.length > 0, `The audit API returned no runtime events for ${revisionId}.`);
+  // Read from the installed database after the API read. Later arrivals can add rows.
+  const rows = await queryRevision(stack, revisionId, `SELECT id ${runtimeRows};`, options);
+  const persisted = new Set(rows.split("\n"));
+  for (const { id } of events) {
+    assert.ok(persisted.has(id), `PostgreSQL has no runtime event ${id} for ${revisionId}.`);
+  }
+}
+
+export async function expectNoRuntimeAuditGrant(stack: InstalledAuditStack, revisionId: string) {
+  const count = await queryRevision(
+    stack,
+    revisionId,
+    "SELECT count(*) FROM occ.gateway_runtime_audit_grants WHERE revision_id = :'revision_id';",
+  );
+  assert.equal(count, "0", `The stopped revision ${revisionId} still has an audit credential.`);
+}
+
+export async function expectNoRuntimeAuditRows(stack: LocalSetup, revisionId: string) {
+  const count = await queryRevision(stack, revisionId, `SELECT count(*) ${runtimeRows};`);
+  assert.equal(count, "0", "the disabled audit switch allowed a runtime write");
+}
+
+export async function apiProcess(
+  stack: Pick<LocalSetup, "kubeconfig" | "context" | "state">,
+  options?: RunOptions,
+) {
+  const { stdout } = await kubectl(
+    stack,
+    [
+      "-n",
+      stack.state.platformNamespace,
+      "get",
+      "pods",
+      "-l",
+      "app.kubernetes.io/instance=openclaw-enterprise,app.kubernetes.io/component=api",
+      "-o",
+      "json",
+    ],
+    options,
+  );
+  const ready = podList(stdout).filter(
+    (pod) =>
+      !pod.metadata.deletionTimestamp &&
+      pod.status?.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
+  );
+  assert.equal(ready.length, 1, "the chart must have one ready API Pod");
+  const api = ready[0]!;
+  const container = api.status?.containerStatuses?.find(({ name }) => name === "api");
+  assert.ok(api.metadata.uid && container?.containerID, "the API Pod must identify its process");
+  return {
+    podUid: api.metadata.uid,
+    containerId: container.containerID,
+    restartCount: container.restartCount,
+  };
+}
+
 // Answer api.openai.com inside the cluster with the stand-in provider. Agent
 // Pods reach it through their ordinary model egress NetworkPolicy and verify
 // its certificate against the CA added to the runtime image. `providerImage`
@@ -302,10 +636,12 @@ export async function routeModelProvider(
     journey = "PROBE_PUBLIC_READ_JOURNEY",
     cleanup = [],
     credentialDigests,
+    auditFailures = false,
   }: {
     journey?: string;
     cleanup?: (() => Promise<unknown>)[];
     credentialDigests?: Record<string, string>;
+    auditFailures?: boolean;
   } = {},
 ) {
   await run("docker", ["network", "create", "--subnet", modelNetwork.subnet, modelNetwork.name]);
@@ -348,6 +684,7 @@ export async function routeModelProvider(
     `PROBE_ENDPOINT_ECHO_PATTERN=${noncePattern}`,
     "--env",
     `${journey}=1`,
+    ...(auditFailures ? ["--env", "PROBE_CODEX_AUDIT_FAILURES=1"] : []),
     // With digests, the stand-in answers only these credentials and names each caller.
     ...(credentialDigests === undefined ? [] : ["--env", "PROBE_ENDPOINT_CREDENTIAL_DIGESTS"]),
     "--entrypoint",

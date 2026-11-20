@@ -26,12 +26,13 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 
 const adminEmail = "postgres-admin@openclaw.local";
 const adminPassword = "postgres-development-password";
 const authBaseURL = "https://console.oce.localhost";
+const migrationUrl = process.env.OCC_TEST_AUTH_ACCOUNTS_MIGRATION_DATABASE_URL;
 
 type App = Awaited<ReturnType<typeof composePostgresDevelopment>>;
 
@@ -543,6 +544,148 @@ test(
     const iamAfter = await state.loadNativeIAMState(installation.id);
     assert.equal(iamAfter.identities.length, iamBefore.identities.length + 1);
     assert.equal(iamAfter.bindings.length, iamBefore.bindings.length + 1);
+  },
+);
+
+test(
+  "password-only login and logout commit with their audit events",
+  {
+    skip: databaseUrl && migrationUrl ? false : "Prepare the dedicated postgres-auth file fixture.",
+  },
+  async (context) => {
+    assert.ok(databaseUrl && migrationUrl);
+    const appTarget = new URL(databaseUrl);
+    const migrationTarget = new URL(migrationUrl);
+    assert.equal(appTarget.host, migrationTarget.host);
+    assert.equal(appTarget.pathname, migrationTarget.pathname);
+    assert.notEqual(appTarget.username, migrationTarget.username);
+    const observer = testPool(context, { connectionString: databaseUrl });
+    const migrator = testPool(context, { connectionString: migrationUrl });
+    const config = {
+      mode: "development",
+      host: "127.0.0.1",
+      databaseUrl,
+      authBaseURL,
+      controlPlaneAuditEnabled: false,
+      nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
+      authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
+    } satisfies Parameters<typeof composePostgresDevelopment>[0];
+    await ensureDevelopmentBootstrap(context, {
+      databaseUrl,
+      email: adminEmail,
+      password: adminPassword,
+      authSecret: config.authSecret,
+      authBaseURL,
+      installationName: "PostgreSQL password session audit",
+    });
+    appTarget.searchParams.set("options", "-c lock_timeout=2000ms");
+    const app = await composePostgresDevelopment(
+      { ...config, databaseUrl: appTarget.toString() },
+      {
+        computeDriver: createDevelopmentComputeDriver(),
+        configurationDriver: createTestConfigurationDriver(),
+      },
+    );
+    context.after(() => app.close());
+    const state = new PostgresPlatformState(observer);
+    const installation = await state.loadInstallation();
+    assert.ok(installation);
+    const principal = installationPrincipal(await state.loadNativeIAMState(installation.id));
+    assert.ok(principal?.kind === "principal");
+    const credentials = { email: adminEmail, password: adminPassword };
+    const sessionCount = async () => {
+      const { rows } = await observer.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM occ.session WHERE user_id = $1",
+        [principal.subject],
+      );
+      return first(rows).count;
+    };
+    const requestId = (result: unknown) => text(record(record(result).meta).requestId);
+    const auditFor = async (action: string, id: string) => {
+      const { rows } = await observer.query(
+        `SELECT actor_id, resource_id, outcome FROM occ.audit_events
+         WHERE action = $1 AND details -> '__occAuditMetadata' ->> 'requestId' = $2`,
+        [action, id],
+      );
+      return rows;
+    };
+    const unlockLedger = async () => {
+      const locker = await migrator.connect();
+      await locker.query("BEGIN");
+      try {
+        await locker.query("LOCK TABLE occ.audit_events IN SHARE MODE");
+      } catch (error) {
+        await locker.query("ROLLBACK");
+        locker.release();
+        throw error;
+      }
+      return async () => {
+        try {
+          await locker.query("ROLLBACK");
+        } finally {
+          locker.release();
+        }
+      };
+    };
+
+    // The ledger lock must prevent a valid login from committing any session, even
+    // before the timeout response. A later compensating delete cannot pass this check.
+    const countBefore = await sessionCount();
+    const releaseLoginLedger = await unlockLedger();
+    const pendingLogin = injectJson(app, "POST", "/api/auth/sign-in/email", {
+      body: credentials,
+      headers: { origin: authBaseURL },
+    });
+    try {
+      await waitFor("the actual login audit insert to wait on the ledger", async () => {
+        const { rows } = await observer.query<{ pid: number }>(
+          `SELECT pid FROM pg_stat_activity WHERE datname = current_database()
+           AND usename = current_user AND state = 'active' AND wait_event_type = 'Lock'
+           AND query LIKE 'INSERT INTO occ.audit_events%'`,
+        );
+        return rows[0]?.pid;
+      });
+      assert.equal(await sessionCount(), countBefore, "an unaudited session became visible");
+      const refused = await pendingLogin;
+      assertApiError(refused, 503, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(refused.headers["set-cookie"], undefined);
+      assert.equal(await sessionCount(), countBefore);
+      assert.deepEqual(await auditFor("authentication.login", requestId(refused.json())), []);
+    } finally {
+      await releaseLoginLedger();
+      await Promise.allSettled([pendingLogin]);
+    }
+
+    const session = await signIn(app, credentials);
+    const actor = { actor_id: principal.id, resource_id: installation.id, outcome: "success" };
+    assert.deepEqual(
+      await auditFor("authentication.login", requestId(await session.response.json())),
+      [actor],
+    );
+    assert.equal(await sessionCount(), countBefore + 1);
+
+    // A failed audit write must roll back deletion and retain the valid browser session.
+    const releaseLogoutLedger = await unlockLedger();
+    try {
+      const refused = await injectJson(app, "POST", "/api/auth/sign-out", { session });
+      assertApiError(refused, 503, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(refused.headers["set-cookie"], undefined);
+      assert.equal(await sessionCount(), countBefore + 1);
+      assert.equal((await injectJson(app, "GET", "/installation", { session })).statusCode, 200);
+    } finally {
+      await releaseLogoutLedger();
+    }
+
+    const signedOut = await injectJson(app, "POST", "/api/auth/sign-out", { session });
+    assert.equal(signedOut.statusCode, 200);
+    assert.ok(signedOut.headers["set-cookie"]);
+    assertApiError(
+      await injectJson(app, "GET", "/installation", { session }),
+      401,
+      "UNAUTHENTICATED",
+    );
+    assert.equal(await sessionCount(), countBefore);
+    assert.deepEqual(await auditFor("authentication.logout", requestId(signedOut.json())), [actor]);
   },
 );
 

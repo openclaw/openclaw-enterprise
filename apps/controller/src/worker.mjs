@@ -170,17 +170,6 @@ try {
       throw markerRefusal("OCC_WORKER_READINESS_PATH", cause);
     }
   }
-  const drivers = await loadInstallationConfiguration({ mode, startupConfiguration });
-  protectedDriver = drivers?.protectedDriver;
-  let computeDriver;
-  if (drivers === undefined && mode === "development") {
-    const { createDevelopmentDockerComputeDriver } =
-      await import("./composition/development-postgres.ts");
-    computeDriver = createDevelopmentDockerComputeDriver();
-    if (typeof computeDriver.preflight === "function") {
-      await computeDriver.preflight();
-    }
-  }
   const databasePoolOptions = workerDatabasePoolOptions(databaseTimeoutMs);
   pool = await createPostgresPool(databaseUrl, {
     ...databasePoolOptions,
@@ -197,11 +186,31 @@ try {
         }
       : {}),
   });
+  const workerState = new PostgresPlatformState(pool);
+  const drivers = await loadInstallationConfiguration({
+    mode,
+    startupConfiguration,
+    gatewayRuntimeAudit: {
+      register: (grant) => workerState.registerGatewayRuntimeGrant(grant),
+      remove: (grant) => workerState.removeGatewayRuntimeGrant(grant),
+      exists: (grant) => workerState.hasGatewayRuntimeGrant(grant),
+    },
+  });
+  protectedDriver = drivers?.protectedDriver;
+  let computeDriver;
+  if (drivers === undefined && mode === "development") {
+    const { createDevelopmentDockerComputeDriver } =
+      await import("./composition/development-postgres.ts");
+    computeDriver = createDevelopmentDockerComputeDriver();
+    if (typeof computeDriver.preflight === "function") {
+      await computeDriver.preflight();
+    }
+  }
   const repositoryOwner = drivers?.repositoryOwner;
   if (repositoryOwner?.controlSocket !== undefined) {
     receiptServer = await startRepositoryReceiptServer({
       ...repositoryOwner,
-      state: new PostgresPlatformState(pool),
+      state: workerState,
     });
   }
   if (repositoryOwner && drivers.preparedRepositoryGit) {
