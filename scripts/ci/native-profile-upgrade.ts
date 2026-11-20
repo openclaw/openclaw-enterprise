@@ -28,6 +28,19 @@ function sourceMetadata(text: string): Record<string, unknown> {
   return isPropertyBag(value) ? value : {};
 }
 
+// A JSON array containing a single hash coerces to that hash at any nesting depth.
+type SourceHash = string | [SourceHash];
+
+function assertSourceHashes(source: Record<string, unknown>): asserts source is {
+  commit: SourceHash;
+  sourceArchiveSha256: SourceHash;
+} {
+  assert.ok(
+    /^[a-f0-9]{40}$/.test(String(source.commit)) &&
+      /^[a-f0-9]{64}$/.test(String(source.sourceArchiveSha256)),
+  );
+}
+
 export function nativeProfileSourceReceipt(value: unknown) {
   if (
     !isPropertyBag(value) ||
@@ -85,10 +98,7 @@ export async function nativeProfileCandidateSource(repository: string) {
   const source = sourceMetadata(
     await readFile(join(repository, "deploy/runtime/openclaw-source.json"), "utf8"),
   );
-  assert.ok(
-    /^[a-f0-9]{40}$/.test(String(source.commit)) &&
-      /^[a-f0-9]{64}$/.test(String(source.sourceArchiveSha256)),
-  );
+  assertSourceHashes(source);
   const bridgePatches = (await git("ls-tree", "-r", "HEAD", "deploy/runtime"))
     .split("\n")
     .flatMap((line) => {
