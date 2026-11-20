@@ -166,6 +166,24 @@ function permitsPort(value: unknown, port: number): boolean {
   });
 }
 
+export class ChannelPublicEgressPolicyConflict extends Error {
+  readonly #operatorMessage: string;
+
+  constructor(message: string, uid: string | undefined) {
+    super(message);
+    // Only the worker's operator diagnostic can read this locator. Kubernetes-assigned
+    // UUIDs are bounded and identify even policies with long or sensitive names.
+    this.#operatorMessage =
+      uid?.length === 36 && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u.test(uid)
+        ? `${message} Inspect NetworkPolicy UID ${uid}.`
+        : message;
+  }
+
+  operatorMessage(): string {
+    return this.#operatorMessage;
+  }
+}
+
 /** Kubernetes Compute owns these records, policies and grants as one revision lifecycle. */
 export class KubernetesChannelEgress {
   private readonly options: ChannelEgressOptions;
@@ -929,13 +947,15 @@ export class KubernetesChannelEgress {
                 peer.namespaceSelector === undefined &&
                 peer.podSelector === undefined
               ) {
-                throw new Error(
+                throw new ChannelPublicEgressPolicyConflict(
                   "An additive NetworkPolicy grants unrestricted direct destinations to a channel Gateway.",
+                  policy.metadata.uid,
                 );
               }
               if (block && !isPrivateRange(String(block.cidr))) {
-                throw new Error(
+                throw new ChannelPublicEgressPolicyConflict(
                   "An additive NetworkPolicy permits direct public egress from a channel Gateway.",
+                  policy.metadata.uid,
                 );
               }
               const targetsFleet = block

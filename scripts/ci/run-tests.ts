@@ -109,6 +109,8 @@ function imageDigests(env: NodeJS.ProcessEnv) {
     runtime: "OCC_TEST_KUBERNETES_RUNTIME_IMAGE",
     controllerUpgrade: "OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE",
     runtimeUpgrade: "OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE",
+    nativeBaselineController: "OCC_TEST_NATIVE_BASELINE_CONTROLLER_IMAGE",
+    nativeBaselineRuntime: "OCC_TEST_NATIVE_BASELINE_RUNTIME_IMAGE",
     repositoryCredentials: "OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE",
     postgres: "OCC_TEST_PRODUCTION_POSTGRES_IMAGE",
     node: "OCC_TEST_PRODUCTION_NODE_IMAGE",

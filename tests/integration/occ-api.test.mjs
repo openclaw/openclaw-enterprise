@@ -1,6 +1,10 @@
 import {
-  assertInvalidInlinePlan,
+  createSlackValidationFixture,
   invalidInlinePlans,
+  provisioningRequestBody,
+  runChannelReferenceRefusals,
+  verifyInlineConfigurationRefusals,
+  verifyInlineProvisioningRecovery,
 } from "./occ-api-inline-provisioning-cases.ts";
 import * as firstDeploymentCases from "./occ-api-first-deployment-cases.ts";
 import { runBackendAssociations, runBackendIdCharacterRule } from "./occ-api-backend-cases.ts";
@@ -68,7 +72,6 @@ import {
   AgentDeletingError,
   AuthorizationDeniedError,
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
-  DependencyUnavailableError,
   ResourceStateConflictError,
   ScopeViolationError,
 } from "../../packages/occ/src/index.ts";
@@ -80,12 +83,7 @@ import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   AGENT_DELETING,
   DEDICATED_STORAGE_ROUTING_REQUIRED,
-  referenceFormRefusal,
-  SERVICE_ACCOUNT_CROSS_NAMESPACE,
   SLACK_ROUTE_NOT_CONFIGURED,
-  unboundReferenceRefusal,
-  unsubstitutedReferenceRefusal,
-  unsupportedChannelRefusal,
 } from "../helpers/refusal-text.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
@@ -285,33 +283,6 @@ function assertOnlyDefaultNamespace(response) {
     response.data.map((namespace) => namespace.name),
     [BOOTSTRAP_DEFAULT_NAMESPACE_NAME],
   );
-}
-
-function exactSecretRef(namespaceId, id) {
-  return { kind: "secret", namespaceId, id };
-}
-
-function provisioningRequestBody(namespaceId, secrets, { configuration, ...overrides } = {}) {
-  return {
-    requestId: `req_${randomUUID()}`,
-    name: `Provisioned Agent ${randomUUID().slice(0, 8)}`,
-    executionMode: "dedicated",
-    configuration: {
-      kind: "agent",
-      values: { agents: { defaults: { model: "codex/gpt-6-astra" } } },
-      secretBindings: {
-        TOOL_API_KEY: {
-          source: exactSecretRef(namespaceId, secrets.toolApiKey.id),
-        },
-      },
-      ...configuration,
-    },
-    harnessAuth: {
-      method: "api_key",
-      source: exactSecretRef(namespaceId, secrets.modelApiKey.id),
-    },
-    ...overrides,
-  };
 }
 
 function createProvisioningCapableConfigurationDriver() {
@@ -1358,151 +1329,25 @@ test("Agent provisioning API validates inline configuration with existing Secret
     toolApiKey.data.ref,
     foreignNamespaceId,
   );
-  for (const plan of invalidPlans) {
-    await assertInvalidInlinePlan(provision, plan);
-  }
-  // A plan the Kubernetes Compute Driver refuses is a conflict (its error classes are private,
-  // so it used to be a 500). A gateway setting in the caller's own Configuration is named,
-  // without its value, so the caller can fix it.
-  const kubernetes = createTestKubernetesComputeDriver("compute-provisioning-validation");
-  computeDriver.validateAgentProvisioning = (input) => kubernetes.validateAgentProvisioning(input);
-  const model = { agents: { defaults: { model: "codex/gpt-6-astra" } } };
-  for (const [gateway, message] of [
-    [
-      { auth: { mode: "token" } },
-      "Configuration setting gateway.auth.mode must be trusted-proxy: Kubernetes Compute supports only native trusted-proxy gateway authentication.",
-    ],
-    [
-      { trustedProxies: ["10.99.0.0/16"] },
-      "Configuration setting gateway.trustedProxies must be omitted or match the Installation's network.gatewayTrustedProxyCidrs.",
-    ],
-  ]) {
-    const refused = await provision(
-      requestBody({
-        configuration: { values: { ...model, gateway } },
-      }),
-    );
-    assert.equal(refused.status, 409, JSON.stringify(refused.body));
-    assert.deepEqual(
-      { code: refused.body.error.code, message: refused.body.error.message },
-      { code: "RESOURCE_CONFLICT", message },
-    );
-    assert.doesNotMatch(JSON.stringify(refused.body), /10\.99\./);
-  }
-  // The retired Codex untrusted approval policy is one of those gateway settings (finding 987).
-  const untrustedPolicy = await provision(
-    requestBody({
-      configuration: {
-        values: {
-          ...model,
-          plugins: {
-            entries: { codex: { config: { appServer: { approvalPolicy: "untrusted" } } } },
-          },
-        },
-      },
-    }),
-  );
-  assert.equal(untrustedPolicy.status, 409, JSON.stringify(untrustedPolicy.body));
-  assert.deepEqual(
-    { code: untrustedPolicy.body.error.code, message: untrustedPolicy.body.error.message },
-    {
-      code: "RESOURCE_CONFLICT",
-      message:
-        'Configuration setting plugins.entries.codex.config.appServer.approvalPolicy must not be "untrusted", which the OpenClaw runtime retired: use "on-request".',
-    },
-  );
-  // Topology-independent Kubernetes rules give the same refusal as Configuration save.
-  computeDriver.validateConfiguration = (...args) => kubernetes.validateConfiguration(...args);
-  // Saving a Preset accepts a header name that waits on a variable without a default.
-  configurationDriver.validateValues = async () => {};
-  const placeholder = "{{ vars.header }}";
-  const preset = await controller.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: {
-      name: "Header variable",
-      template: {
-        variables: { header: { type: "string" } },
-        configuration: {
-          values: {
-            ...model,
-            models: {
-              providers: {
-                openai: {
-                  headers: { [placeholder]: "v" },
-                  request: { headers: { [placeholder]: "v" } },
-                  models: [{ id: "m", headers: { [placeholder]: "v" } }],
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-  });
-  assert.equal(preset.status, 201, JSON.stringify(preset.body));
-  delete configurationDriver.validateValues;
-  await assertNoAgentsInNamespace(fixture, namespace.id);
-  for (const [values, message] of [
-    [
-      { ...model, channels: { discord: { enabled: true } } },
-      unsupportedChannelRefusal("channels.discord"),
-    ],
-    [
-      { ...model, env: { OPENAI_API_KEY: "${OPENAI_API_KEY}" } },
-      "Configuration setting env.OPENAI_API_KEY must not be set: the Agent's Harness authentication binding owns model provider environment.",
-    ],
-    [
-      {
-        ...model,
-        models: {
-          providers: { openai: { request: { headers: { Authorization: "Bearer ${TOKEN}" } } } },
-        },
-      },
-      'Configuration setting models.providers.openai.request.headers must not set the credential header "Authorization" (its name marks a credential): model credentials come from the Agent\'s Harness authentication binding.',
-    ],
-    // Finding 1311: provisioning runs the agents roster rules Configuration save runs, with the
-    // same text, so a roster every deployment refuses is refused before anything is stored.
-    [
-      { agents: { ...model.agents, entries: { "main!": {} } } },
-      'The OpenClaw Gateway rejects the Agent ID in agents.entries["main!"]: use up to 64 letters, digits, _ or -, not starting with -.',
-    ],
-    [
-      { agents: { ...model.agents, entries: { main: {}, helper: {} } } },
-      'The OpenClaw Gateway needs agents.ownership "explicit" for more than one agents.entries entry: set it, or keep one entry.',
-    ],
-  ]) {
-    const refused = await provision(requestBody({ configuration: { values } }));
-    assert.equal(refused.status, 400, JSON.stringify(refused.body));
-    assert.deepEqual(
-      { code: refused.body.error.code, message: refused.body.error.message },
-      { code: "INVALID_REQUEST", message },
-    );
-  }
-  // Provisioning with an inline header names the forbidden header but never echoes its value.
-  const sentinel = `synthetic-filled-header-${randomUUID()}`;
-  for (const name of ["X-Upstream-Pwd", "X-Signature-Sha256"]) {
-    const filled = await provision(
-      requestBody({
-        configuration: {
-          values: {
-            ...model,
-            models: { providers: { openai: { headers: { [name]: sentinel } } } },
-          },
-        },
-      }),
-    );
-    assert.equal(filled.status, 400, JSON.stringify(filled.body));
-    assert.deepEqual(
-      { code: filled.body.error.code, message: filled.body.error.message },
-      {
-        code: "INVALID_REQUEST",
-        message: `Configuration setting models.providers.openai.headers must not set the credential header "${name}" (its name marks a credential): model credentials come from the Agent's Harness authentication binding.`,
-      },
-    );
-    assert.equal(JSON.stringify(filled.body).includes(sentinel), false);
-  }
-  await assertNoAgentsInNamespace(fixture, namespace.id);
-  assert.deepEqual(configurationsCreated, [], "Kubernetes refusals must not store Configurations");
-  delete computeDriver.validateConfiguration;
+  const state = {
+    controller,
+    fixture,
+    namespace,
+    computeDriver,
+    configurationDriver,
+    logLines,
+    configurationsCreated,
+    provisionPath,
+    provision,
+    requestBody,
+    foreignNamespaceId,
+    invalidPlans,
+    linearPluginId,
+    diffsPluginId,
+    pluginPolicy,
+    assertNoAgentsInNamespace,
+  };
+  await verifyInlineConfigurationRefusals(state);
   // A refusal the caller cannot fix (here the Installation enables dedicated runtime storage
   // without gateway routing) keeps fixed text, since its reason names Installation settings.
   // The API log names it with the request ID for the operator.
@@ -1590,202 +1435,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
       );
     }
   }
-  // The logged reason keeps at most 512 characters, and a thrown non-Error's value is not logged.
-  for (const [thrown, reason] of [
-    [new Error("r".repeat(600)), "r".repeat(512)],
-    ["internal driver detail", "The Compute Driver refused the plan."],
-  ]) {
-    computeDriver.validateAgentProvisioning = () => {
-      throw thrown;
-    };
-    const logged = logLines.length;
-    const refused = await provision(requestBody());
-    assert.equal(refused.status, 409, JSON.stringify(refused.body));
-    assert.doesNotMatch(JSON.stringify(refused.body), /internal driver detail|r{512}/);
-    assert.deepEqual(
-      logLines
-        .slice(logged)
-        .filter((line) => line.event === "agent_provisioning.compute_refused")
-        .map((line) => ({ requestId: line.requestId, reason: line.reason })),
-      [{ requestId: refused.body.meta.requestId, reason }],
-    );
-  }
-  // A dependency the Compute Driver reports as unavailable stays retryable.
-  computeDriver.validateAgentProvisioning = () => {
-    throw new DependencyUnavailableError("The Compute Driver is unavailable.");
-  };
-  const computeUnavailable = await provision(requestBody());
-  computeDriver.validateAgentProvisioning = () => {};
-  assert.equal(computeUnavailable.status, 503, JSON.stringify(computeUnavailable.body));
-  assert.equal(computeUnavailable.body.error.code, "DEPENDENCY_UNAVAILABLE");
-  // Restoring a healthy Compute Driver must not change which field the API rejects.
-  for (const plan of invalidPlans.filter((plan) => plan.details !== undefined)) {
-    await assertInvalidInlinePlan(provision, plan);
-  }
-
-  // A model provider baseUrl the runtime cannot use is refused at admission with the field
-  // named, instead of surfacing later as an unexplained startup model check failure.
-  const badBaseUrl = requestBody();
-  badBaseUrl.configuration.values = {
-    ...badBaseUrl.configuration.values,
-    models: { providers: { codex: { baseUrl: "not a url", api: "openai-responses" } } },
-  };
-  const refusedBaseUrl = await provision(badBaseUrl);
-  assert.equal(refusedBaseUrl.status, 400, JSON.stringify(refusedBaseUrl.body));
-  assert.equal(
-    refusedBaseUrl.body.error.message,
-    "Configuration field /models/providers/codex/baseUrl must be an absolute http or https URL.",
-  );
-  await assertNoAgentsInNamespace(fixture, namespace.id);
-
-  const pluginDriver = new CodexPluginDriver();
-  fixture.controller.registerDriver(pluginDriver);
-  fixture.controller.selectDriver("plugin", pluginDriver.id);
-  // Driver-specific validation must precede durable provisioning and resource creation.
-  const invalidPolicy = await provision(
-    requestBody({
-      configuration: { values: createHarnessConfiguration("codex", "gpt-6-astra") },
-      plugins: {
-        [linearPluginId]: { enabled: true, tools: { "app/search": { reviewer: "auto" } } },
-      },
-    }),
-  );
-  assertApiError(invalidPolicy, 400, "INVALID_REQUEST");
-  assert.equal(
-    invalidPolicy.body.error.message,
-    "This Plugin Driver does not support tools[id].reviewer. Use toolDefaults.reviewer when supported, or omit the reviewer.",
-  );
-  await assertNoAgentsInNamespace(fixture, namespace.id);
-  // The Codex Plugin Driver's automatic reviewer rule (finding 988) also refuses a
-  // provisioning request before anything durable is written.
-  const automaticReviewer = requestBody({
-    plugins: { [linearPluginId]: { enabled: true, toolDefaults: { reviewer: "auto" } } },
-  });
-  automaticReviewer.configuration.values = {
-    ...createHarnessConfiguration("codex", "gpt-6-astra"),
-    plugins: { entries: { codex: { config: { appServer: { approvalPolicy: "never" } } } } },
-  };
-  const refusedReviewer = await provision(automaticReviewer);
-  assertApiError(refusedReviewer, 400, "INVALID_REQUEST");
-  assert.equal(
-    refusedReviewer.body.error.message,
-    'An automatic plugin reviewer requires Configuration setting plugins.entries.codex.config.appServer.approvalPolicy "on-request"; change it or choose the human reviewer.',
-  );
-  await assertNoAgentsInNamespace(fixture, namespace.id);
-  // The OpenClaw Plugin Driver refuses a selection whose every tool the inline Configuration
-  // denies (finding 508) before anything durable is written.
-  const openClawDriver = new OCCPluginDriver();
-  fixture.controller.registerDriver(openClawDriver);
-  fixture.controller.selectDriver("plugin", openClawDriver.id);
-  const deniedTools = requestBody({
-    plugins: { [diffsPluginId]: pluginPolicy() },
-  });
-  deniedTools.configuration.values = {
-    ...createHarnessConfiguration("openclaw", "gpt-5.1"),
-    tools: { deny: ["*"] },
-  };
-  const refusedDenial = await provision(deniedTools);
-  assertApiError(refusedDenial, 400, "INVALID_REQUEST");
-  assert.equal(
-    refusedDenial.body.error.message,
-    `Configuration setting tools.deny blocks every tool of plugin ${diffsPluginId}; remove the matching deny entry or deselect the plugin.`,
-  );
-  await assertNoAgentsInNamespace(fixture, namespace.id);
-  // Its plugins run only in an OpenClaw Harness, and this request provisions dedicated Codex
-  // (finding 2348).
-  const codexPlugins = await provision(
-    requestBody({
-      configuration: { values: createHarnessConfiguration("codex", "gpt-6-astra") },
-      plugins: { [diffsPluginId]: pluginPolicy() },
-    }),
-  );
-  assert.equal(codexPlugins.status, 400, JSON.stringify(codexPlugins.body));
-  assert.deepEqual(
-    { code: codexPlugins.body.error.code, message: codexPlugins.body.error.message },
-    {
-      code: "INVALID_REQUEST",
-      message:
-        "No Plugin Driver is enabled for the codex Harness. Remove the Agent's plugins or enable its catalog.",
-    },
-  );
-  await assertNoAgentsInNamespace(fixture, namespace.id);
-  fixture.controller.selectDriver("plugin", pluginDriver.id);
-
-  const assertNeedsDurableStorage = (response) => {
-    assertApiError(response, 503, "DEPENDENCY_UNAVAILABLE");
-    assert.equal(response.body.error.message, "A required platform dependency is unavailable.");
-    // Only the operator log says which dependency failed. Match this request to exclude earlier 503s.
-    assert.deepEqual(
-      logLines
-        .filter(
-          (line) =>
-            line.event === "http.dependency_unavailable" &&
-            line.requestId === response.body.meta.requestId,
-        )
-        .map((line) => line.message),
-      ["Agent provisioning requires durable PostgreSQL state for checkpoints."],
-    );
-  };
-  assertNeedsDurableStorage(await provision(requestBody()));
-  await assertNoAgentsInNamespace(
-    fixture,
-    namespace.id,
-    "in-memory admission must stop before creating an Agent",
-  );
-
-  // A managed ServiceAccount PAT source is admitted only for the exact account in the route
-  // Namespace that the caller may read. Every refusal comes before the durable-state step,
-  // which an accepted plan reaches (503 here).
-  const account = await fixture.platformState.transact((unit) =>
-    unit.serviceAccounts.createServiceAccount({
-      id: `sa_${randomUUID()}`,
-      namespaceId: namespace.id,
-      name: `provisioning-account-${randomUUID().slice(0, 8)}`,
-    }),
-  );
-  const managedSource = { kind: "service_account", namespaceId: namespace.id, id: account.id };
-  const provisionWithAccount = (source) =>
-    provision(
-      requestBody({
-        harnessAuth: { method: "codex_pat", source },
-      }),
-    );
-  fixture.state.restrictions.push({
-    id: "deny-provisioning-account-read",
-    namespaceId: namespace.id,
-    resourceKind: "service_account",
-    resourceId: account.id,
-    action: "read",
-    effect: "deny",
-  });
-  const unreadableAccount = await provisionWithAccount(managedSource);
-  fixture.state.restrictions.pop();
-  assertApiError(unreadableAccount, 403, "FORBIDDEN");
-  // Another Namespace is a rule about the request, named before any lookup (finding 2536); a
-  // missing account in the route Namespace stays a 404.
-  const foreignAccount = await provisionWithAccount({
-    ...managedSource,
-    namespaceId: foreignNamespaceId,
-  });
-  assertApiError(foreignAccount, 400, "INVALID_REQUEST", "another Namespace");
-  assert.equal(foreignAccount.body.error.message, SERVICE_ACCOUNT_CROSS_NAMESPACE);
-  const missingAccount = await provisionWithAccount({ ...managedSource, id: `sa_${randomUUID()}` });
-  assertApiError(missingAccount, 404, "NOT_FOUND", "a missing account");
-  assertNeedsDurableStorage(await provisionWithAccount(managedSource));
-
-  const rawBody = JSON.stringify(
-    requestBody({
-      configuration: { values: { payload: "x".repeat(448 * 1024) } },
-    }),
-  );
-  const oversized = await controller.request("POST", provisionPath, { rawBody });
-  assertApiError(oversized, 413, "PAYLOAD_TOO_LARGE");
-  await assertNoAgentsInNamespace(fixture, namespace.id);
-  assert.deepEqual(
-    configurationsCreated,
-    [],
-    "no provisioning request should store a Configuration",
-  );
+  await verifyInlineProvisioningRecovery(state);
 });
 
 registerBootstrapAuthorizationEvidenceCase(createInjectedFixture);
@@ -2278,48 +1928,6 @@ test("IAM and audit dependency failures fail closed without orphaned state", asy
 
 registerSshAdmissionCases();
 
-async function createSlackValidationFixture(controller, namespaceName) {
-  const { fixture } = controller;
-  await bootstrap(controller);
-  const namespace = await createReadyNamespace(controller, namespaceName);
-  const base = `/namespaces/${namespace.id}`;
-  const makeSecret = async (name, value) => {
-    const result = await controller.request("POST", `${base}/secrets`, { body: { name, value } });
-    assert.equal(result.status, 201);
-    return result.data;
-  };
-  const app = await makeSecret("app", "xapp-synthetic-app");
-  const bot = await makeSecret("bot", "xoxb-synthetic-bot");
-  const model = await makeSecret("model", "synthetic-model");
-  const secrets = { modelApiKey: model, toolApiKey: model };
-  return {
-    fixture,
-    namespace,
-    base,
-    app,
-    bot,
-    async saveConfiguration(configuration) {
-      const result = await controller.request("POST", `${base}/configurations`, {
-        body: configuration,
-      });
-      assert.equal(result.status, 201, JSON.stringify(result.body));
-      return result.data;
-    },
-    async createAgent(name, configurationId) {
-      const result = await controller.request("POST", `${base}/agents`, {
-        body: { name, configurationId },
-      });
-      assert.equal(result.status, 201, JSON.stringify(result.body));
-      return result.data;
-    },
-    provision(configuration) {
-      return controller.request("POST", `${base}/agents/provision`, {
-        body: provisioningRequestBody(namespace.id, secrets, { configuration }),
-      });
-    },
-  };
-}
-
 async function bindSlackDeploymentCredentials(fixture, namespaceId, agent, { app, bot }) {
   await bindHarnessKey(fixture, namespaceId, agent);
   for (const secret of [app, bot]) {
@@ -2352,68 +1960,7 @@ test("Agent provisioning and deploy name a refused channel token reference form 
     },
     configurationDriver,
   });
-  const { fixture, namespace, base, app, bot, saveConfiguration, createAgent, provision } =
-    await createSlackValidationFixture(controller, "slack-reference-forms");
-  let calls = 0;
-  const channel = new SlackChannelDriver(async () => {
-    calls++;
-    return new Response(JSON.stringify({ ok: true, bot_id: "B123", team_id: "T123" }));
-  });
-  fixture.controller.registerDriver(channel);
-  fixture.controller.selectDriver("channel", channel.id);
-  const form = (name) => referenceFormRefusal("channels.slack.botToken", name);
-  const unbound = unboundReferenceRefusal("channels.slack.botToken", "SLACK_SPARE_TOKEN");
-  const forms = [
-    ["xoxb-${SLACK_BOT_TOKEN}", form("otherText")],
-    // Finding 2517: a token pasted as the value names the setting the same way.
-    ["$xoxbSECRET", form("inline")],
-    // Finding 2503: trailing space and two references are not "text around" a reference.
-    ["${SLACK_BOT_TOKEN} ", form("otherText")],
-    ["${SLACK_BOT_TOKEN}${SLACK_APP_TOKEN}", form("otherText")],
-    ["${SLACK_BOT_TOKEN:-}", form("fallback")],
-    ["$SLACK_BOT_TOKEN", form("shorthand")],
-    ["${slack_bot}", unsubstitutedReferenceRefusal("channels.slack.botToken", "${slack_bot}")],
-    ["${SLACK_SPARE_TOKEN}", unbound],
-    // Finding 2520: the binding rule answers before the form rule, at save and at deploy.
-    ["xoxb-${SLACK_SPARE_TOKEN}", unbound],
-  ];
-  const configurationWithBotToken = (botToken) =>
-    slackValidationConfiguration({
-      appSource: app.ref,
-      botSource: bot.ref,
-      botToken,
-      model: "codex/gpt-6-astra",
-    });
-  for (const [botToken, message] of forms) {
-    const refused = await provision(configurationWithBotToken(botToken));
-    assertApiError(refused, 400, "INVALID_REQUEST");
-    assert.equal(refused.body.error.message, message, botToken);
-    assert.doesNotMatch(JSON.stringify(refused.body), /xoxb-synthetic|SECRET/);
-  }
-  // Each was refused before Slack was asked, and nothing was created.
-  assert.equal(calls, 0);
-  await assertNoAgentsInNamespace(fixture, namespace.id);
-
-  // Finding 2516: deployment also asked the Slack Channel Driver first. A stored Configuration
-  // that predates these rules, written past OCC, now gets the rule's message at deploy, still
-  // before Slack is asked.
-  const configuration = configurationWithBotToken("${SLACK_BOT_TOKEN}");
-  const { values } = configuration;
-  const config = await saveConfiguration(configuration);
-  const agent = await createAgent("slack-forms", config.id);
-  await bindHarnessKey(fixture, namespace.id, agent);
-  for (const [botToken, message] of forms) {
-    const stored = configurationDriver.stored({ namespaceId: namespace.id, id: config.id });
-    await configurationDriver.update({
-      ...stored,
-      values: { ...values, channels: { slack: { ...values.channels.slack, botToken } } },
-    });
-    const refused = await controller.request("POST", `${base}/agents/${agent.id}/deploy`);
-    assertApiError(refused, 400, "INVALID_REQUEST");
-    assert.equal(refused.body.error.message, message, botToken);
-    assert.doesNotMatch(JSON.stringify(refused.body), /xoxb-synthetic|SECRET/);
-  }
-  assert.equal(calls, 0);
+  await runChannelReferenceRefusals(controller, configurationDriver, assertNoAgentsInNamespace);
 });
 
 test("Slack validation rejects swapped credentials and preserves authorization", async () => {
