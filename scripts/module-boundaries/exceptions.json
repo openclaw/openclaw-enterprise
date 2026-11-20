@@ -54,6 +54,7 @@
         "type:PlatformReadView",
         "type:PlatformStateStore",
         "type:PlatformUnitOfWork",
+        "type:TokenServiceInstance",
         "value:InMemoryPlatformState"
       ],
       "owner": "Repository ports and mutation composition",
@@ -71,7 +72,8 @@
         "type:PlatformOperation",
         "type:PlatformReadView",
         "type:PlatformStateStore",
-        "type:PlatformUnitOfWork"
+        "type:PlatformUnitOfWork",
+        "type:TokenServiceInstance"
       ],
       "owner": "Repository ports and mutation composition",
       "reason": "The OCC service imports repository contracts and its default in-memory store from the same persistence module. This separately tracked edge imports types only.",
