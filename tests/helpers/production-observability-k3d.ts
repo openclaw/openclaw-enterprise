@@ -240,7 +240,9 @@ export async function installObservabilityControlPlane(
       ),
     );
     for (const result of emptied) {
-      if (result.status === "rejected") errors.push(result.reason);
+      if (result.status === "rejected") {
+        errors.push(result.reason);
+      }
     }
     try {
       await kubectl(
