@@ -267,7 +267,7 @@ export function registerQaAgentLifecycleDiagnosticsCases(): void {
 
   test("a QA Agent stop timeout names the remaining Pods and keeps redacted platform logs", async () => {
     const { registerQaSecret } = await import("../helpers/qa-secrets.ts");
-    const { stopQaAgent, describeStopObservation } = await import("../helpers/qa-repository.mjs");
+    const { stopQaAgent, describeStopObservation } = await import("../helpers/qa-repository.ts");
     registerQaSecret("stop-fixture-service-key");
     const agent: AgentFixture = { id: "agent-1", namespaceId: "namespace-1" };
     const pod = {
@@ -557,13 +557,14 @@ export function registerQaAgentLifecycleDiagnosticsCases(): void {
     const { GATEWAY_STOP_TIMEOUT_MS } =
       await import("../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts");
     const { stopQaAgent, QA_STOP_TIMEOUT_MS, QA_SLOW_STOP_MS } =
-      await import("../helpers/qa-repository.mjs");
+      await import("../helpers/qa-repository.ts");
     // The worker's own Gateway wait (grace plus one request) fits, with room for the
     // Harness and the API; the old 300 s default did not.
     assert.ok(QA_STOP_TIMEOUT_MS >= GATEWAY_STOP_TIMEOUT_MS + 10_000 + 3 * 60_000);
     assert.ok(QA_STOP_TIMEOUT_MS > 300_000);
     assert.equal(QA_SLOW_STOP_MS, 60_000);
 
+    // Kubernetes can report a disappeared container without a termination time while the Pod drains.
     const gateway = {
       metadata: {
         namespace: "oce-agent-4",
@@ -571,7 +572,18 @@ export function registerQaAgentLifecycleDiagnosticsCases(): void {
         deletionTimestamp: "2026-10-11T07:23:42Z",
         labels: { "openclaw.dev/agent": "agent-4", "openclaw.dev/workload-role": "gateway" },
       },
-      status: { phase: "Running" },
+      status: {
+        phase: "Running",
+        containerStatuses: [
+          {
+            name: "gateway",
+            restartCount: 1,
+            lastState: {
+              terminated: { reason: "ContainerStatusUnknown", exitCode: 137, finishedAt: null },
+            },
+          },
+        ],
+      },
     };
     // A fake clock for both the slow-stop threshold and the timeout, and no sleep between
     // reads: each GET advances the clock by the next step; the last step's read finds

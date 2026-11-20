@@ -26,6 +26,25 @@ jq -n --arg registry "${SANDBOX_REGISTRY:?}" \
   --arg clusterDomain "${CLUSTER_DOMAIN:?}" \
   --arg repository "${SANDBOX_REPOSITORY:?}" -f "$assets/openshell-values.jq" \
   > "$RUN_DIR/openshell.json"
+```
+
+On clusters that deny network traffic by default, apply the OpenShell
+NetworkPolicies in `$PLATFORM_NS` before running Helm. Render the selected chart
+with `$RUN_DIR/openshell.json` to check its Pod labels and ports. For stock
+OpenShell v0.1.8, both Pod templates have
+`app.kubernetes.io/instance=openshell-gateway`. The certificate Job has
+`app.kubernetes.io/name=openshell-certgen` and
+`app.kubernetes.io/component=certgen`. The Gateway has
+`app.kubernetes.io/name=openshell`.
+
+Allow the certificate Job and Gateway to reach the API destinations in
+`API_CIDRS` on their API ports (TCP 443 on EKS). Allow DNS to the cluster DNS
+Service IP and its Pods on TCP and UDP 53. Allow the OCC API and worker Pods
+to reach the Gateway on TCP 8080. The certificate Job runs as a Helm
+pre-install hook. A policy that selects only Gateway Pods leaves the hook
+blocked under strict enforcement.
+
+```bash
 helm upgrade --install openshell-gateway "${OPENSHELL_CHART:?}" \
   -n "$PLATFORM_NS" -f "$RUN_DIR/openshell.json" --wait
 os_ip=$(kubectl -n "$PLATFORM_NS" get svc openshell-gateway -o jsonpath='{.spec.clusterIP}')
