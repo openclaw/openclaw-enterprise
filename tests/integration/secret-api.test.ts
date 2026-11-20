@@ -39,12 +39,12 @@ import type {
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import {
   authenticatedHeaders,
   createTestAuthPrincipal,
   signInToControllerApp,
-} from "../helpers/auth-session.mjs";
+} from "../helpers/auth-session.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";

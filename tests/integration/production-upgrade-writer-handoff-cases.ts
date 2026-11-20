@@ -140,6 +140,183 @@ export function registerWriterHandoffCases({
   realHelm: string;
   repository: string;
 }): void {
+  test("one-off channel transition fences both writers across Agent Stop", async (t) => {
+    for (const [scenario, refusal] of [
+      ["initial-zero", /worker Deployment .* is at zero replicas without a confirmed stop/u],
+      ["worker-zero", /worker Deployment .* is at zero replicas without a confirmed stop/u],
+      ["worker-uid", /OCC worker Deployment identity or replicas changed during Agent Stop/u],
+      [
+        "worker-generation",
+        /OCC worker Deployment identity or replicas changed during Agent Stop/u,
+      ],
+      ["api-generation", /OCC api Deployment identity or replicas changed during Agent Stop/u],
+      ["healthy-direct", null],
+      ["healthy-resume", null],
+    ] as const) {
+      await t.test(scenario, async (t) => {
+        const f = await fixture(t, {
+          agent: true,
+          controllerOnly: true,
+          candidates: true,
+          inventoryRequiresApi: true,
+        });
+        const valuesPath = join(f.directory, "values.json");
+        const installationPath = join(f.directory, "installation.json");
+        const values = record(JSON.parse(await readFile(valuesPath, "utf8")), "Helm values");
+        const installation = record(
+          JSON.parse(await readFile(installationPath, "utf8")),
+          "Installation",
+        );
+        values.slackProxy = { enabled: true };
+        const hostname = "openclaw-enterprise-slack-proxy.system.svc";
+        const compute = field(field(installation, "drivers"), "compute");
+        record(field(compute, "configuration"), "Compute configuration").runtime = {
+          channels: {
+            proxyUrl: `http://${hostname}:3128`,
+            managedProxy: {
+              hostname,
+              namespace: "system",
+              port: 3128,
+              podLabels: {
+                "app.kubernetes.io/name": "openclaw-enterprise",
+                "app.kubernetes.io/instance": "oce",
+                "app.kubernetes.io/component": "slack-proxy",
+              },
+            },
+          },
+        };
+        const installationBytes = JSON.stringify(installation);
+        await writeFile(installationPath, installationBytes);
+        await writeFile(valuesPath, JSON.stringify(values));
+        await writeFile(join(f.directory, "live-values"), JSON.stringify(values));
+        const state = await f.state();
+        record(field(state.secret, "data"), "live Installation Secret data")["installation.yaml"] =
+          Buffer.from(installationBytes).toString("base64");
+        state.channelStopCase = scenario;
+        state.worker = scenario === "initial-zero" ? 0 : 1;
+        state.deploymentIdentities = {
+          api: { uid: "api-deployment-uid", generation: 1, resourceVersion: "1" },
+          worker: {
+            uid: "worker-deployment-uid",
+            generation: scenario === "initial-zero" ? 2 : 1,
+            resourceVersion: scenario === "initial-zero" ? "2" : "1",
+          },
+        };
+        await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+
+        // Prepare with the real one-off CLI. Bypass only the independent Envoy
+        // forwarding prerequisite. The Stop journal, OCC calls and inventory
+        // checks still run in the real channel helper.
+        const prepared = join(f.directory, "channel-candidates");
+        await execute(
+          "python3",
+          [
+            "scripts/upgrade-channel-egress",
+            "prepare",
+            "--values",
+            valuesPath,
+            "--installation",
+            installationPath,
+            "--namespace",
+            "system",
+            "--release",
+            "oce",
+            "--out-dir",
+            prepared,
+            "--excluded-cidr",
+            "192.0.2.0/24",
+          ],
+          { cwd: repository },
+        );
+        for (const name of ["values", "installation"]) {
+          await writeFile(
+            join(f.directory, `candidate-${name}.json`),
+            await readFile(join(prepared, `${name}.yaml`)),
+          );
+        }
+        await writeFile(
+          join(f.directory, "bin", "python3"),
+          `#!/usr/bin/env bash
+if [[ "$1" == scripts/setup-channel-egress && "$2" == check ]]; then exit 0; fi
+real_python=$(PATH="${"${PATH#*:}"}" command -v python3) || exit
+exec "$real_python" "$@"
+`,
+          { mode: 0o700 },
+        );
+
+        const run = (...args: string[]) => f.run("--channel-egress-one-off", ...args);
+        if (refusal) {
+          const result = await expectUpgradeFailure(run(), "the writer fence must refuse");
+          const events = await f.events();
+          assert.deepEqual(
+            events.filter((event) => event === "channel-agent-stop"),
+            scenario === "initial-zero" ? [] : ["channel-agent-stop"],
+          );
+          assert.deepEqual(
+            events.filter((event) =>
+              /^(?:writer-patch-|scale-|migration$|secret-replaced$|agent-deploy )/u.test(event),
+            ),
+            [],
+          );
+          assert.equal(result.code, 1);
+          assert.match(result.stderr, refusal);
+          const held = await f.state();
+          assert.equal(held.version, 1);
+          assert.equal(held.helmSubmissions ?? 0, 0);
+          assert.equal(held.dispatches, 0);
+          assert.equal(held.api, 1);
+          assert.equal(held.worker, scenario.endsWith("-zero") ? 0 : 1);
+          assert.deepEqual(held.secret, state.secret);
+          assert.equal(existsSync(f.evidence + ".migration-state.json"), false);
+          for (const name of [
+            "worker-stop-confirmed.json",
+            "database-migration-handoff.json",
+            "helm-started",
+          ]) {
+            assert.equal(existsSync(join(f.evidence, name)), false);
+          }
+          const journal = join(f.evidence, "channel-agent-operations.json");
+          if (scenario === "initial-zero") {
+            assert.equal(existsSync(journal), false);
+          } else {
+            const operations: unknown = JSON.parse(await readFile(journal, "utf8"));
+            const [agent] = list(field(operations, "targets"), "Agent operation records");
+            assert.equal(field(agent, "stop"), "complete");
+          }
+          return;
+        }
+
+        if (scenario === "healthy-resume") {
+          // Lose the response after replacing the Installation Secret. Resume
+          // must verify the recorded Stops and use the already replaced Secret.
+          await f.failNext("lost-secret-response");
+          await assert.rejects(run(), { code: 9 });
+          assert.equal(existsSync(join(f.evidence, "worker-stop-confirmed.json")), true);
+          assert.equal((await f.events()).filter((event) => event === "secret-replaced").length, 1);
+          await run("--resume");
+        } else {
+          await run();
+        }
+        const events = await f.events();
+        assert.deepEqual(
+          events.filter((event) => /^(?:channel-agent-stop$|writer-patch-|scale-)/u.test(event)),
+          [
+            "channel-agent-stop",
+            "writer-patch-api",
+            "scale-api",
+            "writer-patch-worker",
+            "scale-worker",
+          ],
+        );
+        assert.equal(events.filter((event) => event === "secret-replaced").length, 1);
+        const completed = await f.state();
+        assert.equal(completed.version, 2);
+        assert.equal(completed.helmSubmissions, 1);
+        assert.equal(completed.dispatches, 1);
+      });
+    }
+  });
+
   test("a separate database deployment pauses after quiescence and before Helm even on resume", async (t) => {
     let databaseId = "ins_test";
     const f = await fixture(t, {
