@@ -650,6 +650,8 @@ export function openConnectionTemplateEditor(
       }
       if (
         !saved.id ||
+        !Number.isSafeInteger(saved.current.version) ||
+        saved.current.version < 1 ||
         (template &&
           (saved.id !== template.id || saved.current.version < template.current.version)) ||
         saved.displayName !== body.displayName ||
