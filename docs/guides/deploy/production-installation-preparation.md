@@ -101,10 +101,11 @@ default registry selection.
 ## Use a Terraform-managed EKS cluster
 
 For a dedicated Amazon Elastic Kubernetes Service (EKS) cluster, complete the
-[Terraform reference](https://github.com/freeqaz-openai/oce-eks-terraform)
+[AWS EKS Terraform target](https://github.com/freeqaz-openai/oce-terraform/tree/main/targets/aws-eks)
 through its foundation check and kubeconfig staging. Continue in the same Bash
 session from the matching OCE checkout. Keep the checked `KUBECONFIG_FILE`,
-`OCC_INPUT_DIRECTORY`, `CONTEXT`, and `TF_CHECKOUT` values from that handoff.
+`OCC_INPUT_DIRECTORY`, `CONTEXT`, and `TF_TARGET_DIR` values from that handoff. `TF_TARGET_DIR` must identify the
+`targets/aws-eks` directory in the Terraform checkout.
 
 Use the checked kubeconfig for the linked EKS commands, then refresh the
 [API and webhook addresses](eks-openshell-setup.md#refresh-api-network-policies-after-the-node-groups-join):
@@ -112,7 +113,7 @@ Use the checked kubeconfig for the linked EKS commands, then refresh the
 ```bash
 export KUBECONFIG="${KUBECONFIG_FILE:?Use the checked Terraform kubeconfig}"
 : "${CONTEXT:?Use the Terraform context}"
-cluster=$(terraform -chdir="${TF_CHECKOUT:?Use the Terraform checkout}" output -json oce_cluster)
+cluster=$(terraform -chdir="${TF_TARGET_DIR:?Use the AWS EKS Terraform target directory}" output -json oce_cluster)
 EKS_CLUSTER_ARN=$(jq -er '.arn' <<<"$cluster")
 AWS_REGION=$(jq -er '.region' <<<"$cluster")
 EKS_CLUSTER=$(jq -er '.name' <<<"$cluster")
