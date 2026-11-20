@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import type { ItemEvent } from "../../apps/controller/src/drivers/egress-proxy/openai-responses.ts";
+import type {
+  ItemEvent,
+  ResponsesEvent,
+} from "../../apps/controller/src/drivers/egress-proxy/openai-responses.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { parseJson } from "../helpers/egress-observation-values.ts";
 import inlineCapture from "../fixtures/static-egress/codex-inline-tools.json" with { type: "json" };
@@ -20,24 +23,12 @@ import {
 } from "./static-egress-responses-data.ts";
 import { registerStaticEgressResponsesProjectionCases } from "./static-egress-responses-projection-cases.ts";
 
-type MetadataValue = string | number | boolean;
-function isMetadata(value: unknown): value is Record<string, MetadataValue> {
-  const record = asRecord(value);
-  return (
-    record !== undefined &&
-    Object.values(record).every(
-      (item) =>
-        typeof item === "string" ||
-        typeof item === "boolean" ||
-        (typeof item === "number" && Number.isFinite(item)),
-    )
-  );
+function parseMetadata(text: string): object {
+  const metadata = asRecord(parseJson(text));
+  assert.ok(metadata, "captured Codex turn metadata");
+  return metadata;
 }
-function parseMetadata(text: string): Record<string, MetadataValue> {
-  const value = parseJson(text);
-  assert.ok(isMetadata(value), "captured Codex turn metadata");
-  return value;
-}
+
 function parsedEvent(text: string): { type: string } {
   const value = parseJson(text);
   const record = asRecord(value);
@@ -50,8 +41,8 @@ export function registerStaticEgressResponsesPrefixCases(): void {
   test("Responses follow-up replays assistant text with empty provider metadata", async (t) => {
     const f = await staticEgressFixture(t);
     const check = responseChecks(f);
-    const events = responseEvents();
-    const terminal = events[7];
+    const capture = responseEvents();
+    const terminal = capture[7];
     const assistant = assistantMessage(terminal.response.output[0]);
     const part = assistant.content[0];
     assert.ok(part?.type === "output_text", "captured assistant output text");
@@ -68,6 +59,7 @@ export function registerStaticEgressResponsesPrefixCases(): void {
       output_index: 1,
       item: { ...tool, input: "" },
     } satisfies ItemEvent & { item: typeof tool };
+    const events: ResponsesEvent[] = [...capture];
     events.splice(-1, 0, addedTool, {
       type: "response.output_item.done",
       output_index: 1,
@@ -355,8 +347,10 @@ export function registerStaticEgressResponsesWireCases(
       },
       (request) => {
         const metadata = parseMetadata(request.client_metadata[metadataKey]);
-        metadata.reasoning_effort = "unrecognized";
-        request.client_metadata[metadataKey] = JSON.stringify(metadata);
+        request.client_metadata[metadataKey] = JSON.stringify({
+          ...metadata,
+          reasoning_effort: "unrecognized",
+        });
       },
       ...["ultra", "unrecognized"].map((effort) => (request: InlineRequest) => {
         request.reasoning.effort = effort;
@@ -453,7 +447,7 @@ export function registerStaticEgressResponsesWireCases(
       "unsupported provider operations cannot read credentials",
     );
 
-    const split = responseEvents();
+    const split = [...responseEvents()];
     const deltaIndex = split.findIndex((event) => event.type === "response.output_text.delta");
     const delta = split[deltaIndex];
     assert.ok(delta && "delta" in delta, "captured output text delta");
@@ -463,7 +457,7 @@ export function registerStaticEgressResponsesWireCases(
       { ...delta, delta: "synthetic-key-" },
       { ...delta, delta: "initial" },
     );
-    const switched: { type: string }[] = responseEvents();
+    const switched: { type: string }[] = [...responseEvents()];
     const firstMessage = switched
       .slice(1, -1)
       .map((event) => parsedEvent(JSON.stringify(event).replaceAll("READY", "synthetic-key-")));
@@ -645,6 +639,7 @@ export function registerStaticEgressResponsesWireCases(
     const check = responseChecks(f);
     const base = responseEvents();
     const capturedCompleted = structuredClone(base[7]);
+    assert.ok(capturedCompleted.response.usage, "captured completed token counts");
     const completed = {
       ...capturedCompleted,
       response: {

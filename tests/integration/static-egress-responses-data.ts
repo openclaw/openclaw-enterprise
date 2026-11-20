@@ -4,7 +4,6 @@ import type {
   ResponsesEvent,
 } from "../../apps/controller/src/drivers/egress-proxy/openai-responses.ts";
 import { isResponsesEvent } from "../../apps/controller/src/drivers/egress-proxy/openai-responses.ts";
-import { asRecord } from "../../packages/utils/src/index.ts";
 import { isArray } from "../helpers/egress-observation-values.ts";
 import type { createStaticEgressExchange } from "../helpers/static-egress-exchange.ts";
 import {
@@ -18,31 +17,35 @@ type SyntheticEnvelope = Extract<SyntheticEvent, { response: object }>;
 type SyntheticItemEvent = Extract<SyntheticEvent, { item: object }>;
 type SyntheticMessage = Extract<SyntheticItemEvent["item"], { type: "message" }>;
 type SyntheticPartEvent = Extract<SyntheticEvent, { part: object }>;
-type OutputItem = Extract<ResponsesEvent, { response: object }>["response"]["output"][number];
+type Response = Extract<ResponsesEvent, { response: object }>["response"];
 export type WireContent = ResponseOutputContent & { annotations?: []; logprobs?: [] };
-export type WireMessage = Omit<SyntheticMessage, "content"> & { content: WireContent[] };
-export type WireOutputItem = OutputItem | WireMessage | SyntheticItemEvent["item"];
-type WireResponse = Omit<SyntheticEnvelope["response"], "output"> & {
-  output: WireOutputItem[];
+export type WireMessage = Omit<SyntheticMessage, "content" | "status"> & {
+  content: WireContent[];
+  status?: string;
 };
-type Envelope<Tag extends "response.created" | "response.completed"> = Omit<
-  SyntheticEnvelope,
-  "type" | "response"
-> & { type: Tag; response: WireResponse };
+export type WireOutputItem = WireMessage | Exclude<Response["output"][number], { type: "message" }>;
+type TokenCounts = Pick<
+  NonNullable<SyntheticEnvelope["response"]["usage"]>,
+  "input_tokens" | "output_tokens" | "total_tokens"
+>;
+type WireResponse = Omit<Response, "output"> & {
+  model?: string;
+  output: WireOutputItem[];
+  usage?: TokenCounts | null;
+};
+type Envelope<Tag extends "response.created" | "response.completed"> = {
+  type: Tag;
+  response: WireResponse;
+};
 type MessageItem<Tag extends "response.output_item.added" | "response.output_item.done"> = Omit<
   SyntheticItemEvent,
   "type" | "item"
 > & { type: Tag; item: WireMessage };
 type TextPart<Tag extends "response.content_part.added" | "response.content_part.done"> = Omit<
   SyntheticPartEvent,
-  "type"
-> & { type: Tag };
-export type WireEvent =
-  | ResponsesEvent
-  | SyntheticEvent
-  | Envelope<"response.created" | "response.completed">
-  | MessageItem<"response.output_item.added" | "response.output_item.done">;
-type CanonicalEvents = [
+  "type" | "part"
+> & { type: Tag; part: Extract<WireContent, { type: "output_text" }> };
+type CanonicalEvents = readonly [
   Envelope<"response.created">,
   MessageItem<"response.output_item.added">,
   TextPart<"response.content_part.added">,
@@ -51,7 +54,6 @@ type CanonicalEvents = [
   TextPart<"response.content_part.done">,
   MessageItem<"response.output_item.done">,
   Envelope<"response.completed">,
-  ...WireEvent[],
 ];
 
 const canonicalTags = [
@@ -65,33 +67,8 @@ const canonicalTags = [
   "response.completed",
 ] as const;
 
-function isOutputText(value: unknown): boolean {
-  const part = asRecord(value);
-  return (
-    part?.type === "output_text" &&
-    typeof part.text === "string" &&
-    isArray(part.annotations) &&
-    part.annotations.length === 0
-  );
-}
-
-function isMessage(value: unknown): value is WireMessage {
-  const item = asRecord(value);
-  return (
-    item?.type === "message" &&
-    typeof item.id === "string" &&
-    typeof item.status === "string" &&
-    typeof item.role === "string" &&
-    isArray(item.content) &&
-    item.content.every((value) => {
-      const part = asRecord(value);
-      return isOutputText(value) || (part?.type === "refusal" && typeof part.refusal === "string");
-    })
-  );
-}
-
-// The captured JSON is the wire boundary. Validate its fixed positions before exposing
-// the typed mutable events used by the scenarios; negative mutations happen afterwards.
+// The protocol validator checks the fields. The scenarios also need the eight
+// captured positions to carry assistant messages and output text.
 function assertCanonicalEvents(events: unknown): asserts events is CanonicalEvents {
   assert.ok(
     isArray(events) && events.length === canonicalTags.length,
@@ -103,27 +80,18 @@ function assertCanonicalEvents(events: unknown): asserts events is CanonicalEven
       isResponsesEvent(event, captured.request.model) && event.type === tag,
       `captured Responses event ${index}`,
     );
-  }
-  for (const index of [0, 7]) {
-    const event = asRecord(events[index]);
-    const response = asRecord(event?.response);
-    assert.ok(
-      response &&
-        typeof response.id === "string" &&
-        response.object === "response" &&
-        typeof response.model === "string" &&
-        typeof response.created_at === "number" &&
-        typeof response.status === "string" &&
-        isArray(response.output) &&
-        response.output.every(isMessage),
-      "captured Responses envelope",
-    );
-  }
-  for (const index of [1, 6]) {
-    assert.ok(isMessage(asRecord(events[index])?.item), "captured Responses message");
-  }
-  for (const index of [2, 5]) {
-    assert.ok(isOutputText(asRecord(events[index])?.part), "captured Responses output text");
+    if ("response" in event) {
+      assert.ok(
+        event.response.output.every((item) => item.type === "message"),
+        "captured Responses output",
+      );
+    }
+    if ("item" in event) {
+      assert.equal(event.item.type, "message", "captured Responses message");
+    }
+    if ("part" in event) {
+      assert.equal(event.part?.type, "output_text", "captured Responses output text");
+    }
   }
 }
 
@@ -147,7 +115,7 @@ export function splitText(text: string): [string, string] {
 }
 
 export function assistantMessage(item: WireOutputItem | undefined): WireMessage {
-  assert.ok(isMessage(item), "captured assistant message");
+  assert.ok(item?.type === "message", "captured assistant message");
   return item;
 }
 

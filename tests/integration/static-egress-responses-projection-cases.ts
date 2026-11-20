@@ -3,6 +3,7 @@ import test from "node:test";
 import type {
   ItemContentEvent,
   ItemEvent,
+  ResponsesEvent,
 } from "../../apps/controller/src/drivers/egress-proxy/openai-responses.ts";
 import { outputWithIndependentCitation } from "../fixtures/synthetic-egress-provider.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
@@ -16,7 +17,6 @@ import {
   splitText,
   wire,
   type WireContent,
-  type WireEvent,
   type WireMessage,
 } from "./static-egress-responses-data.ts";
 
@@ -211,18 +211,14 @@ export function registerStaticEgressResponsesProjectionCases(): void {
     const f = await staticEgressFixture(t);
     const check = responseChecks(f);
     // A provider safety refusal streams as a `refusal` content part with refusal deltas.
-    const refusalEvents = (refusal: string): WireEvent[] => {
-      const [created, added, partAdded, delta, textDone, partDone, done, completed] =
-        responseEvents();
-      const events = [created, added, partAdded, delta, textDone, partDone, done, completed];
+    const refusalEvents = (refusal: string): ResponsesEvent[] => {
       const [prefix, suffix] = splitText(refusal);
-      return events.flatMap<WireEvent>((event) => {
-        const next = structuredClone(event);
+      return responseEvents().flatMap<ResponsesEvent>((next) => {
         if ("part" in next) {
           return [
             {
               ...next,
-              part: { type: "refusal", refusal: event.type.endsWith(".added") ? "" : refusal },
+              part: { type: "refusal", refusal: next.type.endsWith(".added") ? "" : refusal },
             },
           ];
         }
@@ -233,8 +229,8 @@ export function registerStaticEgressResponsesProjectionCases(): void {
           ];
         }
         if (next.type === "response.output_text.done") {
-          Reflect.deleteProperty(next, "text");
-          const done = { ...next, type: "response.refusal.done", refusal };
+          const { text: _text, ...fields } = next;
+          const done = { ...fields, type: "response.refusal.done", refusal };
           return [done];
         }
         const items = [
@@ -243,7 +239,7 @@ export function registerStaticEgressResponsesProjectionCases(): void {
         ];
         for (const item of items) {
           if (item.type === "message" && item.content.length > 0) {
-            assistantMessage(item).content = [{ type: "refusal", refusal }];
+            item.content = [{ type: "refusal", refusal }];
           }
         }
         return [next];
@@ -313,7 +309,7 @@ export function registerStaticEgressResponsesProjectionCases(): void {
         ];
         for (const item of items) {
           if (item.type === "message" && item.content.length > 0) {
-            assistantMessage(item).content = [{ type: "refusal", refusal: "redacted" }];
+            item.content = [{ type: "refusal", refusal: "redacted" }];
           }
         }
         return event;
@@ -326,20 +322,21 @@ export function registerStaticEgressResponsesProjectionCases(): void {
     const f = await staticEgressFixture(t);
     const check = responseChecks(f);
     const parts = (text: string) => outputTextParts(...splitText(text));
-    function eventsFor(text: string, kind: ProjectionKind) {
-      const events = responseEvents();
+    function eventsFor(text: string, kind: ProjectionKind): ResponsesEvent[] {
+      const capture = responseEvents();
+      const events: ResponsesEvent[] = [...capture];
       if (kind === "done") {
         // Change only this independent item. Deltas and terminal output stay READY.
-        events[6].item.content = parts(text);
+        capture[6].item.content = parts(text);
       } else if (kind === "envelope") {
-        assistantMessage(events[7].response.output[0]).content = parts(text);
+        assistantMessage(capture[7].response.output[0]).content = parts(text);
       } else if (kind === "added") {
-        events[1].item.content = parts(text);
+        capture[1].item.content = parts(text);
         // Seeded parts already occupy indexes 0 and 1; no duplicate append.
         events.splice(2, 1);
       } else if (kind === "deltas") {
         const [left, right] = splitText(text);
-        events.splice(3, 1, { ...events[3], delta: left }, { ...events[3], delta: right });
+        events.splice(3, 1, { ...capture[3], delta: left }, { ...capture[3], delta: right });
       } else {
         // Split the seed across two parts, then finish via an ID-free delta.
         // No single indexed SDK snapshot contains the full candidate.
@@ -347,18 +344,18 @@ export function registerStaticEgressResponsesProjectionCases(): void {
         const citation = text.indexOf("citation");
         const boundary = citation === -1 ? Math.floor(text.length / 2) : citation + 3;
         const seed = parts(text.slice(0, boundary));
-        events[3].delta = text.slice(boundary);
+        capture[3].delta = text.slice(boundary);
         if (kind === "seed") {
-          events[1].item.content = seed;
+          capture[1].item.content = seed;
           events.splice(2, 1);
         } else {
           // The delta names the first item, but the assistant consumer sends it
           // to the most recently added message. Both wire items remain valid.
-          const active = structuredClone(events[1]);
+          const active = structuredClone(capture[1]);
           active.output_index = 1;
           active.item.id = "msg_active";
           active.item.content = seed;
-          const done = structuredClone(events[6]);
+          const done = structuredClone(capture[6]);
           events.splice(3, 0, active);
           done.output_index = 1;
           done.item.id = "msg_active";
@@ -483,7 +480,7 @@ export function registerStaticEgressResponsesProjectionCases(): void {
         type: "response.output_item.done",
         item: { ...event.item, content: outputTextParts(text) },
       }) satisfies ItemEvent;
-    const response = (...events: WireEvent[]) => [
+    const response = (...events: ResponsesEvent[]) => [
       wire.responseEvents[0],
       ...events,
       wire.responseEvents[7],
@@ -525,11 +522,12 @@ export function registerStaticEgressResponsesProjectionCases(): void {
     const generated =
       "Intro\n<proposed_plan>\n- Inspect <oai-mem-citation>source</oai-mem-citation>code\n</proposed_plan>\nDone";
     for (const split of [false, true]) {
-      const events = responseEvents();
-      events[4].text = generated;
-      events[5].part.text = generated;
-      events[6].item.content = outputTextParts(generated);
-      assistantMessage(events[7].response.output[0]).content = outputTextParts(generated);
+      const capture = responseEvents();
+      capture[4].text = generated;
+      capture[5].part.text = generated;
+      capture[6].item.content = outputTextParts(generated);
+      assistantMessage(capture[7].response.output[0]).content = outputTextParts(generated);
+      const events = [...capture];
       events.splice(
         3,
         1,
@@ -669,7 +667,7 @@ export function registerStaticEgressResponsesProjectionCases(): void {
     for (const kind of ["part", "item", "parts"] as const) {
       await check.events(events("ordinary response", kind), false, `benign ${kind}`);
     }
-    const laterProgress = events("ordinary response", "part");
+    const laterProgress: ResponsesEvent[] = events("ordinary response", "part");
     const previous = laterProgress.at(-2);
     const first = laterProgress[0];
     assert.ok(previous && "item" in previous, "later progress retains the completed item");
