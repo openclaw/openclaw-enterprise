@@ -1,6 +1,7 @@
 import { click } from "../create-agent-form-data.mts";
 import type { StoryAction } from "../../story-action.mts";
 
+const editGoogle = { selector: '[aria-label="Edit Google OAuth"]', click: true } as const;
 const openTemplate = [click("Create connection template")];
 const discoverMcp = [
   ...openTemplate,
@@ -107,9 +108,22 @@ export const connectionTemplateScenarios = {
     name: "Edit Google OAuth",
     path: "/console/credentials/connection-templates",
     oauthCatalog: "ready",
-    actions: [click("Edit Google OAuth")],
+    actions: [editGoogle],
     description:
       "Edit the Installation-wide Google template. Expand API destinations to change its HTTPS routes. This preview includes sample Gmail, Calendar and Drive routes.",
+  },
+  credentialsUnconfirmedTemplate: {
+    group: "Pages/Credentials",
+    name: "Unconfirmed template save",
+    path: "/console/credentials/connection-templates",
+    oauthCatalog: "unconfirmed-save",
+    actions: [editGoogle, click("Save new version")],
+    description:
+      "The catalog saved version 2 of Google OAuth, but the save response omitted the version.",
+    steps: [
+      "Check that the editor explains how to recover, Save new version is disabled and Close has focus.",
+      "Press Enter on Close. Check that the refreshed catalog lists Google OAuth once at version 2.",
+    ],
   },
   credentialsManualTemplate: {
     group: "Pages/Credentials",
@@ -169,7 +183,7 @@ export const connectionTemplateScenarios = {
       | "/console/credentials/oauth-clients";
     actions?: StoryAction[];
     emptyNamespaces?: true;
-    oauthCatalog?: "ready" | "error";
+    oauthCatalog?: "ready" | "error" | "unconfirmed-save";
     readOnlyPermissionSummary?: true;
     description: string;
     steps?: readonly string[];
