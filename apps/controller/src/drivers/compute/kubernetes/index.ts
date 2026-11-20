@@ -3,6 +3,7 @@ import { resolveChannelRouting, type ChannelProviderDriver } from "../../channel
 import {
   KubernetesChannelEgress,
   CHANNEL_EGRESS_BINDING_LABEL,
+  CHANNEL_GATEWAY_BOUNDARY_LABELS,
   type PreparedChannelRouting,
 } from "./channel-egress.ts";
 import {
@@ -17683,7 +17684,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               ...selector,
               "openclaw.dev/workload-role": role,
               ...(role === "gateway" && enabledChannels?.binding
-                ? { [CHANNEL_EGRESS_BINDING_LABEL]: enabledChannels.binding.id }
+                ? {
+                    ...CHANNEL_GATEWAY_BOUNDARY_LABELS,
+                    [CHANNEL_EGRESS_BINDING_LABEL]: enabledChannels.binding.id,
+                  }
                 : {}),
               [NETWORK_PROFILE_LABEL]: ORDINARY_NETWORK_PROFILE,
             },
