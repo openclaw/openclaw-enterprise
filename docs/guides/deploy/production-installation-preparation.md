@@ -101,41 +101,40 @@ default registry selection.
 ## Use a Terraform-managed EKS cluster
 
 For a dedicated Amazon Elastic Kubernetes Service (EKS) cluster, follow the
-[Terraform reference](https://github.com/freeqaz-openai/oce-eks-terraform). Save
-its private kubeconfig and exported `CONTEXT` in the same Bash session. Finish
-the reference's NetworkPolicy, storage, and readiness checks. Prepare the
-[external database and routing prerequisites](production-installation.md#requirements)
-and the selected OCE images separately. For a cluster managed by another
-workflow, use the [EKS infrastructure requirements](eks-openshell-setup.md#prepare-aws-infrastructure)
-and use its reviewed kubeconfig and context when you configure the Installation.
+[Terraform reference](https://github.com/freeqaz-openai/oce-eks-terraform). After
+preparing system NetworkPolicies, storage, and the prerequisite controllers, run
+its final foundation check from the Terraform checkout:
 
-From the matching OCE checkout, copy the kubeconfig into a new input directory
-so configuration and installation use the same cluster and context.
+```bash
+KUBECONFIG_FILE="${RUN_DIR:?Use the Terraform run directory}/install.kubeconfig"
+CONTEXT=$(./scripts/prepare-kubeconfig --check "$KUBECONFIG_FILE")
+export KUBECONFIG_FILE CONTEXT
+```
+
+The check writes a new private kubeconfig after it verifies the cluster identity,
+node pools, strict VPC CNI configuration, add-on readiness, and default encrypted
+StorageClass. Complete the reference's traffic, admission, and storage checks.
+Then switch to the matching OCE checkout and stage the kubeconfig for the
+configuration and installation commands:
 
 ```bash
 umask 077
-: "${KUBECONFIG_FILE:?Run the Terraform kubeconfig handoff first}"
-: "${CONTEXT:?Set the context returned by the Terraform handoff}"
-OCC_INPUT_DIRECTORY=$(mktemp -d "${RUN_DIR:?Use the Terraform handoff directory}/occ.XXXXXXXX") &&
+OCC_INPUT_DIRECTORY=$(mktemp -d "$RUN_DIR/occ.XXXXXXXX") &&
   install -m 600 "$KUBECONFIG_FILE" "$OCC_INPUT_DIRECTORY/kubeconfig" &&
-  export OCC_INPUT_DIRECTORY KUBECONFIG_FILE="$OCC_INPUT_DIRECTORY/kubeconfig" &&
-  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" get nodes -L oce-role
+  export OCC_INPUT_DIRECTORY KUBECONFIG_FILE="$OCC_INPUT_DIRECTORY/kubeconfig"
 ```
 
-Stop if a command fails or either pool lacks Ready nodes. When you generate
-the profile below, set `controlPlane.nodeSelector` and
-`runtime.gatewayNodeSelector` to `{"oce-role":"control"}`. Set
-`runtime.nodeSelector` to `{"oce-role":"agents"}` and
-`runtime.gatewayStorageClassName` to the reference's `encrypted-gp3` class.
-
-Refresh the [API and webhook addresses](eks-openshell-setup.md#refresh-api-network-policies-after-the-node-groups-join).
-Use the refreshed `API_CIDRS` for `controlPlane.clusterCidrs` in the profile.
-For [prerequisite diagnosis](prerequisite-diagnosis.md), use the selected
-kubeconfig and context. Set `eks.clusterArn` to `.arn` from
-`terraform output -json oce_cluster` in the Terraform checkout.
-Resolve failed or unknown checks before installation. Continue below, then run
-[`occ installation install`](production-installation.md#install-the-control-plane)
-with the same kubeconfig and context.
+When generating the profile below, use `{"oce-role":"control"}` for
+`controlPlane.nodeSelector` and `runtime.gatewayNodeSelector`,
+`{"oce-role":"agents"}` for `runtime.nodeSelector`, and `encrypted-gp3` for
+`runtime.gatewayStorageClassName`. Refresh the
+[API and webhook addresses](eks-openshell-setup.md#refresh-api-network-policies-after-the-node-groups-join)
+and use `API_CIDRS` for `controlPlane.clusterCidrs`. Run
+[prerequisite diagnosis](prerequisite-diagnosis.md) with the same kubeconfig and
+context, using `.arn` from `terraform output -json oce_cluster` for
+`eks.clusterArn`. Resolve failed or unknown checks, then continue with
+[configuration](#configure-the-installation) and
+[installation](production-installation.md#install-the-control-plane).
 
 ## Configure the Installation
 
