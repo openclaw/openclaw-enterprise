@@ -8,6 +8,7 @@
     "tests/integration/dev-up-compose-startup.test.ts",
     "tests/integration/dev-up-compose.test.mjs",
     "tests/integration/occ-api.test.mjs",
+    "tests/integration/occ-api-deployment-work.test.ts",
     "tests/integration/occ-api-mutation-refusals.test.ts",
     "tests/integration/managed-mcp-tool-discovery.test.ts",
     "tests/integration/occ-api-channel-directory.test.ts",
@@ -507,6 +508,17 @@
     },
     {
       "path": "tests/integration/occ-api.test.mjs"
+    },
+    {
+      "path": "tests/integration/occ-api-deployment-work.test.ts",
+      "expectedTests": [
+        "OCC Fastify rejects unsafe guarded Agent stop requests",
+        "Agent deployment status polls the admitted revision work with exact read authorization",
+        "a refused deployment's status names its cause and remedy without naming principals",
+        "a deletion retry by another delete holder names the initiator condition and audits it",
+        "Installation deployment inventory fails closed on incomplete authorization and reports in-flight work",
+        "Installation deployment inventory refuses a revision owned by a different Namespace tuple"
+      ]
     },
     {
       "path": "tests/integration/occ-api-mutation-refusals.test.ts",
