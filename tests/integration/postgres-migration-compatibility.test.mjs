@@ -1452,6 +1452,7 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
+      [84, "preStaticTokenServiceSources"],
     ]) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1669,7 +1670,7 @@ test(
         },
       );
     }
-    for (const [prefix, history] of [
+    const histories = [
       [24, "prePresetsMain"],
       [25, "main"],
       [28, "repositoryRetention"],
@@ -1726,7 +1727,15 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
-    ]) {
+      [84, "preStaticTokenServiceSources"],
+    ];
+    // Every new migration needs a named history for the count before it, or databases
+    // migrated to that count are refused.
+    const { entries } = JSON.parse(
+      await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
+    );
+    assert.equal(histories.at(-1)[0], entries.length - 1);
+    for (const [prefix, history] of histories) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
         const namespaceId = await seedCanonicalData(db, {
@@ -2031,6 +2040,7 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
+      [84, "preStaticTokenServiceSources"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2219,6 +2229,7 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
+      [84, "preStaticTokenServiceSources"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
