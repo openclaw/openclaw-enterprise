@@ -113,7 +113,7 @@ test(
       await unit.secrets.deleteSecret(namespaceId, gatewaySecretId);
     });
 
-    const source = await controller.registerManagedCredentialSource(
+    const source = await controller.createManagedCredentialSource(
       principal.id,
       namespaceId,
       {
