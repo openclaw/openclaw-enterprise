@@ -218,8 +218,7 @@ export async function probePackagedCodex(
 
   // Install two real local bundles without credentials or model calls. Feature
   // enablement stays on, so only OCE's plugin policy can exclude their skills.
-  const { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } =
-    process.getBuiltinModule("node:fs");
+  const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = process.getBuiltinModule("node:fs");
   const { tmpdir } = process.getBuiltinModule("node:os");
   const { createInterface } = process.getBuiltinModule("node:readline");
   const { spawn } = process.getBuiltinModule("node:child_process");
@@ -284,34 +283,6 @@ export async function probePackagedCodex(
       .map(read);
   }
 
-  async function assertBundledRepositoryRestSkill(skillDirectory: string) {
-    const name = "github-repository-rest";
-    const instructions = resolve(skillDirectory, "SKILL.md");
-    const skillLink = resolve(root, ".agents/skills", name);
-    const discover = async () => (await listSkills()).filter((skill) => skill.name === name);
-    assert.ok(
-      typeof process.getuid === "function" && process.getuid() !== 0,
-      "The packaged skill must be readable by the runtime user.",
-    );
-    assert.match(readFileSync(instructions, "utf8"), /^name: github-repository-rest$/m);
-
-    // Image packaging alone must never make the skill visible to a clean user.
-    assert.deepEqual(await discover(), [], "The skill must be opt-in.");
-    mkdirSync(dirname(skillLink), { recursive: true });
-    symlinkSync(skillDirectory, skillLink, "dir");
-    try {
-      const skills = await discover();
-      assert.equal(skills.length, 1, "The opt-in must discover exactly one skill.");
-      const [skill] = skills;
-      assert.ok(skill?.enabled === true, "The opted-in skill must be enabled.");
-      assert.equal(skill.scope, "user");
-      assert.equal(realpathSync(asText(skill.path)), realpathSync(instructions));
-    } finally {
-      unlinkSync(skillLink);
-    }
-    assert.deepEqual(await discover(), [], "Removing the opt-in must hide the skill.");
-  }
-
   try {
     await rpc("initialize", {
       clientInfo: { name: "oce-plugin-defaults-proof", version: "1.0.0" },
@@ -319,7 +290,15 @@ export async function probePackagedCodex(
     });
     native.stdin.write(JSON.stringify({ method: "initialized" }) + "\n");
     if (expectBundledRepositoryRestSkill) {
-      await assertBundledRepositoryRestSkill("/usr/local/share/oce/skills/github-repository-rest");
+      const name = "github-repository-rest";
+      const path = resolve("/etc/codex/skills", name, "SKILL.md");
+      assert.ok(typeof process.getuid === "function" && process.getuid() !== 0);
+      const matches = (await listSkills()).filter((skill) => skill.name === name);
+      assert.equal(matches.length, 1, "Codex should discover the bundled skill in a fresh home.");
+      const [skill] = matches;
+      assert.ok(skill?.enabled === true);
+      assert.equal(skill.scope, "admin");
+      assert.equal(realpathSync(asText(skill.path)), realpathSync(path));
     }
     // Production startup uses this experimental API. An empty query proves protocol
     // support without authentication, remote catalog access, or a model request.

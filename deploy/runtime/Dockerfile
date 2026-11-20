@@ -506,10 +506,9 @@ RUN --mount=type=bind,source=scripts/lib/runtime-download-clients.ts,target=/tmp
   && node /tmp/build-runtime-assets.ts inventory /app/node_modules/openclaw /opt/oce/runtime /tmp/additional-download-clients.json \
   && rm /tmp/build-runtime-assets.ts /tmp/lib/openclaw-source.ts
 
-# Set the file mode without replacing the base image's /usr directory permissions.
 RUN --mount=type=bind,source=deploy/runtime/repository-credentials/github-repository-rest/SKILL.md,target=/tmp/github-repository-rest.md \
     /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig \
-    && skill=/usr/local/share/oce/skills/github-repository-rest \
+    && skill=/etc/codex/skills/github-repository-rest \
     && install -D -m 0444 /tmp/github-repository-rest.md "$skill/SKILL.md" \
     && touch -d @0 "$skill/SKILL.md" "$skill"
 

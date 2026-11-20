@@ -266,38 +266,19 @@ branch list for `github-repository`; it does not promise every administrative
 operation. Access is finite by default. Change selections and deploy a new revision
 to change access; do not rewrite a narrow grant into a broader one in place.
 
-### Enable the optional GitHub REST skill
+### Work with GitHub issues and pull requests
 
-The [GitHub REST skill](../../../deploy/runtime/repository-credentials/github-repository-rest/SKILL.md)
-teaches a Codex Agent to read issues with `gh api` and open a non-draft PR with
-`curl`. It grants no access. Verify the deployed `github-repository` binding
-for each target:
+The runtime bundles a [GitHub REST skill](../../../deploy/runtime/repository-credentials/github-repository-rest/SKILL.md)
+in Codex’s standard skill directory. Deploy an image containing the skill and
+ask the Agent to work on a configured repository. Codex can discover the
+instructions automatically.
 
-- **Read issues:** Require REST access and Issues read permission.
-- **Open a non-draft PR:** Require deployed [scoped REST](https://github.com/openclaw/openclaw-enterprise/blob/1d2f37d8af5c01178e9092ec1e5ac1e7d7849bce/docs/reference/repository-credentials/access-levels.md#scoped-rest),
-  a Sandbox write grant and Pull requests write permission. Without the scoped
-  policy and its same-repository check, do not use the create command.
-
-Do not enable the skill for Git-only access. For a ref-constrained draft, use
-the [existing draft client](../../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository)
-with its own grant. Do not broaden access.
-
-To opt in, run this as the Agent user **inside its Sandbox**, with a private,
-revision-specific home. Do not link the skill in the shared workspace or on the host.
-
-```sh
-skill=/usr/local/share/oce/skills/github-repository-rest
-destination="${HOME:?}/.agents/skills"
-test "$(id -u)" != 0 &&
-  test "$(realpath -m -- "$destination")" = "$destination" &&
-  test -r "$skill/SKILL.md" &&
-  mkdir -p -- "$destination" &&
-  ln -sT -- "$skill" "$destination/github-repository-rest"
-```
-
-This does not replace an existing skill. Reload Codex skills to see
-`github-repository-rest`. To opt out, unlink only the link you created.
-Recheck access before opting in on a new revision. Discovery is not authorization.
+The skill shows how to choose a REST endpoint and call it with `gh api`.
+The deployed binding and network policy determine which requests succeed.
+For example, posting a conversation comment on a PR requires permission to
+write to the issue comments endpoint. A grant limited to reading issues and
+opening PRs excludes commenting. For a ref-constrained draft, keep using the
+[designated client](../../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
 
 ### Plan for request limits
 
