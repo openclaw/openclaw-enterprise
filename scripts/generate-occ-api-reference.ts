@@ -267,9 +267,10 @@ function schemaRows(schema: unknown, document: unknown, parent = ""): string[] {
 
 function schemaVariantLabel(schema: unknown, document: unknown): string | undefined {
   const resolved = resolveSchema(schema, document);
+  const required = array(optionalField(resolved, "required") ?? []);
   for (const [name, property] of entries(optionalField(resolved, "properties") ?? {})) {
     const value = resolveSchema(property, document);
-    if (Object.hasOwn(fields(value), "const")) {
+    if (required.includes(name) && Object.hasOwn(fields(value), "const")) {
       return `\`${name}: ${JSON.stringify(field(value, "const"))}\``;
     }
   }
@@ -283,14 +284,34 @@ function schemaTable(schema: unknown, document: unknown): string {
     const variants = optionalField(resolved, "anyOf");
     if (
       Array.isArray(variants) &&
-      variants.some((variant) => schemaVariantLabel(variant, document))
+      (variants.some((variant) => {
+        const value = resolveSchema(variant, document);
+        return (
+          schemaVariantLabel(variant, document) ||
+          (optionalField(value, "title") && optionalField(value, "anyOf"))
+        );
+      }) ||
+        (optionalField(resolved, "title") &&
+          variants.every((variant) =>
+            optionalField(resolveSchema(variant, document), "properties"),
+          )))
     ) {
       return variants
         .map((variant) => {
-          const required = array(optionalField(resolveSchema(variant, document), "required") ?? []);
+          const variantSchema = resolveSchema(variant, document);
+          const required = array(optionalField(variantSchema, "required") ?? []);
+          const title = optionalField(variantSchema, "title");
+          const requiredFields = required.map((name) => `\`${text(name)}\``).join(", ");
           const label =
+            (title
+              ? `${text(title)}${required.length ? ` (required fields: ${requiredFields})` : ""}`
+              : undefined) ??
             schemaVariantLabel(variant, document) ??
-            `Required fields: ${required.map((name) => `\`${text(name)}\``).join(", ")}`;
+            (required.length
+              ? `Required fields: ${requiredFields}`
+              : `Optional fields: ${entries(optionalField(variantSchema, "properties") ?? {})
+                  .map(([name]) => `\`${name}\``)
+                  .join(", ")}`);
           return `**${label}**\n\n${schemaTable(variant, document)}`;
         })
         .join("\n\n");

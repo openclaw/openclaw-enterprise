@@ -31,6 +31,8 @@ OpenShell is a development integration. See the
 
 ## Register a source
 
+Managed static POST and PATCH are staged and return `501 NOT_IMPLEMENTED` after authorization.
+
 1. Wait for the Namespace to become `ready`.
 2. For a Secret-backed source, [create a Secret](drivers/kubernetes-secret.md#create-a-namespace-owned-secret) and keep its `ref`.
 3. Send `POST /namespaces/:namespaceId/credential-sources`. The caller needs
@@ -62,7 +64,7 @@ Replace the sample IDs and Secret reference. Execution authority admits every pr
 }
 ```
 
-The `201` response includes the `cs_` source ID, binding `ref` and status. Bind the Agent to the source ID. The source retains the `sec_` reference.
+The `201` response includes the `cs_` ID, binding `ref` and status. The source retains its `sec_` reference.
 
 - `name` is unique within the Namespace.
 - Select an offered `type`. With a Proxy selected, fresh Gateway registration requires
@@ -77,10 +79,8 @@ The `201` response includes the `cs_` source ID, binding `ref` and status. Bind 
 - `secrets` maps catalog fields to same-Namespace Secret references. OCC rejects
   cross-Namespace references with `400` and missing Secrets with `404`.
 
-OCC rejects unknown or missing required fields and invalid configuration
-with `400 INVALID_REQUEST`, which names the field and points at `/config/<field>` or
-`/secrets/<field>`, before reading Secrets through
-the Secret Driver. OCC records `registering` before the external operation.
+Before reading Secrets, OCC rejects invalid fields or configuration with `400 INVALID_REQUEST`
+at `/config/<field>` or `/secrets/<field>`. OCC records `registering` before the external operation.
 For Gateway copies, definitive rejection triggers cleanup. An uncertain write,
 such as a timeout, leaves the source `deleting` because a copy may still
 appear. Use DELETE to finish cleanup.

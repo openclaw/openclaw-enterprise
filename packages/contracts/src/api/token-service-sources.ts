@@ -14,42 +14,48 @@ import { CredentialSourceSchema } from "./resources.ts";
 
 const material = Type.Record(Type.String(), SecretValue, {
   minProperties: 1,
-  maxProperties: 16,
+  maxProperties: 1,
   writeOnly: true,
-  description: "Credential values keyed by the secret fields declared by the source type.",
+  description:
+    "Write-only: one opaque credential value. The field name does not grant destination authority.",
 });
+
+const managedConfig = {
+  ...CredentialSourceConfig,
+  description:
+    "Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService.",
+};
 
 export const RegisterTokenServiceSourceBody = Type.Object(
   {
     name: Name,
-    type: CredentialSourceType,
-    connectionTemplateId: Type.Optional(ConnectionTemplateId),
-    config: Type.Optional(CredentialSourceConfig),
-    secret: Type.Optional(material),
+    type: Type.Literal("static"),
+    config: Type.Optional(managedConfig),
+    secret: material,
   },
   {
     $id: "RegisterTokenServiceSourceBody",
     additionalProperties: false,
     description:
-      "Proposed registration body for a Namespace credential source. OCC allocates the identity and selects the TokenService Driver. An attached Connection Template supplies its current settings. Supply the secret fields required by the source type.",
+      "Staged managed static registration contract. The public route currently returns 501 NOT_IMPLEMENTED after authorization. When enabled, OCC allocates the identity and selects the TokenService owner.",
   },
 );
 
 export const UpdateTokenServiceSourceBody = Type.Union(
   [
     Type.Object(
-      { config: CredentialSourceConfig, secret: Type.Optional(material) },
+      { config: managedConfig, secret: Type.Optional(material) },
       { additionalProperties: false },
     ),
     Type.Object(
-      { config: Type.Optional(CredentialSourceConfig), secret: material },
+      { config: Type.Optional(managedConfig), secret: material },
       { additionalProperties: false },
     ),
   ],
   {
     $id: "UpdateTokenServiceSourceBody",
     description:
-      "Proposed update to credential material, mutable lifecycle settings, or both. Omitted fields retain their values.",
+      "Staged managed static update contract. Supply configuration, a credential value, or both. The public route currently returns 501 NOT_IMPLEMENTED after authorization. When enabled, OCC must dispatch by the persisted Source owner; omitted fields retain their values.",
   },
 );
 

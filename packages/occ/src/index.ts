@@ -9025,6 +9025,20 @@ export class OpenClawController {
     });
   }
 
+  // TODO: Remove this staging-only check when managed Source HTTP handlers invoke the manager.
+  async authorizeCredentialSourceWrite(
+    principalId: string,
+    namespaceId: string,
+    credentialSourceId?: string,
+  ): Promise<void> {
+    this.namespaceIdentity(namespaceId);
+    await this.authorize(principalId, credentialSourceId === undefined ? "create" : "update", {
+      kind: "credential_source",
+      id: credentialSourceId ?? namespaceId,
+      namespaceId,
+    });
+  }
+
   /**
    * Registration records the source as `registering` before the gateway write, so an uncertain
    * gateway outcome always leaves a record an operator can list and delete. `audit` builds the

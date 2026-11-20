@@ -1147,7 +1147,7 @@ function permissionDescription(
           return `Requires ${action} permission on each ${name} named in the request body secrets.`;
         }
         if (operation?.operationId === "updateCredentialSource") {
-          return `Requires ${action} permission on each ${name} the source references after the update, including its current references when the request omits secrets.`;
+          return `For a legacy Gateway update, requires ${action} permission on each ${name} the source references after the update, including its current references when the request omits secrets.`;
         }
         return `Requires ${action} permission on each bound ${name} when Secret bindings are present or selected.`;
       }
