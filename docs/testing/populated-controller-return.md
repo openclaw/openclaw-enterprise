@@ -184,8 +184,10 @@ Match slice Service-owner UIDs to `boundServiceUID` and endpoint target UIDs to
 Pod UIDs. A null binding means the baseline Service was not observed successfully;
 the observer never adopts a replacement. Missing, stale or unmatched owner and
 target UIDs leave attribution unknown even when a labeled slice is present.
-An empty list means the scoped read returned zero objects. Missing readiness
-conditions stay null.
+An empty `objects` list means the scoped read returned zero objects. A placeholder
+EndpointSlice with an owner reference to the named core `v1` Service can report
+`endpoints: null`. The receipt records an empty `endpoints` list for that slice.
+Missing readiness conditions stay null.
 Read errors are unknown, not empty endpoint sets. If the runner reports an unsettled baseline command, the fixture stops before launching the upgrade. The three reads are not atomic,
 and polling cannot locate exact transition times or prove reachability. Compare
 their UTC windows with the HTTP samples; Pod condition transition timestamps come

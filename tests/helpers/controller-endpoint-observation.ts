@@ -12,9 +12,10 @@ type ObjectMetadata = {
   resourceVersion: string;
   deletionTimestamp?: string;
   labels?: Record<string, string>;
-  ownerReferences?: { kind: string; name: string; uid: string }[];
+  ownerReferences?: { apiVersion: string; kind: string; name: string; uid: string }[];
 };
 type KubernetesObject = {
+  apiVersion?: string;
   kind: string;
   metadata: ObjectMetadata;
   spec?: { selector?: Record<string, string> };
@@ -22,10 +23,12 @@ type KubernetesObject = {
     phase?: string;
     conditions?: { type: string; status: string; lastTransitionTime?: string }[];
   };
-  endpoints?: {
-    conditions?: { ready?: boolean; serving?: boolean; terminating?: boolean };
-    targetRef?: { kind: string; namespace: string; name: string; uid: string };
-  }[];
+  endpoints?:
+    | {
+        conditions?: { ready?: boolean; serving?: boolean; terminating?: boolean };
+        targetRef?: { kind: string; namespace: string; name: string; uid: string };
+      }[]
+    | null;
 };
 type ReadObservation = {
   startedAt: string;
@@ -158,13 +161,24 @@ export async function observeControllerEndpoints<T>(
         (object) => {
           const metadata = identity(object, "EndpointSlice");
           assert.equal(object.metadata.labels?.["kubernetes.io/service-name"], serviceName);
-          assert.ok(Array.isArray(object.endpoints));
+          const serviceUIDs = (object.metadata.ownerReferences ?? [])
+            .filter(
+              ({ apiVersion, kind, name }) =>
+                apiVersion === "v1" && kind === "Service" && name === serviceName,
+            )
+            .map(({ uid }) => uid);
+          const endpoints = object.endpoints;
+          // Kubernetes can encode a placeholder slice's empty endpoint list as JSON null.
+          assert.ok(
+            Array.isArray(endpoints) ||
+              (endpoints === null &&
+                object.apiVersion === "discovery.k8s.io/v1" &&
+                serviceUIDs.some((uid) => typeof uid === "string" && uid.length > 0)),
+          );
           return {
             ...metadata,
-            serviceUIDs: (object.metadata.ownerReferences ?? [])
-              .filter(({ kind, name }) => kind === "Service" && name === serviceName)
-              .map(({ uid }) => uid),
-            endpoints: object.endpoints.map(({ conditions, targetRef }) => ({
+            serviceUIDs,
+            endpoints: (endpoints ?? []).map(({ conditions, targetRef }) => ({
               ready: conditions?.ready ?? null,
               serving: conditions?.serving ?? null,
               terminating: conditions?.terminating ?? null,

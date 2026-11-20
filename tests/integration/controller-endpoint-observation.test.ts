@@ -28,12 +28,16 @@ const service = (uid = "service-original") => ({
   metadata: metadata(serviceName, uid),
   spec: { selector },
 });
-const slice = (podUID: string, serviceUID = "service-original") => ({
+const slice = (podUID: string, serviceUID = "service-original", ownerAPIVersion = "v1") => ({
+  apiVersion: "discovery.k8s.io/v1",
   kind: "EndpointSlice",
+  addressType: "IPv4",
   metadata: {
     ...metadata("api-slice", "slice-uid"),
     labels: { "kubernetes.io/service-name": serviceName },
-    ownerReferences: [{ kind: "Service", name: serviceName, uid: serviceUID }],
+    ownerReferences: [
+      { apiVersion: ownerAPIVersion, kind: "Service", name: serviceName, uid: serviceUID },
+    ],
   },
   endpoints: [
     {
@@ -101,7 +105,7 @@ test(
         assert.deepEqual(args.slice(9, -2), ["-l", `kubernetes.io/service-name=${serviceName}`]);
         if (stage === 1) {
           emptyObserved.resolve();
-          return list([]);
+          return list([{ ...slice("pod-old"), endpoints: null }]);
         }
         return list([
           slice(
@@ -143,8 +147,9 @@ test(
       ["before", "during", "during", "after"],
     );
     assert.equal(receipt.samples[0].slices.objects[0].endpoints[0].targetRef.uid, "pod-old");
-    assert.deepEqual(receipt.samples[1].slices.objects, []);
     assert.equal(receipt.samples[1].slices.status, "ok");
+    assert.deepEqual(receipt.samples[1].slices.objects[0].endpoints, []);
+    assert.deepEqual(receipt.samples[1].slices.objects[0].serviceUIDs, [receipt.boundServiceUID]);
     assert.equal(receipt.samples[2].slices.objects[0].endpoints[0].targetRef.uid, "pod-new");
     assert.equal(receipt.samples[3].service.objects[0].uid, "service-replaced");
     assert.equal(receipt.samples[3].slices.objects[0].serviceUIDs[0], "service-replaced");
@@ -181,7 +186,7 @@ test("controller endpoint failed reads stay unknown and cannot establish a late 
     }
     return actionStarted
       ? JSON.stringify({ apiVersion: "v1", kind: "Status", items: [] })
-      : JSON.stringify({ items: [] });
+      : list([{ ...slice("pod-old"), endpoints: undefined }]);
   };
   await observeControllerEndpoints({ ...f.options, run }, async () => {
     actionStarted = true;
@@ -196,6 +201,31 @@ test("controller endpoint failed reads stay unknown and cannot establish a late 
   assert.deepEqual(receipt.samples[0].pods.objects, []);
   assert.equal(receipt.samples.at(-1).service.status, "ok");
   assert.ok(!(await readFile(f.path, "utf8")).includes(privateText));
+});
+
+test("controller endpoint observations exclude Service owners from other API groups", async (t) => {
+  const f = await fixture(t);
+  const foreignOwnedSlice = slice("pod-old", "foreign-service", "example.test/v1");
+  let actionStarted = false;
+  const run: FixtureRun = async (_command, args) => {
+    if (args[8] === "services") {
+      return list([service()]);
+    }
+    if (args[8] === "pods") {
+      return list([]);
+    }
+    return list([actionStarted ? foreignOwnedSlice : { ...foreignOwnedSlice, endpoints: null }]);
+  };
+  await observeControllerEndpoints({ ...f.options, run }, async () => {
+    actionStarted = true;
+  });
+  const { samples } = await f.receipt();
+  assert.equal(samples[0].slices.status, "invalid-response");
+  assert.ok(!("objects" in samples[0].slices));
+  const after = samples.at(-1).slices;
+  assert.equal(after.status, "ok");
+  assert.deepEqual(after.objects[0].serviceUIDs, []);
+  assert.equal(after.objects[0].endpoints[0].targetRef.uid, "pod-old");
 });
 
 test("controller endpoint observer joins reads and preserves action and evidence failures", async (t) => {
