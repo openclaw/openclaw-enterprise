@@ -532,17 +532,16 @@ for (const tool of ["yq", "k3d"]) {
         await chmod(installed, 0o555);
         await writeFile(cached, untrusted, { mode: 0o755 });
 
+        let kubectlSha256: string | undefined;
         if (tool === "k3d") {
           // Pass the prerequisite's real checksum gate with a fixture-only pin
           // so the test can reach k3d without downloading kubectl.
           const kubectl = "#!/bin/sh\nprintf 'verified fixture kubectl\\n'\n";
+          kubectlSha256 = createHash("sha256").update(kubectl).digest("hex");
           await writeFile(join(bin, "kubectl"), kubectl, { mode: 0o755 });
           await writeFile(
             join(scripts, "kubectl-pins.json"),
-            JSON.stringify({
-              version: "1.35.0",
-              linux: { [arch]: createHash("sha256").update(kubectl).digest("hex") },
-            }),
+            JSON.stringify({ version: "1.35.0", linux: { [arch]: kubectlSha256 } }),
           );
         }
 
@@ -575,8 +574,108 @@ for (const tool of ["yq", "k3d"]) {
         }
         assert.deepEqual(await readTool(installed), { bytes: untrusted, mode: 0o555 });
         assert.deepEqual(await readFile(cached), untrusted);
-        assert.deepEqual(await readdir(cache), [checksum]);
+        // The verified kubectl prerequisite is cached beside the untouched k3d entry.
+        assert.deepEqual(
+          (await readdir(cache)).sort(),
+          [checksum, ...(kubectlSha256 ? [kubectlSha256] : [])].sort(),
+        );
       },
     );
   });
 }
+
+test("Linux k3d setup caches verified kubectl and verifies cached bytes before reuse", async (t) => {
+  const hardware = machine();
+  const arch = hardware === "x86_64" ? "amd64" : "arm64";
+  if (process.platform !== "linux" || !["x86_64", "aarch64", "arm64"].includes(hardware)) {
+    t.skip("Linux amd64/arm64 pinned tool setup");
+    return;
+  }
+  const kubectl = Buffer.from("#!/bin/sh\nprintf 'verified fixture kubectl\\n'\n");
+  const checksum = createHash("sha256").update(kubectl).digest("hex");
+  const artifact = `/release/v1.35.0/bin/linux/${arch}/kubectl`;
+  const requests: (string | undefined)[] = [];
+  // Serve only kubectl; k3d answers 404 so setup stops right after kubectl.
+  const server = createServer((request, response) => {
+    requests.push(request.url);
+    if (request.url !== artifact) {
+      response.writeHead(404);
+      response.end();
+      return;
+    }
+    response.writeHead(200, { "content-length": kubectl.length });
+    response.end(kubectl);
+  });
+  await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  const dir = await mkdtemp(join(tmpdir(), "ci-download-pinned-"));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const bin = join(dir, "bin");
+    const cache = join(dir, "cache");
+    const scripts = join(dir, "scripts", "ci");
+    await mkdir(bin);
+    await mkdir(scripts, { recursive: true });
+    const setupSource = await readFile(
+      new URL("../../scripts/ci/setup-tools.sh", import.meta.url),
+      "utf8",
+    );
+    const setup = join(scripts, "setup-tools.sh");
+    await writeFile(
+      setup,
+      setupSource.replaceAll(/https:\/\/(?:github\.com|get\.helm\.sh|dl\.k8s\.io)\//g, `${origin}/`),
+    );
+    await copyFile(script, join(scripts, "download-pinned.sh"));
+    await writeFile(
+      join(scripts, "kubectl-pins.json"),
+      JSON.stringify({ version: "1.35.0", linux: { [arch]: checksum } }),
+    );
+    await writeFile(join(bin, "docker"), "#!/bin/sh\necho 29.9.2\n", { mode: 0o755 });
+
+    const setupK3d = async (withCache: boolean) => {
+      // Each CI job starts with an empty tool directory.
+      await rm(join(bin, "kubectl"), { force: true });
+      const before = requests.length;
+      const result = await new Promise<CommandResult>((done) => {
+        execFile(
+          "/bin/bash",
+          [setup, "k3d"],
+          {
+            env: {
+              RUNNER_TEMP: dir,
+              ...(withCache ? { CI_PINNED_TOOL_CACHE: cache } : {}),
+              PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`,
+              ALL_PROXY: origin,
+              NO_PROXY: "127.0.0.1",
+            },
+            timeout: 15_000,
+          },
+          (error, stdout, stderr) => done({ code: error ? (error.code ?? 1) : 0, stdout, stderr }),
+        );
+      });
+      // kubectl was published and ran; the k3d fixture 404 then ends setup.
+      assert.match(result.stdout, /^verified fixture kubectl$/m, result.stderr);
+      assert.notEqual(result.code, 0);
+      assert.deepEqual(await readFile(join(bin, "kubectl")), kubectl);
+      return requests.slice(before).filter((url) => url === artifact).length;
+    };
+
+    // A cold cache downloads kubectl once and stores the verified bytes.
+    assert.equal(await setupK3d(true), 1);
+    assert.deepEqual(await readFile(join(cache, checksum)), kubectl);
+    // A filled cache makes no kubectl request.
+    assert.equal(await setupK3d(true), 0);
+    // Cached bytes that fail the repository checksum are replaced by a download.
+    await writeFile(join(cache, checksum), "#!/bin/sh\nprintf executed > ./unverified-executed\n");
+    assert.equal(await setupK3d(true), 1);
+    assert.ok(!(await readdir(dir)).includes("unverified-executed"), "corrupt cached kubectl ran");
+    assert.deepEqual(await readFile(join(cache, checksum)), kubectl);
+    // Without a cache directory, kubectl is still downloaded and verified.
+    assert.equal(await setupK3d(false), 1);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
