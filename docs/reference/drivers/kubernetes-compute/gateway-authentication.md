@@ -78,7 +78,8 @@ send a value that is not a scope, such as `none`: many proxies drop empty
 headers. Native HTTP APIs, such as `/tools/invoke` and `/sessions/<key>/kill`,
 ignore `identityScopes`: without the header, OpenClaw gives a trusted-proxy request
 its default operator scopes, including `operator.admin`, narrowed only by native
-role ceilings. So whenever `allowUsers` admits a human, Compute adds
+role ceilings. So whenever `allowUsers` admits a human, gateway routing is on, or
+the revision admits HTTP chat, Compute adds
 `x-openclaw-scopes` to `trustedProxy.requiredHeaders` (operator entries are kept;
 they must be nonblank, trimmed names, and on routed Agents may not name a header
 the route removes), and the Gateway refuses any trusted-proxy request without it:

@@ -5075,10 +5075,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   getGatewayChatEndpoint(revision: AgentRevision): string | undefined {
-    if (!this.usesWritableNativeAdminConfig(revision.configuration)) {
+    // Judge the Gateway configuration this Driver deploys for the revision, not the saved
+    // Configuration: routed rendering adds x-openclaw-scopes when the saved document omits it.
+    let configuration: OpenClawConfigurationDocument;
+    try {
+      configuration = this.kubernetesGatewayConfigurationDocument(
+        revision.configuration,
+        revision.compute.admission?.startsWith(HTTP_CHAT_ADMISSION) === true,
+      );
+    } catch {
       return undefined;
     }
-    const gateway = asRecord(revision.configuration.gateway);
+    if (!this.usesWritableNativeAdminConfig(configuration)) {
+      return undefined;
+    }
+    const gateway = asRecord(configuration.gateway);
     const requiredHeaders = asRecord(asRecord(gateway?.auth)?.trustedProxy)?.requiredHeaders;
     if (
       !Array.isArray(requiredHeaders) ||
