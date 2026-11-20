@@ -31,6 +31,7 @@ import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
 import { requestId } from "../helpers/static-egress-request-id.ts";
 import { staticEgressWireFixture, wireTime } from "../helpers/static-egress.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import { registerStaticEgressResponsesWireCases } from "./static-egress-responses-wire-cases.ts";
 
 function heldRequests(t: TestContext, release: () => void) {
   const cancellation = new AbortController();
@@ -845,4 +846,11 @@ export function registerStaticEgressRequestCapacityCases(): void {
     assert.deepEqual(await late, { kind: "refused", error: { kind: "deadline_exceeded" } });
     assert.equal(checks, 3);
   });
+}
+
+export function registerStaticEgressResponsesAndCapacityCases(
+  unicodeEscapes: (text: string) => string,
+): void {
+  registerStaticEgressResponsesWireCases(unicodeEscapes);
+  registerStaticEgressRequestCapacityCases();
 }
