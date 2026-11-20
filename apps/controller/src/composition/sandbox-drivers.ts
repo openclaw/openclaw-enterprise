@@ -5,9 +5,9 @@ import type { InstalledDriver, OpenClawController } from "@openclaw-enterprise/o
 export function installSelectedSandboxDrivers(
   controller: OpenClawController,
   drivers: {
-    readonly sandboxDriver?: SandboxDriver;
-    readonly protectedDriver?: InstalledDriver;
-    readonly credentialDeliveryRegistration?: InstalledDriver;
+    readonly sandboxDriver?: SandboxDriver | undefined;
+    readonly protectedDriver?: InstalledDriver | undefined;
+    readonly credentialDeliveryRegistration?: InstalledDriver | undefined;
   },
 ): void {
   const owner = drivers.protectedDriver ?? drivers.credentialDeliveryRegistration;
