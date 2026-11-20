@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-19"
-last_updated_session: "authoring-run/aed0a2bc-9691-4859-8bd6-1e7b3549c9b4"
+updated: "2026-11-20"
+last_updated_session: "authoring-run/835f8811-dc27-47d1-b27d-5d20413085f7"
 ---
 
 # Production image upgrade flow
@@ -9,12 +9,10 @@ last_updated_session: "authoring-run/aed0a2bc-9691-4859-8bd6-1e7b3549c9b4"
 ## Overview
 
 Upgrades OpenClaw Control Plane (OCC) and Agent runtimes.
-See [channel transitions](channel-egress.md#0-install-or-upgrade-channel-routing)
-for the explicit one-off entrypoint.
 
 ## Entry Points
 
-- Run `scripts/upgrade-production-images` with reviewed inputs, or use `occ installation upgrade` with a private operator profile.
+- Run `scripts/upgrade-production-images` with reviewed inputs or `occ installation upgrade` with a private operator profile.
 - Stderr phases are advisory; `--verbose` shows native output.
 - Required: healthy Helm release with chart-owned initializer, matching OCC/Kubernetes Installation
   IDs and complete authorized inventory without active deployments.
@@ -45,12 +43,23 @@ graph TD
     RC -->|Yes| AR["Verify and recover candidate"]
     AR -->|Refused| X
     AR -->|Acknowledged| I
-    D -->|No| RI{"Writers and live inventory valid?"}
+    D -->|No| RI{"Initial writer observations valid?"}
     RI -->|No| X
-    RI -->|Yes| E["Stop writers"]
-    E --> DBP{"Separate database deployment?"}
+    RI -->|Yes| WC{"Worker running or confirmed on resume?"}
+    WC -->|No| X
+    WC -->|Yes| CT{"One-off channel transition?"}
+    CT -->|Yes| AS["Stop selected Agents<br/>or verify recorded Stops"]
+    AS --> RF{"Refreshed writers and receipt<br/>and required inventory valid?"}
+    RF -->|No| X
+    RF -->|Yes| E["Stop OCC writers and drain Pods"]
+    CT -->|No| WI{"Required inventory valid?"}
+    WI -->|No| X
+    WI -->|Yes| E
+    E --> ACK{"Worker stop acknowledged?"}
+    ACK -->|No| X
+    ACK -->|Yes| DBP{"Separate database deployment?"}
     DBP -->|Yes| PAUSE["Exit 3 with writers stopped"]
-    PAUSE --> MA["Apply and verify SQL"]
+    PAUSE --> MA["Recheck stop receipt, apply and verify SQL"]
     MA -->|Unresolved| X
     MA -->|Verified and cleaned| F["Resume with checked history"]
     PAUSE -->|Verified manual migration| F
@@ -77,257 +86,253 @@ graph TD
 ### 1. Prepare the candidate
 
 `internal/occcli/installation_upgrade.go:installationUpgradeCommand` runs
-`scripts/upgrade-production:main`. `report_status` compares two local marker scans.
-Plan validates profile inputs, images and checkout commit. The adapter uses
-`kubectl` to decode the selected HTTPS target, binds explicit CA bytes and previews
-trust. Apply and resume require approval and recheck bound inputs before dispatch.
+`scripts/upgrade-production:main`. Status compares local marker scans; Plan validates
+profile, images and checkout commit. The adapter decodes HTTPS with `kubectl`,
+binds explicit CA bytes and previews trust. Approved apply/resume recheck bindings.
 
-Both entrypoints refuse active kubectl preferences. If preferences are enabled
-and no file is active, the native helper snapshots the kubeconfig and refuses
-selected exec credentials before disabling command defaults for live clients.
-Approved snapshots also refuse selected `auth-provider` entries. Profiled
-recovery rechecks the recorded target and explicit CA binding.
+Entrypoints refuse active kubectl preferences. If enabled but inactive, the
+helper snapshots kubeconfig, refuses selected exec credentials and disables live
+defaults (`KUBERC=off`). Approved snapshots refuse selected `auth-provider` entries;
+profiled recovery rechecks target and explicit CA.
 
-Before `scripts/upgrade-production-images:prepare_upgrade`, refuse other Helm
+Before `scripts/upgrade-production-images:prepare_upgrade`, refuse alternate Helm
 release stores, [Helm overrides](../guides/deploy/production-upgrade.md), source
-mismatch, chart edits or symlinks, and evidence or baseline aliases.
+mismatch, chart edits/symlinks and evidence/baseline aliases.
 `preprovisionedNamespace` must yield one `false` (`preprovisioned-namespace.err`).
 
-`check_migration` matches the rendered and deployed migrator inputs and
-checks the revision around one read-only Job. Success requires recognized
-history and UID-bound cleanup. Unknown creates retain evidence and lock.
+`check_migration` matches rendered/deployed migrator inputs and checks revisions
+around one read-only Job. Require recognized history and UID-bound cleanup;
+unknown creates retain evidence and lock.
 
 `matches_yaml` compares candidate, [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
-and live mappings. Invalid inputs or unwritable evidence yield `Cannot compare upgrade YAML`.
-Projections allow Slack directory proxy, curated Codex PluginDriver selection
-and one registration wrapper. The baseline projection excludes
-`agentNativeAdmin.sharedCookieDomain` when absent from the candidate.
-Immutable switches require string keys.
+and live mappings; invalid inputs or unwritable evidence yield `Cannot compare upgrade YAML`.
+Projections allow Slack directory proxy, curated Codex PluginDriver selection and one
+registration wrapper. Baseline excludes `agentNativeAdmin.sharedCookieDomain` if
+the candidate omits it. Immutable switches require string keys.
 
-`read_restart_inventory` requires a complete, authorized inventory with no
-nonterminal deployments. Retained running revisions need saved Harness objects and
-an accepted [restart assessment](../reference/repository-credentials/worker-replacement.md).
-Standalone preflight rehearses with an explicit original-worker requirement.
-Unknown assessments block rehearsal. Runtime upgrades record replacements and
-check draft images and sizes, baseline versions and Namespace readiness.
-Stopped or deleting Agents are excluded. Pending repository cleanup is allowed.
+`read_restart_inventory` requires complete authorized inventory without nonterminal
+deployments. Retained running revisions require saved Harness objects and accepted
+[restart assessment](../reference/repository-credentials/worker-replacement.md).
+Standalone preflight rehearses explicit original-worker requirements; unknown
+assessments block. Runtime upgrades record replacements; check draft images/sizes,
+baseline versions and Namespace readiness; exclude stopped/deleting Agents; allow
+pending repository cleanup.
 
-`OpenClawController.deploymentInventorySnapshot` batches deployment-work reads
-in one State snapshot and refuses missing or mismatched work. Credential
-withdrawal is distinct from deployment work. `findRevisionForBrowsing` yields
-`unknown` for unreadable snapshots and propagates database or identity errors.
-`getInstallationDeploymentInventory` gives Compute ten seconds outside State
-transactions, then rechecks fleet authorization and Driver selections. Drift
-refuses inventory. Owner failures yield `unknown`.
+`OpenClawController.deploymentInventorySnapshot` batches deployment-work reads in
+one State snapshot and refuses missing/mismatched work. Credential withdrawal is
+separate. For unreadable snapshots, `findRevisionForBrowsing` returns `unknown`; database/identity
+errors propagate. `getInstallationDeploymentInventory` gives
+Compute ten seconds outside State transactions, then rechecks fleet authorization
+and Driver selections. Drift blocks inventory; owner failures return `unknown`.
 
-`scripts/upgrade-evidence.py:validate_compatibility` checks the PostgreSQL
-receipt's file binding, data, IAM, cleanup and image digests. Hashes bind
-resume inputs. See [qualification limits](../guides/deploy/production-upgrade.md#upgrade-the-control-plane).
+`scripts/upgrade-evidence.py:validate_compatibility` checks PostgreSQL receipt
+file binding, data, IAM, cleanup and image digests. Hashes bind resume inputs.
+See [qualification limits](../guides/deploy/production-upgrade.md#upgrade-the-control-plane).
 
-`verify_agent_continuity` brackets runtime inspection with authorized Agent
-reads and records the selected revision and Driver roles in `agent-continuity.json`.
+`verify_agent_continuity` checks authorized Agent reads around runtime inspection,
+recording selected revision and Driver roles in `agent-continuity.json`.
 
-Repository credentials require immutable images and a common node architecture.
-`scripts/upgrade-image-identity.py:read_platform` verifies OCI hashes (2 MiB per
-blob, 32 MiB total). `scripts/upgrade-repository-image-probe.ts:main` probes
-before preparation and resume. The negative control requires an absent socket
-and a Docker-confirmed broker exit without OOM or daemon error.
+Repository credentials require immutable images and common node architecture.
+`scripts/upgrade-image-identity.py:read_platform` verifies OCI hashes (2 MiB/blob,
+32 MiB total). `scripts/upgrade-repository-image-probe.ts:main` probes before
+preparation/resume; the negative control requires an absent socket and Docker-confirmed
+broker exit without OOM or daemon error.
 
-For immutable switches, `prepare_upgrade` verifies both Secret identities,
-unrelated data and candidate YAML. `upgrade-evidence.py` binds both snapshots.
-Changed immutable data requires a successor. The mutable Secret access review
-blocks on denied update permission and warns if inconclusive. Certificates
-require server-side dry run.
+For immutable switches, `prepare_upgrade` checks both Secret identities, unrelated
+data and candidate YAML; `upgrade-evidence.py` binds snapshots. Changed immutable
+data requires a successor. Mutable Secret update denial blocks; inconclusive review
+warns. Certificates require server-side dry run.
 
-`scripts/upgrade-startup-preflight.ts` builds single-Pod Jobs with candidate
-images, credentials and mounts, a deadline and zero retries. `preflight_startup`
-refuses changed UIDs or multiple children. Job failure overrides child success.
+`scripts/upgrade-startup-preflight.ts` builds single-Pod Jobs using candidate
+images, credentials, mounts, deadline and zero retries. `preflight_startup`
+refuses changed UIDs or multiple children; Job failure overrides child success.
 
-`migrationJob` selects the chart initializer and preserves policy labels.
-Hook mode uses `--check`. In separate mode,
-`check_separate_migration_preconditions` verifies Secret access, records the
-migrator and CA Secret UIDs and resource versions, and requires
-`migration.checked-for-installation`. Both checks allow recognized pending
-history. After cleanup, separate mode rechecks identities and
-`scripts/upgrade-evidence.py` binds them to the prepared run.
+`migrationJob` selects the chart initializer, preserving policy labels. Hook
+mode uses `--check`; separate-mode `check_separate_migration_preconditions` verifies
+Secret access, records migrator and CA Secret UIDs/resource versions, and requires
+`migration.checked-for-installation`. Both allow recognized pending history. After
+cleanup, separate mode rechecks identities; `scripts/upgrade-evidence.py` binds
+them to the prepared run.
 
 `apps/controller/src/composition/console-theme.ts:loadConsoleTheme` checks API
-theme bundles. Both writers use `loadStartupConfigurationSnapshot` and
-`loadInstallationConfiguration` without database access. For OpenShell
-`bearerTokenFile`, each Job checks file type and readability without reading the token.
+theme bundles. Writers call `loadStartupConfigurationSnapshot` and
+`loadInstallationConfiguration` without database access. Jobs check OpenShell
+`bearerTokenFile` type/readability without reading it.
 
-`connectionPlan` preserves private OIDC CA mounts and database preload. Writer
-Jobs use `OCC_DATABASE_URL` to verify that one read-only `occ.installation` result
-matches OCC and the startup Secret. Statement and lock timeouts are five seconds,
-with 15 seconds for the full check. Logs omit connection errors and rows.
+`connectionPlan` preserves private OIDC CA mounts and database preload. Writer Jobs
+use `OCC_DATABASE_URL` for one read-only `occ.installation` result matching OCC and
+the startup Secret. Statement/lock timeouts are five seconds; the check gets 15.
+Logs omit connection errors and rows.
 
-`preflight_resume` checks history and both writer identities before shutdown or
-Helm, even with both stopped. Completed Helm releases skip these Jobs.
-Preflight verifies Job and Pod identities around log retrieval and rejects NUL
-bytes. `formatStartupConfigurationFailure` reports up to 32 field diagnostics.
+`preflight_resume` checks history and both writer identities before shutdown/Helm,
+even when stopped; completed Helm releases skip these Jobs. Preflight checks Job/Pod
+identities around log retrieval and rejects NUL bytes.
+`formatStartupConfigurationFailure` reports up to 32 field diagnostics.
 
-Kubernetes Compute preflight uses the Pod service account. It refuses
+Kubernetes Compute preflight uses the Pod service account and refuses
 [split-layout Gateway storage](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations)
-on single-cluster upgrades. The image's `isName` checks Installation names when
-available. `refuseUndeployableConfigurationValues` checks recorded drafts.
-Older images or gzipped inputs over 1 MiB warn and defer to deployment.
+for single-cluster upgrades. Available image `isName` checks Installation names;
+`refuseUndeployableConfigurationValues` checks drafts. Older images or gzipped inputs
+over 1 MiB warn and defer to deployment.
 
 Experimental two-cluster Jobs use `verifyExecutionTenantGrants` to check API
-Pod, proxy, and optional log/Event access, plus worker Pod patch and Job get,
-create and delete access. Missing grants require the
+Pod/`pods/proxy` reads, optional logs/Events, worker Pod patch and Job get/create/delete.
+Missing grants require
 [execution chart upgrade](../testing/kubernetes.md#upgrade-the-execution-chart).
-Startup Jobs retain default-deny and dependency egress policies. Verify enforcement.
+Verify default-deny and dependency egress enforcement for Startup Jobs.
 
-Preflight leaves writers serving. `scripts/upgrade-preflight-state.py` records
-create intent and acknowledged UIDs. `scripts/lib/upgrade-preflight-cleanup.sh:cleanup_preflight`
-confirms Jobs and children are gone before deleting dependencies. Unknown
-consumers retain dependencies. [Interrupted cleanup](coordinated-production-upgrade/preflight-cleanup.md)
-uses these records.
+Preflight does not stop or restart OCC writers; resume Jobs can run while writers
+remain stopped. `scripts/upgrade-preflight-state.py` records create intent and
+acknowledged UIDs. `scripts/lib/upgrade-preflight-cleanup.sh:cleanup_preflight`
+confirms Jobs/children gone before deleting dependencies; unknown consumers retain them.
+[Interrupted cleanup](coordinated-production-upgrade/preflight-cleanup.md) uses these records.
 
-Recheck switch Secrets after cleanup. `startup-preflight-passed` records checks
-and cleanup. Standalone preflight exits without preparing a deployment. If
-retained revisions require the original worker, it writes
-`preflight-blocked-original-worker` and exits 1. Upgrade refreshes inventory.
-Preparation locks candidates, inventory and target/parameter hashes. `scripts/upgrade-production-images:interrupted_upgrade`
-retains the lock and skips cleanup on `SIGHUP`, `SIGINT`, or `SIGTERM`.
-Before unlocking, confirm termination and reconcile accepted operations/resources.
-Freeze writers, autoscalers, Helm changes and drafts per the [production guide](../guides/deploy/production-upgrade.md).
+After cleanup, recheck switch Secrets; record `startup-preflight-passed`.
+Standalone preflight exits unprepared; original-worker requirements set
+`preflight-blocked-original-worker` and exit 1. Upgrade refreshes inventory and locks
+candidates, inventory and target/parameter hashes. On `SIGHUP`, `SIGINT` or `SIGTERM`,
+`scripts/upgrade-production-images:interrupted_upgrade` retains the lock and skips
+cleanup. Before unlocking, confirm termination and reconcile accepted operations/resources.
+Freeze writers, autoscalers, Helm changes and drafts per the
+[production guide](../guides/deploy/production-upgrade.md).
 
 ### 2. Reconcile a prior attempt
 
-Resume locks evidence and dispatch journals, checks paths and identities, binds
-prepared inputs, source and cluster, and requalifies images and eligible nodes.
-Values must match baseline, candidate or the recorded predecessor and revision.
-Resume can finish local Installation writes, mutable Secret replacement or an
-immutable reference switch. `verify_installation_switch` checks both UIDs and data.
-Check migration history and settle initializer Jobs and Pods before retry.
-`new_attempt` fsyncs attempt-directory ancestors before publishing pointers.
-A failed identity or history check leaves stopped writers stopped. Reconcile
-unknown creates before resume. Resume skips Helm submission when the submitted
-revision is deployed with the candidate values or the recorded recovery successor verifies.
+Resume locks evidence and dispatch journals; verifies paths, identities, prepared
+inputs, source and cluster; and requalifies images/nodes. Values must match baseline,
+candidate or recorded predecessor/revision. Resume can finish Installation writes, mutable Secret
+replacement or immutable switches; `verify_installation_switch` checks both UIDs/data.
+Before retry, check history and settle initializer Jobs/Pods. `new_attempt` fsyncs
+ancestors before publishing pointers. Identity/history failure leaves writers stopped.
+Reconcile unknown creates. Skip Helm for the deployed candidate revision or verified
+recorded recovery successor.
 
-If Helm intent exists and the release is still at the original revision,
-a separate-mode retry calls `require_migration_writers_stopped` before preparing
-a new attempt or starting preflight. Each Deployment must have the handoff UID
-and generation, the expected release and component labels, zero replicas, and no
-deletion timestamp. Writer Pods must be absent. The helper rechecks both
-Deployments before the scale step, which skips stopped writers. Once it confirms
-the Pods are absent, it rechecks Helm status, terminal initialization Jobs and
-Pods, and both Deployments before protected writes.
-A failed expected revision follows the usual checked retry.
+After rejected Helm intent at the incumbent revision, separate-mode retry checks handoff
+UIDs/generations, labels, zero replicas, deletion timestamps and writer Pods; validates
+the ACK against that fresh worker snapshot before attempt preparation or ordinary
+preflight. Recheck the pair before scaling and Helm, and terminal initializers and both
+Deployments before protected writes. A failed expected revision uses checked retry.
 
 For [same-candidate recovery](../guides/deploy/production-helm-recovery.md),
-`scripts/upgrade-helm-state.py:recover` checks Helm payload, ownership, completed
-Job/Pod and exact security contexts. `pod_matches` compares requests/limits through
-Compute's `resource-quantities.ts`. Reads use manifest namespaces and release
-ownership. `check-recovery` validates the original attempt before preflight Jobs;
-both application identities must pass before a new rollback. `recover` repeats
-admission before exclusive intent and dispatch. Accepted/uncertain recovery stays
-readback-only.
-`require_absent` rejects remaining predecessor-only resources before intent,
-before rollback, after rollback and on resume. `verify_workload_changes` requires
-retired environment entries and container placements absent before rollback; afterward all changed selections must
-match. Neither check deletes resources. Changed nonnative resource specs require exact
-candidate matches. Resume rechecks recorded UIDs without pinning old versions.
-Supports only pre-upgrade hooks. Resume requires successor acknowledgement.
-Client shutdown, exclusive ownership, resource reconciliation and database history
-remain operator attestations.
+`scripts/upgrade-helm-state.py:recover` checks payload, ownership, terminal Job/Pod
+and exact security contexts. `pod_matches` compares requests/limits via Compute's
+`resource-quantities.ts`; reads use manifest namespaces/release ownership.
+`check-recovery` validates the original attempt before preflight Jobs; both application
+identities must pass before rollback. `recover` repeats admission before exclusive
+intent/dispatch; accepted or uncertain recovery is readback-only. `require_absent`
+rejects predecessor-only resources before intent, around rollback and on resume.
+`verify_workload_changes` requires retired environment entries/container placements
+absent before rollback and changed selections matching afterward. Neither deletes
+resources. Changed nonnative specs must match the candidate. Resume rechecks UIDs
+without pinning old versions and requires successor acknowledgement. Only pre-upgrade
+hooks are supported. Operators attest shutdown, exclusive ownership, resource
+reconciliation and database history.
 
 ### 3. Quiesce writers and run the candidate release
 
-`scripts/upgrade-production-images:quiescence_remaining` bounds shutdown.
-Validate both Deployments. Before either stop, check named patch permission for
-running workers. Refuse denial and warn on inconclusive review.
-While the worker runs, refuse inventory drift, including on resume. Restore stopped
-API access under exclusive maintenance ownership before retry.
-Skip stopped writers. Stopped workers lack prospective checks.
-Sequential patches test UID, resource version and replicas. Conflicts can leave
-the API stopped. Verify Pod absence and original Deployments at zero. Operators
-stop other writers/autoscalers and keep nodes reachable.
-Separate mode rechecks Secret identities before stopping writers and again
-before recording their stopped UIDs and generations. It exits 3.
-`apply_database_migration` requires approval for irreversible SQL.
-Its sibling journal records Job create and delete intent. Unknown effects retain
-the lock and kubeconfig snapshot. Cleanup observes prior deletes. Only a cleaned
-failed verification Job permits a verification retry. Resume requires completed
-verification for journaled migrations and rechecks both Secret identities.
-Kubernetes Jobs reference these Secrets by name, so keep edits fenced throughout.
+`scripts/upgrade-production-images:quiescence_remaining` bounds shutdown. Stop other
+writers/autoscalers; keep nodes reachable. Validate both Deployments. When the worker
+runs, including on resume, check named patch permission and refresh inventory before
+either OCC writer stops. Denial/drift blocks; inconclusive review warns. Sequential PATCHes
+test UID, resource version and replicas; conflict can leave the API stopped.
 
-Protected files change atomically. Resource-version checks preserve unrelated
-mutable Secret data. Reference switches preserve both Secrets; both OCC templates
-select the successor and checksum.
+At zero, fresh runs refuse; resume requires private `worker-stop-confirmed.json`
+bound to prepared parameters and worker UID/generation. Receipt creation requires a
+successful PATCH response confirming the same UID, next generation and zero replicas.
+Lost responses and invalid receipts block. Confirmed stops skip worker PATCH and
+inventory refresh. After drain, recheck original UIDs, zero replicas and receipt before
+handoff, protected settings, Secret replacement or Helm.
 
-`upgrade-helm-state.py:new_attempt` renders and dry-runs immutable values. Hooks
-and the initializer Pod receive the fresh `installation.upgradeAttemptId`.
-Upgrade and recovery preserve `.json` format.
-`record_submission` saves intent and predecessor before publishing `helm-started`.
-Identical interrupted staging can finish. Published intent survives staged retries.
-`scripts/migration-history.mjs:migrateWithHistory` checks Installation identity
-and recognized history under lock for separate Jobs. Verification and the
-separate Helm hook require completed history. Hook mode applies pending SQL.
+For the [one-off channel transition](channel-egress.md#0-install-or-upgrade-channel-routing),
+enforce the zero-worker rule before Agent Stop. Stop selected Agents, or verify
+recorded Stops on resume with the API stopped. Reread both Deployments; recheck the
+receipt. Before either writer PATCH, refuse UID, generation or replica changes since
+initial observation.
+Resource-version-only changes are allowed; atomic PATCHes use refreshed versions.
+Refreshed running-worker inventory must match preparation except recorded Stops.
+
+Separate mode rechecks Secret identities, records stopped UIDs/generations and exits 3;
+fence both writers. Managed apply requires irreversible-SQL approval. Before journal
+intent or SQL-capable Job creation, new apply freshly checks the handoff pair and
+validates the stop ACK against that worker snapshot. Preserve pending/completed
+reconciliation and read-only verification. Unknown effects retain lock and kubeconfig
+snapshot; cleanup observes prior deletes. Retry requires cleaned failed verification.
+Resume requires completed journaled verification and rechecks Secret identities.
+Fence referenced Secrets throughout.
+
+Preserve evidence after an unconfirmed stop. After handoff, reconcile original
+migration/history with both writers fenced. Otherwise reconcile the stop; verify
+release, mounted Installation Secret and database compatibility before recovery.
+Restore a stopped API for inventory while the worker runs only after those checks,
+under exclusive maintenance ownership. Destructive recovery requires human risk review.
+
+`upgrade-helm-state.py:new_attempt` renders and dry-runs immutable values; hooks
+and initializer Pod receive fresh `installation.upgradeAttemptId`. Upgrade/recovery
+preserve `.json`. `record_submission` saves intent and predecessor before publishing
+`helm-started`. Identical interrupted staging can finish; published intent survives
+staged retries. For separate Jobs, `scripts/migration-history.mjs:migrateWithHistory`
+checks Installation identity and recognized history under lock. Verification and the
+separate Helm hook require completed history; hook mode applies pending SQL.
 
 ### 4. Verify control-plane recovery
 
 `scripts/upgrade-helm-state.py:verify_installation_consumers`
 
-Verify images, replicas and changed Installation checksums.
-Reference switches verify both Secret identities and Installation mounts in
-controllers and the owned initializer Pod. Each component needs one named container.
-Only broker-enabled workers permit restartable init containers. Authenticated OCC
-retries must return the same Installation ID.
-Worker preparation re-renders current launch requirements.
-Repository-bound Agents receive maintenance every 30 seconds until their session
-deadline; other Agents are re-prepared if deployment remains unfinished.
-Kubernetes Compute rolls changed Gateway and Harness Pod templates even with
-unchanged runtime images. Chat waits for readiness.
-OpenShell instead requires exact existing Sandbox content
-(`apps/controller/src/drivers/sandbox/openshell.ts:verifyExistingSandbox`).
-Generated-command changes require a fresh Agent revision; controller-only reuse
-cannot adopt them. See the
-[upgrade guide](../guides/deploy/production-upgrade.md#prepare-the-release).
-Other Agents receive Pod configuration/[diagnostics](agent-deployment-diagnostics.md) fixes on preparation or deployment.
+Verify images, replicas and changed Installation checksums. Reference switches check
+both Secret identities and Installation mounts in controllers and the owned initializer
+Pod. Require one named container per component; only broker-enabled workers permit restartable
+init containers. Authenticated OCC retries must return the same Installation ID. Worker
+preparation re-renders launch requirements. Repository-bound Agents receive maintenance every
+30 seconds until their session deadline. Other Agents are re-prepared if deployment remains unfinished. Kubernetes
+Compute rolls changed Gateway/Harness Pod templates even with unchanged images. Chat
+waits for readiness; OpenShell requires exact existing Sandbox
+content (`apps/controller/src/drivers/sandbox/openshell.ts:verifyExistingSandbox`).
+Generated-command changes
+[require a fresh Agent revision](../guides/deploy/production-upgrade.md#prepare-the-release);
+controller-only reuse cannot adopt them.
+Preparation/deployment applies Pod configuration/[diagnostics](agent-deployment-diagnostics.md)
+fixes to other Agents.
 
-Repository-enabled releases verify Ready API/worker Pods, owning ReplicaSets,
-node architecture and runtime image IDs against the qualified pair. The Driver
-checks broker admission without a session. Pod identities must remain stable
-through that check, dispatch and completion.
+Repository-enabled releases verify Ready API/worker Pods, owning ReplicaSets, node
+architecture and runtime image IDs against the qualified pair. The Driver checks broker
+admission without a session. Pod identities must remain stable through completion.
 
 ### 5. Deploy and verify the recorded fleet
 
-`scripts/upgrade-production-images:confirmed_deployment_status` and
+`scripts/upgrade-production-images:confirmed_deployment_status`,
 `scripts/upgrade-dispatch-state.py:transition`
 
-Flush intent before dispatch; unresolved intents block sends.
-The journal retains accepted revisions, definite refusals and superseded receipts.
-Resume may retry refusals; replacements must name the current failed revision.
-Unknown outcomes or stale journals require
+Flush intent before dispatch; unresolved intents block sends. The journal retains
+accepted revisions, definite refusals and superseded receipts. Resume may retry
+refusals; replacements must name the current failed revision. Unknown outcomes or
+stale journals require
 [recovery](../guides/deploy/production-upgrade-recovery.md).
 
 Verify authorized deployment status, revisions and Pod readiness on the
-candidate digest. [Gateway and Harness storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
-describes how state migration and retries gate runtime startup.
+candidate digest.
+[Gateway/Harness storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
+covers state migration and retry startup gates.
 
 Replacement gateways run read-only `openclaw doctor --lint --json --severity-min error`
 serially. `gateway_free_memory` requires one cgroup v2 reading above heap cap
-plus 640 MiB or two above cap plus 256 MiB. After insufficient memory, only
-fresh sufficient readings admit Doctor. A memory timeout stops new checks.
-`revision_pod_change_since_ready` checks all required Pods even after Doctor
-failure. A missing, changed, restarting or unready Pod fails the upgrade.
-See [Doctor recovery](../guides/deploy/production-upgrade-recovery.md#correct-a-doctor-failure).
+plus 640 MiB or two above cap plus 256 MiB. After insufficient memory, Doctor
+needs fresh sufficient readings; timeout stops new checks.
+`revision_pod_change_since_ready` checks all required Pods even after Doctor failure.
+Missing, changed, restarting or unready Pods fail the upgrade
+([Doctor recovery](../guides/deploy/production-upgrade-recovery.md#correct-a-doctor-failure)).
 
 ### 6. Hand off application verification
 
 `docs/guides/deploy/production-upgrade.md:Verify the release`
 
-Confirm Helm revision and OCC access. Runtime upgrades require deployment,
-readiness and Doctor success. `verify_agent_continuity` precedes terminal
-controller/Helm checks. Require one Running, Ready Pod per role. Replacement
-UIDs and completed init containers qualify. Eight results leave uniqueness unknown.
-Previously running provider Harnesses must stay running. Failure retains
-observations without `completed`. Reconcile failed writes. Resume rechecks
-without repeating successful Helm. `completed` blocks resume.
-Verify routing, models, channels, credentials, workspaces and restores.
-The [served Console check](../release/container-promotion.md#verify-the-served-console)
+Confirm Helm revision/OCC access. Runtime upgrades require deployment, readiness and
+Doctor success. `verify_agent_continuity` precedes terminal controller/Helm checks.
+Require one Running, Ready Pod per role; replacement UIDs and completed init containers
+qualify; eight results leave uniqueness unknown. Keep previously running provider Harnesses
+running. Failure retains observations without `completed`; reconcile failed
+writes. Resume rechecks without repeating successful Helm; `completed` blocks resume.
+Verify routing, models, channels, credentials, workspaces and restores. The
+[served Console check](../release/container-promotion.md#verify-the-served-console)
 accepts an optional image-bound entry digest.
 
 ### Read-only export after a split-layout refusal
@@ -341,8 +346,8 @@ requires no Agents or Secrets.
 ## Debugging and Verification
 
 - Check `helm-attempts/<UUID>/` render and dry-run output, and
-  `preflight-<api|worker|migration>.log`, `-logs.err` and `-status.json`. For resume,
-  use the current `upgrade-preflight-resume.*` directory.
+  `preflight-<api|worker|migration>.log`, `-logs.err` and `-status.json`. On resume,
+  use `upgrade-preflight-resume.*`.
 - See [upgrade recovery](../guides/deploy/production-upgrade-recovery.md) for
   `native-command-failures.tsv`, migration journals and dispatch results.
 - Compare `before-workloads.json` and `after-workloads.json` for controller-only
@@ -352,19 +357,26 @@ requires no Agents or Secrets.
 
 ## Related docs
 
-- [Production upgrade guide](../guides/deploy/production-upgrade.md)
-- [Production installation](../guides/deploy/production-installation.md)
-- [Production Agent verification](../guides/deploy/production-agents.md)
-- [Agent deployment reference](../reference/agents/deployment.md)
-- [Production startup flow](production-startup.md)
-- [Controller worker flow](controller-worker.md)
-- [Authoritative platform design](../design.md)
+- [Upgrade guide](../guides/deploy/production-upgrade.md)
+- [Installation](../guides/deploy/production-installation.md)
+- [Agent verification](../guides/deploy/production-agents.md)
+- [Agent deployment](../reference/agents/deployment.md)
+- [Production startup](production-startup.md)
+- [Controller worker](controller-worker.md)
+- [Platform design](../design.md)
 
 ## Manual Notes
 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 03:27: Check writer identity across the one-off Agent Stop phase. (authoring-run/835f8811-dc27-47d1-b27d-5d20413085f7 - 0e158e5f10ed1e65be1f6d64ff0f62cffb6f3283)
+
+- 2026-11-19 20:21: Require the worker stop receipt before migration and retry. (authoring-run/418defcd-00b7-4596-95cb-96610a0a2343 - 88f7c7a3b3f3430d89bcb82803c89c6dfbea2bbb)
+
+- 2026-11-19 16:56: Distinguish fenced migration handoff from other recovery. (authoring-run/cf9ae9aa-8bb0-4bc8-af2c-326adebf9112 - abd7da2dbd99369b523fe93ec052842c77e9cd2d)
+- 2026-11-19 15:27: Require an acknowledged worker stop before resume. (authoring-run/86724f58-75e9-4f02-a3a4-d285ef3a889b - 603a8d4ce1f3e47d9c8485d4dd0023c531bbd64b)
 
 - 2026-11-19 19:15: Trace the stopped writers check before Helm retry. (authoring-run/aed0a2bc-9691-4859-8bd6-1e7b3549c9b4 - d976da889bdeca6e9208821a5b4ea79a49033b0f)
 

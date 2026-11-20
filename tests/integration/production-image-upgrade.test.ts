@@ -411,7 +411,13 @@ esac
   await writeCommand(
     bin,
     "python3",
-    `if [[ "$1" == scripts/upgrade-dispatch-state.py || "$1" == scripts/upgrade-helm-state.py ||
+    `# Run the actual receipt writer with its PATCH response and directory descriptors.
+if (($# == 4)) && [[ "$1" == - && "$2" == */worker-stop-confirmed.json &&
+    "$3" == "\${2%/*}/current-worker-deployment.json" && "$4" =~ ^[0-9a-f]{64}$ ]]; then
+  command -p python3 "$@"
+  exit $?
+fi
+if [[ "$1" == scripts/upgrade-dispatch-state.py || "$1" == scripts/upgrade-helm-state.py ||
       "$1" == scripts/upgrade-preflight-state.py ||
       ( "$1" == - && "$4" == */oce-upgrade-preflight-* ) ||
       ( "$1" == - && ( "$2" == deploy/helm/openclaw-enterprise ||
@@ -653,6 +659,21 @@ fi
   const readinessCounter = join(directory, "readiness-counter");
   const runtimeCountCounter = join(directory, "runtime-count-counter");
   const commandLog = join(directory, "commands.log");
+  // Each simulated cluster keeps writer state across kubectl and Helm calls.
+  const writerState = `
+read_writer() {
+  component=$1
+  writer_file="$COMMAND_LOG.writer-$component"
+  generation=1
+  replicas=1
+  if [[ -f "$writer_file" ]]; then
+    read -r generation replicas <"$writer_file"
+  fi
+}
+write_writer() {
+  printf '%s %s\\n' "$((generation + 1))" "$1" >"$writer_file"
+}
+`;
   // Render the chart inputs preflight uses: controller entrypoints and images,
   // Installation mounts, and the initializer's migration identity.
   // Accepted upgrades retain their submitted values and advance the revision;
@@ -660,7 +681,7 @@ fi
   await writeCommand(
     bin,
     "helm",
-    `printf 'helm %s\\n' "$*" >>"$COMMAND_LOG"
+    `${writerState}printf 'helm %s\\n' "$*" >>"$COMMAND_LOG"
 revision_file="$LIVE_VALUES_FILE.revision"
 revision=1
 [[ ! -f "$revision_file" ]] || revision=$(cat "$revision_file")
@@ -681,6 +702,10 @@ elif [[ "$1" == upgrade && "$*" != *--dry-run=* ]]; then
     if [[ "$1" == --values ]]; then cp "$2" "$LIVE_VALUES_FILE"; break; fi
     shift
   done
+  for component in api worker; do
+    read_writer "$component"
+    write_writer 1 || exit
+  done
   printf '%s\\n' "$((revision + 1))" >"$revision_file"
   printf 'native Helm output\\n'
 elif [[ "$1" == template ]]; then
@@ -696,6 +721,10 @@ fi
     `${dispatchJson}if [[ "$*" == *'resourceAttributes'* ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
+case "\${!#}" in
+  */current-api-deployment.json|*/current-worker-deployment.json|*/quiescence-api-deployment.json|*/quiescence-worker-deployment.json|*/quiescence-pods.json|*/worker-stop-confirmed.json)
+    PATH="$ORIGINAL_TOOL_PATH" exec jq "$@" ;;
+esac
 if [[ "$*" == '-S '* || "$*" == '-eS '* ]]; then
   cat
   exit 0
@@ -813,9 +842,53 @@ if (result !== undefined) {
   await writeCommand(
     bin,
     "kubectl",
-    `printf 'kubectl %s\\n' "$*" >>"$COMMAND_LOG"
+    `${writerState}printf 'kubectl %s\\n' "$*" >>"$COMMAND_LOG"
 case "$*" in
-  *' patch deployment/'*) printf 'native patch output\\n' ;;
+  patch|'patch '*|*' patch'|*' patch '*|'get deployment/'*|*' get deployment/'*)
+    # Check the argument boundaries before reading or updating writer state.
+    if [[ "$1" == --kubeconfig ]]; then
+      [[ -n "$2" && "$3" == --context && -n "$4" ]] || exit 91
+      shift 4
+    fi
+    if [[ "$1" == --request-timeout=* ]]; then
+      [[ "$1" =~ ^--request-timeout=[0-9]+s$ ]] || exit 91
+      shift
+    fi
+    [[ "$1" == --namespace && "$2" == openclaw-system ]] || exit 91
+    shift 2
+    case "$2" in
+      deployment/openclaw-enterprise-api) component=api ;;
+      deployment/openclaw-enterprise-worker) component=worker ;;
+      *) exit 91 ;;
+    esac
+    if [[ "$1" == get ]]; then
+      [[ $# == 4 && "$3" == --output && "$4" == json ]] || exit 91
+      read_writer "$component"
+      printf '{"metadata":{"uid":"fixture-%s","generation":%s,"resourceVersion":"%s","labels":{"app.kubernetes.io/instance":"oce","app.kubernetes.io/component":"%s"}},"spec":{"replicas":%s}}\\n' \\
+        "$component" "$generation" "$generation" "$component" "$replicas"
+      exit
+    fi
+    [[ "$1" == patch && "$3" == --type && "$4" == json && "$5" == --patch-file && -f "$6" && "$6" != -* ]] || exit 91
+    if [[ "$component" == worker ]]; then
+      [[ $# == 8 && "$7" == --output && "$8" == 'jsonpath={.metadata.uid}{"\\t"}{.metadata.generation}{"\\t"}{.spec.replicas}' ]] || exit 91
+    else
+      [[ $# == 6 ]] || exit 91
+    fi
+    read_writer "$component"
+    PATH="$ORIGINAL_TOOL_PATH" jq -es --arg uid "fixture-$component" --arg version "$generation" \\
+      --argjson replicas "$replicas" '. == [[
+        {op: "test", path: "/metadata/uid", value: $uid},
+        {op: "test", path: "/metadata/resourceVersion", value: $version},
+        {op: "test", path: "/spec/replicas", value: $replicas},
+        {op: "replace", path: "/spec/replicas", value: 0}
+      ]]' "$6" >/dev/null || exit 91
+    write_writer 0 || exit
+    if [[ "$component" == worker ]]; then
+      printf 'fixture-worker\\t%s\\t0\\n' "$((generation + 1))"
+    else
+      printf 'native patch output\\n'
+    fi
+    ;;
   *' rollout status deployment/'*) printf 'native rollout output\\n' ;;
   *'exec gateway-test --container gateway -- env NODE_OPTIONS=--max-old-space-size=384 node /app/openclaw.mjs doctor --lint --json --severity-min error'*)
     if [[ "$DOCTOR_FAILURE" == "1" ]]; then
@@ -833,12 +906,6 @@ case "$*" in
     exec "$(dirname "$0")/preflight-kubectl" "$@" ;;
 
   *'jsonpath='*) printf '%s\\n' "$OBSERVED_CONTROLLER_IMAGE" ;;
-  *' get deployment/openclaw-enterprise-'*)
-    for arg in "$@"; do
-      case "$arg" in deployment/openclaw-enterprise-*) component=\${arg##*-} ;; esac
-    done
-    printf '{"metadata":{"uid":"fixture-%s","resourceVersion":"1","labels":{"app.kubernetes.io/instance":"oce","app.kubernetes.io/component":"%s"}},"spec":{"replicas":1}}\\n' "$component" "$component"
-    ;;
   *'get pods'*) printf '%s\\n' '{"items":[]}' ;;
   *' get pod/'*) printf '%s\\n' '{"status":{"phase":"Succeeded"}}' ;;
   *' logs pod/'*) printf 'agent-drafts-accepted\\ninstallation-startup-ready\\n' ;;
@@ -911,6 +978,8 @@ esac
   // Helm may produce useful stdout before failing; verbose output must expose
   // that saved evidence without changing the native status or failure receipt.
   const helmFailureEvidence = join(directory, "helm-failure-evidence");
+  // The failed attempt leaves its writers stopped. Later cases use separate state.
+  const helmFailureLog = join(directory, "helm-failure-commands.log");
   await assert.rejects(
     execute(
       upgradeScript,
@@ -919,7 +988,7 @@ esac
         cwd: repository,
         env: {
           ...environment,
-          COMMAND_LOG: commandLog,
+          COMMAND_LOG: helmFailureLog,
           HELM_UPGRADE_FAILURE: "1",
           OBSERVED_CONTROLLER_IMAGE: controllerImage,
         },
@@ -928,11 +997,22 @@ esac
     (error: unknown) => {
       const failure = processFailure(error);
       assert.equal(failure.code, 9, failure.stderr);
-      assert.equal(
-        failure.stdout.split("native patch output\n").at(-1),
-        "native Helm failure output\n",
+      assert.match(
+        failure.stdout,
+        /native patch output\nfixture-worker\t2\t0\nnative Helm failure output\n$/u,
       );
       return true;
+    },
+  );
+  // The confirmed stop must survive a failed Helm submission with the attempt and writer binding.
+  assert.deepEqual(
+    parseJson(await readFile(join(helmFailureEvidence, "worker-stop-confirmed.json"), "utf8")),
+    {
+      attempt: createHash("sha256")
+        .update(await readFile(join(helmFailureEvidence, "parameters.json")))
+        .digest("hex"),
+      uid: "fixture-worker",
+      generation: 2,
     },
   );
   const [helmAttempt] = await readdir(join(helmFailureEvidence, "helm-attempts"));
@@ -949,7 +1029,7 @@ esac
     "helm-upgrade\trelease\t9\n",
   );
   await writeFile(protectedFiles.values, valuesDocument, { mode: 0o600 });
-  await rm(commandLog);
+  await rm(helmFailureLog);
 
   // A controller release changes only the Helm-owned image. It must not replace
   // the Installation Secret or create Agent revisions; it checks active snapshots.
