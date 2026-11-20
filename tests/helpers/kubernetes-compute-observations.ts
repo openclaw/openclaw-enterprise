@@ -420,6 +420,12 @@ export async function assertReadyGateway(
       typeof podName === "string",
       "the gateway Pod must have a string name before reading its mounted configuration",
     );
+    // Pod names are DNS subdomains. kubectl exec interprets a slash as a resource selector.
+    const dnsLabel = /^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/;
+    assert.ok(
+      podName.length <= 253 && podName.split(".").every((label) => dnsLabel.test(label)),
+      "the gateway Pod must have a valid Kubernetes name before reading its mounted configuration",
+    );
     const mountedDocument = await kubectlRead(
       "exec",
       podName,
