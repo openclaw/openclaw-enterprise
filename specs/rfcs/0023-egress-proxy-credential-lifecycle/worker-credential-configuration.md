@@ -8,6 +8,10 @@ This amendment proposes one worker-owned configuration callback and exposes the 
 
 ## Caller and contract
 
+OCC provisions the Namespace before Agent deployment. Compute prepares the backing namespace, then the selected OpenShell Sandbox Driver ensures the configured Gateway, checks Gateway readiness when configured, verifies Gateway health, and creates or verifies the active Workspace. This includes a Namespace-owned Gateway selected through `gateway.namespaceGatewayResources`. OCC marks the Namespace ready after each selected lifecycle participant completes. Agent Compute uses that ready Namespace backend and existing Workspace; it does not create the shared Gateway or Workspace during Agent staging. See [Namespace-owned Gateway setup](../../../docs/reference/drivers/openshell-sandbox/namespace-gateway.md) for qualification limits.
+
+Installation validation rejects incompatible selectors before Agent admission. OCC TokenService with the native OpenShell proxy and OpenShell Sandbox is a valid selection. The native proxy requires an OpenShell Sandbox, and OpenShell TokenService with an external proxy is unsupported. Deployment separately validates the exact native Provider identity and Workspace before attaching a binding.
+
 The worker calls `ComputeDriver.prepareRevision`. Compute creates the Sandbox during that call, so the worker cannot configure the exact target beforehand. The [proxy deployment contract](../../../packages/contracts/src/drivers/credential-proxy/deployment.ts) needs a source-bound resolver to initialize delivery. Compute cannot call that operation directly without receiving the resolver. A callback lets the worker call the existing staged proxy API for the actual target while Compute continues to orchestrate preparation. Splitting `prepareRevision` would require another lifecycle operation and a way to retain the intermediate target.
 
 Add this optional member to [ComputeRevisionContext](../../../packages/contracts/src/drivers/compute/index.ts):
@@ -35,3 +39,5 @@ After both observations are ready, Compute authenticates the held startup, insta
 ## Acceptance criteria
 
 Use the regular Agent deployment workflow to prove that the worker configures the actual Sandbox ID and returns only projections to Compute. Denied source authority, the wrong target or configuration, failed delivery, stale readiness, or a missing startup acknowledgment must prevent release. Verify that Compute signs only for the acknowledged startup and that a retry cannot release a replacement with an earlier grant. Qualify an allowed Agent request and a denial before the origin through the selected real runtime.
+
+Qualify this path with a dedicated Harness and the native embedded Credential Proxy, using the ready Namespace Gateway and Workspace. The held startup and combined native network and injection configuration belong to this path. Embedded Harness mode is outside this qualification.
