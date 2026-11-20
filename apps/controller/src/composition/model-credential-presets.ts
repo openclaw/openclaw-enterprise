@@ -3,7 +3,7 @@ import {
   normalizeInferenceBaseUrl,
   type StaticKeyTemplateValues,
 } from "@openclaw-enterprise/contracts";
-import type { ControllerOptions } from "@openclaw-enterprise/occ";
+import type { ControllerOptions, ModelCredentialPreset } from "@openclaw-enterprise/occ";
 import { asRecord, splitModelRef } from "@openclaw-enterprise/utils";
 
 const openAiStaticTemplate = {
@@ -14,7 +14,7 @@ const openAiStaticTemplate = {
 /** The source preset chooses credential authority; the saved model selection chooses its consumer. */
 export const resolveModelCredentialPreset: NonNullable<
   ControllerOptions["modelCredentialPreset"]
-> = ({ presetId, configuration, harness }) => {
+> = ({ presetId, configuration, harness }): ModelCredentialPreset | undefined => {
   if (presetId !== "openai" || (harness.id !== "openclaw" && harness.id !== "codex")) {
     return undefined;
   }
@@ -47,7 +47,10 @@ export const resolveModelCredentialPreset: NonNullable<
     return undefined;
   }
   try {
-    const provider = { baseUrl: normalizeInferenceBaseUrl(providerSettings.baseUrl), protocol };
+    const provider: ModelCredentialPreset["provider"] = {
+      baseUrl: normalizeInferenceBaseUrl(providerSettings.baseUrl),
+      protocol,
+    };
     if (!modelProviderRequestApproved(provider, openAiStaticTemplate)) {
       return undefined;
     }
