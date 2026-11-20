@@ -283,16 +283,18 @@ export async function assertReadyGateway(
     "Recreate",
     "gateway updates must stop the old Pod before starting its replacement",
   );
+  const observedGeneration = field(deployment.status, "observedGeneration");
+  const generation = field(deployment.metadata, "generation");
+  assert.ok(atLeast(observedGeneration, generation));
   objectMember(deployment, "status");
-  objectMember(deployment, "metadata");
-  assert.ok(atLeast(deployment.status.observedGeneration, deployment.metadata.generation));
   assert.equal(
     deployment.status.readyReplicas,
     1,
     "each Agent gateway must have one ready replica",
   );
+  objectMember(deployment, "metadata");
+  assert.equal(field(deployment.metadata.annotations, "openclaw.dev/agent-id"), agentId);
   observeGatewayMetadata(deployment);
-  assert.equal(deployment.metadata.annotations["openclaw.dev/agent-id"], agentId);
   if (namespaceId !== undefined) {
     assert.equal(deployment.metadata.annotations["openclaw.dev/namespace-id"], namespaceId);
   }
@@ -305,7 +307,6 @@ export async function assertReadyGateway(
     snapshot === undefined ? undefined : expectedGatewayDocument(snapshot);
   if (snapshot !== undefined) {
     const document = JSON.stringify(snapshot.configuration);
-    objectMember(deployment.spec, "template");
     const template = deployment.spec.template;
     for (const metadata of [deployment.metadata, field(template, "metadata")]) {
       const annotations = field(metadata, "annotations");
@@ -338,7 +339,10 @@ export async function assertReadyGateway(
     );
     assert.equal(field(configuration, "immutable"), true);
     const data = field(configuration, "data");
-    assert.deepEqual(Object.keys(object(data)), ["openclaw.json"]);
+    if (data === null || data === undefined) {
+      throw new TypeError("Expected ConfigMap data");
+    }
+    assert.deepEqual(Object.keys(data), ["openclaw.json"]);
     assert.deepEqual(
       JSON.parse(String(field(data, "openclaw.json"))),
       expectedNativeDocument,
@@ -481,12 +485,12 @@ export async function assertHarnessWorkspaceClaim(
   const annotations = field(claim.metadata, "annotations");
   assert.equal(field(annotations, "openclaw.dev/namespace-id"), namespaceId);
   assert.equal(field(annotations, "openclaw.dev/agent-id"), agentId);
+  assert.deepEqual(field(claim.spec, "accessModes"), ["ReadWriteOnce"]);
   objectMember(claim, "spec");
-  assert.deepEqual(claim.spec.accessModes, ["ReadWriteOnce"]);
   assert.equal(field(field(claim.spec.resources, "requests"), "storage"), sharedWorkspaceSize);
   assert.equal(claim.spec.storageClassName, "local-path");
+  assert.equal(field(claim.status, "phase"), "Bound");
   objectMember(claim, "status");
-  assert.equal(claim.status.phase, "Bound");
   assert.equal(field(claim.status.capacity, "storage"), sharedWorkspaceSize);
   if (expectedUid !== undefined) {
     assert.equal(
