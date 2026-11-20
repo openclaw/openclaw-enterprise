@@ -409,7 +409,7 @@ export function registerLeaseParentAndRestrictionCases<Scenario extends LeaseSce
       try {
         scenario.socket.write("allowed-client-message");
         peer.write("allowed-upstream-message");
-        await waitFor(
+        await waitUntil(
           "allowed application bytes across both relay directions",
           () =>
             clientBytes.includes("allowed-upstream-message") &&
