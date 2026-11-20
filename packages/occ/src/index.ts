@@ -16302,7 +16302,11 @@ export class OpenClawController {
         "The selected model has no matching approved source preset and explicit inference route.",
       );
     }
-    if (sandbox === undefined || !this.selections.has("credential_proxy")) {
+    if (
+      sandbox === undefined ||
+      !this.selections.has("credential_proxy") ||
+      this.credentialDeploymentCapabilities === undefined
+    ) {
       throw new ResourceStateConflictError(
         "The selected Sandbox and Credential Proxy have no qualified staged credential enforcement.",
       );
@@ -16311,7 +16315,7 @@ export class OpenClawController {
     let capabilities: CredentialDeploymentCapabilities | undefined;
     try {
       proxy = this.selectedProxyOwner().require("credential_proxy");
-      capabilities = this.credentialDeploymentCapabilities?.({ sandbox, proxy });
+      capabilities = this.credentialDeploymentCapabilities({ sandbox, proxy });
     } catch {
       capabilities = undefined;
     }

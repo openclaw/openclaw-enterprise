@@ -223,8 +223,8 @@ export function installationControllerOptions(
   | "modelCredentialPreset"
 > {
   return {
-    // TODO(staged credential deployment): wire enforcing capabilities after native process identity,
-    // policy enforcement, target cleanup and source update notifications are qualified.
+    // TODO(staged credential deployment): select the new Credential Proxy Driver, then wire
+    // capabilities after process identity, enforcement, cleanup and source updates qualify.
     modelCredentialPreset: resolveModelCredentialPreset,
     driverConfigurations: installationDriverConfigurations(installation),
     sandboxNetworkPolicyCeiling: installation?.sandboxNetworkPolicyCeiling ?? [],
@@ -1711,9 +1711,6 @@ async function composeInstallationConfiguration(
           }
         : {}),
       ...(protectedDriver === undefined ? {} : { protectedDriver }),
-      ...(protectedDriver === undefined
-        ? {}
-        : { credentialProxyDriver: protectedDriver.require("credential_proxy") }),
       preparedTokens: tokenService,
       ...(preparedRepositoryGit === undefined || repositoryTransport || repositoryGitDriver
         ? {}

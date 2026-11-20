@@ -1161,6 +1161,7 @@ export function validStandaloneCredentialDeployment(
   }
   const binding = policy.bindings[0];
   return (
+    revision.credentialSources?.length === 1 &&
     policy.bindings.length === 1 &&
     binding?.consumer.kind === "model" &&
     binding.sourceRef.kind === "credential_source" &&

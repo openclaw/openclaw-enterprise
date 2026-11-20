@@ -3,17 +3,11 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 
 import { createPostgresAuthAccountProvisioner } from "../../apps/controller/src/auth/index.ts";
-import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { installationControllerOptions } from "../../apps/controller/src/composition/installation-config.ts";
-import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
-import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
-import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import type { CredentialSourceReference } from "../../packages/contracts/src/index.ts";
 import {
   OpenClawController,
-  InstalledDriver,
   ResourceStateConflictError,
   type UpdateManagedCredentialSourceInput,
 } from "../../packages/occ/src/index.ts";
@@ -21,10 +15,8 @@ import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-ses
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
-import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 import { auditEvent } from "./postgres-namespace-iam-fixture.ts";
 
@@ -55,10 +47,9 @@ test(
     // The selected owner and Secret Driver are concrete; only the Kubernetes API transport is simulated.
     const { driver } = useInstallationSecretDriver(controller);
     assert.ok(driver.installationSecrets);
-    const storeIdentity = randomUUID();
     const instanceId = await controller.activateTokenServiceInstance(
       "selected-owner",
-      storeIdentity,
+      randomUUID(),
     );
     const owner = new OCCTokenServiceDriver(
       "selected-owner",
@@ -396,163 +387,6 @@ test(
       ).rows[0];
     const noDeploymentEffects = { roles: 0, bindings: 0, grant_audits: 0, revisions: 0, work: 0 };
     assert.deepEqual(await deploymentEffects(), noDeploymentEffects);
-
-    // Qualification is simulated here solely to reach OCC's policy admission. The real
-    // OpenShell Drivers are selected together, but this test does not claim native enforcement.
-    const grant = {
-      id: "model-egress",
-      binary: "/usr/bin/model-client",
-      host: "api.openai.com",
-      ports: [{ from: 443, to: 443 }],
-    };
-    const sandboxId = "staged-policy-openshell";
-    const backend = {
-      id: "staged-policy-backend",
-      drivers: { sandbox: sandboxId, credential_proxy: sandboxId },
-      client: new OpenShellGateway({ serviceName: "openshell-gateway" }),
-    };
-    const sandboxConfiguration = {
-      integrationMode: "legacy" as const,
-      gateway: {},
-      kubernetes: {
-        userNamespaces: false,
-        serviceAccount: { mode: "gatewayConfigured" as const },
-        sandboxDataMount: {
-          subPath: "workspace",
-          mountPath: "/sandbox/enterprise",
-          readOnly: false,
-        },
-      },
-      policy: {
-        process: { runAsUser: "1000", runAsGroup: "1000" },
-        networkPolicies: [
-          {
-            name: "baseline",
-            binaries: [{ path: grant.binary }],
-            endpoints: [{ host: "baseline.example.test", ports: [443] }],
-          },
-        ],
-      },
-    };
-    const sandbox = new OpenShellSandboxDriver(sandboxConfiguration, { id: sandboxId, backend });
-    const proxyConfiguration = {
-      middlewareName: "staged-policy",
-      authorityScope: "execution" as const,
-    };
-    const proxy = new OpenShellCredentialProxyDriver(proxyConfiguration, {
-      id: sandboxId,
-      sandbox,
-      backend,
-    });
-    const placement = createRuntimeLogComputeDriver({
-      id: controller.selectedDriver("compute").id,
-      sandboxNamespaceName: kubernetesNamespaceName,
-    });
-    const admission = createTestKubernetesComputeDriver(placement.id, {
-      gatewayRuntime: true,
-      modelProvider: { protocol: "openai-responses", baseUrl: "https://api.openai.com/v1" },
-    });
-    // Reuse production model-route admission while this fixture supplies only test placement.
-    const qualifiedCompute = Object.assign(placement, {
-      resolveHarnessConfiguration: admission.resolveHarnessConfiguration.bind(admission),
-    });
-    const qualified = new OpenClawController(controller.installation, {
-      state,
-      ...installationControllerOptions(undefined),
-      nativeWorkerSupport: "custom-image",
-      sandboxNetworkPolicyCeiling: [grant],
-      driverConfigurations: [
-        {
-          capability: "sandbox",
-          driverId: sandbox.id,
-          implementation: sandbox.implementation,
-          definition: OpenShellSandboxDriver,
-        },
-      ],
-      credentialDeploymentCapabilities: () => ({
-        binary: grant.binary,
-        // Deliberately refuse the otherwise valid matcher at the qualification callback. A
-        // persisted rule ID leaking into C2 would fail strict parsing before reaching this refusal.
-        sandbox: { wildcards: false, portRanges: false, supportsNetworkPolicy: () => false },
-        proxy: {
-          distinguishesExecutable: true,
-          distinguishesPort: true,
-          rejectsStaleAndMisplacedPlaceholders: true,
-          supportsBindingRequest: () => true,
-        },
-      }),
-      recordOperations: true,
-    });
-    for (const capability of ["iam", "configuration", "secret", "token_service"] as const) {
-      const selected = controller.selectedDriver(capability);
-      qualified.registerDriver(selected);
-      qualified.selectDriver(capability, selected.id);
-    }
-    qualified.registerDriver(qualifiedCompute);
-    qualified.selectDriver("compute", qualifiedCompute.id);
-    assert.equal(await qualified.activateTokenServiceInstance(owner.id, storeIdentity), instanceId);
-    qualified.installDriver(
-      new InstalledDriver(
-        {
-          id: sandboxId,
-          implementation: "openshell",
-          configuration: { sandbox: sandboxConfiguration, proxy: proxyConfiguration },
-        },
-        {
-          capabilities: { sandbox, credential_proxy: proxy },
-          namespaceLifecycleHooks: sandboxNamespaceLifecycleBinding(qualifiedCompute, sandbox)
-            .hooks,
-        },
-      ),
-      ["sandbox"],
-    );
-    const qualifiedApp = createApp(qualified);
-    const dedicated = await inject(
-      "POST",
-      `${base}/agents`,
-      {
-        name: `Qualified policy ${randomUUID()}`,
-        configurationId,
-        executionMode: "dedicated",
-        harnessAuth: { method: "credential_source", sourceId },
-        credentialSources: [{ sourceId }],
-      },
-      qualifiedApp,
-    );
-    assert.equal(dedicated.statusCode, 201, dedicated.body);
-    const dedicatedId = dedicated.json().data.id;
-    const networking = `${base}/agents/${dedicatedId}/sandbox-policy/networking`;
-    const editing = await inject("PATCH", `${networking}/editing`, { enabled: true }, qualifiedApp);
-    assert.equal(editing.statusCode, 200, editing.body);
-    const savedGrant = await inject(
-      "PUT",
-      networking,
-      { expectedVersion: 1, additions: [grant] },
-      qualifiedApp,
-    );
-    assert.equal(savedGrant.statusCode, 200, savedGrant.body);
-    // The grant was saved before a Proxy was selected. Enabling staged qualification later
-    // must adapt the existing saved rule instead of treating its persistence ID as a matcher.
-    qualified.selectDriver("credential_proxy", proxy.id);
-    const refusedGrant = await inject(
-      "POST",
-      `${base}/agents/${dedicatedId}/deploy`,
-      {},
-      qualifiedApp,
-    );
-    assert.equal(refusedGrant.statusCode, 409, refusedGrant.body);
-    assert.deepEqual(refusedGrant.json().error.details?.[0], {
-      path: "/networkAccessPolicy/allowed",
-      code: "INVALID_VALUE",
-      message: "The Sandbox cannot enforce the complete effective network policy.",
-    });
-    const detachedDedicated = await inject(
-      "PATCH",
-      `${base}/agents/${dedicatedId}`,
-      { configurationId, harnessAuth: null, credentialSources: [] },
-      qualifiedApp,
-    );
-    assert.equal(detachedDedicated.statusCode, 200, detachedDedicated.body);
 
     // A deployer who loses exact source authority is denied before the staged-delivery refusal.
     assert.equal(

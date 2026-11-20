@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import type { AgentRevision, RepositoryRevisionState } from "@openclaw-enterprise/contracts";
+import {
+  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
+  type AgentRevision,
+  type RepositoryRevisionState,
+} from "../../packages/contracts/src/index.ts";
 import type {
   PlatformUnitOfWork,
   PlatformStateStore,
@@ -14,16 +18,11 @@ import {
   type PlatformStateSeed,
 } from "./platform-state-contract-fixture.ts";
 
-async function standaloneRevision(
+async function readySource(
   transaction: PlatformUnitOfWork,
   seed: PlatformStateSeed,
-  repository?: RepositoryRevisionState,
-): Promise<AgentRevision> {
-  const instance = await transaction.installations.selectTokenServiceInstance({
-    id: randomUUID(),
-    driverId: "token-service-contract",
-    storeIdentity: "standalone-state-contract",
-  });
+  tokenServiceInstanceId: string,
+): Promise<string> {
   const sourceId = identifier("cs");
   const createdAt = new Date().toISOString();
   await transaction.credentialSources.createCredentialSource({
@@ -31,10 +30,10 @@ async function standaloneRevision(
     namespaceId: seed.namespace.id,
     name: `Standalone model source ${randomUUID()}`,
     type: "static",
-    config: {},
+    config: { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: "openai" },
     secrets: {},
     ownerCapability: "token_service",
-    tokenServiceInstanceId: instance.id,
+    tokenServiceInstanceId,
     state: "registering",
     createdAt,
   });
@@ -49,6 +48,25 @@ async function standaloneRevision(
   assert.ok(
     await transaction.credentialSources.markCredentialSourceReady(seed.namespace.id, sourceId, {}),
   );
+  return sourceId;
+}
+
+async function standaloneRevision(
+  transaction: PlatformUnitOfWork,
+  seed: PlatformStateSeed,
+  options: { repository?: RepositoryRevisionState; extraSource?: boolean } = {},
+): Promise<AgentRevision> {
+  const { repository } = options;
+  const instance = await transaction.installations.selectTokenServiceInstance({
+    id: randomUUID(),
+    driverId: "token-service-contract",
+    storeIdentity: "standalone-state-contract",
+  });
+  const sourceId = await readySource(transaction, seed, instance.id);
+  const sourceIds = [sourceId];
+  if (options.extraSource) {
+    sourceIds.push(await readySource(transaction, seed, instance.id));
+  }
   const agent = {
     ...seed.agent,
     id: identifier("agt"),
@@ -56,7 +74,7 @@ async function standaloneRevision(
     executionMode: "dedicated" as const,
     servicePrincipalId: identifier("service-agent"),
     harnessAuth: { method: "credential_source" as const, sourceId },
-    credentialSources: [{ sourceId }],
+    credentialSources: sourceIds.map((id) => ({ sourceId: id })),
     ...(repository === undefined
       ? {}
       : {
@@ -69,7 +87,7 @@ async function standaloneRevision(
   await transaction.agents.createAgent(agent);
   const request = {
     binary: "/usr/bin/node",
-    host: "api.example.test",
+    host: "api.openai.com",
     ports: [{ from: 443, to: 443 }],
     requestPolicy: { type: "http" as const, method: "POST", path: "/v1/responses" },
   };
@@ -79,23 +97,41 @@ async function standaloneRevision(
     agentId: agent.id,
     servicePrincipalId: agent.servicePrincipalId,
     executionAdmission: { version: 8, mode: "standalone" },
-    harness: { ...seed.revision.harness, mode: "dedicated" },
+    configuration: {
+      ...seed.revision.configuration,
+      models: {
+        providers: { openai: { api: "openai-responses", baseUrl: "https://api.openai.com/v1" } },
+      },
+    },
+    harness: {
+      ...seed.revision.harness,
+      mode: "dedicated",
+      configuration: {
+        modelProvider: { protocol: "openai-responses", baseUrl: "https://api.openai.com/v1" },
+      },
+    },
     sandboxDriverId: "sandbox-contract",
     harnessAuth: {
       ...agent.harnessAuth,
       sourceType: "static",
       tokenServiceInstanceId: instance.id,
     },
-    credentialSources: [{ sourceId, sourceType: "static", tokenServiceInstanceId: instance.id }],
+    credentialSources: sourceIds.map((id) => ({
+      sourceId: id,
+      sourceType: "static",
+      tokenServiceInstanceId: instance.id,
+    })),
     credentialDeployment: {
       proxyDriverId: "proxy-contract",
-      networkAccessPolicy: { allowed: [request] },
+      networkAccessPolicy: {
+        allowed: [{ binary: request.binary, host: request.host, ports: request.ports }],
+      },
       bindings: [
         {
           bindingRef: "model",
           sourceRef: { kind: "credential_source", namespaceId: seed.namespace.id, id: sourceId },
-          consumer: { kind: "model", providerId: "model-provider" },
-          projection: { environment: "MODEL_API_KEY", presentation: "bearer" },
+          consumer: { kind: "model", providerId: "openai" },
+          projection: { environment: "OPENAI_API_KEY", presentation: "bearer" },
         },
       ],
       injectionPolicies: [{ bindingRef: "model", allowedRequests: [request] }],
@@ -108,7 +144,7 @@ export async function verifyStandaloneCredentialStateContract(
   store: PlatformStateStore,
   seed: PlatformStateSeed,
 ): Promise<void> {
-  // The real State producer must admit the supported one-model shape before negative probes.
+  // This controlled State-boundary control admits a realistic frozen model policy; it does not qualify a runtime.
   const rollback = new Error("rollback standalone credential contract");
   await assert.rejects(
     store.transact(async (transaction) => {
@@ -146,17 +182,27 @@ export async function verifyStandaloneCredentialStateContract(
           bindings: [...policy.bindings, pluginBinding],
           injectionPolicies: [
             ...policy.injectionPolicies,
-            { bindingRef: "plugin", allowedRequests: policy.networkAccessPolicy.allowed },
+            { bindingRef: "plugin", allowedRequests: policy.injectionPolicies[0]!.allowedRequests },
           ],
         },
       });
     }),
     refusal,
   );
+  // The Agent may own both ready sources, but standalone v8 admits only its model source.
+  await assert.rejects(
+    store.transact(async (transaction) => {
+      const revision = await standaloneRevision(transaction, seed, { extraSource: true });
+      await transaction.revisions.createRevision(revision);
+    }),
+    refusal,
+  );
   // A valid repository draft and snapshot still cannot share standalone model delivery.
   await assert.rejects(
     store.transact(async (transaction) => {
-      const revision = await standaloneRevision(transaction, seed, repositoryCredentials());
+      const revision = await standaloneRevision(transaction, seed, {
+        repository: repositoryCredentials(),
+      });
       await transaction.revisions.createRevision(revision);
     }),
     refusal,

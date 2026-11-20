@@ -192,7 +192,8 @@ Under the source lock, OCC verifies the TokenService instance and `provider_pres
 composition matches the explicit `openai/<model>` and inference route. OCC maps saved
 Sandbox grants to request matchers and validates network and injection policies with
 `validateDeploymentPolicy`. A qualified v8 revision saves the policy, Proxy ID and
-source instance. Unqualified enforcement returns `409` without queuing work.
+source instance. Production leaves the staged Proxy unset; unqualified enforcement
+returns `409` without queuing work.
 
 `admitCredentialSources` requires a Sandbox (`409`) and rechecks caller and Agent
 `operate` on every source. The recorded owner must still offer its type;
@@ -202,8 +203,8 @@ The revision records `sourceId`, `sourceType` and the owner's `credentialGateway
 
 Both State adapters call `packages/occ/src/state/platform-state.ts:assertRevisionAuthAvailable`
 from `createRevision`; a snapshot that does not match a ready same-Namespace source's
-ID, type and owner raises `ScopeViolationError`. A standalone revision permits one model
-binding, no repository delivery, and injection requests covered by its network policy.
+ID, type and owner raises `ScopeViolationError`. A standalone revision permits one source,
+one model binding, no repository delivery, and injection requests covered by its network policy.
 `packages/occ/src/state/postgres-state.ts:createRevision` takes a shared Namespace lock,
 an Agent key-share lock, then ordered source `SELECT FOR SHARE` locks through commit.
 Both adapters copy input before awaiting and preserve snapshot order; memory checks its
