@@ -17,6 +17,7 @@ import {
   ResourceStateConflictError,
   RetryLaterError,
   ScopeViolationError,
+  TokenServiceRegistrationRefusedError,
   type UpdateManagedCredentialSourceInput,
 } from "../../packages/occ/src/index.ts";
 import { PostgresCommitOutcomeUnknownError } from "../../packages/occ/src/state/postgres-state.ts";
@@ -148,7 +149,7 @@ test(
         createAudit,
       );
     const retire = (id: string) =>
-      controller.deleteManagedCredentialSource(principal.id, namespaceId, id, (_removed, phase) =>
+      controller.deleteCredentialSource(principal.id, namespaceId, id, (_removed, phase) =>
         event(
           principal.id,
           "openclaw.credential_sources.delete",
@@ -165,13 +166,6 @@ test(
         )
       ).rows;
 
-    // The serving route remains the Secret-reference contract; staged material is not a public writer.
-    const publicWriter = await inject("POST", base, {
-      name: "not public",
-      type: "openai",
-      secret: { api_key: randomUUID() },
-    });
-    assert.equal(publicWriter.statusCode, 400, publicWriter.body);
     const createsBefore = core.calls.createNamespacedSecret;
     // The owner resolves one static value; ambiguous material must fail before custody starts.
     await assert.rejects(
@@ -185,11 +179,11 @@ test(
         },
         createAudit,
       ),
-      /requires one nonempty UTF-8 credential value/,
+      TokenServiceRegistrationRefusedError,
     );
     await assert.rejects(
       createSource("Oversized", "a".repeat(65_471)),
-      /encoded credential exceeds/,
+      TokenServiceRegistrationRefusedError,
     );
     // Provider approval belongs to OCC. Neither an unknown ID nor a lifecycle setting can create it.
     for (const invalid of ["", "unknown"]) {
@@ -372,25 +366,7 @@ test(
     );
     assert.equal(await resolve(), key);
 
-    // Internal records must not become serving source metadata or mutable public resources, even for an administrator.
-    assert.deepEqual((await inject("GET", base)).json().data, []);
-    assert.equal((await inject("GET", `${base}/${sourceId}`)).statusCode, 404);
-    const absentId = `cs_${randomUUID()}`;
-    for (const method of ["PATCH", "DELETE"] as const) {
-      const hidden = await inject(
-        method,
-        `${base}/${sourceId}`,
-        method === "PATCH" ? {} : undefined,
-      );
-      const absent = await inject(
-        method,
-        `${base}/${absentId}`,
-        method === "PATCH" ? {} : undefined,
-      );
-      assert.equal(hidden.statusCode, absent.statusCode);
-      assert.equal(hidden.json().error.code, absent.json().error.code);
-      assert.equal(hidden.statusCode, 409);
-    }
+    // Managed material rotates through PATCH; the Gateway-specific rotate operation stays unavailable.
     assert.equal((await inject("POST", `${base}/${sourceId}/rotate`)).statusCode, 404);
 
     const updateSource = (actorId: string, input: UpdateManagedCredentialSourceInput) =>

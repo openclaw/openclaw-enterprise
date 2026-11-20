@@ -1,17 +1,16 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-20
-last_updated_session: authoring-run/1a7c3a53-041d-40fe-bdea-664eca7f6d97
+last_updated_session: authoring-run/9bb61048-2680-4355-9169-bd7a6dd316af
 ---
 
 # Credential source lifecycle Flow
 
 ## Overview
 
-OCC authorizes serving sources and stores their metadata and owner references;
-OpenShell holds their values. Admission freezes identity; workers pass live
-sources to Compute. [Internal TokenService custody](token-service-static-custody.md)
-has no public enrollment or Agent delivery.
+`CredentialGatewayDriver` is the legacy serving Source owner. OCC stores metadata
+and owner references. [TokenService custody](token-service-static-custody.md)
+supports public enrollment and draft binding; Agent delivery is unavailable.
 
 [Protected sources](credential-source-egress.md) admit versioned Secret references
 without Gateway copies and require explicit migration while unbound. Protected
@@ -81,8 +80,8 @@ with `ResourceConflictError` before effects. OCC commits intermediate State befo
 `apps/controller/src/http/credential-sources.ts:createCredentialSource`,
 `packages/occ/src/index.ts:createCredentialSource`
 
-The route accepts `name`, `type`, optional `config`, and lowercase-keyed `secrets`;
-[TokenService schemas](../../packages/contracts/src/api/token-service-sources.ts) remain standalone OpenAPI components.
+Legacy Gateway creation uses `name`, `type`, optional `config`, and `secrets`.
+See [TokenService custody](token-service-static-custody.md) for managed enrollment.
 One transaction authorizes `credential_source:create`, locks the ready Namespace,
 requires its selected source Driver, then reads the catalog.
 An unoffered type returns `CredentialSourceTypeNotOfferedError` (`409`). Unknown
@@ -371,6 +370,8 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:18: Link managed enrollment. (authoring-run/9bb61048-2680-4355-9169-bd7a6dd316af - 27b47ccbf7223c303b844af151c9712082380919)
 
 - 2026-11-20 04:20: Link the separate internal static custody flow. (authoring-run/1a7c3a53-041d-40fe-bdea-664eca7f6d97 - edd728580)
 

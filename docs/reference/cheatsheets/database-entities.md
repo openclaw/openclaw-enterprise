@@ -215,7 +215,7 @@ Binds an Installation to its selected TokenService Driver and private-store iden
 
 ### `credential_sources`
 
-Records each source owner. Gateway and Proxy sources identify their Driver. Internal static registrations identify their TokenService instance and its private receipt; saved accounts retain their existing Token Service owner.
+Records each source owner. Gateway and Proxy sources identify their Driver. Managed static Sources identify their TokenService instance and its private receipt; saved accounts retain their existing Token Service owner.
 
 - `id`
 - `namespace_id`

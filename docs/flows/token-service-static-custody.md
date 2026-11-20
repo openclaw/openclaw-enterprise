@@ -1,156 +1,163 @@
 ---
 created: "2026-11-20"
 updated: 2026-11-20
-last_updated_session: authoring-run/0faa6e4e-f75e-4816-9495-10e1c22d0681
+last_updated_session: authoring-run/9bb61048-2680-4355-9169-bd7a6dd316af
 ---
 
-# Internal static TokenService custody flow
+# Managed static credential source custody flow
 
 ## Overview
 
-OpenClaw Control Plane (OCC) creates, updates, and deletes an internal
-CredentialSource. The selected TokenServiceDriver registers, updates, and removes
-its credential material through the SecretDriver's Installation-private store.
-The lifecycle type `static` does not identify a provider or destination.
-OCC can separately associate an approved provider preset with the source. A
-source without that association grants no destination authority.
-Public managed POST/PATCH request bodies are staged: the controller authorizes the
-exact Source operation and returns `501 NOT_IMPLEMENTED` before custody changes.
+A caller enrolls a managed static credential source through the authenticated
+Namespace Source API. OpenClaw Control Plane (OCC) owns the Source identity,
+configuration, IAM bindings, and audit. The selected TokenServiceDriver owns the
+usable credential. The `static` lifecycle type does not identify a provider or
+destination. OCC can separately record an approved provider preset. This flow
+ends at Source retirement; Agent revision delivery remains unavailable.
 
 ## Entry Points
 
-- Trigger: startup selects `token_service: occ`; an internal caller requests a
-  source operation in a ready Namespace.
-- Source: `apps/controller/src/composition/token-service.ts:installTokenServiceDriver`
-- Source: `apps/controller/src/http/credential-sources.ts:createCredentialSource`
+- Trigger: `POST /namespaces/:namespaceId/credential-sources` with a singular
+  write-only `secret`; `GET` or `PATCH` the exact Source, list the Namespace's
+  Sources, or `DELETE` the exact Source.
+- Source: `apps/controller/src/http/credential-sources.ts:credentialSourceHandlers`
 - Source: `packages/occ/src/index.ts:createManagedCredentialSource`
-- Permissions: `create` on the Namespace's source collection; `update` or `delete`
-  on the exact CredentialSource.
+- Source: `packages/occ/src/index.ts:deleteCredentialSource`
+- Permissions: `credential_source:create` on the Namespace Source collection;
+  exact `credential_source:read`, `update`, or `delete` for the corresponding
+  operation. Listing requires Namespace `read` and filters by exact Source `read`.
+- Assumptions: a ready Namespace and a selected TokenService instance.
 
 ## Flow
 
 ```mermaid
 graph TD
-  P["<b>Managed POST/PATCH</b><br/>Write-only material or config"] --> Q{"<b>Exact Source permission</b>"}
-  Q -->|denied| R["<b>403 and denial audit</b>"]
-  Q -->|allowed| S["<b>501 NOT_IMPLEMENTED</b><br/>No owner call"]
-  A["<b>OCC creates source</b><br/>Reserve and audit"] --> B["<b>TokenServiceDriver</b><br/>Register material"]
-  B -->|receipt| C["<b>OCC commits ready</b>"]
-  B -->|uncertain write| D["<b>OCC keeps deleting</b>"]
-  C -->|update| E["<b>TokenServiceDriver</b><br/>Update material"]
-  E --> C
-  C -->|preset only| H["<b>OCC updates config</b><br/>Commit with audit"]
-  H --> C
-  C -->|delete| F["<b>TokenServiceDriver</b><br/>Remove material"]
-  D -->|retry after fence| F
-  F --> G["<b>OCC deletes source</b><br/>Bindings and audit"]
+  A["<b>Authenticated Source API</b><br/>Validate request and IAM"] -->|POST| B["<b>OCC reserves Source</b><br/>Audit registration start"]
+  B --> C["<b>TokenServiceDriver</b><br/>Register credential"]
+  C -->|receipt| D["<b>OCC commits ready</b><br/>Metadata and audit"]
+  C -->|uncertain write| E["<b>OCC keeps deleting</b><br/>Retry retirement"]
+  A -->|GET or list| F["<b>OCC returns metadata</b><br/>No credential resolution"]
+  A -->|PATCH| G{"<b>Locked Source owner</b>"}
+  G -->|managed| H{"<b>Preset changes?</b>"}
+  H -->|preset only, unbound| I["<b>OCC updates config</b><br/>Commit with audit"]
+  H -->|material or lifecycle only| J["<b>TokenServiceDriver</b><br/>Update credential"]
+  H -->|effective preset change mixed with material or bound| X["<b>Refuse change</b><br/>No owner write"]
+  G -->|Gateway| K["<b>Existing Gateway path</b>"]
+  A -->|DELETE, unreferenced| L["<b>OCC marks deleting</b><br/>Audit retirement start"]
+  E --> L
+  L --> M["<b>Recorded TokenService</b><br/>Confirm removal"]
+  M --> N["<b>OCC removes Source</b><br/>Bindings and audit"]
+  D -->|Agent draft binding| O["<b>Agent save</b><br/>Exact source authorization"]
+  O --> P["<b>Deploy refused</b><br/>No revision or work"]
 ```
 
 ## Execution Trace
 
-### 1. Refuse staged public enrollment
-
-`apps/controller/src/http/credential-sources.ts:createCredentialSource`,
-`updateCredentialSource`, `packages/occ/src/index.ts:authorizeCredentialSourceWrite`
-
-The Source routes validate the named managed static bodies alongside legacy Gateway
-bodies. A managed request checks `create` on the Namespace collection or `update` on
-the exact Source. A denial returns `403` with attributable evidence; an authorized
-request returns `501` without echoing material or calling the legacy Gateway or
-TokenService. Public managed enrollment remains unavailable.
-
-### 2. Select the Driver
+### 1. Select the owner
 
 `apps/controller/src/composition/token-service.ts:installTokenServiceDriver`
 
 Startup binds the selected TokenServiceDriver to the SecretDriver's
-`installationSecrets` store. OCC records the store identity and Driver selection
-in `token_service_instances`; each source pins that instance.
+Installation-private store. OCC records the store identity and Driver selection
+in `token_service_instances`. A Source pins that instance; changing a selected
+Driver does not transfer custody.
 
-### 3. Create the source and register material
+### 2. Register the Source
 
-`packages/occ/src/index.ts:createManagedCredentialSource`,
-`apps/controller/src/drivers/token-service/occ.ts:registerSource`
+`apps/controller/src/http/credential-sources.ts:createCredentialSource`,
+`packages/occ/src/index.ts:createManagedCredentialSource`
 
-OCC authorizes creation, locks the Namespace, and commits a `registering` source,
-its creator binding, and the start audit. It then commits a separate dispatch
-claim before calling `TokenServiceDriver.registerSource`. The Driver stores one nonempty UTF-8 value
-through SecretDriver under the instance and source reference. OCC commits the
-receipt, configuration, `ready` state, and completion audit together. The source
-record contains no credential value. The optional `providerPreset` input must
-name an approved preset. OCC saves it once as `config.provider_preset`; it does
-not send the association in lifecycle settings or the registration receipt.
-The completion audit identifies the approved preset on the exact source.
+The route distinguishes the validated managed request by singular `secret`.
+OCC authorizes `credential_source:create`, locks the Namespace, and commits a
+`registering` Source, creator binding, and `registration_started` audit before
+material can leave the controller. It commits a dispatch claim, rechecks IAM and
+the Source, and calls `TokenServiceDriver.registerSource`. The selected static
+adapter accepts one nonempty UTF-8 credential and no lifecycle settings. OCC
+commits the private receipt, metadata, `ready` state, and completion audit.
 
-### 4. Update the source
+`config.provider_preset` accepts the exact approved ID `openai`. OCC removes it
+from lifecycle settings and records it as Source configuration; it is not a
+TokenService registration field. A Source without an approved preset grants no
+destination authority. The write-only material does not enter Namespace Secret
+references, responses, logs, or audit details.
 
+### 3. Observe or update the Source
+
+`packages/occ/src/index.ts:credentialSourceUpdateIdentity`,
+`packages/occ/src/index.ts:readCredentialSource`,
 `packages/occ/src/index.ts:updateManagedCredentialSource`
 
-OCC requires `update` on the exact source and checks its recorded instance under
-the source lock. A preset-only update changes the source config and commits its
-audit in the same transaction without calling TokenService. Omitting
-`providerPreset` preserves the association; `null` removes it. Empty or
-unknown IDs fail before persistence. The completion audit records the new preset
-or `null` for removal.
+A managed exact GET returns sanitized metadata and record state; it does not
+resolve a credential or claim live credential readiness. The list returns only
+readable Sources and never asks the owner for material.
 
-An effective preset change or removal requires an unbound source. OCC checks
-existing references while it holds the Namespace and source locks, before it
-changes config or calls the owner. Repeating the current preset and rotating
-material without changing the preset remain allowed while bound.
+For PATCH, OCC authorizes exact `credential_source:update` and locks the
+Namespace and Source before it returns the immutable owner classification and
+persisted lifecycle type to the handler. The handler rejects a request shape
+that does not match that owner. It calls the managed lifecycle outside an
+inherited controller transaction; the managed method rechecks IAM, locks, and
+instance ownership. Gateway updates retain their existing transaction and audit.
 
-For a material or lifecycle update, OCC first audits the attempt, then rechecks
-authority and calls `TokenServiceDriver.updateSource`. It preserves the preset
-when lifecycle settings change. An effective preset change must be a separate
-operation because a TokenService write cannot roll back with the source audit.
-The Driver receives only material and lifecycle settings.
-Static sources accept only empty lifecycle settings and cannot refresh.
+Omitting `config` preserves the preset. `config: {}` removes it. A preset-only
+change commits config and audit together without calling TokenService. An
+effective preset change or removal requires an unbound Source and a separate
+request from material or lifecycle changes. Repeating the same preset or
+updating material without an effective preset change remains allowed while
+bound. For a material or lifecycle update, OCC commits `update_started` first,
+then calls the owner and commits completion audit. Driver errors are reduced to
+fixed platform messages before they can reach responses, logs, or audit.
 
-### 5. Delete the source
+### 4. Retire the Source
 
-`packages/occ/src/index.ts:deleteManagedCredentialSource`,
-`apps/controller/src/drivers/token-service/occ.ts:removeSource`
-
-OCC rejects blocking references, marks the source `deleting`, and audits the
-attempt. `TokenServiceDriver.removeSource` erases the value through SecretDriver
-before deleting its storage object. On confirmation, OCC deletes the source and
-bindings with the completion audit.
-
-### 6. Recover failures
-
+`packages/occ/src/index.ts:deleteCredentialSource`,
 `packages/occ/src/index.ts:retireCredentialSourceMaterial`
 
-An undispatched or definitively refused registration needs no Driver cleanup. A
-possibly dispatched write without a receipt remains `deleting` until the dispatch fence passes and the recorded
-Driver confirms removal. A missing Driver or uncertain removal retains the
-source for an internal deletion retry.
+OCC authorizes exact `credential_source:delete`, locks the Namespace and Source,
+and rejects blocking Agent, revision, deployment, provisioning, or withdrawal
+references. It marks the Source `deleting` and commits `retirement_started`
+before the recorded TokenService removes material. On confirmation, OCC removes
+the Source and its IAM bindings with completion audit. The Namespace remains
+nonempty until that removal commits.
+
+An undispatched or definitively refused registration needs no owner cleanup. A
+possibly dispatched write without a receipt stays `deleting` until its dispatch
+fence passes and the recorded owner confirms removal. Missing ownership or an
+uncertain removal retains the record for an authorized DELETE retry. Denied
+mutations receive attributable authorization-denial audit without material.
+
+### 5. Stop at the Agent delivery boundary
+
+`packages/occ/src/index.ts:authorizeAgentCredentialSources`
+
+An authorized Agent draft can bind a ready managed Source for Harness
+authentication. Deployment refuses the Source before it saves an Agent revision
+or queues deployment work. Source enrollment and draft binding do not prove
+credential delivery, a running Harness, or a model turn.
 
 ## Debugging and Verification
 
-Inspect `token_service_instance_id`, `registration`, and
-`registration_dispatched_at` in private persistence to identify the owner and
-dispatch state. The [PostgreSQL lifecycle test](../../tests/integration/postgres-static-token-service-lifecycle.test.ts)
-uses direct controller calls, Native IAM, PostgreSQL, and concrete Drivers with a
-simulated Kubernetes API transport. Startup installs the Driver, but no production
-caller creates these sources. Public managed POST/PATCH return `501`; read, list,
-and delete still hide or reject managed sources. The [Source API test](../../tests/integration/credential-source-api.test.mjs)
-checks the refusal and denial audit; the [wire test](../../tests/integration/credential-source-wire-contract.test.ts)
-checks request validation and sanitized response serialization.
-[Agent draft admission](native-service-account-credential-delivery.md) can save a
-ready source for Harness authentication; deployment refuses it before saving a
-revision or queuing work. The test does not prove live Secret storage or Agent
-delivery.
+Run `node --test tests/integration/postgres-staged-agent-credential-binding.test.ts`
+with the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-environment).
+A passing run checks the actual Fastify routes, PostgreSQL application role,
+Native IAM, concrete TokenService and Secret Drivers, public read sanitization,
+update and denial audit, retirement, authorized Agent binding, and staged deploy
+refusal. The Kubernetes API transport is simulated. This does not prove live
+Kubernetes Secret storage, runtime delivery, or model execution.
 
 ## Related docs
 
-- [Serving credential-source lifecycle](credential-source-lifecycle.md)
+- [Managed static Source reference](../reference/credential-sources/managed-static.md)
+- [Gateway and protected source lifecycle](credential-source-lifecycle.md)
+- [Agent draft admission](native-service-account-credential-delivery.md)
 - [Driver selection](../reference/drivers/selection.md#supported-selections)
-- [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-environment)
 
 ## Manual Notes
 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:18: Connect public enrollment, observation, update, and retirement to the selected Source owner; describe staged proof limits. (authoring-run/9bb61048-2680-4355-9169-bd7a6dd316af - 27b47ccbf7223c303b844af151c9712082380919)
 
 - 2026-11-20 16:06: Document staged public Source inputs and authorized refusal before custody. (authoring-run/0faa6e4e-f75e-4816-9495-10e1c22d0681 - d3297613840eda80cafbf383bef5f8a91196b13b)
 

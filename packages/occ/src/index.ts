@@ -378,6 +378,7 @@ import {
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
   ScopeViolationError,
+  TokenServiceSourceInputError,
   TokenServiceRegistrationRefusedError,
   SecretBindingDriverError,
   ServiceAccountBackendBindingError,
@@ -1346,7 +1347,6 @@ const CONNECTION_OPERATION_TIMEOUT_MS = 30_000;
 const CONNECTION_SESSION_TTL_MS = 10 * 60 * 1000;
 /** Only a claimed server-side consent attempt may operate on its still-pending source. */
 const PENDING_CONNECTION: unique symbol = Symbol("pending-connection");
-const MANAGED_SOURCE: unique symbol = Symbol("managed-source");
 const CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES =
   "Credential source Secrets cannot cross Namespaces.";
 // Bounds the Sandbox Driver's Harness record read that runs beside Compute diagnostics.
@@ -9025,16 +9025,12 @@ export class OpenClawController {
     });
   }
 
-  // TODO: Remove this staging-only check when managed Source HTTP handlers invoke the manager.
-  async authorizeCredentialSourceWrite(
-    principalId: string,
-    namespaceId: string,
-    credentialSourceId?: string,
-  ): Promise<void> {
+  /** Authorize creation before the API reports errors in managed Source configuration. */
+  async authorizeCredentialSourceCreate(principalId: string, namespaceId: string): Promise<void> {
     this.namespaceIdentity(namespaceId);
-    await this.authorize(principalId, credentialSourceId === undefined ? "create" : "update", {
+    await this.authorize(principalId, "create", {
       kind: "credential_source",
-      id: credentialSourceId ?? namespaceId,
+      id: namespaceId,
       namespaceId,
     });
   }
@@ -9696,6 +9692,31 @@ export class OpenClawController {
     }
   }
 
+  /** Resolve the immutable Source identity for an exact update without requiring a read grant. */
+  async credentialSourceUpdateIdentity(
+    principalId: string,
+    namespaceId: string,
+    credentialSourceId: string,
+  ): Promise<{ readonly managed: boolean; readonly type: string }> {
+    this.namespaceIdentity(namespaceId);
+    return this.mutate(async (state) => {
+      const resource = { kind: "credential_source" as const, id: credentialSourceId, namespaceId };
+      await this.authorize(principalId, "update", resource);
+      await this.exactNamespace(state, namespaceId);
+      const source = await state.credentialSources.lockCredentialSource(
+        namespaceId,
+        credentialSourceId,
+      );
+      await this.authorize(principalId, "update", resource);
+      if (!source) {
+        throw new ScopeViolationError(
+          "The credential source does not belong to the exact Namespace.",
+        );
+      }
+      return { managed: isManagedTokenServiceSource(source), type: source.type };
+    });
+  }
+
   async readCredentialSource(
     principalId: string,
     namespaceId: string,
@@ -9712,13 +9733,17 @@ export class OpenClawController {
         namespaceId,
         credentialSourceId,
       );
-      if (!found || isManagedTokenServiceSource(found)) {
+      if (!found) {
         throw new ScopeViolationError(
           "The credential source does not belong to the exact Namespace.",
         );
       }
       return { namespace: exact, source: found };
     });
+    if (isManagedTokenServiceSource(source)) {
+      // Registration state is metadata; observing it does not attest usable owner material.
+      return this.credentialSourceMetadata(source);
+    }
     if (source.ownerCapability === "token_service") {
       const refresh = await this.connectionTokenIssuer().status(
         { kind: "oauth_refresh_token", namespaceId, sourceId: source.id },
@@ -9788,9 +9813,6 @@ export class OpenClawController {
     return this.read(async (state) => {
       const readable: Readonly<CredentialSourceMetadata>[] = [];
       for (const source of await state.credentialSources.listCredentialSources(namespace.id)) {
-        if (isManagedTokenServiceSource(source)) {
-          continue;
-        }
         if (
           await this.canRead(principalId, {
             kind: "credential_source",
@@ -9806,49 +9828,18 @@ export class OpenClawController {
   }
 
   /**
-   * Deletion is caller-retried: the record stays `deleting` until the gateway copy is gone,
-   * which keeps the Namespace nonempty and blocks new bindings in the meantime. The record moves
-   * to `deleting`, which is one-way, only once the selected gateway registered it, so a refusal
-   * after a gateway change leaves the source as it was.
+   * Deletion is caller-retried: the record stays `deleting` until its recorded owner confirms
+   * material removal. It keeps the Namespace nonempty and blocks new bindings in the meantime.
    */
   async deleteCredentialSource(
     principalId: string,
     namespaceId: string,
     credentialSourceId: string,
-    audit?: (removedAccessBindings: readonly RemovedAccessBinding[]) => AuditEvent,
+    audit?: (
+      removedAccessBindings: readonly RemovedAccessBinding[],
+      phase?: "retirement_started",
+    ) => AuditEvent,
     connection?: typeof PENDING_CONNECTION,
-  ): Promise<void> {
-    return this.deleteRecordedCredentialSource(
-      principalId,
-      namespaceId,
-      credentialSourceId,
-      audit,
-      connection,
-    );
-  }
-
-  /** Internal retirement path for staged registrations. The serving API cannot select it. */
-  async deleteManagedCredentialSource(
-    principalId: string,
-    namespaceId: string,
-    credentialSourceId: string,
-    audit: (removed: readonly RemovedAccessBinding[], phase?: "retirement_started") => AuditEvent,
-  ): Promise<void> {
-    return this.deleteRecordedCredentialSource(
-      principalId,
-      namespaceId,
-      credentialSourceId,
-      audit,
-      MANAGED_SOURCE,
-    );
-  }
-
-  private async deleteRecordedCredentialSource(
-    principalId: string,
-    namespaceId: string,
-    credentialSourceId: string,
-    audit?: (removed: readonly RemovedAccessBinding[], phase?: "retirement_started") => AuditEvent,
-    connection?: typeof PENDING_CONNECTION | typeof MANAGED_SOURCE,
   ): Promise<void> {
     this.requireIndependentMutation("Credential source registration and deletion");
     this.namespaceIdentity(namespaceId);
@@ -9866,16 +9857,19 @@ export class OpenClawController {
         credentialSourceId,
       );
       const found =
-        connection !== MANAGED_SOURCE && isManagedTokenServiceSource(recorded)
+        connection === PENDING_CONNECTION && isManagedTokenServiceSource(recorded)
           ? undefined
           : recorded;
       if (found?.ownerCapability !== "token_service") {
         this.assertCredentialSourceOwnerSelected();
       }
-      if (!found || (connection === MANAGED_SOURCE && !isManagedTokenServiceSource(found))) {
+      if (!found) {
         throw new ScopeViolationError(
           "The credential source does not belong to the exact Namespace.",
         );
+      }
+      if (isManagedTokenServiceSource(found) && audit === undefined) {
+        throw new ResourceStateConflictError("Managed source retirement requires audit evidence.");
       }
       if (found.ownerCapability === "token_service" && !isManagedTokenServiceSource(found)) {
         const saved = await state.savedConnections.findSavedConnection(
@@ -19238,6 +19232,31 @@ export class OpenClawController {
     try {
       return await operation();
     } catch (error) {
+      if (capability === "TokenService") {
+        // Driver errors can contain the material supplied to it. Retain only the error category.
+        if (error instanceof TokenServiceRegistrationRefusedError) {
+          throw new TokenServiceRegistrationRefusedError(
+            "The TokenService refused the source registration.",
+          );
+        }
+        if (error instanceof TokenServiceSourceInputError) {
+          throw new TokenServiceSourceInputError("The TokenService rejected the source input.");
+        }
+        if (error instanceof ResourceStateConflictError) {
+          throw new ResourceStateConflictError(
+            "The TokenService cannot complete this source operation.",
+          );
+        }
+        if (error instanceof ResourceConflictError) {
+          throw new ResourceConflictError("The TokenService source conflicts with current state.");
+        }
+        if (error instanceof ScopeViolationError) {
+          throw new ScopeViolationError(
+            "The TokenService source is unavailable to this operation.",
+          );
+        }
+        throw new DependencyUnavailableError("The selected TokenService Driver is unavailable.");
+      }
       if (
         error instanceof DependencyUnavailableError ||
         error instanceof ScopeViolationError ||
