@@ -624,7 +624,10 @@ test("Linux k3d setup caches verified kubectl and verifies cached bytes before r
     const setup = join(scripts, "setup-tools.sh");
     await writeFile(
       setup,
-      setupSource.replaceAll(/https:\/\/(?:github\.com|get\.helm\.sh|dl\.k8s\.io)\//g, `${origin}/`),
+      setupSource.replaceAll(
+        /https:\/\/(?:github\.com|get\.helm\.sh|dl\.k8s\.io)\//g,
+        `${origin}/`,
+      ),
     );
     await copyFile(script, join(scripts, "download-pinned.sh"));
     await writeFile(
