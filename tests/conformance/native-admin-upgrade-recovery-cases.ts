@@ -20,6 +20,13 @@ import { NativeIAMDriver, type NativeIAMState } from "../../packages/iam/src/ind
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { waitUntil } from "../helpers/wait-for.ts";
+import {
+  registerDelayedDenialAppendCase,
+  registerHttpAuditFailureCase,
+  registerHttpDenialResponseCases,
+} from "./native-admin-upgrade-denial-cases.ts";
+
+export { AdmissionSocket } from "./native-admin-upgrade-denial-cases.ts";
 
 type BrowserSelection = Awaited<
   ReturnType<OpenClawController["getBrowserAccessibleActiveAgentRevision"]>
@@ -56,17 +63,22 @@ interface GatewayRequest {
   ): boolean;
 }
 
-interface DenialOwner {
+export interface DenialOwner {
+  readonly access: Pick<
+    ReturnType<typeof createNativeAdminAccess>,
+    "interceptHttp" | "httpAdmissionReason"
+  >;
   readonly denied: Error;
   readonly warnings: readonly unknown[];
   readonly upstreams: readonly GatewayRequest[];
   denials(): readonly AuditEventCreationInput[];
+  request(): { method: string; url: string; headers: IncomingHttpHeaders };
   shutdown(): Promise<void>;
   upgrade(): UpgradeSocket;
 }
 
-interface RecoveryFixture {
-  denialOwner(t: TestContext, overrides: DenialOverrides): Promise<DenialOwner>;
+export interface RecoveryFixture {
+  denialOwner(t: TestContext, overrides?: DenialOverrides): Promise<DenialOwner>;
   settleCallbacks(): Promise<void>;
   AdmissionSocket: new () => UpgradeSocket;
 }
@@ -78,11 +90,9 @@ function acknowledgeUpgrade(owner: DenialOwner, socket: UpgradeSocket): void {
   upstream.emit("upgrade", { statusCode: 101, headers: {} }, socket, Buffer.alloc(0));
 }
 
-export function registerUpgradeAdmissionRecoveryCases({
-  denialOwner,
-  settleCallbacks,
-  AdmissionSocket,
-}: RecoveryFixture): void {
+export function registerUpgradeAdmissionRecoveryCases(fixture: RecoveryFixture): void {
+  const { denialOwner, settleCallbacks, AdmissionSocket } = fixture;
+  registerDelayedDenialAppendCase(fixture);
   for (const boundary of ["timeout", "disconnect", "shutdown-wait-expiry"]) {
     test(`native-admin denial ownership consumes a denial after ${boundary}`, async (t) => {
       const admission = Promise.withResolvers<never>();
@@ -237,13 +247,11 @@ export function registerUpgradeAdmissionRecoveryCases({
       await owner.shutdown();
     }
   });
+  registerHttpAuditFailureCase(fixture);
 }
 
-export function registerUpgradeLeaseAndResetRecoveryCases({
-  denialOwner,
-  settleCallbacks,
-  AdmissionSocket,
-}: RecoveryFixture): void {
+export function registerUpgradeLeaseAndResetRecoveryCases(fixture: RecoveryFixture): void {
+  const { denialOwner, settleCallbacks, AdmissionSocket } = fixture;
   for (const order of ["denial-first", "deadline-first"]) {
     test(`native-admin denial ownership attempts one audit at the deadline (${order})`, async (t) => {
       const admission = Promise.withResolvers<never>();
@@ -372,6 +380,7 @@ export function registerUpgradeLeaseAndResetRecoveryCases({
       await owner.shutdown();
     }
   });
+  registerHttpDenialResponseCases(fixture);
 }
 
 const installation = {
