@@ -5,6 +5,7 @@ import {
   ErrorResponse,
   type CreateAgentBody,
   type ErrorCode,
+  type PluginApprovers,
   type PluginDesiredState,
   type PluginDriver,
   type UpdateAgentBody,
@@ -25,8 +26,14 @@ export type ConfiguredController = (options?: {
   configurationDriver?: ConfigurationDriver;
 }) => Promise<Controller>;
 export type Reply = Awaited<ReturnType<FixtureRequest>>;
-export type AgentCreate = Omit<CreateAgentBody, "plugins"> & { plugins?: PluginDesiredState };
-export type AgentUpdate = Omit<UpdateAgentBody, "plugins"> & { plugins?: PluginDesiredState };
+export type AgentCreate = Omit<CreateAgentBody, "plugins" | "pluginApprovers"> & {
+  plugins?: PluginDesiredState;
+  pluginApprovers?: PluginApprovers;
+};
+export type AgentUpdate = Omit<UpdateAgentBody, "plugins" | "pluginApprovers"> & {
+  plugins?: PluginDesiredState;
+  pluginApprovers?: PluginApprovers | null;
+};
 
 export const diffsPluginId = "occ-plugin:diffs";
 export const linearPluginId = "codex-plugin:linear@openai-curated-remote";
