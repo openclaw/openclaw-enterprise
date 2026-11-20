@@ -30,13 +30,16 @@ import {
   harnessWorkspaceClaimName,
   revisionName,
   createDriver as createFixtureDriver,
-  workloadPod as findWorkloadPod,
-  probe as runProbe,
-  assertDeniedTraffic,
-  assertExplicitNetworkProfile,
   authorized,
   createScopedController as provisionScopedController,
 } from "../helpers/kubernetes-compute-real.mjs";
+import {
+  workloadPod,
+  type WorkloadPod,
+  probe,
+  assertDeniedTraffic,
+  assertExplicitNetworkProfile,
+} from "../helpers/kubernetes-compute-network.ts";
 import {
   assertResourceUid,
   assertReadyGateway,
@@ -83,8 +86,6 @@ const resources: <K extends string>(
   kind: K,
   namespace: string,
 ) => Promise<(K extends "deployments" ? Deployment : KubernetesResource)[]> = listResources;
-const workloadPod: (namespace: string, selector: string) => Promise<Pod | undefined> =
-  findWorkloadPod;
 const waitFor: <T>(
   description: string,
   operation: () => T | false | undefined | Promise<T | false | undefined>,
@@ -111,13 +112,6 @@ const createScopedController = provisionScopedController as (
   tenantRole: string;
 }>;
 const revisionContext: (candidate: AgentRevision) => RevisionContext = fixtureRevisionContext;
-const probe: (
-  namespace: string,
-  pod: string,
-  operation: "http" | "dns" | "token",
-  target: string,
-  port?: number,
-) => Promise<string> = runProbe;
 
 test(
   "real Kubernetes Compute Driver owns isolated Agent gateways, identities, revisions, and deletion",
@@ -722,11 +716,16 @@ test(
         true,
         "the controller needs exact-target access to canonical and delivered Secrets",
       );
-      const workloads: ReadonlyArray<readonly [string, Pod]> = [
+      const workloads: ReadonlyArray<readonly [string, WorkloadPod]> = [
         [owned[0], firstPod],
         [gatewayTargets[0], gatewayPod],
       ];
       for (const [podNamespace, pod] of workloads) {
+        assert.ok(
+          typeof pod.spec.serviceAccountName === "string" &&
+            pod.spec.serviceAccountName.trim().length > 0,
+          "workload must report its actual ServiceAccount before authorization is checked",
+        );
         assert.equal(
           await authorized(
             target,
