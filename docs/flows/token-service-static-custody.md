@@ -91,12 +91,12 @@ A managed exact GET returns sanitized metadata and record state; it does not
 resolve a credential or claim live credential readiness. The list returns only
 readable Sources and never asks the owner for material.
 
-For PATCH, OCC authorizes exact `credential_source:update` and locks the
-Namespace and Source before it returns the immutable owner classification and
-persisted lifecycle type to the handler. The handler rejects a request shape
-that does not match that owner. It calls the managed lifecycle outside an
-inherited controller transaction; the managed method rechecks IAM, locks, and
-instance ownership. Gateway updates retain their existing transaction and audit.
+For PATCH, OCC authorizes exact `credential_source:update`, checks the Namespace,
+locks the Source, and rechecks authorization before returning its immutable owner
+classification and lifecycle type. The handler rejects a request shape that does
+not match that owner. The managed mutation then locks the Namespace and Source and
+rechecks IAM and instance ownership. Gateway updates retain their existing
+transaction and audit.
 
 Omitting `config` preserves the preset. `config: {}` removes it. A preset-only
 change commits config and audit together without calling TokenService. An
@@ -112,10 +112,11 @@ fixed platform messages before they can reach responses, logs, or audit.
 `packages/occ/src/index.ts:deleteCredentialSource`,
 `packages/occ/src/index.ts:retireCredentialSourceMaterial`
 
-OCC authorizes exact `credential_source:delete`, locks the Namespace and Source,
-and rejects blocking Agent, revision, deployment, provisioning, or withdrawal
-references. It marks the Source `deleting` and commits `retirement_started`
-before the recorded TokenService removes material. On confirmation, OCC removes
+OCC authorizes exact `credential_source:delete` and locks the Namespace and Source.
+A missing Source returns `404` before OCC selects an owner. OCC rejects blocking
+Agent, revision, deployment, provisioning, or withdrawal references. It marks
+the Source `deleting` and commits `retirement_started` before the recorded
+TokenService removes material. On confirmation, OCC removes
 the Source and its IAM bindings with completion audit. The Namespace remains
 nonempty until that removal commits.
 
@@ -156,6 +157,8 @@ Kubernetes Secret storage, runtime delivery, or model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:50: Correct PATCH lock ownership and return not found before owner selection on a DELETE retry after retirement. (authoring-run/9bb61048-2680-4355-9169-bd7a6dd316af - 00881f668ea8c2857f4e20ae562be7aa2d18a4da)
 
 - 2026-11-20 16:18: Connect public enrollment, observation, update, and retirement to the selected Source owner; describe staged proof limits. (authoring-run/9bb61048-2680-4355-9169-bd7a6dd316af - 27b47ccbf7223c303b844af151c9712082380919)
 

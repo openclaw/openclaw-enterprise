@@ -638,6 +638,10 @@ test(
     assert.equal(metadata.rowCount, 1);
     const retired = remember(await inject("DELETE", sourcePath));
     assert.equal(retired.statusCode, 204, retired.body);
+    // Once retirement removes the Source, a retry must report absence without selecting a legacy owner.
+    const retried = remember(await inject("DELETE", sourcePath));
+    assert.equal(retried.statusCode, 404, retried.body);
+    assert.equal(retried.json().error.code, "NOT_FOUND");
     assert.equal((await inject("GET", sourcePath)).statusCode, 404);
     assert.deepEqual((await inject("GET", `${base}/credential-sources`)).json().data, []);
     assert.equal(await sourceBlocker(), undefined);

@@ -9860,13 +9860,13 @@ export class OpenClawController {
         connection === PENDING_CONNECTION && isManagedTokenServiceSource(recorded)
           ? undefined
           : recorded;
-      if (found?.ownerCapability !== "token_service") {
-        this.assertCredentialSourceOwnerSelected();
-      }
       if (!found) {
         throw new ScopeViolationError(
           "The credential source does not belong to the exact Namespace.",
         );
+      }
+      if (found.ownerCapability !== "token_service") {
+        this.assertCredentialSourceOwnerSelected();
       }
       if (isManagedTokenServiceSource(found) && audit === undefined) {
         throw new ResourceStateConflictError("Managed source retirement requires audit evidence.");
