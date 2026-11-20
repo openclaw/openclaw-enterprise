@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import {
+  createReceiptPersistenceFaults,
   readReceipt,
-  receiptPersistenceFaults,
   stageReceiptExchange,
 } from "./static-egress-receipt-support.ts";
 
@@ -162,7 +162,7 @@ export async function runStaticEgressReceiptAuthorizationFailureCase(
   ] as const) {
     await t.test(scenario, async (t) => {
       let elapsed = 0;
-      const fault = receiptPersistenceFaults();
+      const fault = createReceiptPersistenceFaults();
       const f = await staticEgressFixture(t, {
         now: () => new Date(Date.now() + elapsed),
         appFactory: fault.appFactory,
@@ -264,7 +264,7 @@ export async function runStaticEgressResponseCommitCase(t: TestContext): Promise
   for (const scenario of ["reject", "lost_ack", "deadline"] as const) {
     await t.test(scenario, async (t) => {
       let elapsed = 0;
-      const fault = receiptPersistenceFaults();
+      const fault = createReceiptPersistenceFaults();
       const f = await staticEgressFixture(t, {
         now: () => new Date(Date.now() + elapsed),
         appFactory: fault.appFactory,

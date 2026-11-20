@@ -96,7 +96,7 @@ export function readReceipt(f: DeployedFixture, input: SendAttempt) {
 
 // Faults wrap the real state transaction owner: operations and rollback still run in the
 // actual memory adapter. Lost acknowledgments here are scheduling proof, not real PG proof.
-export function receiptPersistenceFaults() {
+export function createReceiptPersistenceFaults() {
   let armed: ArmedFault | undefined;
 
   function wrapState(state: PlatformStateStore): PlatformStateStore {

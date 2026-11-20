@@ -865,4 +865,4 @@ export {
   runStaticEgressReceiptRestartCase,
   runStaticEgressResponseCommitCase,
 } from "./static-egress-receipt-persistence-cases.ts";
-export { receiptPersistenceFaults } from "./static-egress-receipt-support.ts";
+export { createReceiptPersistenceFaults } from "./static-egress-receipt-support.ts";

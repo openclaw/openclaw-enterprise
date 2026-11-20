@@ -27,7 +27,7 @@ import {
 
 import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
 import {
-  receiptPersistenceFaults,
+  createReceiptPersistenceFaults,
   registerStaticEgressResponsesAndCapacityCases,
   runStaticEgressCredentialRejectionCase,
   runStaticEgressElapsedDeadlineCase,
@@ -1106,7 +1106,7 @@ test("cancelled and denied exchanges retain capacity until receipt work settles"
 
 for (const stage of ["policy check", "Kubernetes namespace verification"]) {
   test(`closing the accepted duplex during ${stage} prevents the Secret GET`, async (t) => {
-    const fault = receiptPersistenceFaults();
+    const fault = createReceiptPersistenceFaults();
     const finished = Promise.withResolvers();
     const f = await staticEgressFixture(t, {
       resolutionFinished: finished.resolve,
