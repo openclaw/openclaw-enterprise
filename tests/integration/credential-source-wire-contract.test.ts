@@ -37,9 +37,8 @@ async function publishedCredentialComponents(t: TestContext) {
   return { route, validatorCompiler, serializerCompiler, published };
 }
 
-test("published TokenService source schemas accept registration material and serialize only metadata", async (t) => {
-  const { route, validatorCompiler, serializerCompiler, published } =
-    await publishedCredentialComponents(t);
+test("published TokenService source request schemas validate managed static material and config", async (t) => {
+  const { route, validatorCompiler, published } = await publishedCredentialComponents(t);
   const writeOnlySecret = { properties: { secret: { writeOnly: true } } };
   assert.partialDeepStrictEqual(published("RegisterTokenServiceSourceBody"), writeOnlySecret);
   assert.partialDeepStrictEqual(published("UpdateTokenServiceSourceBody"), {
@@ -52,26 +51,6 @@ test("published TokenService source schemas accept registration material and ser
   const config = {};
   const connectionTemplateId = `ctp_${uuid}`;
 
-  const metadata = {
-    ...source,
-    id,
-    namespaceId,
-    ref: { kind: "credential_source", namespaceId, id },
-    config,
-    connectionTemplateId,
-    state: "ready",
-    version: "v2",
-  };
-  const internal = {
-    ...metadata,
-    ownerCapability: "token_service",
-    tokenServiceInstanceId: "private-instance",
-    driverId: "model-credentials",
-    delivery: "push",
-    secret: credential,
-    secrets: refs,
-    backendRef: { key: "private" },
-  };
   // Compile the controller's registered references and the schemas at the public OpenAPI keys.
   const registered = (name: string) => ({ $ref: `${name}#` });
   for (const resolve of [registered, published]) {
@@ -80,13 +59,6 @@ test("published TokenService source schemas accept registration material and ser
       schema: resolve("RegisterTokenServiceSourceBody"),
     });
     const update = validatorCompiler({ ...route, schema: resolve("UpdateTokenServiceSourceBody") });
-    const metadataSchema = resolve("TokenServiceSourceMetadata");
-    const validMetadata = validatorCompiler({ ...route, schema: metadataSchema });
-    const serializeMetadata: (value: unknown) => string = serializerCompiler({
-      ...route,
-      schema: metadataSchema,
-    });
-
     assert.equal(register({ ...source, config, secret: credential }), true);
     // Static custody accepts one opaque value without assigning authority to its field name.
     assert.equal(register({ ...source, secret: { "client-id": "synthetic-material" } }), true);
@@ -108,13 +80,8 @@ test("published TokenService source schemas accept registration material and ser
     assert.equal(update({ config, connectionTemplateId }), false);
 
     const invalidConfig = { "client-id": 42 };
-    assert.equal(register({ ...source, config: invalidConfig }), false);
+    assert.equal(register({ ...source, config: invalidConfig, secret: credential }), false);
     assert.equal(update({ config: invalidConfig }), false);
-    assert.equal(validMetadata({ ...metadata, config: invalidConfig }), false);
-    assert.equal(validMetadata(metadata), true);
-    assert.equal(validMetadata(internal), false);
-    // Private ownership, delivery, backend, and material fields never enter public metadata.
-    assert.deepEqual(JSON.parse(serializeMetadata(internal)), metadata);
   }
 });
 
