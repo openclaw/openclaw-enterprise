@@ -606,7 +606,7 @@ function assertPresetPolicyFixture(value: unknown): asserts value is PresetPolic
 
 function historicalRole(
   permissions: HistoricalPermission[],
-  overrides: Partial<HistoricalRole> = {},
+  overrides: Partial<Omit<HistoricalRole, "permissions">> = {},
 ): HistoricalRole {
   return {
     id: `role_admin_${randomUUID()}`,
@@ -771,21 +771,17 @@ export async function assertPresetPolicyUpgrade(
   const presetRead = presetPermissions[1];
   assert.ok(presetRead);
   const stock = historicalRole(legacyPermissions);
-  const reordered = historicalRole(legacyPermissions, {
-    permissions: [...legacyPermissions].reverse(),
-  });
-  const reduced = historicalRole(legacyPermissions, { permissions: legacyPermissions.slice(1) });
+  const reordered = historicalRole([...legacyPermissions].reverse());
+  const reduced = historicalRole(legacyPermissions.slice(1));
   const roles = [
     stock,
     reordered,
     reduced,
-    historicalRole(legacyPermissions, {
-      permissions: [...legacyPermissions, { action: "update", resourceKind: "namespace" }],
-    }),
+    historicalRole([...legacyPermissions, { action: "update", resourceKind: "namespace" }]),
     historicalRole(legacyPermissions, { name: "Custom administrator" }),
     historicalRole(legacyPermissions, { id: `role_${randomUUID()}` }),
     historicalRole(legacyPermissions, { namespace_id: namespaceId }),
-    historicalRole(legacyPermissions, { permissions: [...legacyPermissions, presetRead] }),
+    historicalRole([...legacyPermissions, presetRead]),
   ];
   const principals = await seedHistoricalRoles(pool, roles, [stock, reduced]);
   assert.ok(principals[0] && principals[1]);
@@ -1243,19 +1239,17 @@ export async function assertAdministratorGrantUpgrade(
   const currentUpdate = currentGrants[2];
   assert.ok(currentUpdate);
   const release = historicalRole(releaseSeed);
-  const reordered = historicalRole(releaseSeed, { permissions: [...releaseSeed].reverse() });
-  const preCredentialSources = historicalRole(releaseSeed, { permissions: presetSeed });
-  const reduced = historicalRole(releaseSeed, { permissions: releaseSeed.slice(1) });
-  const current = historicalRole(releaseSeed, { permissions: [...releaseSeed, currentUpdate] });
+  const reordered = historicalRole([...releaseSeed].reverse());
+  const preCredentialSources = historicalRole(presetSeed);
+  const reduced = historicalRole(releaseSeed.slice(1));
+  const current = historicalRole([...releaseSeed, currentUpdate]);
   const roles = [
     release,
     reordered,
     preCredentialSources,
     reduced,
     current,
-    historicalRole(releaseSeed, {
-      permissions: [...releaseSeed, { action: "update", resourceKind: "namespace" }],
-    }),
+    historicalRole([...releaseSeed, { action: "update", resourceKind: "namespace" }]),
     historicalRole(releaseSeed, { name: "Custom administrator" }),
     historicalRole(releaseSeed, { id: `role_${randomUUID()}` }),
     historicalRole(releaseSeed, { namespace_id: namespaceId }),
