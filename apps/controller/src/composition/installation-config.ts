@@ -1654,11 +1654,11 @@ async function composeInstallationConfiguration(
       ...(repositoryTransport && { repositoryTransport }),
     };
   })();
-  let credentialDeliveryRegistration = protectedDriver?.capabilities.includes(
-    "credential_proxy_delivery",
-  )
-    ? protectedDriver
-    : undefined;
+  let credentialDeliveryRegistration =
+    tokenServiceSelection !== undefined &&
+    protectedDriver?.capabilities.includes("credential_proxy_delivery")
+      ? protectedDriver
+      : undefined;
   if (
     credentialDeliveryRegistration === undefined &&
     tokenServiceSelection !== undefined &&
