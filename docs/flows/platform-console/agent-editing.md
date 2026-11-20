@@ -81,11 +81,10 @@ repository access, or overview errors need attention; outcomes remain.
 `createDeploymentStatusPanel` polls until completion/refusal. Transient errors retain progress.
 `invalidate`/`fail` clear caches/reads.
 Refusals supersede success, opening details. Matching errors share alerts. `401` expires sessions.
-`onFreshRecord` publishes. `show` displays shared records.
-`terminalOverview` shares Agent/history reads once per permitted outcome.
-**Refresh record** retries failed overviews, retaining focus and ignoring repeats.
-**Refresh deployment** queues full rereads.
-`readingOverview` protects explicit reads. `recordGeneration` rejects stale records.
+**Refresh deployment** retries the latest readable revision’s overview.
+**Refresh record** rereads the viewed revision, retaining focus and ignoring repeats.
+`onFreshRecord` retries that overview only for matching terminal records.
+`terminalOverview`/`readingOverview` share Agent/history reads. `recordGeneration` rejects stale records.
 Revision changes replace **View deployment**. Same-revision updates preserve its focus.
 
 Each surface shows revision-specific `repositoryAccess.message` beside unchanged outcomes.
