@@ -2,12 +2,14 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { Parser } from "htmlparser2";
 import { parseDocsDocument } from "./vendor/docs-markdown.mjs";
 import {
   array,
   createDocsParser,
   docsParser,
   frontmatter,
+  isRecord,
   record,
   string,
 } from "./parser-boundary.ts";
@@ -24,10 +26,51 @@ function countWords(text: string) {
     .filter((word) => markdownWord.test(word)).length;
 }
 
-function stripHtml(value: string) {
-  return String(value)
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/<[^>]*>/g, " ");
+function htmlText(html: string) {
+  const parts: string[] = [];
+  const separate = () => parts.push(" ");
+  const parser = new Parser(
+    {
+      ontext: (text) => parts.push(text),
+      onopentagname: separate,
+      onclosetag: separate,
+    },
+    { decodeEntities: false },
+  );
+  parser.end(html);
+  return parts.join("");
+}
+
+function inlineText(token: Record<string, unknown>): string {
+  const children = token.children == null ? [] : array(token.children);
+  const parts: string[] = [];
+  let previousText = false;
+  let interrupted = false;
+  for (const value of children) {
+    const child = record(value);
+    const type = child.type;
+    if (type === "html_inline" && string(child.content).startsWith("<!--")) {
+      interrupted = previousText;
+      continue;
+    }
+    if (type === "text" || type === "image" || type === "code_inline" || type === "html_inline") {
+      const content = string(child.content);
+      // A comment may interrupt a word. Join its text only after Markdown parsing.
+      if (!interrupted || type !== "text") {
+        parts.push(" ");
+      }
+      if (type === "html_inline") {
+        parts.push(htmlText(content));
+      } else if (type === "image" && content.includes("<!--") && child.children != null) {
+        parts.push(inlineText(child));
+      } else {
+        parts.push(content);
+      }
+    }
+    previousText = type === "text";
+    interrupted = false;
+  }
+  return parts.join("");
 }
 
 function gitMarkdownFiles(root: string) {
@@ -91,16 +134,16 @@ export function countMarkdownWords(
   markdown: string,
   options: MarkdownWordCountOptions & { markdown?: unknown } = {},
 ) {
-  return countWordsWithParser(markdown, docsParser(options.markdown), options);
+  const md = docsParser(options.markdown);
+  return countContentWords(frontmatter(markdown).content, md, options);
 }
 
-function countWordsWithParser(
-  markdown: string,
+function countContentWords(
+  body: string,
   md: ReturnType<typeof createDocsParser>,
   options: MarkdownWordCountOptions,
 ) {
-  const content = frontmatter(markdown).content.replace(/<!--[\s\S]*?-->/g, "");
-  const parsed: unknown = parseDocsDocument(content, md, options);
+  const parsed: unknown = parseDocsDocument(body, md, options);
   const tokens = array(record(parsed).tokens);
   const sections = [];
   let proseWords = 0;
@@ -125,7 +168,7 @@ function countWordsWithParser(
       const tag = string(token.tag);
       if (["h1", "h2", "h3"].includes(tag)) {
         const next = tokens[index + 1];
-        const heading = next == null ? tag : (record(next).content ?? tag);
+        const heading = string(next == null ? tag : (record(next).content ?? tag));
         const map = token.map == null ? undefined : array(token.map);
         const line = map?.[0] ?? 0;
         if (typeof line !== "number") {
@@ -133,7 +176,7 @@ function countWordsWithParser(
         }
         sections.push(current);
         current = {
-          heading: string(heading),
+          heading: heading.includes("<!--") ? inlineText(record(next)).trim() : heading,
           level: tag,
           line: line + 1,
           proseWords: 0,
@@ -143,26 +186,11 @@ function countWordsWithParser(
       }
     }
     if (type === "inline") {
-      const children = token.children == null ? [] : array(token.children);
-      const parts: string[] = [];
-      for (const childValue of children) {
-        const child = record(childValue);
-        const childType = child.type;
-        if (
-          childType === "text" ||
-          childType === "code_inline" ||
-          childType === "html_inline" ||
-          childType === "image"
-        ) {
-          const content = string(child.content);
-          parts.push(childType === "html_inline" ? stripHtml(content) : content);
-        }
-      }
-      addProse(parts.join(" "));
+      addProse(inlineText(token));
     } else if (type === "fence" || type === "code_block") {
       addCode(string(token.content));
     } else if (type === "html_block") {
-      addProse(stripHtml(string(token.content)));
+      addProse(htmlText(string(token.content)));
     }
   }
   sections.push(current);
@@ -185,18 +213,15 @@ export function checkMarkdownWordCounts({
   const absoluteRoot = fs.realpathSync.native(path.resolve(root));
   const rows = markdownFiles.map((file) => {
     const markdown = fs.readFileSync(file.absolutePath, "utf8");
-    const boxed: unknown = Object(frontmatter(markdown).data);
-    if (boxed === null || typeof boxed !== "object") {
-      throw new TypeError("Unsupported docs parser contract: expected boxed frontmatter");
-    }
-    const tags: unknown = Reflect.get(boxed, "tags");
+    const { data, content } = frontmatter(markdown);
+    const tags = isRecord(data) ? data.tags : undefined;
     if (
       tags !== undefined &&
-      (!Array.isArray(tags) || array(tags).some((tag) => typeof tag !== "string" || !tag.trim()))
+      (!Array.isArray(tags) || tags.some((tag: unknown) => typeof tag !== "string" || !tag.trim()))
     ) {
       throw new Error(`${file.path}: tags frontmatter must be a list of nonempty strings`);
     }
-    const counts = countWordsWithParser(markdown, md, {
+    const counts = countContentWords(content, md, {
       sourceFile: file.absolutePath,
       root: file.path.startsWith("docs/")
         ? path.join(absoluteRoot, "docs")
@@ -204,7 +229,7 @@ export function checkMarkdownWordCounts({
     });
     // Exceptions belong to the resolved file, not aliases pointing elsewhere.
     let lengthException;
-    if (tags !== undefined && array(tags).includes("nolimit")) {
+    if (tags?.includes("nolimit")) {
       lengthException = "nolimit tag";
     } else if (path.basename(file.realPath) === "AGENTS.md") {
       lengthException = "Agent instruction document";

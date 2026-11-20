@@ -467,37 +467,54 @@ test("word counter reads a supplied MarkdownIt parse getter only once", () => {
   assert.equal(parseCalls, 1);
 });
 
-test("word counter preserves comment delimiters in prose and fenced examples", async (t) => {
+test("word counter excludes parsed comments and counts literal delimiters", async (t) => {
   const directory = await temporaryDirectory(t, "enterprise-docs-comment-counts-");
   execFileSync("git", ["init"], { cwd: directory, stdio: "ignore" });
-  const cases = {
-    "adjacent.md": "a<!-- hidden -->b",
-    "fenced.md": "```html\n<!<!-- cut -->-- hidden -->visible\n```\n",
-    "nested-closed.md": "<!<!-- cut -->-- hidden -->visible",
-    "nested-multiple.md": "<!<!-- a -->-<!-- b -->- hidden words",
-    "nested-open.md": "<!<!-- cut -->-- hidden words",
-  };
-  for (const [file, content] of Object.entries(cases)) {
+  const cases = [
+    ["adjacent.md", "a<!-- hidden -->b", 1, 0],
+    ["consecutive.md", "one<!-- hidden --><!-- also hidden -->two three", 2, 0],
+    ["fenced.md", "```html\n<!<!-- cut -->-- hidden -->visible\n```\n", 0, 3],
+    ["nested-closed.md", "<!<!-- cut -->-- hidden -->visible", 2, 0],
+    ["nested-multiple.md", "<!<!-- a -->-<!-- b -->- hidden words", 2, 0],
+    ["nested-open.md", "<!<!-- cut -->-- hidden words", 2, 0],
+    ["tag.md", "before <sp<!-- gap -->an> after", 3, 0],
+    ["block.md", "<div>before <sp<!-- gap -->an> after</div>", 3, 0],
+    ["heading.md", "# before<!-- private -->after", 1, 0],
+    ["image.md", "![before<!-- private -->after](image.png)", 1, 0],
+    ["spaced.md", "one <!-- hidden -->two three", 3, 0],
+    ["unclosed.md", "before <!-- still visible", 3, 0],
+    ["code.md", "`<!-- inline example -->`\n\n~~~txt\n<!-- fenced example -->\n~~~", 2, 2],
+  ] as const;
+  for (const [file, content] of cases) {
     await writeFile(join(directory, file), content);
   }
 
   const result = checkMarkdownWordCounts({ root: directory });
   assert.equal(result.ok, true);
-  assert.deepEqual(
-    result.rows.map(({ path, proseWords, codeWords, totalWords }) => ({
-      path,
-      proseWords,
-      codeWords,
-      totalWords,
-    })),
-    [
-      { path: "adjacent.md", proseWords: 1, codeWords: 0, totalWords: 1 },
-      { path: "fenced.md", proseWords: 0, codeWords: 2, totalWords: 2 },
-      { path: "nested-closed.md", proseWords: 1, codeWords: 0, totalWords: 1 },
-      { path: "nested-multiple.md", proseWords: 2, codeWords: 0, totalWords: 2 },
-      { path: "nested-open.md", proseWords: 2, codeWords: 0, totalWords: 2 },
-    ],
-  );
+  const rows = new Map(result.rows.map((row) => [row.path, row]));
+  assert.equal(rows.size, cases.length);
+  assert.equal(rows.get("heading.md")?.sections[1]?.heading, "beforeafter");
+  for (const [file, , prose, code] of cases) {
+    const row = rows.get(file);
+    assert.ok(row, file);
+    assert.deepEqual(
+      [row.proseWords, row.codeWords, row.totalWords],
+      [prose, code, prose + code],
+      file,
+    );
+  }
+});
+
+test("word counter resolves only intact snippet directives", async (t) => {
+  const directory = await temporaryDirectory(t, "enterprise-docs-snippet-counts-");
+  const page = join(directory, "README.md");
+  const attributes = 'file="absent.txt" lang="txt"';
+  const count = () => checkMarkdownWordCounts({ root: directory, files: ["README.md"] });
+  await writeFile(page, `before <Sni<!-- gap -->ppet ${attributes} /> after\n`);
+  assert.equal(count().rows[0]?.proseWords, 5);
+
+  await writeFile(page, `before <Snippet ${attributes} /> after\n`);
+  assert.throws(count, /Missing or out-of-scope code snippet .*absent\.txt/);
 });
 
 // `scope` is authored matrix metadata carried in the fixture alongside renderer fields.
