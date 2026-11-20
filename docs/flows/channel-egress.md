@@ -176,12 +176,11 @@ activation fails. Translation status alone is insufficient; the active listener
 generation must match. Retained revoking records indicate incomplete cleanup.
 Do not delete them to reclaim a port.
 
-When an additive policy lets the Gateway reach unrestricted or public
-destinations directly, the worker's `worker.compute-prepare-failed` event names
-the offending NetworkPolicy by Kubernetes UID. In the Gateway's Kubernetes
-namespace, run
-`kubectl get networkpolicy -n <gateway-namespace> -o custom-columns=NAME:.metadata.name,UID:.metadata.uid`
-to find the policy before correcting it.
+If preparation detects an additive NetworkPolicy that lets the Gateway reach
+unrestricted or public destinations directly, check the worker's
+`worker.compute-prepare-failed` event. If the event includes a NetworkPolicy UID,
+find the policy in the Gateway's Kubernetes namespace before correcting it.
+Run `kubectl get networkpolicy -n <gateway-namespace> -o custom-columns=NAME:.metadata.name,UID:.metadata.uid`.
 
 [The Kubernetes and Slack procedures](../testing/slack.md) select the real
 runtime tests. Controlled endpoint probes prove transport, not another channel
