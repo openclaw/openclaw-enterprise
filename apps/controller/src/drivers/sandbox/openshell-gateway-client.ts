@@ -2598,6 +2598,8 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       attachedSandbox.workspace !== workspace ||
       !attachedSandbox.id ||
       desired.sandbox_id !== attachedSandbox.id ||
+      (desired.attachment_epoch ?? "") !==
+        (attachedSandbox.spec?.provider_attachment_epoch ?? "") ||
       !/^[1-9]\d*$/.test(attachedSandbox.resourceVersion ?? "")
     ) {
       return undefined;

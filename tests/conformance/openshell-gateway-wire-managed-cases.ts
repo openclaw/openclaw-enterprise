@@ -170,7 +170,8 @@ export function registerManagedWorkloadCases(): void {
               sandbox: call.request.sandbox,
               provider_id: "provider-id",
               provider_resource_version: "3",
-              attachment_epoch: mutationId,
+              attachment_epoch:
+                call.request.provider === "invalid-epoch" ? "older-epoch" : mutationId,
             },
             persisted_time: {
               seconds: "1795152000",
@@ -285,7 +286,12 @@ export function registerManagedWorkloadCases(): void {
     assert.equal(attached.attached, true);
     // Existing reconciliation can still read back membership after a successful legacy reply;
     // staged callers receive no validated attachment evidence from absent or mismatched receipts.
-    for (const provider of ["legacy-provider", "invalid-receipt", "invalid-time"]) {
+    for (const provider of [
+      "legacy-provider",
+      "invalid-receipt",
+      "invalid-time",
+      "invalid-epoch",
+    ]) {
       assert.equal(
         await client.attachSandboxProvider(selector.workspace, selector.name, provider, signal, {
           ...conditional,
