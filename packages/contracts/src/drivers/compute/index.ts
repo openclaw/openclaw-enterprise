@@ -6,6 +6,11 @@ import type {
 import type { ConfigurationValidationOptions } from "../configuration/index.ts";
 import type { CredentialAttachmentStatus } from "../credential-gateway/index.ts";
 import type {
+  CredentialDeploymentConfiguration,
+  CredentialProjection,
+} from "../../credential-deployment.ts";
+import type { HarnessStartupRef } from "../sandbox/deployment.ts";
+import type {
   CredentialPolicyWithdrawalOptions,
   EgressInstallation,
 } from "../credential-proxy/index.ts";
@@ -53,6 +58,16 @@ export type AgentChatCompletionsResolution =
   | { readonly status: "unsupported" };
 
 export interface ComputeRevisionContext {
+  /** Worker configures the exact staged target without exposing source resolution to Compute. */
+  readonly configureCredentialDeployment?: (
+    expected: CredentialDeploymentConfiguration,
+    signal: AbortSignal,
+  ) => Promise<{ readonly credentialProjections: readonly CredentialProjection[] }>;
+  /** Reauthorize this exact acknowledged held startup immediately before Compute signs release. */
+  readonly verifyCredentialDeploymentRelease?: (
+    startup: HarnessStartupRef,
+    signal: AbortSignal,
+  ) => Promise<void>;
   /** An active provider's maintenance pass may update its existing Harness only. */
   readonly existingHarnessOnly?: true;
   /** Worker persists only an authenticated receipt for this admitted plan. */
@@ -234,7 +249,7 @@ export interface ComputeDriver extends Driver {
   ): Promise<SandboxHarnessObservation>;
   /** Admission capability check, not release authority. Missing support fails closed. */
   validateExecutionAdmission?(
-    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
+    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan" | "credentialDeployment">,
     /** Only the release of a revision already in durable custody can use its historical contract. */
     source?: SelectedDriverRegistration | "stored",
   ): void;

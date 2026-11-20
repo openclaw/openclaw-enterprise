@@ -1,3 +1,6 @@
+import { Type } from "typebox";
+import { Check } from "typebox/value";
+import { requestCovered, validateMatches } from "../../deployment-request-match.ts";
 import type {
   CredentialProxyBinding,
   CredentialProxyExchange,
@@ -148,7 +151,10 @@ export interface ProxyPlan {
   /** v4/v7 are exact dispatch; v5 requires online authorization; v6 records an observed request hook. */
   readonly repositoryGitAuthorization?: "online-request" | "request-hook-observed";
   /** v4–v7: the Harness model attachment independently admitted by the Credential Gateway. */
-  readonly harnessCredentialSource?: Extract<HarnessAuthSnapshot, { method: "credential_source" }>;
+  readonly harnessCredentialSource?: Extract<
+    HarnessAuthSnapshot,
+    { method: "credential_source"; credentialGatewayId: string }
+  >;
   readonly routes: readonly EgressRoute[];
 }
 
@@ -541,10 +547,128 @@ export interface CredentialProxyDriver extends Driver {
   ): Promise<void>;
 }
 
-/** Durable admission semantics. v7 adds verified Git policy reduction to exact dispatch. */
+const strictDeploymentShape = { additionalProperties: false } as const;
+const nonemptyDeploymentString = Type.String({ pattern: "\\S" });
+const deploymentSourceRef = Type.Object(
+  {
+    kind: Type.Literal("credential_source"),
+    namespaceId: nonemptyDeploymentString,
+    id: nonemptyDeploymentString,
+  },
+  strictDeploymentShape,
+);
+const deploymentConsumer = Type.Union([
+  Type.Object(
+    {
+      kind: Type.Literal("plugin"),
+      pluginId: nonemptyDeploymentString,
+      requirement: nonemptyDeploymentString,
+      connection: nonemptyDeploymentString,
+    },
+    strictDeploymentShape,
+  ),
+  Type.Object(
+    { kind: Type.Literal("model"), providerId: nonemptyDeploymentString },
+    strictDeploymentShape,
+  ),
+  Type.Object(
+    { kind: Type.Literal("repository"), repositoryId: nonemptyDeploymentString },
+    strictDeploymentShape,
+  ),
+]);
+const credentialDeploymentShape = Type.Object(
+  {
+    proxyDriverId: nonemptyDeploymentString,
+    networkAccessPolicy: Type.Object(
+      { allowed: Type.Array(Type.Unknown()) },
+      strictDeploymentShape,
+    ),
+    bindings: Type.Array(
+      Type.Object(
+        {
+          bindingRef: nonemptyDeploymentString,
+          sourceRef: deploymentSourceRef,
+          consumer: deploymentConsumer,
+          projection: Type.Object(
+            {
+              environment: Type.String({ pattern: "^[A-Za-z_][A-Za-z0-9_]*$" }),
+              presentation: Type.Union([
+                Type.Literal("bearer"),
+                Type.Literal("x-api-key"),
+                Type.Literal("repository_git"),
+                Type.Literal("github_installation"),
+                Type.Literal("github_repository"),
+              ]),
+            },
+            strictDeploymentShape,
+          ),
+        },
+        strictDeploymentShape,
+      ),
+    ),
+    injectionPolicies: Type.Array(
+      Type.Object(
+        {
+          bindingRef: nonemptyDeploymentString,
+          allowedRequests: Type.Array(Type.Unknown(), { minItems: 1 }),
+        },
+        strictDeploymentShape,
+      ),
+    ),
+  },
+  strictDeploymentShape,
+);
+
+/** Recognize persisted shape and internal references without claiming live source authority. */
+function validCredentialDeployment(
+  deployment: NonNullable<AgentRevision["credentialDeployment"]>,
+): boolean {
+  if (
+    !Check(credentialDeploymentShape, deployment) ||
+    validateMatches(deployment.networkAccessPolicy.allowed, "").length
+  ) {
+    return false;
+  }
+  const bindings = new Set<string>();
+  const environments = new Set<string>();
+  for (const binding of deployment.bindings) {
+    const presentation = binding.projection.presentation;
+    if (
+      bindings.has(binding.bindingRef) ||
+      environments.has(binding.projection.environment) ||
+      (binding.consumer.kind === "plugin" && presentation !== "bearer") ||
+      (binding.consumer.kind === "model" &&
+        presentation !== "bearer" &&
+        presentation !== "x-api-key") ||
+      (binding.consumer.kind === "repository" &&
+        presentation !== "repository_git" &&
+        presentation !== "github_installation" &&
+        presentation !== "github_repository")
+    ) {
+      return false;
+    }
+    bindings.add(binding.bindingRef);
+    environments.add(binding.projection.environment);
+  }
+  for (const injection of deployment.injectionPolicies) {
+    if (
+      !bindings.delete(injection.bindingRef) ||
+      validateMatches(injection.allowedRequests, "").length ||
+      !injection.allowedRequests.every((rule) =>
+        requestCovered(rule, deployment.networkAccessPolicy.allowed),
+      )
+    ) {
+      return false;
+    }
+  }
+  return bindings.size === 0;
+}
+
+/** Durable admission semantics. v8 fences staged credential deployment from older readers. */
 export type ExecutionAdmission =
   | { readonly version: 2; readonly mode: "unprotected" }
-  | { readonly version: 3 | 4 | 5 | 6 | 7; readonly mode: "protected" };
+  | { readonly version: 3 | 4 | 5 | 6 | 7; readonly mode: "protected" }
+  | { readonly version: 8; readonly mode: "standalone" };
 
 export function protectedRepositoryGitAdmission(
   admission: ExecutionAdmission | undefined,
@@ -557,22 +681,55 @@ export function protectedRepositoryGitAdmission(
   );
 }
 
+type ExecutionAdmissionRevision = Pick<
+  AgentRevision,
+  "executionAdmission" | "egressPlan" | "credentialDeployment"
+> &
+  Partial<Pick<AgentRevision, "harnessAuth" | "credentialSources">>;
+
 /** Recognition only. A valid protected schema is not proof of deployability. */
-export function assertExecutionAdmission(
-  revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
-): void {
+export function assertExecutionAdmission(revision: ExecutionAdmissionRevision): void {
   const admission = revision.executionAdmission;
   if (
     !admission ||
     (!(admission.version === 2 && admission.mode === "unprotected") &&
+      !(admission.version === 8 && admission.mode === "standalone") &&
       !(
         (admission.version === 3 || protectedRepositoryGitAdmission(admission)) &&
         admission.mode === "protected"
       )) ||
-    (admission.mode !== "protected" && admission.mode !== "unprotected") ||
+    (admission.mode !== "protected" &&
+      admission.mode !== "unprotected" &&
+      admission.mode !== "standalone") ||
     Object.keys(admission).some((key) => key !== "version" && key !== "mode")
   ) {
     throw new Error("Missing or unsupported durable execution admission.");
+  }
+  if (admission.mode === "standalone") {
+    if (
+      revision.egressPlan !== undefined ||
+      revision.credentialDeployment === undefined ||
+      !validCredentialDeployment(revision.credentialDeployment)
+    ) {
+      throw new Error("Invalid staged credential deployment admission.");
+    }
+    const auth = revision.harnessAuth;
+    if (
+      auth?.method === "credential_source" &&
+      auth.tokenServiceInstanceId !== undefined &&
+      (Object.hasOwn(auth, "credentialGatewayId") || Object.hasOwn(auth, "loginMode"))
+    ) {
+      throw new Error("Invalid staged credential source snapshot.");
+    }
+    return;
+  }
+  if (
+    revision.credentialDeployment !== undefined ||
+    (revision.harnessAuth?.method === "credential_source" &&
+      revision.harnessAuth.tokenServiceInstanceId !== undefined) ||
+    revision.credentialSources?.some((source) => source.tokenServiceInstanceId !== undefined)
+  ) {
+    throw new Error("Staged credential deployment requires its own execution admission.");
   }
   if ((admission.mode === "protected") !== (revision.egressPlan !== undefined)) {
     throw new Error("Inconsistent durable execution admission and egress plan.");
@@ -641,11 +798,9 @@ export function assertExecutionAdmission(
 }
 
 /** Default cutoff for Compute implementations without protected installation and release. */
-export function assertExecutionReleaseAllowed(
-  revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
-): void {
+export function assertExecutionReleaseAllowed(revision: ExecutionAdmissionRevision): void {
   assertExecutionAdmission(revision);
-  if (revision.executionAdmission.mode === "protected") {
+  if (revision.executionAdmission.mode !== "unprotected") {
     throw new Error(
       "Protected execution is unavailable on a Compute without exact installation and release.",
     );

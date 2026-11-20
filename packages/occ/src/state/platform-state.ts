@@ -842,11 +842,19 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
       return normalizeHarnessAuthBinding(value) !== null;
     }
     if (value.method === "credential_source") {
+      if (
+        normalizeHarnessAuthBinding({ method: value.method, sourceId: value.sourceId }) === null ||
+        !isNonEmptyString(value.sourceType)
+      ) {
+        return false;
+      }
+      const keys = Object.keys(value).sort().join(",");
+      if (keys === "method,sourceId,sourceType,tokenServiceInstanceId") {
+        return isNonEmptyString(value.tokenServiceInstanceId);
+      }
       return (
-        normalizeHarnessAuthBinding({ method: value.method, sourceId: value.sourceId }) !== null &&
-        Object.keys(value).length === 5 &&
+        keys === "credentialGatewayId,loginMode,method,sourceId,sourceType" &&
         isNonEmptyString(value.credentialGatewayId) &&
-        isNonEmptyString(value.sourceType) &&
         (value.loginMode === "api_key" ||
           value.loginMode === "codex_pat" ||
           value.loginMode === "chatgptAuthTokens")
@@ -984,10 +992,10 @@ export async function assertRevisionAuthAvailable(
   loadSources: (
     ids: readonly string[],
   ) => Promise<
-    readonly Pick<
+    readonly (Pick<
       CredentialSource,
       "id" | "namespaceId" | "type" | "state" | "ownerCapability" | "driverId"
-    >[]
+    > & { readonly tokenServiceInstanceId?: string })[]
   >,
 ): Promise<void> {
   const snapshots: CredentialSourceSnapshot[] = [...(revision.credentialSources ?? [])];
@@ -1023,11 +1031,19 @@ export async function assertRevisionAuthAvailable(
     }
     const ownerMatches =
       (source.ownerCapability === "credential_gateway" &&
+        snapshot.tokenServiceInstanceId === undefined &&
         snapshot.credentialProxyId === undefined &&
         snapshot.credentialGatewayId === source.driverId) ||
       (source.ownerCapability === "credential_proxy" &&
+        snapshot.tokenServiceInstanceId === undefined &&
         snapshot.credentialGatewayId === undefined &&
-        snapshot.credentialProxyId === source.driverId);
+        snapshot.credentialProxyId === source.driverId) ||
+      (source.ownerCapability === "token_service" &&
+        source.driverId === undefined &&
+        isNonEmptyString(source.tokenServiceInstanceId) &&
+        snapshot.credentialGatewayId === undefined &&
+        snapshot.credentialProxyId === undefined &&
+        snapshot.tokenServiceInstanceId === source.tokenServiceInstanceId);
     if (source.type !== snapshot.sourceType || !ownerMatches) {
       throw new ScopeViolationError(
         "The AgentRevision credential source snapshot does not match its current owner or type.",
@@ -1094,16 +1110,62 @@ export function validCredentialSourceSnapshots(value: unknown): boolean {
     const keys = Object.keys(entry).sort();
     const snapshot = entry as Record<string, unknown>;
     const valid =
-      ["credentialGatewayId,sourceId,sourceType", "credentialProxyId,sourceId,sourceType"].includes(
-        keys.join(","),
-      ) &&
+      [
+        "credentialGatewayId,sourceId,sourceType",
+        "credentialProxyId,sourceId,sourceType",
+        "sourceId,sourceType,tokenServiceInstanceId",
+      ].includes(keys.join(",")) &&
       isNonEmptyString(snapshot.sourceId) &&
-      isNonEmptyString(snapshot.credentialGatewayId ?? snapshot.credentialProxyId) &&
+      isNonEmptyString(
+        snapshot.credentialGatewayId ??
+          snapshot.credentialProxyId ??
+          snapshot.tokenServiceInstanceId,
+      ) &&
       isNonEmptyString(snapshot.sourceType) &&
       !seen.has(snapshot.sourceId);
     seen.add(snapshot.sourceId as string);
     return valid;
   });
+}
+
+/** Full-revision invariant; the execution fence also runs on partial Driver admission inputs. */
+export function validStandaloneCredentialDeployment(
+  revision: Pick<
+    AgentRevision,
+    | "namespaceId"
+    | "executionAdmission"
+    | "credentialDeployment"
+    | "harnessAuth"
+    | "credentialSources"
+  >,
+): boolean {
+  if (revision.executionAdmission.mode !== "standalone") {
+    return true;
+  }
+  const auth = revision.harnessAuth;
+  const policy = revision.credentialDeployment;
+  if (
+    auth.method !== "credential_source" ||
+    !isNonEmptyString(auth.tokenServiceInstanceId) ||
+    policy === undefined
+  ) {
+    return false;
+  }
+  const snapshot = revision.credentialSources?.find(({ sourceId }) => sourceId === auth.sourceId);
+  if (
+    snapshot === undefined ||
+    snapshot.tokenServiceInstanceId !== auth.tokenServiceInstanceId ||
+    snapshot.sourceType !== auth.sourceType
+  ) {
+    return false;
+  }
+  const models = policy.bindings.filter(({ consumer }) => consumer.kind === "model");
+  return (
+    models.length === 1 &&
+    models[0]?.sourceRef.kind === "credential_source" &&
+    models[0].sourceRef.namespaceId === revision.namespaceId &&
+    models[0].sourceRef.id === auth.sourceId
+  );
 }
 
 function assertAdmittedAgentRevision(revision: AgentRevision): void {
@@ -1152,6 +1214,7 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     Object.hasOwn(revision, "serviceAccount") ||
     !validHarnessAuthSnapshot(revision.harnessAuth, revision.namespaceId) ||
     !validCredentialSourceSnapshots(revision.credentialSources) ||
+    !validStandaloneCredentialDeployment(revision) ||
     !validPluginRevisionState(revision.plugins) ||
     !validPluginApprovers(revision.pluginApprovers) ||
     (revision.repositoryCredentials !== undefined &&

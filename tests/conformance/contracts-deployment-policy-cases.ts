@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  assertExecutionAdmission,
+  assertExecutionReleaseAllowed,
   credentialProxyRoutingDetails,
+  credentialSourceMatchesSnapshot,
   validateDeploymentPolicy,
+  type CredentialSource,
   type DeploymentPolicy,
   type DeploymentPolicyValidationContext,
   type DeploymentRequestMatch,
   type DeploymentRequestPolicy,
+  type HarnessAuthSnapshot,
 } from "../../packages/contracts/src/index.ts";
 
 function calendarAccount(connection: string, environment: string) {
@@ -62,6 +67,133 @@ function policyRefusals(policy: DeploymentPolicy, context: DeploymentPolicyValid
 }
 
 export function registerDeploymentPolicyCases(): void {
+  test("staged source snapshots stay bound to the registered TokenService instance", () => {
+    const source = {
+      id: "cs_work",
+      namespaceId: "ns_example",
+      name: "Work",
+      type: "static",
+      config: {},
+      secrets: {},
+      state: "ready",
+      createdAt: "2026-11-20T00:00:00Z",
+      ownerCapability: "token_service",
+      tokenServiceInstanceId: "instance-a",
+      registration: {},
+    } as const satisfies CredentialSource;
+    const snapshot = {
+      sourceId: source.id,
+      sourceType: source.type,
+      tokenServiceInstanceId: "instance-a",
+    };
+    assert.equal(credentialSourceMatchesSnapshot(source, snapshot), true);
+    assert.equal(
+      credentialSourceMatchesSnapshot(
+        { ...source, tokenServiceInstanceId: "instance-b" },
+        snapshot,
+      ),
+      false,
+    );
+    assert.equal(
+      credentialSourceMatchesSnapshot(source, {
+        sourceId: source.id,
+        sourceType: source.type,
+        credentialGatewayId: "instance-a",
+      }),
+      false,
+    );
+  });
+
+  test("staged credential deployment requires its own reader fence and an enforcing Compute", () => {
+    const { policy } = credentialPolicyFixture({ type: "http", method: "GET", path: "/events" });
+    const staged = {
+      executionAdmission: { version: 8, mode: "standalone" },
+      credentialDeployment: { ...policy, proxyDriverId: "proxy" },
+    } as const;
+    assert.doesNotThrow(() => assertExecutionAdmission(staged));
+    const sourceAuth = {
+      method: "credential_source" as const,
+      sourceId: "cs_work",
+      sourceType: "static",
+      tokenServiceInstanceId: "instance-a",
+    };
+    assert.doesNotThrow(() => assertExecutionAdmission({ ...staged, harnessAuth: sourceAuth }));
+    // A persisted TokenService snapshot cannot gain auth authority from a legacy Harness login mode.
+    assert.throws(
+      () =>
+        assertExecutionAdmission({
+          ...staged,
+          harnessAuth: { ...sourceAuth, loginMode: "api_key" } as unknown as HarnessAuthSnapshot,
+        }),
+      /Invalid staged credential source snapshot/,
+    );
+    assert.throws(() => assertExecutionReleaseAllowed(staged), /exact installation and release/);
+    assert.throws(
+      () =>
+        assertExecutionAdmission({
+          ...staged,
+          executionAdmission: { version: 2, mode: "unprotected" },
+        }),
+      /own execution admission/,
+    );
+    assert.throws(
+      () =>
+        assertExecutionAdmission({
+          executionAdmission: { version: 2, mode: "unprotected" },
+          harnessAuth: {
+            method: "credential_source",
+            sourceId: "cs_work",
+            sourceType: "static",
+            tokenServiceInstanceId: "instance-a",
+          },
+        }),
+      /own execution admission/,
+    );
+    assert.throws(
+      () =>
+        assertExecutionAdmission({
+          executionAdmission: { version: 2, mode: "unprotected" },
+          credentialSources: [
+            { sourceId: "cs_work", sourceType: "static", tokenServiceInstanceId: "instance-a" },
+          ],
+        }),
+      /own execution admission/,
+    );
+    assert.throws(
+      () => assertExecutionAdmission({ executionAdmission: staged.executionAdmission }),
+      /Invalid staged/,
+    );
+    assert.throws(
+      () =>
+        assertExecutionAdmission({
+          ...staged,
+          credentialDeployment: { ...staged.credentialDeployment, injectionPolicies: [] },
+        }),
+      /Invalid staged/,
+    );
+    assert.throws(
+      () =>
+        assertExecutionAdmission({
+          ...staged,
+          credentialDeployment: {
+            ...staged.credentialDeployment,
+            injectionPolicies: [
+              {
+                ...policy.injectionPolicies[0]!,
+                allowedRequests: [
+                  {
+                    ...policy.injectionPolicies[0]!.allowedRequests[0]!,
+                    host: "other.example.org",
+                  },
+                ],
+              },
+            ],
+          },
+        }),
+      /Invalid staged/,
+    );
+  });
+
   test("credential injection needs independent network permission for the exact HTTP request or MCP tool", () => {
     const http = { type: "http", method: "GET", path: "/events" } as const;
     const mcp = {

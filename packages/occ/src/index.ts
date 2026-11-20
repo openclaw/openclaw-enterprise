@@ -60,6 +60,10 @@ import {
   codexProxiesRepositoryBroker,
   validPluginDriverIdentity,
   codexRepositoryBrokerNetworkProxy,
+  inferenceKeyDestination,
+  isSourceProviderPresetId,
+  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
+  validateDeploymentPolicy,
 } from "@openclaw-enterprise/contracts";
 import { EgressSendReceipts } from "./egress-send-receipts.ts";
 import type {
@@ -75,6 +79,14 @@ import type {
   TokenService,
   EgressRef,
   ProtectedEgressSource,
+  StaticKeyTemplateValues,
+  ModelProviderSettings,
+  DeploymentCredentialBinding,
+  DeploymentPolicy,
+  DeploymentRequestMatch,
+  NetworkPolicyCapabilities,
+  CredentialInjectionCapabilities,
+  CredentialProxyDriver,
 } from "@openclaw-enterprise/contracts";
 import {
   CredentialProxy,
@@ -824,6 +836,33 @@ export interface InstallationIAMConfiguration {
   }[];
 }
 
+/** A composition-owned, reviewed static credential profile for an explicitly selected model. */
+export interface ModelCredentialPreset {
+  readonly providerId: string;
+  readonly provider: Pick<ModelProviderSettings, "baseUrl" | "protocol">;
+  readonly template: StaticKeyTemplateValues;
+  readonly projection: Extract<
+    DeploymentCredentialBinding,
+    { readonly consumer: { readonly kind: "model" } }
+  >["projection"];
+}
+
+/** Only the selected enforcing implementations can attest to their process and policy support. */
+export interface CredentialDeploymentCapabilities {
+  readonly binary: string;
+  readonly sandbox: NetworkPolicyCapabilities;
+  readonly proxy: CredentialInjectionCapabilities;
+}
+
+interface PreparedModelCredentialDeployment {
+  readonly source: Readonly<
+    CredentialSource & { ownerCapability: "token_service"; tokenServiceInstanceId: string }
+  >;
+  readonly preset: ModelCredentialPreset;
+  readonly capabilities: CredentialDeploymentCapabilities;
+  readonly proxy: CredentialProxyDriver;
+}
+
 export interface ControllerOptions {
   /** Key material for sealed authentication-state payloads (device-login challenge and handle). */
   readonly authenticationStateEncryptionSecret?: string;
@@ -834,6 +873,16 @@ export interface ControllerOptions {
     readonly withSourceToken: NonNullable<CredentialGatewayDriver["withSourceToken"]>;
   };
   readonly preparedTokens?: TokenService | undefined;
+  readonly modelCredentialPreset?: (input: {
+    readonly presetId: string;
+    readonly configuration: Readonly<Record<string, unknown>>;
+    readonly harness: RevisionHarnessDescriptor;
+  }) => ModelCredentialPreset | undefined;
+  /** Code-only composition of the actual selected Sandbox and Proxy; absent means unsupported. */
+  readonly credentialDeploymentCapabilities?: (input: {
+    readonly sandbox: SandboxDriver;
+    readonly proxy: CredentialProxyDriver;
+  }) => CredentialDeploymentCapabilities | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
   /** Installation configuration `iam`; `applyIAMConfiguration` writes it to IAM policy. */
@@ -2325,6 +2374,8 @@ export class OpenClawController {
   private readonly credentialProxyCapacity: CredentialProxyCapacity;
   private readonly registry = new Map<string, RegisteredDriver>();
   private readonly pluginSourceReader: ControllerOptions["pluginSourceReader"];
+  private readonly modelCredentialPreset: ControllerOptions["modelCredentialPreset"];
+  private readonly credentialDeploymentCapabilities: ControllerOptions["credentialDeploymentCapabilities"];
   private tokenServiceInstance: Readonly<TokenServiceInstance> | undefined;
   private readonly preparedTokens: TokenService | undefined;
   private readonly selections = new Map<DriverCapability, RegisteredDriver>();
@@ -2373,6 +2424,8 @@ export class OpenClawController {
     this.authorization = options.authorize;
     this.preparedTokens = options.preparedTokens;
     this.pluginSourceReader = options.pluginSourceReader;
+    this.modelCredentialPreset = options.modelCredentialPreset;
+    this.credentialDeploymentCapabilities = options.credentialDeploymentCapabilities;
     this.clock = options.now ?? (() => new Date());
     this.identifier = options.createId;
     this.state = options.state ?? new InMemoryPlatformState();
@@ -8343,6 +8396,7 @@ export class OpenClawController {
         repositoryGit &&
         source?.state === "ready" &&
         harnessAuth?.method === "credential_source" &&
+        harnessAuth.credentialGatewayId !== undefined &&
         source.id === harnessAuth.sourceId &&
         credentialSourceMatchesSnapshot(source, harnessAuth)
       ) {
@@ -13930,6 +13984,14 @@ export class OpenClawController {
         principalId,
         lockedAgent,
       );
+      const stagedModel = await this.prepareModelCredentialDeployment(
+        state,
+        lockedAgent,
+        harnessAuth,
+        requestedHarness,
+        configuration.values,
+        sandbox,
+      );
       const revisionHarness = immutableCopy({
         ...requestedHarness,
         configuration:
@@ -13939,6 +14001,32 @@ export class OpenClawController {
             configuration.values,
           ) ?? {},
       });
+      if (stagedModel !== undefined) {
+        const resolvedProvider = asRecord(revisionHarness.configuration?.modelProvider);
+        let matches: boolean;
+        try {
+          matches =
+            resolvedProvider?.protocol === stagedModel.preset.provider.protocol &&
+            typeof resolvedProvider.baseUrl === "string" &&
+            isDeepStrictEqual(
+              inferenceKeyDestination(
+                resolvedProvider.baseUrl,
+                stagedModel.preset.provider.protocol,
+              ),
+              inferenceKeyDestination(
+                stagedModel.preset.provider.baseUrl,
+                stagedModel.preset.provider.protocol,
+              ),
+            );
+        } catch {
+          matches = false;
+        }
+        if (!matches) {
+          throw new ResourceStateConflictError(
+            "The frozen Harness model route does not match the admitted source preset.",
+          );
+        }
+      }
       this.requireCredentialSourceDrivers(harnessAuth, sandbox);
       const driver =
         lockedAgent.plugins && Object.keys(lockedAgent.plugins).length
@@ -14115,19 +14203,44 @@ export class OpenClawController {
       // PostgreSQL restamps createdAt on its own clock; the response carries the stored value.
       // The repository credential deadline above stays on this controller's clock.
       const revisionId = this.nextIdentifier("agent_revision");
-      const proxyAdmission = await this.admitProxyPlan(
-        state,
-        lockedAgent,
-        revisionId,
-        admittedConfiguration,
-        sandbox?.id,
-        repositoryCredentials,
-        harnessAuth,
-        revisionHarness.configuration,
-      );
+      const policy = await state.sandboxPolicies.find(namespace.id, lockedAgent.id);
+      if (stagedModel !== undefined && (policy?.additions.length ?? 0) > 0) {
+        await this.authorize(principalId, "read", {
+          kind: "sandbox_policy",
+          id: policy!.id,
+          namespaceId: namespace.id,
+        });
+      }
+      if (
+        stagedModel !== undefined &&
+        (repositoryCredentials !== undefined || credentialSources.length !== 1)
+      ) {
+        throw new ResourceStateConflictError(
+          "A staged model credential cannot share an execution with other credential delivery.",
+        );
+      }
+      const credentialDeployment =
+        stagedModel === undefined
+          ? undefined
+          : this.admitModelCredentialPolicy(stagedModel, policy?.additions ?? []);
+      const proxyAdmission =
+        credentialDeployment === undefined
+          ? await this.admitProxyPlan(
+              state,
+              lockedAgent,
+              revisionId,
+              admittedConfiguration,
+              sandbox?.id,
+              repositoryCredentials,
+              harnessAuth,
+              revisionHarness.configuration,
+            )
+          : undefined;
       const egressPlan = proxyAdmission?.plan;
       let executionAdmission: ExecutionAdmission;
-      if (egressPlan === undefined) {
+      if (credentialDeployment !== undefined) {
+        executionAdmission = { version: 8, mode: "standalone" };
+      } else if (egressPlan === undefined) {
         executionAdmission = { version: 2, mode: "unprotected" };
       } else {
         let version: 3 | 4 | 5 | 6 | 7 = 3;
@@ -14145,21 +14258,27 @@ export class OpenClawController {
         }
         executionAdmission = { version, mode: "protected" };
       }
-      const execution = { executionAdmission, ...(egressPlan === undefined ? {} : { egressPlan }) };
+      const execution = {
+        executionAdmission,
+        ...(egressPlan === undefined ? {} : { egressPlan }),
+        ...(credentialDeployment === undefined ? {} : { credentialDeployment }),
+      };
       assertExecutionAdmission(execution);
       try {
         if (compute.validateExecutionAdmission === undefined) {
           assertExecutionReleaseAllowed(execution);
         } else {
           const admission = { ...execution, harnessAuth, credentialSources, repositoryCredentials };
-          compute.validateExecutionAdmission(admission, egressPlan && this.selectedProxyOwner());
+          compute.validateExecutionAdmission(
+            admission,
+            (egressPlan || credentialDeployment) && this.selectedProxyOwner(),
+          );
         }
       } catch {
         throw new DependencyUnavailableError(
           "The selected Compute cannot admit this execution mode; protected release and old-reader fencing are unavailable.",
         );
       }
-      const policy = await state.sandboxPolicies.find(namespace.id, lockedAgent.id);
       const policyScope = { repositoryCredentials: repositoryCredentials !== undefined };
       // Finding 2053: protected execution refuses Agent additions, never drops them. Only an
       // explicitly acknowledged artifact snapshot can accompany dedicated Codex repository
@@ -14168,11 +14287,13 @@ export class OpenClawController {
       // ceiling, the Driver) comes after SandboxPolicy read, so a deployer without it learns nothing.
       const protectedExecution = execution.executionAdmission.mode === "protected";
       if (policy !== undefined && policy.additions.length > 0) {
-        await this.authorize(principalId, "read", {
-          kind: "sandbox_policy",
-          id: policy.id,
-          namespaceId: namespace.id,
-        });
+        if (stagedModel === undefined) {
+          await this.authorize(principalId, "read", {
+            kind: "sandbox_policy",
+            id: policy.id,
+            namespaceId: namespace.id,
+          });
+        }
         if (protectedExecution) {
           throw new ProtectedExecutionNetworkPolicyError("deploy");
         }
@@ -14303,6 +14424,17 @@ export class OpenClawController {
       // Database locks do not freeze process-local selections across awaited Driver calls.
       if (prepared !== undefined) {
         this.assertPreparedDeploymentDrivers(prepared);
+      }
+      if (stagedModel !== undefined) {
+        this.ownedTokenServiceDriver(stagedModel.source.tokenServiceInstanceId);
+        if (
+          this.sandboxDriver() !== sandbox ||
+          this.selectedProxyOwner().require("credential_proxy") !== stagedModel.proxy
+        ) {
+          throw new DependencyUnavailableError(
+            "The staged credential enforcing Drivers changed during admission.",
+          );
+        }
       }
       proxyAdmission?.assertProvidersCurrent();
       const revision = await state.revisions.createRevision(candidate, first?.digest);
@@ -15989,6 +16121,15 @@ export class OpenClawController {
         throw new ScopeViolationError("The credential source is unavailable.");
       }
       compute.validateHarnessCredentialSources?.(harness, [source]);
+      if (isManagedTokenServiceSource(source)) {
+        this.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+        snapshots.push({
+          sourceId,
+          tokenServiceInstanceId: source.tokenServiceInstanceId,
+          sourceType: source.type,
+        });
+        continue;
+      }
       const owner = this.credentialSourceOwner(source);
       if (owner.kind === "proxy") {
         if (!this.protectedSourceTypes().some((p) => p.type.type === source.type)) {
@@ -16001,6 +16142,114 @@ export class OpenClawController {
       }
     }
     return immutableCopy(snapshots);
+  }
+
+  private async prepareModelCredentialDeployment(
+    state: PlatformUnitOfWork,
+    agent: Readonly<Agent>,
+    auth: HarnessAuthSnapshot,
+    harness: RevisionHarnessDescriptor,
+    configuration: OpenClawConfigurationDocument,
+    sandbox: SandboxDriver | undefined,
+  ): Promise<PreparedModelCredentialDeployment | undefined> {
+    if (auth.method !== "credential_source" || auth.tokenServiceInstanceId === undefined) {
+      return undefined;
+    }
+    const source = await state.credentialSources.lockCredentialSource(
+      agent.namespaceId,
+      auth.sourceId,
+    );
+    if (
+      !isManagedTokenServiceSource(source) ||
+      source.state !== "ready" ||
+      source.tokenServiceInstanceId !== auth.tokenServiceInstanceId ||
+      source.type !== auth.sourceType
+    ) {
+      throw new ScopeViolationError("The Harness credential source is unavailable.");
+    }
+    const presetId = source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY];
+    if (!isSourceProviderPresetId(presetId)) {
+      throw new ResourceStateConflictError(
+        "The Harness credential source has no permitted model provider preset.",
+      );
+    }
+    let preset: ModelCredentialPreset | undefined;
+    try {
+      preset = this.modelCredentialPreset?.({ presetId, configuration, harness });
+    } catch {
+      preset = undefined;
+    }
+    if (preset === undefined) {
+      throw new ResourceStateConflictError(
+        "The selected model has no matching approved source preset and explicit inference route.",
+      );
+    }
+    if (sandbox === undefined || !this.selections.has("credential_proxy")) {
+      throw new ResourceStateConflictError(
+        "The selected Sandbox and Credential Proxy have no qualified staged credential enforcement.",
+      );
+    }
+    let proxy: CredentialProxyDriver;
+    let capabilities: CredentialDeploymentCapabilities | undefined;
+    try {
+      proxy = this.selectedProxyOwner().require("credential_proxy");
+      capabilities = this.credentialDeploymentCapabilities?.({ sandbox, proxy });
+    } catch {
+      capabilities = undefined;
+    }
+    if (capabilities === undefined || !capabilities.binary.startsWith("/")) {
+      throw new ResourceStateConflictError(
+        "The selected Sandbox and Credential Proxy have no qualified staged credential enforcement.",
+      );
+    }
+    return { source, preset, capabilities, proxy: proxy! };
+  }
+
+  private admitModelCredentialPolicy(
+    { source, preset, capabilities, proxy }: PreparedModelCredentialDeployment,
+    networkGrants: readonly SandboxNetworkGrant[],
+  ): NonNullable<AgentRevision["credentialDeployment"]> {
+    const destination = inferenceKeyDestination(preset.provider.baseUrl, preset.provider.protocol);
+    const request: DeploymentRequestMatch = {
+      binary: capabilities.binary,
+      host: destination.host,
+      ports: [{ from: destination.port, to: destination.port }],
+      requestPolicy: { type: "http", method: destination.method, path: destination.path },
+    };
+    const binding: DeploymentCredentialBinding = {
+      bindingRef: "model",
+      sourceRef: credentialSourceRef(source),
+      consumer: { kind: "model", providerId: preset.providerId },
+      projection: preset.projection,
+    };
+    const deployment: DeploymentPolicy = {
+      networkAccessPolicy: { allowed: networkGrants },
+      bindings: [binding],
+      injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [request] }],
+    };
+    const details = validateDeploymentPolicy(deployment, {
+      ceiling: this.sandboxNetworkPolicyCeiling,
+      sandbox: capabilities.sandbox,
+      proxy: capabilities.proxy,
+      targetMayHoldPlaceholders: true,
+      authorityForBinding: (identity) =>
+        identity.bindingRef === binding.bindingRef &&
+        isDeepStrictEqual(identity.sourceRef, binding.sourceRef) &&
+        isDeepStrictEqual(identity.consumer, binding.consumer)
+          ? {
+              destinations: preset.template.destinations,
+              allowedRequests: [request],
+              projection: preset.projection,
+            }
+          : undefined,
+    });
+    if (details.length) {
+      throw new ResourceStateConflictError(
+        "The staged model credential and network policy cannot be enforced.",
+        details,
+      );
+    }
+    return immutableCopy({ ...deployment, proxyDriverId: proxy.id });
   }
 
   /**
@@ -17530,7 +17779,7 @@ export class OpenClawController {
     state: PlatformUnitOfWork,
     namespaceId: string,
     binding: Extract<HarnessAuthBinding, { readonly method: "credential_source" }>,
-  ): Promise<readonly [HarnessAuthSnapshot, CredentialSourceType]> {
+  ): Promise<readonly [HarnessAuthSnapshot, CredentialSourceType?]> {
     const source = await state.credentialSources.lockCredentialSource(
       namespaceId,
       binding.sourceId,
@@ -17539,10 +17788,20 @@ export class OpenClawController {
       throw new ScopeViolationError("The Harness credential source is unavailable.");
     }
     if (isManagedTokenServiceSource(source)) {
-      // TODO: Replace this refusal when revision delivery can freeze and dispatch this owner.
-      throw new ResourceStateConflictError(
-        "Agent revision delivery for this TokenService source is not available.",
-      );
+      this.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+      if (source.type !== "static") {
+        throw new ResourceStateConflictError(
+          "This TokenService source cannot authenticate a staged model deployment.",
+        );
+      }
+      return immutableCopy([
+        {
+          method: "credential_source" as const,
+          sourceId: source.id,
+          sourceType: source.type,
+          tokenServiceInstanceId: source.tokenServiceInstanceId,
+        },
+      ] as const);
     }
     const gateway = this.ownedCredentialGatewayDriver(source);
     const type = await this.credentialSourceType(gateway, source.type);
@@ -17584,7 +17843,16 @@ export class OpenClawController {
   ): void {
     if (auth.method === "credential_source") {
       this.requireCredentialSourceSandbox(sandbox);
-      this.credentialGatewayDriver(auth.credentialGatewayId);
+      if (auth.tokenServiceInstanceId !== undefined) {
+        if (!this.selections.has("credential_proxy")) {
+          throw new ResourceStateConflictError(
+            "A staged credential deployment requires a selected Credential Proxy.",
+          );
+        }
+        this.selectedProxyOwner();
+      } else {
+        this.credentialGatewayDriver(auth.credentialGatewayId);
+      }
     }
   }
 

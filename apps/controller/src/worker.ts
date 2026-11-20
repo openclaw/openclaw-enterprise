@@ -5,6 +5,8 @@ import {
   pluginRuntimeHarnessRequirement,
   credentialSourceMatchesSnapshot,
   revisionCredentialSourceSnapshot,
+  isSourceProviderPresetId,
+  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
 } from "@openclaw-enterprise/contracts";
 import type { CredentialProxyDriver } from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
@@ -32,6 +34,10 @@ import type {
   AgentRevisionMetadata,
   CredentialSource,
   CredentialSourceSnapshot,
+  CredentialDeploymentConfiguration,
+  CredentialProjection,
+  HarnessStartupRef,
+  ResolvedCredential,
   AuditEvent,
   AuthorizationDecision,
   AuthorizationRequest,
@@ -128,6 +134,7 @@ import {
   validateServiceAccountBackendBinding,
 } from "@openclaw-enterprise/occ";
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
+import { installTokenServiceDriver } from "./composition/token-service.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
 import { ComputeCleanupFailedError } from "./drivers/compute/cleanup-failure.ts";
 import type { PreparedRepositoryGitMaterialState } from "./drivers/repo/github/access/prepared-repository-git.ts";
@@ -604,6 +611,15 @@ interface RevisionDispatchResult extends DispatchResult {
   readonly supersededBy?: Readonly<AgentRevision>;
   readonly expectedActiveRevisionId?: string;
   readonly context?: ComputeRevisionContext;
+}
+
+class CredentialDeploymentAuthorizationError extends Error {
+  readonly denial: RevisionDispatchResult;
+
+  constructor(denial: RevisionDispatchResult) {
+    super("The staged Agent revision is no longer authorized.");
+    this.denial = denial;
+  }
 }
 
 interface AgentStopDispatchResult extends DispatchResult {
@@ -1247,6 +1263,9 @@ export class ControllerWorker {
   private readonly proxyDriver: CredentialProxyDriver | undefined;
   private readonly protectedDriver: InstalledDriver | undefined;
   private readonly preparedTokens: InstallationRuntimeDrivers["tokenService"];
+  private readonly tokenServiceDrivers:
+    Pick<InstallationRuntimeDrivers, "installation" | "secretDriver"> | undefined;
+  private readonly resolveCredentialDeploymentContext: InstallationRuntimeDrivers["resolveCredentialDeploymentContext"];
   private readonly backends: readonly BackendDefinition[];
   private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
   private readonly requireComputePreflight: boolean;
@@ -1399,6 +1418,8 @@ export class ControllerWorker {
     }
     this.protectedDriver = drivers?.protectedDriver;
     this.preparedTokens = drivers?.tokenService;
+    this.tokenServiceDrivers = drivers;
+    this.resolveCredentialDeploymentContext = drivers?.resolveCredentialDeploymentContext;
     this.sandbox =
       this.protectedDriver?.require("sandbox") ?? drivers?.sandboxDriver ?? options.sandboxDriver;
     this.credentialGateway = drivers?.credentialGatewayDriver ?? options.credentialGatewayDriver;
@@ -1569,6 +1590,7 @@ export class ControllerWorker {
       }
     }
     provisioning.installPluginDrivers(this.pluginDrivers);
+    await installTokenServiceDriver(provisioning, this.tokenServiceDrivers);
     this.provisioningController = provisioning;
     const compute = this.compute;
     if (typeof compute.preflight === "function") {
@@ -2345,6 +2367,36 @@ export class ControllerWorker {
       this.repositoryCredentials.validate(revision);
     }
     await this.recheckRevokedCredentialSources(claim, revision);
+    if (revision.credentialDeployment !== undefined) {
+      let configured: CredentialDeploymentConfiguration | undefined;
+      prepared = {
+        ...prepared,
+        configureCredentialDeployment: async (expected, signal) => {
+          const result = await this.configureCredentialDeployment(
+            claim,
+            revision,
+            expected,
+            signal,
+          );
+          configured = structuredClone(expected);
+          return result;
+        },
+        verifyCredentialDeploymentRelease: async (startup, signal) => {
+          if (
+            !configured ||
+            !isDeepStrictEqual(configured, {
+              targetRef: startup.targetRef,
+              configurationId: startup.configurationId,
+            })
+          ) {
+            throw new DependencyUnavailableError(
+              "The staged target was not configured by this claim.",
+            );
+          }
+          await this.verifyCredentialDeploymentRelease(claim, revision, startup, signal);
+        },
+      };
+    }
     this.preparedThisPass = revision.id;
     let observation = await this.withClaimHeartbeat(claim, () =>
       this.compute.prepareRevision(revision, prepared),
@@ -4972,6 +5024,11 @@ export class ControllerWorker {
               await this.assertRepositoryAuthority(claim, revision);
               this.repositoryCredentials.validate(revision);
             }
+            if (revision.credentialDeployment !== undefined) {
+              await this.withClaimHeartbeat(claim, (signal) =>
+                this.authorizedCredentialDeployment(claim, revision, signal),
+              );
+            }
             await this.withClaimHeartbeat(claim, () =>
               this.stagedRevision("activateRevision", revision, context),
             );
@@ -4983,6 +5040,7 @@ export class ControllerWorker {
           if (
             error instanceof WorkClaimLostError ||
             error instanceof RepositoryCredentialAuthorityError ||
+            error instanceof CredentialDeploymentAuthorizationError ||
             error instanceof RepositorySessionWithdrawnError ||
             error instanceof ComputeStopYieldedError ||
             error instanceof ComputePreparationFailedError
@@ -5116,7 +5174,9 @@ export class ControllerWorker {
         ({ result, logFields: failureLogFields } = error.pending());
       } else {
         const dependencyFailure = revisionDependencyFailure(error);
-        if (error instanceof ComputePreparationFailedError) {
+        if (error instanceof CredentialDeploymentAuthorizationError) {
+          result = error.denial;
+        } else if (error instanceof ComputePreparationFailedError) {
           result = {
             outcome: "permanent",
             code: error.code,
@@ -5636,6 +5696,11 @@ export class ControllerWorker {
         await this.assertRepositoryAuthority(claim, revision);
         this.repositoryCredentials.validate(revision);
       }
+      if (revision.credentialDeployment !== undefined) {
+        await this.withClaimHeartbeat(claim, (signal) =>
+          this.authorizedCredentialDeployment(claim, revision, signal),
+        );
+      }
       const agent = await this.state.read((view) =>
         view.agents.findAgent(revision.namespaceId, revision.agentId),
       );
@@ -5773,6 +5838,260 @@ export class ControllerWorker {
     });
   }
 
+  private async authorizedCredentialDeployment(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ) {
+    signal.throwIfAborted();
+    const policy = revision.credentialDeployment;
+    if (
+      !policy ||
+      revision.executionAdmission.version !== 8 ||
+      revision.executionAdmission.mode !== "standalone" ||
+      claim.namespaceId !== revision.namespaceId ||
+      claim.agentId !== revision.agentId ||
+      claim.revisionId !== revision.id ||
+      policy.proxyDriverId !== this.proxyDriver?.id ||
+      revision.sandboxDriverId !== this.sandbox?.id ||
+      !this.resolveCredentialDeploymentContext ||
+      !this.sandbox?.credentialDeployment ||
+      !this.provisioningController
+    ) {
+      throw new DependencyUnavailableError(
+        "The staged credential deployment does not match this revision.",
+      );
+    }
+    if (!(await this.renewClaim(claim))) {
+      throw new WorkClaimLostError();
+    }
+    const { namespace, agent, current, newest } = await this.state.read(async (view) => ({
+      namespace: await view.namespaces.findNamespace(revision.namespaceId),
+      agent: await view.agents.findAgent(revision.namespaceId, revision.agentId),
+      current: await view.revisions.findRevision(
+        revision.namespaceId,
+        revision.agentId,
+        revision.id,
+      ),
+      newest: (
+        await view.revisions.listRevisionMetadata(revision.namespaceId, revision.agentId)
+      ).at(-1),
+    }));
+    if (
+      namespace?.status !== "ready" ||
+      agent?.status !== "active" ||
+      agent.desiredRuntimeState !== "running" ||
+      agent.servicePrincipalId !== revision.servicePrincipalId ||
+      newest?.id !== revision.id ||
+      current?.configurationId !== revision.configurationId ||
+      current.executionAdmission.version !== 8 ||
+      current.executionAdmission.mode !== "standalone" ||
+      !isDeepStrictEqual(current.credentialDeployment, policy)
+    ) {
+      throw new DependencyUnavailableError("The staged Agent revision is no longer current.");
+    }
+    const denied = await this.authorizeRevision(claim, agent, revision);
+    if (denied) {
+      throw new CredentialDeploymentAuthorizationError(denied);
+    }
+    const owner = this.provisioningController.selectedDriver("token_service");
+    const instanceId = this.provisioningController.currentTokenServiceInstanceId();
+    const sources = new Map<string, Readonly<CredentialSource>>();
+    for (const binding of policy.bindings) {
+      if (
+        binding.sourceRef.namespaceId !== revision.namespaceId ||
+        binding.sourceRef.kind !== "credential_source"
+      ) {
+        throw new DependencyUnavailableError(
+          "The staged source does not belong to the Agent Namespace.",
+        );
+      }
+      const snapshot = revisionCredentialSourceSnapshot(revision, binding.sourceRef.id);
+      if (!snapshot || snapshot.tokenServiceInstanceId !== instanceId) {
+        throw new DependencyUnavailableError(
+          "The staged source does not belong to the selected TokenService instance.",
+        );
+      }
+      const { source, withdrawal } = await this.resolveRevisionCredentialSource(revision, snapshot);
+      if (
+        withdrawal ||
+        !source ||
+        source.ownerCapability !== "token_service" ||
+        source.tokenServiceInstanceId !== instanceId ||
+        source.type !== "static" ||
+        binding.consumer.kind !== "model" ||
+        !isSourceProviderPresetId(source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY]) ||
+        source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] !== binding.consumer.providerId ||
+        !source.registration
+      ) {
+        throw new DependencyUnavailableError("The staged source is unavailable or withdrawn.");
+      }
+      sources.set(source.id, source);
+    }
+    signal.throwIfAborted();
+    return { namespace, owner, instanceId, sources, policy };
+  }
+
+  private async currentCredentialDeployment(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+    expected: CredentialDeploymentConfiguration,
+    signal: AbortSignal,
+  ) {
+    const target = expected.targetRef;
+    if (
+      target.namespaceId !== revision.namespaceId ||
+      target.agentId !== revision.agentId ||
+      target.revisionId !== revision.id ||
+      typeof target.sandboxId !== "string" ||
+      !target.sandboxId.trim() ||
+      expected.configurationId !== revision.configurationId
+    ) {
+      throw new DependencyUnavailableError("The staged target does not match this revision.");
+    }
+    const authority = await this.authorizedCredentialDeployment(claim, revision, signal);
+    const context = await this.resolveCredentialDeploymentContext!(
+      authority.namespace,
+      revision,
+      signal,
+    );
+    const sandbox = this.sandbox!.credentialDeployment!(context);
+    const status = await sandbox.getHarnessProcessStatus(expected, signal);
+    if (
+      status.state !== "held" ||
+      !isDeepStrictEqual(status.startup.targetRef, target) ||
+      status.startup.configurationId !== expected.configurationId
+    ) {
+      throw new DependencyUnavailableError("The exact staged Sandbox startup is not held.");
+    }
+    signal.throwIfAborted();
+    return { ...authority, context, sandbox, status };
+  }
+
+  private async configureCredentialDeployment(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+    expected: CredentialDeploymentConfiguration,
+    signal: AbortSignal,
+  ) {
+    const current = await this.currentCredentialDeployment(claim, revision, expected, signal);
+    const proxy = this.proxyDriver;
+    if (!proxy?.configureDeployment) {
+      throw new DependencyUnavailableError(
+        "The selected Credential Proxy cannot configure a staged target.",
+      );
+    }
+    const resolved = new Map<string, Promise<ResolvedCredential>>();
+    let open = true;
+    const requireOpen = () => {
+      signal.throwIfAborted();
+      if (!open) {
+        throw new DependencyUnavailableError("The staged configuration operation has ended.");
+      }
+    };
+    try {
+      const result = await proxy.configureDeployment(
+        { namespace: current.context.namespace, revision, signal },
+        {
+          ...expected,
+          injectionPolicies: current.policy.injectionPolicies,
+          bindings: current.policy.bindings.map((binding) => ({
+            binding,
+            resolveCredential: async () => {
+              requireOpen();
+              const fresh = await this.currentCredentialDeployment(
+                claim,
+                revision,
+                expected,
+                signal,
+              );
+              requireOpen();
+              const source = fresh.sources.get(binding.sourceRef.id);
+              if (!source || source.ownerCapability !== "token_service" || !source.registration) {
+                throw new DependencyUnavailableError(
+                  "The authorized staged source is unavailable.",
+                );
+              }
+              let value = resolved.get(binding.sourceRef.id);
+              if (!value) {
+                value = fresh.owner.resolveCredential(
+                  {
+                    sourceRef: binding.sourceRef,
+                    tokenServiceInstanceId: fresh.instanceId,
+                    registration: source.registration,
+                  },
+                  signal,
+                );
+                resolved.set(binding.sourceRef.id, value);
+              }
+              const credential = await value;
+              requireOpen();
+              await this.currentCredentialDeployment(claim, revision, expected, signal);
+              requireOpen();
+              return credential;
+            },
+          })),
+        },
+      );
+      if (!Array.isArray(result.credentialProjections)) {
+        throw new DependencyUnavailableError("The Credential Proxy returned invalid projections.");
+      }
+      const credentialProjections: CredentialProjection[] = result.credentialProjections.map(
+        (projection) => {
+          if (
+            !projection ||
+            typeof projection.bindingRef !== "string" ||
+            typeof projection.environment !== "string" ||
+            !projection.placeholder
+          ) {
+            throw new DependencyUnavailableError(
+              "The Credential Proxy returned an invalid projection.",
+            );
+          }
+          const placeholder = projection.placeholder;
+          if (placeholder.kind === "runtime") {
+            return {
+              bindingRef: projection.bindingRef,
+              environment: projection.environment,
+              placeholder: { kind: "runtime" },
+            };
+          }
+          if (placeholder.kind === "proxy" && typeof placeholder.value === "string") {
+            return {
+              bindingRef: projection.bindingRef,
+              environment: projection.environment,
+              placeholder: { kind: "proxy", value: placeholder.value },
+            };
+          }
+          throw new DependencyUnavailableError(
+            "The Credential Proxy returned an invalid placeholder.",
+          );
+        },
+      );
+      return { credentialProjections };
+    } finally {
+      open = false;
+      resolved.clear();
+    }
+  }
+
+  private async verifyCredentialDeploymentRelease(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+    startup: HarnessStartupRef,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const current = await this.currentCredentialDeployment(claim, revision, startup, signal);
+    if (
+      current.status.projections !== "installed" ||
+      !isDeepStrictEqual(current.status.startup, startup)
+    ) {
+      throw new DependencyUnavailableError(
+        "The exact held startup has not acknowledged its projections.",
+      );
+    }
+  }
+
   private async resolveRevisionSecretContext(
     revision: Readonly<AgentRevision>,
   ): Promise<
@@ -5852,37 +6171,55 @@ export class ControllerWorker {
       harnessAuth = { ...auth, backendRef: secret.backendRef };
     } else if (revision.harnessAuth.method === "credential_source") {
       const auth = revision.harnessAuth;
-      if (
-        this.credentialGateway === undefined ||
-        auth.credentialGatewayId !== this.credentialGateway.id
-      ) {
-        return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
-      }
-      const { source, withdrawal } = await this.resolveRevisionCredentialSource(revision, auth);
-      // A withdrawn source never re-attaches to its revision, for example after Pod loss.
-      if (withdrawal !== undefined) {
-        return { result: { outcome: "permanent", code: "CREDENTIAL_WITHDRAWN" } };
-      }
-      // A deleting source can no longer be attached, even to an admitted revision.
-      if (source === undefined) {
-        return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
-      }
-      if (source.egress !== undefined) {
-        const control = this.proxyDriver?.sourceControl;
-        const provider = control?.providers.find((entry) =>
-          isDeepStrictEqual(entry.ref, source.egress!.key.provider),
-        );
-        if (!provider || !isDeepStrictEqual(control?.backend, source.egress.key.backend)) {
-          return { result: { outcome: "permanent", code: "EGRESS_PROVIDER_UNAVAILABLE" } };
+      if (auth.tokenServiceInstanceId !== undefined) {
+        if (
+          !revision.credentialDeployment ||
+          this.provisioningController?.currentTokenServiceInstanceId() !==
+            auth.tokenServiceInstanceId
+        ) {
+          return { result: { outcome: "permanent", code: "CREDENTIAL_SOURCE_UNAVAILABLE" } };
         }
-        // Provider defaults must reach the normal Harness too. In particular, a
-        // source with an omitted optional endpoint cannot escape its protected profile.
-        harnessAuth = {
-          ...auth,
-          source: { ...source, config: provider.normalizeConfig(source.config) },
-        };
+        const { source, withdrawal } = await this.resolveRevisionCredentialSource(revision, auth);
+        if (withdrawal) {
+          return { result: { outcome: "permanent", code: "CREDENTIAL_WITHDRAWN" } };
+        }
+        if (!source || source.ownerCapability !== "token_service" || !source.registration) {
+          return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
+        }
+        harnessAuth = auth;
       } else {
-        harnessAuth = { ...auth, source };
+        if (
+          this.credentialGateway === undefined ||
+          auth.credentialGatewayId !== this.credentialGateway.id
+        ) {
+          return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
+        }
+        const { source, withdrawal } = await this.resolveRevisionCredentialSource(revision, auth);
+        // A withdrawn source never re-attaches to its revision, for example after Pod loss.
+        if (withdrawal !== undefined) {
+          return { result: { outcome: "permanent", code: "CREDENTIAL_WITHDRAWN" } };
+        }
+        // A deleting source can no longer be attached, even to an admitted revision.
+        if (source === undefined) {
+          return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
+        }
+        if (source.egress !== undefined) {
+          const control = this.proxyDriver?.sourceControl;
+          const provider = control?.providers.find((entry) =>
+            isDeepStrictEqual(entry.ref, source.egress!.key.provider),
+          );
+          if (!provider || !isDeepStrictEqual(control?.backend, source.egress.key.backend)) {
+            return { result: { outcome: "permanent", code: "EGRESS_PROVIDER_UNAVAILABLE" } };
+          }
+          // Provider defaults must reach the normal Harness too. In particular, a
+          // source with an omitted optional endpoint cannot escape its protected profile.
+          harnessAuth = {
+            ...auth,
+            source: { ...source, config: provider.normalizeConfig(source.config) },
+          };
+        } else {
+          harnessAuth = { ...auth, source };
+        }
       }
     } else {
       harnessAuth = revision.harnessAuth;
@@ -5891,6 +6228,28 @@ export class ControllerWorker {
     for (const snapshot of revision.credentialSources ?? []) {
       // The Harness source is listed too; it resolves above through the Harness binding.
       if (snapshot.sourceId === revisionHarnessSourceId(revision)) {
+        continue;
+      }
+      if (snapshot.tokenServiceInstanceId !== undefined) {
+        if (
+          !revision.credentialDeployment ||
+          this.provisioningController?.currentTokenServiceInstanceId() !==
+            snapshot.tokenServiceInstanceId
+        ) {
+          return { result: { outcome: "permanent", code: "CREDENTIAL_SOURCE_UNAVAILABLE" } };
+        }
+        const { source, withdrawal } = await this.resolveRevisionCredentialSource(
+          revision,
+          snapshot,
+        );
+        if (
+          withdrawal ||
+          !source ||
+          source.ownerCapability !== "token_service" ||
+          !source.registration
+        ) {
+          return { result: { outcome: "permanent", code: "CREDENTIAL_SOURCE_UNAVAILABLE" } };
+        }
         continue;
       }
       const sourceOwner = snapshot.credentialProxyId ?? snapshot.credentialGatewayId;

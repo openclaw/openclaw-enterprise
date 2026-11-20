@@ -1,6 +1,7 @@
 import type { ChannelProviderDriver } from "../drivers/channel/routing.ts";
 import { SlackChannelDriver } from "../drivers/channel/slack.ts";
 import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
+import { resolveModelCredentialPreset } from "./model-credential-presets.ts";
 import type { NamespaceLifecycleBinding } from "@openclaw-enterprise/occ";
 import {
   openShellProxyConfiguration,
@@ -42,6 +43,7 @@ import { createHash, X509Certificate } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
+  AgentRevision,
   Backend,
   GitHubRepositoryCredentialBackendDefinition,
   ComputeDriver,
@@ -58,8 +60,10 @@ import type {
   BackendSummary,
   RepositoryPolicyDriver,
   NativeRepositorySender,
+  Namespace,
   PluginDriver,
   SandboxDriver,
+  SandboxHarnessStatusContext,
   SecretDriver,
 } from "@openclaw-enterprise/contracts";
 import { NativeIAMDriver, type NativeIAMStateStore } from "@openclaw-enterprise/iam";
@@ -216,8 +220,12 @@ export function installationControllerOptions(
   | "iamConfiguration"
   | "nativeWorkerSupport"
   | "credentialProxyCapacity"
+  | "modelCredentialPreset"
 > {
   return {
+    // TODO(staged credential deployment): wire enforcing capabilities after native process identity,
+    // policy enforcement, target cleanup and source update notifications are qualified.
+    modelCredentialPreset: resolveModelCredentialPreset,
     driverConfigurations: installationDriverConfigurations(installation),
     sandboxNetworkPolicyCeiling: installation?.sandboxNetworkPolicyCeiling ?? [],
     ...(installation?.iam === undefined ? {} : { iamConfiguration: installation.iam }),
@@ -253,6 +261,13 @@ export interface InstallationRuntimeDrivers {
   readonly protectedDriver?: InstalledDriver;
   readonly namespaceLifecycleBindings?: readonly NamespaceLifecycleBinding[];
   readonly proxyDriver?: CredentialProxyDriver;
+  readonly resolveCredentialDeploymentContext?: (
+    namespace: Readonly<Namespace>,
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ) => Promise<
+    Pick<SandboxHarnessStatusContext, "namespace" | "revision" | "kubernetes" | "transportToken">
+  >;
   /** Present only when this registration owns protected repository delivery. */
   readonly repositoryGitDriver?: InstalledDriver;
   readonly tokenService?: TokenService;
@@ -1657,6 +1672,7 @@ async function composeInstallationConfiguration(
     },
   ]);
   let computeDriver: ComputeDriver;
+  let resolveCredentialDeploymentContext: InstallationRuntimeDrivers["resolveCredentialDeploymentContext"];
   if (computePackage !== undefined) {
     computeDriver = createExternalDriver(
       computePackage.module,
@@ -1695,6 +1711,9 @@ async function composeInstallationConfiguration(
           }
         : {}),
       ...(protectedDriver === undefined ? {} : { protectedDriver }),
+      ...(protectedDriver === undefined
+        ? {}
+        : { credentialProxyDriver: protectedDriver.require("credential_proxy") }),
       preparedTokens: tokenService,
       ...(preparedRepositoryGit === undefined || repositoryTransport || repositoryGitDriver
         ? {}
@@ -1707,10 +1726,13 @@ async function composeInstallationConfiguration(
       ),
       readNodeCa: () => readHarnessNodeCa(environment),
     };
-    computeDriver = new KubernetesComputeDriver(
+    const kubernetesCompute = new KubernetesComputeDriver(
       compute.configuration as unknown as KubernetesComputeDriverOptions,
       selection,
     );
+    computeDriver = kubernetesCompute;
+    resolveCredentialDeploymentContext =
+      kubernetesCompute.resolveCredentialDeploymentContext.bind(kubernetesCompute);
   }
   const namespaceLifecycleBindings =
     sandboxDriver === undefined ||
@@ -1746,6 +1768,7 @@ async function composeInstallationConfiguration(
     bundledPresetVersions,
     installation,
     computeDriver,
+    ...(resolveCredentialDeploymentContext && { resolveCredentialDeploymentContext }),
     namespaceLifecycleBindings,
     configurationDriver,
     secretDriver,

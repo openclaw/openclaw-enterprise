@@ -681,6 +681,14 @@
       "tag": "0085_static_token_service_sources",
       "breakpoints": true,
       "sha256": "864f62240041297afe02c8847732860b037823fe7b511cb46f12e031e9c25b62"
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1787000000086,
+      "tag": "0086_standalone_credential_deployment",
+      "breakpoints": true,
+      "sha256": "75ae6c544d3e050ead819ce5a09c70586f947f294cd8459a85f3e31a7bd04201"
     }
   ],
   "initialSchemaStates": {

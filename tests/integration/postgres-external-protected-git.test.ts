@@ -927,6 +927,7 @@ function externalGitJourney(
           assert.equal(custody.harnessAuth?.method, "credential_source");
           const auth = custody.harnessAuth;
           assert.ok(auth && auth.method === "credential_source");
+          assert.ok(auth.source);
           await modelGateway.attachForRevision({
             revision,
             namespace,
