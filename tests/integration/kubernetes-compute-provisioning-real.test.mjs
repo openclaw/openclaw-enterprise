@@ -25,6 +25,7 @@ import {
   revisionContext,
   revision,
   gatewayName,
+  harnessWorkspaceClaimName,
   revisionName,
   createDriver,
   createScopedController,
@@ -373,10 +374,14 @@ test(
     });
     const workload = await resource("deployment", revisionName(candidate), existingName);
     const harnessClaim = await assertHarnessWorkspaceClaim(existingName, owner.id, agentId);
+    const expectedClaimName = harnessWorkspaceClaimName(agentId);
+    assert.ok(
+      harnessClaim.metadata.name === expectedClaimName,
+      "the Agent-owned Harness workspace claim must have the requested name",
+    );
     assert.equal(
       gateway.spec.template.spec.volumes.some(
-        ({ persistentVolumeClaim }) =>
-          persistentVolumeClaim?.claimName === harnessClaim.metadata.name,
+        ({ persistentVolumeClaim }) => persistentVolumeClaim?.claimName === expectedClaimName,
       ),
       false,
       "Gateway must not mount the Harness workspace claim",
@@ -385,7 +390,7 @@ test(
       workload.spec.template.spec.volumes.find(({ name }) => name === "openclaw-workspace"),
       {
         name: "openclaw-workspace",
-        persistentVolumeClaim: { claimName: harnessClaim.metadata.name },
+        persistentVolumeClaim: { claimName: expectedClaimName },
       },
     );
     await driver.stopRevision(candidate);
@@ -401,8 +406,7 @@ test(
       "stop must not return while an exact revision Pod can still execute",
     );
     assert.equal(
-      (await resource("persistentvolumeclaim", harnessClaim.metadata.name, existingName)).metadata
-        .uid,
+      (await resource("persistentvolumeclaim", expectedClaimName, existingName)).metadata.uid,
       harnessClaim.metadata.uid,
       "stop must preserve the Agent-owned Harness workspace claim",
     );
