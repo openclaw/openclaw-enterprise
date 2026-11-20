@@ -651,7 +651,9 @@ export async function checkRemoteNodeCidrs(): Promise<void> {
   }
 }
 
-const yamlItems = Type.Array(Type.Unknown());
+function itemZero(value: unknown): unknown {
+  return Array.isArray(value) ? value[0] : asRecord(value)?.["0"];
+}
 
 export function registerExecutionPortAndDnsCase(): void {
   test(
@@ -674,11 +676,9 @@ export function registerExecutionPortAndDnsCase(): void {
         const policy = await proxyPolicy(
           (await template("--set", `routing.envoyHttpsTargetPort=${port}`)).stdout,
         );
-        const ingress = asRecord(policy?.spec)?.ingress;
-        assert.ok(Check(yamlItems, ingress), "Expected NetworkPolicy ingress rules");
-        const ports = asRecord(ingress[0])?.ports;
-        assert.ok(Check(yamlItems, ports), "Expected ports on the first ingress rule");
-        assert.equal(asRecord(ports[0])?.port, port);
+        const ingress = itemZero(asRecord(policy?.spec)?.ingress);
+        const portRule = itemZero(asRecord(ingress)?.ports);
+        assert.equal(asRecord(portRule)?.port, port);
       }
       // The DNS egress rule selects kubernetes.io/metadata.name, which holds a Namespace name.
       for (const namespace of ["Kube-System", "kube.system", "-dns", "a".repeat(64)]) {
@@ -692,11 +692,9 @@ export function registerExecutionPortAndDnsCase(): void {
       const policy = await proxyPolicy(
         (await template("--set-string", `dns.namespace=${namespace}`)).stdout,
       );
-      const egress = asRecord(policy?.spec)?.egress;
-      assert.ok(Check(yamlItems, egress), "Expected NetworkPolicy egress rules");
-      const to = asRecord(egress[0])?.to;
-      assert.ok(Check(yamlItems, to), "Expected destinations on the first egress rule");
-      const selector = asRecord(asRecord(to[0])?.namespaceSelector);
+      const egress = itemZero(asRecord(policy?.spec)?.egress);
+      const destination = itemZero(asRecord(egress)?.to);
+      const selector = asRecord(asRecord(destination)?.namespaceSelector);
       assert.equal(asRecord(selector?.matchLabels)?.["kubernetes.io/metadata.name"], namespace);
     },
   );

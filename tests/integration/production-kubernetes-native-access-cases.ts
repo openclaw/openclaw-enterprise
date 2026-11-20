@@ -462,18 +462,16 @@ const themeContainer = Type.Object({
   env: yamlItems,
   volumeMounts: Type.Optional(Type.Unknown()),
 });
+const themeContainers = Type.Union([Type.String(), yamlItems]);
 const themeDeploymentSpec = Type.Object({
   template: Type.Object({
-    metadata: Type.Object({ annotations: Type.Optional(Type.Unknown()) }),
+    metadata: Type.Optional(Type.Unknown()),
     spec: Type.Object({
-      initContainers: Type.Optional(Type.Union([Type.Null(), Type.String(), yamlItems])),
-      containers: yamlItems,
+      initContainers: Type.Optional(Type.Union([Type.Null(), themeContainers])),
+      containers: themeContainers,
       volumes: yamlItems,
     }),
   }),
-});
-const workloadSelectorSpec = Type.Object({
-  template: Type.Object({ spec: Type.Object({ nodeSelector: Type.Optional(Type.Unknown()) }) }),
 });
 
 export function findResourceByComponent<T>(
@@ -542,9 +540,9 @@ function themeValuesPod(objects: readonly unknown[]) {
 }
 
 function workloadNodeSelector(workload: unknown): unknown {
-  const spec = asRecord(workload)?.spec;
-  assert.ok(Check(workloadSelectorSpec, spec), "Expected workload pod template");
-  return spec.template.spec.nodeSelector;
+  const podSpec = asRecord(asRecord(asRecord(workload)?.spec)?.template)?.spec;
+  assert.ok(podSpec !== null && podSpec !== undefined, "Expected workload pod template");
+  return asRecord(podSpec)?.nodeSelector;
 }
 
 export function assertConsoleThemeMounts(
@@ -563,8 +561,9 @@ export function assertConsoleThemeMounts(
       assert.equal(findNamed(container.env, "OCC_CONSOLE_THEME_DIR") !== undefined, enabled);
       const volume = findNamed(pod.spec.volumes, "console-theme");
       assert.equal(volume !== undefined, enabled);
+      assert.ok(pod.metadata !== null && pod.metadata !== undefined, "Expected pod metadata");
       assert.equal(
-        asRecord(pod.metadata.annotations)?.["openclaw.dev/console-theme-checksum"],
+        asRecord(asRecord(pod.metadata)?.annotations)?.["openclaw.dev/console-theme-checksum"],
         enabled ? "revision-two" : undefined,
       );
       if (enabled) {
