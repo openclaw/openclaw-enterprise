@@ -62,18 +62,6 @@ export async function verifyNativeOpenClawProvisioning(): Promise<void> {
   const base = buildSandboxInstallation().drivers.sandbox.configuration;
   const configuration: OpenShellSandboxDriverOptions = {
     ...base,
-    kubernetes: {
-      ...base.kubernetes,
-      agentResourceOverrides: [
-        {
-          namespaceId: namespaceContext().namespace.id,
-          agentId: "agt_00000000-0000-4000-8000-000000000003",
-          requests: {},
-          limits: {},
-          runtimeClassName: "openshell-skipper",
-        },
-      ],
-    },
     policy: {
       ...base.policy,
       filesystem: {
@@ -113,7 +101,7 @@ export async function verifyNativeOpenClawProvisioning(): Promise<void> {
   assert.equal(deployment.kind, "Deployment");
   const template = record(record(record(deployment).spec).template);
   const preparation = record(template.spec);
-  assert.equal(preparation.runtimeClassName, "openshell-skipper");
+  assert.equal(preparation.runtimeClassName, undefined);
   assert.equal(preparation.automountServiceAccountToken, false);
   assert.equal(record(preparation.securityContext).runAsUser, 10001);
   const containers = preparation.containers;
@@ -462,9 +450,43 @@ export async function verifyExistingSandboxAdoption(): Promise<void> {
     "example.com/gpu": "1",
     "ephemeral-storage": "1Gi",
   });
+  // A Sandbox created with the previous default still has its immutable launch policy.
+  const installed = sandboxes.get(name);
+  assert.ok(installed?.spec);
+  const policy = record(installed.spec.policy);
+  const filesystem = record(policy.filesystem);
+  assert.ok(Array.isArray(filesystem.read_only));
+  assert.ok(filesystem.read_only.includes("/opt/devtools"));
+  assert.ok(Array.isArray(filesystem.read_write));
+  assert.equal(filesystem.read_write.includes("/opt/devtools"), false);
+  const previous = {
+    ...installed,
+    spec: {
+      ...installed.spec,
+      policy: {
+        ...policy,
+        filesystem: {
+          ...filesystem,
+          read_only: filesystem.read_only.filter((path: unknown) => path !== "/opt/devtools"),
+        },
+      },
+    },
+  };
+  sandboxes.set(name, previous);
+  calls.length = 0;
+  await assert.rejects(provision(), /without exact AgentRevision ownership and content/);
+  assert.deepEqual(calls, [["getSandbox", name, context.namespace.name]]);
+  assert.equal(sandboxes.get(name), previous);
+  sandboxes.set(name, installed);
+
   const other = await provision([], dedicatedRevision(driver, context, "000000000004"));
+  const otherFilesystem = record(
+    record(sandboxes.get(other.resourceName)?.spec?.policy).filesystem,
+  );
+  assert.ok(Array.isArray(otherFilesystem.read_only));
+  assert.ok(otherFilesystem.read_only.includes("/opt/devtools"));
   const otherTemplate = templateFor(other.resourceName);
-  assert.equal(otherTemplate.runtime_class_name, "openshell-sandbox");
+  assert.equal(otherTemplate.runtime_class_name, undefined);
   assert.deepEqual(resources(otherTemplate, "requests"), {
     cpu: "1",
     memory: "1Gi",

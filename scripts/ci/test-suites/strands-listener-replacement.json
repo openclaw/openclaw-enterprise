@@ -1,0 +1,24 @@
+{
+  "requiredEnv": [
+    "OCC_TEST_KUBERNETES_KUBECONFIG",
+    "OCC_TEST_KUBERNETES_CONTEXT",
+    "OCC_TEST_PROVIDER_TENANT",
+    "OCC_TEST_PROVIDER_AGENT",
+    "OCC_TEST_OCC_BIN",
+    "OCC_NAMESPACE",
+    "OCC_URL",
+    "OCC_SERVICE_KEY_FILE"
+  ],
+  "env": {
+    "OCC_TEST_STRANDS_REPLACEMENT": "1"
+  },
+  "prepare": {},
+  "files": [
+    {
+      "path": "tests/integration/strands-listener-replacement-real.test.ts",
+      "expectedTests": [
+        "a replacement Strands Pod receives no credentials from the Gateway or worker"
+      ]
+    }
+  ]
+}

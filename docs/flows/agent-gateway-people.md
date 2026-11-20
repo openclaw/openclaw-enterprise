@@ -1,6 +1,6 @@
 ---
 created: "2026-10-16"
-updated: "2026-11-17"
+updated: "2026-11-20"
 last_updated_session: https://team.openclaw.ai/chat/roboclaw/~key/subagent/254196da-15e2-4a62-8e29-00d766313468
 ---
 
@@ -10,8 +10,11 @@ last_updated_session: https://team.openclaw.ai/chat/roboclaw/~key/subagent/25419
 
 The Agent Access view lists configured Gateway identities, enriched with optional
 native profile names, avatars and role labels. This read-only view does not provision OCC
-accounts or grant access. It does not enumerate OCC proxy users or evaluate external
-ingress and identity-provider eligibility.
+accounts or grant access. It does not enumerate OCC delegated browser identities
+nor evaluate external ingress and identity-provider eligibility. OCC browser
+delegation retains a separate native profile for each OCE Principal; this static
+roster does not link those profiles to operator-managed identities. The workspace
+machine identity remains separate.
 
 ## Entry Points
 
@@ -176,6 +179,8 @@ Access.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 20:29: Clarify the static roster boundary after adopting per-person OCC browser delegation from main. (agent:roboclaw:subagent:254196da-15e2-4a62-8e29-00d766313468 - 7df2a940f0f8f4d152afd1737f5c81363aaa543b)
 
 - 2026-11-17 21:20: Remove manual direct-entry URLs and retain the configured-user roster independently of OCC sharing. (agent:roboclaw:subagent:254196da-15e2-4a62-8e29-00d766313468 - add6c5f107e34692aad98dc354e1cb6ee36f5eb7)
 

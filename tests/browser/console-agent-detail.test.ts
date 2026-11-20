@@ -70,7 +70,6 @@ import {
   trackSettledFetches,
   waitForSettledFetches,
 } from "./console-fetch-accounting.ts";
-import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
   withholdPermissionSummary,
@@ -79,18 +78,14 @@ import {
   configurationPatchRequests,
 } from "./console-agents-test-support.ts";
 import {
-  AGENT_CREATE_DENIED,
   AGENT_DEPLOY_NOT_INCLUDED,
   AGENT_SOURCES_DENIED,
   AGENT_UPDATE_DENIED,
   CONFIGURATION_EDITS_PENDING,
-  CONFIGURATION_UPDATE_DENIED,
   CONSOLE_NAMESPACE_NOT_READY,
   CONFIGURATION_SAVE_DENIED,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY,
-  NEW_SECRET_OPERATE_DENIED,
-  NEW_SECRET_OPERATE_REMEDY,
   RESOURCE_CONFLICT,
   SECRET_CREATE_DENIED,
   SECRET_NAME_CONFLICT,
@@ -105,13 +100,20 @@ import {
   credentialCheckedAtDeploy,
   namespaceListDenied,
   notIncluded,
-  secretOperateRefused,
   stopRefused,
   stopStatusRefreshFailed,
-  PLUGINS_READ_ONLY,
   READ_ONLY_DRAFT_NOTICE,
 } from "../helpers/refusal-text.mjs";
+import {
+  AGENT_CREATE_DENIED,
+  CONFIGURATION_UPDATE_DENIED,
+  NEW_SECRET_OPERATE_DENIED,
+  NEW_SECRET_OPERATE_REMEDY,
+  secretOperateRefused,
+  PLUGINS_READ_ONLY,
+} from "../helpers/refusal-access.ts";
 import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 
@@ -2511,6 +2513,7 @@ for (const viewport of [
 }
 
 test("a version editor without Agent update can recover a failed deployment from the draft", async (t) => {
+  const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Version editor");
   const agent = await fixture.createAgent(
     namespace.id,
@@ -2782,6 +2785,7 @@ test("a reader without update views the version draft read-only", async (t) => {
 // Edit current Configuration turns into Open draft in place, and the Plugins tab waits
 // for the answer before it reads the policy capabilities, which need Agent update (finding 2436).
 test("a late permission answer relabels a reader's version entry and skips plugin capabilities", async (t) => {
+  const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Late plugin reader");
   const agent = await fixture.createAgent(namespace.id, "Late plugin Agent", nativeValues("v1"), {
     harnessAuth: { method: "runtime" },
@@ -3023,6 +3027,7 @@ test("a deployer without update keeps the draft checklist", async (t) => {
 // Configuration update, the Channels tab, the draft card and the Credentials tab's Channel
 // Secrets panel turn read-only in place (findings 2421, 2432).
 test("a late permission answer turns a reader's Channels and Channel Secrets read-only", async (t) => {
+  const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Late reader answer", { ready: true });
@@ -3956,6 +3961,7 @@ test("the picker's Create new Secret is disabled when operate covers only some S
 
 // A tab parked before the answer landed is shown again with the answer applied (finding 2421).
 test("a Channels tab parked before a reader's permission answer returns read-only", async (t) => {
+  const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Parked reader tab");
   const agent = await fixture.createAgent(namespace.id, "Parked reader Agent", nativeValues("v1"), {
     harnessAuth: { method: "runtime" },
@@ -4065,6 +4071,7 @@ test("a permission reread after a save turns the draft read-only", async (t) => 
 });
 
 test("a negative permission answer reaching an open Stop or Delete dialog prevents submission", async (t) => {
+  const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Open confirmation");
   const agent = await fixture.createAgent(
     namespace.id,

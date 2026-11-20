@@ -8,13 +8,13 @@ import { fileURLToPath } from "node:url";
 import {
   auditManifest,
   fileConcurrency,
-  isObject,
   issue,
   logIssues,
   selectLane,
   sourceEvidence,
   type loadRunnerManifest,
 } from "./runner-inputs.ts";
+import { isRecord } from "./records.ts";
 import { cleanupAllowanceMs, laneDeadlineMs } from "./runner-preparation.ts";
 import { forwardedSignals } from "./runner-process.ts";
 
@@ -160,7 +160,7 @@ async function lifecyclePhase(
     child.on("message", (message: unknown) => {
       if (
         !received.result &&
-        isObject(message) &&
+        isRecord(message) &&
         message.type === "ci-lifecycle-group" &&
         typeof message.id === "number" &&
         Number.isInteger(message.id) &&
@@ -169,7 +169,7 @@ async function lifecyclePhase(
         groups.add(message.id);
       } else if (
         !received.result &&
-        isObject(message) &&
+        isRecord(message) &&
         message.type === "ci-lifecycle-result" &&
         typeof message.exitCode === "number" &&
         Number.isInteger(message.exitCode) &&
@@ -243,7 +243,7 @@ function isRunEvidence(
   testName: string | undefined,
 ): value is RunSummary {
   return (
-    isObject(value) &&
+    isRecord(value) &&
     value.command === "run" &&
     value.lane === lane &&
     value.sourceSha === sourceSha &&

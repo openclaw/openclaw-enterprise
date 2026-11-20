@@ -1231,13 +1231,7 @@ test("generated API reference changes select full across additions, edits, delet
   await expectAll(
     t,
     "full",
-    [
-      "docs/reference/api.md",
-      "docs/reference/cheatsheets/api.md",
-      "docs/reference/api/extra.md",
-      "docs/reference/api/nested/space and\nnewline.md",
-    ].flatMap((path) => [
-      // The check also rejects unexpected Markdown anywhere in the generated directory.
+    ["docs/reference/api.md", "docs/reference/cheatsheets/api.md"].flatMap((path) => [
       [({ put }) => put(path)],
       [({ put }) => put(path, "changed\n"), { [path]: "old\n" }],
       [({ repo }) => rmSync(join(repo, path)), { [path]: "old\n" }],
@@ -2237,11 +2231,11 @@ test("failed lane summary preserves the first unsuccessful step", (t) => {
 test("lane lists outside the lane table name every lane they must", async (t) => {
   const suiteIndex = indexData(read("scripts/ci/test-suites.json"));
   // The lane action exposes the cache credentials and sets OCC_CI_IMAGE_CACHE for
-  // exactly the lanes prepare.mjs restores the BuildKit cache for. A lane missing
+  // exactly the lanes prepare.ts restores the BuildKit cache for. A lane missing
   // from either condition builds its images cold, and nothing fails.
   const action = loadYaml(".github/actions/run-ci-lane/action.yml");
   const preparation: unknown = await import(
-    pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.mjs")).href
+    pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.ts")).href
   );
   const imageCacheLanes = record(preparation).imageCacheLanes;
   assert.ok(imageCacheLanes instanceof Map);
@@ -3014,7 +3008,7 @@ function laneManifest(
 function suiteFiles(base = policy): Record<string, string> {
   const files: Record<string, string> = {
     "scripts/ci/impact.ts": base,
-    "scripts/ci/prepare.mjs": "export const prepared = true;\n",
+    "scripts/ci/prepare.ts": "export const prepared = true;\n",
     "scripts/ci/test-suites.json": `${JSON.stringify(
       {
         version: 1,
@@ -3070,6 +3064,129 @@ async function suiteFixture(
   const f = await fixture(t, change, { ...suiteFiles(), ...extra }, {}, options);
   return [f, await shallowBootstrap(f)] as const;
 }
+
+test("test graph advisory reports indexed runtime consumers and retains fallback", async (t) => {
+  const owned = "tests/helpers/owned.ts";
+  const unowned = "tests/helpers/unowned.ts";
+  const intermediate = "tests/helpers/intermediate.ts";
+  const root = "tests/integration/typed.test.ts";
+  const helper = "tests/helpers/runtime.mjs";
+  const bridge = "tests/helpers/bridge.mjs";
+  const fullRoot = "tests/integration/openshell-real.test.mjs";
+  const ordinaryRoot = "tests/integration/postgres-a.test.mjs";
+  const unrelatedRoot = "tests/integration/unrelated.test.ts";
+  const security = "tests/helpers/auth.mjs";
+  const ci = "scripts/ci/helper.mjs";
+  const unknown = "tests/helpers/unknown.txt";
+  const unindexed = "tests/helpers/unindexed.mjs";
+  const initial = suiteFiles();
+  const registryPath = "scripts/ci/test-suites.json";
+  const registry = jsonRecord(present(initial[registryPath]));
+  const changed = {
+    [owned]: "export const value = 1;\n",
+    [unowned]: "export const value = 1;\n",
+    [helper]: "export const value = 1;\n",
+    [security]: "export const value = 1;\n",
+    [ci]: "export const value = 1;\n",
+    [unknown]: "unchanged input\n",
+    [unindexed]: "export const value = 1;\n",
+  };
+  const f = await fixture(
+    t,
+    ({ put }) => {
+      for (const [file, content] of Object.entries(changed)) {
+        put(file, content + "\n");
+      }
+    },
+    {
+      ...initial,
+      ...changed,
+      [registryPath]: JSON.stringify({
+        ...registry,
+        lanes: { ...record(registry.lanes), unrelated: "./test-suites/unrelated.json" },
+        groups: { ...record(registry.groups), full: [...Object.keys(suiteLanes), "unrelated"] },
+      }),
+      "scripts/ci/test-suites/unrelated.json": laneManifest([unrelatedRoot]),
+      "tests/tsconfig.json": JSON.stringify({
+        compilerOptions: { incremental: true, noEmit: true },
+      }),
+      [intermediate]: 'export { value } from "./owned.ts";\n',
+      [root]: 'import "../helpers/intermediate.ts";\nimport "../helpers/runtime.mjs";\n',
+      [bridge]: 'export { value } from "./runtime.mjs";\n',
+      [fullRoot]: 'import "../helpers/bridge.mjs";\n',
+      [ordinaryRoot]: 'import "../helpers/runtime.mjs";\n',
+      [unrelatedRoot]:
+        'import "../helpers/auth.mjs";\nimport "../../scripts/ci/helper.mjs";\n' +
+        'import "../helpers/unindexed.mjs";\n',
+    },
+  );
+  const { put } = repository(f.repo);
+  const versioned = [
+    owned,
+    unowned,
+    intermediate,
+    root,
+    helper,
+    bridge,
+    fullRoot,
+    ordinaryRoot,
+    unrelatedRoot,
+    security,
+    ci,
+    unknown,
+  ];
+  for (const includeBridge of [true, false]) {
+    put(
+      ".build/tests/tsconfig.tsbuildinfo",
+      JSON.stringify({
+        version: "7.0.2",
+        options: { composite: false },
+        fileNames: versioned.map((file) => `../../${file}`),
+        fileInfos: versioned.map(() => "0".repeat(32)),
+        fileIdsList: [[1], [3, 5], [5], [6], [10, 11]],
+        referencedMap: [[3, 1], [4, 2], [7, 4], [8, 3], [9, 5], ...(includeBridge ? [[6, 3]] : [])],
+      }),
+    );
+    const result = await run(
+      process.execPath,
+      [join(repositoryRoot, "scripts/ci/test-graph-advisory.ts")],
+      {
+        cwd: f.repo,
+        env: {
+          ...process.env,
+          GITHUB_EVENT_NAME: "pull_request",
+          GITHUB_EVENT_PATH: f.eventPath,
+          GITHUB_SHA: f.tested,
+          GITHUB_RUN_ID: "17",
+          GITHUB_RUN_ATTEMPT: "2",
+          GITHUB_WORKFLOW_SHA: f.tested,
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stderr, "");
+    const advisory = jsonRecord(result.stdout);
+    assert.deepEqual(advisory.run, { id: "17", attempt: "2", workflow: f.tested });
+    assert.equal(record(advisory.source).tested, f.tested);
+    const hints = record(advisory.hints);
+    assert.deepEqual(hints.direct, []);
+    assert.deepEqual(hints.compiler, ["checks-baseline-1"]);
+    assert.deepEqual(hints.staticFixture, []);
+    assert.deepEqual(advisory.fallback, [
+      "fixture_or_runtime",
+      "no_registered_owner",
+      "runtime_edges_unclassified",
+      "security_scope",
+      "unindexed_mjs_roots",
+      "unindexed_path",
+      "unknown_path",
+      "workflow_or_ci",
+    ]);
+    assert.equal(advisory.omissions, 0);
+    assert.deepEqual(hints.runtimeCompiler, ["checks-baseline-1", "postgres"]);
+    assert.deepEqual(hints.fullOnlyCompiler, includeBridge ? ["openshell"] : []);
+  }
+});
 
 test("main test advisory reports only a verified single modification and leaves selection full", async (t) => {
   const path = "tests/integration/postgres-a.test.mjs";
@@ -3309,7 +3426,7 @@ test("mixed test and code, tooling, workflow or package changes select full", as
     "ineligible_change",
     [
       "src/app.ts",
-      "scripts/ci/prepare.mjs",
+      "scripts/ci/prepare.ts",
       "scripts/ci/run-tests.ts",
       "scripts/ci/impact-gate.ts",
       ".github/workflows/ci.yml",
@@ -3375,7 +3492,7 @@ test("unmapped, non-CI, referenced or irregular test files select full", async (
     referenced_test: [
       [
         editTest("tests/integration/postgres-b.test.mjs"),
-        { "scripts/ci/prepare.mjs": 'if (file.endsWith("postgres-b.test.mjs")) {}\n' },
+        { "scripts/ci/prepare.ts": 'if (file.endsWith("postgres-b.test.mjs")) {}\n' },
       ],
       [
         editTest("tests/integration/k3d-a.test.mjs"),
@@ -3695,7 +3812,7 @@ test("tests mode flows through the gate to a source-bound aggregate of only its 
   );
   // Synthetic lanes in a group that also has an unselected lane; the fixture's
   // stand-in prepare module is not a runner preparation hook.
-  rmSync(join(root, "scripts/ci/prepare.mjs"));
+  rmSync(join(root, "scripts/ci/prepare.ts"));
   const group = ["checks-baseline-1", "postgres", "k3d-fixture-state"];
   const { runLane, aggregate } = syntheticLanes(root, f.tested, group, "synthetic-");
   const ran = ["checks-baseline-1", "postgres"];

@@ -8,7 +8,6 @@ import { asRecord } from "../../packages/utils/src/objects.ts";
 type InstallationOptions = {
   requestLog: string;
   tlsDirectoryFile: string;
-  serviceKey: string;
   scenario: string;
   installationId: string;
 };
@@ -82,13 +81,13 @@ function readListeningPorts(child: InstallationChild): Promise<ListeningPorts> {
 
 export async function startDevUpInstallationServer(
   t: TestContext,
-  { requestLog, tlsDirectoryFile, serviceKey, scenario, installationId }: InstallationOptions,
+  { requestLog, tlsDirectoryFile, scenario, installationId }: InstallationOptions,
   stopProcess: (child: ChildProcess) => Promise<void>,
 ): Promise<ListeningPorts> {
   const entry = fileURLToPath(new URL("../fixtures/dev-up-installation-http.ts", import.meta.url));
   const child = spawn(
     process.execPath,
-    [entry, requestLog, tlsDirectoryFile, serviceKey, scenario, installationId],
+    [entry, requestLog, tlsDirectoryFile, scenario, installationId],
     { env: {}, stdio: ["ignore", "pipe", "inherit"] },
   );
   const closed = new Promise<void>((resolve) => {

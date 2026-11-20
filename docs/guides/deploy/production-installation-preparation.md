@@ -65,13 +65,6 @@ else
 fi
 ```
 
-The runtime build sizes its Node.js compile to the builder with
-[`NODE_BUILD_JOBS=auto`](../../../deploy/runtime/node/README.md). It reads only
-the build step's own CPU and memory limits; limits set on a parent cgroup are
-invisible to it. On a builder host where a parent cgroup caps CPU or memory,
-add `--build-arg NODE_BUILD_JOBS=<n>` to the runtime `docker buildx build`
-command, sized to those limits.
-
 If a build fails certificate verification when downloading a package behind an HTTPS proxy or from a private package registry, add `--secret "id=build-ca,src=$CA_BUNDLE"` to both `docker buildx build` commands above. Set `CA_BUNDLE` to a PEM file with the public trust roots and the approved proxy or registry CA certificate. Both Dockerfiles mount this file only during the download steps. Keep TLS verification enabled. Image registry TLS uses the builder's own trust configuration.
 
 Before installation, [check each digest](../../testing/docker.md#check-published-images)
@@ -109,7 +102,7 @@ default registry selection.
 
 This runbook uses Helm
 release `oce` in Namespace `openclaw-system`. Keep configuration and
-bootstrap PVC YAML in the protected `OCC_INPUT_DIRECTORY`; Secret inputs stay
+Installation YAML in the protected `OCC_INPUT_DIRECTORY`; Secret inputs stay
 under `/secure/occ`.
 
 To reuse profile output or verified YAML from
@@ -195,16 +188,14 @@ For registry-backed installs, compare selected images with the checked digests:
 check the profile input JSON before rendering, or the edited manual YAML with
 [Verify installation image selections](../../testing/docker.md#verify-installation-image-selections).
 
-### Shared bootstrap PVC and configuration checks
+<a id="shared-bootstrap-pvc-and-configuration-checks"></a>
 
-Create the bootstrap PVC manifest if it is absent:
+### Shared credential and configuration checks
+
+Protect both configuration files:
 
 ```bash
-test -e "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml" || \
-  install -m 600 deploy/examples/production/bootstrap-pvc.yaml "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml"
-chmod 600 "$OCC_INPUT_DIRECTORY/values.yaml" \
-  "$OCC_INPUT_DIRECTORY/installation.yaml" \
-  "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml"
+chmod 600 "$OCC_INPUT_DIRECTORY/values.yaml" "$OCC_INPUT_DIRECTORY/installation.yaml"
 ```
 
 For profiles, change `$OCC_PROFILE_INPUT` and rerender instead of editing
@@ -213,8 +204,8 @@ before the checks:
 
 - `values.yaml`: set auth URL, admin email, database and cluster CIDRs,
   control-plane node selector, database CA, DNS, API clients, and bootstrap
-  password claim. Keep `bootstrap.password.mountPath` absolute; the bootstrap Job
-  refuses relative paths. Keep native admin enabled for the password profile, and gateway
+  credential Secret name (`bootstrap.credentials.secretName`). The keys default
+  to `admin-password` and `admin-service-key`. Keep native admin enabled for the password profile, and gateway
   routing enabled with the reviewed GatewayClass and Secret names. Helm refuses an
   `auth.baseUrl` that breaks the
   [`OCC_AUTH_BASE_URL` rules](../../reference/settings/production.md#required-production-controller-environment)
@@ -235,38 +226,36 @@ before the checks:
   `presets.includeDefaults: false` disables the
   [bundled Presets](../../reference/presets.md#installation-defaults).
 
-Set `bootstrap-pvc.yaml` name, namespace, size, and protected `storageClassName`.
-
 For `logging.level`, see [Choose the log level](../observability.md#1-choose-the-log-level).
 [Configure native admin domains](native-admin.md#steps).
 For Slack Agents, configure both proxy paths in the
 [Slack guide](../integrations/slack.md#configure-both-slack-proxies). For Codex
 sandboxing, follow [Codex sandbox setup](codex-sandbox.md).
 
-`images.controller` must be an immutable reference `prepare-bootstrap-volume --image` accepts: a letter or digit, then only letters, digits, `.`, `_`, `:`, `/`, and `-`, and a lowercase `sha256` digest.
+`images.controller` must be an approved immutable image reference with a lowercase
+`sha256` digest.
 
 Before running this block, confirm that `OCC_INPUT_DIRECTORY` points to the
-intended protected directory containing your prepared `values.yaml`,
-`installation.yaml`, and `bootstrap-pvc.yaml`. In a new shell, restore that
+intended protected directory containing your prepared `values.yaml`
+and `installation.yaml`. In a new shell, restore that
 [setup](#configure-the-installation) first.
 
 Run this block before provisioning the password profile. If it fails, correct the
 named check before continuing. After the directory check, each run invalidates
-the previous render. Image, claim, database CA, and manifest-path exports are set
+the previous render. Image, credential Secret, database CA, and manifest-path exports are set
 only after every check succeeds:
 
 ```bash
 {
-  unset CONTROLLER_IMAGE BOOTSTRAP_CLAIM OCC_RENDERED_MANIFEST
+  unset CONTROLLER_IMAGE BOOTSTRAP_SECRET BOOTSTRAP_PASSWORD_KEY BOOTSTRAP_SERVICE_KEY_KEY OCC_RENDERED_MANIFEST
   unset DATABASE_CA_SECRET DATABASE_CA_KEY
   OCC_RENDER_TEMP=
   if
-    OCC_VALIDATION_STEP='input directory setup: set OCC_INPUT_DIRECTORY to the intended existing directory with all three prepared YAML files' &&
+    OCC_VALIDATION_STEP='input directory setup: set OCC_INPUT_DIRECTORY to the intended existing directory with both prepared YAML files' &&
     test -n "${OCC_INPUT_DIRECTORY:-}" &&
     test -d "$OCC_INPUT_DIRECTORY" &&
     test -f "$OCC_INPUT_DIRECTORY/values.yaml" &&
     test -f "$OCC_INPUT_DIRECTORY/installation.yaml" &&
-    test -f "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml" &&
     OCC_VALIDATION_STEP='previous render invalidation' &&
     rm -f -- "$OCC_INPUT_DIRECTORY/rendered.yaml" &&
     OCC_VALIDATION_STEP='controller image digest' &&
@@ -290,9 +279,6 @@ only after every check succeeds:
       (.drivers.compute.configuration.runtime.gatewayNodeSelector | length > 0) and
       (.drivers.compute.configuration.runtime.nodeSelector | length > 0)' \
       "$OCC_INPUT_DIRECTORY/installation.yaml" >/dev/null &&
-    OCC_VALIDATION_STEP='bootstrap PVC' &&
-    yq e -e '.metadata.namespace == "openclaw-system" and .spec.storageClassName != ""' \
-      "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml" >/dev/null &&
     OCC_VALIDATION_STEP='render temporary file' &&
     OCC_RENDER_TEMP="$(mktemp "$OCC_INPUT_DIRECTORY/.rendered.XXXXXXXX")" &&
     OCC_VALIDATION_STEP='Helm render' &&
@@ -305,28 +291,23 @@ only after every check succeeds:
     DATABASE_CA_SECRET="$(yq e -r '.database.caSecretName // ""' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
     OCC_VALIDATION_STEP='database CA key extraction' &&
     DATABASE_CA_KEY="$(yq e -r '.database.caKey // "ca.pem"' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
-    OCC_VALIDATION_STEP='bootstrap claim extraction' &&
-    OCC_BOOTSTRAP_CLAIM_JSON="$(yq e -e -o=json -I=0 '.bootstrap.password.claimName | select(tag == "!!str" and length > 0)' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
-    OCC_VALIDATION_STEP='bootstrap claim match' &&
-    OCC_EXPECTED_BOOTSTRAP_CLAIM="$(yq e -e -o=json -I=0 '.metadata.name | select(tag == "!!str" and length > 0)' "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml")" &&
-    test "$OCC_BOOTSTRAP_CLAIM_JSON" = "$OCC_EXPECTED_BOOTSTRAP_CLAIM" &&
-    OCC_VALIDATION_STEP='bootstrap claim export' &&
-    BOOTSTRAP_CLAIM="$(yq e -e -r '.bootstrap.password.claimName + "."' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
-    BOOTSTRAP_CLAIM="${BOOTSTRAP_CLAIM%.}" &&
-    test "$(BOOTSTRAP_CLAIM="$BOOTSTRAP_CLAIM" yq e -n -o=json -I=0 'strenv(BOOTSTRAP_CLAIM)')" = "$OCC_BOOTSTRAP_CLAIM_JSON" &&
+    OCC_VALIDATION_STEP='bootstrap credential Secret selection' &&
+    BOOTSTRAP_SECRET="$(yq e -e -r '.bootstrap.credentials.secretName' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
+    BOOTSTRAP_PASSWORD_KEY="$(yq e -r '.bootstrap.credentials.passwordKey // "admin-password"' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
+    BOOTSTRAP_SERVICE_KEY_KEY="$(yq e -r '.bootstrap.credentials.serviceKeyKey // "admin-service-key"' "$OCC_INPUT_DIRECTORY/values.yaml")" &&
     OCC_VALIDATION_STEP='validated render publication' &&
     mv -- "$OCC_RENDER_TEMP" "$OCC_INPUT_DIRECTORY/rendered.yaml"
   then
     OCC_RENDERED_MANIFEST="$OCC_INPUT_DIRECTORY/rendered.yaml"
-    export CONTROLLER_IMAGE BOOTSTRAP_CLAIM OCC_RENDERED_MANIFEST
+    export CONTROLLER_IMAGE BOOTSTRAP_SECRET BOOTSTRAP_PASSWORD_KEY BOOTSTRAP_SERVICE_KEY_KEY OCC_RENDERED_MANIFEST
     export DATABASE_CA_SECRET DATABASE_CA_KEY
-    unset OCC_VALIDATION_STEP OCC_BOOTSTRAP_CLAIM_JSON OCC_EXPECTED_BOOTSTRAP_CLAIM OCC_RENDER_TEMP
+    unset OCC_VALIDATION_STEP OCC_RENDER_TEMP
   else
-    unset CONTROLLER_IMAGE BOOTSTRAP_CLAIM OCC_RENDERED_MANIFEST
+    unset CONTROLLER_IMAGE BOOTSTRAP_SECRET BOOTSTRAP_PASSWORD_KEY BOOTSTRAP_SERVICE_KEY_KEY OCC_RENDERED_MANIFEST
     unset DATABASE_CA_SECRET DATABASE_CA_KEY
     if [ -n "$OCC_RENDER_TEMP" ]; then rm -f -- "$OCC_RENDER_TEMP"; fi
     printf 'Installation check failed: %s; stop before provisioning.\n' "$OCC_VALIDATION_STEP" >&2
-    unset OCC_VALIDATION_STEP OCC_BOOTSTRAP_CLAIM_JSON OCC_EXPECTED_BOOTSTRAP_CLAIM OCC_RENDER_TEMP
+    unset OCC_VALIDATION_STEP OCC_RENDER_TEMP
     false
   fi
 }
@@ -334,7 +315,47 @@ only after every check succeeds:
 
 `$KUBECONFIG_FILE` must select the same cluster as `$CONTEXT`.
 
-Prepare these Secret input files under `/secure/occ`, each holding one raw value
+`occ installation install` generates and retains private administrator inputs
+and creates the bootstrap Secret automatically. No external secret manager or
+separate generation command is required. Keep `XDG_STATE_HOME`, if set, absolute
+and outside the checkout; its default is `$HOME/.local/state`.
+
+### Optional: supply bootstrap credentials
+
+Skip this section for automatic setup. For direct Helm installation or
+`--bootstrap-credentials=existing`, prepare the Secret yourself. Generate once
+with Node.js from the matching checkout; existing files are never overwritten:
+
+```bash
+node --input-type=module <<'JS'
+import { randomBytes } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
+writeFileSync('/secure/occ/admin-password', randomBytes(32).toString('base64url'), { mode: 0o600, flag: 'wx' });
+writeFileSync('/secure/occ/admin-service-key', `occ_${randomBytes(32).toString('base64url')}`, { mode: 0o600, flag: 'wx' });
+JS
+```
+
+Retain these files outside the checkout. The password is for human sign-in; the
+service key authenticates automation and expires 30 days after registration.
+See the [input contract](../../reference/authentication.md#installation-and-account-ownership)
+for file validation and retention. An external secret manager can supply the same
+values. Create the configured Secret before installation, using the selected
+context and namespace and the keys resolved by validation:
+
+```bash
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+  create secret generic "$BOOTSTRAP_SECRET" \
+  --from-file="$BOOTSTRAP_PASSWORD_KEY=/secure/occ/admin-password" \
+  --from-file="$BOOTSTRAP_SERVICE_KEY_KEY=/secure/occ/admin-service-key"
+```
+
+Select `--bootstrap-credentials=existing` when installing through the CLI.
+After a failed or uncertain create, preserve inputs and reconcile before retrying.
+Do not put plaintext credentials in Helm values or shell arguments.
+
+### Prepare other Secret inputs
+
+Prepare these other Secret input files under `/secure/occ`, each holding one raw value
 without quotes or assignment.
 
 | File                  | Contents and source                                                                                                                                                                                                                       |

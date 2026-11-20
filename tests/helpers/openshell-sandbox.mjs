@@ -7,7 +7,6 @@ import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbo
  * undefined value removes the setting), with extra `gateway` settings. */
 export function openShellSandbox(t, overrides = {}, gateway = {}) {
   const kubernetes = {
-    runtimeClassName: "openshell-sandbox",
     // Native OpenClaw workspace preparation requires it.
     userNamespaces: false,
     serviceAccount: { mode: "gatewayConfigured" },
@@ -35,7 +34,8 @@ export function openShellSandbox(t, overrides = {}, gateway = {}) {
   t.after(() => backend.client.close());
   const sandboxDriver = new OpenShellSandboxDriver(
     {
-      gateway: { workspaceMode: "operator", ...gateway },
+      integrationMode: "legacy",
+      gateway: { ...gateway },
       kubernetes,
       policy: {
         process: { runAsUser: "1000", runAsGroup: "1000" },

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { registerRenewableModelStreamLeaseCases } from "./credential-proxy-stream-lease-cases.ts";
 import type { OpenClawController } from "../../packages/occ/src/index.ts";
 import { grpc, type Grpc } from "../helpers/openshell-grpc-sdk.ts";
 import {
@@ -294,3 +295,5 @@ test("exchange reader rejects invalid reply envelopes and preserves terminal ord
   await pendingEnd;
   await assert.rejects(ended.next(), /ended without another message/);
 });
+
+registerRenewableModelStreamLeaseCases();

@@ -1,3 +1,8 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Repository layout and conventions
 
 Use this guide to choose where a change belongs in OpenClaw Enterprise (OCE).
@@ -49,6 +54,7 @@ owns their deployment, workspace resource rendering, and image import.
 | `apps/controller/src/auth/`                               | Authentication integrations.                                                                                 |
 | `apps/controller/src/composition/`                        | Runtime assembly and wiring of selected implementations.                                                     |
 | `apps/controller/src/drivers/`                            | Bundled infrastructure Driver implementations, organized by capability.                                      |
+| `apps/controller/src/drivers/credential-proxy/`           | Native credential delivery Driver and its private OpenShell Provider handling.                               |
 | `apps/controller/src/drivers/plugin/google-workspace/`    | Google Workspace operation loading and request authorization for the shared plugin guard.                    |
 | `apps/controller/src/backends/`                           | Backend implementations.                                                                                     |
 | `apps/controller/src/gateway/`                            | Agent gateway transport and workspace access.                                                                |
@@ -64,6 +70,7 @@ owns their deployment, workspace resource rendering, and image import.
 | `cmd/occ/`                                                | Go CLI executable entrypoint.                                                                                |
 | `internal/occcli/`                                        | CLI commands and terminal interface.                                                                         |
 | `internal/occclient/`                                     | Go HTTP client for OCC.                                                                                      |
+| `internal/bootstrapcredentials/`                          | Private bootstrap input generation shared by installation and development tools.                             |
 | `internal/occdev/`                                        | CLI development-stack lifecycle commands.                                                                    |
 
 Start from the existing primitive that owns a capability. Keep platform core
@@ -82,6 +89,11 @@ shared resource definitions and the public package exports.
 The container release command starts at `scripts/ci/container-release.ts`.
 Its modules under `scripts/ci/container-release/` own release admission,
 receipt validation, OCI verification, native smoke, and registry publication.
+
+`apps/controller/src/drivers/compute/kubernetes/harness/` owns internal Harness
+runtimes and workspace handling for the single Kubernetes Compute Driver.
+`drivers/sandbox/openshell/managed.ts` owns managed OpenShell reconciliation;
+see the [prototype boundary](reference/drivers/kubernetes-openshell-compute.md).
 
 Within controller composition, `installation-presets.ts` owns Preset file loading
 and bundled-version assembly; `installation-config.ts` owns Driver composition.
@@ -144,8 +156,6 @@ graph. The full `deploy/runtime/Dockerfile` uses the repository root as its buil
 context to include the emitted client router in the Agent image.
 `deploy/runtime/openclaw-source.json` owns the OpenClaw source commit, archive
 checksum, and fixed build timestamp used by that runtime recipe and its callers.
-`deploy/runtime/node/` owns the runtime's pinned Node source, termination patch,
-native build and verification. Its patch inventory is separate from OpenClaw's.
 
 Helm embeds the startup programs from `deploy/helm/openclaw-enterprise/files/`
 in rendered container commands. Edit their TypeScript sources in
@@ -154,6 +164,7 @@ command from the repository root with the pinned Node version.
 
 - API CA programs: `node deploy/helm/src/generate-api-ca.ts`
 - Installation check: `node deploy/helm/src/generate-installation-check.ts`
+- Channel egress policy: `node deploy/helm/src/generate-channel-egress.ts`; `--check` verifies the packaged policy against current Drivers.
 
 Commit any generated chart updates with their sources. The OIDC CA integration
 suite checks the packaged CA programs. The Installation preflight suite checks
@@ -196,16 +207,16 @@ use formatting, builds, and link checks; do not add or run tests solely for pros
 | `docs/flows/`                         | Source-backed runtime execution traces.                                                            |
 | `docs/testing/`                       | Contributor test setup, environments, fixtures, and proof limits.                                  |
 | `docs/release/`                       | Release configuration, publication, promotion, and recovery procedures.                            |
-| `specs/README.md`                     | RFC index with linked numbers, names, and implementation statuses.                                 |
+| `specs/README.md`                     | RFC index with linked IDs, names, and implementation statuses.                                     |
 | `specs/rfcs/`                         | Architectural proposals and decisions.                                                             |
 | `specs/plans/`                        | All implementation plans and historical delivery records; relevant RFCs are linked in frontmatter. |
 | `docs/snippets/`                      | Reusable Markdown and code examples embedded with `Snippet`; Markdown uses `published: false`.     |
 | `docs/assets/`                        | Documentation images and other shared assets.                                                      |
 
 Use stable feature names for living references. Follow
-[RFCs and implementation plans](contributing/specifications.md) for numbering,
+[RFCs and implementation plans](contributing/specifications.md) for naming,
 document ownership, and lifecycle. Prefer one Markdown file per RFC or plan;
-documents with supporting material use `<number>-<topic>/index.md`, with
+documents with supporting material use `<stem>/index.md`, with
 companions in the same directory. Keep completed and superseded documents in
 place. Preserve historical names and content when grouping companions. This
 first phase does not reorganize `specs/.archive/`; removed image assets remain
@@ -214,6 +225,11 @@ Update affected current references, guides, and flows with behavior changes;
 shipped specifications remain historical records. Keep Manual Notes unchanged.
 Put detailed contracts in their owning reference rather than expanding
 architecture pages for every feature.
+
+Keep shared control plane installation steps in `docs/guides/deploy/production-installation.md`.
+The [setup overview](guides/deploy/control-plane-setup.md) links cloud and
+distribution-specific preparation in sibling pages under `docs/guides/deploy/`.
+Register these pages in the **Control Plane Setup** sidebar group.
 
 Put contributor workflows for documentation in `docs/contributing/`, starting
 with the [writing guide](contributing/documentation.md). Existing site-tooling

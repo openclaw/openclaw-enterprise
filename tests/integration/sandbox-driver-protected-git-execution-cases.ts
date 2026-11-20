@@ -1,3 +1,7 @@
+import {
+  assertGitExecutionContinuity,
+  verifyManagedGitReplacement,
+} from "./sandbox-driver-managed-git-cases.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -23,6 +27,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.ts";
+import type { GitWorkspaceInput } from "../fixtures/openshell-git-workspace.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { verifyOpenShellPushNegotiation } from "../helpers/openshell-git-push-negotiation.ts";
 import { runDocker } from "../helpers/runtime-image-docker.ts";
@@ -86,6 +91,10 @@ function enrolledRequirements(
   return {
     ...requirements,
     proxyWiring,
+    labels: {
+      "openclaw.dev/revision": proxyWiring.plan.execution.revisionId,
+      "openclaw.dev/agent": proxyWiring.plan.execution.agentId,
+    },
     files: [
       {
         ...manifest,
@@ -137,6 +146,7 @@ export async function verifyProtectedOpenShellGitExecution(
     inferenceProvider,
     gateway,
     getCreated,
+    restoreCreated,
     registry,
     sandboxConfiguration,
     workspaceMountPath,
@@ -268,6 +278,12 @@ export async function verifyProtectedOpenShellGitExecution(
     }),
     undefined,
   );
+  await assertGitExecutionContinuity(
+    sandbox,
+    ctx,
+    gateway.sandboxes.get(result.resourceName),
+    false,
+  );
   const created = getCreated();
   assert.ok(created);
   // Check the final launch environment, after all provider and Sandbox composition.
@@ -303,19 +319,41 @@ export async function verifyProtectedOpenShellGitExecution(
         "--security-opt=no-new-privileges",
         "--tmpfs=/sandbox:rw,exec,nosuid,nodev,mode=755",
         "--tmpfs=/tmp:rw,nosuid,nodev,mode=1777",
-        "--mount",
-        `type=bind,src=${fileURLToPath(new URL("../fixtures/openshell-git-workspace.cjs", import.meta.url))},dst=/proof.cjs,readonly`,
         "--entrypoint=node",
         image,
-        "/proof.cjs",
+        "-e",
+        process
+          .getBuiltinModule("node:module")
+          .stripTypeScriptTypes(
+            process
+              .getBuiltinModule("node:fs")
+              .readFileSync(
+                fileURLToPath(new URL("../fixtures/openshell-git-workspace.ts", import.meta.url)),
+                "utf8",
+              ),
+          ),
+        "fixture",
         JSON.stringify({
           workspace: workspaceMountPath,
           environment: gitEnvironment,
-        }),
+        } satisfies GitWorkspaceInput),
       ]);
     },
   );
   assert.deepEqual(result.proxyWiring?.plan, plan);
+  await verifyManagedGitReplacement(subtest, {
+    sandbox,
+    gateway,
+    registry,
+    rev,
+    ctx,
+    required,
+    plan,
+    inferenceProvider,
+    created,
+    restoreCreated,
+    proxy,
+  });
   await verifyProtectedGitNetworkPolicy({
     sandboxConfiguration,
     backend,

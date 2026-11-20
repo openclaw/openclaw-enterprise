@@ -65,6 +65,11 @@ import {
   nativeAdminValues,
 } from "./console-agents-test-support.ts";
 import {
+  invalidSecretProviderDefaultsRefusal,
+  unreadableGatewayPasswordRefusal,
+  unreadablePluginSecretRefusal,
+} from "../helpers/refusal-credential-diagnostics.ts";
+import {
   AGENT_SAVE_DENIED,
   CONFIGURATION_EDITS_PENDING,
   READ_UNAVAILABLE,
@@ -72,15 +77,14 @@ import {
   KUBERNETES_ALLOW_USERS_REFUSAL,
   KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL,
   codexPluginRefusal,
-  configIncludeRefusal,
-  invalidSecretProviderDefaultsRefusal,
-  unreadableGatewayPasswordRefusal,
-  unreadablePluginSecretRefusal,
   pluginEntryKeyVariantRefusal,
   pluginPolicyListRefusal,
-  providerKeyVariantRefusal,
   NO_TEST_REQUEST,
 } from "../helpers/refusal-text.mjs";
+import {
+  configIncludeRefusal,
+  providerKeyVariantRefusal,
+} from "../helpers/refusal-configuration-runtime.ts";
 import {
   OPENCLAW_SANDBOX_SETTINGS,
   openClawSandboxRefusal,

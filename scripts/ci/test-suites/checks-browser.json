@@ -18,7 +18,7 @@
     "tests/browser/console-agent-deploy-again.test.ts",
     "tests/browser/console-agent-logs.test.ts",
     "tests/browser/console-agent-repositories.test.ts",
-    "tests/integration/repository-credentials-github-prepared.test.mjs",
+    "tests/integration/repository-credentials-github-prepared.test.ts",
     "tests/integration/github-installation-access-policy.test.ts",
     "tests/integration/repository-credentials-github-installation-issuer.test.ts",
     "tests/integration/skipper-private-git-origin.test.mjs",
@@ -93,7 +93,7 @@
       "path": "tests/browser/docs-compute-matrix.test.ts"
     },
     {
-      "path": "tests/integration/repository-credentials-github-prepared.test.mjs"
+      "path": "tests/integration/repository-credentials-github-prepared.test.ts"
     },
     {
       "path": "tests/integration/github-installation-access-policy.test.ts",

@@ -24,15 +24,15 @@ Compose without Installation YAML selects no Secret Driver. See
 The [shared interface](../../../packages/contracts/src/drivers/secret/index.ts) requires four
 storage and projection methods and optionally supports transient server-side use.
 
-| Method                                    | Contract                                                                                                                                                                        |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `create(identity, value)`                 | Store the value for OCC's `{ id, namespaceId, name }` and return a safe backend reference.                                                                                      |
-| `update(secret, value)`                   | Replace the value at the stored, owned backend identity. Returns no value and does not report delivery.                                                                         |
-| `delete(secret)`                          | Remove only the backend object belonging to this Secret. Returns no value.                                                                                                      |
-| `resolve(secret)`                         | Check live ownership and return only the reference safe to use for projection. Never return the value or substitute another object.                                             |
-| `compareAndSwap(secret, expected, value)` | Optional atomic replacement of an exact current value. **Experimental** Codex OAuth device login uses it to serialize polling and fence cancellation; a mismatch returns false. |
-| `withValue(secret, use)`                  | Optional. Verify ownership, pass the current value to the trusted callback, and return its result.                                                                              |
-| `readCredentialInput(input)`              | Optional. Required for protected static sources. Read the authoritative value and its version from the owned Secret.                                                            |
+| Method                                    | Contract                                                                                                                            |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `create(identity, value)`                 | Store the value for OCC's `{ id, namespaceId, name }` and return a safe backend reference.                                          |
+| `update(secret, value)`                   | Replace the value at the stored, owned backend identity. Returns no value and does not report delivery.                             |
+| `delete(secret)`                          | Remove only the backend object belonging to this Secret. Returns no value.                                                          |
+| `resolve(secret)`                         | Check live ownership and return only the reference safe to use for projection. Never return the value or substitute another object. |
+| `compareAndSwap(secret, expected, value)` | Optional. Replace the value only if it matches the expected value. Return false on mismatch.                                        |
+| `withValue(secret, use)`                  | Optional. Verify ownership, pass the current value to the trusted callback, and return its result.                                  |
+| `readCredentialInput(input)`              | Optional. Required for protected static sources. Read the authoritative value and its version from the owned Secret.                |
 
 The current `SecretBackendRef` contains `namespaceName`, `name`, `key`, and
 `uid`; these are internal metadata, never caller-selected locations. The public
@@ -42,7 +42,7 @@ OCC rejects empty values, NUL, invalid text, and values above 65,536 UTF-8 bytes
 OCC uses `withValue` to register and update [credential sources](../credential-sources.md)
 with the Credential Gateway. Other callers include
 Secret-backed plugin discovery, channel credential validation and directory
-lookup, and **experimental** Codex OAuth device login.
+lookup, and OAuth connection token custody.
 
 For `readCredentialInput`, [`CredentialInputRead`](../../../packages/contracts/src/drivers/credential-proxy/index.ts)
 supplies the stored `secret`, `retention: "none"`, and a `lifetime`. Honor its

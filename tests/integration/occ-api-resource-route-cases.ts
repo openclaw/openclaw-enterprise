@@ -10,8 +10,8 @@ import {
   type NamespaceWire,
   type Permission,
 } from "../../packages/contracts/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { AGENT_NAME_CONFLICT, NAMESPACE_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import {
@@ -297,6 +297,16 @@ export async function checkMalformedResourcePaths(
   );
   const { error: agentError } = checkedInjectedBody(nonV4Agent, 400, ErrorResponse);
   assert.deepEqual(agentError.details, [{ path: "/agentId", code: "INVALID_FORMAT" }]);
+
+  // A malformed device-login handle is rejected before the caller needs to authenticate.
+  const malformedSession = await controller.request(
+    "DELETE",
+    `/namespaces/${namespace.id}/agents/device-authorizations/sec_not-a-uuid`,
+    { identity: false },
+  );
+  const { error: sessionError } = checkedInjectedBody(malformedSession, 400, ErrorResponse);
+  assert.deepEqual(sessionError.details, [{ path: "/sessionId", code: "INVALID_FORMAT" }]);
+  assert.match(sessionError.message, /params \/sessionId .* expected sec_ /);
 
   // A deployment is addressed by its revision ID, so the message names the rev_ prefix.
   const malformedDeployment = await controller.request(
@@ -596,6 +606,16 @@ export async function runNamespaceIsolation({
     `/namespaces/${tenantBId}/agents/${ownAgentId}`,
   );
   assert.equal(visibleAgent.status, 200);
+  assertApiError(
+    await injectedRequest(
+      readerApp,
+      "POST",
+      `/namespaces/${tenantBId}/agents/${ownAgentId}/stop?expectedActiveRevisionId=${missingRevisionId}`,
+    ),
+    403,
+    "FORBIDDEN",
+    "Agent read does not grant guarded stop or reveal a revision conflict",
+  );
 
   const { principal: revisionReader } = await fixture.createAuthPrincipal("revision-only-reader");
   fixture.state.identities.push(revisionReader);

@@ -34,8 +34,10 @@ was granted after a denied read, use the page **Refresh** to retry. Automatic
 revisits retain the remembered denial.
 
 The list does not evaluate current identity-provider eligibility, enumerate active
-connections, or list each OCC human using the shared proxy. Config readback does
-not prove that a pending change is applied. See the
+connections, or list OCC delegated browser identities. OCC browser access uses
+per-person native profiles, separately from the workspace machine identity. This
+roster does not link those profiles to operator-managed identities. Config
+readback does not prove that a pending change is applied. See the
 [configured-user contract](../../reference/agents/gateway-people.md).
 
 > **Trusted teammates only.** Distinct identities and roles do not provide per-person

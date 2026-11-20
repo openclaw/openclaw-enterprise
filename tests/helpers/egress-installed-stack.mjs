@@ -11,7 +11,7 @@ import {
   readString,
   record,
 } from "./egress-observation-values.ts";
-import { createManagedWorkloadExec } from "./egress-managed-workload-exec.mjs";
+import { createManagedWorkloadExec } from "./egress-managed-workload-exec.ts";
 import { enforcementCapabilities } from "./egress-installed-agent.mjs";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { createRealKubernetesFixture } from "./kubernetes-real.ts";
@@ -92,7 +92,6 @@ export async function arrangeRealPrerequisites(t, progress, inputsPath, profile 
     openShellGatewayImage: input.images.openShellGateway,
     openShellSandboxImage: input.images.sandbox,
     openShellSupervisorImage: input.images.supervisor,
-    openShellRuntimeClass: input.runtimeClass,
     commandTimeoutMs: 120_000,
     signal: t.signal,
   });

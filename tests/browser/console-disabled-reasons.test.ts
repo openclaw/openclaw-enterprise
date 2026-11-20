@@ -8,13 +8,12 @@ import type { Locator } from "playwright";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
-  AGENT_CREATE_DENIED,
   AGENT_DEPLOY_NOT_INCLUDED,
   CHANNELS_NEED_DEDICATED,
-  DIAGNOSTICS_DENIED,
   SECRET_CREATE_DENIED,
   SLACK_SETUP_HINT,
 } from "../helpers/refusal-text.mjs";
+import { AGENT_CREATE_DENIED, DIAGNOSTICS_DENIED } from "../helpers/refusal-access.ts";
 import {
   AGENT_READ,
   accessibleDescription,

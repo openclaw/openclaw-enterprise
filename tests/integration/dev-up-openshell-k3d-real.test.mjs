@@ -662,10 +662,12 @@ test(
       [...kubectl, "get", "serviceaccount", "openshell-sandbox", "--namespace", namespace],
       { cwd: repository, env: environment },
     );
-    await execute("kubectl", [...kubectl, "get", "runtimeclass", "openshell-sandbox"], {
+    // This owned cluster must exercise OpenShell without class provisioning.
+    const classes = await execute("kubectl", [...kubectl, "get", "runtimeclass", "-o", "json"], {
       cwd: repository,
       env: environment,
     });
+    assert.deepEqual(JSON.parse(classes.stdout).items, []);
     await execute("kubectl", [...kubectl, "get", "crd", "sandboxes.agents.x-k8s.io"], {
       cwd: repository,
       env: environment,

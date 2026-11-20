@@ -76,7 +76,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
 
-import { chromium } from "playwright";
+import { chromium, request as playwrightRequest } from "playwright";
 
 import { AgentCallerPermissionsResponse } from "../../packages/contracts/src/api/resources.ts";
 
@@ -84,7 +84,7 @@ import { waitForIdleFetches } from "./console-fetch-accounting.ts";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
 
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.ts";
-import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
+import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.ts";
 import { memberRole } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { restrict } from "../helpers/iam-grants.ts";
@@ -446,10 +446,17 @@ function assertCredentials(credentials: unknown): asserts credentials is Credent
   );
 }
 
-// Fresh tabs start at an authenticated destination, as the original login helper did.
-// Prepare the real browser session separately so target-page routes observe only the
-// authenticated load, not sign-in discovery or its anonymous session read. Tests of
-// sign-in itself use loginThroughForm; already-loaded tabs preserve that path too.
+// Signs the page in and opens `path`. A fresh tab (still on about:blank) signs in with the same
+// Better Auth password request the form sends, made in the page's own browser context so the
+// browser stores the session cookie the API set, and then loads `path` already signed in: one
+// page load instead of a sign-in page plus the destination, and no form to fill. A fresh tab on
+// a file app (fileConsoleApp) signed in as its administrator loads the file's session cookies
+// instead, so the file makes one password sign-in rather than one a test. A tab that has
+// already loaded a page signs in through the form, so a test that signs in again on the same tab
+// keeps that tab's session storage and history across the sign-in. A fixture under a custom
+// host also uses the form, for tests of its cookie boundary. Tests about the sign-in page
+// itself use the form directly or loginThroughForm.
+
 export async function login(
   page: Page,
   fixture: LoginFixture,
@@ -459,51 +466,64 @@ export async function login(
   assertCredentials(credentials);
   const origin = new URL(fixture.origin);
   if (
+    page.url() !== "about:blank" ||
     origin.protocol !== "https:" ||
-    origin.hostname !== "console.oce.localhost" ||
-    page.url() !== "about:blank"
+    origin.hostname !== "console.oce.localhost"
   ) {
     await loginForm(page, fixture, path, credentials);
     return;
   }
-  const sharedSession = fixture.sharedByFile && credentials === fixture.credentials;
-  await page
-    .context()
-    .addCookies(
-      await (sharedSession
-        ? fileSessionCookies(page, fixture)
-        : browserSessionCookies(page, fixture, credentials)),
-    );
-  await page.goto(new URL(path, fixture.origin).href);
-  if (sharedSession) {
-    // An ended file session is a fixture ownership error, not a reason to sign in again.
-    const body: unknown = await page
-      .evaluate(async () => {
-        const response = await fetch("/api/auth/session");
-        return response.json();
-      })
-      .catch(() => null);
+  if (fixture.sharedByFile && credentials === fixture.credentials) {
+    await page.context().addCookies(await fileSessionCookies(fixture));
+    // An earlier test that ended this session would otherwise leave this test on the sign-in
+    // page, which waitForURL below cannot tell apart from the console. This test fails and says
+    // so; the next one signs in again, so one such test fails at most one other.
+    const session = await page.request.get(new URL("/api/auth/session", origin).href);
+    const body: unknown = await session.json().catch(() => null);
     if (!(isRecord(body) && isRecord(body.data) && body.data.authenticated === true)) {
       fileSessions.delete(fixture);
       assert.fail(
         "an earlier test ended the file's shared session; a test that ends sessions needs its own app",
       );
     }
+  } else {
+    const response = await page.request.post(new URL("/api/auth/sign-in/email", origin).href, {
+      data: { email: credentials.email, password: credentials.password },
+      // A later route.fetch() shares this request context. Retire the sign-in
+      // socket before an intercepted write can race the ingress idle timeout.
+      headers: { origin: origin.origin, connection: "close" },
+    });
+    assert.equal(response.status(), 200, `password sign-in failed: ${await response.text()}`);
   }
+  await page.goto(new URL(path, fixture.origin).href);
   await page.waitForURL(signedInPath);
 }
 
-// Cache only a real browser's server-issued cookies. APIRequestContext does not use
-// Chromium's fixture host resolver, so it cannot establish this public-origin session.
+// The administrator's session cookies for a file app (fileConsoleApp): one password sign-in for
+// the whole file, which each test's fresh tab then loads like a saved sign-in state. The tests
+// that share it must not end the session (see fileConsoleApp); login() checks it is still live.
 const fileSessions = new WeakMap<
   LoginFixture,
   Promise<Awaited<ReturnType<BrowserContext["storageState"]>>["cookies"]>
 >();
 
-function fileSessionCookies(page: Page, fixture: LoginFixture) {
+function fileSessionCookies(fixture: LoginFixture) {
   let cookies = fileSessions.get(fixture);
   if (cookies === undefined) {
-    cookies = browserSessionCookies(page, fixture, fixture.credentials);
+    cookies = (async () => {
+      const origin = new URL(fixture.origin).origin;
+      const context = await playwrightRequest.newContext();
+      try {
+        const response = await context.post(new URL("/api/auth/sign-in/email", origin).href, {
+          data: { email: fixture.credentials.email, password: fixture.credentials.password },
+          headers: { origin },
+        });
+        assert.equal(response.status(), 200, `password sign-in failed: ${await response.text()}`);
+        return (await context.storageState()).cookies;
+      } finally {
+        await context.dispose();
+      }
+    })();
     cookies.catch(() => {
       if (fileSessions.get(fixture) === cookies) {
         fileSessions.delete(fixture);
@@ -512,19 +532,6 @@ function fileSessionCookies(page: Page, fixture: LoginFixture) {
     fileSessions.set(fixture, cookies);
   }
   return cookies;
-}
-
-async function browserSessionCookies(page: Page, fixture: LoginFixture, credentials: Credentials) {
-  const browser = page.context().browser();
-  assert.ok(browser, "session setup requires the fixture's owned browser");
-  const context = await browser.newContext();
-  try {
-    const loginPage = await context.newPage();
-    await loginForm(loginPage, fixture, "/console/agents", credentials);
-    return (await context.storageState()).cookies;
-  } finally {
-    await context.close();
-  }
 }
 
 // Signs in through the console's sign-in form, the way a person does: open `path`, which shows
@@ -1707,7 +1714,8 @@ export async function expectNoHorizontalScroll(page: Page) {
 
 // The in-memory fixture has no worker records. A test that supplies a failed deployment
 // record builds its error with the API's own code, so the console shows the exact code,
-// message and data that the API and occ return for that failure.
+// message and data that the API and occ return for that failure. The Agent ID has a real
+// ID's length, so the message length checks see what the API returns.
 export function persistedDeploymentError(
   code: NonNullable<Parameters<typeof deploymentErrorForWork>[0]["reasonCode"]>,
   data?: Parameters<typeof deploymentErrorForWork>[0]["resultData"],
@@ -1715,6 +1723,7 @@ export function persistedDeploymentError(
   const error = deploymentErrorForWork({
     state: "failed_permanent",
     reasonCode: code,
+    agentId: "agt_00000000-0000-4000-8000-000000000000",
     ...(data === undefined ? {} : { resultData: data }),
   });
   assert.ok(error);

@@ -4,9 +4,9 @@ import type { Locator } from "playwright";
 import type { AuditEvent } from "../../packages/contracts/src/index.ts";
 import { DeletionRetryOwnedError } from "../../packages/occ/src/index.ts";
 
-import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import { restrict } from "../helpers/iam-grants.ts";
-import { NAMESPACE_DELETE_DENIED, NAMESPACE_DELETE_RESTRICTED } from "../helpers/refusal-text.mjs";
+
 import { createConsoleAppFixture, grantMember, memberRole } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { callbackGate } from "../helpers/wait-for.ts";
@@ -28,6 +28,15 @@ import {
   waitForSettledFetches,
 } from "./console-fetch-accounting.ts";
 import { focusedLabel, waitForFocusedLabel } from "./console-refocus-helpers.ts";
+
+// Finding D788. Namespace IAM Roles cannot grant Namespace delete, so a member's trash icon names
+// who can delete the Namespace instead of a grant to ask for.
+const NAMESPACE_DELETE_DENIED =
+  "Only an Installation administrator can delete a Namespace. Ask one to delete this Namespace.";
+// The same icon for an Installation administrator whom a deny Restriction keeps from deleting the
+// Namespace (finding 2861): administration cannot lift it.
+const NAMESPACE_DELETE_RESTRICTED =
+  "A Restriction denies deleting this Namespace, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it.";
 
 const browser = fileBrowser();
 

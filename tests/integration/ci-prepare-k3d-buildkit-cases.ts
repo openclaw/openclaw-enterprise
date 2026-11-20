@@ -61,7 +61,11 @@ async function assertReadOnlyBuildKitCache(t: TestContext, lane: string, env: No
       return "printf 'synthetic import stop\\n' >&2; exit 1";
     }
   });
-  const prepared = await commands.prepare();
+  const prepared = await commands.prepare(
+    lane === "gateway-routing"
+      ? ["--selected-file", "tests/integration/harness-topology-k3d-routing-real.test.mjs"]
+      : [],
+  );
   assert.equal(prepared.status, 1);
   assertStderrMatch(prepared.stderr, /synthetic import stop/);
   assert.equal(imports, 1);
@@ -155,7 +159,10 @@ export function registerBuildKitCases() {
         return "printf 'synthetic import stop\\n' >&2; exit 1";
       }
     });
-    const prepared = await commands.prepare();
+    const prepared = await commands.prepare([
+      "--selected-file",
+      "tests/integration/harness-topology-k3d-routing-real.test.mjs",
+    ]);
     assert.equal(prepared.status, 1);
     assertStderrMatch(prepared.stderr, /synthetic import stop/);
     const builds = (await commands.commands()).filter(({ args }) =>
@@ -205,7 +212,7 @@ export function registerVerifiedRuntimePublicationCase() {
     });
     // Exercise the real preparation CLI, image verification and environment publication.
     // Routing installation and seccomp generation are separate from image selection.
-    const prepareUrl = new URL("../../scripts/ci/prepare.mjs", import.meta.url).href;
+    const prepareUrl = new URL("../../scripts/ci/prepare.ts", import.meta.url).href;
     await writeFile(
       preload,
       `import { registerHooks } from "node:module";

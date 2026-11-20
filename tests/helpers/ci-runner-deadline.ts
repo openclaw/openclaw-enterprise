@@ -9,7 +9,7 @@ import {
   openShellProgressPrefix,
   upstreamOutageCase,
 } from "../../scripts/ci/openshell-progress.mjs";
-import { isRecord } from "../../scripts/ci/reporter-diagnostics.ts";
+import { isRecord } from "../../scripts/ci/records.ts";
 import reporter from "../../scripts/ci/reporter.ts";
 import { runNode as runNative } from "../../scripts/ci/runner-process.ts";
 
@@ -85,21 +85,27 @@ export const runNode: typeof runNative = async (args, options) => {
   let expireEarly: (() => void) | undefined;
   let dispatch: { trigger: Trigger; elapsedMs: number; delay: number } | undefined;
   const nativeTimer = setTimeout;
-  // runNode synchronously arms one file timer. Graces and every timer outside
-  // this call retain the ordinary clock.
+  // runNode synchronously arms one file timer. Controlled cases dispatch its
+  // callback only after reporter readiness; startup must not race the wall clock.
+  // Graces and every timer outside this call retain the ordinary clock, including
+  // the fixture's outer timeout if readiness never arrives.
   const timer = mock.method(globalThis, "setTimeout", arm);
   function arm(callback: () => void, delay: number) {
     const armedAt = performance.now();
     const expire = (trigger: Trigger) => {
       const elapsedMs = performance.now() - armedAt;
-      if (dispatch || (trigger === "readiness" && elapsedMs >= delay)) {
+      if (dispatch) {
         return;
       }
       dispatch = { trigger, elapsedMs, delay };
       callback();
     };
     expireEarly = () => expire("readiness");
-    return nativeTimer(() => expire("wall"), delay);
+    const handle = nativeTimer(() => expire("wall"), delay);
+    if (controlled) {
+      clearTimeout(handle);
+    }
+    return handle;
   }
   let pending: ReturnType<typeof runNative>;
   try {

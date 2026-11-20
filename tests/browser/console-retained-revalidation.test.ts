@@ -4,8 +4,6 @@ import { createServer } from "node:http";
 import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
 import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
-
-import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { listen } from "../helpers/listen.ts";
@@ -34,6 +32,7 @@ import {
 import { restrict } from "../helpers/iam-grants.ts";
 import { AgentRevisionReadResponse } from "../../packages/contracts/src/api/resources.ts";
 import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 type Agent = Pick<AgentWire, "id" | "name" | "configurationId">;
 type Namespace = Pick<NamespaceWire, "id">;
@@ -949,6 +948,7 @@ test("Opening an Agent focuses each heading once", async (t) => {
 // body, and its heading took focus only once the tab's reads settled, 0.5-0.9 s later at 400 ms
 // (finding 1483). It now takes focus as the title renders.
 test("Opening an Agent focuses its heading before the tab's reads settle", async (t) => {
+  const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
   const { namespace, agent, page } = await openList(t, "Opening focus", "Opening Focus");
   const link = page.locator(settledView).getByRole("link", { name: "Opening Focus" });
   // The Configuration tab's read is slow.
@@ -1754,6 +1754,7 @@ test("holdRequests sends a held write once, and fails it when its answer is lost
 });
 
 test("Leaving a new Agent page before its reveal does not leave it hidden on return", async (t) => {
+  const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
   const { namespace, agent, page } = await openList(t, "Early leave", "Revealed Agent", {
     deploy: true,
   });

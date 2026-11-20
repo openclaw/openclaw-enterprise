@@ -18,6 +18,7 @@ import type {
   HarnessAuthSnapshot,
   HarnessExecutionMode,
   Namespace,
+  ModelProvider,
   OpenClawConfigurationDocument,
   ResolvedHarnessAuth,
   RevisionHarnessDescriptor,
@@ -52,6 +53,8 @@ export type AgentChatCompletionsResolution =
   | { readonly status: "unsupported" };
 
 export interface ComputeRevisionContext {
+  /** An active provider's maintenance pass may update its existing Harness only. */
+  readonly existingHarnessOnly?: true;
   /** Worker persists only an authenticated receipt for this admitted plan. */
   readonly recordEgressInstallation?: (installation: EgressInstallation) => Promise<void>;
   /** A fresh read of the still-authorized revision and its exact committed installation. */
@@ -321,6 +324,15 @@ export interface ComputeDriver extends Driver {
   normalizeHarnessOverrides?(
     overrides: Readonly<Record<string, unknown>>,
   ): Readonly<Record<string, unknown>>;
+  /** Translate a saved provider and its selected catalog rows into immutable deployment values. */
+  resolveModelProvider?(
+    provider: Readonly<ModelProvider>,
+    harness: RevisionHarnessDescriptor,
+    configuration: OpenClawConfigurationDocument,
+  ): {
+    readonly values: OpenClawConfigurationDocument;
+    readonly settings: Readonly<Record<string, unknown>>;
+  };
   /** Resolve immutable Harness settings before credential and egress admission. */
   resolveHarnessConfiguration?(
     harness: RevisionHarnessDescriptor,
@@ -388,11 +400,28 @@ export interface ComputeDriver extends Driver {
   }): Promise<void>;
   getGatewayEndpoint?(revision: AgentRevision): string | undefined;
   /**
-   * Private WSS base for native chat, with an equivalent HTTPS UI endpoint. The Driver
-   * must enforce a session-writing ceiling across HTTP and WebSocket, including device
-   * grants. Undefined means unsupported; callers must not use the admin endpoint instead.
+   * Resolve a private browser transport for an already-authorized, exact AgentRevision.
+   * Installation and Principal IDs are server-owned. Returned headers are credentials:
+   * never serialize them to a browser or fall back to a shared machine endpoint.
+   * Subject is the non-secret native identity for connection attribution; never derive it from headers.
+   * Reads existing revision credentials only; absence is a dependency failure.
    */
-  getGatewayChatEndpoint?(revision: AgentRevision): string | undefined;
+  getGatewayBrowserRequest?(
+    revision: AgentRevision,
+    input: {
+      readonly installationId: string;
+      readonly principalId: string;
+      readonly mode: "admin" | "chat";
+    },
+    signal: AbortSignal,
+  ): Promise<
+    | {
+        readonly endpoint: string;
+        readonly subject: string;
+        readonly headers: Readonly<Record<string, string>>;
+      }
+    | undefined
+  >;
   /** Resolve only the private HTTP completion route for this exact revision. */
   getChatCompletionsEndpoint?(revision: AgentRevision): AgentChatCompletionsResolution;
   ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;

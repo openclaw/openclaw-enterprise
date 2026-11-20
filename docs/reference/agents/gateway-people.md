@@ -53,9 +53,10 @@ rule adds no authorization or Configuration-read dependency.
 This is a configured-identity list, not current connections or a complete access
 report. Native `config.get` describes the configuration-file snapshot; it does not
 prove that every setting is applied. The list does not evaluate external ingress
-or identity-provider eligibility, and does not enumerate OCC humans who share the
-proxy’s machine identity. It creates no OCC accounts, grants no access and changes
-no native roles. See [Gateway authentication](../drivers/kubernetes-compute/gateway-authentication.md)
+or identity-provider eligibility. OCC browser delegation uses a separate native
+identity for each OCE Principal; those identities do not become static allowlist
+entries. This roster does not associate operator-managed identities with OCC
+Principals. It creates no OCC accounts, grants no access and changes no native roles. See [Gateway authentication](../drivers/kubernetes-compute/gateway-authentication.md)
 for admission ownership and withdrawal limits.
 
 See [the Access-tab procedure](../../guides/console/agent-people.md) and the

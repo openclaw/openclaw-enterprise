@@ -210,9 +210,10 @@ cluster. Complete [Agent model verification](../operate/model-verification.md).
 Keep the resolved image references with your deployment record so a later move
 of the selected alias does not change which images were selected for this installation.
 
-For an OpenShell deployment that uses optional native tools, the sandbox
-filesystem policy must let the Agent read and execute files under
-`/opt/devtools`. Verify each required tool through the deployed Agent with
-the exact image digest and policy. Exercise a real allowed download and a
-connection the policy must deny. Follow the
+OpenShell's default Enterprise sandbox policy lets the Agent read and execute
+packaged native tools under `/opt/devtools`. If you set an explicit filesystem
+policy, follow the [OpenShell Driver configuration](../../reference/drivers/openshell-sandbox.md#configuration).
+Verify each required tool through the deployed Agent with the exact image
+digest and policy. Exercise a real allowed download and a connection the
+policy must deny. Follow the
 [OpenShell verification procedures](../../testing/openshell.md#openshell-sandbox).

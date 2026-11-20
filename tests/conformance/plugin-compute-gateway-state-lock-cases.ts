@@ -2,7 +2,21 @@ import assert from "node:assert/strict";
 import { dirname } from "node:path";
 import test from "node:test";
 import { invalidGatewayConfiguration } from "../helpers/openclaw-config-validation.ts";
-import { property, record, required, text } from "./plugin-compute-fixtures.ts";
+import {
+  confirmation,
+  expectedInspection,
+  freeLock,
+  heldLock,
+  inspection,
+  keptLocks,
+  leaseHolder,
+  lockFileHolder,
+  gatewayLockNamespaceRefusal,
+  lockHoldLine,
+  released,
+  validateLockRefusal,
+} from "../helpers/openclaw-state-lock.ts";
+import { property, record, required, text, waitForCondition } from "./plugin-compute-fixtures.ts";
 import { readReadyStatusFromHandler } from "./plugin-compute-status.ts";
 import {
   assertDeliberateRestart,
@@ -12,60 +26,8 @@ import {
 
 type GatewaySupervisor = Awaited<ReturnType<typeof startCodexGatewaySupervisor>>;
 
-// What the pinned OpenClaw's `gateway recover-lock --json` prints without --confirm, as a
-// production-shaped test install printed it inside a Gateway Pod after the Gateway Pod before
-// it was force-deleted (finding 3288): the successor's own start refused that owner lease
-// after `config validate` passed.
-const recovery =
-  "Stop the holder before retrying; if it has already stopped, run `openclaw gateway" +
-  " recover-lock` to inspect and explicitly recover the unchanged owner.";
-const leaseHolder =
-  "SQLite Gateway owner lease: holder 44 at gateway-804a2e28f577-6d77574958-v8sp7/pid-ns" +
-  ` 4026536354, last renewed 452 s ago. ${recovery}`;
-// OpenClaw lists each lock file it finds before the lease, in the same shape.
-function lockFileHolder(path: string, pid = 44) {
-  return (
-    `${path}: holder ${pid} at gateway-804a2e28f577-6d77574958-v8sp7/pid-ns 4026536354,` +
-    ` last heartbeat 452 s ago. ${recovery}`
-  );
-}
-const confirmation = "10e3e307222372d1013b3d238518fc59804660f0bd41e674ba543c63f9a903c0";
-function inspection(holders: readonly string[], present = holders.length > 0) {
-  return {
-    status: 0,
-    stdout: JSON.stringify({
-      present,
-      holders,
-      confirmation,
-      command: `openclaw gateway recover-lock --confirm ${confirmation}`,
-    }),
-  };
-}
-const heldLock = inspection([leaseHolder]);
-const freeLock = inspection([]);
-// What the exited-state release prints when it recovered the records of this container's own
-// child, which it proved dead in this live PID namespace.
-const released = { status: 0, stdout: JSON.stringify({ recovered: true, removed: 1 }) };
-// What it does when one record is not attributable to this namespace: it recovers nothing.
-const keptLocks = { status: 1, stdout: "" };
 // A record the wrapper's own native Gateway wrote in this namespace before it exited.
 const ownHolder = lockFileHolder("/home/node/.openclaw/state/gateway.lock", 7);
-// The inspection the wrapper may run: never --confirm, which would recover the lock.
-const expectedInspection = {
-  command: "node",
-  args: ["/app/openclaw.mjs", "gateway", "recover-lock", "--json"],
-  readOnly: "1",
-};
-// The same line the tool policy step logs when `config validate` meets the lock first.
-// An embedded Gateway reaches the same hold, so the line names no Gateway kind.
-function lockHoldLine(reported = leaseHolder) {
-  return (
-    "The Gateway cannot start: an earlier Gateway process did not stop cleanly and still holds" +
-    " the Gateway state lock, and this container cannot verify that it stopped. It remains" +
-    " unready; stop the Agent and recover the lock as the Agent troubleshooting guide describes" +
-    ` for an unverifiable state owner. OpenClaw reported: ${reported}`
-  );
-}
 const RECHECK_MS = 300_000;
 
 // The directory of the configuration the Gateway runs with is writable here, so only the
@@ -93,6 +55,39 @@ async function startRefusedGateway(t: test.TestContext, lockInspection = heldLoc
   gateway.serving = false;
   assert.equal((await readReadyStatusFromHandler(gateway.statusHandler)).status, 503);
   required(gateway.children[0]).exit(1, null);
+  return gateway;
+}
+
+// A container restarted after a kill: the tool policy step's config validate meets the lock
+// before any native Gateway starts.
+async function startValidateRefusedGateway(t: test.TestContext) {
+  const gateway: GatewaySupervisor = await startCodexGatewaySupervisor(t, {
+    runtimeStatus: true,
+    expectStart: false,
+  });
+  writableConfiguration(gateway);
+  gateway.validation = validateLockRefusal;
+  gateway.lockInspection = heldLock;
+  await waitForCondition("the held failure", () =>
+    property(gateway.runtimeStatus(), "runtimeFailure"),
+  );
+  assert.equal(heldCheck(gateway), "gateway-state-lock");
+  return gateway;
+}
+
+// A respawn for a changed Harness peer whose config validate meets the lock.
+async function startRespawnRefusedGateway(t: test.TestContext) {
+  const gateway: GatewaySupervisor = await startCodexGatewaySupervisor(t, { runtimeStatus: true });
+  writableConfiguration(gateway);
+  const first = required(gateway.children[0]);
+  gateway.validation = validateLockRefusal;
+  gateway.lockInspection = heldLock;
+  gateway.peerStatus = { ...gateway.peerStatus, startupId: "agent-startup-2" };
+  const respawn = gateway.pollPeer();
+  await waitForCondition("the stale Gateway stop", () => first.killed.length === 1);
+  first.exit(null, "SIGTERM");
+  await respawn;
+  assert.equal(heldCheck(gateway), "gateway-state-lock");
   return gateway;
 }
 
@@ -192,6 +187,18 @@ export function registerGatewayStateLockCases(): void {
     assert.equal(property(gateway.runtimeStatus(), "runtimeFailure"), undefined);
   });
 
+  test("Kubernetes Gateway that exits 0 has nothing to release", async (t) => {
+    const gateway: GatewaySupervisor = await startCodexGatewaySupervisor(t, {
+      runtimeStatus: true,
+    });
+    liveNamespace(gateway);
+    gateway.exitRelease = () => released;
+    required(gateway.children[0]).exit(0, null);
+    // A clean exit released its own records: no recovery runs, live namespace or not.
+    assert.deepEqual(gateway.exitReleaseCalls, []);
+    assert.deepEqual(gateway.exits, [0]);
+  });
+
   test("Kubernetes Gateway held on the state lock retries a failed exit release", async (t) => {
     const gateway: GatewaySupervisor = await startCodexGatewaySupervisor(t, {
       runtimeStatus: true,
@@ -286,6 +293,68 @@ export function registerGatewayStateLockCases(): void {
     assert.deepEqual(gateway.exits, [1]);
   });
 
+  test("Kubernetes Gateway rechecks the state lock its config validate refused", async (t) => {
+    const gateway = await startValidateRefusedGateway(t);
+    assert.deepEqual(gateway.children, []);
+    assert.deepEqual(gateway.exits, []);
+    assert.ok(
+      gateway.logs.includes(lockHoldLine(gatewayLockNamespaceRefusal)),
+      JSON.stringify(gateway.logs),
+    );
+    // validate already named the holder; only the recheck inspects.
+    assert.deepEqual(gateway.lockInspectionCalls, []);
+    // No handler yet: SIGTERM ends the wrapper, and tini reports it as exit 0.
+    assert.equal(gateway.signalHandlers.SIGTERM, undefined);
+
+    recheck(gateway);
+    assert.deepEqual(gateway.exits, []);
+    assert.equal(heldCheck(gateway), "gateway-state-lock");
+
+    // An operator recovered the lock: the container restarts on purpose into a start that
+    // takes it. The wrapper itself only inspected.
+    gateway.lockInspection = freeLock;
+    recheck(gateway);
+    assert.deepEqual(gateway.exits, [DELIBERATE_RESTART]);
+    assertDeliberateRestart(gateway, "GATEWAY_STATE_LOCK_RELEASED");
+    assert.deepEqual(gateway.lockInspectionCalls, [expectedInspection, expectedInspection]);
+    assert.deepEqual(gateway.children, []);
+  });
+
+  test("Kubernetes Gateway held on the state lock its config validate refused exits 1 when it cannot inspect it", async (t) => {
+    const gateway = await startValidateRefusedGateway(t);
+    gateway.lockInspection = {
+      status: null,
+      error: new Error("spawnSync node ETIMEDOUT"),
+      stdout: "",
+    };
+    recheck(gateway);
+    assert.deepEqual(gateway.exits, [1]);
+  });
+
+  test("Kubernetes Gateway rechecks the state lock its respawn's config validate refused", async (t) => {
+    const gateway = await startRespawnRefusedGateway(t);
+    const peerRequestsBefore = gateway.peerRequests;
+    await gateway.pollPeer();
+    assert.equal(gateway.peerRequests, peerRequestsBefore, "a held Gateway skips the peer poll");
+    recheck(gateway);
+    assert.deepEqual(gateway.exits, []);
+    gateway.lockInspection = freeLock;
+    recheck(gateway);
+    assert.deepEqual(gateway.exits, [DELIBERATE_RESTART]);
+    assertDeliberateRestart(gateway, "GATEWAY_STATE_LOCK_RELEASED");
+    assert.equal(gateway.children.length, 1);
+  });
+
+  test("Kubernetes Gateway held on the state lock its respawn's config validate refused stops on SIGTERM", async (t) => {
+    const gateway = await startRespawnRefusedGateway(t);
+    required(gateway.signalHandlers.SIGTERM)();
+    assert.deepEqual(gateway.exits, [0]);
+    gateway.lockInspection = freeLock;
+    recheck(gateway);
+    assert.deepEqual(gateway.exits, [0]);
+    assert.deepEqual(gateway.lockInspectionCalls, []);
+  });
+
   // Every other exit restarts the container as before. A failed or unreadable inspection is
   // never reported as the lock.
   type ExitCase = {
@@ -307,6 +376,12 @@ export function registerGatewayStateLockCases(): void {
     {
       label: "an inspection that fails",
       lockInspection: { status: 1, stdout: "" },
+      exit: [1, null],
+      inspects: true,
+    },
+    {
+      label: "an inspection that fails after printing a report",
+      lockInspection: { ...heldLock, status: 1 },
       exit: [1, null],
       inspects: true,
     },

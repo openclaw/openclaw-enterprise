@@ -16,8 +16,6 @@ import {
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { createFixtureResponse } from "../helpers/console-fixture-response.ts";
 
-import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
-
 import { fileConsoleApp } from "../helpers/console-app.mjs";
 import { createNativeConsoleFixture, nativeBrowserSupported } from "./console-native-ingress.ts";
 
@@ -25,12 +23,15 @@ import {
   apiRequests,
   detailUrl,
   deploymentStatusResponse,
+  hasFocus,
   holdRequests,
   login,
   nativeValues,
   newPage,
+  nextFrames,
   nonAuthWriteRequests,
   pathRequests,
+  settlePageRequests,
   waitForCondition,
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
@@ -55,6 +56,7 @@ import {
   registerSettingsRefocusAndTabsCases,
   registerSharingCredentialsAndChannelsCases,
 } from "./console-agent-detail-cases.mts";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 function assertRecord(
   value: unknown,
@@ -462,6 +464,7 @@ test("Agent browser access keeps the Open chat label while refreshing", async (t
 });
 
 test("Agent detail rereads native admin access once when a pending deployment activates, and Refresh access keeps keyboard focus", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   if (!nativeBrowserSupported(t)) {
     return;
   }
@@ -647,10 +650,51 @@ test("Agent sharing grants existing people exact discovery and native access, th
   const detail = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "access");
   await login(page, fixture, detail);
   const panel = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
-  await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
-  await panel.getByRole("checkbox").check();
-  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
-  await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
+  const principal = panel.getByLabel("Existing person’s Principal ID");
+  const acknowledgment = panel.getByRole("checkbox");
+  const share = panel.getByRole("button", { name: "Share Agent", exact: true });
+  const shared = panel.getByText("Agent access is shared.", { exact: false });
+  const bindingPath = `${policyPath}/access-bindings`;
+  const bindingUrl = `${fixture.origin}${bindingPath}`;
+  const requests = apiRequests(page, fixture.origin);
+  const policyRequestCount = () =>
+    requests.filter((request) => request.path.startsWith(`${policyPath}/`)).length;
+  const nextBindingResponse = () =>
+    page.waitForResponse(
+      (response) => response.url() === bindingUrl && response.request().method() === "POST",
+    );
+  async function submitShare() {
+    await acknowledgment.check();
+    await acknowledgment.focus();
+    await page.keyboard.press("Tab");
+    assert.equal(await hasFocus(share), true, "Tab from the acknowledgment reaches Share Agent");
+    await page.keyboard.press("Enter");
+  }
+
+  await principal.fill(person.principal.id);
+  // Hold the binding before send so Chromium uses its own hostname resolution and CA trust.
+  const heldBinding = await holdRequests(t, page, bindingUrl, { once: true, method: "POST" });
+  await submitShare();
+  await heldBinding.requested;
+  await nextFrames(page);
+  const focusedWhileSharing = await hasFocus(share);
+  assert.equal(await share.isDisabled(), true);
+  const pendingRequests = policyRequestCount();
+  await page.keyboard.press("Enter");
+  await settlePageRequests(page);
+  const focusedAfterRepeat = await hasFocus(share);
+  assert.equal(
+    policyRequestCount(),
+    pendingRequests,
+    "Repeat Enter sends no sharing policy requests",
+  );
+  const created = nextBindingResponse();
+  heldBinding.release();
+  assert.equal((await created).status(), 201);
+  await shared.waitFor();
+  await waitForEnabled(share);
+  const focusedAfterSuccess = await hasFocus(share);
+  assert.equal(pathRequests(requests, "POST", bindingPath).length, 2);
   await panel.screenshot({ path: join(artifacts, "agent-sharing-granted.png") });
   const bindings: unknown = await fixture.addedAccessBindings(namespace.id);
   assert.ok(
@@ -674,6 +718,25 @@ test("Agent sharing grants existing people exact discovery and native access, th
       ["namespace", namespace.id],
     ],
   );
+  assert.equal(focusedAfterSuccess, true, "Share Agent keeps keyboard focus after success");
+  assert.equal(focusedWhileSharing, true, "Share Agent keeps keyboard focus while sharing");
+  assert.equal(focusedAfterRepeat, true, "Share Agent keeps keyboard focus after repeat Enter");
+
+  // Sharing again reuses the grants and leaves focus where the user moved it.
+  const heldRoles = await holdRequests(t, page, `${fixture.origin}${policyPath}/roles`, {
+    once: true,
+    method: "GET",
+  });
+  await submitShare();
+  await heldRoles.requested;
+  const accessTab = page.getByRole("tab", { name: "Access", selected: true });
+  await accessTab.focus();
+  assert.equal(await hasFocus(accessTab), true);
+  heldRoles.release();
+  await shared.waitFor();
+  assert.equal(await hasFocus(accessTab), true, "Sharing does not take back focus the user moved");
+  assert.equal(pathRequests(requests, "POST", bindingPath).length, 2);
+
   assert.deepEqual(
     fixtureResponse(
       await fixture.request("GET", "/namespaces", { session }),
@@ -735,8 +798,8 @@ test("Agent sharing grants existing people exact discovery and native access, th
     )
     .waitFor();
   await recipient.getByRole("link", { name: "Open Agent UI" }).waitFor();
-  // A non-administrator never probes sharing policy, but can independently read the
-  // Agent bookmark and administer its native Gateway with exact Agent grants.
+  // A non-administrator never probes sharing policy, but can independently
+  // administer its native Gateway with exact Agent grants.
   assert.equal(
     await recipient.getByRole("region", { name: "Share Agent through OCC", exact: true }).count(),
     1,
@@ -865,11 +928,24 @@ test("Agent sharing grants existing people exact discovery and native access, th
   );
   assert.equal(retainedChat.status, 200);
   assert.deepEqual(retainedChat.data, { status: "stopped" });
+
+  // A Controller refusal still takes focus and blocks further sharing until policy is refreshed.
+  await principal.fill("prn_00000000-0000-4000-8000-000000000000");
+  const [rejected] = await Promise.all([nextBindingResponse(), submitShare()]);
+  assert.equal(rejected.status(), 400);
+  const refusal = panel.getByRole("alert").filter({
+    hasText: "No existing person with that Principal ID can be granted access here",
+  });
+  await refusal.waitFor();
+  assert.equal(await hasFocus(refusal), true, "The sharing refusal takes focus");
+  assert.equal(await share.isDisabled(), true);
+  assert.deepEqual(await fixture.addedAccessBindings(namespace.id), after);
 });
 
 registerSharingCredentialsAndChannelsCases(detailApp);
 
 test("Deployment activity keeps keyboard focus when refresh discovers a newer version", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Deployment refresh focus", { ready: true });
   const agent = await fixture.createAgent(

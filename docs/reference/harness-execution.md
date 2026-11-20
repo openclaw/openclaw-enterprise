@@ -204,11 +204,10 @@ primary or fallback. Codex accepts `codex`, or `openai` with the Codex plugin
 enabled for WebSocket app-server transport.
 
 On Kubernetes, a dedicated Codex Gateway with a workspace-node ID or binding
-path preserves `reasoning`, `thinkingLevelMap`, and nonempty
-`compat.supportedReasoningEfforts` containing only `minimal`, `low`, `medium`,
-`high`, `xhigh`, `max`, or `ultra`. Verify against the runtime/model.
-Other `compat` fields, including `thinkingLevels`, are dropped.
-No capabilities are inferred.
+path keeps `reasoning`, `thinkingLevelMap`, and
+`compat.supportedReasoningEfforts` listing only `none`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, `max`, or `ultra`, not all `none`. It drops other `compat`
+fields, including `thinkingLevels`, and infers no capabilities.
 
 An embedded or dedicated Gateway cannot start when an active plugin's startup
 secret input reads an unset variable: Codex `appServer.authToken` or
@@ -283,9 +282,9 @@ A Preset is checked when a launch creates its Configuration.
 - A startup model probe can incur charges.
   A successful probe establishes model access at startup only. SSH checks process
   readiness. Neither establishes that a fallback model works.
-- Retained gateway state does not guarantee recovery of an interrupted turn.
-  Dedicated restart acceptance remains incomplete. For the workload and storage
-  boundaries, see [runtime isolation](security/runtime-isolation.md#agent-runtime-isolation).
+- OpenClaw continues eligible interrupted roots under [native recovery policy](agents/interrupted-turns.md) by
+  admitting another input. It does not restore processes. See dedicated Codex
+  [qualified cases and limits](../testing/harness-restart-recovery.md).
 - Docker Compute rejects all current Harness authentication bindings and cannot
   deploy a new Agent. See [Docker Compute](drivers/docker-compute.md).
 

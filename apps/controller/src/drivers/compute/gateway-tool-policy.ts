@@ -3,6 +3,7 @@ import type {
   OpenClawConfigurationDocument,
   OpenClawConfigurationValue,
 } from "@openclaw-enterprise/contracts";
+import { unverifiableStateLockLine } from "./embedded-gateway-owner.ts";
 
 // Reviewed Gateway tools and actions. Dedicated deployments can add reviewed
 // managed plugin tools. Ordinary tool grants remain subject to this policy.
@@ -25,6 +26,10 @@ const GATEWAY_TOOL_BASELINE = {
     "get_goal",
     "create_goal",
     "update_goal",
+    // Read-only over the session's eligible skills, including pinned Skill Library
+    // revisions whose files exist only in the Gateway.
+    "skills_search",
+    "skills_read",
     "ls",
     "read",
     "write",
@@ -155,7 +160,7 @@ const GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS = [
 
 // Reviewed core, automation and Codex adapter enforcement. Update together
 // with the runtime source pin and archive provenance.
-export const GATEWAY_TOOL_POLICY_SOURCE_COMMIT = "b58996d69286d55d1bbbd9b5c03b4ad837baac45";
+export const GATEWAY_TOOL_POLICY_SOURCE_COMMIT = "82b682c627ba8bfc2c2bd51cf46ad8f51c583857";
 
 type SettingError = (setting: string, requirement: string) => Error;
 
@@ -426,7 +431,7 @@ function requireGatewayToolPolicyRuntime() {
 // refusal as its root read issue, which names OpenClaw's GatewayLockNamespaceError.
 class GatewayStateLockError extends Error {
   constructor(refusal) {
-    super("The Gateway cannot start: an earlier Gateway process did not stop cleanly and still holds the Gateway state lock, and this container cannot verify that it stopped. It remains unready; stop the Agent and recover the lock as the Agent troubleshooting guide describes for an unverifiable state owner. OpenClaw reported: " + refusal);
+    super(${JSON.stringify(unverifiableStateLockLine("Gateway"))} + refusal);
   }
 }
 function gatewayStateLockRefusal(stdout) {

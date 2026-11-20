@@ -9,13 +9,14 @@ not listed unless they are also documented settings.
 
 ## CLI
 
-Command-line flags override these variables. See the [CLI reference](../cli.md).
+Resource-command flags override connection settings. See the [CLI reference](../cli.md).
 
 - `OCC_URL` — Control Plane HTTP(S) origin; required for resource commands.
 - `OCC_SERVICE_KEY_FILE` — Path to a service-key JSON response; required for resource commands.
 - `OCC_NAMESPACE` — Namespace ID for scoped resource commands.
 - `OCC_CA_BUNDLE` — Additional PEM certificate-authority bundle for HTTPS.
 - `OCC_TIMEOUT_SECONDS` — OCC request or installation handoff timeout in whole seconds; default: `30`.
+- `XDG_STATE_HOME` — Absolute local state root for generated installation recovery inputs; defaults to `$HOME/.local/state`. Keep it outside the checkout.
 
 ## Controller and authentication
 
@@ -29,7 +30,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_CONSOLE_THEME_DIRECTORY` — Host directory consumed by the [Compose theme override](../../guides/deploy/console-theme.md#podman-or-docker-compose); not read by the API.
 - `OCC_CONSOLE_THEME_DIR` — Optional absolute directory for the API's public [console theme bundle](../console/theming.md); applied at startup.
 - `OCC_CONFIG_PATH` — Absolute path to trusted Installation YAML; required in production and shared with the worker.
-- `OCC_AUTH_SECRET` — Production requires a high-entropy session-signing secret; development has a local-only fallback.
+- `OCC_AUTH_SECRET` — Signs sessions and provides key material for device-login handles and challenges. Production requires a high-entropy secret. Development has a local-only fallback.
 - `OCC_AUTH_BASE_URL` — Authentication, cookie, and exact development browser origin; required in production; default in development: `http://127.0.0.1:3000`.
 - `OCC_AUTH_RECOVERY_USER_ID` — Existing local password administrator protected for recovery when Google or OIDC sign-in is enabled.
 - `OCC_AUTH_OIDC_ENROLLMENT` — Optional JSON admission and account creation policy, including `createAccount.requireVerifiedEmail` (default `true`); see [OIDC enrollment](../authentication/team-enrollment.md).
@@ -37,7 +38,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AUTH_GOOGLE_CLIENT_ID` — Optional Google OAuth web client ID; selects the provider instance. Requires the client secret and the recovery user ID; see [Google sign-in](../../guides/deploy/google-sign-in.md).
 - `OCC_AUTH_GOOGLE_CLIENT_SECRET` — Protected server-side client secret for the configured Google OAuth client.
 - `OCC_AUTH_GOOGLE_ALLOWED_DOMAINS` — Optional comma-separated Google Workspace hosted domains; when set, sign-in requires a matching `hd` claim and a verified email.
-- `OCC_AUTH_OIDC_ISSUER`, `OCC_AUTH_OIDC_AUTHORIZATION_URL`, `OCC_AUTH_OIDC_TOKEN_URL`, `OCC_AUTH_OIDC_JWKS_URL` — Optional generic OIDC issuer and its URLs, copied from the discovery document: `https:` on port 443, one DNS host, no query or fragment. Set all of them with the client ID, client secret and recovery user ID, or none; see [OIDC sign-in](../../guides/deploy/oidc-sign-in.md) and, for Keycloak, [Keycloak sign-in](../../guides/deploy/oidc-keycloak.md).
+- `OCC_AUTH_OIDC_ISSUER`, `OCC_AUTH_OIDC_AUTHORIZATION_URL`, `OCC_AUTH_OIDC_TOKEN_URL`, `OCC_AUTH_OIDC_JWKS_URL` — Optional generic OIDC issuer and its URLs, copied from the discovery document: each uses `https:` on port 443 with a DNS host and no query or fragment. The hosts can differ. Set all of them with the client ID, client secret and recovery user ID, or none; see [OIDC sign-in](../../guides/deploy/oidc-sign-in.md) and, for Keycloak, [Keycloak sign-in](../../guides/deploy/oidc-keycloak.md).
 - `OCC_AUTH_OIDC_CLIENT_ID`, `OCC_AUTH_OIDC_CLIENT_SECRET` — The OIDC client; with the issuer, they select the provider instance.
 - `OCC_AUTH_OIDC_TOKEN_AUTH` — `client_secret_post` (default) or `client_secret_basic`.
 - `OCC_AUTH_OIDC_DISPLAY_NAME` — Optional Console button label, 1–40 printable characters; default `single sign-on`.
@@ -52,9 +53,6 @@ console uses the current origin and has no separate environment settings.
 - `OCC_GATEWAY_API_KEY_PATH` — API/worker absolute path to the private gateway service-key file for operator RPCs and dedicated node enrollment.
 - `OCC_INSTALLATION_SECRET_NAMESPACE` — Kubernetes namespace for private OAuth client secrets on the selected Secret Driver. Helm provisions it and sets the name for the API and worker. For standalone Kubernetes, provision a dedicated namespace (default `oce-installation-secrets`) and grant the controller access to its Secrets.
 - `OCC_PREPROVISIONED_NAMESPACE` — API/worker JSON `{"namespaceId", "uid"}` binding one operator-created tenant namespace; set by Helm `preprovisionedNamespace`. See [preprovisioned namespace](../drivers/kubernetes-compute/preprovisioned-namespace.md).
-- `OCC_CHANNEL_DIRECTORY_PROXY_URL` — Optional API-only HTTP(S) proxy endpoint for production Slack directory lookup and credential validation; set by Helm `slackProxy.enabled` or `api.channelDirectoryProxyUrl`.
-- `OCC_API_HTTPS_EGRESS_OPEN` — `true` when API egress allows TCP 443 to any address, so a Slack check without a proxy can succeed; default: `false`. Set by the chart from sign-in `egressCidrs`.
-- `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` — Exact Kubernetes Service host accepted as a managed Slack directory proxy; set only by Helm `slackProxy.enabled`.
 - `NODE_EXTRA_CA_CERTS` — Additional process-wide Node.js PEM trust, read at startup. The chart combines API roots ([OIDC CA settings](../settings/oidc.md)); Compute combines public [Sandbox endpoint](../drivers/sandbox.md#interface) and execution-cluster roots for the dedicated Gateway.
 - `OCC_GATEWAY_CA_PATH` — API-only path to the Gateway-only CA bundle that dedicated Harness nodes trust; empty means none. Unset, node enrollment uses `NODE_EXTRA_CA_CERTS`. Helm sets it with OIDC CA values.
 - `OCC_EGRESS_AUTHORITY_PORT`, `OCC_OPENSHELL_GIT_PORT` — Chart-set port of its `egressAuthority` and `openshellGit` listeners, or `disabled`. API and worker startup and the upgrade check refuse `CHART_LISTENER_MISMATCH` when the Installation authority uses another port, a host other than `0.0.0.0` or `::`, a disabled listener, or TLS or issuer file paths other than the chart's mounts. Not operator inputs.
@@ -77,16 +75,16 @@ for authentication modes and TLS requirements.
 
 ## Installation bootstrap
 
-These belong to the initializer, not the running API or worker. See
+These belong to initialization and its setup tools, not the running API or worker. See
 [production bootstrap settings](../settings/production.md#production-installation-bootstrap-environment)
 and [development defaults](../settings/development.md#required-development-controller-environment).
 
 - `OCC_BOOTSTRAP_ADMIN_EMAIL` — Initial production administrator email.
 - `OCC_BOOTSTRAP_INSTALLATION_NAME` — Initial production Installation display name.
-- `OCC_BOOTSTRAP_PASSWORD_FILE` — New protected output path for the production administrator password.
-- `OCC_BOOTSTRAP_SERVICE_KEY_FILE` — New private absolute output path for the initial service-key JSON; used in production and development.
+- `OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE` — Absolute UTF-8 input file for the initial administrator password; required for fresh initialization in both modes.
+- `OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE` — Absolute UTF-8 input file for the cryptographically generated initial service key; required for fresh initialization in both modes.
 - `OPENCLAW_DEV_EMAIL` — Development administrator email; default: `admin@openclaw.local`.
-- `OPENCLAW_DEV_PASSWORD` — Development administrator password.
+- `OPENCLAW_DEV_PASSWORD` — Development setup-tool password input; the initializer reads the private password file instead.
 - `OPENCLAW_DEV_INSTALLATION_NAME` — Development Installation display name; default: `OpenClaw Local Development`.
 
 ## Worker

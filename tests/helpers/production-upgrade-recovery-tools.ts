@@ -20,6 +20,14 @@ export const oldRuntime = `registry.example.invalid/runtime@sha256:${"c".repeat(
 // The fixture exits 9 only for an armed fault. An interrupted run must reach that fault.
 export const injectedFault = { code: 9 };
 
+export function upgradeDiagnosticLines(stderr: string): string[] {
+  // Progress can precede the diagnostic. Keep all lines from the first diagnostic onward.
+  return stderr
+    .replace(/^(?:Upgrade: [^\n]+\n)+/u, "")
+    .trimEnd()
+    .split("\n");
+}
+
 const executeFile = promisify(execFile);
 
 export function execute(
@@ -35,7 +43,7 @@ export function execute(
   });
 }
 
-async function commandPath(name: "helm" | "sleep" | "setsid", fallback: string) {
+async function commandPath(name: "helm" | "sleep" | "setsid" | "python3", fallback: string) {
   const { stdout } = await execute("bash", [
     "--noprofile",
     "--norc",
@@ -66,7 +74,14 @@ export async function createRecoveryTools(repository: string) {
     sleep: await commandPath("sleep", "/bin/sleep"),
     setsid: await commandPath("setsid", "/usr/bin/setsid"),
   };
-  return { repository, sourceRevision, script, realHelm, shimTools };
+  return {
+    repository,
+    sourceRevision,
+    script,
+    realHelm,
+    realPython: await commandPath("python3", "/usr/bin/python3"),
+    shimTools,
+  };
 }
 
 export type RecoveryTools = Awaited<ReturnType<typeof createRecoveryTools>>;

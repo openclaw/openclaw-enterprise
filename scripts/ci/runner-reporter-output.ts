@@ -9,7 +9,8 @@ import {
   optionalReporterField,
   reporterField,
 } from "./runner-failure-diagnostics.ts";
-import { absoluteInputPath, isObject, issue, repoRelativePath } from "./runner-inputs.ts";
+import { absoluteInputPath, issue, repoRelativePath } from "./runner-inputs.ts";
+import { isRecord } from "./records.ts";
 
 type TerminalEvent = Parameters<typeof exercisedAssertionFailures>[1][number] & {
   data: Record<string, unknown>;
@@ -236,7 +237,7 @@ function isTerminalEvent(event: unknown, absolutePath: string): event is Termina
   }
   const data = reporterField(event, "data");
   return (
-    isObject(data) &&
+    isRecord(data) &&
     (data.testType === "suite" || (Number.isInteger(data.line) && data.name !== absolutePath))
   );
 }
@@ -263,7 +264,7 @@ function assertionFailures(
     .filter((event) => reporterField(event, "type") === "test:summary")
     .map((event) => reporterField(event, "data"));
   const [counts] = summaries;
-  if (summaries.length !== 1 || !isObject(counts)) {
+  if (summaries.length !== 1 || !isRecord(counts)) {
     return undefined;
   }
   const { tests, passed, failed, cancelled, skipped, todo, suites } = counts;
@@ -481,7 +482,7 @@ export function validateExpectedTests(
   }
   const statusByName = new Map<string, TestStatus | "invalid">();
   for (const testCase of tests) {
-    if (!isObject(testCase) || typeof testCase.name !== "string") {
+    if (!isRecord(testCase) || typeof testCase.name !== "string") {
       issues.push(
         issue("invalid-test-evidence", "test evidence contains an invalid case entry", {
           file: path,

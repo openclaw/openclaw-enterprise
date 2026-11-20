@@ -8,8 +8,7 @@ last_verified: "2026-11-04"
 
 ## Overview
 
-Use official OpenShell `v0.1.8` from the repository root. See [images and trust](openshell-oauth.md#prepare-images-and-trust)
-for versions and qualification limits.
+From the repository root, use official OpenShell `v0.1.8`. See [qualification limits](openshell-oauth.md#prepare-images-and-trust).
 
 ## Start a reusable development environment
 
@@ -37,15 +36,15 @@ Stop, including after partial startup:
 ```
 
 This deletes only the owned cluster and database. For Compose, set
-`OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup; otherwise the control
-plane follows the Compute Driver, selecting Kubernetes here.
+`OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup; the default follows the
+Compute Driver (Kubernetes here).
 
 ## Finite repository removal
 
 To qualify one Agent after repository-binding removal, set `file` to
 `tests/integration/openshell-git-finite-removal-real.test.ts`. Follow the lane
 prerequisites below; pass `--selected-file "$file"` to
-`scripts/ci/prepare.mjs --lane openshell`, then `--file "$file"` to
+`scripts/ci/prepare.ts --lane openshell`, then `--file "$file"` to
 `scripts/ci/run-tests.ts run openshell`, using the same private `--state "$state"`.
 Always run `node scripts/ci/cleanup.ts --state "$state"`, even after preparation
 or execution fails. The fixture owns a disposable Kubernetes control plane and
@@ -236,7 +235,7 @@ else
   export NODE_BASE_IMAGE
 fi
 export OCC_OPENSHELL_TEST_ROOT="$(mktemp -d)"
-node scripts/ci/prepare.mjs --lane openshell \
+node scripts/ci/prepare.ts --lane openshell \
   --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
 node scripts/ci/run-tests.ts run openshell \
   --state "$OCC_OPENSHELL_TEST_ROOT/state.json" \
@@ -379,6 +378,11 @@ for the merged images, guided Codex, or ChatGPT OAuth.
 For interactive native testing, choose OpenAI, OpenClaw and Dedicated in
 [Create Agent](../reference/console/create-and-deploy.md#create-an-agent) and select
 an API-key Secret; the Codex PAT used by the starter is a separate credential.
+
+<a id="managed-compute-prototype"></a>
+<a id="provider-replacement"></a>
+
+[Managed OpenShell and Provider replacement tests](openshell-managed.md).
 
 ## Troubleshooting
 

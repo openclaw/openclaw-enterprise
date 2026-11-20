@@ -2,7 +2,7 @@ import {
   assertChatGPTStartupMetadata,
   checkNativeRepositoryStartup,
   createChatGPTInstallation,
-  checkedStartupCapture,
+  createStartupProcesses,
   checkCountedQuotaStartup,
   registerChatGPTStartupRefusals,
   registerStartupDriverResolutionCases,
@@ -79,34 +79,11 @@ const chatgptInstallation = () => createChatGPTInstallation(installation);
 // a temporary one owned by this file, so each boot after the first reuses compiled code.
 const compileCache = await fileCompileCache("configuration-startup");
 
-// The production listener and sign-in settings of the API boots that reach session auth.
-const productionServer = {
-  OCC_HOST: "192.0.2.10",
-  OCC_PORT: "8080",
-  OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
-  OCC_AUTH_BASE_URL: "https://console.example.test",
-  OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.example.test",
-};
-
-// Boots run concurrently, about one per CPU. A boot killed at its timeout rejects with
-// the signal instead of reading as a wrong exit status. The timeout only guards against a
-// process that never exits: every boot here ends in a startup refusal within a second or two
-// on an idle machine, and on a loaded runner the same boot took more than 10 s.
-const limit = concurrencyLimit();
-async function boot(script, env, timeout = 30_000, nodeArguments = []) {
-  const capture = await limit(() =>
-    captureChild(process.execPath, [...nodeArguments, script], {
-      cwd: process.cwd(),
-      env: { ...env, NODE_COMPILE_CACHE: compileCache },
-      timeout,
-    }),
-  );
-  const { signal, ...result } = checkedStartupCapture(capture);
-  if (signal) {
-    throw new Error(`${script} ended by ${signal} (timeout ${timeout} ms): ${result.stderr}`);
-  }
-  return result;
-}
+const { boot, productionServer, warmStartupProcesses } = createStartupProcesses({
+  captureChild,
+  concurrencyLimit,
+  compileCache,
+});
 
 // Warm the compile cache with one API and one worker boot through production startup to the
 // database connection, the furthest any case here goes. Node writes a cold cache when a process
@@ -118,30 +95,7 @@ before(async () => {
   try {
     const path = join(directory, "installation.yaml");
     await writeFile(path, JSON.stringify(installation()), "utf8");
-    const env = {
-      PATH: process.env.PATH,
-      NODE_ENV: "production",
-      OCC_CONFIG_PATH: path,
-      OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
-    };
-    const [server, worker] = await settled([
-      boot("apps/controller/src/server.mjs", { ...env, ...productionServer }),
-      boot("apps/controller/src/worker.mjs", env),
-    ]);
-    // A boot that stopped earlier would leave the composition modules uncached.
-    const warmUp = "compile-cache warm-up";
-    assert.equal(server.status, 1, warmUp);
-    assert.equal(
-      startupDiagnostic(server.stderr, "startup-error").code,
-      "PERSISTENCE_UNAVAILABLE",
-      warmUp,
-    );
-    assert.equal(worker.status, 1, warmUp);
-    assert.equal(
-      startupDiagnostic(worker.stderr, "worker.startup-error").code,
-      "PERSISTENCE_UNAVAILABLE",
-      warmUp,
-    );
+    await warmStartupProcesses(path);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -158,6 +112,19 @@ async function fixture(t, configuration = installation()) {
   await writeFile(path, JSON.stringify(configuration), "utf8");
   return path;
 }
+
+test("TokenService registration selection does not require a Sandbox or Credential Proxy", async (t) => {
+  const configuration = installation();
+  configuration.drivers.token_service = { id: "occ", configuration: {} };
+  const path = await fixture(t, configuration);
+  const loaded = await loadInstallationConfiguration({
+    mode: "development",
+    environment: { OCC_CONFIG_PATH: path },
+  });
+  assert.equal(loaded.installation.drivers.token_service.id, "occ");
+  assert.equal(loaded.installation.drivers.sandbox, undefined);
+  assert.equal(loaded.installation.drivers.credential_proxy, undefined);
+});
 
 test("Credential Proxy startup preserves the selection and refuses retired keys", async (t) => {
   const configuration = credentialProxyInstallation();

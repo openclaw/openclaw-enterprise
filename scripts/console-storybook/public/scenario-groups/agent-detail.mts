@@ -254,6 +254,41 @@ export function createAgentDetailScenarios({
     name: "slack_search_public",
     ownerId: slackPluginId,
   };
+  const slackSendTool = {
+    id: "slack_send_message",
+    name: "slack_send_message",
+    ownerId: slackPluginId,
+  };
+  const slackMcpBase = {
+    group: "Pages/Agent detail",
+    path: `${draft}&tab=plugins`,
+    harnessId: "openclaw",
+    deployed: true,
+    credentialSources: [{ sourceId: slackSourceId }],
+    pluginDiscoveryCredential: "none",
+    pluginCapabilities: {
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      approvers: { agent: false, plugin: false, tools: false },
+      toolDefaults: { enabled: false, approval: [], reviewer: [] },
+      tools: { enabled: false, approval: [], reviewer: [] },
+      driverPolicySchema: { type: "object", properties: {} },
+      policyScopeByPlugin: { [slackPluginId]: "tool_human_approval" },
+      credentialSlots: [
+        {
+          pluginId: slackPluginId,
+          releaseSha256: "a".repeat(64),
+          id: "account",
+          label: "Slack account",
+          toolDiscovery: true,
+          sources: [{ id: slackSourceId, name: "Slack search connection (simulated)" }],
+        },
+      ],
+    },
+    pluginDiscovery: {
+      pages: { initial: { plugins: [slackEntry], nextCursor: null } },
+      details: { [slackPluginId]: { ...slackEntry, tools: [slackTool, slackSendTool] } },
+    },
+  } satisfies Partial<AgentDetailScenario>;
 
   const shareExistingPerson = [
     { selector: "#share-principal-id", value: "prn_person-demo" },
@@ -562,7 +597,8 @@ export function createAgentDetailScenarios({
           "Grant an existing person access to this Agent's full native Gateway. Other Agents and OCE administration remain separate.",
         steps: [
           "Enter prn_person-demo as the existing Principal ID.",
-          "Review the native-access disclosure, acknowledge it, and share.",
+          "Review the native-access disclosure and acknowledge it.",
+          "Tab to Share Agent, press Enter once, and confirm focus remains on Share Agent when Agent access is shared.",
           "Remove the direct binding with the red-edged destructive Remove binding button (it acts at once, with no confirmation); Namespace discovery remains available.",
         ],
       },
@@ -1283,36 +1319,9 @@ export function createAgentDetailScenarios({
         gap: "Catalog responses and the saved Agent are simulated. This verifies Console recovery, not plugin installation or a live runtime.",
       },
       slackMcpTools: {
-        group: "Pages/Agent detail",
+        ...slackMcpBase,
         name: "Choose tools for a connected Slack account",
-        path: `${draft}&tab=plugins`,
-        harnessId: "openclaw",
-        deployed: true,
         agentPlugins: { [slackPluginId]: { enabled: true } },
-        credentialSources: [{ sourceId: slackSourceId }],
-        pluginDiscoveryCredential: "none",
-        pluginCapabilities: {
-          driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-          approvers: { agent: false, plugin: false, tools: false },
-          toolDefaults: { enabled: false, approval: [], reviewer: [] },
-          tools: { enabled: false, approval: [], reviewer: [] },
-          driverPolicySchema: { type: "object", properties: {} },
-          policyScopeByPlugin: { [slackPluginId]: "enablement_only" },
-          credentialSlots: [
-            {
-              pluginId: slackPluginId,
-              releaseSha256: "a".repeat(64),
-              id: "account",
-              label: "Slack account",
-              toolDiscovery: true,
-              sources: [{ id: slackSourceId, name: "Slack search connection (simulated)" }],
-            },
-          ],
-        },
-        pluginDiscovery: {
-          pages: { initial: { plugins: [slackEntry], nextCursor: null } },
-          details: { [slackPluginId]: { ...slackEntry, tools: [slackTool] } },
-        },
         rules: [
           {
             suffix: "/plugins/details",
@@ -1325,13 +1334,39 @@ export function createAgentDetailScenarios({
         ],
         actions: [click("Configure plugins")],
         description:
-          "The Tools picker loads available tools from the selected Slack account. Select the tools the next deployment may call.",
+          "The Tools picker loads available tools from the selected Slack account. Enable tools and choose whether native calls require human approval on the next deployment.",
         steps: [
           "Open Slack. Before selecting an account, no tools can be loaded. Select Slack search connection (simulated).",
           "Choose Load tools. The first request shows a loading state, then a permission error. Choose Load tools again to recover.",
-          "Check slack_search_public. Choose Done and Save plugin selections. Open the picker and load tools again to confirm the saved choice.",
+          "Enable slack_search_public and slack_send_message with their tool switches. Open Tool policy for slack_send_message and set Require approval for to Every action. Unsupported approval modes, reviewer selection, and plugin defaults are disabled. Review the note that direct scripts bypass Gateway approval.",
+          "Choose Done and Save plugin selections. Open the picker: saved tools and approval choices remain visible as Unavailable until discovery succeeds. Load tools again to confirm the choices.",
+          "Disable slack_send_message to remove its approval override, or turn off Enable plugin to clear its managed account and tool policies before saving.",
         ],
         gap: "The account and MCP response are simulated. This verifies Console selection and readback.",
+      },
+      slackMcpSavedToolsUnavailable: {
+        ...slackMcpBase,
+        name: "Revoke a saved MCP tool when discovery fails",
+        agentPlugins: {
+          [slackPluginId]: {
+            enabled: true,
+            driverPolicy: {
+              releaseSha256: "a".repeat(64),
+              credentials: { account: slackSourceId },
+              toolNames: [slackSendTool.id],
+            },
+            tools: { [slackSendTool.id]: { approval: "all_actions" } },
+          },
+        },
+        rules: [{ suffix: "/plugins/details", method: "POST", status: 403, code: "FORBIDDEN" }],
+        actions: [click("Configure plugins")],
+        description:
+          "A previously saved tool and its Ask policy remain visible when MCP discovery fails. The operator can revoke that tool without discovering it again or selecting another account.",
+        steps: [
+          "Open Slack and choose Load tools. Inspect slack_send_message, labeled Unavailable, and open Tool policy to see Require approval for set to Every action.",
+          "Disable slack_send_message. Its saved approval policy is removed and the unavailable row disappears. Choose Done and save.",
+        ],
+        gap: "The account and discovery failure are simulated. This verifies Console recovery controls.",
       },
       pluginsDraft: {
         group: "Pages/Agent detail",
@@ -3153,9 +3188,9 @@ export function createAgentDetailScenarios({
         ],
         description: "The Console retries one temporary Configuration read failure on tab return.",
         steps: [
-          "Open the preview in its own tab and choose Edit Configuration. Make an unsaved JSON edit and scroll until the page header is out of view.",
-          "Switch to another browser tab and return. After one second, Still checking… appears at the bottom of the viewport while the draft is hidden. The delayed retry restores the draft, selection, focus, and scroll without selecting Retry, and the status disappears.",
-          "Repeat at 390 px wide. The status fits the viewport and does not block navigation. Reset the story to repeat the delayed retry.",
+          "Open the preview in its own tab and choose Edit Configuration. Make an unsaved JSON edit, select text in the editor, and scroll until the page header is out of view.",
+          "Switch to another browser tab and return. When Still checking… appears at the bottom of the viewport and the draft is hidden, switch away again. Let the delayed retry finish while the preview tab is hidden.",
+          "Return to the preview. After the next access check succeeds, confirm the status disappears and the editor regains focus with the unsaved draft, selection, and scroll position intact. Type without clicking the editor to verify that only the selected text changes. Reset the story and repeat at 390 px wide. Confirm the status fits the viewport and navigation remains available.",
         ],
       },
       configurationReadUnavailableOnRefocus: {

@@ -267,6 +267,7 @@ test(
         await mkdir(join(directory, ".upgrade-lock"));
         const info = await stat(directory);
         const parameters = {
+          profiled: false,
           evidenceDirectory: { path: directory, st_dev: info.dev, st_ino: info.ino },
           arguments: [
             selection.kubeconfigPath,
@@ -278,6 +279,12 @@ test(
           kubeconfigSha256: digest(await readFile(selection.kubeconfigPath)),
           scriptSha256: digest(await readFile("scripts/upgrade-production-images")),
           startupPreflightSha256: digest(await readFile("scripts/upgrade-startup-preflight.ts")),
+          selectedImageMigrationSha256: digest(
+            await readFile("scripts/lib/selected-image-migration.ts"),
+          ),
+          selectedImageMigrationProgramSha256: digest(
+            await readFile("deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs"),
+          ),
           preflightStateSha256: digest(await readFile("scripts/upgrade-preflight-state.py")),
           preflightCleanupSha256: digest(
             await readFile("scripts/lib/upgrade-preflight-cleanup.sh"),
