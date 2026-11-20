@@ -41,16 +41,18 @@ import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { responseTo } from "./console-action-helpers.ts";
 import { refocus } from "./console-refocus-helpers.ts";
 import {
+  GENERIC_DENIAL,
+  SECRET_CREATE_DENIED,
+  SECRET_OPERATE_DENIED,
+} from "../helpers/refusal-text.mjs";
+import {
   ADMINISTRATOR_ACCESS_DENIED,
   AGENT_CREATE_DENIED,
   CONFIGURATION_CREATE_REFUSED,
-  GENERIC_DENIAL,
-  SECRET_CREATE_DENIED,
   NEW_SECRET_OPERATE_DENIED,
   NEW_SECRET_OPERATE_REMEDY,
-  SECRET_OPERATE_DENIED,
   AGENT_CREATE_PERMISSIONS_UNREAD,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-access.ts";
 
 // Create Agent for a Namespace member (UX plan A2, spec 3.11; findings 1901, 493). The real
 // Native IAM Driver answers every read and write: the member's GET /installation is refused, and
