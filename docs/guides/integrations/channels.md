@@ -22,7 +22,7 @@ and receive a reply.
 
 ## Add Slack in the Console
 
-1. Open **Agents**, select your Agent, and select **Create new version**.
+1. Open **Agents**, select your Agent, and select **Open draft**.
    Open **Channels**, then **Configure Slack**. For an existing Slack setup,
    select **Edit Slack**.
 2. Under **Slack credentials**, select the bot token Secret first. To create
@@ -35,7 +35,9 @@ and receive a reply.
    does not delete it. Both token bindings are required to save enabled Slack.
 
 3. Enable Slack. Under **Channels**, search for and select the channel you
-   invited the app to. The bot token enables channel and people lookup.
+   invited the app to. Use **Next page** when more results are available, or
+   paste the channel's exact ID and press Enter. The bot token enables channel
+   and people lookup.
 4. Under **Who can use the agent in these channels?**, keep **Specific people**
    and select the people who may use it, including your test sender. Choose
    **Everyone in these channels** only if all members of those channels should
