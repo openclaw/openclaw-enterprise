@@ -74,4 +74,4 @@ Reuse OpenShell rules and existing credential protections. Add no ACL service, m
 
 ## Delivery and verification
 
-Implement Git and REST in parallel. Require installed AC-1–AC-5 for Git and AC-6 for REST in the saved/deployed workflow. Protected delivery requires verified topology. Bundled Kubernetes remains gated by inspected workspace WebSocket traffic above 4 MiB. Installed acceptance remains unproved.
+Implement Git and REST in parallel. Require installed AC-1–AC-5 for Git and AC-6 for REST in the saved/deployed workflow. Protected delivery requires verified topology. An installed k3d run of [#6764](https://github.com/openclaw/openclaw-enterprise/pull/6764) at `c94ba932`, using stock OpenShell 0.1.8 and the official OpenClaw pin from [#6746](https://github.com/openclaw/openclaw-enterprise/pull/6746), passed 46/46 checks for the saved-Agent Git workflow, a separate peer and selected REST operations against a controlled origin. This qualifies the composed test branch for those cases, not the full criteria or live GitHub. The selected legacy authorizer still limits Git push requests to 4 MiB; inspected workspace WebSocket replies are a separate path.
