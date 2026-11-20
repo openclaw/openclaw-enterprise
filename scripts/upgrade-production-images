@@ -1581,6 +1581,7 @@ run_preflight_jobs() {
       logs=$(read_preflight_logs "$log_container" "$pod" "$evidence_dir/preflight-$component-logs.err") ||
         logs_status=$?
       if ! child=$(read_preflight_child "$component" "$job" "$job_uid" "$pod_uid" 30s) || [[ -z "$child" ]]; then
+        identity_valid=0
         logs=
         message="cannot bind the $component startup preflight logs to the original child Pod; discarded unconfirmed output. No ${writer_qualifier}OCC writer was stopped."
       else
@@ -1598,6 +1599,9 @@ run_preflight_jobs() {
           message="cannot read the $component startup preflight logs; no ${writer_qualifier}OCC writer was stopped."
         fi
       fi
+    fi
+    if (( ! identity_valid )) && [[ "$phase" == Pending:* ]]; then
+      message+=" Last scheduler report for the original Pod: ${phase#Pending:}"
     fi
     if [[ -z "$message" ]]; then
       case "$phase" in
