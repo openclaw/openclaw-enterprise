@@ -398,12 +398,28 @@ export function registerInstallationRecoveryCases({
     await assert.rejects(f.run(), /Installation consumer mount differs/);
     const accepted = await f.state();
     delete accepted.installationDeploymentMountPath;
-    const mutations: [string, (value: RecoveryState) => void][] = [
+    // This fixture stands in for Pod admission on the retained Pod: it adds an
+    // SELinux level and the template's own group (the stand-in chart sets
+    // runAsGroup 1000). It proves the helper's decision through
+    // the real upgrade command, not live admission. The Job template stays
+    // unchanged, so the rest of the Pod must still match exactly.
+    assert.ok(accepted.installationInitializer);
+    const admittedPodContext = mappingAt(
+      mapping(accepted.installationInitializer).pod,
+      "spec",
+      "securityContext",
+    );
+    admittedPodContext.seLinuxOptions = { level: "s0:c34,c12" };
+    admittedPodContext.supplementalGroups = [1000];
+    // Each refusal names the exact check that must fail, so a regression in
+    // one comparison cannot pass through another check's message.
+    const mutations: [string, (value: RecoveryState) => void, RegExp][] = [
       [
         "controller Pod mount",
         (value) => {
           value.installationPodMountPath = "/wrong-directory";
         },
+        /Installation consumer mount differs/,
       ],
       [
         "initializer Job mount",
@@ -413,6 +429,7 @@ export function registerInstallationRecoveryCases({
             mappingAt(mapping(value.installationInitializer).job, "spec", "template", "spec"),
           );
         },
+        /initializer Job execution differs/,
       ],
       [
         "initializer Pod mount",
@@ -420,6 +437,7 @@ export function registerInstallationRecoveryCases({
           assert.ok(value.installationInitializer);
           changeFirstInitContainerMount(mapping(mapping(value.installationInitializer).pod).spec);
         },
+        /initializer Pod identity/,
       ],
       [
         "foreign initializer Pod",
@@ -429,6 +447,7 @@ export function registerInstallationRecoveryCases({
             mappingAt(mapping(value.installationInitializer).pod, "metadata").ownerReferences,
           ).uid = "another-job";
         },
+        /initializer Pod identity/,
       ],
       [
         "unfinished initializer",
@@ -436,17 +455,59 @@ export function registerInstallationRecoveryCases({
           assert.ok(value.installationInitializer);
           mapping(mapping(value.installationInitializer).job).status = { active: 1 };
         },
+        /initializer Job has not completed successfully/,
       ],
+      [
+        // The rendered Job template omits both fields, so the exact Job
+        // comparison must refuse them even though the retained Pod may carry them.
+        "Job template SELinux level and group",
+        (value) => {
+          assert.ok(value.installationInitializer);
+          const context = mappingAt(
+            mapping(value.installationInitializer).job,
+            "spec",
+            "template",
+            "spec",
+            "securityContext",
+          );
+          context.seLinuxOptions = { level: "s0:c34,c12" };
+          context.supplementalGroups = [1000];
+        },
+        /initializer Job execution differs/,
+      ],
+      // Only a level with two distinct categories is a per-workload label. A
+      // level that covers more, or that a category pair can dominate, stays
+      // refused even when the group qualifies.
+      ...(
+        [
+          ["SELinux level range", "s0-s0:c0.c1023"],
+          ["SELinux category span", "s0:c0.c1023"],
+          ["SELinux category list", "s0:c1,c2,c3"],
+          ["SELinux level with one category", "s0:c5"],
+          ["SELinux level with a repeated category", "s0:c5,c5"],
+          // A level without categories is not a per-workload label: it shares
+          // the uncategorized s0 label, so the exception must not accept it.
+          ["SELinux level without categories", "s0"],
+        ] as const
+      ).map(([name, level]): [string, (value: RecoveryState) => void, RegExp] => [
+        name,
+        (value) => {
+          assert.ok(value.installationInitializer);
+          mappingAt(
+            mapping(value.installationInitializer).pod,
+            "spec",
+            "securityContext",
+          ).seLinuxOptions = { level };
+        },
+        /initializer Pod identity/,
+      ]),
     ];
-    for (const [name, mutate] of mutations) {
+    for (const [name, mutate, refusal] of mutations) {
       await t.test(name, async () => {
         const changed = structuredClone(accepted);
         mutate(changed);
         await writeFile(join(f.directory, "state.json"), JSON.stringify(changed));
-        await assert.rejects(
-          f.run("--resume"),
-          /Installation consumer mount differs|initializer (Job|Pod)/,
-        );
+        await assert.rejects(f.run("--resume"), refusal);
         const refused = await f.state();
         assert.equal(refused.helmSubmissions, 1);
         assert.equal(refused.dispatches, 0);

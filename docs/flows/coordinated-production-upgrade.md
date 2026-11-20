@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: 2026-11-24
-last_updated_session: authoring-run/1c3ad59b-d58f-4d86-bdd9-767c3a9547d4
+last_updated_session: authoring-run/bcc1983c-825b-4ebc-9dd4-1d36ef4f9ac4
 ---
 
 # Production image upgrade flow
@@ -210,7 +210,12 @@ Recheck Helm status and terminal initializers before submission.
 
 For [same-candidate recovery](../guides/deploy/production-helm-recovery.md),
 `scripts/upgrade-helm-state.py:recover` checks Helm payload, ownership, completed
-Job and Pod, and security contexts. `pod_matches` compares resource quantities.
+Job and Pod, and security contexts. Security contexts remain exact, except that
+the retained Pod may independently add an SELinux level of the form `s0:cN,cM`
+with distinct categories, or one supplemental group that equals the template
+Pod's integer `runAsGroup` and each regular and init container's effective group,
+when the template omits them. The level check validates shape, not category
+allocation. `pod_matches` compares resource quantities.
 Reads use manifest namespaces and release ownership. `check-recovery` checks the
 original attempt before preflight and both application identities before rollback.
 Repeat admission before exclusive intent and dispatch. Accepted or uncertain
@@ -281,7 +286,10 @@ separate Helm hook require completed history. Hook mode applies pending SQL.
 Verify images, replicas and Installation checksums. For reference switches,
 check both Secret identities and controller and initializer mounts. Require one
 named container per component, broker-enabled workers for restartable init
-containers, and the same Installation ID from OCC.
+containers, and the same Installation ID from OCC. Every `verify-installation`
+run also applies the [Phase 2](#2-reconcile-a-prior-attempt) `verify_hook`
+initializer comparison, so the admission exception covers uninterrupted
+reference switches, not only `--recover-helm`.
 
 Worker preparation re-renders launch requirements and maintains repository sessions
 every 30 seconds until their deadline. It re-prepares other unfinished deployments.
@@ -367,6 +375,10 @@ requires no Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-24 21:44: Point Phase 4 at the shared initializer verification on uninterrupted reference switches. (authoring-run/bcc1983c-825b-4ebc-9dd4-1d36ef4f9ac4 - 2aaa14c34fda7baff79200d476d0f3daa6110dd7)
+
+- 2026-11-19 20:33: Accept an admission-assigned SELinux level and Pod group on the retained initializer Pod. (authoring-run/62a4c901-7066-4e94-bb84-e010a1f89f1d - 46b193ba5b9a45386faa747c53886c43f08ccc7b)
+
 - 2026-11-24 03:54: Preserve writer stop evidence. (authoring-run/1c3ad59b-d58f-4d86-bdd9-767c3a9547d4 - 7f069277c2659c8f2fc5f46b702e6062a852c3b0)
 
 - 2026-11-24 02:21: Recheck writer generations before Helm. (authoring-run/b49fd055-c8ec-4d10-8ba1-536c248c8f66 - 1b6b18670a33c9d51b4fc4cbc0a901a08782c963)
@@ -400,25 +412,5 @@ requires no Agents or Secrets.
 - 2026-11-18 14:34: Retire bootstrap outputs safely (PST). (authoring-run/fcffdcd5-85ba-4fd1-ad35-bfbbcd6953b6 - ce0bd74dcbb7bdf2fd97a6d87e9ea0f88cf0199d)
 
 - 2026-11-18 20:23: Apply and verify separate database Jobs. (authoring-run/859166ef-2ed3-42e1-b8fd-88441bb8746f - 084874338baf51ad05d0b1a2b438e8bcd0120c1b)
-
-- 2026-11-19 17:03: Reconcile the upgrade trace and bind admission to the selected credential method. (authoring-run/1b66f15a-ca57-49d3-97bd-6ce1593f55a2 - c833b919f687c17dcb5b2e1e5037b55ed4321ac0)
-
-- 2026-11-19 12:44: Compare status markers. (authoring-run/b54d6eb9-13cb-4072-96e2-2e285cde2402 - a02224a7e22516f958546a249ddcbfa9bfcd6012)
-- 2026-11-19 12:31: Trace standalone preflight status. (authoring-run/95ab0282-a9eb-46db-9c6b-bd4cce4ee6ea - a02224a7e22516f958546a249ddcbfa9bfcd6012)
-- 2026-11-19 11:30: Trace candidate rehearsal when retained Agents require the original worker. (authoring-run/099c1a03-0e25-4504-9cf7-2f62d1cfa035 - 6679017155741810c2ae1bcbacba05a3eb59f3ec)
-
-- 2026-11-19 10:56: Refuse active kuberc. (authoring-run/9c893cda-96dc-4a06-9e08-ad2aeca46de7 - 5f425af517e8ee120c7721e7559a846ce70120e9)
-
-- 2026-11-19 10:26: Trace kubeconfig decoding and snapshot authentication. (authoring-run/8620ea2f-2212-49a6-b45b-0c6b44bf7fa2 - b0171d98e4470aaad0ba5b7ddb4e16a27fb9de7a)
-
-- 2026-11-19 09:57: Trace the Helm release store guard. (authoring-run/d4ce1b5c-3a22-44f3-b1ad-40e8a771c331 - 2455e61e32e8f97a6dfb505608a665e2eca59f20)
-
-- 2026-11-19 09:47: Trace profile TLS checks. (authoring-run/2a1d437b-87cc-4839-a06a-12b3d255450f - 2455e61e32e8f97a6dfb505608a665e2eca59f20)
-
-- 2026-11-19 05:13: Trace upgrade approval, trust, and evidence. (authoring-run/def34421-d123-4fd1-bde1-e8d966d6bcad - 8bc5fe2fc916765024493c981308179a04a0e716)
-
-- 2026-11-18 19:45: Tighten the upgrade trace. (authoring-run/9b947cd8-0275-4e7f-ac7f-5dce4b0f8965 - aed2f7edd530ab336bbd6cb8c7389b24cb83e397)
-
-- 2026-11-18 19:27: Trace migration-only compatibility checks through the Helm hook and Job journal. (authoring-run/7ae70bae-f8ac-425d-abbf-7039b71997b7 - 71334bb9b104662870798a29814e7171e8905baf)
 
 [Production image upgrade flow documentation history](coordinated-production-upgrade/history.md) preserves the older dated entries.
