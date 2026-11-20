@@ -688,7 +688,7 @@
       "when": 1787000000086,
       "tag": "0086_static_connection_templates",
       "breakpoints": true,
-      "sha256": "10568b34702af717ce62b4844309f5ecda693072a3a94929d9a6a15631e8b672"
+      "sha256": "1b692295009fadb1947b6410b685100f0a9170425fa90a40ee7b69ad476e76c0"
     }
   ],
   "initialSchemaStates": {
@@ -826,12 +826,12 @@
     "46b5b1593daa0a0bbfeb8d0b84e2314d0f68f9adc5d598bb6b9e2d3bdc8403d6": [
       "68b4d77e1f53f11c6a410f50a9100fb76cf7dd81df49eb4d6aa20ae5f21c7796"
     ],
-    "9a9e1940405ba1253b52d5491c536ab52fb84a523a33e884aea52a4143b9aa00": [
-      "a59ba9780b820d36c57d3d979c6354693e166231fd18490bb888368a56dfc48e"
+    "5419bf08aecf19ee24486b888e8591a44d93653fd728c4165e730bbdbb38da4f": [
+      "26efbc005b75f979027b8c46f6a0c80ff5f2f7ef5a6e06da135bfb4c2a8b1d7d"
     ]
   },
   "catalogs": {
-    "completed": "9a9e1940405ba1253b52d5491c536ab52fb84a523a33e884aea52a4143b9aa00",
+    "completed": "5419bf08aecf19ee24486b888e8591a44d93653fd728c4165e730bbdbb38da4f",
     "empty": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "prePresetsMain": "7fe2e7ccc13ce974d03137b5117752ff03e7c001d2916d50c300ddbdf826207a",
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",

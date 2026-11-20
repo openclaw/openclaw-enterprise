@@ -141,6 +141,15 @@ test(
     const read = await inject("GET", path);
     assert.equal(read.statusCode, 200, read.body);
     assert.deepEqual(read.json().data.current.destinations, destinations);
+    // An approval must be usable by the same exact/subtree matcher that checks credential policy.
+    const invalidPaths = ["/v1/*", "/v1/../models", "/v1/%EF%BC%8F"];
+    for (const invalidPath of invalidPaths) {
+      const refused = await inject("PATCH", path, {
+        ...settings,
+        destinations: [{ ...destinations[2], path: invalidPath }],
+      });
+      assert.equal(refused.statusCode, 400, refused.body);
+    }
     const renamed = await inject("PATCH", path, { displayName: "Renamed API key" });
     assert.equal(renamed.statusCode, 200, renamed.body);
     assert.equal(renamed.json().data.current.version, 1);
@@ -150,7 +159,7 @@ test(
     });
     assert.equal(reordered.statusCode, 200, reordered.body);
     assert.equal(reordered.json().data.current.version, 1);
-    const next = [{ ...destinations[2], path: "/v2/**" }];
+    const next = [{ ...destinations[2], path: "/v2/%C3%A9" }];
     const changed = await inject("PATCH", path, { ...settings, destinations: next });
     assert.equal(changed.statusCode, 200, changed.body);
     assert.equal(changed.json().data.current.version, 2);
@@ -165,13 +174,18 @@ test(
       { version: 2, destinations: next },
     ]);
     // The database rejects invalid policy even when a caller bypasses public route validation.
-    await assert.rejects(
-      pool.query(
-        "INSERT INTO occ.static_key_template_versions(template_id,version,destinations,created_at) VALUES($1,3,$2,now())",
-        [shared.id, JSON.stringify([next[0], next[0]])],
-      ),
-      { code: "23514", constraint: "static_key_template_versions_destinations_valid" },
-    );
+    for (const invalid of [
+      [next[0], next[0]],
+      ...invalidPaths.map((invalidPath) => [{ ...next[0], path: invalidPath }]),
+    ]) {
+      await assert.rejects(
+        pool.query(
+          "INSERT INTO occ.static_key_template_versions(template_id,version,destinations,created_at) VALUES($1,3,$2,now())",
+          [shared.id, JSON.stringify(invalid)],
+        ),
+        { code: "23514", constraint: "static_key_template_versions_destinations_valid" },
+      );
+    }
     const oauthClient = await inject("POST", "/oauth-clients", clientInput(shared.id, 2));
     assert.equal(oauthClient.statusCode, 409, oauthClient.body);
     const wrongFamily = await inject("PATCH", path, manual);

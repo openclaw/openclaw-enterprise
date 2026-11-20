@@ -26,7 +26,7 @@ A new OAuth template starts with **No template limit** (`scopes: []`). Select **
 
 Use `POST /connection-templates` with one of these setup methods.
 
-- With `mode: static_bearer`, supply 1 to 128 approved HTTP destinations. Each row must contain an exact DNS host or private IPv4 address, port, path and uppercase HTTP method, for example `{"host":"service.example.test","port":443,"path":"/reports/**","method":"GET"}`. The mode specifies Bearer authentication. The template stores no credential material and needs no OAuth client. Static credential enrollment and Agent delivery are separate capabilities.
+- With `mode: static_bearer`, supply 1 to 128 approved HTTP destinations. Each row must contain an exact DNS host or private IPv4 address, port, path and uppercase HTTP method, for example `{"host":"service.example.test","port":443,"path":"/reports/**","method":"GET"}`. Use an absolute exact path or a terminal `/**` subtree. Dot segments and other wildcard forms are rejected. The mode specifies Bearer authentication. The template stores no credential material and needs no OAuth client. Static credential enrollment and Agent delivery are separate capabilities.
 - With `mode: manual`, supply the issuer, OAuth URLs, scopes and a nonempty `destinations` array. Each object has a host, port and path, for example `{"host":"mail.example.test","port":443,"path":"/inbox/**"}`. A credentialed request must match all three in one row. The plugin and deployed request policy determine the allowed operations.
 - With `mode: mcp_discovery`, preview metadata with `POST /connection-templates/discover`. Send the MCP server URL. When the resource advertises several issuers, select one and repeat discovery. The response includes the protected resource, advertised capabilities and scopes. Choose the scopes allowed for this template. OCC repeats discovery when saving and pins the approved issuer, resource and exact MCP server URL. Discovery can report a registration endpoint. Register the client separately.
 
@@ -46,8 +46,10 @@ OCC handles browser consent and the callback. After exchange, OCC registers the 
 
 1. Use a signed-in browser session. List available templates at
    `GET /namespaces/{namespaceId}/connection-templates`. OCC requires
-   `credential_source:create` for that Namespace. A template appears here once
-   its current version has an OAuth client.
+   `credential_source:create` for that Namespace. The list can include static
+   Bearer templates. For OAuth consent, select a template whose `current.mode`
+   is `manual` or `mcp_discovery`. OAuth templates appear only when their current
+   version has an OAuth client.
 2. Send the chosen `connectionTemplateId` to
    `POST /namespaces/{namespaceId}/connections`. For a template with no configured scope list, supply optional `selectedScopes` or omit them to use provider defaults. A manual template with configured scopes uses the full list. For MCP, include every scope required by the resource and stay within any configured list. Open the returned
    `authorizationUrl` in the same browser and approve the request.

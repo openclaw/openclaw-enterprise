@@ -16,6 +16,13 @@ DECLARE
   endpoint jsonb;
   previous jsonb;
   host text;
+  request_path text;
+  base_path text;
+  decoded_path text;
+  path_bytes bytea;
+  segment text;
+  normalized text;
+  path_index integer;
 BEGIN
   IF jsonb_typeof(destinations) <> 'array' OR jsonb_array_length(destinations) NOT BETWEEN 1 AND 128 THEN RETURN false; END IF;
   FOR endpoint IN SELECT value FROM jsonb_array_elements(destinations) LOOP
@@ -24,10 +31,34 @@ BEGIN
       OR jsonb_typeof(endpoint->'host') <> 'string'
       OR jsonb_typeof(endpoint->'port') <> 'number' OR endpoint->>'port' !~ '^[1-9][0-9]{0,4}$'
       OR jsonb_typeof(endpoint->'path') <> 'string' OR length(endpoint->>'path') > 512
-      OR (endpoint->>'path') COLLATE "C" !~ '^/[!-~]*$' OR endpoint->>'path' ~ '[?#\\]'
+      OR (endpoint->>'path') NOT LIKE '/%' OR strpos(endpoint->>'path', '//') > 0
       OR jsonb_typeof(endpoint->'method') <> 'string'
       OR (endpoint->>'method') COLLATE "C" !~ '^[!#$%&''*+.^_`|~0-9A-Z-]{1,16}$'
     THEN RETURN false; END IF;
+    request_path := endpoint->>'path';
+    base_path := CASE WHEN right(request_path, 3) = '/**' THEN left(request_path, -3) ELSE request_path END;
+    IF base_path COLLATE "C" !~ '^([A-Za-z0-9._~!$&''()+,:=@/-]|%20|%[89A-F][0-9A-F])*$' THEN RETURN false; END IF;
+    path_bytes := ''::bytea;
+    path_index := 1;
+    WHILE path_index <= length(base_path) LOOP
+      IF substr(base_path, path_index, 1) = '%' THEN
+        path_bytes := path_bytes || decode(substr(base_path, path_index + 1, 2), 'hex');
+        path_index := path_index + 3;
+      ELSE
+        path_bytes := path_bytes || convert_to(substr(base_path, path_index, 1), 'UTF8');
+        path_index := path_index + 1;
+      END IF;
+    END LOOP;
+    BEGIN
+      decoded_path := convert_from(path_bytes, 'UTF8');
+    EXCEPTION WHEN character_not_in_repertoire THEN RETURN false;
+    END;
+    FOREACH segment IN ARRAY string_to_array(decoded_path, '/') LOOP
+      normalized := normalize(segment, NFKC);
+      IF normalized IN ('.', '..') OR normalized ~ '[%/?#;*[:cntrl:]]'
+        OR strpos(normalized, chr(92)) > 0 OR normalized COLLATE "C" ~ U&'[\0080-\009F]'
+      THEN RETURN false; END IF;
+    END LOOP;
     host := endpoint->>'host';
     IF length(host) > 253 OR NOT (
       host COLLATE "C" ~ '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'

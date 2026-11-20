@@ -1,3 +1,5 @@
+import { validRequestPath } from "./request-path.ts";
+
 /** RFC 6749 section 3.3 scope-token grammar shared by the API and token exchange. */
 export const oauthScopeTokenPattern = /^[\x21\x23-\x5b\x5d-\x7e]+$/u;
 export function isOAuthScopeToken(value: unknown): value is string {
@@ -251,6 +253,7 @@ export function normalizeStaticKeyDestinations(
       if (
         !isApprovedDestinationHost(host) ||
         !validEndpoint(port, path) ||
+        !validRequestPath(path, true) ||
         !staticKeyHttpMethodPattern.test(method)
       ) {
         throw new ConnectionTemplateValidationError(

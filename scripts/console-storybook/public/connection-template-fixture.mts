@@ -181,6 +181,13 @@ export function createConnectionTemplateFixture(
         ) {
           return error(409, "RESOURCE_STATE_CONFLICT", "Reload the selected connection template.");
         }
+        if (version.mode === "static_bearer") {
+          return error(
+            409,
+            "RESOURCE_STATE_CONFLICT",
+            "A static template cannot register an OAuth client.",
+          );
+        }
         const client = {
           id: nextId("ccr"),
           displayName: body.displayName,
