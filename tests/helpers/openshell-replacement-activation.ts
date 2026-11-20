@@ -20,18 +20,30 @@ interface RedeploymentResponse {
   error?: unknown;
 }
 
-interface ReplacementRedeployment<Response extends RedeploymentResponse> {
+interface RejectedRedeploymentResponse {
+  status: 400 | 401 | 403 | 404 | 409 | 413 | 415 | 500 | 503;
+  error: unknown;
+}
+
+type RedeploymentResult = RedeploymentResponse | RejectedRedeploymentResponse;
+
+interface ReplacementRedeployment<Response extends RedeploymentResult> {
   namespaceId: string;
   agent: { id: string };
   revision: { id: string };
   request(method: "POST", path: string): Promise<Response>;
 }
 
-export async function redeployOpenShellReplacement<Response extends RedeploymentResponse>(
+export function redeployOpenShellReplacement<Response extends RedeploymentResult>(
   topology: ReplacementRedeployment<Response>,
   reportProgress: boolean,
-  activate: (response: Response) => Promise<void>,
-): Promise<Response> {
+  activate: (response: Extract<Response, RedeploymentResponse>) => Promise<void>,
+): Promise<Extract<Response, RedeploymentResponse>>;
+export async function redeployOpenShellReplacement(
+  topology: ReplacementRedeployment<RedeploymentResult>,
+  reportProgress: boolean,
+  activate: (response: RedeploymentResponse) => Promise<void>,
+): Promise<RedeploymentResponse> {
   if (reportProgress) {
     emitOpenShellReplacementCheckpoint("redeploy-request");
   }
