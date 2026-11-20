@@ -100,41 +100,31 @@ default registry selection.
 
 ## Use a Terraform-managed EKS cluster
 
-For a dedicated Amazon Elastic Kubernetes Service (EKS) cluster, follow the
-[Terraform reference](https://github.com/freeqaz-openai/oce-eks-terraform). After
-preparing system NetworkPolicies, storage, and the prerequisite controllers, run
-its final foundation check from the Terraform checkout:
+For a dedicated Amazon Elastic Kubernetes Service (EKS) cluster, complete the
+[Terraform reference](https://github.com/freeqaz-openai/oce-eks-terraform)
+through its foundation check and kubeconfig staging. Continue in the same Bash
+session from the matching OCE checkout. Keep the checked `KUBECONFIG_FILE`,
+`OCC_INPUT_DIRECTORY`, `CONTEXT`, and `TF_CHECKOUT` values from that handoff.
+
+Use the checked kubeconfig for the linked EKS commands, then refresh the
+[API and webhook addresses](eks-openshell-setup.md#refresh-api-network-policies-after-the-node-groups-join):
 
 ```bash
-KUBECONFIG_FILE="${RUN_DIR:?Use the Terraform run directory}/install.kubeconfig"
-CONTEXT=$(./scripts/prepare-kubeconfig --check "$KUBECONFIG_FILE")
-export KUBECONFIG_FILE CONTEXT
+export KUBECONFIG="${KUBECONFIG_FILE:?Use the checked Terraform kubeconfig}"
+: "${CONTEXT:?Use the Terraform context}"
+cluster=$(terraform -chdir="${TF_CHECKOUT:?Use the Terraform checkout}" output -json oce_cluster)
+EKS_CLUSTER_ARN=$(jq -er '.arn' <<<"$cluster")
+AWS_REGION=$(jq -er '.region' <<<"$cluster")
+EKS_CLUSTER=$(jq -er '.name' <<<"$cluster")
+export EKS_CLUSTER_ARN AWS_REGION EKS_CLUSTER
 ```
 
-The check writes a new private kubeconfig after it verifies the cluster identity,
-node pools, strict VPC CNI configuration, add-on readiness, and default encrypted
-StorageClass. Complete the reference's traffic, admission, and storage checks.
-Then switch to the matching OCE checkout and stage the kubeconfig for the
-configuration and installation commands:
-
-```bash
-umask 077
-OCC_INPUT_DIRECTORY=$(mktemp -d "$RUN_DIR/occ.XXXXXXXX") &&
-  install -m 600 "$KUBECONFIG_FILE" "$OCC_INPUT_DIRECTORY/kubeconfig" &&
-  export OCC_INPUT_DIRECTORY KUBECONFIG_FILE="$OCC_INPUT_DIRECTORY/kubeconfig"
-```
-
-When generating the profile below, use `{"oce-role":"control"}` for
+When generating the profile, use `{"oce-role":"control"}` for
 `controlPlane.nodeSelector` and `runtime.gatewayNodeSelector`,
-`{"oce-role":"agents"}` for `runtime.nodeSelector`, and `encrypted-gp3` for
-`runtime.gatewayStorageClassName`. Refresh the
-[API and webhook addresses](eks-openshell-setup.md#refresh-api-network-policies-after-the-node-groups-join)
-and use `API_CIDRS` for `controlPlane.clusterCidrs`. Run
-[prerequisite diagnosis](prerequisite-diagnosis.md) with the same kubeconfig and
-context, using `.arn` from `terraform output -json oce_cluster` for
-`eks.clusterArn`. Resolve failed or unknown checks, then continue with
-[configuration](#configure-the-installation) and
-[installation](production-installation.md#install-the-control-plane).
+`{"oce-role":"agents"}` for `runtime.nodeSelector`, `encrypted-gp3` for
+`runtime.gatewayStorageClassName`, and the refreshed `API_CIDRS` for
+`controlPlane.clusterCidrs`. Continue with [configuration](#configure-the-installation).
+Run prerequisite diagnosis after [creating the controller Namespace](#prepare-workspace-access).
 
 ## Configure the Installation
 
@@ -438,6 +428,12 @@ Create the controller Namespace (`--namespace`: DNS-1123 label, maximum 63 chara
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" create namespace openclaw-system
 ```
+
+For EKS, run [prerequisite diagnosis](prerequisite-diagnosis.md) now. Set the plan's
+`namespace` to `openclaw-system`, select the same kubeconfig and context, use
+`EKS_CLUSTER_ARN` for `eks.clusterArn`, and set `peakAdditional` from the
+candidate chart and concurrent rollouts. Use the reviewed API and webhook CIDRs.
+Resolve failed or unknown checks before installing.
 
 Complete [Configure private routing](workspace-routing.md#configure-private-routing):
 create `occ-private-gateway-key` and match the Helm and Installation routing
