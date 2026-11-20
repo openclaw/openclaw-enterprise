@@ -83,8 +83,18 @@ Confirm that preflight checks and cleanup succeeded. Preflight leaves writers
 running. If it reports that retained Agent revisions require their original
 worker and exits 1, resolve the blocker through the
 [maintenance handoff](production-upgrade.md#rehearse-before-the-maintenance-window).
-Follow that handoff before applying. Use fresh evidence and the same reviewed
-inputs and expert options for `apply`:
+Follow that handoff before applying.
+
+If preparation needs different data in an immutable Installation Secret,
+[stage a successor](immutable-installation-upgrade.md) and select it with
+`--candidate-values`. For a prepared attempt, keep the recorded inputs and
+follow [upgrade recovery](production-upgrade-recovery.md).
+
+If Certificate admission fails, inspect `preflight-certificates.err` in the
+attempt's protected evidence. For a webhook timeout, check the cert-manager
+webhook Service, its endpoints, and reachability from the Kubernetes API server.
+
+Use fresh evidence and the same reviewed inputs and expert options for `apply`:
 
 ```bash
 occ installation upgrade apply --profile /secure/occ/upgrade.json

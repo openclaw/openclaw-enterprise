@@ -658,15 +658,27 @@ export function registerHelmRollbackCases({ fixture }: { fixture: RecoveryFixtur
   test("certificate admission refusal leaves the incumbent controllers running", async (t) => {
     const f = await fixture(t, { controllerOnly: true, certificate: true });
     await f.failNext("refuse-certificate-admission");
-    await assert.rejects(f.run(), /certificate admission preflight failed/);
+    await assert.rejects(f.run(), (error) => {
+      assert.ok(error instanceof Error);
+      assert.ok("stderr" in error && typeof error.stderr === "string");
+      assert.match(error.stderr, /certificate admission preflight failed/);
+      assert.match(error.stderr, /No OCC writer was stopped/);
+      assert.match(error.stderr, /preflight-certificates\.err/);
+      assert.match(
+        error.stderr,
+        /If the webhook call timed out, check reachability from the Kubernetes API server to the cert-manager webhook/,
+      );
+      assert.doesNotMatch(error.stderr, /certificate webhook call timed out/);
+      return true;
+    });
     assert.deepEqual(await f.events(), ["certificate-admission"]);
     const state = await f.state();
     assert.equal(state.api, 1);
     assert.equal(state.worker, 1);
     assert.equal(state.version, 1);
-    assert.equal(
-      await f.readEvidence("preflight-certificates.err"),
-      "certificate webhook refused dry-run\n",
+    await assertPrivateReceipt(
+      join(f.evidence, "preflight-certificates.err"),
+      "certificate webhook call timed out\n",
     );
   });
 

@@ -650,8 +650,9 @@ matches_yaml() {
 }
 
 require_mutable_installation_secret() {
+  local next_step=$2
   jq -e '.immutable != true' "$1" >/dev/null ||
-    die "Installation Secret $installation_secret is immutable and the candidate requires different data. Choose a candidate that preserves the live Installation configuration or defer this upgrade."
+    die "Installation Secret $installation_secret is immutable and the candidate requires different data. $next_step"
 }
 
 check_installation_update_access() {
@@ -1766,10 +1767,11 @@ preflight_startup() {
     if ((certificate_count > 0)); then
       # Server-side apply sends even unchanged objects for admission. Ignore field
       # ownership conflicts in the dry-run only; Helm does not use server-side apply.
-      "${kube[@]}" --request-timeout=20s --namespace "$namespace" apply --dry-run=server \
+      # Allow the webhook's maximum 30s deadline plus time for the API response.
+      "${kube[@]}" --request-timeout=45s --namespace "$namespace" apply --dry-run=server \
         --server-side --force-conflicts --field-manager=occ-upgrade-preflight \
         --filename "$certificates" >/dev/null 2>"$evidence_dir/preflight-certificates.err" ||
-        die "certificate admission preflight failed; no ${writer_qualifier}OCC writer was stopped. Check cert-manager and see preflight-certificates.err in the evidence directory."
+        die "certificate admission preflight failed. No ${writer_qualifier}OCC writer was stopped. Inspect preflight-certificates.err in the evidence directory. If the webhook call timed out, check reachability from the Kubernetes API server to the cert-manager webhook."
     fi
   fi
   node scripts/upgrade-startup-preflight.ts networkpolicy "$evidence_dir/preflight-rendered.jsonl" \
@@ -2788,7 +2790,8 @@ fi
 if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]] ||
   ! matches_yaml "$candidate_installation" "$evidence_dir/before-live-installation.yaml"; then
   if [[ ! -f "$evidence_dir/before-candidate-installation-secret.json" ]]; then
-    require_mutable_installation_secret "$live_installation_secret"
+    require_mutable_installation_secret "$live_installation_secret" \
+      "Stage a versioned immutable successor with the final candidate Installation configuration. Pass --candidate-values with installation.secretName set to the successor and use a fresh evidence directory. See docs/guides/deploy/immutable-installation-upgrade.md."
     check_installation_update_access
   fi
   touch "$evidence_dir/installation-changed"
@@ -3048,7 +3051,8 @@ if ((helm_complete == 0)); then
   replace_installation_secret=0
   if [[ -f "$evidence_dir/installation-changed" ]] &&
     ! matches_yaml "$evidence_dir/current-live-installation.yaml" "$candidate_installation"; then
-    require_mutable_installation_secret "$live_secret"
+    require_mutable_installation_secret "$live_secret" \
+      "The prepared upgrade is bound to the recorded Installation Secret. Preserve the recorded inputs and evidence and follow docs/guides/deploy/production-upgrade-recovery.md."
     replace_installation_secret=1
   fi
   if [[ -f "$evidence_dir/helm-started" ]]; then

@@ -424,7 +424,18 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
           log("certificate-admission");
         }
         if (take("refuse-certificate-admission")) {
-          return fail(1, "certificate webhook refused dry-run");
+          const timeout = args.find((argument) => argument.startsWith("--request-timeout="));
+          const seconds = Number(timeout?.match(/^--request-timeout=([1-9][0-9]*)s$/u)?.[1]);
+          assert.ok(
+            seconds > 0 && seconds <= 60,
+            "Certificate admission must have a bounded timeout",
+          );
+          // Model a webhook exhausting its 30-second admission deadline before the
+          // API server returns the diagnostic. No test clock needs to wait 30 seconds.
+          return fail(
+            1,
+            seconds > 30 ? "certificate webhook call timed out" : "kubectl request timed out",
+          );
         }
         return io.exit(0);
       }
