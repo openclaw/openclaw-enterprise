@@ -302,4 +302,52 @@ export function registerCutOutputCases() {
     assert.match(String(logs?.value), /fixture progress \d+"/);
     assertAbsent(text, phrase, "a stamped cut line");
   });
+
+  test("k3d diagnostics drop the cut line of a docker logs read that timed out", async (t) => {
+    const directory = await temporaryDirectory(t, "k3d-cut-timeout-");
+    // A timed-out read keeps the last 8 MiB of what it got; the window starts inside a value
+    // whose key was cut off, on a line that starts with a Docker-timestamp-shaped word.
+    const phrase = "FixtureStampedValue0042zz";
+    const cutLine = `2026-11-18T23:59:59Z ${phrase} end\n`;
+    const progress = Array.from(
+      { length: 200_000 },
+      (_, index) => `2026-11-19T00:00:00Z level=info msg="fixture progress ${index}"\n`,
+    ).join("");
+    const window = `${cutLine}${progress}`.slice(0, 8 * 1024 * 1024);
+    const stream = `2026-11-18T23:59:58Z level=info msg="password: ${window}`;
+    for (const which of ["stdout", "stderr"] as const) {
+      const statePath = join(directory, `${which}.json`);
+      await captureK3dDiagnostics({
+        execFile: async (command, args, options) => {
+          if (args[0] !== "logs") {
+            throw new Error(`${command} ${args[0]} unavailable`);
+          }
+          const output = stream.slice(-options.maxOutputChars);
+          throw Object.assign(new Error("timed out"), {
+            timedOut: true,
+            stdout: which === "stdout" ? output : "",
+            stderr: which === "stderr" ? output : "",
+          });
+        },
+        cluster: {
+          name: "k3d-cut",
+          owner: "fixture-owner",
+          directory,
+          kubeconfig: join(directory, "kubeconfig"),
+          context: "k3d-cut",
+          nodes: ["k3d-cut-server-0"],
+        },
+        lane: "fixture-lane",
+        statePath,
+      });
+      const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
+      assertAbsent(text, phrase, `a timed-out read on ${which}`);
+      const containers = asRecord(JSON.parse(text))?.containers;
+      assert.ok(Array.isArray(containers), "expected the node containers");
+      const logs = asRecord(asRecord(containers[0])?.logs);
+      assert.equal(logs?.status, "timed-out", which);
+      assert.match(String(logs?.value), /docker logs timed out; partial output/, which);
+      assert.match(String(logs?.value), /fixture progress \d+"/, which);
+    }
+  });
 }

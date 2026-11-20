@@ -236,11 +236,14 @@ function withoutStructuredLogLines(text: string) {
     .join("\n");
 }
 
-// A producer that keeps only the last `limit` characters can cut a line, and a credential's
-// key or prefix with it, so that no rule matches the rest: they all work within a line. Such
-// text starts after its first line break, and is dropped without one.
-export function withoutCutLine(text: string, limit: number) {
-  if (text.length < limit) {
+// A producer that keeps only the last characters of a text can cut a line, and a credential's
+// key or prefix with it, so that no rule matches the rest. `cut` text is shown from after its
+// first line break, and not at all without one. Some redaction rules run past a line break (a
+// quoted or bracketed value, a value on the line after its key, a private key block), so a
+// caller that redacts drops this line from the redacted text: no replacement adds a line
+// break, so its first line holds what is left of the cut one.
+export function withoutCutLine(text: string, cut: boolean) {
+  if (!cut) {
     return text;
   }
   const lineEnd = text.indexOf("\n");

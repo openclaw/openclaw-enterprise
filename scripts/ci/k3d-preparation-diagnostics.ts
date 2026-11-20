@@ -185,9 +185,10 @@ export async function captureK3dDiagnostics({
       partial,
     }: { maxOutputChars?: number; partial?: (output: CommandOutput) => Value } = {},
   ): Promise<Observation<Value>> {
-    // execFile keeps the last maxOutputChars characters of each stream.
+    // execFile keeps the last maxOutputChars characters of each stream. Every projection
+    // here redacts line by line, so the cut line can go before it.
     const whole = (text: unknown) =>
-      typeof text === "string" ? withoutCutLine(text, maxOutputChars) : "";
+      typeof text === "string" ? withoutCutLine(text, text.length >= maxOutputChars) : "";
     try {
       const { stdout, stderr } = await execFile(command, args, {
         timeoutMs: diagnosticCommandTimeoutMs,

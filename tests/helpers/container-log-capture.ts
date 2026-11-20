@@ -4,7 +4,11 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { failureSecrets, withoutCutLine } from "../../scripts/ci/failure-redaction.ts";
+import { failureSecrets } from "../../scripts/ci/failure-redaction.ts";
+import {
+  CONTAINER_LOG_BUFFER_CHARS,
+  CONTAINER_LOG_ERROR_CHARS,
+} from "../../scripts/ci/k3d-container-log.ts";
 import { projectContainerLog } from "../../scripts/ci/k3d-diagnostics.ts";
 
 // The CI runner sets this for k3d lanes (scripts/ci/k3d-diagnostics.ts) and
@@ -14,8 +18,8 @@ export const containerLogDirectoryVariable = "OPENCLAW_CI_CONTAINER_LOG_DIR";
 
 // The runner publishes at most the last 1,500 lines of 1,000 characters.
 const maxBufferedLines = 1_500;
-const maxBufferedChars = 2 * 1024 * 1024;
-const maxErrorChars = 2_048;
+const maxBufferedChars = CONTAINER_LOG_BUFFER_CHARS;
+const maxErrorChars = CONTAINER_LOG_ERROR_CHARS;
 const stopTimeoutMs = 5_000;
 
 type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
@@ -139,7 +143,7 @@ export function followContainerLog({ args, env, target, snapshot, recoverLogs }:
   const lines: string[] = [];
   const markers: Marker[] = [];
   let partial = "";
-  let droppedPartial = false;
+  let structuredPartial = false;
   let bufferedChars = 0;
   let omittedLines = 0;
   const stream: Stream = { startedAt: new Date().toISOString() };
@@ -165,18 +169,14 @@ export function followContainerLog({ args, env, target, snapshot, recoverLogs }:
     const parts = (partial + chunk).split("\n");
     const tail = parts.pop() ?? "";
     for (const line of parts) {
-      if (!droppedPartial && !line.includes("OCSF-JSON")) {
+      if (!structuredPartial && !line.includes("OCSF-JSON")) {
         lines.push(line);
         bufferedChars += line.length;
       }
-      droppedPartial = false;
+      structuredPartial = false;
     }
-    // A line longer than the buffer would keep only its end, which can start inside a
-    // credential: drop it whole, as a structured line is.
-    const oversize = !droppedPartial && tail.length > maxBufferedChars;
-    omittedLines += Number(oversize);
-    droppedPartial ||= oversize || tail.includes("OCSF-JSON");
-    partial = droppedPartial ? "" : tail;
+    structuredPartial ||= tail.includes("OCSF-JSON");
+    partial = structuredPartial ? "" : tail.slice(-maxBufferedChars);
     while (
       (bufferedChars > maxBufferedChars || lines.length > maxBufferedLines) &&
       lines.length > 0
@@ -230,13 +230,12 @@ export function followContainerLog({ args, env, target, snapshot, recoverLogs }:
         .catch(() => {});
     }
     snapshots.push(await takeSnapshot("after-log"));
-    const shownError = withoutCutLine(error, maxErrorChars);
     const record: ContainerLogRecord = {
       test: t.fullName ?? t.name,
       reason,
       ...target,
       markers,
-      stream: { ...stream, ...(shownError.length > 0 ? { error: shownError } : {}) },
+      stream: { ...stream, ...(error.length > 0 ? { error } : {}) },
       snapshots,
       omittedLines,
       lines: partial.length > 0 ? [...lines, partial] : lines,

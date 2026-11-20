@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 
 import {
   assertAbsent,
   cutCredentials,
   cutOffsets,
+  keyBody,
+  multiLineCredentials,
   registeredCutSecret,
 } from "../fixtures/cut-credentials.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { setEnvironment } from "../helpers/environment.ts";
+import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
@@ -589,10 +591,7 @@ test("a credential cut at the start of a captured container log stays out of its
     { interpreter: process.execPath },
   );
   const secrets = failureSecrets([{ OCC_TEST_CUT_SECRET: registeredCutSecret }]);
-  // What the runner publishes for one failed wait: its projection of the written record.
-  const capture = async (stderr: string, stdout: string) => {
-    await writeFile(join(streams, "stderr"), stderr);
-    await writeFile(join(streams, "stdout"), stdout);
+  const follow = async (context: TestContext) => {
     const log = followContainerLog({
       args: [join(streams, "stderr"), join(streams, "stdout")],
       env: { ...process.env, PATH: commandPath(bin) },
@@ -600,11 +599,18 @@ test("a credential cut at the start of a captured container log stays out of its
       snapshot: async () => ({}),
     });
     await assert.rejects(
-      log.attachOnFailure(t, "cut wait", async () => {
+      log.attachOnFailure(context, "cut wait", async () => {
         throw new Error("cut wait failed");
       }),
       /cut wait failed/,
     );
+  };
+  // What one failed wait publishes: the runner's projection of the written record for the
+  // diagnostics artifact, and, without a record directory, the test's diagnostic line.
+  const capture = async (stderr: string, stdout: string) => {
+    await writeFile(join(streams, "stderr"), stderr);
+    await writeFile(join(streams, "stdout"), stdout);
+    await follow(t);
     const [name, ...others] = await readdir(records);
     assert.ok(name !== undefined && others.length === 0, "one record per failed wait");
     const path = join(records, name);
@@ -612,10 +618,22 @@ test("a credential cut at the start of a captured container log stays out of its
     await rm(path);
     const projected = projectContainerLog(record, secrets);
     assert.ok(projected, "projected container log record");
-    return projected;
+    const diagnostics: string[] = [];
+    await withEnvironment({ OPENCLAW_CI_CONTAINER_LOG_DIR: undefined }, () =>
+      follow({
+        name: t.name,
+        fullName: t.fullName,
+        diagnostic: (message: string) => {
+          diagnostics.push(message);
+        },
+      } as TestContext),
+    );
+    assert.equal(diagnostics.length, 1, "one diagnostic line per failed wait");
+    return { projected, shown: `${JSON.stringify(projected)}\n${diagnostics.join("\n")}` };
   };
   const before = "2026-11-19T00:00:00.000Z before";
   const lineEnd = "fixture-cut-line-end";
+  const truncation = "... [truncated]";
   for (const { name, text, secret } of cutCredentials) {
     const singleLine = !text.includes("\n");
     for (const offset of cutOffsets(text)) {
@@ -626,8 +644,7 @@ test("a credential cut at the start of a captured container log stays out of its
       const stderr = `kubectl: fixture note\nkubectl: ${text.slice(0, offset)}${cutLine}${notes}`;
       const longLine = `${text.slice(offset)} ${lineEnd} `.padEnd(2 * 1024 * 1024, "z");
       const stdout = `${before}\n${singleLine ? `${before} ${text.slice(0, offset)}${longLine}` : ""}`;
-      const projected = await capture(stderr, stdout);
-      const shown = JSON.stringify(projected);
+      const { projected, shown } = await capture(stderr, stdout);
       const label = `${name} cut ${offset} in`;
       // The cut line is dropped whole, so even one remaining character is not published.
       assert(!shown.includes(lineEnd), `${label}: the cut line is published`);
@@ -636,16 +653,72 @@ test("a credential cut at the start of a captured container log stays out of its
       // The unterminated line over 2 MiB counts as an omitted line.
       assert.equal(projected.omittedLines, singleLine ? 1 : 0, label);
       if (singleLine) {
-        // The whole lines after the cut stay, bounded to 2,000 characters.
-        assert.equal(
-          projected.stream.error,
-          notes.length > 2_000 ? `${notes.slice(0, 2_000)}... [truncated]` : notes,
-          label,
-        );
+        // The window is redacted and bounded to 2,000 characters whole; then its first line
+        // goes, so the line after the cut remains, whole or up to that bound.
+        const error = projected.stream.error ?? "";
+        const kept = error.endsWith(truncation) ? error.slice(0, -truncation.length) : error;
+        assert(error === notes || (kept.length > 1_000 && notes.startsWith(kept)), label);
       }
     }
   }
+  // A value that a rule masks past a line break keeps its anchor while the window is
+  // redacted: the cut before the anchor drops only what redaction left of the first line.
+  const words = "kubectl: fixture prefix words ";
+  for (const { name, text, secrets: values } of multiLineCredentials) {
+    for (const offset of [0, 1, Math.floor(words.length / 2), words.length - 1]) {
+      const cutLine = `${words.slice(offset)}${text}\n`;
+      const notes = `kubectl: fixture notes ${"n".repeat(2_048 - cutLine.length - 24)}\n`;
+      const { shown } = await capture(
+        `kubectl: fixture note\n${words.slice(0, offset)}${cutLine}${notes}`,
+        "",
+      );
+      for (const value of values) {
+        assertAbsent(shown, value, `${name} cut ${offset} in`);
+      }
+    }
+  }
+  // A window without a line break says that it was cut instead of disappearing.
+  const { projected: oneLine } = await capture(`kubectl: ${"n".repeat(3_000)}`, "");
+  assert.equal(oneLine.stream.error, "[diagnostics: cut stderr; first line dropped]");
+
+  // A line over the 2 MiB buffer evicts the earlier lines, as it always did, so a later
+  // END line is the first one, and the key body above it stays masked.
+  const marker = "[redacted credential-bearing line]";
+  const after = "2026-11-19T00:00:02Z after";
+  const huge = `2026-11-19T00:00:01Z huge ${"q".repeat(3 * 1024 * 1024)}`;
+  const evicted = await capture(
+    "",
+    [
+      "2026-11-19T00:00:00Z note -----END PRIVATE KEY----- seen earlier",
+      `${huge} -----BEGIN PRIVATE KEY-----`,
+      ...keyBody,
+      "-----END PRIVATE KEY-----",
+      `${after}\n`,
+    ].join("\n"),
+  );
+  // An END in the last 2 MiB of a line that never ends masks the lines above it before
+  // that cut line is left out.
+  const open = await capture(
+    "",
+    [before, ...keyBody, `${huge} -----END PRIVATE KEY----- tail`].join("\n"),
+  );
+  for (const [label, { shown }] of [
+    ["an earlier END line", evicted],
+    ["an END in the cut line", open],
+  ] as const) {
+    for (const value of keyBody) {
+      assertAbsent(shown, value, label);
+    }
+  }
+  assert.deepEqual(evicted.projected.lines, [marker, marker, marker, after]);
+  assert.equal(evicted.projected.omittedLines, 2);
+  assert.deepEqual(open.projected.lines, [marker, marker, marker]);
+  assert.equal(open.projected.omittedLines, 1);
+
   // Under the limit nothing is cut, so nothing is dropped.
-  const short = await capture(`kubectl: ${cutCredentials[2]!.text}\nkubectl: fixture note\n`, "");
+  const { projected: short } = await capture(
+    `kubectl: ${cutCredentials[2]!.text}\nkubectl: fixture note\n`,
+    "",
+  );
   assert.equal(short.stream.error, "kubectl: password=[redacted]\nkubectl: fixture note\n");
 });
