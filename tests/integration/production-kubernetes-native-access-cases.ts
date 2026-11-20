@@ -924,7 +924,7 @@ export async function checkProductionExamples(
     unquotedPath,
     example
       .replace("<actual-proxy-source-cidr>", "192.0.2.10/32")
-      .replace(/^( {10}limits:\n {12}cpu: )"4"$/m, (_, prefix) => `${prefix}4`),
+      .replace(/^( {10}limits:\n {12}cpu: )"4"$/m, (_, prefix: string) => `${prefix}4`),
   );
   await assert.rejects(
     loadInstallationConfiguration({
@@ -1046,9 +1046,13 @@ export async function checkRetiredBootstrapOutputs(): Promise<void> {
   ).template.spec;
   assert.ok(!initializerPod.volumes.some(({ persistentVolumeClaim }) => persistentVolumeClaim));
   // A fresh install still has to name the precreated credentials Secret.
-  await assert.rejects(render(retired), ({ stderr }) =>
-    /bootstrap\.credentials\.secretName must reference a precreated Secret/.test(stderr),
-  );
+  await assert.rejects(render(retired), (error: unknown) => {
+    const stderr = asRecord(error)?.stderr;
+    return (
+      typeof stderr === "string" &&
+      /bootstrap\.credentials\.secretName must reference a precreated Secret/.test(stderr)
+    );
+  });
 }
 
 export async function checkPackagedProductionChart(): Promise<void> {
@@ -1105,7 +1109,15 @@ export async function checkInstallationNameValues(): Promise<void> {
   ]) {
     await assert.rejects(
       render({ "installation.name": name }),
-      ({ code, stderr }) => code !== 0 && message.test(stderr),
+      (error: unknown) => {
+        const failure = asRecord(error);
+        return (
+          typeof failure?.stderr === "string" &&
+          Number.isInteger(failure.code) &&
+          failure.code !== 0 &&
+          message.test(failure.stderr)
+        );
+      },
       JSON.stringify(name),
     );
   }
