@@ -55,6 +55,8 @@ export type {
   CredentialSourceControl,
   CredentialUpdateNotification,
   CredentialProxyDriver,
+  CredentialDeploymentProxyDriver,
+  CredentialDeploymentContext,
 } from "./drivers/credential-proxy/index.ts";
 export type {
   CredentialProxyBinding,
@@ -332,7 +334,8 @@ export interface OpenShellBackendDefinition {
   readonly configuration: OpenShellBackendConfiguration;
   readonly drivers: {
     readonly sandbox: string;
-    readonly credential_gateway: string;
+    /** Legacy credential Source owner, when selected. The Gateway service is configured separately. */
+    readonly credential_gateway?: string;
     readonly credential_proxy?: string;
     /** Refreshes the gateway's refresh-type sources; absent when none are offered. */
     readonly credential_refresh?: string;

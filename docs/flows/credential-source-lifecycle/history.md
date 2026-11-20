@@ -8,6 +8,30 @@ This record preserves the dated changes to the credential source lifecycle flow.
 
 ## Changelog
 
+- 2026-11-20 07:52: Trace managed source permission, standalone admission and live release checks. (authoring-run/6a2ac989-1b9e-4a4a-becf-4de572752f27 - d6853a84e)
+
+- 2026-11-20 04:19: Describe the staged worker and Compute path and its deployment hold. (authoring-run/4c6987ec-ea41-4485-98ca-62d6e617244f - daa612511)
+
+- 2026-11-20: Document native staged Proxy operation and holds. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - 291d3b1de)
+
+- 2026-11-20 04:20: Link the separate internal static custody flow. (authoring-run/1a7c3a53-041d-40fe-bdea-664eca7f6d97 - edd728580)
+
+- 2026-11-19 03:15: Keep the flow current while moving catalog enforcement to a separate change. (authoring-run/b0e8e24d-3e5e-40a1-ae3b-10e0dfe3e6a8 - ea34779cc)
+
+- 2026-11-18 14:02: Check the selected catalog type during registration. (authoring-run/f10d3e7e-18d9-4ae8-9bdb-8004b6815fb7 - 293833c72)
+
+- 2026-11-18 12:46: Check catalog field names and report malformed config keys. (authoring-run/f10d3e7e-18d9-4ae8-9bdb-8004b6815fb7 - 4875ab0f5)
+
+- 2026-11-17 19:44: Distinguish the published TokenService schemas from the current registration handler. (01a1eb01-0dea-7f01-8613-761574377d3f - 23b54e285)
+
+- 2026-11-17 19:24: Correct session ownership. (authoring-run/a1a47d55-3248-4349-81a2-ca786027b634 - c5ddcd80cb4cfcd0b969a52ef5c4cafff552a8e8)
+
+- 2026-11-13 15:44: Recheck the Git-only model lifecycle before Kubernetes attachment and release. (authoring-run/f3a542b0-ca6b-426f-8759-3ca2500f79ce - a14ccd99)
+
+- 2026-11-11 19:04: Keep ordinary Gateway model delivery independent of Git Proxy selection. (authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb - aea0cb511)
+
+- 2026-11-11 16:45: Expose structured retry guidance for the existing registration deletion fence. (authoring-run/b642b758-0314-4f01-a300-5e37962b8fb4 - 5eed51d18d8ea86a6c9450c352e967b433fa47da)
+
 - 2026-11-03 16:57: Correct catalog-field refusal status. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 82a04653d)
 
 - 2026-11-03 15:09: Document shared provider routing and separate destination authorization. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 47e0e95df)

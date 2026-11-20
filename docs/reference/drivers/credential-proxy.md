@@ -17,7 +17,7 @@ custody and retirement. Provider adapters own provider-specific scope, injection
 and response rules. The proxy enforces requests and obtains eligible material;
 it does not run a credential renewal loop.
 
-Ordinary sources remain Gateway-owned. When static protection is required, neither
+Legacy Gateway sources remain Gateway-owned; new Source custody belongs to [TokenService](../../flows/token-service-static-custody.md). When static protection is required, neither
 the Gateway nor the Proxy may declare refresh, device authorization or managed
 login tokens. Capabilities omit incompatible types. If OCC detects a mismatch
 before the Secret read, creation and adoption return 409 without reading material.
@@ -30,7 +30,7 @@ plan. An unavailable Proxy never permits Gateway fallback for a protected source
 ## Interface
 
 The public [contracts entry point](../../../packages/contracts/src/index.ts)
-exports `CredentialProxyDriver`, `DriverRegistration`, the
+exports `CredentialProxyDriver`, `CredentialDeploymentProxyDriver`, `DriverRegistration`, the
 [exchange types](../../../packages/contracts/src/credential-proxy-exchange.ts)
 and [repository delivery types](../../../packages/contracts/src/protected-repository-git.ts).
 The [Driver source](../../../packages/contracts/src/drivers/credential-proxy/index.ts) defines
@@ -47,7 +47,7 @@ these operations:
 | `removeRevision(context)`                   | Revision cleanup removes the owned installation and returns a boolean completion result.                                                                                | Required; failure must not be reported as completed cleanup.                                             |
 | `policyReduction`                           | Withdrawal uses versioned `apply(context, reduction)`, then independent `observe(context, reduction)`.                                                                  | Optional on the interface; required when the plan records that capability.                               |
 
-Staged delivery declares optional `deployProxy`, `configureDeployment`, `getDeploymentStatus`, and `removeDeployment` directly on the Driver. Each receives a trusted Namespace, Agent revision, and signal and must reject a mismatched deployment or target. `notifyCredentialUpdated` is source-scoped and receives no revision. These declarations do not establish runtime support: the bundled Driver and regular Agent workflow do not yet implement them. See the proposed [worker configuration amendment](../../../specs/rfcs/0023-egress-proxy-credential-lifecycle/worker-credential-configuration.md).
+Staged delivery uses the separate `CredentialDeploymentProxyDriver` and `credential_proxy_delivery` capability, paired with the selected Sandbox registration. Its required `deployProxy`, `configureDeployment`, `getDeploymentStatus`, and `removeDeployment` operations receive a trusted Namespace, Agent revision, and signal and reject a mismatched deployment or target. Optional `notifyCredentialUpdated` is source-scoped and receives no revision. Bundled OpenShell implements first-use native Provider delivery and target checks, but status fails closed, target-bound removal is unavailable, and update notification is not implemented. The regular Agent workflow does not call this capability, so staged delivery remains unsupported. See the [source lifecycle flow](../../flows/credential-source-lifecycle.md#pending-native-integration) and [worker configuration amendment](../../../specs/rfcs/0023-egress-proxy-credential-lifecycle/worker-credential-configuration.md#amendment-select-native-delivery-independently).
 
 There is no `withdrawBinding` member in the current interface. Use OCC withdrawal
 and the admitted `policyReduction` capability, or runtime retirement, rather than

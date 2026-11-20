@@ -10,6 +10,9 @@ import {
   NATIVE_WORKER_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
+import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
+import { installationControllerOptions } from "../../apps/controller/src/composition/installation-config.ts";
+import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
 import {
   OpenShellSandboxDriver,
   type OpenShellSandboxDriverOptions,
@@ -20,7 +23,11 @@ import type {
   ConfigurationValidationError,
   OpenShellBackendConfiguration,
 } from "../../packages/contracts/src/index.ts";
-import { ConfigurationHarnessError } from "../../packages/occ/src/index.ts";
+import {
+  ConfigurationHarnessError,
+  DriverSelectionError,
+  OpenClawController,
+} from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { reservedPortArgs } from "../helpers/available-port.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
@@ -173,6 +180,33 @@ export function registerSandboxDriverStartupWiringCases(
 
   test("startup composes both OpenShell members from one Backend", async (t) => {
     await verifySharedBackendComposition(t);
+  });
+
+  test("startup selects native credential delivery without a legacy Credential Gateway", async (t) => {
+    const configuration = sandboxInstallation();
+    // A Gateway service remains configured, but neither the backend nor startup selects the
+    // legacy CredentialGatewayDriver as a credential Source owner.
+    Reflect.deleteProperty(configuration.drivers, "credential_gateway");
+    Reflect.deleteProperty(configuration.backend[0]!.drivers, "credential_gateway");
+    Object.assign(configuration.drivers, { token_service: { id: "occ", configuration: {} } });
+    const runtime = await loadInstallationFile(t, configuration);
+    const owner = runtime!.credentialDeliveryRegistration!;
+    const proxy = owner.require("credential_proxy_delivery");
+
+    assert.ok(proxy instanceof OpenShellCredentialProxyDriver);
+    assert.equal(owner.require("sandbox"), runtime!.sandboxDriver);
+    const controller = new OpenClawController(
+      { id: "ins_native", name: "Native", createdAt: "2026-11-20T00:00:00Z" },
+      {
+        ...installationControllerOptions(runtime!.installation),
+        namespaceLifecycleBindings: runtime!.namespaceLifecycleBindings,
+        backends: runtime!.installation.backend,
+      },
+    );
+    installSelectedSandboxDrivers(controller, runtime!);
+    await controller.validateBackendConfiguration();
+    assert.equal(controller.selectedDriver("credential_proxy_delivery"), proxy);
+    assert.throws(() => controller.selectedDriver("credential_gateway"), DriverSelectionError);
   });
 
   test("startup pairs the Credential Refresh Driver with its gateway on one OpenShell Backend", async (t) => {
