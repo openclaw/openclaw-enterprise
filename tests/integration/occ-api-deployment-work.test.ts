@@ -36,6 +36,7 @@ type InjectedReply = Awaited<ReturnType<FixtureRequest>>;
 function assertApiError(reply: InjectedReply, status: number, code: ErrorCode, label?: string) {
   const message =
     label === undefined ? JSON.stringify(reply.body) : `${label}: ${JSON.stringify(reply.body)}`;
+  assert.equal(reply.status, status, message);
   const { error } = checkedInjectedBody(reply, status, ErrorResponse);
   assert.equal(error.code, code, message);
 }
