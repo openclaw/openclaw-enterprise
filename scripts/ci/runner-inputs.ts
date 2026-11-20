@@ -5,7 +5,7 @@ import { availableParallelism } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { openShellHarnessError } from "./openshell-model-inputs.mjs";
+import { openShellHarnessError } from "./openshell-model-inputs.ts";
 import { loadTestSuites } from "./test-suites.ts";
 import { isRecord } from "./records.ts";
 

@@ -5,7 +5,7 @@ import { observeOpenShellPermissionRefusal } from "./openshell-permission-diagno
 import {
   assertOpenShellModelId,
   normalizeOpenShellModelId,
-} from "../../scripts/ci/openshell-model-inputs.mjs";
+} from "../../scripts/ci/openshell-model-inputs.ts";
 import { openShellTurnoverQualification } from "../../scripts/ci/reporter.ts";
 import {
   openShellGatewayGrpcChannel,
