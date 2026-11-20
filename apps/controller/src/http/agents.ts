@@ -7,6 +7,7 @@ import {
   type AgentRead,
   type AgentRevisionRead,
   type AgentRuntimeCredentialsBody,
+  type AgentStopQuery,
   type FirstDeploymentIntent,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -628,8 +629,14 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
     },
     async stopAgent({ controller, context, request, reply, params, namespaceId, mutationEvent }) {
       const agentId = params.agentId!;
+      const { expectedActiveRevisionId } = request.query as AgentStopQuery;
       const stopped = await controller.transact(async (unit) => {
-        const agent = await controller.stopAgent(context.actorId, namespaceId, agentId);
+        const agent = await controller.stopAgent(
+          context.actorId,
+          namespaceId,
+          agentId,
+          expectedActiveRevisionId,
+        );
         try {
           await unit.audit.append(mutationEvent({ kind: "agent", id: agentId, namespaceId }));
         } catch (error) {

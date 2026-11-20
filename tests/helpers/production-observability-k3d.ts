@@ -47,6 +47,7 @@ type Labels = Record<string, string>;
 type InstallationOptions = {
   modelTurns?: boolean;
   nativeRepository?: boolean;
+  initialAgentImageTag?: string;
 };
 
 const nativeRepositoryValues = Type.Object({
@@ -114,7 +115,7 @@ export const observabilitySelection = {
 // all use the installed production implementations, with a credential-free runtime fixture.
 export async function installObservabilityControlPlane(
   t: TestContext,
-  { modelTurns = false, nativeRepository = false }: InstallationOptions = {},
+  { modelTurns = false, nativeRepository = false, initialAgentImageTag }: InstallationOptions = {},
 ) {
   const modelInputs = modelTurns ? readModelTurnInputs() : undefined;
   const selectionInput = explicitK3dSelection();
@@ -245,11 +246,15 @@ export async function installObservabilityControlPlane(
       metadata: { name, labels: { "oce-test": suffix } },
     });
   }
+  const agentImage = images.codex ?? images.runtime;
   const configuration = createKubernetesInstallationConfiguration({
     authentication: { mode: "inCluster" },
     platformNamespace: system,
     gatewayImage: images.runtime,
-    codexImage: images.codex ?? images.runtime,
+    // Kubernetes uses the digest when the reference includes both a tag and a digest.
+    codexImage: initialAgentImageTag
+      ? agentImage.replace(/(?::[^/@]+)?@sha256:/, `:${initialAgentImageTag}@sha256:`)
+      : agentImage,
     codexSeccompProfile: modelTurns
       ? process.env.OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE
       : undefined,

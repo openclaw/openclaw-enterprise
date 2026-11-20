@@ -1,7 +1,7 @@
 ---
 name: spec
 description: Draft or update OpenClaw Enterprise RFCs and implementation plans with
-  repository numbering and lifecycle rules.
+  repository naming and lifecycle rules.
 dependencies:
   - enterprise-testing
   - technical-writing
@@ -25,6 +25,6 @@ any broader authorization already given in the conversation.
 
 Paths in the workflows are relative to the repository root unless explicitly
 identified as bundled skill paths. The repository's specification process owns
-numbering, placement, status, and historical exceptions; read it before writing.
+naming, placement, status, and historical exceptions; read it before writing.
 Use $technical-writing for prose and $enterprise-testing for proportional
 verification requirements. Neither requires a global skill installation.

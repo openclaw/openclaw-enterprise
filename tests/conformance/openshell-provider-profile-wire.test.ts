@@ -27,13 +27,32 @@ test("prepared Git provider binds repository read and write rules to its wire pr
     binaries: ["/usr/bin/git"],
   };
   const scope = { ...commonScope, installationId: "42" } satisfies OpenShellPreparedGitScope;
-  const { client } = await gitExpiryGateway(t, {
+  const providerReads: unknown[] = [];
+  const { client, world } = await gitExpiryGateway(t, {
     model: "model",
     workspace: scope.workspace,
     sandbox: scope.sandbox,
     revisionId: scope.executionId,
     deadline: "2030-01-01T00:00:00Z",
     platformProfile: false,
+    configure(methods: {
+      CreateProvider: (request: Record<string, unknown>) => {
+        provider: { metadata: { id: string; name: string } };
+      };
+      GetProvider: (request: Record<string, unknown>) => unknown;
+    }) {
+      const { CreateProvider: createProvider, GetProvider: getProvider } = methods;
+      methods.CreateProvider = (request) => {
+        const response = createProvider(request);
+        // The fixture normally gives every provider the same ID.
+        response.provider.metadata.id = response.provider.metadata.name + "-id";
+        return response;
+      };
+      methods.GetProvider = (request) => {
+        providerReads.push(request.name);
+        return getProvider(request);
+      };
+    },
   });
   const signal = AbortSignal.timeout(10_000);
   const read = { repository: "fixture/a", access: "read" } as const;
@@ -48,6 +67,14 @@ test("prepared Git provider binds repository read and write rules to its wire pr
   // Edits to the original grant objects or array cannot change the prepared profile.
   readGrant.access = "write";
   policy.push({ repository: "fixture/c", access: "read" });
+  // A caller inspecting the expected rule must not be able to widen the imported
+  // profile while keeping the identity derived from the original grants.
+  const discovery = scoped.previewNetworkRule().endpoints[0];
+  assert.ok(discovery && "rules" in discovery);
+  const service = discovery.rules?.[0]?.allow.query?.service;
+  assert.ok(service);
+  Reflect.set(service, "glob", "*");
+
   const binding = await scoped.bootstrap(signal);
   const stored = await client.getProviderProfile(scope.workspace, binding.profile, signal);
   assert.deepEqual(stored?.definition?.endpoints, [
@@ -105,6 +132,45 @@ test("prepared Git provider binds repository read and write rules to its wire pr
   assert.equal(profileIdForPolicy([punctuationWrite, punctuationRead]), punctuationProfile);
   assert.equal(profileIdForPolicy([punctuationRead, punctuationWrite]), punctuationProfile);
 
+  let releaseCalls = 0;
+  async function release() {
+    releaseCalls++;
+    return undefined;
+  }
+
+  assert.equal(await scoped.rotate(binding, release, signal), undefined);
+  assert.equal(releaseCalls, 1);
+  assert.equal(world.writes, 0);
+  releaseCalls = 0;
+
+  const changed = new OpenShellPreparedGitProvider(client, {
+    ...scope,
+    repositoryNetworkPolicy: [{ ...read, access: "write" }, write],
+  });
+  const changedBinding = await changed.bootstrap(signal);
+  assert.notEqual(changedBinding.profile, binding.profile);
+  assert.equal(changedBinding.profileVersion, binding.profileVersion);
+  assert.notEqual(changedBinding.providerId, binding.providerId);
+  providerReads.length = 0;
+
+  const refused = (error: unknown) =>
+    error instanceof OpenShellPreparedGitProviderError &&
+    error.outcome === "refused" &&
+    error.readFailure === undefined;
+
+  await assert.rejects(changed.rotate(binding, release, signal), refused);
+  assert.equal(releaseCalls, 0);
+  assert.deepEqual(providerReads, []);
+
+  // Restore uses the changed policy's profile but retains the old provider generation.
+  const restored = changed.restore(binding);
+  assert.equal(restored.profile, changedBinding.profile);
+  assert.equal(restored.providerId, binding.providerId);
+  await assert.rejects(changed.rotate(restored, release, signal), refused);
+  assert.equal(releaseCalls, 0);
+  assert.deepEqual(providerReads, [changedBinding.provider]);
+  assert.equal(world.writes, 0);
+
   const legacy = await new OpenShellPreparedGitProvider(client, scope).bootstrap(signal);
   assert.equal(legacy.profile, "oce-github-installation-f941504fe8c04d629f0fcd8569984de1");
   const legacyStored = await client.getProviderProfile(scope.workspace, legacy.profile, signal);
@@ -137,8 +203,42 @@ test("prepared Git provider binds repository read and write rules to its wire pr
     },
   ]);
 
+  const single = await new OpenShellPreparedGitProvider(client, {
+    ...commonScope,
+    repository: "Fixture/Legacy_Repo",
+    gitOrigin: "https://git.example.test:8443",
+    apiOrigin: "https://api.example.test:9443",
+  }).bootstrap(signal);
+  const singleStored = await client.getProviderProfile(scope.workspace, single.profile, signal);
+  assert.deepEqual(singleStored?.definition?.endpoints, [
+    {
+      host: "git.example.test",
+      port: 8443,
+      protocol: "rest",
+      path: "/Fixture/Legacy_Repo.git/**",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      access: "NETWORK_ACCESS_PRESET_READ_WRITE",
+    },
+    {
+      host: "api.example.test",
+      port: 9443,
+      protocol: "rest",
+      path: "/repos/Fixture/Legacy_Repo/pulls",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      access: "NETWORK_ACCESS_PRESET_READ_WRITE",
+    },
+  ]);
+
   for (const { name, policy } of [
     { name: "empty policy", policy: [] },
+    { name: "unsupported grant constraint", policy: [Object.assign({}, read, { branch: "main" })] },
+    { name: "inherited grant", policy: [Object.create(read)] },
+    { name: "noncanonical owner", policy: [{ ...read, repository: "a_b/repo" }] },
+    { name: "noncanonical name", policy: [{ ...read, repository: "fixture/.repo" }] },
+    {
+      name: "too many grants",
+      policy: Array.from({ length: 33 }, (_, i) => ({ ...read, repository: "fixture/r" + i })),
+    },
     { name: "duplicate repository", policy: [read, { ...read, access: "write" }] },
     { name: "uppercase repository", policy: [{ ...read, repository: "Fixture/a" }] },
     { name: "Git suffix", policy: [{ ...read, repository: "fixture/a.git" }] },
@@ -397,6 +497,10 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
     [runtimeRule.name]: runtimeRule,
   };
   const observe = () => prepared.observe(binding, "sandbox-id", AbortSignal.timeout(10_000));
+  // A READY supervisor and matching rule names cannot authorize the first observation
+  // when the effective policy has an unstamped Git endpoint.
+  overrides = { effective: { ...expected, [name]: gitRule } };
+  assert.equal(await observe(), undefined);
   overrides = { effective: expected };
   const installed = await observe();
   assert.ok(installed);
@@ -478,6 +582,28 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
     );
   });
 
+  await t.test("a wildcard source host refuses initial and predecessor readback", async () => {
+    // The literal source route already passed both observations. Change only its
+    // host, keeping the same REST rule in admitted, loaded, and effective policy.
+    const wildcardRule = {
+      ...sourceRule,
+      endpoints: [{ ...modelEndpoint, host: "**.com" }],
+    };
+    const wildcardSource = {
+      ...stockSource,
+      network_policies: { ...stockSource.network_policies, model: wildcardRule },
+    };
+    overrides = {
+      source: wildcardSource,
+      sandboxPolicy: wildcardSource,
+      effective: { ...expected, model: wildcardRule },
+    };
+    assert.deepEqual(
+      { active: (await observe()) !== undefined, predecessor: await predecessor() },
+      { active: false, predecessor: false },
+    );
+  });
+
   const broadGit = { endpoints: [{ host: "github.com", port: 443, protocol: "tcp" }] };
   const broadApi = { endpoints: [{ host: "API.GITHUB.COM", port: 443, protocol: "rest" }] };
   const broadSource = {
@@ -489,9 +615,14 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
     endpoints: [{ host: "alias.example.test", port: 443 }],
   };
   const opaqueSource = { ...stockSource, network_policies: { model: opaqueModel } };
+  await t.test("missing policy readback", async () => {
+    overrides = { effective: expected, missingConfig: true };
+    assert.equal(await observe(), undefined);
+    // The predecessor caller receives the failed read for classification.
+    await assert.rejects(predecessor(), /NOT_FOUND/);
+  });
   for (const [label, evidence] of Object.entries({
     "missing admitted Sandbox policy": { sandboxPolicy: null },
-    "missing policy readback": { missingConfig: true },
     "missing effective Git rule": { effective: {} },
     "source revision not active": { active: 16 },
     "wrong active hash": { config: { policy_hash: "c".repeat(64) } },
@@ -513,9 +644,6 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
           endpoints: [{ ...modelRule.endpoints[0], host: "other.example.test" }],
         },
       },
-    },
-    "overlapping wildcard Provider route": {
-      effective: { ...expected, _provider_other: { endpoints: [{ host: "**.com", port: 443 }] } },
     },
     "opaque Provider alias": {
       effective: {
@@ -584,6 +712,7 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
     await t.test(label, async () => {
       overrides = { effective: expected, ...evidence };
       assert.equal(await observe(), undefined);
+      assert.equal(await predecessor(), false);
     });
   }
 
