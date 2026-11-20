@@ -5,6 +5,8 @@ with exact-Agent `operate`. Obtain the OCE Agent ID from its API response.
 [Create and deploy an Agent](http-api-agent.md) if needed. Browser chat does not
 need to be enabled. Configure an external API proxy to accept 20 MiB bodies,
 allow at least 660 seconds per request, and relay SSE without response buffering.
+Set its idle timeout to at least 660 seconds too: a response carries no bytes
+while tools run.
 
 ## Send a turn
 
@@ -41,8 +43,13 @@ Omit the label for independent turns.
 
 A turn can execute tools. Disconnects, revoked access and timeouts do not undo
 those effects. Check the Agent's state before retrying; the label is not an
-idempotency key. See the [HTTP chat contract](../reference/agent-http-chat.md)
-for limits, status codes, conversation boundaries and audit behavior.
+idempotency key.
+
+A request ends at its 10-minute deadline, and the turn behind it stops. For
+longer work, tell the Agent to record its progress in the workspace, then send
+a new request with the same label and a message such as `Continue the task.`
+See the [HTTP chat contract](../reference/agent-http-chat.md) for limits, status
+codes, conversation boundaries and audit behavior.
 
 ## Disable HTTP chat
 
