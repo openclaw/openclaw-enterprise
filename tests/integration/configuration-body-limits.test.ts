@@ -15,7 +15,7 @@ import type {
   ResourceRef,
 } from "../../packages/contracts/src/index.ts";
 import { ConfigurationSizeError, type PlatformStateStore } from "../../packages/occ/src/index.ts";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   assertWriteAuthorizationDenial,

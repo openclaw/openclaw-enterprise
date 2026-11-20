@@ -46,7 +46,8 @@
     "keycloak-oidc": "./test-suites/keycloak-oidc.json",
     "egress-connected": "./test-suites/egress-connected.json",
     "skipper-prepared-git-installed": "./test-suites/skipper-prepared-git-installed.json",
-    "egress-custody-installed": "./test-suites/egress-custody-installed.json"
+    "egress-custody-installed": "./test-suites/egress-custody-installed.json",
+    "channel-egress-upgrade": "./test-suites/channel-egress-upgrade.json"
   },
   "groups": {
     "ci": [

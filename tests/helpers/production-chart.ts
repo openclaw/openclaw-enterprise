@@ -44,6 +44,7 @@ export async function chartTooling() {
 export const productionValues = {
   // Direct-access fixture: routing cases override or omit this explicit opt-out.
   "gatewayRouting.enabled": "false",
+  "channelEgress.enabled": "false",
   "images.controller": `registry.example.invalid/controller@sha256:${"a".repeat(64)}`,
   "auth.baseUrl": "https://occ.example.invalid",
   "agentNativeAdmin.domain": "agents.example.invalid",

@@ -290,7 +290,7 @@ api:
     clientAddressHeader: ""
 
 channelEgress:
-  enabled: false
+  enabled: true
   gatewayName: openclaw-channel-egress
   gatewayClassName: eg
   envoyNamespace: envoy-gateway-system
