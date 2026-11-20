@@ -19,6 +19,7 @@ import {
   requireRecoveryPreflight,
   type CapabilityProbe,
   type PreflightFault,
+  type RecoveryState,
 } from "./production-upgrade-recovery-state.ts";
 import {
   controller,
@@ -106,6 +107,7 @@ export type RecoveryFixtureOptions = {
   olderDraftRules?: boolean;
   unavailableDraftResolver?: boolean;
   databaseAnswer?: DatabaseAnswer;
+  migrationSecrets?: boolean;
   afterDeploy?: () => Promise<void>;
   environment?: NodeJS.ProcessEnv;
 };
@@ -149,6 +151,7 @@ type RecoverySeed = {
 > & {
     collectorSecret: Awaited<ReturnType<typeof collectorConfigSecret>>;
     secret: { apiVersion: string; kind: string; metadata: object; data: Record<string, string> };
+    preflight?: RecoveryState;
     recoveryCandidateResources?: readonly object[];
     themeConfigMaps: NonNullable<RecoveryChart["configMaps"]>;
   };
@@ -405,6 +408,7 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       olderDraftRules = false,
       unavailableDraftResolver = false,
       databaseAnswer = () => ({ rows: [{ id: "ins_test" }] }),
+      migrationSecrets = false,
       afterDeploy,
       environment = {},
     }: RecoveryFixtureOptions = {},
@@ -416,6 +420,7 @@ export function createRecoveryFixture(tools: RecoveryTools) {
     let upgradeProcess: ChildProcess | undefined;
     let interrupted = false;
     let database: (FakePostgres & PreflightDatabase) | undefined;
+    let databaseSecretNames: string[] = [];
     const server = await startCommandServer({
       forwardedEnv: [],
       handle: (request) => {
@@ -598,6 +603,10 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       const secretName = databaseValues.secretName ?? "occ-database";
       const appUrlKey = databaseValues.appUrlKey ?? "application-url";
       assert.ok(typeof secretName === "string" && typeof appUrlKey === "string");
+      databaseSecretNames = [secretName];
+      if (typeof databaseValues.caSecretName === "string" && databaseValues.caSecretName) {
+        databaseSecretNames.push(databaseValues.caSecretName);
+      }
       database = {
         ...postgres,
         secretName,
@@ -624,6 +633,27 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       initializationResources,
       preflightPolicy,
       preflightFault,
+      ...(migrationSecrets && {
+        preflight: {
+          pods: {},
+          jobs: {},
+          networkpolicies: {},
+          deleted: [],
+          secrets: Object.fromEntries(
+            databaseSecretNames.map((name) => [
+              name,
+              {
+                metadata: {
+                  name,
+                  namespace: "system",
+                  uid: `migration-secret-${name}`,
+                  resourceVersion: "1",
+                },
+              },
+            ]),
+          ),
+        },
+      }),
       installationName,
       inventoryNamespaces,
       inventoryResponses,
