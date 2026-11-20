@@ -6,7 +6,7 @@ import type {
   Backend,
   CredentialDeploymentConfiguration,
   CredentialDeploymentContext,
-  CredentialDeploymentProxyDriver,
+  CredentialProxyDriver,
   CredentialDeploymentReadiness,
   CredentialProjection,
   CredentialProxyRouting,
@@ -27,7 +27,7 @@ import {
 } from "./openshell-pushed-provider.ts";
 
 /** Native credential delivery for the selected OpenShell Sandbox and Backend. */
-export class OpenShellCredentialProxyDriver implements CredentialDeploymentProxyDriver {
+export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   readonly capability = "credential_proxy_delivery" as const;
   readonly id: string;
   readonly implementation: string;
@@ -57,7 +57,7 @@ export class OpenShellCredentialProxyDriver implements CredentialDeploymentProxy
 
   async deployProxy(
     context: CredentialDeploymentContext,
-    input: Parameters<CredentialDeploymentProxyDriver["deployProxy"]>[1],
+    input: Parameters<CredentialProxyDriver["deployProxy"]>[1],
   ): Promise<{ readonly proxyRouting?: CredentialProxyRouting }> {
     assertOpenShellDeploymentContext(context, this.sandbox.id);
     assertOpenShellDeploymentRef(context, input.deployment);
@@ -70,7 +70,7 @@ export class OpenShellCredentialProxyDriver implements CredentialDeploymentProxy
 
   async configureDeployment(
     context: CredentialDeploymentContext,
-    input: Parameters<CredentialDeploymentProxyDriver["configureDeployment"]>[1],
+    input: Parameters<CredentialProxyDriver["configureDeployment"]>[1],
   ): Promise<{ readonly credentialProjections: readonly CredentialProjection[] }> {
     assertOpenShellDeploymentContext(context, this.sandbox.id);
     assertOpenShellDeploymentConfiguration(context, input);
@@ -189,7 +189,7 @@ export class OpenShellCredentialProxyDriver implements CredentialDeploymentProxy
 
   async removeDeployment(
     context: CredentialDeploymentContext,
-    input: Parameters<CredentialDeploymentProxyDriver["removeDeployment"]>[1],
+    input: Parameters<CredentialProxyDriver["removeDeployment"]>[1],
   ): Promise<void> {
     assertOpenShellDeploymentContext(context, this.sandbox.id);
     if ("unboundDeployment" in input) {

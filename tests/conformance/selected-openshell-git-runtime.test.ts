@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
-import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import {
   OpenShellGitRouteBlockedError,
   openShellGitRouteReadiness,
@@ -81,7 +81,7 @@ async function selectedV5(t: TestContext) {
       };
     }
   })({ endpoint: "http://127.0.0.1:1" });
-  const proxy = new OpenShellCredentialProxyDriver(
+  const proxy = new OpenShellLegacyEgressProxyDriver(
     {
       middlewareName: "oce-prepared-git",
       repositoryMiddlewareName: "oce-prepared-git",

@@ -54,7 +54,7 @@ export type {
   CredentialSourceControl,
   CredentialUpdateNotification,
   CredentialProxyDriver,
-  CredentialDeploymentProxyDriver,
+  LegacyEgressProxyDriver,
   CredentialDeploymentContext,
 } from "./drivers/credential-proxy/index.ts";
 export type {

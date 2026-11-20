@@ -1,14 +1,14 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-20
-last_updated_session: 01a1eae9-8497-74d2-a9c7-9bc93809e94a
+last_updated_session: 01a1f7ec-0d9e-7803-96c3-eb88548e3788
 ---
 
 # Credential source lifecycle flow
 
 ## Overview
 
-OpenClaw Control Plane (OCC) authorizes CredentialSource operations and records the Source owner. The legacy serving path records `CredentialGatewayDriver` as owner; its OpenShell implementation stores the value. The serving protected path instead records the Credential Proxy as owner. The new design separates OCC TokenService Source ownership and [internal custody](token-service-static-custody.md) from native Credential Proxy delivery. An OpenShell Provider in that path is a delivery copy, not the Source owner. TokenService custody exists; native Agent delivery remains uncalled. OCC freezes source identity in the Agent revision and the worker rechecks authorization before delivery.
+OpenClaw Control Plane (OCC) authorizes CredentialSource operations and records the Source owner. The legacy serving path records `CredentialGatewayDriver` as owner; its OpenShell implementation stores the value. The serving protected path instead records `LegacyEgressProxyDriver` as owner. The new design separates OCC TokenService Source ownership and [internal custody](token-service-static-custody.md) from native Credential Proxy delivery. An OpenShell Provider in that path is a delivery copy, not the Source owner. TokenService custody exists; native Agent delivery remains uncalled. OCC freezes source identity in the Agent revision and the worker rechecks authorization before delivery.
 
 ## Entry Points
 
@@ -105,6 +105,7 @@ Inspect source `status`, worker reason codes, and withdrawal state. `CREDENTIAL_
 
 ## Changelog
 
+- 2026-11-20 10:13: Name the serving protected source owner as the legacy egress Driver. (01a1f7ec-0d9e-7803-96c3-eb88548e3788 - b02e93892)
 - 2026-11-20 08:10: Clarify serving and internal custody, registration checks, dispatch, and deletion retry behavior. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - 6c7aeed58)
 - 2026-11-20 07:59: Rewrite the serving lifecycle around source ownership, Agent delivery, and staged native limits. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - e76d323cb)
 
