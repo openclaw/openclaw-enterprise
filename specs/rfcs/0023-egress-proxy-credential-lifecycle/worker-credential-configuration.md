@@ -74,9 +74,9 @@ notifyCredentialUpdated?(
 ): Promise<void>;
 ```
 
-`configureDeployment` calls a binding's resolver only for first-use material transfer, never to attach a shared Provider. `getDeploymentStatus` observes without repair, reload, or upstream operations. For the expected configuration, pushed bindings require every serving copy to have the expected version; shared Provider bindings require the current effective policy.
+`configureDeployment` calls a binding's resolver only for first-use material transfer, never to attach a shared Provider. `getDeploymentStatus` observes without repair, reload, or upstream operations. For the expected configuration, each pushed binding requires a serving copy on this target, and every serving copy must have the expected version. Shared Provider bindings require the current effective policy.
 
-`notifyCredentialUpdated` belongs to source scope and receives no Agent revision. Its resolver is authorized only for the notification's exact source. A source update does not create a delivery resource or resolve material when no transfer is needed. A material push requires a version on the resolved material and acknowledges only after every serving copy can use that version. Concurrent updates cannot restore an older version. Move `CredentialUpdateNotification` to the Driver's public types.
+`notifyCredentialUpdated` belongs to source scope and receives no Agent revision. Its resolver is authorized only for the notification's exact source. With no delivery resource, the update succeeds without resolving material or creating a resource. Otherwise, it resolves material only when transfer is needed. A material push requires a version on the resolved material and acknowledges only after every serving copy can use that version. Concurrent updates cannot restore an older version. Move `CredentialUpdateNotification` to the Driver's public types.
 
 Admission rejects staged TokenService credential delivery if a required Driver operation is absent. Compute requires both worker callbacks on that staged path. Existing protected and unprotected revisions retain their current Driver paths. Vendor-specific policy contributions stay private to the paired Drivers.
 
