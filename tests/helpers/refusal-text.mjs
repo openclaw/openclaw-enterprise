@@ -16,18 +16,6 @@ export const callerDenied = (grant, target) =>
 // when the caller sent it or may read both it and the Agent, otherwise "one of its bound Secrets".
 export const agentPrincipalDenied = (agent, target, grant = "Secret operate") =>
   `${agent} cannot use ${target}: the Agent itself needs ${grant} on it. Ask an Installation administrator to give the Agent access, then deploy again.`;
-// A create needs the collection grant, which only Roles from the Installation configuration
-// hold: an Installation administrator creates one. `kinds` is the plural, such as "Secrets".
-export const createDenied = (kind, namespaceId, kinds = `${kind}s`) =>
-  `Not authorized: this needs ${kind} create in Namespace ${namespaceId}. Only an Installation administrator can create ${kinds}: ask one to create it.`;
-// The same create refused by a Restriction to a caller who administers the Installation, as the
-// console's AGENT_CREATE_RESTRICTED says (finding D769). Other callers get createDenied.
-export const createRestricted = (kind, namespaceId) =>
-  `Not authorized: a Restriction in Namespace ${namespaceId} denies ${kind} create, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it, or create the ${kind} in another Namespace.`;
-export const NAMESPACE_CREATE_DENIED =
-  "Not authorized: this needs Namespace create. Only an Installation administrator can create Namespaces: ask one to create it.";
-export const INSTALLATION_ADMINISTER_DENIED =
-  "Not authorized: this needs Installation administer. Ask an Installation administrator to do it for you or to grant it.";
 // An Agent create or update whose gatewayManagedMode alone needs Installation administer names the
 // field (finding 2691).
 export const GATEWAY_MANAGED_MODE_DENIED =
@@ -133,10 +121,6 @@ export const SIGN_IN_UNAVAILABLE =
 export const signInRateLimited = (seconds) =>
   `Too many attempts. Wait ${seconds === 1 ? "1 second" : `${seconds} seconds`}, then try again.`;
 export const SIGN_IN_RATE_LIMITED_MINUTE = "Too many attempts. Wait a minute, then try again.";
-// Create Agent and the Agents list for a caller without Agent create, which Namespace Roles cannot
-// grant people (findings 2496, 2508).
-export const AGENT_CREATE_DENIED =
-  "Your access does not include creating Agents in this Namespace. Only an Installation administrator can create Agents: ask one to create it and to give you access to edit and deploy it.";
 // The same places for an Installation administrator whom a deny Restriction keeps from creating
 // Agents in this Namespace (finding D759): administration cannot lift it.
 export const AGENT_CREATE_RESTRICTED =
@@ -144,11 +128,6 @@ export const AGENT_CREATE_RESTRICTED =
 // Secrets and Namespaces follow the same rule: Namespace Roles cannot grant people create.
 export const SECRET_CREATE_DENIED =
   "Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.";
-// The same refused Installation read when the Namespace permission read failed (finding 2110).
-export const AGENT_CREATE_PERMISSIONS_UNREAD =
-  "Your permissions in this Namespace could not be checked, and Installation-wide capabilities are not readable with your access. Retry the permission check before creating an Agent.";
-export const CONSOLE_NAMESPACE_CREATE_DENIED =
-  "Your access does not include creating Namespaces in this Installation. Only an Installation administrator can create Namespaces: ask one to create a Namespace or to give you access to an existing one.";
 
 // The console's reasons for a control disabled, or a request refused, for lack of a grant
 // (findings 2539, 2578): what the reader's access does not include, then the grant to ask an
@@ -162,16 +141,7 @@ export const notIncluded = (task, grant) =>
 export const credentialCheckedAtDeploy = (noun) =>
   `Deploying checks that this Agent can use the selected ${noun}. If it cannot, ask an Installation administrator to give the Agent ${noun} operate on it.`;
 export const AGENT_STOP_DENIED = notIncluded("stopping this Agent", "Agent operate on it");
-// The Secret dialog's disabled Replace value and Delete Secret, from the Secret read's answer
-// (finding D761).
-export const SECRET_UPDATE_DENIED = notIncluded(
-  "replacing this Secret's value",
-  "Secret update on it",
-);
-export const SECRET_DELETE_DENIED = notIncluded("deleting this Secret", "Secret delete on it");
 export const AGENT_DELETE_DENIED = notIncluded("deleting this Agent", "Agent delete on it");
-// A Namespace the reader cannot read, deleted or not shared, in one sentence (finding D753).
-export const NAMESPACE_UNAVAILABLE = "This Namespace is missing or your access does not include it";
 export const AGENT_STOP_AND_DELETE_DENIED = notIncluded(
   "stopping or deleting this Agent",
   "Agent operate and Agent delete on it",
@@ -194,10 +164,6 @@ export const STOP_REPEAT_CONFIRMATION = `This Agent is already requested to stop
 // The Agent page's Stop row, by whether Stop would cancel a first deployment in progress.
 export const STOP_CANCELS_FIRST_DEPLOYMENT = "Cancels this deployment without deleting Agent data.";
 export const STOP_RUNNING_VERSION = "Stops the running version without deleting Agent data.";
-// Each version has its own AgentRevision read grant, so a reader who deploys still needs read on
-// each new version, granted after it exists.
-export const NEW_VERSIONS_READ =
-  "Each new version needs its own AgentRevision read: ask an Installation administrator to grant it after each deployment.";
 // A request the API refused for lack of a grant: what the reader tried, then the grant to ask for.
 export const permissionRefused = (task, grant) =>
   `You do not have permission to ${task}. ${askForGrant(grant)}`;
@@ -207,38 +173,6 @@ export const stopRefused = (name) =>
   `Stop was refused: your access does not include stopping ${name}. ${askForGrant("Agent operate on it")}`;
 export const deleteRefused = (name) =>
   `Deletion was refused: your access does not include deleting ${name}. ${askForGrant("Agent delete on it")}`;
-export const CONFIGURATION_UPDATE_DENIED = notIncluded(
-  "editing this Configuration",
-  "Configuration update on it",
-);
-export const DIAGNOSTICS_DENIED = notIncluded(
-  "running diagnostics for this Agent",
-  "Agent operate on it",
-);
-export const WORKSPACE_SAVE_DENIED = notIncluded(
-  "saving this Agent's workspace files",
-  "Agent operate on it",
-);
-export const SANDBOX_POLICY_READ_DENIED = notIncluded(
-  "reading this Agent’s network policy or its suggestions",
-  "SandboxPolicy read on it",
-);
-// Deploy checks the same read when the policy has saved rules; the Agent page names the policy in
-// words, not by the ID the API's denial gives (finding D801).
-export const DEPLOY_SANDBOX_POLICY_READ_DENIED =
-  "Deploying this Agent needs SandboxPolicy read on its network policy, which your access does not include. Ask an Installation administrator to grant it.";
-// The Logs tab's refusals use the API's grant words for log text (finding 2599).
-export const LOG_TEXT_DENIED =
-  "Log text requires Agent read_logs (or Agent administer) on this Agent. Ask an Installation administrator to grant it.";
-// The status refusal names only status: the log pane names read_logs itself (finding D763). It
-// names only the grant the caller's answers show missing (finding D753); unknown answers, both.
-export const RUNTIME_STATUS_DENIED =
-  "Runtime status requires Agent operate on this Agent and AgentRevision read on this version. Ask an Installation administrator to grant them.";
-export const RUNTIME_STATUS_OPERATE_DENIED =
-  "Runtime status requires Agent operate on this Agent. Ask an Installation administrator to grant it.";
-// A version the page could not read: the strip says so instead of reading status (finding D794).
-export const RUNTIME_STATUS_VERSION_UNREADABLE =
-  "You cannot read this version, so its runtime status is not shown. Ask an Installation administrator for AgentRevision read on it.";
 // A version link the page cannot list may name a version that does not exist: the API answers
 // both alike, so the console says either may be true (finding D750).
 export const VERSION_UNAVAILABLE =
@@ -517,24 +451,11 @@ export const CONFIGURATION_SAVE_DENIED =
 // and a save refused on one a fresh answer names says so (finding 2453).
 export const SECRET_OPERATE_DENIED =
   "Binding it needs Secret operate, which your access does not include. Ask an Installation administrator for Secret operate on it.";
-// Create Agent's Create new Secret choice and typed model key, for a caller whose Secret operate
-// covers only some Secrets: a new Secret gets no operate grant of its own (finding 2492).
-export const NEW_SECRET_OPERATE_DENIED =
-  "Your access includes Secret operate on only some Secrets in this Namespace, so an Agent cannot use a new Secret you create here.";
-// What an administrator can grant instead: Secret operate on one exact Secret (finding 2507).
-export const NEW_SECRET_OPERATE_REMEDY =
-  "To use a new Secret, create it on the Secrets page, then ask an Installation administrator for Secret operate on it.";
 // The console's 403 for a read that names its grant, and for one that names none. Granting access
 // is Installation administration (findings 1920, 2259, 2260).
 // A Namespace list (Secrets, Presets, Service Accounts) is refused for lack of Namespace read.
 export const namespaceListDenied = (items) =>
   notIncluded(`listing ${items} in this Namespace`, "Namespace read");
-// What an Installation administrator's own refused request says: asking one would not help.
-export const ADMINISTRATOR_ACCESS_DENIED = "Your access does not include this action.";
-export const CONSOLE_ACCESS_DENIED =
-  "Your access does not include this action. Ask an Installation administrator to check your access.";
-export const secretOperateRefused = (name) =>
-  `Save was refused: your access does not include Secret operate on ${name}, which each save needs on every Secret it binds. Choose another Secret, or ask an Installation administrator for Secret operate on it.`;
 
 // The console's text for a read that failed with a 5xx.
 export const READ_UNAVAILABLE = "Service unavailable. The read could not be completed. Try again.";
@@ -712,8 +633,6 @@ export const BROKER_HOST_DENIED = brokerProxyRefusal(
 export const COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED =
   "The selected Compute Driver cannot deliver repository credentials to this Harness topology.";
 export const PROVISIONING_NOT_COMPLETED = "Agent provisioning could not complete.";
-// The heading wherever a caller reads no Namespace, on every page alike (finding D755).
-export const NO_READABLE_NAMESPACES = "No readable Namespaces";
 // An Installation without repository access. Only an Installation administrator can set it up,
 // so only one gets the setup guide link; anyone else is told whom to ask (finding D754).
 export const REPOSITORY_ACCESS_NOT_CONFIGURED =
@@ -742,8 +661,6 @@ export const VERSION_READ_DENIED_HEADING = "You cannot read this version";
 // The version draft a reader without Agent update views (finding 2421), and its plugin list.
 export const READ_ONLY_DRAFT_NOTICE =
   "Version draft · read-only with your access. The next deployment uses it as saved.";
-export const PLUGINS_READ_ONLY =
-  "These are the version draft's plugin selections, read-only with your access. The next deployment uses them as saved.";
 // Why a running version reads "Not verified" (finding 2367).
 export const NO_TEST_REQUEST = "OpenClaw Enterprise sends no test request.";
 // The API's refusal of a sandbox policy rule outside the Installation delegation ceiling.
@@ -755,18 +672,6 @@ export const PLUGIN_CREDENTIALS_REJECTED =
 // Finding 2619. A bound Secret the caller's readable Secret list leaves out, shown without the
 // audited metadata read; and the Backends refusal a non-administrator gets without the read.
 export const BOUND_SECRET_UNLISTED = `A Secret is bound. Its name is unavailable: your access does not include reading it, or it was deleted. ${askForGrant("Secret read on it")}`;
-// A bound Secret whose metadata read was refused to a caller who may still administer the
-// Installation, such as one a Restriction on Secret read covers (finding 2549).
-export const BOUND_SECRET_READ_REFUSED = `A Secret is bound. Its name is hidden because your access does not include reading it. ${askForGrant("Secret read on it")}`;
-// Finding D761. A link to a Secret the readable list leaves out: missing and unreadable alike.
-export const SECRET_LINK_UNLISTED = `This Secret is not in your readable list: it may not exist, or your access does not include reading it. ${askForGrant("Secret read on it")}`;
-// The same link for an Installation administrator, with no ask (finding D769). `shown` is
-// "Secret <id>" for a well-formed linked ID, otherwise "such Secret".
-export const secretLinkUnlistedAdministrator = (shown) =>
-  `No ${shown} is in your readable list for this Namespace.`;
-// A disabled Secret field's hint for a bound Secret the caller may read (finding 2646: a check
-// that it is absent must use this text, not a pasted fragment).
-export const BOUND_SECRET_METADATA = "Secret metadata is bound. Values are never shown.";
 // A version record with no recorded startup failure (agents/deployment-evidence.mts).
 export const NO_PERSISTED_STARTUP_FAILURE = "No persisted startup failure.";
 // Diagnostics hints (agents/deployment-diagnostics.mts): the runtime did not answer, and the
@@ -785,43 +690,10 @@ export const deployUnreadableSecrets = (count) =>
   count === 1
     ? `Deploying needs Secret operate on a bound Secret your access does not include reading. ${askForGrant("Secret read and operate on it")}`
     : `Deploying needs Secret operate on ${count} bound Secrets your access does not include reading. ${askForGrant("Secret read and operate on them")}`;
-export const BACKENDS_DENIED = `Your account does not have access to Backends. Backends apply to the whole Installation, so choosing another Namespace would not change this. ${askForGrant("access")}`;
-// A write the console names after the API refused it, where it was tried (errcopy-console-1026b).
-export const actionRefused = (action, task, grant) =>
-  `${action} was refused: your access does not include ${task}. ${askForGrant(grant)}`;
-// A request that checks several grants shows the API's named one after "<Action> was refused:".
-export const refusedNamed = (action, grant, target) =>
-  `${action} was refused: this needs ${grant} on ${target}. Ask an Installation administrator to grant it.`;
-// A save's reread of the Agent and its Configuration was refused before the write.
-export const SAVE_READ_REFUSED = actionRefused(
-  "Save",
-  "reading this Agent's saved settings, which each save reads first",
-  "Agent read and Configuration read on it",
-);
-export const WORKSPACE_SAVE_REFUSED = actionRefused(
-  "Save",
-  "saving this Agent's workspace files",
-  "Agent operate on it",
-);
-// Configuration create, which only an Installation administrator holds.
-export const CONFIGURATION_CREATE_REFUSED =
-  "Create was refused: your access does not include creating this Agent's Configuration. That needs Configuration create in this Namespace, which only an Installation administrator holds, plus Secret operate on each Secret it binds. Ask an Installation administrator to create this Agent.";
-// Repository choices for an Agent (Agent update) and for a new Agent (Agent create).
-export const REPOSITORY_CHOICES_AGENT_DENIED = notIncluded(
-  "loading repository choices for this Agent",
-  "Agent update on it",
-);
-export const REPOSITORY_CHOICES_CREATE_DENIED =
-  "Repository choices are not shown. Your access does not include creating Agents in this Namespace. Only an Installation administrator can create Agents: ask one to create it and to give you access to edit and deploy it.";
 // The sandbox policy editing setting, which only an Installation administrator who also
 // administers the Agent can change.
 export const POLICY_EDITING_SETTING_REFUSED =
   "Your access does not include changing the editing setting. Only an Installation administrator who also administers this Agent can change it.";
-// A Slack people or channel lookup the API refused without naming a grant.
-export const SLACK_LOOKUP_DENIED = notIncluded(
-  "looking up Slack people and channels with the selected Slack bot Secret",
-  "Secret operate on it",
-);
 // Rechecking an open Agent page when the API names no grant.
 export const AGENT_PAGE_READ_DENIED = notIncluded(
   "reading this Agent, its versions or its Configuration",
@@ -869,14 +741,6 @@ export const workspaceWithoutRunningVersion = (agentId) =>
   `Agent ${agentId} has no running version, so its workspace files cannot be read or written. Deploy it, then try again.`;
 export const workspaceVersionStarting = (agentId) =>
   `Agent ${agentId} has no running version yet: its deployment is still starting, so its workspace files cannot be read or written. Try again when the deployment finishes.`;
-// Finding D788. Namespace IAM Roles cannot grant Namespace delete, so a member's trash icon names
-// who can delete the Namespace instead of a grant to ask for.
-export const NAMESPACE_DELETE_DENIED =
-  "Only an Installation administrator can delete a Namespace. Ask one to delete this Namespace.";
-// The same icon for an Installation administrator whom a deny Restriction keeps from deleting the
-// Namespace (finding 2861): administration cannot lift it.
-export const NAMESPACE_DELETE_RESTRICTED =
-  "A Restriction denies deleting this Namespace, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it.";
 
 // Deploy new version's reason while saved Secrets wait for the Agent's grant names the bindings
 // whose Secrets wait, as the Credentials tab lists them, and where to grant access (finding 3017).
