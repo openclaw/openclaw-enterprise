@@ -272,8 +272,12 @@ export async function assertReadyGateway(
   const name = gatewayName(agentId);
   const raw: unknown = await resource("deployment", name, namespaceName);
   const deployment = object(raw);
+  assert.equal(
+    field(deployment.spec, "replicas"),
+    1,
+    "each Agent gateway must have exactly one replica",
+  );
   objectMember(deployment, "spec");
-  assert.equal(deployment.spec.replicas, 1, "each Agent gateway must have exactly one replica");
   assert.equal(
     optionalField(deployment.spec.strategy, "type"),
     "Recreate",
@@ -408,9 +412,13 @@ export async function assertReadyGateway(
   );
   if (snapshot !== undefined) {
     const podName = field(field(gatewayPod, "metadata"), "name");
+    assert.ok(
+      typeof podName === "string",
+      "the gateway Pod must have a string name before reading its mounted configuration",
+    );
     const mountedDocument = await kubectlRead(
       "exec",
-      String(podName),
+      podName,
       "--namespace",
       namespaceName,
       "--",
@@ -464,8 +472,8 @@ export async function assertHarnessWorkspaceClaim(
     namespaceName,
   );
   const claim = object(raw);
+  assert.equal(field(claim.metadata, "namespace"), namespaceName);
   objectMember(claim, "metadata");
-  assert.equal(claim.metadata.namespace, namespaceName);
   const labels = field(claim.metadata, "labels");
   assert.equal(field(labels, "app.kubernetes.io/managed-by"), "openclaw-enterprise");
   assert.equal(field(labels, "openclaw.dev/namespace"), namespaceId);
