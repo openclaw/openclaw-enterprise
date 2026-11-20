@@ -23,10 +23,10 @@ test(
       await createPostgresAgentApp(t, {
         label: "staged-agent-credential-binding",
         authSecret: "staged-agent-credential-binding-session-secret",
-      controllerOptions: {
-        iamConfiguration: controllerIAMConfiguration(defaultUsersIAM()),
-        recordOperations: true,
-      },
+        controllerOptions: {
+          iamConfiguration: controllerIAMConfiguration(defaultUsersIAM()),
+          recordOperations: true,
+        },
         appOptions: {
           provisionAuthAccount: (
             ...args: Parameters<ReturnType<typeof createPostgresAuthAccountProvisioner>>
