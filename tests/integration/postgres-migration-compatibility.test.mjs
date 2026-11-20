@@ -1695,6 +1695,7 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
+      [84, "preStaticTokenServiceSources"],
     ]) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -2002,6 +2003,7 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
+      [84, "preStaticTokenServiceSources"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2017,6 +2019,28 @@ test(
           prefix === 59
             ? await retainGatewaySourcesAcrossProxyAdmission(db.app, db.migrator, namespaceId)
             : undefined;
+        let existingGatewaySource;
+        if (prefix === 84) {
+          // The new private store must coexist with a real Gateway source and its existing Secret relationship.
+          const secretId = `sec_${randomUUID()}`;
+          const sourceId = `cs_${randomUUID()}`;
+          await db.app.query(
+            `INSERT INTO occ.secrets(id,namespace_id,name,driver_id,backend_namespace_name,backend_name,backend_key,backend_uid,created_at)
+             VALUES($1,$2,'Existing model key','secrets','fixture','existing-model-key','value',$3,now())`,
+            [secretId, namespaceId, randomUUID()],
+          );
+          await db.app.query(
+            `INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,driver_id,owner_capability,state,created_at)
+             VALUES($1,$2,'Existing Gateway model','openai','{}','external-gateway','credential_gateway','ready',now())`,
+            [sourceId, namespaceId],
+          );
+          await db.app.query(
+            `INSERT INTO occ.credential_source_secrets(namespace_id,credential_source_id,field,secret_id)
+             VALUES($1,$2,'api_key',$3)`,
+            [namespaceId, sourceId, secretId],
+          );
+          existingGatewaySource = { sourceId, secretId };
+        }
         const before = await canonicalData(db);
         const receipts = await historyReceipts(db.migrator);
         assert.deepEqual(await runHistoryMigration(db, "production", "--check"), {
@@ -2025,6 +2049,31 @@ test(
         });
         assert.deepEqual(await runHistoryMigration(db), { ok: true, history });
         await assertSourceOwners?.();
+        if (existingGatewaySource) {
+          assert.deepEqual(
+            (
+              await db.app.query(
+                `SELECT s.type,s.owner_capability,s.driver_id,s.state,s.token_service_instance_id,
+                        r.field,r.secret_id
+                   FROM occ.credential_sources s JOIN occ.credential_source_secrets r
+                     ON r.namespace_id=s.namespace_id AND r.credential_source_id=s.id
+                  WHERE s.id=$1`,
+                [existingGatewaySource.sourceId],
+              )
+            ).rows,
+            [
+              {
+                type: "openai",
+                owner_capability: "credential_gateway",
+                driver_id: "external-gateway",
+                state: "ready",
+                token_service_instance_id: null,
+                field: "api_key",
+                secret_id: existingGatewaySource.secretId,
+              },
+            ],
+          );
+        }
         await assertCompletedHistory(db, receipts);
         await assertUpgradedRevisionReadable(db);
         assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before));
@@ -2307,6 +2356,7 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
+      [84, "preStaticTokenServiceSources"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2510,6 +2560,7 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
+      [84, "preStaticTokenServiceSources"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -2597,6 +2648,7 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
+      [84, "preStaticTokenServiceSources"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

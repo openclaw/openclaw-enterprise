@@ -15,6 +15,7 @@ import type { RepositoryPolicyDriver } from "./repo/index.ts";
 import type { SandboxDriver } from "./sandbox/index.ts";
 import type { SecretDriver } from "./secret/index.ts";
 import type { ServiceAccountDriver } from "./service-account/index.ts";
+import type { TokenServiceDriver } from "./token-service/index.ts";
 
 export const DRIVER_CAPABILITIES = Object.freeze([
   "iam",
@@ -29,6 +30,7 @@ export const DRIVER_CAPABILITIES = Object.freeze([
   "credential_gateway",
   "credential_refresh",
   "credential_proxy",
+  "token_service",
 ] as const);
 
 export type DriverCapability = (typeof DRIVER_CAPABILITIES)[number];
@@ -60,6 +62,7 @@ export type DriverByCapability = {
   credential_gateway: CredentialGatewayDriver;
   credential_refresh: CredentialRefreshDriver;
   credential_proxy: CredentialProxyDriver;
+  token_service: TokenServiceDriver;
 };
 
 /** A package returns the capabilities of this instance and one lifecycle, never support flags. */

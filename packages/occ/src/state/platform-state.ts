@@ -56,6 +56,7 @@ import type {
   FirstDeploymentReceipt,
   AuditEvent,
   CredentialSource,
+  TokenServiceRegistration,
   CredentialSourceSnapshot,
   CredentialWithdrawal,
   SecretReference,
@@ -130,6 +131,13 @@ import type {
 
 export type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
 
+/** Durable identity of the selected private credential store. */
+export interface TokenServiceInstance {
+  readonly id: string;
+  readonly driverId: string;
+  readonly storeIdentity: string;
+}
+
 export interface InstallationReadRepository {
   findInstallation(installationId: string): Promise<Readonly<Installation> | undefined>;
   getInstallation(): Promise<Readonly<Installation> | undefined>;
@@ -137,6 +145,9 @@ export interface InstallationReadRepository {
 
 export interface InstallationRepository extends InstallationReadRepository {
   createInstallation(installation: Installation): Promise<Readonly<Installation>>;
+  selectTokenServiceInstance(
+    candidate: TokenServiceInstance,
+  ): Promise<Readonly<TokenServiceInstance>>;
   /**
    * Holds a human Principal's account until COMMIT so a disable cannot commit first.
    * False when the account is disabled; true when it is enabled or the Principal has
@@ -652,10 +663,23 @@ export interface CredentialSourceRepository extends CredentialSourceReadReposito
     credentialSourceId: string,
     secrets: Readonly<Record<string, SecretReference>>,
   ): Promise<Readonly<CredentialSource> | undefined>;
-  /** Moves a registering source to `ready` once the gateway confirms its copy. */
+  /** Claims dispatch or clears it after independent cleanup of a deleting source. */
+  setCredentialSourceRegistrationDispatch(
+    namespaceId: string,
+    credentialSourceId: string,
+    dispatchedAt: string | undefined,
+  ): Promise<boolean>;
+  /** Moves a registering source to `ready` once its owner confirms its copy. */
   markCredentialSourceReady(
     namespaceId: string,
     credentialSourceId: string,
+    registration?: TokenServiceRegistration,
+    config?: Readonly<Record<string, string>>,
+  ): Promise<Readonly<CredentialSource> | undefined>;
+  updateCredentialSourceConfig(
+    namespaceId: string,
+    credentialSourceId: string,
+    config: Readonly<Record<string, string>>,
   ): Promise<Readonly<CredentialSource> | undefined>;
   /** Moves a registering or ready source to `deleting`; the record stays until the gateway copy is gone. */
   markCredentialSourceDeleting(
@@ -1315,6 +1339,7 @@ interface IAMSubjectSource {
 interface PlatformSnapshot {
   readonly egressSendReceipts: Map<string, StoredSendReceipt>;
   installation: Readonly<Installation> | undefined;
+  tokenServiceInstance: Readonly<TokenServiceInstance> | undefined;
   readonly namespaces: Map<string, Readonly<PersistedNamespace>>;
   readonly configurations: Map<string, Readonly<ConfigurationOwnership>>;
   readonly connectionTemplates: Map<string, Readonly<ConnectionTemplate>>;
@@ -1481,6 +1506,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
   return {
     installation:
       snapshot.installation === undefined ? undefined : storedCopy(snapshot.installation),
+    tokenServiceInstance: snapshot.tokenServiceInstance,
     namespaces: copyStoredMap(snapshot.namespaces),
     configurations: copyStoredMap(snapshot.configurations),
     connectionTemplates: new Map(snapshot.connectionTemplates),
@@ -1807,6 +1833,16 @@ function assertProtectedEgressSource(
   }
 }
 
+function validTokenServiceRegistration(value: unknown): boolean {
+  return (
+    isPlainRecord(value) &&
+    Object.keys(value).every((key) => key === "backendRef") &&
+    (value.backendRef === undefined ||
+      (isPlainRecord(value.backendRef) &&
+        Object.values(value.backendRef).every((item) => typeof item === "string")))
+  );
+}
+
 /** Mirrors the PostgreSQL credential source constraints for the in-memory adapter. */
 function assertCredentialSource(source: CredentialSource): void {
   if (source.egress !== undefined) {
@@ -1816,9 +1852,23 @@ function assertCredentialSource(source: CredentialSource): void {
   const secretInputs: unknown = source.secrets;
   const validOwner =
     source.ownerCapability === "token_service"
-      ? source.type === "oauth2-refresh-token" &&
-        source.egress === undefined &&
-        source.driverId === undefined
+      ? source.egress === undefined &&
+        source.driverId === undefined &&
+        (source.tokenServiceInstanceId === undefined
+          ? source.type === "oauth2-refresh-token" &&
+            source.registration === undefined &&
+            source.registrationDispatchedAt === undefined
+          : source.type !== "oauth2-refresh-token" &&
+            (source.registration === undefined ||
+              validTokenServiceRegistration(source.registration)) &&
+            (source.registrationDispatchedAt === undefined ||
+              (Number.isFinite(Date.parse(source.registrationDispatchedAt)) &&
+                Date.parse(source.registrationDispatchedAt) >= Date.parse(source.createdAt))) &&
+            (source.state !== "registering" || source.registration === undefined) &&
+            (source.state !== "ready" ||
+              (source.registration !== undefined &&
+                source.registrationDispatchedAt !== undefined)) &&
+            Object.keys(source.secrets).length === 0)
       : (source.ownerCapability === "credential_gateway" ||
           (source.ownerCapability === "credential_proxy" && source.egress !== undefined)) &&
         typeof source.driverId === "string" &&
@@ -1906,6 +1956,43 @@ function repositories(
       const saved = immutableCopy(installation);
       snapshot.installation = saved;
       return saved;
+    },
+    selectTokenServiceInstance: async (candidate) => {
+      assertInitialized(snapshot);
+      if (
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+          candidate.id,
+        ) ||
+        !isNonEmptyString(candidate.driverId) ||
+        candidate.driverId.length > 200 ||
+        candidate.driverId !== candidate.driverId.trim() ||
+        !isNonEmptyString(candidate.storeIdentity) ||
+        candidate.storeIdentity.length > 200 ||
+        candidate.storeIdentity !== candidate.storeIdentity.trim()
+      ) {
+        throw new ScopeViolationError("The TokenService instance identity is invalid.");
+      }
+      const current = snapshot.tokenServiceInstance;
+      if (
+        current?.driverId === candidate.driverId &&
+        current.storeIdentity === candidate.storeIdentity
+      ) {
+        return current;
+      }
+      if (
+        current &&
+        (current.id === candidate.id ||
+          Array.from(snapshot.credentialSources.values()).some(
+            (source) =>
+              source.ownerCapability === "token_service" &&
+              source.tokenServiceInstanceId === current.id,
+          ))
+      ) {
+        throw new ResourceStateConflictError("The TokenService instance still has registrations.");
+      }
+      const selected = immutableCopy(candidate);
+      snapshot.tokenServiceInstance = selected;
+      return selected;
     },
     // In-memory State has no human accounts, and its units are serialized.
     holdPrincipalAccount: async () => true,
@@ -3132,6 +3219,15 @@ function repositories(
     createCredentialSource: async (source) => {
       assertInitialized(snapshot);
       assertCredentialSource(source);
+      if (
+        source.ownerCapability === "token_service" &&
+        source.tokenServiceInstanceId !== undefined &&
+        source.tokenServiceInstanceId !== snapshot.tokenServiceInstance?.id
+      ) {
+        throw new ScopeViolationError(
+          "The credential source belongs to an unavailable TokenService instance.",
+        );
+      }
       const namespace = await namespaces.lockNamespace(source.namespaceId);
       if (
         namespace === undefined ||
@@ -3186,12 +3282,62 @@ function repositories(
       snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
       return saved;
     },
-    markCredentialSourceReady: async (namespaceId, credentialSourceId) => {
+    setCredentialSourceRegistrationDispatch: async (
+      namespaceId,
+      credentialSourceId,
+      dispatchedAt,
+    ) => {
+      const current = await findCredentialSource(namespaceId, credentialSourceId);
+      if (
+        current?.ownerCapability !== "token_service" ||
+        current.tokenServiceInstanceId === undefined ||
+        current.registration !== undefined ||
+        current.state !== (dispatchedAt === undefined ? "deleting" : "registering") ||
+        (current.registrationDispatchedAt === undefined) === (dispatchedAt === undefined)
+      ) {
+        return false;
+      }
+      const { registrationDispatchedAt: _, ...rest } = current;
+      const saved = immutableCopy(
+        dispatchedAt === undefined ? rest : { ...rest, registrationDispatchedAt: dispatchedAt },
+      );
+      assertCredentialSource(saved);
+      snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
+      return true;
+    },
+    updateCredentialSourceConfig: async (namespaceId, credentialSourceId, config) => {
+      const current = await findCredentialSource(namespaceId, credentialSourceId);
+      if (
+        current?.ownerCapability !== "token_service" ||
+        current.tokenServiceInstanceId === undefined ||
+        current.state !== "ready"
+      ) {
+        return undefined;
+      }
+      const saved = immutableCopy({ ...current, config });
+      assertCredentialSource(saved);
+      snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
+      return saved;
+    },
+    markCredentialSourceReady: async (namespaceId, credentialSourceId, registration, config) => {
       const current = await findCredentialSource(namespaceId, credentialSourceId);
       if (current === undefined || current.state !== "registering") {
         return undefined;
       }
-      const saved = immutableCopy({ ...current, state: "ready" as const });
+      if (
+        config !== undefined &&
+        (current.ownerCapability !== "token_service" ||
+          current.tokenServiceInstanceId === undefined)
+      ) {
+        return undefined;
+      }
+      const saved = immutableCopy({
+        ...current,
+        state: "ready" as const,
+        ...(registration === undefined ? {} : { registration }),
+        ...(config === undefined ? {} : { config }),
+      });
+      assertCredentialSource(saved);
       snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
       return saved;
     },
@@ -4780,6 +4926,7 @@ function finalizeAgentDeletion(
 export class InMemoryPlatformState implements PlatformStateStore {
   private snapshot: PlatformSnapshot = {
     installation: undefined,
+    tokenServiceInstance: undefined,
     namespaces: new Map(),
     configurations: new Map(),
     connectionTemplates: new Map(),
