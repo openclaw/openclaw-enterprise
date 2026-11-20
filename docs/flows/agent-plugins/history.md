@@ -10,6 +10,17 @@ This record preserves the dated changes to the Agent plugin deployment flow. See
 
 - 2026-11-19 01:12: With the runtime pin at OpenClaw `44f24d8398`, dedicated Codex lists a pinned Skill Library skill by name and description with a note to read it through `skills_read` instead of its Gateway-only path. (authoring-run/0cdd91e7-47ea-4661-a124-c23fd4479805 - cea7d46c6956c59ba9604a710022159930eb5aa4)
 - 2026-11-18 22:08: Allow Gateway-side read-only `skills_search` and `skills_read` over session-eligible skills in the default Gateway tool policy, so a dedicated Harness can read skills whose files exist only in the Gateway, such as pinned Skill Library instructions. (authoring-run/19cca54a-1443-4e43-87cd-86a89718b7e4 - 715d7cfbc45f99abdfe9181049affc68218db2c2)
+
+- 2026-11-12 11:28: Accept omitted hosted executor metadata. (authoring-run/b8442d2f-2982-4cf1-8421-13f99290aa97 - b80d084ba843cb8e9ff99e9550bb35dcf6b820f6)
+
+- 2026-11-05 21:02: Trace plugin JSON refusal. (authoring-run/ead82952-8ee4-4f4a-82fe-148da7fa2edc - 3768cfd0d640f450f485cb334b6753ac1e5ea1c3)
+
+- 2026-11-05 13:37: Trace plugin-policy refusal recovery. (authoring-run/9cb771c4-f1a8-44ec-a4ef-7c914a5ddb6e - a8259883139ac831b32c0a7b0fe872f6db4ee290)
+
+- 2026-11-05 01:02: Select the Harness catalog and recheck its identity before cutover. (01a169f0-a851-7b81-8e83-ff597893aa21 - 0e9575278)
+
+- 2026-11-03 01:40: Trace startup of multiple managed packages on one dedicated Agent. (authoring-run/e29308a5-ef76-4952-b439-23483c4dbd99 - 54b2a30498f690e2a16a3198e84a6363f69d91ae)
+
 - 2026-11-03 01:10: Describe hosted MCP packages and Driver-owned request policy. (authoring-run/1bd8c7a3-997a-45b2-93a4-e24d114c9ca8 - 4178b555ac5dc711c818055bd7fe34c3e4d4943b)
 
 - 2026-11-03 00:16: Describe plugin types. (authoring-run/c005ad62-46dd-4f91-8224-3934bc3dbfe7 - e1a6ce75ac414131e759b985d280833b3b26b90e)
