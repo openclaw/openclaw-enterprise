@@ -2671,6 +2671,24 @@
           "primaryKey": false,
           "notNull": true
         },
+        "token_service_instance_id": {
+          "name": "token_service_instance_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "registration": {
+          "name": "registration",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "registration_dispatched_at": {
+          "name": "registration_dispatched_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "state": {
           "name": "state",
           "type": "text",
@@ -2693,6 +2711,20 @@
           "schemaTo": "occ",
           "columnsFrom": [
             "namespace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "restrict"
+        },
+        "credential_sources_token_service_instance_id_token_service_instances_id_fk": {
+          "name": "credential_sources_token_service_instance_id_token_service_instances_id_fk",
+          "tableFrom": "credential_sources",
+          "tableTo": "token_service_instances",
+          "schemaTo": "occ",
+          "columnsFrom": [
+            "token_service_instance_id"
           ],
           "columnsTo": [
             "id"
@@ -2748,7 +2780,7 @@
         },
         "credential_sources_owner_capability_valid": {
           "name": "credential_sources_owner_capability_valid",
-          "value": "(\"occ\".\"credential_sources\".\"driver_id\" IS NOT NULL AND (\"occ\".\"credential_sources\".\"owner_capability\" = 'credential_gateway' OR (\"occ\".\"credential_sources\".\"owner_capability\" = 'credential_proxy' AND \"occ\".\"credential_sources\".\"egress\" IS NOT NULL))) OR (\"occ\".\"credential_sources\".\"owner_capability\" = 'token_service' AND \"occ\".\"credential_sources\".\"driver_id\" IS NULL AND \"occ\".\"credential_sources\".\"type\" = 'oauth2-refresh-token' AND \"occ\".\"credential_sources\".\"egress\" IS NULL)"
+          "value": "CASE WHEN \"occ\".\"credential_sources\".\"owner_capability\" = 'token_service' THEN \"occ\".\"credential_sources\".\"driver_id\" IS NULL AND \"occ\".\"credential_sources\".\"egress\" IS NULL AND (\n      (\"occ\".\"credential_sources\".\"type\" = 'oauth2-refresh-token' AND \"occ\".\"credential_sources\".\"token_service_instance_id\" IS NULL AND \"occ\".\"credential_sources\".\"registration\" IS NULL AND \"occ\".\"credential_sources\".\"registration_dispatched_at\" IS NULL)\n      OR (\"occ\".\"credential_sources\".\"type\" <> 'oauth2-refresh-token' AND \"occ\".\"credential_sources\".\"token_service_instance_id\" IS NOT NULL\n        AND (\"occ\".\"credential_sources\".\"registration\" IS NULL OR occ.token_service_registration_is_valid(\"occ\".\"credential_sources\".\"registration\"))\n        AND (\"occ\".\"credential_sources\".\"registration_dispatched_at\" IS NULL OR \"occ\".\"credential_sources\".\"registration_dispatched_at\" >= \"occ\".\"credential_sources\".\"created_at\")\n        AND (\"occ\".\"credential_sources\".\"state\" <> 'registering' OR \"occ\".\"credential_sources\".\"registration\" IS NULL)\n        AND (\"occ\".\"credential_sources\".\"state\" <> 'ready' OR (\"occ\".\"credential_sources\".\"registration\" IS NOT NULL AND \"occ\".\"credential_sources\".\"registration_dispatched_at\" IS NOT NULL)))\n    ) ELSE \"occ\".\"credential_sources\".\"driver_id\" IS NOT NULL AND \"occ\".\"credential_sources\".\"token_service_instance_id\" IS NULL AND \"occ\".\"credential_sources\".\"registration\" IS NULL AND \"occ\".\"credential_sources\".\"registration_dispatched_at\" IS NULL\n      AND (\"occ\".\"credential_sources\".\"owner_capability\" = 'credential_gateway' OR (\"occ\".\"credential_sources\".\"owner_capability\" = 'credential_proxy' AND \"occ\".\"credential_sources\".\"egress\" IS NOT NULL)) END IS TRUE"
         },
         "credential_sources_driver_id_valid": {
           "name": "credential_sources_driver_id_valid",
@@ -4461,6 +4493,18 @@
           "primaryKey": false,
           "notNull": true
         },
+        "startup_configuration": {
+          "name": "startup_configuration",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "management_mode": {
+          "name": "management_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "updated_at": {
           "name": "updated_at",
           "type": "timestamp with time zone",
@@ -4502,6 +4546,10 @@
         "installation_ceiling_rules": {
           "name": "installation_ceiling_rules",
           "value": "occ.sandbox_network_grants_are_valid(\"occ\".\"installation_network_policy_ceiling\".\"rules\")"
+        },
+        "installation_ceiling_mode": {
+          "name": "installation_ceiling_mode",
+          "value": "\"occ\".\"installation_network_policy_ceiling\".\"management_mode\" IN ('console', 'startup')"
         }
       },
       "isRLSEnabled": false
@@ -7300,6 +7348,79 @@
       },
       "isRLSEnabled": false
     },
+    "occ.token_service_instances": {
+      "name": "token_service_instances",
+      "schema": "occ",
+      "columns": {
+        "installation_id": {
+          "name": "installation_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "driver_id": {
+          "name": "driver_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "store_identity": {
+          "name": "store_identity",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "token_service_instances_installation_id_installation_id_fk": {
+          "name": "token_service_instances_installation_id_installation_id_fk",
+          "tableFrom": "token_service_instances",
+          "tableTo": "installation",
+          "schemaTo": "occ",
+          "columnsFrom": [
+            "installation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "restrict"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "token_service_instances_id_unique": {
+          "name": "token_service_instances_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "token_service_instances_id_valid": {
+          "name": "token_service_instances_id_valid",
+          "value": "\"occ\".\"token_service_instances\".\"id\" ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'"
+        },
+        "token_service_instances_driver_valid": {
+          "name": "token_service_instances_driver_valid",
+          "value": "char_length(\"occ\".\"token_service_instances\".\"driver_id\") BETWEEN 1 AND 200 AND \"occ\".\"token_service_instances\".\"driver_id\" = btrim(\"occ\".\"token_service_instances\".\"driver_id\")"
+        },
+        "token_service_instances_store_valid": {
+          "name": "token_service_instances_store_valid",
+          "value": "char_length(\"occ\".\"token_service_instances\".\"store_identity\") BETWEEN 1 AND 200 AND \"occ\".\"token_service_instances\".\"store_identity\" = btrim(\"occ\".\"token_service_instances\".\"store_identity\")"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "occ.user": {
       "name": "user",
       "schema": "occ",
@@ -7570,6 +7691,6 @@
     "tables": {},
     "columns": {}
   },
-  "id": "e54f0d7c-8d0c-4949-bd38-46ec0d60756c",
-  "prevId": "34b1b74d-57d1-4bf1-bdcc-dbbf2488bc5a"
+  "id": "34b1b74d-57d1-4bf1-bdcc-dbbf2488bc5a",
+  "prevId": "57be4ec3-81ed-4c74-8fb3-e41316a73ce7"
 }

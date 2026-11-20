@@ -46,12 +46,8 @@ import {
 import { responseTo } from "./console-action-helpers.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { within } from "../helpers/wait-for.ts";
-import {
-  NO_READABLE_NAMESPACES,
-  NAMESPACE_UNAVAILABLE,
-  WORKSPACE_FILES_UNAVAILABLE,
-  SIGN_IN_UNAVAILABLE,
-} from "../helpers/refusal-text.mjs";
+import { WORKSPACE_FILES_UNAVAILABLE, SIGN_IN_UNAVAILABLE } from "../helpers/refusal-text.mjs";
+import { NO_READABLE_NAMESPACES, NAMESPACE_UNAVAILABLE } from "../helpers/refusal-access.ts";
 
 type App = ReturnType<typeof createFastifyApp>;
 type RouteHandler = Parameters<App["get"]>[1]["handler"];

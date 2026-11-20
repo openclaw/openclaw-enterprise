@@ -25,7 +25,7 @@ import {
   signInWithEmailPassword,
   signInToControllerApp,
 } from "../helpers/auth-session.mjs";
-import { injectJson } from "../helpers/inject-json.mjs";
+import { injectJson } from "../helpers/inject-json.ts";
 import { listen } from "../helpers/listen.ts";
 
 const installationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
@@ -224,14 +224,8 @@ test("IAM decision reasons must be strings before an installation-admin read", a
   });
   t.after(() => app.close());
   const session = await signInToControllerApp(app, authFixture);
-  const injectControllerJson: (
-    controllerApp: typeof app,
-    method: "GET",
-    path: string,
-    options: Parameters<typeof injectJson>[3],
-  ) => Promise<Awaited<ReturnType<typeof app.inject>>> = injectJson;
   const read = () =>
-    injectControllerJson(app, "GET", "/observability", { session, remoteAddress: "127.0.0.1" });
+    injectJson(app, "GET", "/observability", { session, remoteAddress: "127.0.0.1" });
 
   async function assertRefusedRead(
     status: 403 | 503,

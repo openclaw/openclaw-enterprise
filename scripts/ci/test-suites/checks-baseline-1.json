@@ -8,6 +8,7 @@
     "tests/integration/dev-up-compose-startup.test.ts",
     "tests/integration/dev-up-compose.test.mjs",
     "tests/integration/occ-api.test.mjs",
+    "tests/integration/occ-api-first-deployment-guarded.test.ts",
     "tests/integration/occ-api-deployment-work.test.ts",
     "tests/integration/occ-api-mutation-refusals.test.ts",
     "tests/integration/managed-mcp-tool-discovery.test.ts",
@@ -85,7 +86,7 @@
     "tests/conformance/openshell-gateway-wire.test.ts",
     "tests/conformance/openshell-provider-profile-wire.test.ts",
     "tests/conformance/oauth-connection.test.mjs",
-    "tests/conformance/openshell-managed-bootstrap.test.mjs",
+    "tests/conformance/openshell-managed-bootstrap.test.ts",
     "tests/conformance/openshell-oauth-wire.test.mjs",
     "tests/conformance/openshell-codex-device.test.mjs",
     "tests/conformance/openshell-harness-status.test.mjs",
@@ -362,7 +363,7 @@
       "path": "tests/conformance/oauth-connection.test.mjs"
     },
     {
-      "path": "tests/conformance/openshell-managed-bootstrap.test.mjs"
+      "path": "tests/conformance/openshell-managed-bootstrap.test.ts"
     },
     {
       "path": "tests/conformance/openshell-oauth-wire.test.mjs"
@@ -510,6 +511,22 @@
       "path": "tests/integration/occ-api.test.mjs"
     },
     {
+      "path": "tests/integration/occ-api-first-deployment-guarded.test.ts",
+      "expectedTests": [
+        "guarded first deployment with the bundled Slack selection recovers without writes",
+        "guarded first deployment isolates actors and requires current exact authority",
+        "guarded first deployment rejects stale binding and generation before credential work",
+        "guarded first deployment serializes fresh Slack contenders after concurrent preparation",
+        "guarded first deployment supports trusted registered validators and hides unknown failures",
+        "guarded first deployment rechecks configuration after outside-transaction validation",
+        "guarded first deployment rechecks Agent and Configuration authority before credential effects",
+        "guarded first deployment refuses deleting Agents before validation",
+        "matching first deployments recover between the initial snapshot and lock despite fresh failures",
+        "first deployment recovery generation has an exact decimal wire bound over real HTTP",
+        "guarded deployment rejects dot keys and unrecognized intent fields without writes"
+      ]
+    },
+    {
       "path": "tests/integration/occ-api-deployment-work.test.ts",
       "expectedTests": [
         "OCC Fastify rejects unsafe guarded Agent stop requests",
@@ -645,7 +662,10 @@
       "path": "tests/integration/runtime-credentials-api.test.ts"
     },
     {
-      "path": "tests/integration/secret-driver-startup.test.ts"
+      "path": "tests/integration/secret-driver-startup.test.ts",
+      "expectedTests": [
+        "TokenService startup keeps marker ownership with the selected private Secret Driver"
+      ]
     },
     {
       "path": "tests/integration/service-api-keys.test.ts"

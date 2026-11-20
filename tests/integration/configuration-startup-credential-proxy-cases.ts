@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test, { type TestContext } from "node:test";
+import test from "node:test";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import {
   InstallationFieldError,
@@ -10,6 +10,10 @@ import { openShellRepositoryConfiguration } from "../../apps/controller/src/driv
 import { formatStartupConfigurationFailure } from "../../apps/controller/src/startup-failure.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.ts";
+import type {
+  StartupProcessFixtures,
+  StartupSiblingWait,
+} from "./configuration-startup-resolution-cases.ts";
 
 type StartupMode = Parameters<typeof loadInstallationConfiguration>[0]["mode"];
 type ExpectedFields = readonly (readonly [path: string, code: InstallationFieldDetail["code"]])[];
@@ -19,12 +23,9 @@ type StartupDiagnosticSource =
   | { readonly script: string; readonly event: "startup-error" | "worker.startup-error" }
   | { readonly script: string; readonly event: null };
 
-interface StartupCredentialProxyFixtures {
-  boot(script: string, env: NodeJS.ProcessEnv): Promise<unknown>;
-  fixture(context: TestContext, configuration: Readonly<Record<string, unknown>>): Promise<string>;
-  productionServer: NodeJS.ProcessEnv;
-  settled(boots: readonly Promise<void>[]): Promise<unknown>;
-}
+type StartupCredentialProxyFixtures = StartupProcessFixtures & {
+  settled: StartupSiblingWait;
+};
 
 const api = { script: "apps/controller/src/server.mjs", event: "startup-error" } as const;
 const worker = { script: "apps/controller/src/worker.mjs", event: "worker.startup-error" } as const;
@@ -136,9 +137,8 @@ export function registerStartupCredentialProxyCases({
     // Join every process before the shared Installation fixture can be removed.
     await settled(
       entries.map(async ({ source, env }) => {
-        const result = asRecord(await boot(source.script, env));
-        assert.equal(result?.status, 1, `${source.script} must refuse startup`);
-        assert.ok(typeof result?.stderr === "string", `expected stderr from ${source.script}`);
+        const result = await boot(source.script, env);
+        assert.equal(result.status, 1, `${source.script} must refuse startup`);
         const diagnostic = startupDiagnostic(result.stderr, source);
         assert.equal(diagnostic.code, code, source.script);
         assert.deepEqual(diagnostic.details, details, source.script);

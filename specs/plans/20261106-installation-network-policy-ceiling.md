@@ -12,7 +12,7 @@ rfc: ../rfcs/20261106-installation-network-policy-ceiling.md
 
 ## Outcome and scope
 
-Administrators edit the persisted Installation ceiling in Settings. Startup seeds
+Administrators edit the Installation ceiling in Settings. Startup seeds
 absent state. Running access stays unchanged.
 
 ## Global Constraints
@@ -31,7 +31,7 @@ The Installation repository owns `{ installationId, version, rules, updatedAt, u
 GET and PUT at `/installation/sandbox-network-policy-ceiling` use the standard
 data envelope. PUT takes `{ expectedVersion, rules }`; POST adds `/validate` to
 that path and returns `ConfigurationResult<{ rules }>` without writes. Both
-check Installation authority and version. Preview grants no later write
+check Installation authority and version. Preview grants no write
 authority. Agent policy reads expose only rules.
 
 Shared ceiling locks precede Namespace/Agent locks in admission and worker
@@ -43,24 +43,23 @@ saved state and never seed it. Replicas retain no startup ownership lease.
 
 ### Task 1: Persistence, startup, API and real callers
 
-Extend contracts, Installation repositories, schema/migrations, composition,
-HTTP handlers, admission and worker rechecks. Reject the retired overwrite key.
-Extend PostgreSQL Agent workflows to prove persistence, restart, stale saves,
-denials, audit rollback, concurrency and absent state. Register coverage in CI.
+Extend contracts, Installation persistence, composition, HTTP handlers, admission
+and worker rechecks. Reject the retired overwrite key.
+Extend PostgreSQL Agent coverage for persistence, restart, stale saves, denials,
+audit rollback, concurrency and absent state; register in CI.
 
 ### Task 2: Console Settings and UI evidence
 
 Reuse shared Settings controls. Cover loading, empty, invalid, forbidden,
 conflict, uncertain-save, success and permission-loss states. Preserve drafts;
-require review before saving. Update and rebuild Storybook, inspect controls,
-and capture before/after screenshots and video outside the checkout. Upload
+require review before saving. Rebuild and inspect Storybook; capture before/after screenshots and video
+outside the checkout. Upload
 native GitHub attachments and label simulated proof.
 
 ### Task 3: Current documentation and verification
 
-Update references, guides, flows, cheat sheets and navigation; generate API docs
-from route schemas. Run formatting, lint, types, boundaries, API/docs checks and
-PostgreSQL Agent integrations. Run Fedora/Podman/k3d/OpenShell qualification with
+Update references, guides, flows, cheat sheets, navigation and generated API docs.
+Verify formatting, lint, types, boundaries, API/docs and PostgreSQL Agent workflows. Run Fedora/Podman/k3d/OpenShell qualification with
 the selected host and authorized credentials. Complete independent review.
 Preserve ready-for-review status as requested; list outstanding merge requirements.
 
@@ -315,6 +314,8 @@ status remain unchanged.
 Main `a99a9c852` owns RFC-0044; the ceiling now uses RFC-20261106-installation-network-policy-ceiling under date-and-title naming.
 
 Main `ebcc46a14` owns 0084; ceiling migrations move to 0085–0086 with unchanged SQL.
+
+Main `2c78d43bb` owns 0085; ceiling migrations move to 0086–0087 with unchanged SQL.
 
 ## Manual Notes
 
