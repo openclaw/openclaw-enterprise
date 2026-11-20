@@ -429,7 +429,15 @@ async function withUpgradeServer(
   const crashes: Error[] = [];
   const onUncaught = (error: Error) => crashes.push(error);
   const upgraded = Promise.withResolvers<Duplex>();
-  const onUpgrade = (_request: IncomingMessage, socket: Duplex) => upgraded.resolve(socket);
+  let upgradedSocket: Duplex | undefined;
+  let closing = false;
+  const onUpgrade = (_request: IncomingMessage, socket: Duplex) => {
+    upgradedSocket = socket;
+    upgraded.resolve(socket);
+    if (closing) {
+      socket.destroy();
+    }
+  };
   const app = Fastify({ logger: false });
   process.on("uncaughtException", onUncaught);
   try {
@@ -440,7 +448,10 @@ async function withUpgradeServer(
     assert.ok(address && typeof address === "object");
     await scenario(address.port, upgraded.promise);
   } finally {
+    closing = true;
     try {
+      // Without a production upgrade handler, this accepted socket would stay half-open.
+      upgradedSocket?.destroy();
       await app.close();
       await settleCallbacks();
     } finally {
