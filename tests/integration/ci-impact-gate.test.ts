@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { expectedFullLanes, passingGateNeeds } from "../helpers/ci-expected-coverage.ts";
-import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 
 const gate = resolve("scripts/ci/impact-gate.ts");
 

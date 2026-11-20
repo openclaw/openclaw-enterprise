@@ -100,6 +100,7 @@ export type RecoveryFixtureOptions = {
   preflightPolicy?: boolean;
   certificate?: boolean;
   preflightFault?: PreflightFault | null;
+  failBeforeHelmIntent?: boolean;
   kubernetesNamespaces?: readonly RecoveryNamespace[];
   kubernetesDenied?: boolean;
   kubernetesNetworkPolicies?: Readonly<Record<string, readonly object[]>>;
@@ -441,6 +442,7 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       preflightPolicy = false,
       certificate = false,
       preflightFault = null,
+      failBeforeHelmIntent = false,
       kubernetesNamespaces = [],
       kubernetesDenied = false,
       kubernetesNetworkPolicies = {},
@@ -524,22 +526,27 @@ export function createRecoveryFixture(tools: RecoveryTools) {
         { mode: 0o700 },
       );
     }
-    if (channelTransition) {
-      // Envoy is an external prerequisite for the enabled one-off. The worker Job still
-      // reads its policies through the Kubernetes SDK against the fixture API.
-      const { stdout } = await execute(shimTools.bash, [
-        "--noprofile",
-        "--norc",
-        "-c",
-        "command -v python3",
-      ]);
+    if (channelTransition || failBeforeHelmIntent) {
+      // Preserve fd 3 for preflight Python calls that the command server cannot forward.
+      // The worker Job still reads policies through the Kubernetes SDK against the fixture API.
+      const skipEnvoyProbe = channelTransition
+        ? `if [[ "$1" == scripts/setup-channel-egress && "$2" == check ]]; then
+  exit 0
+fi
+`
+        : "";
+      const marker = bashString(join(directory, "fail-before-helm-intent"));
+      const failIntentRecord = failBeforeHelmIntent
+        ? `if [[ "$1" == scripts/upgrade-helm-state.py && "$2" == record && -f ${marker} ]]; then
+  rm -f ${marker}
+  exit 9
+fi
+`
+        : "";
       await writeFile(
         join(bin, "python3"),
         `#!${shimTools.bash}
-if [[ "$1" == scripts/setup-channel-egress && "$2" == check ]]; then
-  exit 0
-fi
-exec ${bashString(stdout.trim())} "$@"
+${skipEnvoyProbe}${failIntentRecord}exec ${bashString(tools.realPython)} "$@"
 `,
         { mode: 0o700 },
       );

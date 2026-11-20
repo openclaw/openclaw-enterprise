@@ -23,6 +23,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { describe, test } from "node:test";
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.ts";
 import { defaultK3sImage, prepareLane, prepareFile } from "../../scripts/ci/prepare.ts";
+import { registerNativeProfileUpgradeCases } from "./ci-prepare-native-profile-upgrade-cases.ts";
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { listen } from "../helpers/listen.ts";
 import {
@@ -63,6 +64,8 @@ const preparePath = join(repositoryRoot, "scripts/ci/prepare.ts");
 const packagingNodeBaseImage = JSON.parse(
   await readFile(join(repositoryRoot, "scripts/ci/test-suites/images-packaging.json"), "utf8"),
 ).prepare.defaultEnv.NODE_BASE_IMAGE;
+
+registerNativeProfileUpgradeCases({ repositoryRoot, writeState });
 
 async function writeState(path: string, state: unknown) {
   await writeFile(path, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
@@ -2438,16 +2441,6 @@ if (args[0] === "pull") {
         }
       }
     }
-    // The new finite-Git installer still consumes a PAT; joining the installer
-    // lane must not make its file-level preparation accept an API key alone.
-    for (const credentials of [["OPENAI_API_KEY"], ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"]]) {
-      cases.push({
-        harness: "codex",
-        credentials,
-        file: "tests/integration/openshell-git-finite-removal-real.test.ts",
-        ...(credentials.includes("CODEX_ACCESS_TOKEN") ? {} : { missing: "CODEX_ACCESS_TOKEN" }),
-      });
-    }
     // Generic workflows use API keys even when an unrelated managed PAT is present.
     // PAT-only input must fail before the preparer creates a state file or any resources.
     for (const file of [
@@ -2458,6 +2451,8 @@ if (args[0] === "pull") {
       "tests/integration/openshell-refresh-real.test.ts",
       "tests/integration/openshell-withdrawal-real.test.ts",
       "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+      "tests/integration/openshell-git-retention-real.test.ts",
+      "tests/integration/openshell-git-finite-removal-real.test.ts",
     ]) {
       cases.push(
         { harness: "codex", credentials: ["OPENAI_API_KEY"], file },
@@ -2530,8 +2525,8 @@ if (args[0] === "pull") {
     }
   });
 
-  // Each complete OpenShell cohort includes API-key and PAT workflows. Reject
-  // either missing input before creating shared resources.
+  // The installer cohort uses only API keys; the mixed cohorts also retain PAT
+  // workflows. Reject each missing input before creating shared resources.
   for (const lane of ["openshell", "openshell-policy", "openshell-installers"]) {
     for (const harness of ["codex", "openclaw"]) {
       for (const credentials of [
@@ -2568,9 +2563,11 @@ if (args[0] === "pull") {
             10_000,
           );
           assert.equal(result.status, 1);
-          const missing = ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"].filter(
-            (name) => !credentials.includes(name),
-          );
+          const required =
+            lane === "openshell-installers"
+              ? ["OPENAI_API_KEY"]
+              : ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"];
+          const missing = required.filter((name) => !credentials.includes(name));
           if (missing.length) {
             assert.match(result.stderr, /Missing required CI input/u);
             for (const name of missing) {
@@ -2761,7 +2758,11 @@ if (args[0] === "pull") {
       // Real Git identifies this checkout; Docker, PostgreSQL and k3d are command
       // fixtures. This proves fail-closed orchestration, not image or model execution.
       await symlink("/usr/bin/git", join(dirname(commands.statePath), "bin", "git"));
-      const prepared = await commands.prepare();
+      const prepared = await commands.prepare(
+        lane === "gateway-routing"
+          ? ["--selected-file", "tests/integration/harness-topology-k3d-routing-real.test.mjs"]
+          : [],
+      );
       assert.equal(prepared.status, 1, lane);
       assertStderrMatch(prepared.stderr, /Runtime artifact source differs from checkout/, lane);
       assert.deepEqual(modelPreparationNotices(prepared.stderr), []);

@@ -3,12 +3,15 @@ import { spawnSync } from "node:child_process";
 import { chmod, copyFile, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 
-async function createRepositoryFixture(t, { initializeGit = true } = {}) {
+async function createRepositoryFixture(
+  t: TestContext,
+  { initializeGit = true }: { initializeGit?: boolean } = {},
+) {
   const fixtureRoot = await temporaryDirectory(t, "openclaw-enterprise-git-hooks-");
 
   await mkdir(join(fixtureRoot, "scripts"));
@@ -33,7 +36,7 @@ async function createRepositoryFixture(t, { initializeGit = true } = {}) {
   return fixtureRoot;
 }
 
-function installHooks(fixtureRoot) {
+function installHooks(fixtureRoot: string) {
   return spawnSync(process.execPath, ["scripts/install-git-hooks.mjs"], {
     cwd: fixtureRoot,
     encoding: "utf8",
@@ -55,6 +58,7 @@ test("automatic installation skips packaged environments without a Git checkout"
   assert.match(automaticInstallation.stdout, /Skipping Git hook installation/);
 
   const explicitInstallation = installHooks(fixtureRoot);
+  assert.notEqual(explicitInstallation.status, null);
   assert.notEqual(explicitInstallation.status, 0);
   assert.match(explicitInstallation.stderr, /outside a Git checkout/);
 });
@@ -101,6 +105,7 @@ test("hook installation refuses to replace an existing unmanaged native hook", a
 
   const result = installHooks(fixtureRoot);
 
+  assert.notEqual(result.status, null);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /unmanaged.*pre-push/i);
   assert.equal(await readFile(nativeHookPath, "utf8"), unmanagedHook);
@@ -146,7 +151,13 @@ test("the native pre-push hook runs the pinned formatter and blocks formatting f
   for (const filename of [".prettierrc.json", ".prettierignore", ".bun-version"]) {
     await copyFile(join(repositoryRoot, filename), join(fixtureRoot, filename));
   }
-  const { scripts } = JSON.parse(await readFile(join(repositoryRoot, "package.json"), "utf8"));
+  const manifest: unknown = JSON.parse(
+    await readFile(join(repositoryRoot, "package.json"), "utf8"),
+  );
+  assert.ok(manifest !== null && typeof manifest === "object" && "scripts" in manifest);
+  const { scripts } = manifest;
+  assert.ok(scripts !== null && typeof scripts === "object" && "format:check" in scripts);
+  assert.equal(typeof scripts["format:check"], "string");
   const fixturePackage = {
     name: "hook-fixture",
     private: true,
@@ -162,7 +173,7 @@ test("the native pre-push hook runs the pinned formatter and blocks formatting f
       encoding: "utf8",
     });
 
-  const cases = [
+  const cases: [string, string][] = [
     ["packages/utils/src/example.ts", "export const answer={value:42};\n"],
     ["apps/controller/src/drivers/compute/ssh/example.cjs", "module.exports={value:42};\n"],
     ["package.json", `${JSON.stringify(fixturePackage)}\n`],

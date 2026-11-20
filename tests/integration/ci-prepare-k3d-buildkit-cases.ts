@@ -61,7 +61,11 @@ async function assertReadOnlyBuildKitCache(t: TestContext, lane: string, env: No
       return "printf 'synthetic import stop\\n' >&2; exit 1";
     }
   });
-  const prepared = await commands.prepare();
+  const prepared = await commands.prepare(
+    lane === "gateway-routing"
+      ? ["--selected-file", "tests/integration/harness-topology-k3d-routing-real.test.mjs"]
+      : [],
+  );
   assert.equal(prepared.status, 1);
   assertStderrMatch(prepared.stderr, /synthetic import stop/);
   assert.equal(imports, 1);
@@ -155,7 +159,10 @@ export function registerBuildKitCases() {
         return "printf 'synthetic import stop\\n' >&2; exit 1";
       }
     });
-    const prepared = await commands.prepare();
+    const prepared = await commands.prepare([
+      "--selected-file",
+      "tests/integration/harness-topology-k3d-routing-real.test.mjs",
+    ]);
     assert.equal(prepared.status, 1);
     assertStderrMatch(prepared.stderr, /synthetic import stop/);
     const builds = (await commands.commands()).filter(({ args }) =>

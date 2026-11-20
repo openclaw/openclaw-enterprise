@@ -64,7 +64,11 @@ warn() {
 # A closed diagnostic pipe must not stop the upgrade or replace a native status.
 progress() (
   trap '' PIPE
-  printf 'Upgrade: %s\n' "$1" >&2 2>/dev/null || true
+  local timestamp=''
+  TZ=UTC0 builtin printf -v timestamp '%(%Y-%m-%dT%H:%M:%SZ)T' -1 2>/dev/null ||
+    timestamp=$(command date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null) ||
+    timestamp=''
+  printf 'Upgrade: %s%s\n' "$1" "${timestamp:+ [$timestamp]}" >&2 2>/dev/null || true
 )
 
 die() {
@@ -650,8 +654,9 @@ matches_yaml() {
 }
 
 require_mutable_installation_secret() {
+  local next_step=$2
   jq -e '.immutable != true' "$1" >/dev/null ||
-    die "Installation Secret $installation_secret is immutable and the candidate requires different data. Choose a candidate that preserves the live Installation configuration or defer this upgrade."
+    die "Installation Secret $installation_secret is immutable and the candidate requires different data. $next_step"
 }
 
 check_installation_update_access() {
@@ -1587,6 +1592,7 @@ run_preflight_jobs() {
       logs=$(read_preflight_logs "$log_container" "$pod" "$evidence_dir/preflight-$component-logs.err") ||
         logs_status=$?
       if ! child=$(read_preflight_child "$component" "$job" "$job_uid" "$pod_uid" 30s) || [[ -z "$child" ]]; then
+        identity_valid=0
         logs=
         message="cannot bind the $component startup preflight logs to the original child Pod; discarded unconfirmed output. No ${writer_qualifier}OCC writer was stopped."
       else
@@ -1604,6 +1610,9 @@ run_preflight_jobs() {
           message="cannot read the $component startup preflight logs; no ${writer_qualifier}OCC writer was stopped."
         fi
       fi
+    fi
+    if (( ! identity_valid )) && [[ "$phase" == Pending:* ]]; then
+      message+=" Last scheduler report for the original Pod: ${phase#Pending:}"
     fi
     if [[ -z "$message" ]]; then
       case "$phase" in
@@ -1787,10 +1796,11 @@ preflight_startup() {
     if ((certificate_count > 0)); then
       # Server-side apply sends even unchanged objects for admission. Ignore field
       # ownership conflicts in the dry-run only; Helm does not use server-side apply.
-      "${kube[@]}" --request-timeout=20s --namespace "$namespace" apply --dry-run=server \
+      # Allow the webhook's maximum 30s deadline plus time for the API response.
+      "${kube[@]}" --request-timeout=45s --namespace "$namespace" apply --dry-run=server \
         --server-side --force-conflicts --field-manager=occ-upgrade-preflight \
         --filename "$certificates" >/dev/null 2>"$evidence_dir/preflight-certificates.err" ||
-        die "certificate admission preflight failed; no ${writer_qualifier}OCC writer was stopped. Check cert-manager and see preflight-certificates.err in the evidence directory."
+        die "certificate admission preflight failed. No ${writer_qualifier}OCC writer was stopped. Inspect preflight-certificates.err in the evidence directory. If the webhook call timed out, check reachability from the Kubernetes API server to the cert-manager webhook."
     fi
   fi
   node scripts/upgrade-startup-preflight.ts networkpolicy "$evidence_dir/preflight-rendered.jsonl" \
@@ -2155,10 +2165,12 @@ require_settled_initializers() {
 
 require_unchanged_helm_status() {
   helm status "$release" "${helm_args[@]}" --output json >"$1"
+  # Helm 4 includes live resources that change during quiescence. Compare
+  # every other release field before this attempt writes candidate settings.
   jq -e --slurpfile observed "$evidence_dir/current-helm-status.json" '
-    . == $observed[0]
+    (del(.info.resources)) == ($observed[0] | del(.info.resources))
   ' "$1" >/dev/null ||
-    die "the Helm release changed before submission; investigate before continuing."
+    die "the Helm release changed before submission; API and worker remain stopped; this attempt made no candidate writes; investigate before continuing."
 }
 
 migration_secret_identities() {
@@ -2810,7 +2822,8 @@ fi
 if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]] ||
   ! matches_yaml "$candidate_installation" "$evidence_dir/before-live-installation.yaml"; then
   if [[ ! -f "$evidence_dir/before-candidate-installation-secret.json" ]]; then
-    require_mutable_installation_secret "$live_installation_secret"
+    require_mutable_installation_secret "$live_installation_secret" \
+      "Stage a versioned immutable successor with the final candidate Installation configuration. Pass --candidate-values with installation.secretName set to the successor and use a fresh evidence directory. See docs/guides/deploy/immutable-installation-upgrade.md."
     check_installation_update_access
   fi
   touch "$evidence_dir/installation-changed"
@@ -3071,7 +3084,8 @@ if ((helm_complete == 0)); then
   replace_installation_secret=0
   if [[ -f "$evidence_dir/installation-changed" ]] &&
     ! matches_yaml "$evidence_dir/current-live-installation.yaml" "$candidate_installation"; then
-    require_mutable_installation_secret "$live_secret"
+    require_mutable_installation_secret "$live_secret" \
+      "The prepared upgrade is bound to the recorded Installation Secret. Keep the maintenance freeze and preserve the original inputs and evidence. See docs/guides/deploy/production-upgrade-command.md#stop-when-the-recorded-installation-secret-is-immutable."
     replace_installation_secret=1
   fi
   if [[ -f "$evidence_dir/helm-started" ]]; then
@@ -3238,6 +3252,10 @@ if ((helm_complete == 0)); then
     die "API and worker stopped for the separate database deployment. Keep other writers and autoscalers stopped. $migration_instruction After verification, resume the original run with --migration-history-checked. The Helm hook independently requires the complete candidate schema." 3
   fi
 
+  if [[ "$repository_enabled" == true ]]; then
+    verify_pair_nodes
+  fi
+  require_unchanged_helm_status "$evidence_dir/before-helm-submission.json"
   if ((separate_handoff)) && [[ "$migration_progress" != "{}" ]]; then
     recheck_migration_release pre-resume "$evidence_dir/before-helm-status.json"
   fi
@@ -3261,16 +3279,12 @@ PYTHON
           >"$evidence_dir/installation-secret-apply.txt"
     fi
   fi
-  # The marker precedes the request, so a crash cannot turn an unknown Helm
-  # outcome into an automatic retry or an unsafe return to the old image.
-  if [[ "$repository_enabled" == true ]]; then
-    verify_pair_nodes
-  fi
-  require_unchanged_helm_status "$evidence_dir/before-helm-submission.json"
   if [[ -f "$evidence_dir/before-candidate-installation-secret.json" ]]; then
     verify_installation_switch
   fi
   recheck_prepared_migration_secrets
+  # The marker precedes the request, so a crash cannot turn an unknown Helm
+  # outcome into an automatic retry or an unsafe return to the old image.
   python3 scripts/upgrade-helm-state.py record "$evidence_dir" "$helm_attempt"
   # Open stdout before entering the native failure handler.
   helm_status=0

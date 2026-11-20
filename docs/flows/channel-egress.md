@@ -80,8 +80,15 @@ acknowledged resources with UID preconditions. Existing dependencies retain
 ownership; incompatible configuration requires the owner's repair.
 
 `scripts/upgrade-channel-egress:prepare` patches actual legacy input files.
-`validate` requires the supported source, matching target channel fields and an
-unchanged normalized remainder. It permits the existing validated immutable
+Before `prepare` writes candidates or `validate` compares inputs, `helm_values`
+reads a private regular file once and checks the first physical line for
+`USER-SUPPLIED VALUES:` or `COMPUTED VALUES:` with optional trailing whitespace.
+For that line shape, it checks the first entry as YAML regardless of the
+filename. An implicit null at that entry or a failure of that YAML check
+triggers recapture guidance. For accepted inputs, `yq` selects the values parser
+by filename and reads the same bytes through standard input.
+`validate` requires the supported source, matching target channel fields and
+an unchanged normalized remainder. It permits the existing validated immutable
 Secret reference switch. The shared `scripts/upgrade-production-images` binds
 this operation mode and helper hashes to recovery evidence and retains its
 live-input, identity, Secret, startup, migration, quiescence and Helm checks.
@@ -228,6 +235,11 @@ and remaining acceptance evidence.
 
 - 2026-11-20 18:02: Forecast the Worker's direct-egress guard before Stop and verify execution and Gateway namespace ownership (authoring-run/bf16e7c9-029c-4a8c-8fba-00d9249599e2 - 499592f85223d2a36369d6e230915c549ff09864)
 
+- 2026-11-20 14:26: Check Helm display headings and parse values from one file read (authoring-run/1298084c-0ccd-44f1-84ab-4170b4c56d21 - d2c019d17f3c4471b6a10579b1e8c9876240689f)
+
+- 2026-11-20 11:06: Reject either Helm display heading in one-off upgrade values (authoring-run/6cc6b66e-34c0-474e-98fb-7b1a6de5c987 - c86f69daac0044e7a4f770e43aead2121b05f8bd)
+- 2026-11-20 10:51: Preserve valid Helm values mappings that share the display heading (authoring-run/ee570ea2-5d17-4170-a37b-0f46c4fbd8ea - d26c1eb9420d4ec22662f390534a73653325d42f)
+- 2026-11-20 10:26: Reject Helm display output in one-off upgrade values (authoring-run/73549c13-fca6-4842-813d-62fa224637ec - 9092839d0c3b9598e85300451f425ac6d3084fe5)
 - 2026-11-20 09:53: Documented the worker diagnostic for additive public egress policies (authoring-run/7734097f-2ed2-4eb1-afc9-b87345676072 - 9092839d0c3b9598e85300451f425ac6d3084fe5)
 
 - 2026-11-19 20:41: Verify recorded Agent state before one-off completion and on resume (authoring-run/3d885bbf-20eb-48f1-9e9e-975b986c82ab - 87d5c0d63f6765816d0e4a6dee9cb20f8be1d5c1)

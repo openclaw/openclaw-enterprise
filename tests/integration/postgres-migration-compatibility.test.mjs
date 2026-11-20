@@ -9,8 +9,16 @@ import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
+  assertAdministratorGrantUpgrade,
+  assertDrizzleJournalPreserved,
+  assertEmptyInstallationHistory,
+  assertGuardedInstallationUpgrade,
   assertLegacyAgentMigrationRefusal,
   assertLegacyControllerWorkBackfill,
+  assertNativeRestartUpgrade,
+  assertPresetPolicyUpgrade,
+  assertRetainedRevisionResponses,
+  prepareRetainedHarnessRevisions,
 } from "./postgres-historical-agent-migration-cases.ts";
 import {
   registerPostgresMigrationCredentialLineageCases,
@@ -354,104 +362,13 @@ test(
     context.after(async () => {
       assert.deepEqual(await fileHashes(migrationsDirectory), originalMigrations);
     });
-    const server = await pool.query("SELECT current_setting('server_version_num') AS version");
-    const serverVersion = Number(server.rows[0].version);
-    assert.ok(serverVersion >= 180_000 && serverVersion < 190_000, "PostgreSQL 18 is required.");
-    const dumpVersion = await runCommand(fixture, "docker", [
-      ...fixture.composeArgs,
-      "pg_dump",
-      "--version",
-    ]);
-    assert.match(dumpVersion, /^pg_dump \(PostgreSQL\) 18(?:\.|\s)/);
-    const journalQuery =
-      "SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id";
-    const beforeJournal = (await pool.query(journalQuery)).rows;
-    const sourceJournal = JSON.parse(
-      await readFile(join(migrationsDirectory, "meta", "_journal.json"), "utf8"),
-    );
-    assert.ok(beforeJournal.length > 0, "Native preparation must apply the original migrations.");
-    assert.equal(beforeJournal.length, sourceJournal.entries.length);
-    const dumpArgs = [
-      ...fixture.composeArgs,
-      "pg_dump",
-      "--schema-only",
-      "--restrict-key=phase2compatibility",
-      "-U",
-      "occ_migrator",
-      "-d",
-      fixture.database,
-    ];
-    const beforeSchema = await runCommand(fixture, "docker", dumpArgs);
-    assert.ok(beforeSchema.trim().length > 0);
-
-    // Native preparation performed the first migration; rerun the supported entry point.
-    await runCommand(fixture, "corepack", ["pnpm", "db:migrate"]);
-    assert.deepEqual((await pool.query(journalQuery)).rows, beforeJournal);
-    // The history cases run the script text directly; prove pnpm forwards --check too.
-    const checked = await runCommand(fixture, "corepack", [
-      "pnpm",
-      "db:migrate:production",
-      "--check",
-    ]);
-    assert.ok(
-      checked
-        .split("\n")
-        .some(
-          (line) => line === JSON.stringify({ event: "migration.checked", history: "completed" }),
-        ),
-    );
-
-    // The migration command reads only the logging section of the Installation startup file,
-    // through the controller's own startup reader. A file the controller would refuse fails the
-    // command with no migration output and the usual single structured failure line.
-    const configDirectory = await temporaryDirectory(context, "occ-migration-config-");
-    const startupFile = async (name, contents) => {
-      const path = join(configDirectory, name);
-      await writeFile(path, contents, "utf8");
-      return path;
-    };
-    // One refusal from each layer: the logging section, the file reader, and the path rules.
-    const refused = [
-      await startupFile("trace.yaml", "logging:\n  level: trace\n"),
-      await startupFile("invalid.yaml", "logging: [\n"),
-      "relative/startup.yaml",
-    ];
-    for (const path of refused) {
-      const result = await runMigrationCheck(fixture, path);
-      assert.equal(result.code, 1, path);
-      assert.equal(result.stdout, "", path);
-      assert.deepEqual(
-        logEvents(result.stderr),
-        [
-          {
-            severity: "ERROR",
-            service: "occ-migration",
-            event: "migration.failed",
-            code: "MIGRATION_FAILED",
-          },
-        ],
-        path,
-      );
-    }
-    // An accepted file sets the command's log level: info keeps the success event, warn drops it.
-    const checkedOutput = `${JSON.stringify({ event: "migration.checked", history: "completed" })}\n`;
-    const atInfo = await runMigrationCheck(
-      fixture,
-      await startupFile("info.yaml", "logging:\n  level: info\n"),
-    );
-    assert.equal(atInfo.code, 0);
-    assert.equal(atInfo.stdout, checkedOutput);
-    assert.deepEqual(logEvents(atInfo.stderr), [
-      { severity: "INFO", service: "occ-migration", event: "migration.checked" },
-    ]);
-    const atWarn = await runMigrationCheck(
-      fixture,
-      await startupFile("warn.yaml", "logging:\n  level: warn\n"),
-    );
-    assert.equal(atWarn.code, 0);
-    assert.equal(atWarn.stdout, checkedOutput);
-    assert.deepEqual(logEvents(atWarn.stderr), []);
-    assert.equal(await runCommand(fixture, "docker", dumpArgs), beforeSchema);
+    await assertDrizzleJournalPreserved(context, pool, fixture, {
+      migrationsDirectory,
+      runCommand,
+      runMigrationCheck,
+      logEvents,
+      temporaryDirectory,
+    });
   },
 );
 
@@ -1480,20 +1397,8 @@ test(
     const fixture = await migrationHistoryFixture();
     const expected = `ins_${randomUUID()}`;
     const different = `ins_${randomUUID()}`;
-    const refused = { ok: false, code: "MIGRATION_HISTORY_UNSUPPORTED" };
     const empty = await historyDatabase(context, fixture, "guarded_empty");
-    const emptyBefore = await historySnapshot(empty);
-    const guardedCommands = /** @type {const} */ ([
-      "--check-for-installation",
-      "--apply-for-installation",
-    ]);
-    for (const flag of guardedCommands) {
-      assert.deepEqual(
-        await runHistoryCommand(empty, "production", flag, /empty Installation history/, expected),
-        refused,
-      );
-      assert.deepEqual(await historySnapshot(empty), emptyBefore);
-    }
+    await assertEmptyInstallationHistory(empty, expected, { runHistoryCommand, historySnapshot });
 
     // Build the published predecessor with its original SQL and receipts.
     const pending = await historyDatabase(context, fixture, "guarded_pending", { prefix: 81 });
@@ -1505,104 +1410,12 @@ test(
       "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,'Migration fixture','ready',now())",
       [`ns_${randomUUID()}`],
     );
-    const data = await canonicalData(pending);
-    const before = await historySnapshot(pending);
-    assert.equal(before.receipts.length, 81);
-    for (const flag of guardedCommands) {
-      assert.deepEqual(
-        await runHistoryCommand(
-          pending,
-          "production",
-          flag,
-          /does not own the expected Installation/,
-          different,
-        ),
-        refused,
-      );
-      assert.deepEqual(await historySnapshot(pending), before);
-      assert.deepEqual(await canonicalData(pending), data);
-    }
-    // A supported pending history is eligible for downtime, but the check itself
-    // must leave the catalog and the receipts unchanged.
-    assert.deepEqual(
-      await runHistoryCommand(
-        pending,
-        "production",
-        "--check-for-installation",
-        undefined,
-        expected,
-      ),
-      { ok: true, history: "preAuthenticationStates" },
-    );
-    assert.deepEqual(await historySnapshot(pending), before);
-    assert.deepEqual(
-      await runHistoryCommand(
-        pending,
-        "production",
-        "--require-current-for-installation",
-        undefined,
-        expected,
-      ),
-      { ok: false, code: "MIGRATION_HISTORY_PENDING" },
-    );
-    assert.deepEqual(await historySnapshot(pending), before);
-
-    assert.deepEqual(
-      await runHistoryCommand(
-        pending,
-        "production",
-        "--apply-for-installation",
-        undefined,
-        expected,
-      ),
-      { ok: true, history: "preAuthenticationStates" },
-    );
-    // Compare the complete canonical ledger and preserve every original receipt,
-    // including its ID, regardless of how many migrations follow the predecessor.
-    await assertCompletedHistory(pending, before.receipts);
-    const after = await historySnapshot(pending);
-    assert.ok(after.receipts.length > before.receipts.length);
-    assert.deepEqual(await canonicalData(pending), data);
-    assert.deepEqual(
-      await runHistoryCommand(
-        pending,
-        "production",
-        "--check-for-installation",
-        undefined,
-        expected,
-      ),
-      { ok: true, history: "completed" },
-    );
-    assert.deepEqual(await historySnapshot(pending), after);
-    assert.deepEqual(
-      (
-        await pending.migrator.query(
-          "SELECT to_regclass('occ.connection_sessions') IS NULL AS prior_gone, to_regclass('occ.authentication_states') IS NOT NULL AS current_exists",
-        )
-      ).rows,
-      [{ prior_gone: true, current_exists: true }],
-    );
-    assert.deepEqual(
-      await runHistoryCommand(
-        pending,
-        "production",
-        "--require-current-for-installation",
-        /does not own the expected Installation/,
-        different,
-      ),
-      refused,
-    );
-    assert.deepEqual(
-      await runHistoryCommand(
-        pending,
-        "production",
-        "--require-current-for-installation",
-        undefined,
-        expected,
-      ),
-      { ok: true, history: "completed" },
-    );
-    assert.deepEqual(await historySnapshot(pending), after);
+    await assertGuardedInstallationUpgrade(pending, expected, different, {
+      runHistoryCommand,
+      historySnapshot,
+      canonicalData,
+      assertCompletedHistory,
+    });
   },
 );
 
@@ -1614,67 +1427,12 @@ test(
     for (const prefix of [0, 81, 82]) {
       await context.test(`fresh or populated prefix ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "native_restart", { prefix });
-        let revision;
-        let before;
-        if (prefix > 0) {
-          // These published schemas admitted recovery metadata. Preserve all other
-          // execution inputs when the migrator removes it from immutable snapshots.
-          ({ revision } = await seedCanonicalAgent(db, `ns_${randomUUID()}`, {
-            computeAdmission: true,
-            executionAdmission: true,
-            harnessSettings: true,
-            restartContinuation: true,
-          }));
-          before = (
-            await db.app.query("SELECT admitted_spec FROM occ.agent_revisions WHERE id=$1", [
-              revision,
-            ])
-          ).rows[0].admitted_spec;
-          assert.ok(before.restart_continuation);
-        }
-        assert.equal((await runHistoryMigration(db)).ok, true);
-        await assertCompletedHistory(db, []);
-        assert.deepEqual(
-          (
-            await db.migrator.query(
-              "SELECT attname FROM pg_attribute WHERE attrelid='occ.agents'::regclass AND NOT attisdropped AND attname IN ('restart_generation','restart_domain')",
-            )
-          ).rows,
-          [],
-        );
-        assert.equal(
-          (
-            await db.app.query(
-              "SELECT has_table_privilege(current_user,'occ.agent_revisions','UPDATE') AS allowed",
-            )
-          ).rows[0].allowed,
-          false,
-        );
-        if (revision !== undefined) {
-          delete before.restart_continuation;
-          assert.deepEqual(
-            (
-              await db.app.query("SELECT admitted_spec FROM occ.agent_revisions WHERE id=$1", [
-                revision,
-              ])
-            ).rows[0].admitted_spec,
-            before,
-          );
-          await assert.rejects(
-            db.migrator.query(
-              'UPDATE occ.agent_revisions SET admitted_spec=admitted_spec || \'{"draft_spec":{"changed":true}}\'::jsonb WHERE id=$1',
-              [revision],
-            ),
-            { code: "55000" },
-          );
-          await assert.rejects(
-            db.app.query("UPDATE occ.agent_revisions SET admitted_spec=admitted_spec WHERE id=$1", [
-              revision,
-            ]),
-            { code: "42501" },
-          );
-          await assertUpgradedRevisionReadable(db);
-        }
+        await assertNativeRestartUpgrade(db, prefix, {
+          seedCanonicalAgent,
+          runHistoryMigration,
+          assertCompletedHistory,
+          assertUpgradedRevisionReadable,
+        });
       });
     }
   },
@@ -1848,25 +1606,9 @@ test(
   async (context) => {
     const fixture = await migrationHistoryFixture();
     const db = await historyDatabase(context, fixture, "harness_history", { prefix: 71 });
-    const namespace = `ns_${randomUUID()}`;
-    // Seed the old shape under its original constraint, then upgrade in place.
-    const { agent, revision } = await seedCanonicalAgent(db, namespace, {
-      computeAdmission: true,
-      executionAdmission: true,
-      harnessSettings: false,
-    });
-    assert.deepEqual(await runHistoryMigration(db), { ok: true, history: "preHarnessOverrides" });
-
-    const current = `rev_${randomUUID()}`;
-    const settings = {
-      overrides: { preset: "small" },
-      configuration: { preset: "small", instances: 1 },
-    };
-    await db.app.query(
-      `INSERT INTO occ.agent_revisions(id,namespace_id,agent_id,revision_number,admitted_spec,backend_id,admitted_at)
-     SELECT $1,namespace_id,agent_id,2,jsonb_set(admitted_spec,'{harness}',(admitted_spec->'harness') || $2::jsonb),backend_id,now()
-     FROM occ.agent_revisions WHERE id=$3`,
-      [current, settings, revision],
+    const { namespace, agent, revision, current, settings } = await prepareRetainedHarnessRevisions(
+      db,
+      { seedCanonicalAgent, runHistoryMigration },
     );
 
     // The controller must stop before its parent context drops the database.
@@ -1876,24 +1618,7 @@ test(
       const list = await request(controller, "GET", path);
       const oldDetail = await request(controller, "GET", `${path}/${revision}`);
       const newDetail = await request(controller, "GET", `${path}/${current}`);
-      assert.deepEqual([list.status, oldDetail.status, newDetail.status], [200, 200, 200]);
-      const historicalHarness = { id: "codex", version: "1.0.0", mode: "dedicated" };
-      assert.deepEqual(
-        list.data.map(({ id, harness }) => [id, harness]),
-        [
-          [current, { ...historicalHarness, ...settings }],
-          [revision, historicalHarness],
-        ],
-      );
-      assert.equal(oldDetail.data.id, revision);
-      assert.deepEqual(oldDetail.data.configurationReadError, {
-        code: "SAVED_CONFIGURATION_UNREADABLE",
-        field: "configuration",
-      });
-      assert.equal("configuration" in oldDetail.data, false);
-      assert.equal("harness" in oldDetail.data, false);
-      assert.equal(newDetail.data.id, current);
-      assert.deepEqual(newDetail.data.harness, { ...historicalHarness, ...settings });
+      assertRetainedRevisionResponses({ revision, current, settings }, list, oldDetail, newDetail);
     });
   },
 );
@@ -3097,54 +2822,15 @@ test(
         [`binding_admin_${randomUUID()}`, principalId, entry.id],
       );
     }
-    const [{ NativeIAMDriver }, { PostgresPlatformState }] = await Promise.all([
-      import("../../packages/iam/src/index.ts"),
-      import("../../packages/occ/src/state/postgres-state.ts"),
-    ]);
-    const iam = new NativeIAMDriver(new PostgresPlatformState(pool));
-    const presetId = `pre_${randomUUID()}`;
-    const authorize = (principalId, action, kind = "preset") =>
-      iam.authorize({
-        principalId,
-        action,
-        resource: {
-          kind,
-          id:
-            kind === "installation"
-              ? installationId
-              : kind === "preset" && action !== "create"
-                ? presetId
-                : namespaceId,
-          ...(kind === "installation" ? {} : { namespaceId }),
-        },
-      });
-    assert.equal((await authorize(principals[0], "create")).allowed, false);
-    assert.equal((await authorize(principals[0], "administer", "installation")).allowed, true);
-
-    // Run the repository migration itself, not copied UPDATE text or a test-only migrator.
-    await pool.query(await readFile(join(migrationsDirectory, "0024_agent_presets.sql"), "utf8"));
-    await pool.query(
-      "INSERT INTO occ.presets (id, namespace_id, name, template, created_at) VALUES ($1, $2, 'Upgrade', '{}'::jsonb, now())",
-      [presetId, namespaceId],
-    );
-    const upgraded = new Set([stock.id, reordered.id]);
-    for (const entry of roles) {
-      const actual = (await pool.query("SELECT * FROM occ.iam_roles WHERE id = $1", [entry.id]))
-        .rows[0];
-      assert.deepEqual(actual, {
-        ...entry,
-        permissions: upgraded.has(entry.id)
-          ? [...entry.permissions, ...presetPermissions]
-          : entry.permissions,
-      });
-    }
-    for (const { action } of presetPermissions) {
-      assert.equal((await authorize(principals[0], action)).allowed, true);
-      assert.equal((await authorize(principals[1], action)).allowed, false);
-    }
-    assert.equal((await authorize(principals[0], "administer", "installation")).allowed, true);
-    assert.equal((await authorize(principals[0], "read", "namespace")).allowed, true);
-    assert.equal((await authorize(principals[1], "read", "namespace")).allowed, true);
+    await assertPresetPolicyUpgrade(pool, migrationsDirectory, {
+      installationId,
+      namespaceId,
+      roles,
+      stock,
+      reordered,
+      presetPermissions,
+      principals,
+    });
   },
 );
 
@@ -3270,58 +2956,15 @@ test(
         [`binding_admin_${randomUUID()}`, principalId, entry.id],
       );
     }
-    const [{ NativeIAMDriver }, { PostgresPlatformState }] = await Promise.all([
-      import("../../packages/iam/src/index.ts"),
-      import("../../packages/occ/src/state/postgres-state.ts"),
-    ]);
-    const iam = new NativeIAMDriver(new PostgresPlatformState(pool));
-    const sourceId = `cs_${randomUUID()}`;
-    const authorize = async (principalId, action) =>
-      (
-        await iam.authorize({
-          principalId,
-          action,
-          resource: {
-            kind: "credential_source",
-            id: action === "create" ? namespaceId : sourceId,
-            namespaceId,
-          },
-        })
-      ).allowed;
-    assert.equal(await authorize(principals[0], "update"), false);
-    assert.equal(await authorize(principals[0], "read"), true);
-    assert.equal(await authorize(principals[1], "read"), false);
-
-    // Run the repository migration itself, not copied UPDATE text or a test-only migrator.
-    const sql = await readFile(join(migrationsDirectory, migration), "utf8");
-    await pool.query(sql);
-    const upgraded = new Map([
-      [release.id, [currentGrants[2]]],
-      [reordered.id, [currentGrants[2]]],
-      [preCredentialSources.id, currentGrants],
-    ]);
-    const expected = (entry) => ({
-      ...entry,
-      permissions: [...entry.permissions, ...(upgraded.get(entry.id) ?? [])],
+    await assertAdministratorGrantUpgrade(pool, migrationsDirectory, migration, {
+      namespaceId,
+      roles,
+      release,
+      reordered,
+      preCredentialSources,
+      currentGrants,
+      principals,
     });
-    for (const entry of roles) {
-      const actual = (await pool.query("SELECT * FROM occ.iam_roles WHERE id = $1", [entry.id]))
-        .rows[0];
-      assert.deepEqual(actual, expected(entry));
-    }
-    // A repeated run changes nothing: every upgraded Role now matches the current seed.
-    await pool.query(sql);
-    for (const entry of roles) {
-      const actual = (await pool.query("SELECT * FROM occ.iam_roles WHERE id = $1", [entry.id]))
-        .rows[0];
-      assert.deepEqual(actual, expected(entry));
-    }
-    for (const { action } of currentGrants) {
-      assert.equal(await authorize(principals[0], action), true);
-      assert.equal(await authorize(principals[1], action), true);
-    }
-    assert.equal(await authorize(principals[2], "update"), false);
-    assert.equal(await authorize(principals[2], "read"), true);
   },
 );
 
