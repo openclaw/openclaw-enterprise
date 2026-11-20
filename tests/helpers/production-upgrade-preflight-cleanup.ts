@@ -70,7 +70,11 @@ type FixtureOptions = {
 // deadline. Bash imports this sleep function from the environment: each one-second poll
 // in cleanup_preflight sleeps 0.1 s and moves the script's SECONDS clock 10 s ahead, so
 // the unchanged deadline check passes after three polls instead of 30 s of waiting.
-// Every other sleep runs as before.
+// The function shadows the fixture's PATH sleep shim and reaches it through
+// `command sleep`, so every other sleep runs as before. It depends on the cleanup
+// polling with exactly `sleep 1` on the script's SECONDS clock inside
+// cleanup_preflight: if that interval or clock changes, these four cases silently
+// wait the real 30 s again. They stay correct; they are only slow.
 const fastCleanupDeadline = {
   "BASH_FUNC_sleep%%":
     '() { if [[ ${FUNCNAME[1]-} == cleanup_preflight && $* == 1 ]]; then SECONDS=$((SECONDS + 10)); set -- 0.1; fi; command sleep "$@"; }',
