@@ -174,7 +174,7 @@ export function registerStartupAdmissionCases(): void {
         assert.equal(updatedRow.egress, undefined);
         assert.equal(updatedRow.state, "ready");
         assert.deepEqual(
-          [...f.providers],
+          providerEntries(f),
           [
             [
               name,
@@ -186,7 +186,7 @@ export function registerStartupAdmissionCases(): void {
             ],
           ],
         );
-        assert.deepEqual([...f.profiles], profiles);
+        assert.deepEqual(entries(f.profiles), profiles);
         const wire: unknown[] = f.gatewayRequests.slice(wireStart);
         assert.equal(wire.length, 2);
         assert.match(wireRequestId(wire, 1), /^[0-9a-f-]{36}$/);
@@ -368,13 +368,13 @@ export function registerStartupAdmissionCases(): void {
       },
     ]);
     assert.deepEqual(
-      [...f.providers],
+      providerEntries(f),
       deleteBefore.providers.filter(([id]) => id !== name),
     );
     assert.equal(f.providers.has(name), false);
     assert.equal(f.profiles.has(name), false);
     assert.deepEqual(
-      [...f.profiles],
+      entries(f.profiles),
       profilesBefore.filter(([id]) => id !== name),
     );
     const deleteAfter = await admissionSnapshot(f);
