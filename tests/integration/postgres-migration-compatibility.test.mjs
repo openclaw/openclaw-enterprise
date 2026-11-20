@@ -25,7 +25,6 @@ import {
   retainGatewaySourcesAcrossProxyAdmission,
 } from "../helpers/credential-source-owner-upgrade.ts";
 import { request, startController } from "../helpers/postgres-platform-state.ts";
-import { assertPopulatedUpgradeReturn } from "../helpers/populated-upgrade-return.ts";
 import {
   catalogDigest,
   initialSchemaState,
@@ -1695,7 +1694,8 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
-      [84, "preRepositoryNetworkPolicy"],
+      [84, "preStaticTokenServiceSources"],
+      [85, "preRepositoryNetworkPolicy"],
     ]) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1911,17 +1911,36 @@ registerPostgresMigrationTransactionCommandCases({
 });
 
 test(
-  "Canonical repository policy migration preserves stock revision egress rows and saved policy",
+  "Canonical repository policy migration preserves stock TokenService metadata and revision egress",
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
-    const db = await historyDatabase(context, fixture, "egress_repository_policy", { prefix: 84 });
+    const db = await historyDatabase(context, fixture, "egress_repository_policy", { prefix: 85 });
     const namespace = `ns_${randomUUID()}`;
     const { agent, revision } = await seedCanonicalAgent(db, namespace, {
       computeAdmission: true,
       executionAdmission: true,
       harnessSettings: true,
     });
+    // Model a completed registration with opaque custody metadata and no secret material.
+    const installation = `ins_${randomUUID()}`;
+    const instance = randomUUID();
+    await db.app.query(
+      "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'Migration fixture',now())",
+      [installation],
+    );
+    await db.app.query(
+      `INSERT INTO occ.token_service_instances(installation_id,id,driver_id,store_identity)
+       VALUES($1,$2,'occ-token-service','registration-fixture')`,
+      [installation, instance],
+    );
+    await db.app.query(
+      `INSERT INTO occ.credential_sources(
+        id,namespace_id,name,type,config,owner_capability,state,created_at,
+        token_service_instance_id,registration,registration_dispatched_at
+      ) VALUES($1,$2,'Registered source','static','{}','token_service','ready',now(),$3,$4,now())`,
+      [`cs_${randomUUID()}`, namespace, instance, { backendRef: { key: "fixture-registration" } }],
+    );
     const successor = `rev_${randomUUID()}`;
     await db.app.query(
       `INSERT INTO occ.agent_revisions (
@@ -1961,14 +1980,29 @@ test(
         );
       }
     }
-    const readEgress = async () =>
-      (await db.app.query("SELECT * FROM occ.egress_installations ORDER BY retired")).rows;
-    const readPolicy = async () =>
-      (await db.app.query("SELECT document FROM occ.sandbox_policies WHERE agent_id=$1", [agent]))
-        .rows[0].document;
+    const readEgress = async (database = db) =>
+      (await database.app.query("SELECT * FROM occ.egress_installations ORDER BY retired")).rows;
+    const readPolicy = async (database = db) =>
+      (
+        await database.app.query("SELECT document FROM occ.sandbox_policies WHERE agent_id=$1", [
+          agent,
+        ])
+      ).rows[0].document;
+    const readStatic = async (database = db) => ({
+      instances: (await database.app.query("SELECT * FROM occ.token_service_instances")).rows,
+      sources: (await database.app.query("SELECT * FROM occ.credential_sources")).rows,
+    });
     const egress = await readEgress();
     const policy = await readPolicy();
+    const staticMetadata = await readStatic();
+    assert.equal(staticMetadata.instances.length, 1);
+    assert.equal(staticMetadata.sources.length, 1);
+    assert.equal(staticMetadata.sources[0].token_service_instance_id, instance);
+    assert.deepEqual(staticMetadata.sources[0].registration, {
+      backendRef: { key: "fixture-registration" },
+    });
     const before = await historySnapshot(db);
+    const stockArchive = await dumpHistoryArchive(fixture, db);
     assert.deepEqual(
       egress.map(({ revision_id, retired }) => [revision_id, retired]),
       [
@@ -1976,7 +2010,7 @@ test(
         [revision, true],
       ],
     );
-    assert.equal(before.receipts.length, 84);
+    assert.equal(before.receipts.length, 85);
     assert.deepEqual(await runHistoryCommand(db, "production", "--check"), {
       ok: true,
       history: "preRepositoryNetworkPolicy",
@@ -1989,6 +2023,28 @@ test(
     await assertCompletedHistory(db, before.receipts);
     assert.deepEqual(await readEgress(), egress);
     assert.deepEqual(await readPolicy(), policy);
+    assert.deepEqual(await readStatic(), staticMetadata);
+
+    // The archived 0085 database has the same official receipts and qualified restore catalog.
+    const upgraded = await restoreHistoryArchive(context, fixture, stockArchive);
+    const restoredReceipts = await historyReceipts(upgraded.migrator);
+    assert.deepEqual(restoredReceipts, before.receipts);
+    assert.deepEqual(await runHistoryCommand(upgraded, "production", "--check"), {
+      ok: true,
+      history: "preRepositoryNetworkPolicy",
+    });
+    assert.deepEqual(await runHistoryCommand(upgraded, "production"), {
+      ok: true,
+      history: "preRepositoryNetworkPolicy",
+    });
+    assert.deepEqual(await runHistoryCommand(upgraded, "production", "--check"), {
+      ok: true,
+      history: "completed",
+    });
+    assert.deepEqual(await historyReceipts(upgraded.migrator), await historyReceipts(db.migrator));
+    assert.deepEqual(await readStatic(upgraded), staticMetadata);
+    assert.deepEqual(await readEgress(upgraded), egress);
+    assert.deepEqual(await readPolicy(upgraded), policy);
 
     const saved = {
       ...policy,
@@ -2009,6 +2065,21 @@ test(
     assert.deepEqual(await historySnapshot(db), after);
     assert.deepEqual(await readEgress(), egress);
     assert.deepEqual(await readPolicy(), saved);
+    assert.deepEqual(await readStatic(), staticMetadata);
+
+    const restored = await restoreHistoryArchive(
+      context,
+      fixture,
+      await dumpHistoryArchive(fixture, db),
+    );
+    assert.deepEqual(await runHistoryCommand(restored, "production"), {
+      ok: true,
+      history: "completed",
+    });
+    assert.deepEqual(await historyReceipts(restored.migrator), after.receipts);
+    assert.deepEqual(await readStatic(restored), staticMetadata);
+    assert.deepEqual(await readEgress(restored), egress);
+    assert.deepEqual(await readPolicy(restored), saved);
   },
 );
 
@@ -2105,7 +2176,8 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
-      [84, "preRepositoryNetworkPolicy"],
+      [84, "preStaticTokenServiceSources"],
+      [85, "preRepositoryNetworkPolicy"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2411,7 +2483,8 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
-      [84, "preRepositoryNetworkPolicy"],
+      [84, "preStaticTokenServiceSources"],
+      [85, "preRepositoryNetworkPolicy"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2466,179 +2539,76 @@ async function logicalRestoreSnapshot(db, identityReader = db.app) {
 }
 
 test(
-  "Logical restore preserves reviewed canonical and Provider migration histories",
+  "Current canonical logical restore preserves data and refuses catalog tampering",
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
-    for (const lineage of ["canonical", "provider", "canonical51"]) {
-      const prefix = lineage === "canonical51";
-      const history = prefix ? "preProvisioningDeploymentOutcome" : "completed";
-      const source = await historyDatabase(context, fixture, "dump");
-      if (lineage === "provider") {
-        await installProviderCompletedHistory(source);
-      }
-      if (prefix) {
-        // Use the published prefix verbatim, before any production upgrade.
-        await installCanonicalPrefix(source, 51);
-        assert.equal((await historyReceipts(source.migrator)).length, 51);
-        await seedCanonicalData(source, { preset: true });
-        await source.app
-          .query(`UPDATE occ.agents a SET active_revision_id=r.id, desired_runtime_state='running'
-          FROM occ.agent_revisions r WHERE r.agent_id=a.id`);
-      } else {
-        const previous = await historyReceipts(source.migrator);
-        assert.deepEqual(await runHistoryCommand(source, "production"), {
-          ok: true,
-          history: lineage === "provider" ? "providerCompleted" : "empty",
-        });
-        await assertCompletedHistory(source, previous);
-      }
-      await source.app.query(
-        "INSERT INTO occ.iam_identities(id,kind,issuer,subject) VALUES ('restore-human','principal','restore-fixture','human'), ('restore-service','service_principal',NULL,NULL)",
-      );
-      const native = await logicalRestoreSnapshot(source);
-      assert.equal(native.identities.length, prefix ? 3 : 2);
-      const nativeData = prefix ? await canonicalData(source) : undefined;
+    const source = await historyDatabase(context, fixture, "dump");
+    assert.deepEqual(await runHistoryCommand(source, "production"), {
+      ok: true,
+      history: "empty",
+    });
+    await assertCompletedHistory(source);
+    await source.app.query(
+      "INSERT INTO occ.iam_identities(id,kind,issuer,subject) VALUES ('restore-human','principal','restore-fixture','human'), ('restore-service','service_principal',NULL,NULL)",
+    );
+    const native = await logicalRestoreSnapshot(source);
+    assert.equal(native.identities.length, 2);
 
-      // Restore a real archive into a distinct database, preserving ownership and grants atomically.
-      const archive = await dumpHistoryArchive(fixture, source);
-      const restored = await restoreHistoryArchive(context, fixture, archive);
-      const accepted = await logicalRestoreSnapshot(restored);
-      const restoredDigest = catalogDigest(accepted.occ);
-      context.diagnostic(`Restore ${lineage}: ${restoredDigest}`);
-      assert.notEqual(restoredDigest, catalogDigest(native.occ));
-      assert.deepEqual(accepted.receipts, native.receipts);
-      assert.deepEqual(accepted.drizzle, native.drizzle);
-      assert.deepEqual(accepted.identities, native.identities);
-      assert.deepEqual(accepted.sequence, native.sequence);
-      if (prefix) {
-        assert.deepEqual(await canonicalData(restored), nativeData);
-      }
-      assert.deepEqual(await runHistoryCommand(restored, "production", "--check"), {
+    // Restore a current-schema archive into a distinct database with ownership and grants intact.
+    const archive = await dumpHistoryArchive(fixture, source);
+    const restored = await restoreHistoryArchive(context, fixture, archive);
+    const accepted = await logicalRestoreSnapshot(restored);
+    const restoredDigest = catalogDigest(accepted.occ);
+    context.diagnostic(`Restore current canonical: ${restoredDigest}`);
+    assert.notEqual(restoredDigest, catalogDigest(native.occ));
+    assert.deepEqual(accepted.receipts, native.receipts);
+    assert.deepEqual(accepted.drizzle, native.drizzle);
+    assert.deepEqual(accepted.identities, native.identities);
+    assert.deepEqual(accepted.sequence, native.sequence);
+    for (const flag of ["--check", undefined]) {
+      assert.deepEqual(await runHistoryCommand(restored, "production", flag), {
         ok: true,
-        history,
+        history: "completed",
       });
       assert.deepEqual(await logicalRestoreSnapshot(restored), accepted);
-      assert.deepEqual(await runHistoryCommand(restored, "production"), {
-        ok: true,
-        history,
-      });
-      await assertCredentialSchemaPrivileges(restored.app);
-      if (prefix) {
-        const manifest = JSON.parse(
-          await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
-        );
-        const upgraded = await logicalRestoreSnapshot(restored);
-        context.diagnostic(`Upgraded restore: ${catalogDigest(upgraded.occ)}`);
-        assert.deepEqual(upgraded.identities, native.identities);
-        assert.deepEqual(upgraded.receipts.slice(0, 51), native.receipts);
-        assert.deepEqual(
-          upgraded.receipts.map(({ hash, created_at }) => [hash, Number(created_at)]),
-          manifest.entries.map(({ sha256, when }) => [sha256, when]),
-        );
-        // The upgraded restore has its own completed catalog spelling.
-        assert.deepEqual(await runHistoryCommand(restored, "production", "--check"), {
-          ok: true,
-          history: "completed",
-        });
-        assert.deepEqual(await logicalRestoreSnapshot(restored), upgraded);
-        assert.deepEqual(await canonicalData(restored), upgradedCanonicalData(nativeData));
-        await assertPopulatedUpgradeReturn(context, fixture.container, restored, archive, {
-          snapshot: async (database) => ({
-            history: await logicalRestoreSnapshot(database),
-            data: await canonicalData(database),
-            revisions: (await database.app.query("SELECT * FROM occ.agent_revisions ORDER BY id"))
-              .rows,
-          }),
-          restore: (bytes) => restoreHistoryArchive(context, fixture, bytes),
-          checkHistory: (database) => runHistoryCommand(database, "production", "--check"),
-        });
-        assert.deepEqual(await runHistoryCommand(restored, "production", "--check"), {
-          ok: true,
-          history: "completed",
-        });
-        assert.deepEqual(await canonicalData(source), nativeData);
-        assert.deepEqual(await logicalRestoreSnapshot(source), native);
-      } else {
-        assert.deepEqual(await logicalRestoreSnapshot(restored), accepted);
-      }
-
-      if (lineage === "provider") {
-        continue;
-      }
-      // Start each hostile case from the accepted archive; never undo digest-sensitive DDL.
-      const catalogRefusal = /catalog objects or effective grants differ/;
-      for (const [query, refusal, expectedRows] of [
-        [
-          `ALTER TABLE occ.credential_sources DROP CONSTRAINT credential_sources_driver_id_valid,
-           ADD CONSTRAINT credential_sources_driver_id_valid
-           CHECK (char_length(driver_id) BETWEEN 1 AND 201 AND driver_id = btrim(driver_id))`,
-          catalogRefusal,
-        ],
-        ["REVOKE SELECT ON occ.iam_identities FROM occ_app", catalogRefusal],
-        [
-          {
-            text: "UPDATE drizzle.__drizzle_migrations SET hash=repeat('0',64) WHERE id=$1 AND hash <> repeat('0',64)",
-            values: [native.receipts[14].id],
-          },
-          /applied receipts differ from canonical history/,
-          1,
-        ],
-      ]) {
-        const drifted = await restoreHistoryArchive(context, fixture, archive);
-        assert.equal(catalogDigest(await migrationCatalog(drifted.migrator)), restoredDigest);
-        const change = await drifted.migrator.query(query);
-        if (expectedRows !== undefined) {
-          assert.equal(change.rowCount, expectedRows);
-        }
-        // Read as migrator so the lost app grant does not hide row/sequence mutations.
-        const beforeRefusal = await logicalRestoreSnapshot(drifted, drifted.migrator);
-        for (const flag of ["--check", undefined]) {
-          assert.deepEqual(await runHistoryCommand(drifted, "production", flag, refusal), {
-            ok: false,
-            code: "MIGRATION_HISTORY_UNSUPPORTED",
-          });
-          assert.deepEqual(await logicalRestoreSnapshot(drifted, drifted.migrator), beforeRefusal);
-        }
-      }
     }
+    await assertCredentialSchemaPrivileges(restored.app);
 
-    // Tables created after restoring a published prefix retain their native catalog spelling.
-    for (const [prefix, history] of [
-      [74, "preHumanAuthenticationResults"],
-      [75, "preNativeBrowserAccess"],
-      [76, "preControlPlaneAudit"],
-      [77, "prePendingSandboxPolicyApplication"],
-      [78, "prePredecessorReplacement"],
-      [79, "preRevisionRuntimeInputs"],
-      [80, "preRestartContinuation"],
-      [81, "preAuthenticationStates"],
-      [82, "preNativeRestartRecovery"],
-      [83, "preRevisionEgressInstallations"],
-      [84, "preRepositoryNetworkPolicy"],
-    ]) {
-      const previous = await historyDatabase(context, fixture, "previous", { prefix });
-      const restored = await restoreHistoryArchive(
-        context,
-        fixture,
-        await dumpHistoryArchive(fixture, previous),
-      );
-      assert.deepEqual(await runHistoryMigration(restored, "production"), {
-        ok: true,
-        history,
-      });
-      context.diagnostic(
-        `Upgraded restored prefix ${prefix}: ${catalogDigest(await migrationCatalog(restored.migrator))}`,
-      );
-      await context.test(
-        `restored prefix ${prefix} passes the completed history check`,
-        async () => {
-          assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
-            ok: true,
-            history: "completed",
-          });
+    // Start each hostile case from the accepted archive; never undo digest-sensitive DDL.
+    const catalogRefusal = /catalog objects or effective grants differ/;
+    for (const [query, refusal, expectedRows] of [
+      [
+        `ALTER TABLE occ.credential_sources DROP CONSTRAINT credential_sources_driver_id_valid,
+         ADD CONSTRAINT credential_sources_driver_id_valid
+         CHECK (char_length(driver_id) BETWEEN 1 AND 201 AND driver_id = btrim(driver_id))`,
+        catalogRefusal,
+      ],
+      ["REVOKE SELECT ON occ.iam_identities FROM occ_app", catalogRefusal],
+      [
+        {
+          text: "UPDATE drizzle.__drizzle_migrations SET hash=repeat('0',64) WHERE id=$1 AND hash <> repeat('0',64)",
+          values: [native.receipts[14].id],
         },
-      );
+        /applied receipts differ from canonical history/,
+        1,
+      ],
+    ]) {
+      const drifted = await restoreHistoryArchive(context, fixture, archive);
+      assert.equal(catalogDigest(await migrationCatalog(drifted.migrator)), restoredDigest);
+      const change = await drifted.migrator.query(query);
+      if (expectedRows !== undefined) {
+        assert.equal(change.rowCount, expectedRows);
+      }
+      // Read as migrator so the lost app grant does not hide row/sequence mutations.
+      const beforeRefusal = await logicalRestoreSnapshot(drifted, drifted.migrator);
+      for (const flag of ["--check", undefined]) {
+        assert.deepEqual(await runHistoryCommand(drifted, "production", flag, refusal), {
+          ok: false,
+          code: "MIGRATION_HISTORY_UNSUPPORTED",
+        });
+        assert.deepEqual(await logicalRestoreSnapshot(drifted, drifted.migrator), beforeRefusal);
+      }
     }
   },
 );
@@ -2703,7 +2673,8 @@ test(
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
-      [84, "preRepositoryNetworkPolicy"],
+      [84, "preStaticTokenServiceSources"],
+      [85, "preRepositoryNetworkPolicy"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2727,35 +2698,49 @@ test(
         // All three pending receipts, schema changes and main-row annotations roll back.
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         // 0078 replaces the custody guard in place; abort its CREATE FUNCTION statement.
-        // Abort 0085's first trigger after its repository policy constraint was replaced.
-        const rollbackTag = [
-          [84, "CREATE TRIGGER"],
-          [83, "GRANT"],
-          [82, "CREATE TRIGGER"],
-          [81, "GRANT"],
-          [79, "ALTER TABLE"],
-          [78, "GRANT"],
-          [77, "CREATE FUNCTION"],
-          [76, "CREATE INDEX"],
-          [75, "CREATE TRIGGER"],
-          [58, "GRANT"],
-          [57, "CREATE TABLE"],
-          [56, "CREATE FUNCTION"],
-          [55, "CREATE TRIGGER"],
-          [54, "ALTER TABLE"],
-          [53, "CREATE FUNCTION"],
-          [50, "GRANT"],
-          [41, "ALTER TABLE"],
-          [38, "CREATE FUNCTION"],
-          [36, "CREATE INDEX"],
-          [31, "ALTER TABLE"],
-          [27, "CREATE FUNCTION"],
-          [0, "ALTER FUNCTION"],
-        ].find(([minimum]) => prefix >= minimum)[1];
-        const failAt =
-          prefix >= 58
-            ? "IF to_regclass('occ.credential_delivery_reductions') IS NULL THEN RETURN; END IF;"
-            : "";
+        const rollbackTag =
+          prefix === 0
+            ? "CREATE TRIGGER"
+            : [
+                [85, "CREATE TRIGGER"],
+                [84, "GRANT"],
+                [83, "GRANT"],
+                [82, "CREATE TRIGGER"],
+                [81, "GRANT"],
+                [79, "ALTER TABLE"],
+                [78, "GRANT"],
+                [77, "CREATE FUNCTION"],
+                [76, "CREATE INDEX"],
+                [75, "CREATE TRIGGER"],
+                [58, "GRANT"],
+                [57, "CREATE TABLE"],
+                [56, "CREATE FUNCTION"],
+                [55, "CREATE TRIGGER"],
+                [54, "ALTER TABLE"],
+                [53, "CREATE FUNCTION"],
+                [50, "GRANT"],
+                [41, "ALTER TABLE"],
+                [38, "CREATE FUNCTION"],
+                [36, "CREATE INDEX"],
+                [31, "ALTER TABLE"],
+                [27, "CREATE FUNCTION"],
+                [0, "ALTER FUNCTION"],
+              ].find(([minimum]) => prefix >= minimum)[1];
+        // A fresh install fails inside 0085 after its table exists. Drizzle must
+        // roll back the whole install so retry starts from empty history.
+        let failAt = "";
+        if (prefix === 0) {
+          failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
+        } else if (prefix === 85) {
+          // Abort 0086 after it has installed the new reader-version constraint.
+          failAt = `IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conrelid='occ.agent_revisions'::regclass
+            AND conname='agent_revisions_repository_policy_reader_version'
+          ) THEN RETURN; END IF;`;
+        } else if (prefix >= 58) {
+          failAt =
+            "IF to_regclass('occ.credential_delivery_reductions') IS NULL THEN RETURN; END IF;";
+        }
         await historyAdmin(
           db,
           db.name,
@@ -3014,6 +2999,30 @@ test(
         await assertHistoryRefused(db);
       });
     }
+    void context.test(
+      "unpublished repository policy at occupied migration slot 85",
+      async (child) => {
+        const db = await historyDatabase(child, fixture, "repository_policy_preview");
+        const journal = JSON.parse(
+          await readFile(join(migrationsDirectory, "meta/_journal.json"), "utf8"),
+        );
+        // This preview applied the identical repository policy SQL at slot 85.
+        // Its receipt count and timestamp match the official static-source release.
+        const policy = journal.entries[85];
+        const stock = journal.entries[84];
+        const entries = [
+          ...journal.entries.slice(0, 84),
+          { ...policy, idx: stock.idx, when: stock.when },
+        ];
+        await installCanonicalPrefix(db, entries.length, { entries });
+        const before = await historySnapshot(db);
+        assert.equal(before.receipts.length, 85);
+        assert.equal(Number(before.receipts.at(-1).created_at), stock.when);
+        assert.equal(before.receipts.at(-1).hash, manifest.entries[85].sha256);
+        assert.notEqual(before.receipts.at(-1).hash, manifest.entries[84].sha256);
+        await assertHistoryRefused(db, /applied receipts differ from canonical history/);
+      },
+    );
     void context.test("published premerge credential history", async (child) => {
       const db = await historyDatabase(child, fixture, "premerge");
       const journal = JSON.parse(

@@ -17,7 +17,7 @@ import test from "node:test";
 
 const bootstrap = resolve("deploy/runtime/openshell-bootstrap.cjs");
 
-function launch(root, runtimeRoot) {
+function launch(root: string, runtimeRoot: string) {
   const input = {
     root,
     runtimeRoot,
