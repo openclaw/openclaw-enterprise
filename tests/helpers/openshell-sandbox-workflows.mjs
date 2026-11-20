@@ -2,6 +2,10 @@ import { createReplacementNodeObservation } from "./openshell-workspace-node-obs
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { runOpenShellStage } from "./openshell-stage.ts";
 import { observeOpenShellPermissionRefusal } from "./openshell-permission-diagnostic.ts";
+import {
+  assertOpenShellModelId,
+  normalizeOpenShellModelId,
+} from "../../scripts/ci/openshell-model-inputs.mjs";
 import { openShellTurnoverQualification } from "../../scripts/ci/reporter.ts";
 import {
   openShellGatewayGrpcChannel,
@@ -162,9 +166,8 @@ const openShellSupervisorImage = process.env.OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE
 const openShellHelmPath = process.env.OCC_TEST_OPENSHELL_HELM;
 const openShellHelmChart = process.env.OCC_TEST_OPENSHELL_HELM_CHART;
 const openShellWorkspaceHelmChart = process.env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART;
-const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).replace(
-  /^(?:openai|codex)\//,
-  "",
+const providerModel = normalizeOpenShellModelId(
+  process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel,
 );
 const openShellModelBaseUrl = process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim() || undefined;
 const modelCredentialVariable =
@@ -1970,6 +1973,9 @@ async function prepareProductionInstallation(
     enableCompatibilityBridges = harnessId === "openclaw",
   } = {},
 ) {
+  if (process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1") {
+    assertOpenShellModelId(providerModel);
+  }
   const kubeconfig = await validateOpenShellPrerequisites();
   const policyFixtureUrl = process.env.OCC_TEST_OPENSHELL_POLICY_MIGRATION_DATABASE_URL;
   if (harnessId === "codex") {
