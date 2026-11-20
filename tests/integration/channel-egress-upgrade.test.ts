@@ -8,6 +8,7 @@ import { createServer } from "node:http";
 import { request } from "node:https";
 import { selfSigned } from "../helpers/certificates.ts";
 import { createUpgradeResponseProxy } from "../helpers/channel-upgrade-response-proxy.ts";
+import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 
 async function fixture(t: TestContext, enabled = true) {
   const directory = await mkdtemp(join(tmpdir(), "oce-channel-upgrade-"));
@@ -176,6 +177,124 @@ test("disabled legacy channels only remove obsolete fields and remain off", asyn
   );
   assert.equal(dependencies.status, 0, dependencies.stderr);
   assert.match(dependencies.stdout, /Channels disabled/);
+});
+
+test("an ingress owner can admit the exact probe fleet before the dependency check", async (t) => {
+  const f = await fixture(t);
+  const output = join(f.directory, "prepared");
+  const prepared = f.run("prepare", [
+    "--out-dir",
+    output,
+    "--excluded-cidr",
+    "10.42.0.0/16",
+    "--excluded-cidr",
+    "10.43.0.0/16",
+    "--excluded-cidr",
+    "192.0.2.3/32",
+  ]);
+  assert.equal(prepared.status, 0, prepared.stderr);
+  const log = join(f.directory, "kubectl.jsonl");
+  const probe = "oce-channel-probe-2918ac095bc0";
+  await writeCommand(
+    f.directory,
+    "kubectl",
+    `import json, os, sys
+from pathlib import Path
+args = sys.argv[6:]
+if args[0] == "-n":
+    args = args[2:]
+request = None
+if args[:2] == ["create", "-f"]:
+    request = json.load(sys.stdin)
+elif args[:2] == ["delete", "--raw"]:
+    request = json.loads(Path(args[-1]).read_text())
+with open(os.environ["TEST_KUBE_CALLS"], "a") as log:
+    print(json.dumps([args, request]), file=log)
+if args[:2] == ["create", "namespace"]:
+    if os.environ["TEST_EXISTING_NAMESPACE"] == "true":
+        sys.exit(1)
+    response = {"metadata": {"name": args[2], "uid": "probe-namespace-uid"}}
+elif args[:2] == ["get", "deployment"]:
+    response = {"spec": {"template": {"spec": {"containers": [{"image": "envoyproxy/gateway:v1.6.7"}]}}}}
+elif args[:2] == ["get", "configmap"]:
+    response = {"data": {"envoy-gateway.yaml": '{"extensionApis":{"enableEnvoyPatchPolicy":true}}'}}
+elif args[:2] == ["get", "gatewayclass"]:
+    response = {"spec": {"controllerName": "gateway.envoyproxy.io/gatewayclass-controller"}}
+elif args[:2] == ["get", "pods"]:
+    # Stop before port-forward. This test checks fleet identity and resource ownership.
+    response = {"items": []}
+elif request and request["kind"] == "NetworkPolicy":
+    response = {"metadata": {"uid": "probe-egress-uid"}}
+else:
+    response = {}
+print(json.dumps(response))
+`,
+    { interpreter: "python3" },
+  );
+  const env = {
+    ...process.env,
+    PATH: commandPath(f.directory),
+    TEST_KUBE_CALLS: log,
+  };
+  const run = (name: string, existing = false) =>
+    spawnSync(
+      "python3",
+      [
+        "scripts/setup-channel-egress",
+        "check",
+        "--values",
+        join(output, "values.yaml"),
+        "--kubeconfig",
+        "unused",
+        "--context",
+        "fixture",
+        "--namespace",
+        "oce-system",
+        "--probe-name",
+        name,
+      ],
+      { encoding: "utf8", env: { ...env, TEST_EXISTING_NAMESPACE: String(existing) } },
+    );
+  const calls = async () =>
+    (await readFile(log, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+  const failed = run(probe);
+  assert.equal(failed.status, 1, failed.stderr);
+  assert.match(failed.stderr, /probe expected exactly one owned Envoy Pod/u);
+  const recorded = await calls();
+  const creates = recorded.filter(([args]) => args[0] === "create");
+  assert.deepEqual(creates[0][0].slice(0, 3), ["create", "namespace", probe]);
+  assert.equal(creates.length, 3);
+  assert.deepEqual(creates[1][1].spec.podSelector.matchLabels, {
+    "gateway.envoyproxy.io/owning-gateway-name": probe,
+    "gateway.envoyproxy.io/owning-gateway-namespace": probe,
+  });
+  assert.deepEqual(creates[1][1].spec.egress[0], {
+    to: [{ podSelector: { matchLabels: { "control-plane": "envoy-gateway" } } }],
+    ports: [{ protocol: "TCP", port: 18000 }],
+  });
+  const gateway = creates[2][1].items.find((item: { kind: string }) => item.kind === "Gateway");
+  assert.deepEqual(gateway.metadata, { name: probe, namespace: probe });
+  assert.deepEqual(
+    recorded.filter(([args]) => args[0] === "delete").map(([, data]) => data.preconditions.uid),
+    ["probe-namespace-uid", "probe-egress-uid"],
+  );
+
+  await writeFile(log, "");
+  const invalid = run("kube-system");
+  assert.equal(invalid.status, 2, invalid.stderr);
+  assert.match(invalid.stderr, /oce-channel-probe- followed by 12 lowercase hexadecimal digits/u);
+  assert.equal(await readFile(log, "utf8"), "");
+
+  const collision = run(probe, true);
+  assert.equal(collision.status, 1, collision.stderr);
+  // A failed namespace create grants no authority over the resources of its current owner.
+  assert.deepEqual(
+    (await calls()).filter(([args]) => args[0] === "create" || args[0] === "delete"),
+    [[["create", "namespace", probe, "-o", "json"], null]],
+  );
 });
 
 test("one-off preparation refuses wrong release, external proxy, and unprotected input", async (t) => {

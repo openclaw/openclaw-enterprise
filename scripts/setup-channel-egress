@@ -7,6 +7,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import subprocess
 import sys
@@ -42,7 +43,10 @@ def main():
     for key in ("kubeconfig", "context", "namespace", "values"):
         parser.add_argument("--" + key, required=True)
     parser.add_argument("--timeout-seconds", type=int, default=180)
+    parser.add_argument("--probe-name", help="previously reserved namespace and Gateway name for controller ingress")
     args = parser.parse_args()
+    if args.probe_name is not None and not re.fullmatch(r"oce-channel-probe-[0-9a-f]{12}", args.probe_name):
+        parser.error("--probe-name must be oce-channel-probe- followed by 12 lowercase hexadecimal digits")
     values = json.loads(run(["yq", "-o=json", ".", args.values]))
     egress = values.get("channelEgress", {})
     if egress.get("enabled") is False:
@@ -140,12 +144,12 @@ def main():
     else:
         require(json.loads(existing_class)["spec"]["controllerName"] == "gateway.envoyproxy.io/gatewayclass-controller", "GatewayClass belongs to another controller")
     wait("gatewayclass", gateway_class, "Accepted")
-    probe(kube, namespace, gateway_class, args.timeout_seconds)
+    name = args.probe_name or "oce-channel-probe-" + uuid.uuid4().hex[:12]
+    probe(kube, namespace, gateway_class, args.timeout_seconds, name)
     print("Envoy CRDs, pinned controller, GatewayClass and actual patch delivery verified.")
 
 
-def probe(kube, envoy_namespace, gateway_class, timeout):
-    name = "oce-channel-probe-" + uuid.uuid4().hex[:12]
+def probe(kube, envoy_namespace, gateway_class, timeout, name):
     marker = uuid.uuid4().hex
     print(f"Creating temporary channel probe namespace {name}; retain this name if creation has an uncertain outcome.", file=sys.stderr)
     created = json.loads(run([*kube, "create", "namespace", name, "-o", "json"]))

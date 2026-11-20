@@ -75,7 +75,12 @@ Secret data, identity, and candidate checks still apply.
 
 Follow [Set up managed channel egress](channel-egress.md) with the prepared
 candidate values. Complete the dependency check before running the one-off.
-Existing dependencies retain their owner; disabled channels skip provisioning.
+Existing dependencies retain their owner. Disabled channels skip provisioning.
+For an ingress-isolated Envoy controller, have its owner prepare the permanent
+and probe access described in the setup guide. Pass the reservation as
+`--channel-probe-name "$PROBE_NAME"` to each one-off command, including
+`--preflight-only` and any resume of the same run. Keep the rule through the
+dependency recheck before Agent Stop and the cleanup of the last probe.
 
 ### Run the transition
 
