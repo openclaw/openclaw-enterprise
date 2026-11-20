@@ -2748,10 +2748,11 @@ test("a reader without update views the version draft read-only", async (t) => {
   await page.goto(
     detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").href,
   );
-  const snapshot = page
+  // The entry to the draft sits in the version's Settings card, below its snapshot summary.
+  const settingsCard = page
     .locator("section.agent-card")
-    .filter({ has: page.getByRole("heading", { name: "Configuration snapshot" }) });
-  await snapshot.getByRole("button", { name: "Open draft", exact: true }).click();
+    .filter({ has: page.getByRole("heading", { name: "Settings", exact: true }) });
+  await settingsCard.getByRole("button", { name: "Open draft", exact: true }).click();
   await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
   assert.equal(new URL(page.url()).searchParams.get("revision"), "draft");
   assert.equal(await page.getByRole("button", { name: "Edit current Configuration" }).count(), 0);
@@ -2792,13 +2793,16 @@ test("a late permission answer relabels a reader's version entry and skips plugi
   // The held answer keeps the page behind its stand-in until the overview's bounded wait runs
   // out; run it out rather than wait for it.
   await page.clock.fastForward(FIRST_ACTIVITY_WAIT_MS);
-  const snapshot = page
+  // The entry to the draft sits in the version's Settings card, below its snapshot summary.
+  const settingsCard = page
     .locator("section.agent-card")
-    .filter({ has: page.getByRole("heading", { name: "Configuration snapshot" }) });
+    .filter({ has: page.getByRole("heading", { name: "Settings", exact: true }) });
   // Until the answer lands the page assumes an editor.
-  await snapshot.getByRole("button", { name: "Edit current Configuration", exact: true }).waitFor();
+  await settingsCard
+    .getByRole("button", { name: "Edit current Configuration", exact: true })
+    .waitFor();
   firstAnswer.release();
-  await snapshot.getByRole("button", { name: "Open draft", exact: true }).waitFor();
+  await settingsCard.getByRole("button", { name: "Open draft", exact: true }).waitFor();
 
   const secondAnswer = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
     afterServer: true,

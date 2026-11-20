@@ -6,6 +6,12 @@ after **Deploy new version**; a workspace file save applies at once.
 
 ## Configuration tab
 
+The tab shows one card for each part of the Configuration: the **Configuration
+draft** or **Configuration snapshot** summary, then **Settings**, which holds the
+native document. The draft adds **Collaboration and safety** and **Gateway
+managed mode**. Select the **?** beside a card heading or a toggle to read the
+rest of its help.
+
 | Field                                  | Meaning                                                                                                          |
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | **Model**                              | Primary model configured for the Agent.                                                                          |

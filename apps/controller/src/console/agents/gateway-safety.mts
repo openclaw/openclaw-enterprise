@@ -1,4 +1,4 @@
-import { element, setUnavailable } from "../dom.mjs";
+import { aboutDisclosure, element, setUnavailable } from "../dom.mjs";
 import { admitGatewaySecurityDefaults } from "../gateway-security-defaults.mjs";
 
 type ConfigurationDocument = Readonly<Record<string, unknown>>;
@@ -166,10 +166,18 @@ export function withGatewaySafetyStrict(values: ConfigurationDocument, strict: b
 
 const STRICT_HELP =
   "Sets every setting below to its locked-down value. Turn it off to return each setting to its default.";
-const INTRO =
-  "These Gateway settings apply to every conversation with this Agent. The defaults let the people who share the Agent work together; Strict mode locks each setting down. A change here edits the Configuration JSON: save it, then deploy a new version.";
+const INTRO = "These Gateway settings apply to every conversation with this Agent.";
+// Behind the card's "?".
+const INTRO_MORE =
+  "The defaults let the people who share the Agent work together; Strict mode locks each setting down. A change here edits the Configuration JSON: save it, then deploy a new version.";
 const INVALID =
   "The Configuration JSON sets this to a value the Gateway refuses. Correct it in the JSON.";
+
+// A toggle shows the first sentence of its help; the rest waits behind its "?".
+function leadAndRest(help: string): readonly [string, string] {
+  const end = help.indexOf(". ");
+  return end < 0 ? [help, ""] : [help.slice(0, end + 1), help.slice(end + 2)];
+}
 
 function sourceText(value: GatewaySafetyValue) {
   if (value.kind === "invalid") {
@@ -199,21 +207,35 @@ export function gatewaySafetyControls({
       "aria-describedby": `gateway-safety-${id}-hint`,
     });
     const source = element("strong", { className: "gateway-safety-source" });
-    const help = element("span", { className: "gateway-safety-help" }, helpText);
+    const help = element("span", { className: "gateway-safety-help" });
     const hint = element(
       "p",
       { className: "hint field-help", id: `gateway-safety-${id}-hint` },
       source,
       help,
     );
+    const about = aboutDisclosure(label, "", { id: `gateway-safety-${id}-more` });
+    const setHelp = (text: string) => {
+      const [lead, rest] = leadAndRest(text);
+      help.textContent = lead;
+      about.more.textContent = rest;
+      about.button.hidden = !rest;
+    };
+    setHelp(helpText);
     input.addEventListener("change", () => change(input.checked));
     const node = element(
       "div",
       { className: "gateway-safety-setting" },
-      element("label", { className: "gateway-safety-toggle" }, input, label),
+      element(
+        "div",
+        { className: "about-heading" },
+        element("label", { className: "gateway-safety-toggle" }, input, label),
+        about.button,
+      ),
       hint,
+      about.info,
     );
-    return { input, source, help, hint, node };
+    return { input, source, setHelp, hint, node };
   };
   const stage = (next: ConfigurationDocument) => {
     if (current !== undefined && next !== current) {
@@ -232,11 +254,21 @@ export function gatewaySafetyControls({
       stage(withGatewaySafetyValue(current ?? {}, setting, on));
     }),
   }));
+  const about = aboutDisclosure("Collaboration and safety", INTRO_MORE, {
+    id: "gateway-safety-more",
+  });
   const node = element(
     "section",
-    { className: "gateway-safety", "aria-labelledby": "gateway-safety-heading" },
-    element("h3", { id: "gateway-safety-heading" }, "Collaboration and safety"),
+    // A card of its own on the Configuration tab; its heading is the card's.
+    { className: "agent-card gateway-safety", "aria-labelledby": "gateway-safety-heading" },
+    element(
+      "div",
+      { className: "about-heading" },
+      element("h2", { id: "gateway-safety-heading" }, "Collaboration and safety"),
+      about.button,
+    ),
     element("p", { className: "hint" }, INTRO),
+    about.info,
     strict.node,
     element("div", { className: "gateway-safety-settings" }, ...rows.map((row) => row.node)),
     reason,
@@ -248,7 +280,7 @@ export function gatewaySafetyControls({
     reason.hidden = !unavailable;
     reason.textContent = unavailable ?? "";
     let anyBlocked = false;
-    for (const { setting, input, source, help, hint } of rows) {
+    for (const { setting, input, source, setHelp, hint } of rows) {
       const value = values === undefined ? undefined : gatewaySafetyValue(values, setting);
       const invalid = value?.kind === "invalid";
       // A non-object on the path: only the JSON editor can correct it.
@@ -260,7 +292,7 @@ export function gatewaySafetyControls({
       source.textContent = value === undefined ? "" : `${sourceText(value)} `;
       // Unreadable JSON keeps the last help shown.
       if (values !== undefined) {
-        help.textContent = setting.help(values);
+        setHelp(setting.help(values));
       }
       // An unavailable toggle stays in the Tab order, described by why (finding 2878): the
       // section's reason, or its own help when the JSON holds a value only the editor can fix.

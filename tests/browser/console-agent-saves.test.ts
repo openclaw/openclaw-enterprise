@@ -282,16 +282,24 @@ test("collaboration and safety toggles stage their settings in the Configuration
   await page.locator("#gateway-safety-collaborative-steering:checked").waitFor();
   assert.equal(await strict.isChecked(), false);
   // The Gateway queues another participant's message unless the owner explicitly selects reject.
+  // The toggle's hint is the first sentence of its help; the rest opens from its "?".
   const steeringHint = page.locator("#gateway-safety-collaborative-steering-hint");
+  const steeringMore = page.locator("#gateway-safety-collaborative-steering-more");
   const sharedIdentityHelp =
     "OCE native admin and workspace access share one Gateway identity, so this setting does not separate OCE users.";
+  assert.match((await steeringHint.textContent()) ?? "", /^Set in Configuration\. On: [^.]+\.$/);
+  assert.equal(await steeringMore.isVisible(), false);
+  await page
+    .getByRole("button", { name: "About Other participants can steer a running turn" })
+    .click();
+  await steeringMore.waitFor();
   assert.match(
-    (await steeringHint.textContent()) ?? "",
+    (await steeringMore.textContent()) ?? "",
     /Participants are channel users or local operators with distinct Gateway identities\./,
   );
-  assert.ok((await steeringHint.textContent())?.includes(sharedIdentityHelp));
+  assert.ok((await steeringMore.textContent())?.includes(sharedIdentityHelp));
   assert.match(
-    (await steeringHint.textContent()) ?? "",
+    (await steeringMore.textContent()) ?? "",
     /Off: their message runs as a separate turn after it\.$/,
   );
   const rejectSteering = {
@@ -301,8 +309,8 @@ test("collaboration and safety toggles stage their settings in the Configuration
     },
   };
   await json.fill(JSON.stringify(rejectSteering));
-  await steeringHint.filter({ hasText: "Off: the Gateway refuses their message" }).waitFor();
-  assert.ok((await steeringHint.textContent())?.includes(sharedIdentityHelp));
+  await steeringMore.filter({ hasText: "Off: the Gateway refuses their message" }).waitFor();
+  assert.ok((await steeringMore.textContent())?.includes(sharedIdentityHelp));
   await json.fill("{");
   await page
     .getByText("Correct the Configuration JSON to change these settings.", { exact: true })
