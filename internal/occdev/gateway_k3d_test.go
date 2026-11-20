@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"go.yaml.in/yaml/v3"
@@ -19,10 +20,15 @@ func TestComposeRoutingEnablesTheClusterScopedNativeAdminHosts(t *testing.T) {
 	if auth["baseUrl"] != state.BrowserOrigin {
 		t.Fatalf("auth base URL = %q, want browser origin %q", auth["baseUrl"], state.BrowserOrigin)
 	}
+	// Routing-only Helm rendering still validates the fresh-install input contract.
+	bootstrap := values["bootstrap"].(map[string]any)
+	if bootstrap["password"] != nil || !reflect.DeepEqual(bootstrap["credentials"], map[string]string{"secretName": "bootstrap-credentials"}) {
+		t.Fatalf("routing values must reference precreated credentials, not bootstrap storage: %#v", bootstrap)
+	}
 	nativeAdmin := values["agentNativeAdmin"].(map[string]any)
 	if nativeAdmin["enabled"] != true ||
 		nativeAdmin["domain"] != "agents.occ-dev-example.oce.localhost" ||
-		nativeAdmin["sharedCookieDomain"] != "occ-dev-example.oce.localhost" {
+		nativeAdmin["sharedCookieDomain"] != nil {
 		t.Fatalf("unexpected native admin routing values: %#v", nativeAdmin)
 	}
 }

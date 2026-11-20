@@ -1,3 +1,4 @@
+import { channelEgressOptions, slackChannelDrivers } from "./channel-egress.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import {
@@ -6,7 +7,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
-import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "./console-app.mjs";
@@ -52,10 +53,10 @@ export async function createConsoleRepositoryLaunchFixture(
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
         gatewayNodeSelector: { "oce-role": "control" },
-        channels: { proxyUrl: "http://10.42.0.15:3128" },
+        channelEgress: channelEgressOptions,
       },
     },
-    { id: "console-launch-compute", nodeEnrollment: {} },
+    { id: "console-launch-compute", nodeEnrollment: {}, channelDrivers: slackChannelDrivers },
   );
   // This draft/deploy fixture has no PostgreSQL provisioning queue.
   compute.agentProvisioning = undefined;

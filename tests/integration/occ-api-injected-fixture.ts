@@ -1,0 +1,610 @@
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { Type, type Static, type TSchema } from "typebox";
+import { Check } from "typebox/value";
+import { AuthAccountRoleNotFoundError } from "../../apps/controller/src/auth/index.ts";
+import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import {
+  createControllerApp,
+  type ControllerApp,
+  type ControllerAppOptions,
+} from "../../apps/controller/src/index.ts";
+import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import {
+  AgentResponse,
+  ConfigurationResponse,
+  InstallationResponse,
+  JsonValue,
+  NamespaceResponse,
+  PluginApproversSchema,
+  PluginDesiredSelectionSchema,
+  PluginDesiredStateSchema,
+  PluginDriverIdentitySchema,
+  PluginToolDefaultsSchema,
+  PluginToolPolicySchema,
+  RequestId,
+  SecretResponse,
+  ServiceAccountResponse,
+  type AgentRuntimeCredentialStatus,
+  type AgentWire,
+  type ChatGPTBackendDefinition,
+  type ComputeAgentBinding,
+  type HarnessAuthBinding,
+  type OpenClawConfigurationDocument,
+  type SecretReference,
+} from "../../packages/contracts/src/index.ts";
+import { NativeIAMDriver, type NativeIAMState } from "../../packages/iam/src/index.ts";
+import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
+import {
+  authenticatedHeaders,
+  createTestAuthPrincipal,
+  signInToControllerApp,
+} from "../helpers/auth-session.ts";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
+import { createReadyComputeDriver } from "../helpers/development.ts";
+import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+
+type ControllerOptions = NonNullable<ConstructorParameters<typeof OpenClawController>[1]>;
+type FixturePlatformState = NonNullable<ControllerOptions["state"]>;
+type FixtureBackends =
+  readonly [] | readonly [ChatGPTBackendDefinition, ...NonNullable<ControllerOptions["backends"]>];
+type ProvisionAuthAccount = NonNullable<ControllerAppOptions["provisionAuthAccount"]>;
+type AuthSeed = Parameters<ProvisionAuthAccount>[0];
+type AuditEvent = Parameters<ProvisionAuthAccount>[1];
+type IdentityWithId = Pick<AuthSeed["principal"], "id">;
+type MutableIamState = {
+  -readonly [Key in keyof NativeIAMState]: NativeIAMState[Key][number][];
+};
+type FixtureSession = Awaited<ReturnType<typeof signInToControllerApp>>;
+type SessionApp = { defaultSession: FixtureSession | undefined };
+type SeedOptions = { auditEvent?: AuditEvent | undefined };
+
+interface InjectedFixtureOptions extends Partial<
+  Pick<
+    ControllerAppOptions,
+    | "iamDriver"
+    | "computeDriver"
+    | "auditSink"
+    | "configurationDriver"
+    | "secretDriver"
+    | "channelDriver"
+    | "readManagedMcpToolNames"
+    | "logger"
+  >
+> {
+  readonly recordOperations?: ControllerOptions["recordOperations"];
+  readonly backends?: FixtureBackends | undefined;
+  readonly backendSummaries?: ControllerAppOptions["backendSummaries"];
+  readonly provisionAuthAccount?: (
+    seed: AuthSeed,
+    context: {
+      installAuthSeed(seed: AuthSeed, options?: SeedOptions): Promise<void>;
+      state: MutableIamState;
+      auditEvent: AuditEvent;
+    },
+  ) => Promise<void>;
+}
+
+type ApplicationFactory<App extends object> = (options: ControllerAppOptions) => App;
+type InjectedAppOptions = Omit<ControllerAppOptions, "backendSummaries"> &
+  Pick<InjectedFixtureOptions, "backendSummaries">;
+
+interface FixtureAdapters {
+  wrapPlatformState(state: InMemoryPlatformState): FixturePlatformState;
+  invokeApplication<App extends object>(
+    factory: ApplicationFactory<App>,
+    options: InjectedAppOptions,
+  ): App;
+}
+
+interface InjectedRequestOptions {
+  readonly identity?: boolean | undefined;
+  readonly session?: Pick<FixtureSession, "cookie" | "origin"> | string | null | undefined;
+  readonly headers?: Readonly<Record<string, string>> | undefined;
+  readonly body?: unknown;
+  readonly rawBody?: RequestInit["body"];
+}
+
+const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+export const identifier = (prefix: string) => new RegExp(`^${prefix}_${uuidV4}$`);
+
+export async function createInjectedControllerFixture(
+  options: InjectedFixtureOptions,
+  adapters: FixtureAdapters,
+) {
+  const installationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
+  const authFixture = await createTestAuthPrincipal({
+    installationId,
+    email: `admin-${randomUUID()}@example.com`,
+    password: `generated-password-${randomUUID()}`,
+    name: "OCC API Administrator",
+  });
+  const principal = authFixture.seed.principal;
+  const state: MutableIamState = {
+    identities: [principal],
+    groups: [],
+    memberships: [],
+    roles: authFixture.seed.roles.map((role) => ({
+      ...role,
+      permissions: [...role.permissions],
+    })),
+    bindings: [
+      {
+        id: "binding-admin",
+        subjectKind: "identity",
+        subjectId: principal.id,
+        roleId: authFixture.seed.roles[0]!.id,
+      },
+    ],
+    restrictions: [],
+  };
+  const iamDriver =
+    options.iamDriver ??
+    new NativeIAMDriver({ loadNativeIAMState: async () => state }, { id: "iam-integration" });
+  const computeCalls: { ensureNamespace: string[]; deleteNamespace: string[] } = {
+    ensureNamespace: [],
+    deleteNamespace: [],
+  };
+  const computeDriver =
+    options.computeDriver ??
+    createReadyComputeDriver("compute-integration", {
+      async ensureNamespace(namespace) {
+        computeCalls.ensureNamespace.push(namespace.id);
+        return {
+          namespaceId: namespace.id,
+          namespaceReady: true,
+        };
+      },
+      async deleteNamespace(namespace) {
+        computeCalls.deleteNamespace.push(namespace.id);
+        return {
+          namespaceId: namespace.id,
+          namespaceDeleted: true,
+        };
+      },
+      // OCC API coverage exercises admission; runtime compatibility belongs to Compute suites.
+      validateHarnessAuth() {},
+      async stopRevision() {},
+    });
+  const auditSink = options.auditSink ?? new InMemoryAuditSink();
+  const configurationDriver =
+    options.configurationDriver ??
+    createTestConfigurationDriver({ id: "configuration-integration" });
+  const secretDriver =
+    options.secretDriver ?? createTestSecretDriver({ id: "secret-api-integration" });
+  const sessionsByPrincipalId = new Map<string, FixtureSession>();
+  let controller: OpenClawController | undefined;
+  let platformState: FixturePlatformState | undefined;
+
+  async function installAuthSeed(seed: AuthSeed, { auditEvent }: SeedOptions = {}) {
+    const roleIds = new Set(state.roles.map((role) => role.id));
+    for (const binding of seed.bindings) {
+      if (!roleIds.has(binding.roleId)) {
+        throw new AuthAccountRoleNotFoundError(binding.roleId);
+      }
+    }
+    state.identities.push(seed.principal);
+    state.roles.push(...seed.roles);
+    state.bindings.push(...seed.bindings);
+    if (auditEvent !== undefined) {
+      await auditSink.append(auditEvent);
+    }
+  }
+
+  function createApp(identity?: IdentityWithId): ControllerApp & SessionApp;
+  function createApp<App extends object>(
+    identity: IdentityWithId | undefined,
+    createApplication: ApplicationFactory<App>,
+  ): App & SessionApp;
+  function createApp(
+    identity: IdentityWithId = principal,
+    createApplication: ApplicationFactory<object> = createControllerApp,
+  ) {
+    const created = adapters.invokeApplication(createApplication, {
+      ...(controller
+        ? { controller }
+        : {
+            createController(installation) {
+              const baseState = new InMemoryPlatformState({
+                auditSink,
+                resolveIAMIdentity: (identityId) =>
+                  state.identities.find((identity) => identity.id === identityId),
+              });
+              platformState = adapters.wrapPlatformState(baseState);
+              controller = new OpenClawController(installation, {
+                state: platformState,
+                recordOperations: options.recordOperations ?? false,
+                ...(options.backends === undefined ? {} : { backends: options.backends }),
+              });
+              if (options.channelDriver) {
+                controller.registerDriver(options.channelDriver);
+                controller.selectDriver("channel", options.channelDriver.id);
+              }
+              if (options.backends?.length) {
+                // Association alone must never provision an upstream account or credential.
+                const backend = options.backends[0]!;
+                const driverId = backend.drivers.service_account;
+                const unexpectedBackendCall = async () => assert.fail("Unexpected Backend call");
+                controller.registerDriver({
+                  id: driverId,
+                  implementation: "chatgpt",
+                  capability: "service_account",
+                  backendId: backend.id,
+                  create: unexpectedBackendCall,
+                  createCredential: unexpectedBackendCall,
+                  delete: unexpectedBackendCall,
+                });
+                controller.selectDriver("service_account", driverId);
+              }
+              return controller;
+            },
+          }),
+      iamDriver,
+      computeDriver,
+      configurationDriver,
+      secretDriver,
+      resolveHarness: resolveApprovedDevelopmentHarness,
+      auditSink,
+      ...(Object.hasOwn(options, "backendSummaries")
+        ? { backendSummaries: options.backendSummaries }
+        : {}),
+      development: {
+        enabled: true,
+        browserOrigin: "https://console.oce.localhost",
+        installationId,
+      },
+      auth: authFixture.auth,
+      ...(options.readManagedMcpToolNames === undefined
+        ? {}
+        : { readManagedMcpToolNames: options.readManagedMcpToolNames }),
+      ...(options.logger === undefined ? {} : { logger: options.logger }),
+      ...(options.provisionAuthAccount === undefined
+        ? {}
+        : {
+            // The memory composition has no State transaction; write the prepared
+            // account first and remove it when the fixture's provisioning fails.
+            provisionAuthAccount: async (seed, auditEvent, prepared) => {
+              await authFixture.auth.writePreparedAccount(prepared);
+              try {
+                await options.provisionAuthAccount!(seed, {
+                  installAuthSeed,
+                  state,
+                  auditEvent,
+                });
+              } catch (error) {
+                await authFixture.auth.deleteAccount(prepared);
+                throw error;
+              }
+            },
+          }),
+    });
+    return Object.assign(created, { defaultSession: sessionsByPrincipalId.get(identity.id) });
+  }
+
+  const app = createApp();
+  const session = await signInToControllerApp(app, authFixture);
+  sessionsByPrincipalId.set(principal.id, session);
+  app.defaultSession = session;
+
+  return {
+    app,
+    session,
+    authFixture,
+    auditSink,
+    computeCalls,
+    createApp,
+    async createAuthPrincipal(name: string) {
+      const email = `${name}-${randomUUID()}@example.com`;
+      const password = `generated-password-${randomUUID()}`;
+      const account = await authFixture.auth.createAccount({
+        email,
+        password,
+        name,
+      });
+      const seed = authFixture.auth.principalSeed(account, { grant: "none" });
+      sessionsByPrincipalId.set(
+        seed.principal.id,
+        await signInToControllerApp(app, { email, password }),
+      );
+      return {
+        principal: seed.principal,
+        session: sessionsByPrincipalId.get(seed.principal.id),
+      };
+    },
+    get iamDriver() {
+      return iamDriver;
+    },
+    get computeDriver() {
+      return computeDriver;
+    },
+    get configurationDriver() {
+      return configurationDriver;
+    },
+    installationId,
+    principal,
+    state,
+    get platformState() {
+      return platformState;
+    },
+    installAuthSeed,
+    async markNamespaceReady(namespaceId: string) {
+      assert(controller);
+      await controller.handleNamespaceLifecycle(principal.id, namespaceId, "ready");
+    },
+    get controller() {
+      return controller;
+    },
+  };
+}
+
+const InjectedResponseEnvelope = Type.Object({
+  // Some responses add pagination fields to the request metadata.
+  meta: Type.Object({ requestId: RequestId }),
+  data: Type.Optional(Type.Unknown()),
+});
+
+export async function injectedRequest(
+  app: ControllerApp & Partial<SessionApp>,
+  method: string,
+  pathname: string,
+  options: InjectedRequestOptions = {},
+) {
+  const session = options.session ?? app.defaultSession;
+  let sessionHeaders: Record<string, string> = {};
+  if (options.identity !== false) {
+    assert.ok(session, "an authenticated request needs a session");
+    sessionHeaders = authenticatedHeaders(session);
+  }
+  const headers: Record<string, string> = { ...sessionHeaders, ...options.headers };
+  const hasBody = Object.hasOwn(options, "body");
+  const hasRawBody = Object.hasOwn(options, "rawBody");
+  if (hasBody || hasRawBody) {
+    headers["content-type"] ??= "application/json";
+  }
+  let payload: RequestInit["body"];
+  if (hasRawBody) {
+    payload = options.rawBody;
+  } else if (hasBody) {
+    payload = JSON.stringify(options.body);
+  }
+  const response = await app.fetch(
+    new Request(`https://console.oce.localhost${pathname}`, {
+      method,
+      headers,
+      ...(payload === undefined ? {} : { body: payload }),
+    }),
+  );
+  if (response.status === 204) {
+    return { status: response.status, headers: response.headers };
+  }
+  const body: unknown = await response.json();
+  assert(Check(InjectedResponseEnvelope, body), JSON.stringify(body));
+  return { status: response.status, headers: response.headers, body, data: body.data };
+}
+
+export type FixtureRequest = (
+  method: string,
+  pathname: string,
+  options?: InjectedRequestOptions,
+) => ReturnType<typeof injectedRequest>;
+
+type InjectedController = {
+  readonly fixture: Awaited<ReturnType<typeof createInjectedControllerFixture>>;
+  readonly request: FixtureRequest;
+};
+
+const responseSchemas = {
+  SafeJsonValue: JsonValue,
+  PluginApprovers: PluginApproversSchema,
+  PluginDesiredSelection: PluginDesiredSelectionSchema,
+  PluginDesiredState: PluginDesiredStateSchema,
+  PluginDriverIdentity: PluginDriverIdentitySchema,
+  PluginToolDefaults: PluginToolDefaultsSchema,
+  PluginToolPolicy: PluginToolPolicySchema,
+};
+
+export function checkedInjectedBody<Schema extends TSchema>(
+  response: Awaited<ReturnType<FixtureRequest>>,
+  status: number,
+  schema: Schema,
+): Static<Schema, typeof responseSchemas> {
+  const message = JSON.stringify(response.body);
+  assert.equal(response.status, status, message);
+  assert(Check(responseSchemas, schema, response.body), message);
+  return response.body;
+}
+
+export async function createConfiguration(
+  controller: Pick<InjectedController, "request">,
+  namespaceId: string,
+  values: OpenClawConfigurationDocument = {},
+) {
+  const result = await controller.request("POST", `/namespaces/${namespaceId}/configurations`, {
+    body: { kind: "agent", values },
+  });
+  const { data } = checkedInjectedBody(result, 201, ConfigurationResponse);
+  assert.match(data.id, identifier("cfg"));
+  assert.equal(data.namespaceId, namespaceId);
+  assert.deepEqual(data.values, values);
+  return data;
+}
+
+export async function createAgent(
+  controller: Pick<InjectedController, "request">,
+  namespaceId: string,
+  name: string,
+  values: OpenClawConfigurationDocument = {},
+) {
+  const configuration = await createConfiguration(controller, namespaceId, values);
+  const result = await controller.request("POST", `/namespaces/${namespaceId}/agents`, {
+    body: { name, configurationId: configuration.id },
+  });
+  const { data } = checkedInjectedBody(result, 201, AgentResponse);
+  assert.equal(data.name, name);
+  assert.equal(data.namespaceId, namespaceId);
+  assert.match(data.id, identifier("agt"));
+  assert.equal(data.configurationId, configuration.id);
+  assert.equal(Object.hasOwn(data, "installationId"), false);
+  return data;
+}
+
+export function createProvisioningCapableComputeDriver() {
+  const runtimeStatus = new Map<string, AgentRuntimeCredentialStatus>();
+  const keyOf = ({ namespace, agent }: ComputeAgentBinding) => `${namespace.id}:${agent.id}`;
+  return createReadyComputeDriver("compute-provisioning-api", {
+    agentProvisioning: { executionModes: ["dedicated"] },
+    requiresAgentRuntimeCredentials: true,
+    validateHarnessAuth() {},
+    validateAgentProvisioning() {},
+    async provisionAgentRuntimeCredentials(binding) {
+      runtimeStatus.set(keyOf(binding), { transportConfigured: true });
+      return { transportConfigured: true };
+    },
+    async getAgentRuntimeCredentialStatus(binding) {
+      return runtimeStatus.get(keyOf(binding)) ?? { transportConfigured: false };
+    },
+    async stopRevision() {},
+  });
+}
+
+export function slackValidationConfiguration({
+  appSource,
+  botSource,
+  appToken,
+  botToken,
+  model,
+}: {
+  appSource: SecretReference;
+  botSource: SecretReference;
+  appToken?: string;
+  botToken?: string;
+  model?: string;
+}) {
+  return {
+    kind: "agent",
+    values: {
+      ...(model === undefined ? {} : { agents: { defaults: { model } } }),
+      channels: {
+        slack: {
+          enabled: true,
+          mode: "socket",
+          appToken: appToken ?? { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+          botToken: botToken ?? { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+        },
+      },
+    },
+    secretBindings: {
+      SLACK_APP_TOKEN: { source: appSource, delivery: { type: "env" } },
+      SLACK_BOT_TOKEN: { source: botSource, delivery: { type: "env" } },
+    },
+  };
+}
+
+export async function bindHarnessKey(
+  fixture: InjectedController["fixture"],
+  namespaceId: string,
+  agent: Pick<AgentWire, "id" | "configurationId">,
+) {
+  const created = await injectedRequest(fixture.app, "POST", `/namespaces/${namespaceId}/secrets`, {
+    body: { name: `key-${agent.id}`, value: "synthetic-api-contract-key" },
+  });
+  const { data: secret } = checkedInjectedBody(created, 201, SecretResponse);
+  assert(fixture.controller, "bootstrap must create the controller");
+  const internalAgent = await fixture.controller.getAgent(
+    fixture.principal.id,
+    namespaceId,
+    agent.id,
+  );
+  const roleId = `harness-key-${agent.id}`;
+  fixture.state.identities.push({
+    kind: "service_principal",
+    id: internalAgent.servicePrincipalId,
+    namespaceId,
+  });
+  fixture.state.roles.push({
+    id: roleId,
+    namespaceId,
+    permissions: [{ action: "operate", resourceKind: "secret" }],
+  });
+  fixture.state.bindings.push({
+    id: roleId,
+    namespaceId,
+    subjectKind: "identity",
+    subjectId: internalAgent.servicePrincipalId,
+    roleId,
+    resourceKind: "secret",
+    resourceId: secret.id,
+  });
+  const binding = { method: "api_key", source: secret.ref } satisfies HarnessAuthBinding;
+  const updated = await injectedRequest(
+    fixture.app,
+    "PATCH",
+    `/namespaces/${namespaceId}/agents/${agent.id}`,
+    {
+      body: { configurationId: agent.configurationId, harnessAuth: binding },
+    },
+  );
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  return binding;
+}
+
+export async function bootstrapInstallation(
+  { request }: Pick<InjectedController, "request">,
+  name = "Enterprise development",
+) {
+  const response = await request("POST", "/installation/bootstrap", { body: { name } });
+  const message = JSON.stringify(response.body);
+  assert.equal(response.status, 201, message);
+  assert(Check(InstallationResponse, response.body), message);
+  const { data } = response.body;
+  assert.equal(data.name, name);
+  assert.equal(Number.isNaN(Date.parse(data.createdAt)), false);
+  return data;
+}
+
+export async function createNamespace(
+  { request }: Pick<InjectedController, "request">,
+  name: string,
+) {
+  const response = await request("POST", "/namespaces", { body: { name } });
+  const message = JSON.stringify(response.body);
+  assert.equal(response.status, 201, message);
+  assert(Check(NamespaceResponse, response.body), message);
+  const { data } = response.body;
+  assert.equal(data.name, name);
+  assert.equal(data.status, "provisioning");
+  assert.equal(Object.hasOwn(data, "installationId"), false);
+  return data;
+}
+
+export async function createReadyNamespace(controller: InjectedController, name: string) {
+  const namespace = await createNamespace(controller, name);
+  await controller.fixture.markNamespaceReady(namespace.id);
+  return namespace;
+}
+
+export async function readyNamespaceFixture<Controller extends InjectedController>(
+  controller: Controller,
+  namespaceName: string,
+  bootstrapName?: string,
+) {
+  await bootstrapInstallation(controller, bootstrapName);
+  const namespace = await createReadyNamespace(controller, namespaceName);
+  return { fixture: controller.fixture, controller, namespace };
+}
+
+export async function createServiceAccount(
+  request: FixtureRequest,
+  namespaceId: string,
+  name: string,
+) {
+  const response = await request("POST", `/namespaces/${namespaceId}/service-accounts`, {
+    body: { name },
+  });
+  assert.equal(response.status, 201, JSON.stringify(response.body));
+  assert(Check(ServiceAccountResponse, response.body), JSON.stringify(response.body));
+  const { data } = response.body;
+  assert.match(data.id, identifier("sa"));
+  assert.deepEqual(data, { id: data.id, namespaceId, name });
+  return data;
+}

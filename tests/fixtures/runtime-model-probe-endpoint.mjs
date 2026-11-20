@@ -11,11 +11,12 @@ import { connect } from "node:net";
 // loopback, and it also observes the wrapper from outside: when the native
 // process accepts connections, what the private runtime and plugin status
 // report, and what the runtime's HTTP readiness endpoint decides. The first-Agent smoke
-// (scripts/ci/first-agent-smoke.mjs) runs it without observation on an address
+// (scripts/ci/first-agent-smoke.ts) runs it without observation on an address
 // the cluster resolves api.openai.com to. Every line it prints is one JSON event
 // with an epoch timestamp.
 const mode = process.env.PROBE_ENDPOINT_MODE; // "answer" | "reject" | "hang"
 const delayMs = Number(process.env.PROBE_ENDPOINT_DELAY_MS ?? 0);
+const heldPrompt = process.env.PROBE_ENDPOINT_HELD_PROMPT;
 const listenHost = process.env.PROBE_ENDPOINT_HOST ?? "127.0.0.1";
 // When set, a turn answers with the last match of this pattern in its request
 // (a caller's nonce) instead of READY, so a caller can prove its own turn arrived.
@@ -27,7 +28,9 @@ const observing = process.env.PROBE_OBSERVE_NATIVE_PORT !== undefined;
 const publicReadJourney = process.env.PROBE_PUBLIC_READ_JOURNEY === "1";
 const skipperFixture =
   process.env.PROBE_SKIPPER_PREPARED_COMPUTE === "1"
-    ? (await import("./skipper-prepared-compute-model.mjs")).skipperPreparedComputeEvents
+    ? (await import("./skipper-prepared-compute-model.mjs")).createSkipperPreparedComputeEvents(
+        "/fixture/skipper-command.json",
+      )
     : undefined;
 const nativePort = Number(process.env.PROBE_OBSERVE_NATIVE_PORT);
 const statusPort = Number(process.env.PROBE_OBSERVE_STATUS_PORT);
@@ -224,6 +227,10 @@ function publicReadEvents(model, request) {
 // Answer one model turn after the configured delay, unless the caller left.
 function turn(transport, model, request, respond, closed, caller) {
   emit({ event: "request", transport, turn: true });
+  if (heldPrompt !== undefined && request.includes(heldPrompt)) {
+    emit({ event: "turn-held" });
+    return;
+  }
   if (mode === "hang") {
     return;
   }

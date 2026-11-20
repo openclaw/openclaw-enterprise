@@ -1,32 +1,21 @@
 import fs from "node:fs";
 import path from "node:path";
+import { parseDocsDocument, resolveDocsFragment } from "./docs-site/vendor/docs-markdown.mjs";
+import { createGithubAnchorReader } from "./docs-site/github-anchors.ts";
 import {
-  createDocsMarkdown,
-  parseDocsDocument,
-  resolveDocsFragment,
-} from "./docs-site/vendor/docs-markdown.mjs";
-import { createGithubAnchorReader } from "./docs-site/github-anchors.mjs";
-import { array, frontmatter, isRecord, record, string } from "./docs-site/parser-boundary.ts";
+  array,
+  createDocsParser,
+  frontmatter,
+  isRecord,
+  record,
+  string,
+} from "./docs-site/parser-boundary.ts";
 
 const root = process.cwd();
 const specs = path.join(root, "specs");
 const rfcs = path.join(specs, "rfcs");
-const md: unknown = createDocsMarkdown();
-const rawReader: unknown = createGithubAnchorReader(md);
-if (typeof rawReader !== "function") {
-  throw new TypeError("Unsupported docs parser contract: expected anchor reader");
-}
-function githubAnchors(file: string): Set<string> {
-  if (typeof rawReader !== "function") {
-    throw new TypeError("Unsupported docs parser contract: expected anchor reader");
-  }
-  const value: unknown = rawReader(file);
-  if (!(value instanceof Set)) {
-    throw new TypeError("Unsupported docs parser contract: expected anchor set");
-  }
-  const values: Set<unknown> = value;
-  return new Set([...values].map(string));
-}
+const md = createDocsParser();
+const githubAnchors = createGithubAnchorReader(md);
 const statuses = new Set(["Proposed", "Accepted", "Rejected", "Superseded", "Unspecified"]);
 const implementationStatuses = new Set(["Not implemented", "Partially implemented", "Implemented"]);
 const errors = [];
@@ -59,35 +48,79 @@ const rfcEntries = new Set(
     return entry.name.endsWith(".md") ? [path.join(rfcs, entry.name)] : [];
   }),
 );
-const rfcIds = new Set<number>();
+// Published numeric names remain stable. New RFCs use a date and title.
+const historicalRfcNames = new Set([
+  "0001-oidc-sign-in",
+  "0002-agent-workload-tags",
+  "0003-gateway-harness-storage-split",
+  "0004-occ-prometheus-metrics",
+  "0005-harness-auth-binding",
+  "0006-basic-rbac",
+  "0007-human-federated-sign-in",
+  "0008-repository-credentials",
+  "0009-native-plugin-tool-policy",
+  "0010-agent-access",
+  "0011-coordinated-image-upgrade",
+  "0012-production-observability",
+  "0013-platform-audit",
+  "0014-plugin-policy-enforcement",
+  "0015-repository-credential-recovery",
+  "0016-sandbox-credential-injection",
+  "0017-agent-egress-0x",
+  "0018-installation-profiles-design",
+  "0019-keycloak-oidc-verification",
+  "0020-anonymous-public-github-reads",
+  "0021-managed-runtime-mode",
+  "0022-driver-configuration-contributions",
+  "0023-egress-proxy-credential-lifecycle",
+  "0024-sandbox-harness-mode-support",
+  "0025-installation-driver-values",
+  "0026-codex-standalone-web-search",
+  "0027-agent-oauth-connections",
+  "0028-shared-model-provider",
+  "0029-multiple-plugin-drivers",
+  "0030-agent-harness-overrides",
+  "0031-oidc-agent-chat",
+  "0032-oidc-account-enrollment",
+  "0033-repository-worker-restart-preflight",
+  "0034-reusable-model-providers",
+  "0035-namespace-driver-lifecycle",
+  "0036-bounded-planned-replacement",
+  "0037-oidc-enrollment-claims",
+  "0038-operator-scratch-volumes",
+  "0039-event-contract-ownership",
+  "0040-agent-chat-completions",
+  "0041-runtimeclass-agnostic-deployment",
+  "0042-redeployment-continuation",
+  "0043-native-restart-recovery",
+]);
+const rfcNames = new Set<string>();
 for (const file of rfcEntries) {
   const name =
     path.basename(file) === "index.md"
       ? path.basename(path.dirname(file))
       : path.basename(file, ".md");
-  const number = name.match(/^(\d{4,})-[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/)?.[1];
-  const id = Number(number);
-  if (!number || !Number.isSafeInteger(id) || id < 1) {
-    errors.push(
-      `${path.relative(root, file)}: RFC requires a numeric prefix of at least four digits (0001 or higher)`,
-    );
-  } else if (rfcIds.has(id)) {
-    errors.push(`${path.relative(root, file)}: duplicate RFC number ${number}`);
-  } else {
-    rfcIds.add(id);
+  if (!historicalRfcNames.has(name)) {
+    const date = name.match(/^(\d{4})(\d{2})(\d{2})-[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/);
+    const isoDate = date ? `${date[1]}-${date[2]}-${date[3]}` : "";
+    const timestamp = Date.parse(`${isoDate}T00:00:00Z`);
+    if (
+      !date ||
+      date[1] === "0000" ||
+      !Number.isFinite(timestamp) ||
+      new Date(timestamp).toISOString().slice(0, 10) !== isoDate
+    ) {
+      errors.push(
+        `${path.relative(root, file)}: RFC requires yyyymmdd-title with a valid calendar date and lowercase kebab-case title`,
+      );
+    }
   }
+  if (rfcNames.has(name)) {
+    errors.push(`${path.relative(root, file)}: duplicate RFC name ${name}`);
+  }
+  rfcNames.add(name);
   if (!fs.existsSync(file)) {
     errors.push(`${path.relative(root, file)}: missing RFC entry point`);
-  }
-}
-
-for (const [index, id] of [...rfcIds].sort((a, b) => a - b).entries()) {
-  const expected = index + 1;
-  if (id !== expected) {
-    errors.push(
-      `RFC numbers must be continuous from 0001: expected ${String(expected).padStart(4, "0")}, found ${String(id).padStart(4, "0")}`,
-    );
-    break;
   }
 }
 
@@ -196,7 +229,7 @@ if (errors.length) {
   process.exitCode = 1;
 } else {
   console.log(
-    `Validated ${files.length} spec documents, ${rfcEntries.size} RFC numbers, statuses and authors, and ${links} local link targets.`,
+    `Validated ${files.length} spec documents, ${rfcEntries.size} RFC names, statuses and authors, and ${links} local link targets.`,
   );
 }
 if (historicalLinks) {

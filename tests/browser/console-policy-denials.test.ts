@@ -4,12 +4,9 @@ import test from "node:test";
 import type { Page } from "playwright";
 import type { RuntimeLogRecord, SandboxNetworkGrant } from "../../packages/contracts/src/index.ts";
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
-import {
-  callerDenied,
-  DEPLOY_SANDBOX_POLICY_READ_DENIED,
-  PLACEHOLDER_DESTINATION,
-} from "../helpers/refusal-text.mjs";
-import { openShellSandboxRecords } from "../helpers/runtime-logs.mjs";
+import { callerDenied, PLACEHOLDER_DESTINATION } from "../helpers/refusal-text.mjs";
+import { DEPLOY_SANDBOX_POLICY_READ_DENIED } from "../helpers/refusal-access.ts";
+import { openShellSandboxRecords } from "../helpers/runtime-logs.ts";
 
 import {
   apiRequests,
@@ -22,8 +19,8 @@ import {
   nextFrames,
   pathRequests,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { restrict } from "../helpers/iam-grants.ts";
 
 const grants: SandboxNetworkGrant[] = ["one", "two", "three"].map((name) => ({
   id: `python-${name}`,
@@ -233,7 +230,7 @@ test("the Policy denials page controls policy editing and disabling preserves sa
   assert.equal((await fixture.request("GET", base)).data.editingEnabled, false);
 });
 
-test("denial selection spans pages, keeps the inspected window, and saves a deduplicated batch before application", async (t) => {
+test("denial selection spans pages, keeps the inspected window, and requests application of the deduplicated batch", async (t) => {
   const { fixture, namespace, agent, base } = await createPolicyConsole(t, grants);
   // An existing admitted rule must survive a batch: the API saves a complete desired policy.
   assert.equal(
@@ -315,17 +312,18 @@ test("denial selection spans pages, keeps the inspected window, and saves a dedu
     .click();
   await page
     .locator(".sandbox-network-card")
-    .getByText(/Application to the current revision is pending/)
+    .locator(".sandbox-application-feedback")
+    .getByText("Applying…", { exact: true })
     .waitFor();
   const saved = (await fixture.request("GET", base)).data.policy;
   assert.equal(saved.version, 3);
-  assert.equal(saved.additions.length, 3);
-  assert.deepEqual(saved.additions[0], grants[0]);
+  assert.deepEqual(saved.additions, proposed);
+  assert.equal(pathRequests(requests, "PUT", base).length, 0);
   assert.equal(saved.application.state, "pending");
   assert.equal(saved.application.policyVersion, 3);
   assert.deepEqual(
     pathRequests(requests, "POST", `${base}/apply`).map(({ body }: { body: unknown }) => body),
-    [{ expectedVersion: 3, revisionId: revision.id }],
+    [{ expectedVersion: 2, revisionId: revision.id, additions: proposed }],
   );
 });
 

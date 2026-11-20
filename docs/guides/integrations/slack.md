@@ -13,12 +13,15 @@ go to the Agent's gateway; model credentials are configured separately.
   to receive channel mentions and [`chat:write`](https://docs.slack.dev/reference/scopes/chat.write/)
   to send replies. [Reinstall the Slack app](https://docs.slack.dev/app-management/distribution/#when-is-a-reinstall-required)
   if you add bot scopes to an existing installation.
+- Use one Slack app, with its own app-level and bot tokens, for each Agent.
+  Slack can deliver an event to any active Socket Mode connection for that app.
+  If Agents share an app, the intended Agent can miss the event.
 - Invite the app's bot to the channel. Your Installation operator must allow
   the gateway's Slack network traffic and provide a runtime image that includes
   the native Slack plugin.
-- Require the operator to [configure and verify both Slack proxies](#configure-both-slack-proxies)
+- Require the operator to [configure managed channel egress](#configure-managed-channel-egress)
   before enabling Slack: gateway messaging and Console directory lookup use
-  separate settings and egress rules.
+  separate Envoy listeners and network grants.
 - Choose a dedicated Codex Agent on Kubernetes and configure its
   [model authentication](../../reference/agents.md#harness-authentication).
   Embedded OpenClaw execution cannot isolate channel credentials from the
@@ -32,98 +35,38 @@ go to the Agent's gateway; model credentials are configured separately.
   to grant the Agent access to each exact Secret. Creating a token Secret also
   requires Secret creation permission in the Namespace.
 
-## Configure both Slack proxies
+<a id="configure-both-slack-proxies"></a>
 
-For Slack-enabled k3d and EKS installations, configure both paths before
-creating a Slack-enabled dedicated Codex Agent. A working Socket Mode connection
-does not establish that Console user or channel search works.
+## Configure managed channel egress
 
-| Path                                     | Required setting                                                       | Consumer          |
-| ---------------------------------------- | ---------------------------------------------------------------------- | ----------------- |
-| Slack messaging and Socket Mode          | Installation `drivers.compute.configuration.runtime.channels.proxyUrl` | Dedicated gateway |
-| Console lookup and credential validation | Helm `slackProxy.enabled` or `api.channelDirectoryProxyUrl`            | OCC API           |
+Ask the Installation operator to enable the
+[dedicated Envoy egress fleet](../../reference/drivers/kubernetes-compute/channel-egress.md)
+and provide the actual Pod, Service and node address exclusions. The
+installation profile accepts `channels.managedEgress: true` with
+`channels.excludedCidrs` and writes matching Helm and Compute settings.
+Envoy Gateway must enable EnvoyPatchPolicy support. The egress fleet uses its
+qualified image separately from private workspace ingress.
 
-Provision a reviewed HTTP CONNECT proxy that each consumer can reach. For production,
-use Helm `slackProxy.enabled: true`. The chart then creates a private proxy
-Service, points the API directory proxy at its Service DNS name, admits API and
-managed gateway callers, and lets the proxy reach public IPv4 destinations on
-TCP 443, excluding private and reserved ranges. For an external proxy instead,
-use a literal IPv4 address and explicit port with no URL credentials or path.
-Setting one proxy path does not configure the other. The managed proxy serves
-only API directory lookup and dedicated gateway traffic; it does not make
-embedded OpenClaw Slack-capable.
+Each enabled Agent receives its own actual listener port. OCC uses a separate
+listener for credential validation and directory lookup. The Harness receives
+neither grant. No Slack token belongs in Helm values or Envoy configuration.
+Customer upstream proxies are not supported.
 
-The proxy checks the Slack hostname on every CONNECT request, so its network
-policy can allow public HTTPS without tracking Slack's rotating IP addresses.
-Do not store signed WSS URLs or credentials in configuration or documentation.
+Verify both consumers before handing off the setup:
 
-The directory path needs `CONNECT slack.com:443`. The gateway path also needs
-the Slack Socket Mode endpoints returned for the app; review the required
-`slack.com`, `slack-edge.com`, and `slack-msgs.com` domains and their subdomains.
-Retain TLS certificate verification. See the [directory proxy contract](../../reference/drivers/slack-channel.md#enable-lookup-in-production)
-and [gateway network boundary](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
+1. In the Console, select the bot Secret and search for a known user and channel.
+   The bot needs `users:read`, `channels:read`, and `groups:read` for private channels.
+2. Deploy the Agent. Require its Gateway and Harness to be Ready and confirm
+   that Slack Socket Mode connected. Complete the message proof below.
+3. Verify that the same Gateway cannot reach another Agent's listener, an
+   unlisted destination or a private upstream address. Direct internet fallback
+   must remain denied.
 
-Merge these fragments into the protected Installation and Helm inputs. Replace
-documentation-only addresses with reviewed endpoints; preserve other settings.
-
-```yaml
-# installation.yaml
-drivers:
-  compute:
-    configuration:
-      runtime:
-        channels:
-          proxyUrl: http://openclaw-enterprise-slack-proxy.openclaw-system.svc:3128
-          managedProxy:
-            hostname: openclaw-enterprise-slack-proxy.openclaw-system.svc
-            namespace: openclaw-system
-            podLabels:
-              app.kubernetes.io/name: openclaw-enterprise
-              app.kubernetes.io/instance: oce
-              app.kubernetes.io/component: slack-proxy
-            port: 3128
-```
-
-```yaml
-# Helm values
-slackProxy:
-  enabled: true
-```
-
-Apply both inputs through the installation procedure and roll out the affected
-control-plane processes so they load the new configuration. With the managed
-proxy, Helm grants API egress to the proxy Pods. Kubernetes Compute grants
-gateway egress to the channel proxy named in the Installation runtime setting.
-Keep Slack tokens in Namespace Secrets; do not place them in these inputs or the
-proxy configuration.
-
-For an existing installation, once OCC reloads the gateway proxy setting, deploy
-a new version for every affected running Slack Agent. Its gateway environment
-and channel NetworkPolicy are rendered during version preparation; restarting
-OCC alone does not update existing gateways. Preserve stopped Agents' state.
-Changing only the API directory proxy does not require an Agent redeployment.
-
-Before handing off the Slack setup, verify both paths:
-
-1. In the Console, select the Slack bot Secret and search for a known user and
-   channel visible to that bot. Require successful results. The bot needs
-   `users:read`, `channels:read`, and `groups:read` for private channels.
-2. After deploying, require the current gateway and Harness to be Ready and
-   confirm Slack Socket Mode is connected. Use the authorized message proof
-   below to establish delivery separately.
-3. Confirm the proxy denies an unrelated public destination and a private
-   upstream destination from the same permitted caller path.
-
-A directory response of `503` can indicate that the API cannot reach Slack;
-enable the managed Slack proxy or check the external proxy route. When the API
-has no Slack proxy and gets no answer from Slack, Agent provisioning and
-deployment answer `409` and ask for an Installation administrator to give the
-API a route to Slack: Helm `slackProxy.enabled` or
-`api.channelDirectoryProxyUrl`. If the API has
-another approved route to Slack, such as a sign-in setting with empty
-`egressCidrs`, try again; a timeout on that route gets the same answer. A missing-scope response requires updating the bot's Slack scopes. Missing gateway
-proxy configuration prevents Slack-enabled workload preparation. Resolve each path
-independently; entering exact IDs does not verify directory lookup.
+A directory `503` can mean the OCC listener or Slack is unavailable. An absent
+managed route makes credential validation return a configuration conflict.
+Repair the fleet and retry; entering exact IDs does not verify directory access.
+A missing-scope error requires updating the Slack app's scopes. No new
+channel-enabled Gateway starts until its own listener and network grants are installed.
 
 ## Connect and verify
 
@@ -135,7 +78,9 @@ independently; entering exact IDs does not verify directory lookup.
    setup saves only with both. Exact-ID entry remains available without name lookup.
    Enable Slack and choose **Channels**, then select **Specific people** or
    **Everyone in these channels** under channel access. Leave **Require a mention**
-   enabled for this setup. New Slack setups use
+   enabled for this setup. To receive messages without a mention, follow
+   [Enable channel messages without mentions](#enable-channel-messages-without-mentions-optional).
+   New Slack setups use
    [threaded channel replies](../../reference/configuration/secrets.md#native-channel-configuration).
    Choose **Disabled** under **Direct-message policy** for channel-only access,
    or keep **Allowlist** and select **Allowed people in direct messages**.
@@ -170,6 +115,46 @@ references; non-Socket settings, wildcard channel maps, mixed per-channel
 mention settings, mixed per-channel sender lists, and sender IDs that cannot be
 represented in a comma-separated field may need an API edit.
 
+## Enable channel messages without mentions (optional)
+
+Consider model token costs before disabling **Require a mention**. Slack event
+subscriptions control delivery; the channel's mention setting controls admission
+to model turns. With this setting enabled, ordinary channel text without a
+mention is rejected before model dispatch. Replies in threads where the bot
+participates can count as implicit mentions. Disabling the setting lets other
+messages trigger model turns, increasing input tokens for messages and context
+and output tokens for generated responses. This can increase costs substantially
+in busy channels. Receiving a Slack event alone does not consume model tokens;
+calling the model does.
+
+Disabling **Require a mention** changes the Agent's message filter. It does not
+change the Slack app's event subscriptions. The bot token's scopes and the app's
+bot event subscriptions must both permit channel messages:
+
+1. Open [Your Slack Apps](https://api.slack.com/apps), select the Agent's app,
+   then open **Features → Event Subscriptions → Subscribe to bot events**.
+   Select **Add Bot User Event** and add the event for each channel type you use:
+
+   | Channel type | Bot event                                                                       | Required bot token scope |
+   | ------------ | ------------------------------------------------------------------------------- | ------------------------ |
+   | Public       | [`message.channels`](https://docs.slack.dev/reference/events/message.channels/) | `channels:history`       |
+   | Private      | [`message.groups`](https://docs.slack.dev/reference/events/message.groups/)     | `groups:history`         |
+
+   Keep `app_mention` and select **Save Changes**.
+
+2. Under **OAuth & Permissions → Bot Token Scopes**, confirm the required scopes.
+   Add any missing scopes, then select **Install App → Reinstall to Workspace**
+   if you added scopes.
+3. In the Console, open **Channels → Edit Slack**, clear **Require a mention**,
+   save, and deploy a new version. If the running Agent already has this setting
+   disabled, changing the Slack event subscriptions does not require another
+   Agent deployment.
+4. From an allowed user account, send a new top-level message without an
+   `@mention` in a configured channel where the bot is a member. Ask the Agent
+   to repeat a short unique phrase and confirm that its reply contains that
+   phrase. Do not use an existing thread where the bot has participated; its
+   implicit mention handling can admit the message even when mentions are required.
+
 ## Enable direct messages (optional)
 
 Channel mentions do not deliver direct messages, even if the user mentions the
@@ -196,6 +181,11 @@ bot. To enable one-to-one messages:
   the gateway connected to Slack, the bot has joined the configured channel,
   and the channel ID is correct. Then send an explicit mention. Ask the
   operator to check gateway network access if it cannot connect.
+- **Some messages never reach the Agent:** check whether another Agent connects
+  to the same Slack app. Give each Agent its own app and use that app's tokens.
+- **The Agent replies only to mentions after Require a mention is disabled:**
+  check the app's bot event subscriptions as well as its bot token scopes. Follow
+  [Enable channel messages without mentions](#enable-channel-messages-without-mentions-optional).
 - **Channel messages work but direct messages do not:** check the
   `message.im` subscription, the installed bot token's `im:history` scope,
   and whether the sender's Slack user ID is allowed by the native `allowFrom`

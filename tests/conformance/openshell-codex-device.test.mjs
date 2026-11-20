@@ -7,7 +7,7 @@ import {
   pollCodexDeviceAuthorization,
   startCodexDeviceAuthorization,
 } from "../../apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts";
-import { redirectProviderFetch, startProviderServer } from "../helpers/human-login-transport.mjs";
+import { redirectProviderFetch, startProviderServer } from "../helpers/provider-http-transport.ts";
 
 test("Codex device authorization never follows issuer redirects", async (t) => {
   const paths = [
@@ -279,7 +279,15 @@ test("Codex device flow transfers trusted account claims and never reseeds a com
   assert.deepEqual(f.operations, ["configure-refresh", "store-metadata", "rotate", "read-usable"]);
   const [attachment] = await f.driver.attachForRevision({
     namespace: owner.namespace,
-    revision: { harness: { id: "codex", mode: "dedicated" } },
+    revision: {
+      harness: {
+        id: "codex",
+        version: "1.0.0",
+        mode: "dedicated",
+        overrides: {},
+        configuration: {},
+      },
+    },
     sources: [owner.source],
     signal: owner.signal,
   });

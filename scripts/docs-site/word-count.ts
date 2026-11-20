@@ -2,8 +2,15 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createDocsMarkdown, parseDocsDocument } from "./vendor/docs-markdown.mjs";
-import { array, frontmatter, record, string } from "./parser-boundary.ts";
+import { parseDocsDocument } from "./vendor/docs-markdown.mjs";
+import {
+  array,
+  createDocsParser,
+  docsParser,
+  frontmatter,
+  record,
+  string,
+} from "./parser-boundary.ts";
 
 export const DEFAULT_REVIEW_WORDS = 1500;
 export const DEFAULT_MAX_WORDS = 2500;
@@ -78,11 +85,20 @@ export function collectMarkdownFiles({ root = process.cwd(), files }: FileOption
   return [...byRealPath.values()].sort((left, right) => left.path.localeCompare(right.path));
 }
 
+type MarkdownWordCountOptions = { sourceFile?: string; root?: string };
+
 export function countMarkdownWords(
   markdown: string,
-  options: { markdown?: unknown; sourceFile?: string; root?: string } = {},
+  options: MarkdownWordCountOptions & { markdown?: unknown } = {},
 ) {
-  const md: unknown = options.markdown ?? createDocsMarkdown();
+  return countWordsWithParser(markdown, docsParser(options.markdown), options);
+}
+
+function countWordsWithParser(
+  markdown: string,
+  md: ReturnType<typeof createDocsParser>,
+  options: MarkdownWordCountOptions,
+) {
   const content = frontmatter(markdown).content.replace(/<!--[\s\S]*?-->/g, "");
   const parsed: unknown = parseDocsDocument(content, md, options);
   const tokens = array(record(parsed).tokens);
@@ -164,7 +180,7 @@ export function checkMarkdownWordCounts({
   reviewWords = DEFAULT_REVIEW_WORDS,
   files,
 }: FileOptions & { maxWords?: number; reviewWords?: number } = {}) {
-  const md: unknown = createDocsMarkdown();
+  const md = createDocsParser();
   const markdownFiles = collectMarkdownFiles({ root, files });
   const absoluteRoot = fs.realpathSync.native(path.resolve(root));
   const rows = markdownFiles.map((file) => {
@@ -180,8 +196,7 @@ export function checkMarkdownWordCounts({
     ) {
       throw new Error(`${file.path}: tags frontmatter must be a list of nonempty strings`);
     }
-    const counts = countMarkdownWords(markdown, {
-      markdown: md,
+    const counts = countWordsWithParser(markdown, md, {
       sourceFile: file.absolutePath,
       root: file.path.startsWith("docs/")
         ? path.join(absoluteRoot, "docs")
@@ -347,11 +362,15 @@ export function runWordCountCli(argv = process.argv.slice(2)) {
   return result.ok ? 0 : 1;
 }
 
-if (process.argv[1] === __filename) {
+export function runWordCountMain() {
   try {
     process.exitCode = runWordCountCli();
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
   }
+}
+
+if (process.argv[1] === __filename) {
+  runWordCountMain();
 }

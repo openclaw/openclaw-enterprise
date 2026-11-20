@@ -10,13 +10,14 @@
   },
   "agentNativeAdmin": {
     "enabled": true,
-    "domain": ("agents." + $cluster + ".oce.localhost"),
-    "sharedCookieDomain": ($cluster + ".oce.localhost")
+    "domain": ("agents." + $cluster + ".oce.localhost")
   },
   "bootstrap": {
     "adminEmail": $email,
-    "password": {
-      "claimName": "occ-bootstrap-admin-password"
+    "credentials": {
+      "secretName": "occ-bootstrap-credentials",
+      "passwordKey": "admin-password",
+      "serviceKeyKey": "admin-service-key"
     }
   },
   "database": {
@@ -65,7 +66,7 @@
   "repositoryCredentials": {
     "enabled": false
   },
-  "slackProxy": {
+  "channelEgress": {
     "enabled": false
   },
   "metrics": {

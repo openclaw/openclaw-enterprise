@@ -233,8 +233,8 @@ Configuration before replacing its values.
 
 1. Apply the matching Helm values and updated Installation startup Secret using
    the [production installation procedure](production-installation.md). Preserve
-   the existing auth/database and routing-key Secrets, generated CA Secrets, and
-   prepared bootstrap volume; do not rerun fresh-volume preparation. Restart both
+   the existing auth/database and routing-key Secrets and generated CA Secrets.
+   Upgrades do not require bootstrap credential inputs. Restart both
    API and worker to load the new startup configuration. Wait for the private Gateway, certificates, and policy.
 2. For each Agent being routed, request
    `POST /namespaces/:namespaceId/agents/:agentId/deploy` for the same Agent.
@@ -368,6 +368,8 @@ integration uses API-key authentication over WSS; the pinned native client does
 not expose mTLS client-certificate options.
 
 ### Troubleshooting
+
+Diagnose [upstream 403](../operate/local-setup-troubleshooting.md#gateway-connections-return-403-after-an-envoy-pod-replacement).
 
 | Symptom                                                           | What to check                                                                                                                                                                                            |
 | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

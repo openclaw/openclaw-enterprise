@@ -13,8 +13,9 @@ Compute owns native installation, runtime connections, readiness, activation,
 and retirement. Bundled startup code also translates selected policy into native
 configuration; those helpers are not methods on the exported Driver interface.
 
-An Installation can select at most one bundled Plugin Driver. The default is no
-Driver, which permits plugin-free deployments. External Plugin Driver packages
+An Installation can enable both bundled Plugin Drivers. The Driver's `harnessId`
+identifies its catalog. OpenClaw uses `occ-plugin` in either execution mode.
+Dedicated Codex uses `codex-plugin`. Omitting the setting permits plugin-free deployments. External Plugin Driver packages
 are not selectable. See [Driver selection](selection.md) and the
 [Agent plugin reference](../agent-plugins.md).
 
@@ -27,8 +28,10 @@ The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) 
 - `policyCapabilities`: supported default/tool enablement, approval modes, and
   reviewer arrays per scope, plus the JSON Schema for `driverPolicy` fields.
   An empty reviewer array means explicit selection is unsupported at that scope.
-  For IDs marked `enablement_only` in `policyScopeByPlugin`, adding the plugin
-  sets `enabled: true`. The next deployment applies that selection.
+  `policyScopeByPlugin` limits each catalog entry: `enablement_only` exposes its
+  master switch; `tool_human_approval` also permits `all_actions` or `none` on
+  individual selected tools. Unlisted entries use Driver-wide capabilities.
+  The next deployment applies saved selections.
 - `validatePolicies(selections)`: validate requested policy without installation
   or authenticated discovery. OCC calls this before save and deployment admission.
 - `validatePlacement(selections, harness, computeImplementation, credentialRuntime)`
@@ -38,6 +41,21 @@ The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) 
   undefined. A plugin that needs a bound credential can refuse an Installation
   that cannot deliver it. OCC checks placement before saving selections and
   again when it admits deployment.
+- `describeDeployment({plugin, selection, connections})` (optional) returns
+  [deployment requirements](../../../packages/contracts/src/drivers/plugin/deployment.ts)
+  for one admitted catalog identity. The OpenClaw Driver accepts
+  `{catalog: "driver", pluginId}`. Its `installation` tools name the Gateway or
+  Harness, the material to install and the selected tools. Any plugin can declare
+  network requirements for installation or invocation, with HTTP or MCP request
+  restrictions where needed. Each configured credential names its source,
+  environment, presentation, tool IDs and only the invocation requirement IDs
+  eligible for injection under `credentials[requirement][connection]`. Network
+  requirements not referenced by a credential connection need no credential,
+  including requests to a different path on the same host. Discovery can be
+  public or authenticated. For example, Google public discovery uses separate
+  GET paths without injection, while Slack MCP tool discovery uses its account.
+  An empty connection map preserves an unconnected slot. A credentialless plugin
+  declares no slots.
 - `credentials` (optional): credential slots for plugins that use an Agent's
   [credential sources](../credential-sources.md). The Driver receives only source
   metadata that OCC authorized, never credential values.
@@ -79,8 +97,7 @@ metadata never enters Agent selections and does not verify app connections,
 grant access, or configure credentials. Connection verification and deployment
 gates are not part of this metadata contract.
 
-Authorized `GET /installation` exposes the selected Driver's identity and policy
-capabilities. See the [capability response](../agent-plugins.md#discover-policy-controls).
+Authorized `GET /installation` exposes each enabled catalog's Harness, Driver identity and policy capabilities. See the [capability response](../agent-plugins.md#discover-policy-controls).
 
 There is no exported install, enable, policy-translation, or preparation method.
 The optional _backend reader_ in bundled Codex is different from the required
@@ -93,7 +110,8 @@ cursor?, q?}, signal?)` returns `{plugins, nextCursor, setup?}`, and
 `getCatalogPlugin({accessToken?, pluginId}, signal?)` returns plugin details. Here
 `pluginId` is the opaque `remoteId` from a discovery entry; the entry's `id` is
 the stable selection key. The HTTP routes are `POST /namespaces/:namespaceId/agents/plugins`
-and its `/details` child. The selected Driver reports `pluginDiscovery.credential`
+and its `/details` child. Include the target `harnessId` in each request.
+OCC resolves the catalog before it reads a credential. The selected Driver reports `pluginDiscovery.credential`
 in Installation capabilities as `required` or `none`. When required, supply
 exactly one of `accessToken`, `secretRef`, or `credentialSource`. Stored references
 use `{kind, namespaceId, id}` with kind `secret` or `credential_source`.
@@ -104,9 +122,15 @@ empty query lists it. Keep the same query while paging and omit the cursor when
 changing the query.
 Both routes require Agent `create` in the Namespace. Stored references must
 belong to that Namespace and require caller `operate` on the exact source.
-OCC uses SecretDriver `withValue` for Secrets and Credential Gateway
-`withSourceToken` for CredentialSources, passing credentials to the PluginDriver
-in server memory. For PAT discovery, the bundled Codex Driver derives the
+OCC uses SecretDriver `withValue` for Secrets. For CredentialSources, the trusted
+bundled OpenShell Backend reader performs ordinary metadata lookup and
+operator-mTLS export; an external Credential Gateway retains its optional
+`withSourceToken` callback. Both paths require the same exact Gateway owner
+match and Namespace checks, with no fallback to another Gateway or tenant.
+OCC checks authorization, source readiness, attachment where required, and the
+selected catalog before retrieval, then rechecks before catalog dispatch.
+Credentials pass to the PluginDriver in server memory; refresh remains with
+its owner. For PAT discovery, the bundled Codex Driver derives the
 account ID from the PAT. Clients do not provide an account ID. A Secret reference
 to another Namespace returns `400 INVALID_REQUEST`. After caller authorization,
 a missing Secret returns `404`. A missing or non-ready explicitly selected
@@ -159,7 +183,7 @@ metadata, translate supported policy, and apply it to the specified Agent revisi
 before declaring readiness. Nonempty selections cannot start with a missing,
 changed, or Harness-incompatible Driver. Agent save, provisioning and deployment
 refuse a Harness the Driver cannot run (`400`): bundled OpenClaw plugins need an
-OpenClaw Harness, bundled Codex plugins dedicated Codex or embedded OpenClaw.
+OpenClaw Harness, bundled Codex plugins require a dedicated Codex Harness.
 An unsupported policy or unsafe native configuration prevents startup or leaves
 the version unready. Retries reuse the
 requested IDs and policy; they may resolve a newer curated release at that later
@@ -199,7 +223,7 @@ and [Compute startup warnings](compute.md#plugin-startup-warnings).
 ## Implementations
 
 - [Bundled OpenClaw and Codex Drivers](plugin-bundled.md): `occ-plugin` serves
-  embedded OpenClaw; `codex-plugin` serves dedicated Codex.
+  OpenClaw in either mode and `codex-plugin` serves dedicated Codex.
 - [PluginDriver feature matrix](plugin-matrix.md): historical capability review
   with pinned source evidence.
 

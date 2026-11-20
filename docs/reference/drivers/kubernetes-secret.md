@@ -11,11 +11,8 @@ lifecycle. This page owns Kubernetes setup and operator procedures.
 
 The Driver stores values for environment delivery, transient server-side
 hosted plugin discovery, and [credential source](../credential-sources.md)
-registration. **Experimental** Codex OAuth device login stores only a private
-Gateway handle and source reference here. Atomic compare-and-swap fences
-concurrent polling and cancellation. Provider tokens remain in the external
-credential service; no runtime handoff seals or consumes this Secret. See
-[Codex OAuth storage](kubernetes-compute/codex-oauth-storage.md).
+registration. OCC stores [Codex device-login sessions](kubernetes-compute/codex-oauth-storage.md)
+in PostgreSQL.
 
 Single-cluster Compute uses the tenant workload namespace, including adopted
 namespaces. The two-cluster profile retains separate control-cluster storage.
@@ -77,6 +74,14 @@ The driver does not accept installed packages, injected Kubernetes clients,
 ambient kubeconfig fallback, unverified TLS, caller-selected Kubernetes
 namespaces, or caller-selected Kubernetes Secret names. Backend identity is
 OCC-owned metadata.
+
+## Installation-private OAuth client secrets
+
+Helm provisions a separate Kubernetes namespace for confidential registrations and configures both the API and worker to use it. Outside Helm, use `OCC_INSTALLATION_SECRET_NAMESPACE` to select a dedicated namespace. The driver defaults to `oce-installation-secrets`. Grant the API permission to get, create, update, and delete Secrets there. Grant the worker get and delete. Keep workloads and tenant RoleBindings out of this namespace.
+
+The Driver creates one Opaque Secret per registration. Rotation replaces its value in place. Before using or deleting the Secret, the Driver checks its Installation, registration, and Driver identity. Kubernetes resource versions fence concurrent changes.
+
+If Kubernetes confirms creation but returns an object that fails these checks, the Driver attempts to delete the requested object with the returned UID and resourceVersion. A replacement or changed object is preserved. Confirmed removal keeps the original refusal; missing preconditions or an unconfirmed delete report an unknown outcome. OCC retains its hidden registration until the cleanup worker confirms that the private object is absent.
 
 ## Create a Namespace-owned Secret
 

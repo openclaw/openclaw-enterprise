@@ -21,6 +21,7 @@ control-plane data.
 
 ```bash
 umask 077
+mkdir -p /secure/occ/upgrades
 export BASELINE="/secure/occ/upgrades/baseline-$(date -u +%Y%m%dT%H%M%SZ)"
 export PGPASSFILE=/secure/occ/pgpass
 export OCC_MIGRATION_DATABASE_URL='postgresql://occ_migrator@<postgres-host>:5432/<database>?sslmode=verify-full&sslrootcert=/secure/occ/database-ca.pem'
@@ -69,29 +70,42 @@ before the upgrade.
 ## Record images and Kubernetes state
 
 ```bash
-"${kube[@]}" get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{range .status.initContainerStatuses[*]} {.name}={.imageID}{end}{range .status.containerStatuses[*]} {.name}={.imageID}{end}{"\n"}{end}' \
-  >"$BASELINE/pod-images.txt"
-"${kube[@]}" get namespaces -o json |
-  jq -S '[.items[] | {name: .metadata.name, labels: .metadata.labels}]' >"$BASELINE/namespaces.json"
-for kind in rolebindings networkpolicies services; do
-  "${kube[@]}" get "$kind" -A -o json |
-    jq -S '[.items[] | {namespace: .metadata.namespace, name: .metadata.name, roleRef, subjects, spec}]' \
-      >"$BASELINE/$kind.json"
-done
-"${kube[@]}" get storageclasses -o json |
-  jq -S '[.items[] | {name: .metadata.name, provisioner, reclaimPolicy, volumeBindingMode,
-    allowVolumeExpansion, parameters,
-    default: .metadata.annotations["storageclass.kubernetes.io/is-default-class"]}]' \
-    >"$BASELINE/storageclasses.json"
-"${kube[@]}" get pvc -A -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,UID:.metadata.uid,VOLUME:.spec.volumeName' \
-  >"$BASELINE/pvcs.txt"
-# Only with private Agent routing (Gateway API resources):
+(
+  set -uo pipefail
+  "${kube[@]}" get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{range .status.initContainerStatuses[*]} {.name}={.imageID}{end}{range .status.containerStatuses[*]} {.name}={.imageID}{end}{"\n"}{end}' \
+    >"$BASELINE/pod-images.txt" || exit
+  "${kube[@]}" get namespaces -o json |
+    jq -S '[.items[] | {name: .metadata.name, labels: .metadata.labels}]' >"$BASELINE/namespaces.json" || exit
+  for kind in rolebindings networkpolicies services; do
+    "${kube[@]}" get "$kind" -A -o json |
+      jq -S '[.items[] | {namespace: .metadata.namespace, name: .metadata.name, roleRef, subjects, spec}]' \
+        >"$BASELINE/$kind.json" || exit
+  done
+  "${kube[@]}" get storageclasses -o json |
+    jq -S '[.items[] | {name: .metadata.name, provisioner, reclaimPolicy, volumeBindingMode,
+      allowVolumeExpansion, parameters,
+      default: .metadata.annotations["storageclass.kubernetes.io/is-default-class"]}]' \
+      >"$BASELINE/storageclasses.json" || exit
+  "${kube[@]}" get pvc -A -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,UID:.metadata.uid,VOLUME:.spec.volumeName' \
+    | cat >"$BASELINE/pvcs.txt" || exit
+)
+```
+
+Check the exit status immediately. If it is nonzero, discard the incomplete
+capture. Resolve the failure, then repeat the setup and capture in a fresh
+baseline directory. Only for private Agent routing, also require the following
+read to succeed before using the baseline:
+
+```bash
 "${kube[@]}" get gateways,httproutes -A -o yaml >"$BASELINE/gateway-api.yaml"
 ```
 
 `pod-images.txt` records the digest each container actually runs, which the
-configured image reference alone does not prove. The PVC UIDs must be unchanged
-after the upgrade: a new UID means the volume and its Agent data were replaced.
+configured image reference alone does not prove. The PVC UIDs must remain unchanged
+after the upgrade. A changed UID identifies a different claim object; it does
+not by itself establish whether the backing volume or Agent data changed. Stop
+and reconcile the claim, volume identity and workspace checks against the
+baseline before continuing.
 
 ## Record the OCC inventory
 
@@ -102,7 +116,7 @@ On controllers that support it, record the installation-wide deployment inventor
 ```
 
 Require this read to succeed. It requires Installation `administer` and read
-access to each Namespace and Agent. For a running Agent with a selected revision
+access to each Namespace and Agent. For an active, desired-running Agent with a selected revision
 and no deployment in progress, it also checks Agent `deploy` and revision read
 access. An authorization or connection failure does not mean the endpoint is
 unavailable on that release.
@@ -112,7 +126,7 @@ IDs, desired states and selected revisions from an independent inventory held by
 the resource or database owner. Include stopped Agents. Compare those records
 with the lists below before changing production. If an ID or state is missing
 or the expected inventory is unknown, stop. This fallback does not replace the
-deployment inventory required by the image helper for a runtime upgrade.
+deployment inventory required by the image helper for every upgrade.
 
 For either release, collect the remaining records in Bash:
 
@@ -225,8 +239,8 @@ unexpected history, or different receipts.
   pg_dump --format=custom --file "$CANDIDATE_RETURN/candidate.pgdump" "$CANDIDATE_MIGRATION_DATABASE_URL"
   pg_restore --exit-on-error --single-transaction --dbname "$RESTORE_DATABASE_URL" -- \
     "$CANDIDATE_RETURN/candidate.pgdump"
-  NODE_ENV=production OCC_MIGRATION_DATABASE_URL="$RESTORED_MIGRATION_DATABASE_URL" \
-    node scripts/migrate-production.mjs --check >"$CANDIDATE_RETURN/restored-history.json"
+  OCC_MIGRATION_DATABASE_URL="$RESTORED_MIGRATION_DATABASE_URL" \
+    pnpm db:migrate:production --check >"$CANDIDATE_RETURN/restored-history.json"
   jq -se --arg expected "$EXPECTED_CANDIDATE_HISTORY" \
     'length == 1 and .[0].event == "migration.checked" and .[0].history == $expected' \
     "$CANDIDATE_RETURN/restored-history.json" >/dev/null
@@ -243,6 +257,49 @@ database contains the records for each accepted operation. Keep writers stopped
 if any required record differs or an operation remains uncertain. Verify Gateway
 and workspace volumes and compatibility with any older image before switching
 writers.
+
+## Verify a restored saved Configuration
+
+With source writers paused, record the Namespace, Agent, and linked
+Configuration IDs, the Configuration `generation`, and one known nonsecret
+setting at the same recovery point. The check follows the Agent's
+`configurationId` to read the current draft. Agent revisions preserve settings
+from past deployments. Check the required revision separately using the
+[upgrade checklist](upgrade-checklist.md#record-the-starting-state).
+
+Use Bash, jq, and the release CLI (`OCC_BIN`). Point `RESTORED_OCC_URL` at the
+private restored application. Use a protected `SERVICE_KEY_FILE` with read
+access to the Agent and Configuration. Set the IDs and `EXPECTED_GENERATION`
+from the source record. This example uses the saved assistant name as
+`EXPECTED_NAME`. If it was unset, use another recorded nonsecret string and
+replace `.values.ui.assistant.name` in the check.
+
+```bash
+(
+  set +x
+  set -euo pipefail
+  restored_occ=("${OCC_BIN:?}" --url "${RESTORED_OCC_URL:?}" --service-key-file "${SERVICE_KEY_FILE:?}"
+    --namespace "${NAMESPACE_ID:?}" --output json)
+  configuration_id=$("${restored_occ[@]}" agent get "${AGENT_ID:?}" 2>/dev/null |
+    jq -ers --arg ns "$NAMESPACE_ID" --arg agent "$AGENT_ID" --arg config "${EXPECTED_CONFIGURATION_ID:?}" '
+      select(length == 1) | .[0] | select(.namespaceId == $ns and .id == $agent and
+        .configurationId == $config and .configurationReadError == null)
+      | .configurationId
+    ' 2>/dev/null) || exit 1
+  "${restored_occ[@]}" configuration get "$configuration_id" 2>/dev/null |
+    jq -es --arg ns "$NAMESPACE_ID" --arg config "$configuration_id" \
+      --arg generation "${EXPECTED_GENERATION:?}" --arg name "${EXPECTED_NAME:?}" '
+        select(length == 1) | .[0] | .namespaceId == $ns and .id == $config
+        and (.generation | type == "number" and . >= 1 and . == floor)
+        and (.generation | tostring) == $generation and .values.ui.assistant.name == $name
+      ' >/dev/null 2>&1
+)
+```
+
+The check prints no Configuration values. Require exit 0 to accept the
+rehearsal or return a restored copy to service. On failure, keep the restored
+copy isolated and verify that both stores came from the recorded recovery
+point. A matching Agent ID and migration history cannot verify the saved draft.
 
 ## Record Agent data
 
@@ -322,8 +379,9 @@ can contain Secrets.
     --kubeconfig /secure/occ/kubeconfig --kube-context '<reviewed-context>' \
     --namespace openclaw-system >"$comparison/installed.yaml" 2>"$comparison/helm.err"
   test -s "$comparison/installed.yaml"
-  test -s "$UPGRADE_EVIDENCE/rendered.yaml"
-  diff -u "$comparison/installed.yaml" "$UPGRADE_EVIDENCE/rendered.yaml" \
+  attempt="$UPGRADE_EVIDENCE/helm-attempts/$(jq -er .nonce "$UPGRADE_EVIDENCE/prepared-helm-attempt.json")"
+  test -s "$attempt/rendered.yaml"
+  diff -u "$comparison/installed.yaml" "$attempt/rendered.yaml" \
     >"$comparison/manifest.diff" || test "$?" -eq 1
   printf 'Review the private comparison in %s\n' "$comparison"
 )
@@ -331,7 +389,8 @@ can contain Secrets.
 
 Stop if the comparison cannot run. Use the diff to locate changes, then check
 the required objects and fields in both files. Account for intended changes
-such as the selected image digests. Review `server-dry-run.txt` for Helm's
+such as image digests and the upgrade-attempt UUID. Review the attempt's
+`server-dry-run.txt` for Helm's
 upgrade-mode output and hooks. Helm history omits later live patches. Check
 affected objects against the [live Kubernetes records](#record-images-and-kubernetes-state)
 as well. Read the live object for any required field that the baseline does
@@ -365,7 +424,6 @@ any other change, in particular a changed PVC UID, a missing or altered earlier
 receipt, any other NetworkPolicy, Service or RoleBinding change, a different
 workspace hash, or a workspace that is empty or nearly so.
 
-The checklist's Configuration, Preset, Backend, service account, audit,
-session and gateway state items, and its authentication, credential, repository
-and CredentialSource items, have no command here; record them as that page
-describes.
+Use the checklist to record the remaining Configuration inventory and the
+Preset, Backend, service account, audit, session, gateway, authentication,
+credential, repository and CredentialSource items.

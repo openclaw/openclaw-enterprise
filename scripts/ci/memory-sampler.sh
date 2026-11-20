@@ -26,8 +26,13 @@ pressure() {
 }
 
 top_rss() {
-  # comm is the executable name (at most 15 bytes); args may hold secrets.
-  ps -eo rss=,comm= --sort=-rss 2>/dev/null | head -n "$1"
+  # Thread names such as MainThread can hide the executable. Keep only its
+  # basename and the group ID recorded in each test file's result, never args.
+  ps -eo rss=,pid=,ppid=,pgid=,comm= --sort=-rss 2>/dev/null | head -n "$1" |
+    while read -r rss pid ppid pgid comm; do
+      executable=$(readlink "/proc/$pid/exe" 2>/dev/null) || executable=unknown
+      printf '%s %s %s %s %s %s\n' "$rss" "$pid" "$ppid" "$pgid" "${executable##*/}" "$comm"
+    done
 }
 
 # Stop promptly, with no stray sleep left holding the job log open.
@@ -54,14 +59,14 @@ while true; do
       echo "psi_memory ${psi:-unavailable}"
       echo "loadavg $(cut -d ' ' -f 1-3 /proc/loadavg 2>/dev/null)"
       echo "disk_root_available ${disk:-?}"
-      echo "top_rss_kib comm"
+      echo "top_rss_kib pid ppid pgid executable comm"
       top_rss 10
       echo "containers name mem_usage mem_percent"
       timeout 10 docker stats --no-stream --format '{{.Name}} {{.MemUsage}} {{.MemPerc}}' 2>/dev/null | head -n 10
     } >>"$output" 2>/dev/null
   fi
   if ((sample % 4 == 1)); then
-    top=$(top_rss 3 | awk '{ printf "%s%s:%dMiB", sep, $2, $1 / 1024; sep = "," }')
+    top=$(top_rss 3 | awk '{ printf "%s%s:%dMiB", sep, $5, $1 / 1024; sep = "," }')
     echo "memory-sampler $now available=${available}MiB swap_used=${swap_used}MiB disk_available=${disk:-?} ${psi}top=${top}"
   fi
   sleep "$interval" &

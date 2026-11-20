@@ -1,4 +1,4 @@
-import { scenarios } from "./public/scenarios.mjs";
+import { scenarios } from "./public/scenarios.mts";
 
 // Injected by the Storybook build from the prepared static assets.
 declare const __CONSOLE_STORY_BUILD__: string;

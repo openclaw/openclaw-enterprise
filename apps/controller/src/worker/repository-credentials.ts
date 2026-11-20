@@ -1,4 +1,4 @@
-import { sameBinding } from "../drivers/repo/credentials/grant-identity.ts";
+import { sameBinding } from "../drivers/repo/access/grant-identity.ts";
 import { protectedRepositoryGitAdmission } from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
@@ -16,9 +16,11 @@ import { isInstallationRepositoryProfile } from "@openclaw-enterprise/contracts"
 import {
   eligibleRepositoryApprovalScope,
   isRepositoryCleanupWork,
+  repositoryCleanupRevisionId,
   repositoryApprovalFingerprint,
   revisionAdmittedBeforeWork,
   WorkClaimLostError,
+  RepositoryExecutionRequiresRedeployError,
   type ClaimedWork,
   type PlatformUnitOfWork,
   type PlatformReadView,
@@ -51,7 +53,15 @@ export class StandingRepositorySessionDisposingError extends Error {}
 interface Dependencies {
   readonly state: PostgresPlatformState;
   readonly queueOptions: PostgresWorkQueueOptions;
-  readonly driver: RepositoryPolicyDriver | undefined;
+  readonly repository?:
+    | undefined
+    | { readonly kind: "registered"; readonly policy: RepositoryPolicyDriver }
+    | {
+        readonly kind: "bound";
+        readonly policy: RepositoryPolicyDriver & {
+          readonly resolveBindings: RepositoryPolicyDriver["resolve"];
+        };
+      };
   readonly nativeSender?: NativeRepositorySender | undefined;
   readonly verifyExecution?: (
     claim: ClaimedWork,
@@ -151,7 +161,16 @@ export class RepositoryCredentialLifecycle {
     ) {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_PROXY_ADMISSION_MISMATCH");
     }
-    const driver = this.driver(revision);
+    const repository = this.dependencies.repository;
+    const selected = snapshot.driver;
+    if (
+      !repository ||
+      !selected ||
+      repository.policy.id !== selected.id ||
+      repository.policy.implementation !== selected.implementation
+    ) {
+      throw new RepositoryCredentialAuthorityError("REPOSITORY_DRIVER_MISMATCH");
+    }
     if (snapshot.standingApprovalId === undefined && Date.now() >= snapshot.deadlineWallMs) {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED");
     }
@@ -159,7 +178,10 @@ export class RepositoryCredentialLifecycle {
       const binding = snapshot.bindings[0];
       const scope =
         binding &&
-        eligibleRepositoryApprovalScope(driver, { namespaceId: revision.namespaceId, binding });
+        eligibleRepositoryApprovalScope(repository.policy, {
+          namespaceId: revision.namespaceId,
+          binding,
+        });
       if (
         !binding ||
         snapshot.bindings.length !== 1 ||
@@ -177,13 +199,17 @@ export class RepositoryCredentialLifecycle {
     }
     let resolved;
     try {
-      resolved = driver.resolve({
+      const input = {
         namespaceId: revision.namespaceId,
         bindings: snapshot.bindings.map(({ repositoryRef, profile }) => ({
           repositoryRef,
           profile,
         })),
-      });
+      };
+      resolved =
+        repository.kind === "bound"
+          ? repository.policy.resolveBindings(input)
+          : repository.policy.resolve(input);
     } catch {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_BINDING_UNAVAILABLE");
     }
@@ -475,6 +501,13 @@ export class RepositoryCredentialLifecycle {
     const outcome = settleCleanup(attempts);
     for (const attempt of attempts.filter((candidate) => candidate.phase === "closing")) {
       try {
+        if (
+          isRepositoryCleanupWork(claim) &&
+          (attempt.brokerProtocol === 1 || attempt.brokerProtocol === 3) &&
+          (await this.consumeDisposedReceipt(claim, attempt))
+        ) {
+          continue;
+        }
         const closed = await this.closeAttempt(claim, attempt);
         outcome.settled = closed.settled && outcome.settled;
       } catch (error) {
@@ -488,18 +521,66 @@ export class RepositoryCredentialLifecycle {
     return outcome;
   }
 
-  private driver(revision: Revision): RepositoryPolicyDriver {
-    const driver = this.dependencies.driver;
-    const selected = revision.repositoryCredentials?.driver;
-    if (
-      !driver ||
-      !selected ||
-      driver.id !== selected.id ||
-      driver.implementation !== selected.implementation
-    ) {
-      throw new RepositoryCredentialAuthorityError("REPOSITORY_DRIVER_MISMATCH");
+  private async consumeDisposedReceipt(claim: ClaimedWork, attempt: Attempt): Promise<boolean> {
+    // Routing only: unresolved evidence (including a failed read) stays with its original owner.
+    const observed = await this.dependencies.state
+      .read((view) => view.repositorySessions.findBrokerReceipt(attempt.admissionId))
+      .catch(() => undefined);
+    if (observed?.state !== "disposed") {
+      return false;
     }
-    return driver;
+    return this.dependencies.state.transactWithQueue(async (unit, queue) => {
+      const checkClaim = async () => {
+        const current = await queue.heartbeat(claim);
+        if (
+          !current ||
+          current.actorId !== claim.actorId ||
+          current.namespaceId !== claim.namespaceId ||
+          current.agentId !== claim.agentId ||
+          current.revisionId !== claim.revisionId ||
+          !isRepositoryCleanupWork(current) ||
+          current.namespaceId !== attempt.namespaceId ||
+          repositoryCleanupRevisionId(current) !== attempt.revisionId ||
+          (current.agentId !== undefined
+            ? current.agentId !== attempt.agentId
+            : attempt.liveRevisionId !== null)
+        ) {
+          throw new WorkClaimLostError();
+        }
+      };
+      await checkClaim();
+      const current = await unit.repositorySessions.lockAttempt(attempt.admissionId);
+      if (!isDeepStrictEqual(current, attempt)) {
+        throw new WorkClaimLostError();
+      }
+      // The journal belongs to this immutable attempt. Read it under the same lock used by
+      // its original custodian. The advisory read cannot authorize a transition.
+      const receipt = await unit.repositorySessions.findBrokerReceipt(attempt.admissionId);
+      if (
+        receipt?.state !== "disposed" ||
+        !isDeepStrictEqual(receipt, observed) ||
+        receipt.admissionId !== attempt.admissionId ||
+        !receipt.sessionId ||
+        (attempt.sessionId !== undefined && receipt.sessionId !== attempt.sessionId) ||
+        receipt.deadlineWallMs === undefined ||
+        !Number.isSafeInteger(receipt.deadlineWallMs) ||
+        receipt.deadlineWallMs <= 0 ||
+        receipt.deadlineWallMs > attempt.deadlineWallMs ||
+        !receipt.generation ||
+        typeof receipt.revoked !== "number" ||
+        !Number.isSafeInteger(receipt.revoked) ||
+        receipt.revoked < 0 ||
+        typeof receipt.expired !== "number" ||
+        !Number.isSafeInteger(receipt.expired) ||
+        receipt.expired < 0 ||
+        attempt.cleanupContext.binding.repositoryRef !== attempt.repositoryRef
+      ) {
+        throw new RepositoryCredentialAuthorityError("INVALID_REPOSITORY_DRIVER_OBSERVATION");
+      }
+      await checkClaim();
+      await this.advanceIn(unit, attempt, "disposed", receipt.sessionId);
+      return true;
+    }, this.dependencies.queueOptions);
   }
 
   private driverFor(selected: CleanupContext["driver"] | undefined): NativeRepositorySender {
@@ -513,6 +594,17 @@ export class RepositoryCredentialLifecycle {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_DRIVER_MISMATCH");
     }
     return driver;
+  }
+
+  private async verifyExecution(claim: ClaimedWork, revision: Revision) {
+    try {
+      return await this.dependencies.verifyExecution?.(claim, revision);
+    } catch (error) {
+      if (error instanceof RepositoryExecutionRequiresRedeployError) {
+        throw new RepositoryCredentialAuthorityError(error.code);
+      }
+      throw error;
+    }
   }
 
   /** Pins only a fresh observation of the active execution; never creates or repairs Compute. */
@@ -533,7 +625,7 @@ export class RepositoryCredentialLifecycle {
       }
       return;
     }
-    const execution = await this.dependencies.verifyExecution?.(claim, revision);
+    const execution = await this.verifyExecution(claim, revision);
     if (!execution || !execution.executionId || !/^[a-f0-9]{64}$/.test(execution.fingerprint)) {
       if (required) {
         throw new RepositoryCredentialAuthorityError("REPOSITORY_EXECUTION_UNVERIFIED");
@@ -580,7 +672,7 @@ export class RepositoryCredentialLifecycle {
         if (recorded.closed) {
           throw new RepositoryCredentialAuthorityError("REPOSITORY_EXECUTION_CLOSED");
         }
-        const observed = await this.dependencies.verifyExecution?.(claim, revision);
+        const observed = await this.verifyExecution(claim, revision);
         if (!observed || !observed.executionId || !/^[a-f0-9]{64}$/.test(observed.fingerprint)) {
           throw new RepositoryCredentialAuthorityError("REPOSITORY_EXECUTION_UNVERIFIED");
         }

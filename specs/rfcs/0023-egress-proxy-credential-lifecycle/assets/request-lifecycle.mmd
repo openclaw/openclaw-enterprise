@@ -33,7 +33,7 @@ sequenceDiagram
   participant G as GitHub
 
   Note over F,C: Before release: bind the execution, supervisor<br/>installation, and enforced policy
-  Note over C,G: OCE prepares the scoped token<br/>in the background, not on request
+  Note over C,G: Token Service renews early<br/>or when an authorized<br/>request needs it
 
   A-->>F: Read repository metadata
   Note over A,F: Pin the originating execution and response path at acceptance

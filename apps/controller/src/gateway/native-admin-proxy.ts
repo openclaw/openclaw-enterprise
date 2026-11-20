@@ -13,8 +13,10 @@ export interface NativeAdminProxyContext {
 export type NativeAdminWebSocketCloseReason =
   | "session_invalid"
   | "session_expired"
+  | "admission_forbidden"
   | "authorization_denied"
   | "agent_unavailable"
+  | "agent_transition"
   | "revision_changed"
   | "disabled"
   | "dependency_timeout"
@@ -68,7 +70,7 @@ const STRIPPED_REQUEST_HEADERS = new Set([
   "x-openclaw-scopes",
 ]);
 
-const STRIPPED_RESPONSE_HEADERS = new Set(["set-cookie"]);
+const STRIPPED_RESPONSE_HEADERS = new Set(["set-cookie", "clear-site-data"]);
 
 function percentDecode(value: string): string | undefined {
   try {
@@ -315,25 +317,41 @@ function rewriteLocation(value: string, context: NativeAdminProxyContext): strin
   return browser.toString();
 }
 
-function endHttp(reply: FastifyReply, statusCode: number): void {
-  if (!reply.raw.headersSent) {
-    reply.raw.writeHead(statusCode, {
-      "cache-control": "no-store",
-      "content-type": "text/plain; charset=utf-8",
-    });
+// The route's proxy (Envoy) answers this local reply itself when it cannot reach the Gateway: the
+// container refuses connections (held unready, restarting) or has no ready endpoint. The
+// Gateway's own 503s are JSON or "text/plain; charset=utf-8" and pass through.
+const ROUTE_PROXY_UNREACHABLE =
+  /^(?:upstream connect error or disconnect\/reset before headers|no healthy upstream)/;
+
+function routeProxyReplyCandidate(response: http.IncomingMessage): boolean {
+  const length = Number(response.headers["content-length"]);
+  return (
+    response.statusCode === 503 &&
+    response.headers["content-type"] === "text/plain" &&
+    Number.isInteger(length) &&
+    length <= 1024
+  );
+}
+
+// Upstream response headers OCC refuses to relay (an unsafe redirect).
+function rejectUpstreamHeaders(reply: FastifyReply): void {
+  if (reply.raw.writableEnded || reply.raw.destroyed) {
+    return;
   }
-  if (!reply.raw.writableEnded) {
-    reply.raw.end(
-      "The native gateway is unavailable. Reopen native admin from the Agent page to retry.",
-    );
-  }
+  reply.raw.writeHead(502, {
+    "cache-control": "no-store",
+    "content-type": "text/plain; charset=utf-8",
+  });
+  reply.raw.end(
+    "The native gateway is unavailable. Reopen native admin from the Agent page to retry.",
+  );
 }
 
 export async function proxyNativeAdminHttp(options: {
   readonly request: FastifyRequest;
   readonly reply: FastifyReply;
   readonly context: NativeAdminProxyContext;
-}): Promise<void> {
+}): Promise<"gateway_unavailable" | undefined> {
   const upstream = nativeAdminUpstreamUrl(options.context.gatewayBase, options.request.url);
   const headers = requestHeaders(options.request, options.context);
   if (
@@ -345,33 +363,81 @@ export async function proxyNativeAdminHttp(options: {
     return;
   }
 
+  // The incoming stream is already decoded. Reconstruct declared body framing
+  // when sanitization removed its length, preserving ordinary bodyless requests.
+  const incomingHeaders = options.request.raw.headers;
+  if (
+    headers["content-length"] === undefined &&
+    (incomingHeaders["content-length"] !== undefined ||
+      incomingHeaders["transfer-encoding"] !== undefined)
+  ) {
+    headers["transfer-encoding"] = "chunked";
+  }
   const avatarRequest = USER_AVATAR_PATH.test(options.request.url.split("?", 1)[0] ?? "");
-  options.reply.hijack();
+  // The caller answers "gateway_unavailable" itself; the reply is hijacked only to relay.
+  let settle!: (outcome: "gateway_unavailable" | undefined) => void;
+  const outcome = new Promise<"gateway_unavailable" | undefined>((resolve) => (settle = resolve));
+  let relaying = false;
+  const relay = () => {
+    relaying = true;
+    options.reply.hijack();
+    settle(undefined);
+  };
   const upstreamRequest = https.request(
     upstream,
     { method: options.request.method, headers },
     (upstreamResponse) => {
+      upstreamResponse.once("error", fail);
       const headers = responseHeaders(upstreamResponse.headers, options.context);
+      if (headers !== undefined && routeProxyReplyCandidate(upstreamResponse)) {
+        const chunks: Buffer[] = [];
+        upstreamResponse.on("data", (chunk: Buffer) => chunks.push(chunk));
+        upstreamResponse.once("end", () => {
+          const body = Buffer.concat(chunks);
+          if (ROUTE_PROXY_UNREACHABLE.test(body.toString("utf8"))) {
+            fail();
+            return;
+          }
+          relay();
+          options.reply.raw.writeHead(503, headers);
+          options.reply.raw.end(body);
+        });
+        upstreamResponse.once("close", () => !upstreamResponse.complete && fail());
+        return;
+      }
+      relay();
       if (headers === undefined) {
-        endHttp(options.reply, 502);
+        rejectUpstreamHeaders(options.reply);
         upstreamResponse.destroy();
+        abort();
         return;
       }
       if (avatarRequest && upstreamResponse.statusCode === 502) {
         // A missing photo, not an unavailable Gateway: the UI shows initials either way.
-        upstreamResponse.resume();
         options.reply.raw.writeHead(404, { "cache-control": "no-store" });
         options.reply.raw.end();
+        upstreamResponse.destroy();
+        abort();
         return;
       }
       options.reply.raw.writeHead(upstreamResponse.statusCode ?? 502, headers);
       upstreamResponse.pipe(options.reply.raw);
-      upstreamResponse.once("error", () => endHttp(options.reply, 503));
     },
   );
 
   const abort = () => upstreamRequest.destroy();
-  const fail = () => endHttp(options.reply, 503);
+  // Before relaying: no answer from the Gateway at all. After: every relay has written its
+  // headers, so cut the started response.
+  const fail = () => {
+    abort();
+    if (relaying) {
+      if (!options.reply.raw.writableEnded) {
+        options.reply.raw.destroy();
+      }
+    } else {
+      settle("gateway_unavailable");
+    }
+  };
   upstreamRequest.setTimeout(HTTP_PROXY_TIMEOUT_MS, () => upstreamRequest.destroy());
   upstreamRequest.once("error", fail);
   options.request.raw.once("aborted", abort);
@@ -381,6 +447,7 @@ export async function proxyNativeAdminHttp(options: {
     options.reply.raw.off("close", abort);
   });
   options.request.raw.pipe(upstreamRequest);
+  return outcome;
 }
 
 function appendDefinedHeader(
@@ -437,7 +504,7 @@ function cutClient(socket: Socket): void {
 // a close with unread browser bytes makes the kernel reset the connection and drop the tail.
 // So linger: discard what the browser sends, keep the socket until it has read everything and
 // closed its side, and cut it at `drainTimeoutMs`. Otherwise close it now. Same logic as
-// closeClientWhenDrained in slack-proxy.mjs, which runs standalone and cannot share it.
+// Keep the bounded drain behavior local to this native administrative transport.
 function closeClientWhenDrained(socket: Socket, drainTimeoutMs: number): void {
   if (socket.destroyed) {
     return;

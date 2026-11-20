@@ -16,28 +16,13 @@ export const callerDenied = (grant, target) =>
 // when the caller sent it or may read both it and the Agent, otherwise "one of its bound Secrets".
 export const agentPrincipalDenied = (agent, target, grant = "Secret operate") =>
   `${agent} cannot use ${target}: the Agent itself needs ${grant} on it. Ask an Installation administrator to give the Agent access, then deploy again.`;
-// A denial echoes the ID its request sent, so a real and an unknown ID get answers that match once
-// each answer's own ID is hidden: the text never says whether the resource exists.
-export const sentIdHidden = (text, id) => text.replaceAll(id, "<id>");
-// A create needs the collection grant, which no Role can hold: only an Installation
-// administrator creates one. `kinds` is the plural, such as "Secrets".
-export const createDenied = (kind, namespaceId, kinds = `${kind}s`) =>
-  `Not authorized: this needs ${kind} create in Namespace ${namespaceId}. Only an Installation administrator can create ${kinds}: ask one to create it.`;
-// The same create refused by a Restriction to a caller who administers the Installation, as the
-// console's AGENT_CREATE_RESTRICTED says (finding D769). Other callers get createDenied.
-export const createRestricted = (kind, namespaceId) =>
-  `Not authorized: a Restriction in Namespace ${namespaceId} denies ${kind} create, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it, or create the ${kind} in another Namespace.`;
-export const NAMESPACE_CREATE_DENIED =
-  "Not authorized: this needs Namespace create. Only an Installation administrator can create Namespaces: ask one to create it.";
-export const INSTALLATION_ADMINISTER_DENIED =
-  "Not authorized: this needs Installation administer. Ask an Installation administrator to do it for you or to grant it.";
 // An Agent create or update whose gatewayManagedMode alone needs Installation administer names the
 // field (finding 2691).
 export const GATEWAY_MANAGED_MODE_DENIED =
   "Not authorized: changing gatewayManagedMode needs Installation administer. Omit it, or ask an Installation administrator to change it.";
 // The native admin host names the grant but no Agent: the host, not the caller, names the Agent.
 export const NATIVE_ADMIN_DENIED =
-  "Not authorized: opening this Agent's native admin UI needs Agent administer on it. Ask an Installation administrator to grant it.";
+  "Not authorized: opening this Agent's browser UI needs Agent operate or administer on it. Ask an Installation administrator to grant it.";
 // An IAM AccessBinding subject that is an email, and one that is no eligible principal: an unknown
 // ID gets the same answer as an ineligible one (finding D753).
 export const BINDING_SUBJECT_EMAIL =
@@ -71,7 +56,7 @@ export const credentialSourceFieldRequired = (type, field) =>
     : `Credential source type ${type} requires ${field}: add it.`;
 // Agent save, provisioning and deploy (packages/occ/src/errors.ts RepositoryBindingSelectionError).
 export const REPOSITORY_SELECTION_NOT_APPROVED =
-  "These repository selections are not approved for this Namespace: each repository must be approved here for its profile and listed once, at most 16. Choose from the repository options, or ask an Installation administrator to approve it.";
+  "Choose up to 16 distinct repositories approved for this Namespace and profile. For github-repository, all selections must have the same configured permissions. Ask an Installation administrator to check the available options.";
 export const REPOSITORY_ACCESS_OR_BINDINGS =
   "Send repositoryAccess or repositoryBindings, not both. In repositoryAccess, list each repository once, at most 16, with a defaultProfile other than github-installation.";
 export const COMPUTE_REPOSITORY_UNSUPPORTED =
@@ -98,7 +83,7 @@ export const AGENT_DELETING = "The requested Agent is being deleted.";
 export const PROTECTED_SOURCE_EMBEDDED_AGENT =
   "config.agent_id names an embedded Agent, and a protected credential source serves only a dedicated Agent. Name a dedicated Agent in this Namespace.";
 export const protectedSourceTypeRefused = (type, types) =>
-  `The selected Credential Proxy cannot protect ${type} sources, and a Proxy protects every new source. Ask an Installation administrator, or create a type it protects: ${types}.`;
+  `The selected Credential Proxy cannot protect ${type} sources. Ask an Installation administrator, or create a type it protects: ${types}.`;
 export const CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES =
   "Credential source Secrets cannot cross Namespaces.";
 // Withdrawal of a source the Agent's active revision does not use (409).
@@ -136,10 +121,6 @@ export const SIGN_IN_UNAVAILABLE =
 export const signInRateLimited = (seconds) =>
   `Too many attempts. Wait ${seconds === 1 ? "1 second" : `${seconds} seconds`}, then try again.`;
 export const SIGN_IN_RATE_LIMITED_MINUTE = "Too many attempts. Wait a minute, then try again.";
-// Create Agent and the Agents list for a caller without Agent create, which Namespace Roles cannot
-// grant people (findings 2496, 2508).
-export const AGENT_CREATE_DENIED =
-  "Your access does not include creating Agents in this Namespace. Only an Installation administrator can create Agents: ask one to create it and to give you access to edit and deploy it.";
 // The same places for an Installation administrator whom a deny Restriction keeps from creating
 // Agents in this Namespace (finding D759): administration cannot lift it.
 export const AGENT_CREATE_RESTRICTED =
@@ -147,11 +128,6 @@ export const AGENT_CREATE_RESTRICTED =
 // Secrets and Namespaces follow the same rule: Namespace Roles cannot grant people create.
 export const SECRET_CREATE_DENIED =
   "Your access does not include creating Secrets in this Namespace. Only an Installation administrator can create Secrets: ask one to create it and to give you Secret read and operate on it.";
-// The same refused Installation read when the Namespace permission read failed (finding 2110).
-export const AGENT_CREATE_PERMISSIONS_UNREAD =
-  "Your permissions in this Namespace could not be checked, and Installation-wide capabilities are not readable with your access. Retry the permission check before creating an Agent.";
-export const CONSOLE_NAMESPACE_CREATE_DENIED =
-  "Your access does not include creating Namespaces in this Installation. Only an Installation administrator can create Namespaces: ask one to create a Namespace or to give you access to an existing one.";
 
 // The console's reasons for a control disabled, or a request refused, for lack of a grant
 // (findings 2539, 2578): what the reader's access does not include, then the grant to ask an
@@ -165,16 +141,7 @@ export const notIncluded = (task, grant) =>
 export const credentialCheckedAtDeploy = (noun) =>
   `Deploying checks that this Agent can use the selected ${noun}. If it cannot, ask an Installation administrator to give the Agent ${noun} operate on it.`;
 export const AGENT_STOP_DENIED = notIncluded("stopping this Agent", "Agent operate on it");
-// The Secret dialog's disabled Replace value and Delete Secret, from the Secret read's answer
-// (finding D761).
-export const SECRET_UPDATE_DENIED = notIncluded(
-  "replacing this Secret's value",
-  "Secret update on it",
-);
-export const SECRET_DELETE_DENIED = notIncluded("deleting this Secret", "Secret delete on it");
 export const AGENT_DELETE_DENIED = notIncluded("deleting this Agent", "Agent delete on it");
-// A Namespace the reader cannot read, deleted or not shared, in one sentence (finding D753).
-export const NAMESPACE_UNAVAILABLE = "This Namespace is missing or your access does not include it";
 export const AGENT_STOP_AND_DELETE_DENIED = notIncluded(
   "stopping or deleting this Agent",
   "Agent operate and Agent delete on it",
@@ -197,10 +164,6 @@ export const STOP_REPEAT_CONFIRMATION = `This Agent is already requested to stop
 // The Agent page's Stop row, by whether Stop would cancel a first deployment in progress.
 export const STOP_CANCELS_FIRST_DEPLOYMENT = "Cancels this deployment without deleting Agent data.";
 export const STOP_RUNNING_VERSION = "Stops the running version without deleting Agent data.";
-// Each version has its own AgentRevision read grant, so a reader who deploys still needs read on
-// each new version, granted after it exists.
-export const NEW_VERSIONS_READ =
-  "Each new version needs its own AgentRevision read: ask an Installation administrator to grant it after each deployment.";
 // A request the API refused for lack of a grant: what the reader tried, then the grant to ask for.
 export const permissionRefused = (task, grant) =>
   `You do not have permission to ${task}. ${askForGrant(grant)}`;
@@ -210,38 +173,6 @@ export const stopRefused = (name) =>
   `Stop was refused: your access does not include stopping ${name}. ${askForGrant("Agent operate on it")}`;
 export const deleteRefused = (name) =>
   `Deletion was refused: your access does not include deleting ${name}. ${askForGrant("Agent delete on it")}`;
-export const CONFIGURATION_UPDATE_DENIED = notIncluded(
-  "editing this Configuration",
-  "Configuration update on it",
-);
-export const DIAGNOSTICS_DENIED = notIncluded(
-  "running diagnostics for this Agent",
-  "Agent operate on it",
-);
-export const WORKSPACE_SAVE_DENIED = notIncluded(
-  "saving this Agent's workspace files",
-  "Agent operate on it",
-);
-export const SANDBOX_POLICY_READ_DENIED = notIncluded(
-  "reading this Agent’s network policy or its suggestions",
-  "SandboxPolicy read on it",
-);
-// Deploy checks the same read when the policy has saved rules; the Agent page names the policy in
-// words, not by the ID the API's denial gives (finding D801).
-export const DEPLOY_SANDBOX_POLICY_READ_DENIED =
-  "Deploying this Agent needs SandboxPolicy read on its network policy, which your access does not include. Ask an Installation administrator to grant it.";
-// The Logs tab's refusals use the API's grant words for log text (finding 2599).
-export const LOG_TEXT_DENIED =
-  "Log text requires Agent read_logs (or Agent administer) on this Agent. Ask an Installation administrator to grant it.";
-// The status refusal names only status: the log pane names read_logs itself (finding D763). It
-// names only the grant the caller's answers show missing (finding D753); unknown answers, both.
-export const RUNTIME_STATUS_DENIED =
-  "Runtime status requires Agent operate on this Agent and AgentRevision read on this version. Ask an Installation administrator to grant them.";
-export const RUNTIME_STATUS_OPERATE_DENIED =
-  "Runtime status requires Agent operate on this Agent. Ask an Installation administrator to grant it.";
-// A version the page could not read: the strip says so instead of reading status (finding D794).
-export const RUNTIME_STATUS_VERSION_UNREADABLE =
-  "You cannot read this version, so its runtime status is not shown. Ask an Installation administrator for AgentRevision read on it.";
 // A version link the page cannot list may name a version that does not exist: the API answers
 // both alike, so the console says either may be true (finding D750).
 export const VERSION_UNAVAILABLE =
@@ -295,7 +226,7 @@ export const MODEL_CREDENTIAL_REJECTED_RECORDED =
 // The API has no route to Slack (SlackRouteNotConfiguredError, apps/controller/src/drivers/channel/
 // slack.ts). A member reads who to ask, not Helm keys; the guide lists them (findings D750, D753).
 export const SLACK_ROUTE_NOT_CONFIGURED =
-  "The API could not reach Slack and has no Slack proxy. If the API has another approved route to Slack, try again. Otherwise ask an Installation administrator to give the API a route to Slack; the Slack integration guide lists the Helm settings.";
+  "Managed channel egress is not configured for OCC provider requests. Ask an Installation administrator to enable the channel egress fleet.";
 // Agent-side save controls, from the caller's permission answer (findings 2441, 2459).
 export const AGENT_UPDATE_DENIED = notIncluded(
   "saving these settings",
@@ -304,19 +235,15 @@ export const AGENT_UPDATE_DENIED = notIncluded(
 export const AGENT_SOURCES_DENIED =
   "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, which your access does not include. Ask an Installation administrator for that access.";
 // Device login from Create Agent (Namespace-scoped) and from Agent detail (Agent-scoped): a start
-// creates a Secret and a credential source, which only an Installation administrator can create;
-// a poll or cancel checks the scope again plus operate on the login's Secret (finding 2577).
+// requires credential source create. A poll checks the Agent scope and source operate;
+// cancellation checks only the Agent scope.
 const DEVICE_LOGIN_START_REMEDY =
   "which only an Installation administrator holds: choose another authentication method, or ask one to set up this sign-in.";
-export const DEVICE_LOGIN_START_DENIED = `Your access does not include starting a device login in this Namespace. It needs Agent create, Secret create and credential source create here, ${DEVICE_LOGIN_START_REMEDY}`;
-export const AGENT_DEVICE_LOGIN_START_DENIED = `Your access does not include starting a device login for this Agent. It needs Agent read and update on it, plus Secret create and credential source create in this Namespace, ${DEVICE_LOGIN_START_REMEDY}`;
-export const AGENT_DEVICE_LOGIN_POLL_DENIED = notIncluded(
-  "finishing this device login",
-  "Agent read and update on this Agent, plus Secret operate on the login's Secret and credential source operate on its credential source",
-);
+export const DEVICE_LOGIN_START_DENIED = `Your access does not include starting a device login in this Namespace. It needs Agent create and credential source create here, ${DEVICE_LOGIN_START_REMEDY}`;
+export const AGENT_DEVICE_LOGIN_START_DENIED = `Your access does not include starting a device login for this Agent. It needs Agent read and update on it, plus credential source create in this Namespace, ${DEVICE_LOGIN_START_REMEDY}`;
 export const AGENT_DEVICE_LOGIN_CANCEL_DENIED = notIncluded(
   "cancelling this device login",
-  "Agent read and update on this Agent, plus Secret operate on the login's Secret",
+  "Agent read and update on this Agent",
 );
 
 // Kubernetes Compute refuses a Dedicated Agent the Installation cannot place (no gateway routing
@@ -524,24 +451,11 @@ export const CONFIGURATION_SAVE_DENIED =
 // and a save refused on one a fresh answer names says so (finding 2453).
 export const SECRET_OPERATE_DENIED =
   "Binding it needs Secret operate, which your access does not include. Ask an Installation administrator for Secret operate on it.";
-// Create Agent's Create new Secret choice and typed model key, for a caller whose Secret operate
-// covers only some Secrets: a new Secret gets no operate grant of its own (finding 2492).
-export const NEW_SECRET_OPERATE_DENIED =
-  "Your access includes Secret operate on only some Secrets in this Namespace, so an Agent cannot use a new Secret you create here.";
-// What an administrator can grant instead: Secret operate on one exact Secret (finding 2507).
-export const NEW_SECRET_OPERATE_REMEDY =
-  "To use a new Secret, create it on the Secrets page, then ask an Installation administrator for Secret operate on it.";
 // The console's 403 for a read that names its grant, and for one that names none. Granting access
 // is Installation administration (findings 1920, 2259, 2260).
 // A Namespace list (Secrets, Presets, Service Accounts) is refused for lack of Namespace read.
 export const namespaceListDenied = (items) =>
   notIncluded(`listing ${items} in this Namespace`, "Namespace read");
-// What an Installation administrator's own refused request says: asking one would not help.
-export const ADMINISTRATOR_ACCESS_DENIED = "Your access does not include this action.";
-export const CONSOLE_ACCESS_DENIED =
-  "Your access does not include this action. Ask an Installation administrator to check your access.";
-export const secretOperateRefused = (name) =>
-  `Save was refused: your access does not include Secret operate on ${name}, which each save needs on every Secret it binds. Choose another Secret, or ask an Installation administrator for Secret operate on it.`;
 
 // The console's text for a read that failed with a 5xx.
 export const READ_UNAVAILABLE = "Service unavailable. The read could not be completed. Try again.";
@@ -638,124 +552,6 @@ export const dedicatedCodexVariableRefusal = (
 // stored order end on different entries, so the step offers only removal (finding 3095).
 export const unboundPluginSecretRefusal = (setting, name, plugin, enabledBy) =>
   `Configuration setting ${setting} references ${name} without a Configuration Secret binding: bind ${name} in secretBindings, or remove plugins.entries.${plugin}${enabledBy === null ? "" : ` or set ${enabledBy === undefined ? "its enabled" : `plugins.entries.${enabledBy}.enabled`} to false`}.`;
-// Why OpenClaw cannot read a SecretRef, as [problem, step] (packages/occ/src/environment-
-// references.ts): every refusal names one next step (finding 3067). `alias` is the default alias
-// of the ref's source (secrets.defaults.<source>, else "default"). `substitutedAlias`: that alias
-// holds an environment reference, which only the runtime resolves. `provider`: a provider
-// secrets.providers does not configure for the source; `defaultAlias`: provider default while
-// secrets.defaults.<source> names `alias`; `providerAlias`: a provider outside the alias grammar;
-// `id`: an env id outside the grammar, with the `example` the step offers, if any. A null `alias`
-// is one too long to offer by name.
-const useDefaultAlias = (alias, source = "env") =>
-  alias === null ? `use the secrets.defaults.${source} alias` : `use provider ${alias}`;
-const UNREADABLE_SECRET_REFS = {
-  providerless: (source = "env", alias = "default") => [
-    "is a SecretRef without a provider",
-    ["env", "store"].includes(source)
-      ? `add provider ${alias}`
-      : `add a provider that secrets.providers configures for ${source}`,
-  ],
-  substitutedAlias: (source = "env") => [
-    "is a SecretRef without a provider",
-    `add the provider secrets.defaults.${source} names`,
-  ],
-  provider: (provider, source = "env", alias = "default") => [
-    `uses secret provider ${provider}, not configured for ${source}`,
-    `${["env", "store"].includes(source) ? `${useDefaultAlias(alias, source)}, or ` : ""}add it to secrets.providers`,
-  ],
-  defaultAlias: (alias, source = "env", offered = alias) => [
-    `uses secret provider default, but secrets.defaults.${source} names ${alias}`,
-    `use ${offered === null ? "that provider" : `provider ${offered}`}`,
-  ],
-  providerAlias: (provider, alias = "default") => [
-    `uses secret provider ${provider}, not a provider alias OpenClaw reads`,
-    useDefaultAlias(alias),
-  ],
-  id: (id, example) => [
-    `references ${id}, not an env id OpenClaw reads`,
-    `use ${example ?? "A-Z, 0-9 and _, from a letter"}`,
-  ],
-  // A long provider shows quoted and cut, as a key in brackets.
-  allowlist: (id, provider = "default") => [
-    `references ${id}, which secrets.providers${provider.startsWith('"') ? `[${provider}]` : `.${provider}`}.allowlist omits`,
-    "add it to that allowlist",
-  ],
-};
-// The problem alone, as SSH Compute states it for the reference it renders.
-export const unreadableSecretRefProblem = (held, ...shown) =>
-  UNREADABLE_SECRET_REFS[held](...shown)[0];
-// The plugin secret input rule's refusal of a reference OpenClaw cannot read, which stops the
-// Gateway at startup whatever the bindings (finding 3056).
-export const unreadablePluginSecretRefusal = (setting, plugin, held, ...shown) => {
-  const [problem, step] = UNREADABLE_SECRET_REFS[held](...shown);
-  return `Configuration setting ${setting} ${problem}: ${step}, or remove plugins.entries.${plugin} or set its enabled to false.`;
-};
-// The same refusal of a whole `${NAME}` at an input with a runtime owner (beam, imap): OpenClaw
-// reads it as a SecretRef only while NAME is unset, so deployment refuses it while unbound.
-// Binding NAME is the step it names.
-export const unboundUnreadablePluginSecretRefusal = (setting, plugin, name, held, ...shown) =>
-  `Configuration setting ${setting} ${unreadableSecretRefProblem(held, ...shown)}: bind ${name} in secretBindings, or remove plugins.entries.${plugin} or set its enabled to false.`;
-// The same refusal of a whole `${APP_SERVER_*}` there on an embedded or Dedicated OpenClaw Agent
-// (`agent`: "an embedded" or "a Dedicated OpenClaw"), which never sets it (finding 3060).
-export const appServerUnreadablePluginSecretRefusal = (setting, plugin, agent, held, ...shown) =>
-  `Configuration setting ${setting} ${unreadableSecretRefProblem(held, ...shown)}, and it is never set on ${agent} Agent: remove plugins.entries.${plugin} or set its enabled to false.`;
-// The refusal of a gateway.auth.password object OpenClaw cannot read, which stops every start on
-// every Compute (findings 3057, 3061, 3062): Configuration save, Agent save and deployment
-// (packages/occ/src/configuration-settings.ts), and Kubernetes and Docker Compute admission and
-// preparation, from one reader (`gatewayPasswordRequirement`). `keys`: an object with other keys;
-// `shape`: an object OpenClaw does not read as a SecretRef, offering the generated reference on the
-// default env alias.
-const UNREADABLE_GATEWAY_PASSWORDS = {
-  ...UNREADABLE_SECRET_REFS,
-  keys: () => [
-    "holds keys other than source, provider and id, which OpenClaw refuses",
-    "remove them",
-  ],
-  shape: (alias = "default") => [
-    "is not a SecretRef OpenClaw reads",
-    `use {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}`,
-  ],
-};
-export const unreadableGatewayPasswordRefusal = (held, ...shown) =>
-  `Configuration setting gateway.auth.password ${UNREADABLE_GATEWAY_PASSWORDS[held](...shown).join(": ")}.`;
-// The refusal of a secrets.defaults OpenClaw's configuration check refuses, which stops the
-// Gateway at every start on every Compute (finding 3064): Configuration save, Agent save and
-// deployment (`secretProviderDefaultsProblem`) and the console. `alias`: an alias outside the
-// grammar on `source` (`shown` as the message shows it, absent for one that is not text; `fixed`:
-// the alias the step offers, if any); `key`: a key other than a source; `shape`: secrets.defaults
-// that is not an object.
-const INVALID_SECRET_PROVIDER_DEFAULTS = {
-  alias: (source, shown, fixed) => [
-    `secrets.defaults.${source}`,
-    `${shown === undefined ? "is " : `is ${shown}, `}not a provider alias OpenClaw reads (a-z, 0-9, _ and -, from a lowercase letter, at most 64 characters): ${fixed === undefined ? "" : `use ${fixed}, or `}remove it`,
-  ],
-  key: (shown) => [
-    "secrets.defaults",
-    `holds ${shown}, which OpenClaw refuses: name only env, file, exec or store`,
-  ],
-  shape: () => [
-    "secrets.defaults",
-    "must be an object that names a provider alias for env, file, exec or store",
-  ],
-};
-export const invalidSecretProviderDefaultsRefusal = (held, ...shown) => {
-  const [setting, requirement] = INVALID_SECRET_PROVIDER_DEFAULTS[held](...shown);
-  return `Configuration setting ${setting} ${requirement}.`;
-};
-// SSH Compute's refusals of a gateway.auth.password it cannot deliver (finding 3065): `reference`,
-// a password other than the expression or an env SecretRef to the generated password, offering it
-// on the default env alias; `rendered`, an unset password or the expression in password mode when
-// the default-provider reference SSH Compute renders then is unreadable (`requirement` says why),
-// offering the reference on the default env alias; `unoffered`, the same when OpenClaw cannot read
-// that reference either, so no reference is offered.
-export const sshGatewayPasswordRefusal = {
-  unoffered: (requirement) =>
-    `Configuration setting gateway.auth.password must be set to an env SecretRef to OPENCLAW_GATEWAY_PASSWORD that OpenClaw reads: SSH Compute's default reference ${requirement}.`,
-  reference: (alias = "default") =>
-    `Configuration setting gateway.auth.password must be "\${OPENCLAW_GATEWAY_PASSWORD}" or the environment SecretRef {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value SSH Compute generates.`,
-  rendered: (alias, requirement) =>
-    `Configuration setting gateway.auth.password must be set to {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}: SSH Compute's default reference ${requirement}.`,
-};
 const USE_UPPERCASE =
   "use an uppercase ${NAME} bound to a Secret in secretBindings, or escape literal text as $${NAME}";
 export const unsubstitutedReferenceRefusal = (setting, shown) =>
@@ -779,11 +575,11 @@ export const CHANNEL_BINDING_CREDENTIALS_REMEDY = `To fix it, ${CHANNEL_BINDING_
 // The Slack card of an Embedded Agent, on Create Agent and the Agent page's Channels tab.
 export const CHANNELS_NEED_DEDICATED =
   "Channels require Dedicated execution. Embedded Agents can only keep channels disabled.";
-// Kubernetes Compute's Configuration rule for a channel other than Slack or Microsoft Teams, at
+// Kubernetes Compute's Configuration rule for an uninstalled channel provider, at
 // Configuration and Preset save and at deployment (apps/controller/src/drivers/compute/kubernetes/
 // configuration-rules.ts). `setting` is channels.<name>.
 export const unsupportedChannelRefusal = (setting) =>
-  `Configuration setting ${setting} is not a supported channel: use slack or msteams, or set its enabled to false.`;
+  `Configuration setting ${setting} is not a supported channel: use slack, or set its enabled to false.`;
 // The Slack card's setup step, shown until both token Secrets are bound (finding 2438), and never
 // on an Embedded Agent, which cannot have channels (finding D708).
 export const SLACK_SETUP_HINT =
@@ -837,8 +633,6 @@ export const BROKER_HOST_DENIED = brokerProxyRefusal(
 export const COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED =
   "The selected Compute Driver cannot deliver repository credentials to this Harness topology.";
 export const PROVISIONING_NOT_COMPLETED = "Agent provisioning could not complete.";
-// The heading wherever a caller reads no Namespace, on every page alike (finding D755).
-export const NO_READABLE_NAMESPACES = "No readable Namespaces";
 // An Installation without repository access. Only an Installation administrator can set it up,
 // so only one gets the setup guide link; anyone else is told whom to ask (finding D754).
 export const REPOSITORY_ACCESS_NOT_CONFIGURED =
@@ -867,8 +661,6 @@ export const VERSION_READ_DENIED_HEADING = "You cannot read this version";
 // The version draft a reader without Agent update views (finding 2421), and its plugin list.
 export const READ_ONLY_DRAFT_NOTICE =
   "Version draft · read-only with your access. The next deployment uses it as saved.";
-export const PLUGINS_READ_ONLY =
-  "These are the version draft's plugin selections, read-only with your access. The next deployment uses them as saved.";
 // Why a running version reads "Not verified" (finding 2367).
 export const NO_TEST_REQUEST = "OpenClaw Enterprise sends no test request.";
 // The API's refusal of a sandbox policy rule outside the Installation delegation ceiling.
@@ -880,18 +672,6 @@ export const PLUGIN_CREDENTIALS_REJECTED =
 // Finding 2619. A bound Secret the caller's readable Secret list leaves out, shown without the
 // audited metadata read; and the Backends refusal a non-administrator gets without the read.
 export const BOUND_SECRET_UNLISTED = `A Secret is bound. Its name is unavailable: your access does not include reading it, or it was deleted. ${askForGrant("Secret read on it")}`;
-// A bound Secret whose metadata read was refused to a caller who may still administer the
-// Installation, such as one a Restriction on Secret read covers (finding 2549).
-export const BOUND_SECRET_READ_REFUSED = `A Secret is bound. Its name is hidden because your access does not include reading it. ${askForGrant("Secret read on it")}`;
-// Finding D761. A link to a Secret the readable list leaves out: missing and unreadable alike.
-export const SECRET_LINK_UNLISTED = `This Secret is not in your readable list: it may not exist, or your access does not include reading it. ${askForGrant("Secret read on it")}`;
-// The same link for an Installation administrator, with no ask (finding D769). `shown` is
-// "Secret <id>" for a well-formed linked ID, otherwise "such Secret".
-export const secretLinkUnlistedAdministrator = (shown) =>
-  `No ${shown} is in your readable list for this Namespace.`;
-// A disabled Secret field's hint for a bound Secret the caller may read (finding 2646: a check
-// that it is absent must use this text, not a pasted fragment).
-export const BOUND_SECRET_METADATA = "Secret metadata is bound. Values are never shown.";
 // A version record with no recorded startup failure (agents/deployment-evidence.mts).
 export const NO_PERSISTED_STARTUP_FAILURE = "No persisted startup failure.";
 // Diagnostics hints (agents/deployment-diagnostics.mts): the runtime did not answer, and the
@@ -910,61 +690,16 @@ export const deployUnreadableSecrets = (count) =>
   count === 1
     ? `Deploying needs Secret operate on a bound Secret your access does not include reading. ${askForGrant("Secret read and operate on it")}`
     : `Deploying needs Secret operate on ${count} bound Secrets your access does not include reading. ${askForGrant("Secret read and operate on them")}`;
-export const BACKENDS_DENIED = `Your account does not have access to Backends. Backends apply to the whole Installation, so choosing another Namespace would not change this. ${askForGrant("access")}`;
-// A write the console names after the API refused it, where it was tried (errcopy-console-1026b).
-export const actionRefused = (action, task, grant) =>
-  `${action} was refused: your access does not include ${task}. ${askForGrant(grant)}`;
-// A request that checks several grants shows the API's named one after "<Action> was refused:".
-export const refusedNamed = (action, grant, target) =>
-  `${action} was refused: this needs ${grant} on ${target}. Ask an Installation administrator to grant it.`;
-// A save's reread of the Agent and its Configuration was refused before the write.
-export const SAVE_READ_REFUSED = actionRefused(
-  "Save",
-  "reading this Agent's saved settings, which each save reads first",
-  "Agent read and Configuration read on it",
-);
-export const WORKSPACE_SAVE_REFUSED = actionRefused(
-  "Save",
-  "saving this Agent's workspace files",
-  "Agent operate on it",
-);
-// Configuration create, which only an Installation administrator holds.
-export const CONFIGURATION_CREATE_REFUSED =
-  "Create was refused: your access does not include creating this Agent's Configuration. That needs Configuration create in this Namespace, which only an Installation administrator holds, plus Secret operate on each Secret it binds. Ask an Installation administrator to create this Agent.";
-// Repository choices for an Agent (Agent update) and for a new Agent (Agent create).
-export const REPOSITORY_CHOICES_AGENT_DENIED = notIncluded(
-  "loading repository choices for this Agent",
-  "Agent update on it",
-);
-export const REPOSITORY_CHOICES_CREATE_DENIED =
-  "Repository choices are not shown. Your access does not include creating Agents in this Namespace. Only an Installation administrator can create Agents: ask one to create it and to give you access to edit and deploy it.";
 // The sandbox policy editing setting, which only an Installation administrator who also
 // administers the Agent can change.
 export const POLICY_EDITING_SETTING_REFUSED =
   "Your access does not include changing the editing setting. Only an Installation administrator who also administers this Agent can change it.";
-// A Slack people or channel lookup the API refused without naming a grant.
-export const SLACK_LOOKUP_DENIED = notIncluded(
-  "looking up Slack people and channels with the selected Slack bot Secret",
-  "Secret operate on it",
-);
 // Rechecking an open Agent page when the API names no grant.
 export const AGENT_PAGE_READ_DENIED = notIncluded(
   "reading this Agent, its versions or its Configuration",
   "Agent read, AgentRevision read and Configuration read on them",
 );
 
-// API answers that are not permission refusals name their cause and next step (finding D762),
-// and who-to-ask text says "Installation administrator" (D763). The 401 for a missing, expired
-// or revoked credential gives header advice only to a request that sent an Authorization header.
-export const CREDENTIAL_REQUIRED =
-  "A valid session cookie or service API key is required: the credential sent is missing, invalid, expired, or revoked. Sign in again, or use a current service API key.";
-export const AUTHORIZATION_HEADER_REFUSED =
-  "The API does not accept an Authorization header. Send a service API key in the x-api-key header, or sign in for a session cookie.";
-export const BODY_NOT_JSON = "The request body is not valid JSON.";
-// A Namespace-scoped service key outside its Namespace: the text names only the key's own
-// Namespace, never the requested one.
-export const serviceKeyOutsideNamespace = (namespaceId) =>
-  `This service key works only in Namespace ${namespaceId}; this request is outside it. Ask an Installation administrator to run it.`;
 // `source` is the requested log source, or "such" when none is known.
 export const runtimeLogSourceUnavailable = (source) =>
   `This Agent version has no ${source} log source. Every version has gateway; only a Dedicated Agent has agent, and only a version deployed with a Sandbox Driver has sandbox.`;
@@ -994,10 +729,7 @@ export const currentHarnessAuthDenied = (grant, target) =>
 // Native admin status for a caller without Agent administer, on an Installation with native admin
 // off: the grant alone would not open it (finding D762).
 export const nativeAdminOffDenied = (target) =>
-  `${callerDenied("Agent administer", target)} Native admin is also off on this Installation, so the grant alone would not open it.`;
-// A request path no route has (finding D764): a trailing slash says so; any other names no route.
-export const ROUTE_TRAILING_SLASH = "No API route has this path: remove the trailing slash.";
-export const ROUTE_NOT_FOUND = "No API route has this path. Check it against the API reference.";
+  `${callerDenied("Agent operate", target)} Native admin is also off on this Installation, so the grant alone would not open it.`;
 // Credential Gateway refusals that name the Installation setting and who changes it (D763).
 export const CREDENTIAL_GATEWAY_NOT_CONFIGURED =
   "This Installation has no Credential Gateway, so credential sources are unavailable. An Installation administrator must select the OpenShell Credential Gateway Driver; see https://docs-enterprise.openclaw.org/reference/credential-sources/";
@@ -1009,14 +741,6 @@ export const workspaceWithoutRunningVersion = (agentId) =>
   `Agent ${agentId} has no running version, so its workspace files cannot be read or written. Deploy it, then try again.`;
 export const workspaceVersionStarting = (agentId) =>
   `Agent ${agentId} has no running version yet: its deployment is still starting, so its workspace files cannot be read or written. Try again when the deployment finishes.`;
-// Finding D788. Namespace IAM Roles cannot grant Namespace delete, so a member's trash icon names
-// who can delete the Namespace instead of a grant to ask for.
-export const NAMESPACE_DELETE_DENIED =
-  "Only an Installation administrator can delete a Namespace. Ask one to delete this Namespace.";
-// The same icon for an Installation administrator whom a deny Restriction keeps from deleting the
-// Namespace (finding 2861): administration cannot lift it.
-export const NAMESPACE_DELETE_RESTRICTED =
-  "A Restriction denies deleting this Namespace, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it.";
 
 // Deploy new version's reason while saved Secrets wait for the Agent's grant names the bindings
 // whose Secrets wait, as the Credentials tab lists them, and where to grant access (finding 3017).

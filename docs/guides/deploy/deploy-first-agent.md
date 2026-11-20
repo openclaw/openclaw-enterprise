@@ -1,14 +1,70 @@
 # Deploy your first Agent
 
-Complete the installation setup for [local k3d](local-setup.md), [Kubernetes](kubernetes-setup.md), or [Amazon EKS](eks-openshell-setup.md). Continue in the same Bash shell at the root of the matching release checkout. Use the API connection, namespace, browser origin and model from setup.
+Complete the installation setup for [local k3d](local-setup.md), [Kubernetes](kubernetes-setup.md), or [Amazon EKS](eks-openshell-setup.md). Continue in the same Bash shell at the root of the matching release checkout. Use the API connection, namespace and browser origin from setup.
+
+Use this OpenShell workflow to evaluate Agent deployment and model execution.
+A successful run does not complete the
+[remaining OpenShell production qualification](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).
+
+## Prepare an existing OpenShell Gateway
+
+The Kubernetes network helper defaults to `oce-system`. If you use an existing Gateway in another namespace, complete these steps before you start in the Console or call the API.
+
+1. Confirm that the Installation references that Gateway. The command prints the Gateway endpoint, the Harness peer namespace and Service ClusterIP, and the namespaces in the workspace policies and RoleBinding. All must match that Gateway. OCE creates Agent and workspace NetworkPolicies from these fields.
+
+   ```bash
+   jq -r '(.backend[] | select(.type == "openshell") | .configuration.endpoint),
+     (.drivers.compute.configuration.network.providerHarness | "\(.namespace) \(.address)"),
+     (.drivers.sandbox.configuration.gateway | (.operatorWorkspaceResources + .networkPolicyResources)[]
+       | .. | objects | .["kubernetes.io/metadata.name"] // (select(.kind == "ServiceAccount") | .namespace) // empty)' \
+     "$INSTALLATION_FILE"
+   ```
+
+   Set `OPENSHELL_NAMESPACE` in the operator shell to the Gateway's namespace, if the installation did not already save it. The helper uses it for OpenShell Service discovery and policy placement. OCE stays in `oce-system`, and `save_session` retains the setting.
+
+2. Confirm that the operator can read the Services used by the helper and manage NetworkPolicies in the affected namespaces.
+3. Check that the API and worker Pods can reach that Gateway. The quickstart's installation block grants this egress when `OPENSHELL_NAMESPACE` is set before it runs. Otherwise, add scoped egress from those Pods to the `openshell-gateway` Service on TCP 8080 and to its selected Pods on the target port.
+4. Ask the Gateway owner to check ingress for every existing client of the management Pods, including any ingress controller or proxy that connects to them. Verify that each required client has a scoped allow on its destination port before the helper applies its rules. On a cluster that enforces NetworkPolicy, the first ingress policy selecting those Pods can isolate them for ingress.
+
+If repository credentials are already enabled, also [check Gateway egress](#check-gateway-egress-before-adding-git) before deployment.
+
+Create an Agent called `fred` in the Console below, or [start with the API](#1-select-or-register-the-model-credential). Both paths lead to the same onboarding steps. Choose a fresh setup where the name `fred` is available.
+
+## Create and deploy fred in the Console
+
+For a Gateway in another namespace, [complete the Gateway prerequisites](#prepare-an-existing-openshell-gateway) first.
+
+Run `deployment_preflight` in your operator shell before creating the Agent. Open `$CONSOLE_ORIGIN/console/` and sign in with the administrator account from setup. Keep any required browser port-forward running.
+
+<Snippet file="../../snippets/openshell-quickstart/console-agent.md" />
+
+While provisioning runs, open **Agents → fred** in a second tab. Under **Viewing version**, select the first saved version. Copy the Agent ID after `/agents/` and the deployment ID from `revision=` in that tab’s URL.
+
+In the operator shell, enter those IDs to prepare the network rules and wait for that deployment. Record the Agent and its model credential for the Git and Linear walkthroughs.
+
+```bash
+agent='<Agent ID from the Console URL>'
+revision='<deployment ID from the same URL>'
+wait_deployment "$revision"
+request GET "$base/agents/$agent" > "$RUN_DIR/agent"
+name=$(jq -er .data.name "$RUN_DIR/agent")
+principal=$(jq -er .data.servicePrincipalId "$RUN_DIR/agent")
+modelSource=$(jq -er '.data.harnessAuth | select(.method=="credential_source") | .sourceId' "$RUN_DIR/agent")
+```
+
+Continue to [onboarding in the Control UI](#4-complete-onboarding-in-the-control-ui).
 
 ## 1. Select or register the model credential
 
+For a Gateway in another namespace, [complete the Gateway prerequisites](#prepare-an-existing-openshell-gateway) first.
+
 Choose one credential for the dedicated Codex Agent. Both paths use the [OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md#source-type-catalog).
+
+Before selecting either credential, confirm its account policy meets the [OpenShell permission-profile requirement](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
 
 ### Option A. ChatGPT service account token
 
-Choose this path to use Codex plugins. Use a [ChatGPT workspace service account](https://learn.chatgpt.com/docs/enterprise/service-accounts) with the plugins you need enabled. For a new source, save its Codex access token in a private file outside the checkout.
+To use Codex plugins, choose a [ChatGPT service account](https://learn.chatgpt.com/docs/enterprise/service-accounts) with the plugins you need enabled. For a new source, save its Codex access token in a private file outside the checkout.
 
 ```bash
 source_type=codex-pat
@@ -20,7 +76,7 @@ credential_file=/secure/oce/codex-token
 
 > **Warning:** An Agent that uses an OpenAI API key cannot access Codex plugins, including Linear. Choose the service account token if you need plugins.
 
-Use an OpenAI API key with access to the model selected during setup. For a new source, save the key in a private file outside the checkout.
+Use your OpenAI project’s API key. For a new source, save the key in a private file outside the checkout.
 
 ```bash
 source_type=openai
@@ -30,10 +86,11 @@ credential_file=/secure/oce/openai-api-key
 
 ### Select or register the source
 
-Set the Agent name once:
+Set the Agent name and a unique prefix for the credential and role created by this run:
 
 ```bash
-name="openshell-codex-$(date +%s)"
+name=fred
+resource_prefix="$name-$(date +%s)"
 ```
 
 If the credential is already registered, set `MODEL_SOURCE_NAME` to its registered name. Select the ready source and continue to step 2:
@@ -44,16 +101,16 @@ modelSource=$(request GET "$base/credential-sources" |
     '[.data[]|select(.name==$n and .type==$t and .state=="ready" and .ownerCapability=="credential_gateway")]|select(length==1)|first.id')
 ```
 
-Otherwise, store the credential in a Namespace Secret and register its reference before enabling the repository Credential Proxy. Set `credential_file` to the path of your owner-only file.
+Otherwise, store the credential in a Namespace Secret and register its reference with Credential Gateway. This works with or without the repository Credential Proxy. Set `credential_file` to the path of your owner-only file.
 
 ```bash
 # POST $base/secrets: read the credential from its file.
-jq -n --arg name "$name-model" --rawfile token "$credential_file" \
+jq -n --arg name "$resource_prefix-model" --rawfile token "$credential_file" \
   '{name:$name,value:($token|rtrimstr("\n"))}' |
   request POST "$base/secrets" --data-binary @- > "$RUN_DIR/model-secret"
 
 # POST $base/credential-sources: register the Secret reference for the selected login method.
-jq --arg name "$name-model" --arg t "$source_type" --arg field "$secret_field" \
+jq --arg name "$resource_prefix-model" --arg t "$source_type" --arg field "$secret_field" \
   '{name:$name,type:$t,secrets:{($field):.data.ref}}' "$RUN_DIR/model-secret" |
   request POST "$base/credential-sources" --data-binary @- > "$RUN_DIR/model-source"
 modelSource=$(jq -er '.data|select(.state=="ready")|.id' "$RUN_DIR/model-source")
@@ -63,7 +120,11 @@ modelSource=$(jq -er '.data|select(.state=="ready")|.id' "$RUN_DIR/model-source"
 
 Register the model with a fail-closed loopback URL. The Gateway uses authenticated WebSocket transport to the dedicated Codex Harness inside OpenShell.
 
-Render the [Codex configuration template](../../snippets/openshell-quickstart/codex-configuration.jq) with `MODEL` and post its JSON to OCE.
+Set `MODEL` to a [Codex model ID available to your credential](../operate/model-verification.md#choose-a-model-for-dedicated-codex), without the `codex/` prefix.
+
+```bash
+read -r -p "Codex model ID: " MODEL
+```
 
 <Snippet file="../../snippets/openshell-quickstart/codex-configuration.jq" lang="jq" />
 
@@ -91,7 +152,7 @@ After creating the dedicated Agent, bind its exact browser origin to its new Con
 installation=$(request GET "/installation" | jq -er .data.id)
 origin=$(node --input-type=module - "$CONSOLE_ORIGIN" "$NATIVE_ADMIN_DOMAIN" "$RUN_DIR/agent" "$installation" <<'JS'
 import { readFileSync } from "node:fs";
-import { deriveNativeAdminHost } from "./apps/controller/src/gateway/native-admin-host.mjs";
+import { deriveNativeAdminHost } from "./apps/controller/src/gateway/native-admin-host.ts";
 const [consoleOrigin, nativeAdminDomain, agentFile, installation] = process.argv.slice(2);
 const { data: agent } = JSON.parse(readFileSync(agentFile));
 const url = new URL(consoleOrigin);
@@ -116,7 +177,7 @@ Create one role scoped to credential sources. Bind that role to this Agent's pri
 
 ```bash
 # POST $base/iam/roles: allow the operate action on CredentialSources.
-role=$(jq -n --arg name "$name-sources" \
+role=$(jq -n --arg name "$resource_prefix-sources" \
   '{name:$name,permissions:[{action:"operate",resourceKind:"credential_source"}]}' |
   request POST "$base/iam/roles" --data-binary @- | jq -er .data.id)
 
@@ -135,14 +196,16 @@ request POST "$base/agents/$agent/runtime-credentials" --data '{}' > "$RUN_DIR/t
 
 Open `$CONSOLE_ORIGIN/console/` and sign in with the administrator account from installation setup. Keep any required private browser port-forward running.
 
-Run `deployment_preflight` in the operator shell, then use **Deploy an existing Agent’s saved draft** below for the Agent created in step 2. Do not create another Agent. After clicking deploy, run:
+Run `deployment_preflight` in the operator shell. Open **Agents → fred** and select **Draft · Editable Configuration** under **Viewing version**. In **Prepare this version**, check the saved configuration and credentials, then click **Deploy new version** to start version 1.
+
+<Snippet file="../../snippets/openshell-quickstart/console-first-deploy.md" />
+
+Copy the deployment ID from the Console URL and wait for that deployment in the operator shell:
 
 ```bash
 revision='<deployment ID from the Console URL revision parameter>'
 wait_deployment "$revision"
 ```
-
-<Snippet file="../../snippets/openshell-quickstart/console-deployment-actions.md" />
 
 </Accordion>
 <Accordion title="CLI">
@@ -156,37 +219,44 @@ deploy_and_wait
 </Accordion>
 </AccordionGroup>
 
-Continue when the deployment reports `succeeded` and the Agent's `activeRevisionId` matches the new revision.
+Continue when the deployment reports `succeeded` and the Agent's `activeRevisionId` matches the new revision. If the Console says the model is unavailable, see [Recover from an unavailable model](../topics/agent-troubleshoot.md#the-configured-model-is-unavailable).
 
 <a id="7-verify-a-turn-through-openclaw"></a>
 
 ## 4. Complete onboarding in the Control UI
 
-Before sending the first prompt, use the operator shell to check the bootstrap file in this Agent's workspace. This check needs permission to list Pods and execute a command in the tenant namespace.
+<AccordionGroup>
+<Accordion title="Control UI">
+
+<Snippet file="../../snippets/openshell-quickstart/console-open-agent.md" />
+
+In the Control UI, send this message:
+
+> Your name is fred. I prefer short answers. Please finish onboarding and save those details.
+
+In the Console, open **Workspace files** on `fred`. Check `IDENTITY.md` for its name and `USER.md` for your preference.
+
+Send `Reply with OCE_READY.` and confirm the reply. Close the Agent tab, reopen **Open Agent UI**, and select the **same conversation** in chat history. Ask “How do I like my answers?” and check the reply against your saved preference. Retain the conversation's browser path with the private session record.
+
+To hand off work, share the Namespace, Agent name, conversation label, and a link to the decision in your team’s repository at the exact commit. Keep launch tokens, redemption tokens, and browser cookies private. Your teammate signs in to the Console with their own account and [opens the Agent](native-admin.md#local-development). If they see the conversation in chat history, they can select it. Otherwise, they can start a new conversation with the decision reference.
+
+<Snippet file="../../snippets/openshell-quickstart/console-onboard.md" />
+
+</Accordion>
+<Accordion title="CLI">
+
+To check that the deployed Agent can answer through its Gateway, run this in the same operator shell:
 
 ```bash
-revision=$(request GET "$base/agents/$agent" | jq -er .data.activeRevisionId)
-agent_pod=$(kube -n "${TENANT_NAMESPACE:?}" get pods \
-  -l "openclaw.dev/agent=$agent,openclaw.dev/revision=${revision:?}" -o json |
-  jq -er '[.items[] | select(.metadata.deletionTimestamp == null and
-    any(.status.containerStatuses[]?; .name == "agent" and .ready))] |
-    select(length == 1) | first.metadata.name')
-workspace_check() {
-  kube -n "$TENANT_NAMESPACE" exec "$agent_pod" -c agent -- sh -c \
-    'cd /sandbox/enterprise && test -x . && test "$@"' sh "$@"
-}
-workspace_check -f BOOTSTRAP.md
+printf '%s\n' 'Reply with OCE_READY.' > "$RUN_DIR/setup-prompt"
+turn "$RUN_DIR/setup-prompt" > "$RUN_DIR/setup-result" &&
+  jq -e '.outcome.status == "ok" and (.outcome.terminalReply.text | contains("OCE_READY"))' "$RUN_DIR/setup-result"
 ```
 
-Use **Open Agent UI** for the same Agent. Give it a name and one unique preference to remember. Ask it to complete onboarding and save them in its workspace. In the Console **Workspace** tab, open `IDENTITY.md` and `USER.md` and verify the saved values. Back in the operator shell, confirm the Agent removed the bootstrap file:
+A successful check prints `true`. Each `turn` starts a new conversation. Use the Control UI steps to complete onboarding and verify recall in the same conversation.
 
-```bash
-workspace_check ! -e BOOTSTRAP.md
-```
-
-Send `Reply with OCE_READY.` and confirm the reply. Close the Agent tab, reopen **Open Agent UI**, and select the **same conversation** in chat history. Ask for the saved preference without including its value in the prompt. Check the response against the original value. Retain the conversation's browser path with the private session record.
-
-The shared `turn` helper starts a new conversation on each call. A terminal model reply does not replace this browser onboarding and continuity check.
+</Accordion>
+</AccordionGroup>
 
 <a id="keep-the-session-for-the-next-stage"></a>
 
@@ -198,4 +268,20 @@ save_session
 
 Run the two commands printed by `save_session` to resume in a fresh Bash shell. The private session saves IDs and paths; the service key stays in its protected file. Keep this Agent running. You can add Git with either credential. To add plugins, use the service account token.
 
-On Amazon EKS, [verify workspace routing](eks-openshell-setup.md#verify-workspace-routing). To extend this Agent, continue to [Git](../repository-credentials/openshell-git-push.md) or [Plugins](../integrations/codex-plugins.md).
+### Check Gateway egress before adding Git
+
+If you use an existing Gateway, ask its owner to verify that the management Pods can still reach required outbound services, such as external PostgreSQL. Use scoped egress rules for those services. The helper adds egress for the repository credential hook, DNS, and the Kubernetes API. On a cluster that enforces NetworkPolicy, the first egress policy selecting those Pods can isolate them for egress. Check these allows before Add Git applies the policy.
+
+On Amazon EKS, [verify workspace routing](eks-openshell-installation.md#verify-workspace-routing). To extend this Agent, continue to [Git](../repository-credentials/openshell-git-push.md) or [Plugins](../integrations/codex-plugins.md).
+
+## Clean up a separately managed Gateway
+
+Follow the [Agent deletion procedure](quickstart-delete-agent.md) first. Keep the separately managed OpenShell release. Skip the `helm uninstall openshell-gateway` step in the installation cleanup.
+
+Resume the saved session for each run directory used by this installation. Review the helper's policy manifests in `$RUN_DIR` and confirm ownership. Check that workloads you are retaining have the rules they need. Then delete the recorded policies.
+
+```bash
+delete_service_peers
+```
+
+The helper deletes by manifest in each recorded namespace. This includes the management policies in the saved `OPENSHELL_NAMESPACE`. Retain the run directory until cleanup is complete.

@@ -214,6 +214,7 @@ Helm's `gatewayRouting` settings configure shared infrastructure:
 | `tenantGatewayPort`            | `8080`; must equal Compute's `network.gatewayPort`.                                                                                                       |
 | `envoyHttpsTargetPort`         | `10443`; NetworkPolicy port for the Envoy listener Pod.                                                                                                   |
 | `envoyGatewayPodLabels`        | Chart defaults select the Envoy Gateway controller for control-plane egress.                                                                              |
+| `remoteNodeCidrs`              | Empty; IPv4 or IPv6 CIDRs of remote node sources that Envoy ingress admits; `/0` is refused.                                                              |
 
 Routing ports must be decimal integers from `1` to `65535`, without leading
 zeros. With the sandbox enabled, `tenantGatewayPort` stops at `65534`, because
@@ -273,7 +274,7 @@ Agent native admin UI access reuses the same private Envoy routing primitive as
 workspace files. The public browser hosts are operator-owned wildcard names
 served by the OCC API process, using `agentNativeAdmin.domain`; Envoy and Agent
 gateway Services remain private ClusterIP resources. The Agent hosts share the
-ordinary OCE session cookie through the configured `agentNativeAdmin.sharedCookieDomain`,
+ordinary OCE session cookie through the automatically derived common Console and Agent DNS suffix,
 so every matching console and Agent subdomain must be a trusted OCE ingress
 endpoint. OCC authenticates and authorizes the human session before proxying,
 then strips browser cookies and credentials before forwarding to Envoy.

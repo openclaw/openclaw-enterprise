@@ -8,18 +8,20 @@ const RFC3339_TIMESTAMP =
 
 // kubectl JSON preserves timestamp text, unlike SDK models that decode it into Dates.
 // Both core/v1 and events.k8s.io events can omit or explicitly null these fields.
-interface EventTimestamps {
-  series?: { lastObservedTime?: string | null } | null;
-  lastTimestamp?: string | null;
-  eventTime?: string | null;
-  firstTimestamp?: string | null;
-  metadata?: { creationTimestamp?: string | null } | null;
+interface EventTimestamps<Timestamp = string> {
+  series?: { lastObservedTime?: Timestamp | null } | null;
+  lastTimestamp?: Timestamp | null;
+  eventTime?: Timestamp | null;
+  firstTimestamp?: Timestamp | null;
+  metadata?: { creationTimestamp?: Timestamp | null } | null;
 }
 
 type EventTime = string | null | undefined;
 
 /** When an event was last observed: its series' last sighting, else the newest time it carries. */
-export function eventObservedTime(event: EventTimestamps | null | undefined): EventTime {
+export function eventObservedTime<Timestamp = string>(
+  event: EventTimestamps<Timestamp> | null | undefined,
+): Timestamp | null | undefined {
   return (
     event?.series?.lastObservedTime ??
     event?.lastTimestamp ??

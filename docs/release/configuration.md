@@ -20,6 +20,15 @@ A standalone native image check uses the selected source's checked-in CI base.
 
 Runner overrides must select provisioned Linux runners with the matching
 architecture, at least four CPUs, 12 GiB RAM, and enough disk for the build.
+The override takes precedence for both images.
+
+Runtime smoke uses fresh native runners with the same runner overrides, after
+verifying the retained OCI build. Both construction and smoke must succeed; an
+intermediate build artifact is not a qualified release image.
+
+The [CI Image Cache workflow](../../.github/workflows/ci-image-cache.yml) builds
+controller/runtime caches without provider secrets. GitHub supplies its cache
+credentials; it does not publish container images.
 
 ## Publication configuration
 

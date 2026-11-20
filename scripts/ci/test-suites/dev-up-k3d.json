@@ -6,16 +6,31 @@
     "defaultEnv": {
       "OCC_TEST_BROWSER_EXECUTABLE": "",
       "OCC_TEST_DEV_UP_CONTAINER_ENGINE": "docker"
-    }
+    },
+    "sourceBuildFiles": [
+      "tests/integration/dev-up-k3d-refusals-real.test.ts",
+      "tests/integration/dev-up-k3d-real.test.mjs",
+      "tests/integration/dev-up-k3d-keycloak-real.test.ts"
+    ]
   },
   "files": [
     {
-      "path": "tests/integration/dev-up-k3d-real.test.mjs",
+      "path": "tests/integration/dev-up-k3d-refusals-real.test.ts",
       "expectedTests": [
         "dev-up refuses mismatched image selections before creating a cluster",
-        "dev-up refuses gateway trust when Kubernetes does not enforce NetworkPolicy",
+        "dev-up refuses gateway trust when Kubernetes does not enforce NetworkPolicy"
+      ]
+    },
+    {
+      "path": "tests/integration/dev-up-k3d-real.test.mjs",
+      "expectedTests": [
         "dev-up installs the selected Kubernetes control plane and cleans up its owned cluster",
-        "dev-up prepares the real Codex sandbox with a Compose control plane",
+        "dev-up prepares the real Codex sandbox with a Compose control plane"
+      ]
+    },
+    {
+      "path": "tests/integration/dev-up-k3d-keycloak-real.test.ts",
+      "expectedTests": [
         "dev-up Keycloak profile signs in the administrator, preserves the realm and cleans up",
         "dev-up Keycloak second-pass failure retains recovery state until owned cleanup succeeds"
       ]

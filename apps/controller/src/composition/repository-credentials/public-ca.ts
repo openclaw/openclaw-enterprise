@@ -1,6 +1,7 @@
 import { constants } from "node:fs";
-import { open, stat } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { createSecureContext } from "node:tls";
+import { readPublicFile } from "./public-file.ts";
 
 function isCertificateBundle(pem: string): boolean {
   // Match one certificate at the current offset so malformed bundles cannot
@@ -19,42 +20,13 @@ export async function loadPublicCa(path: string): Promise<Buffer> {
   // separate protected loader and is never part of platform composition.
   const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
   try {
-    const before = await file.stat();
-    if (
-      !before.isFile() ||
-      before.size < 1 ||
-      before.size > 131072 ||
-      (before.mode & 0o022) !== 0
-    ) {
-      throw new Error("invalid-public-ca");
-    }
-    const data = Buffer.alloc(before.size + 1);
-    let size = 0;
-    while (size < data.length) {
-      const result = await file.read(data, size, data.length - size, size);
-      if (result.bytesRead === 0) {
-        break;
-      }
-      size += result.bytesRead;
-    }
-    const after = await file.stat();
-    const named = await stat(path);
-    if (
-      size !== before.size ||
-      after.size !== before.size ||
-      after.mtimeMs !== before.mtimeMs ||
-      after.ctimeMs !== before.ctimeMs ||
-      named.dev !== before.dev ||
-      named.ino !== before.ino
-    ) {
-      throw new Error("invalid-public-ca");
-    }
-    const pem = data.subarray(0, size).toString("utf8");
+    const data = await readPublicFile(file, path, 131072, "invalid-public-ca");
+    const pem = data.toString("utf8");
     if (!isCertificateBundle(pem)) {
       throw new Error("invalid-public-ca");
     }
     createSecureContext({ ca: pem, minVersion: "TLSv1.2" });
-    return Buffer.from(data.subarray(0, size));
+    return Buffer.from(data);
   } finally {
     await file.close();
   }

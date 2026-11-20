@@ -10,7 +10,7 @@ revision of that document, subject to historical preservation.
 
 1. Read `AGENTS.md`, `docs/contributing/specifications.md`,
    `docs/contributing/rfcs.md`, and `specs/README.md`. The first owns repository
-   boundaries; the specification process owns numbering and lifecycle; the
+   boundaries; the specification process owns naming and lifecycle; the
    RFC process owns feedback and review.
 2. Search existing RFCs and plans for the decision before creating another.
    Read relevant current references and `docs/design.md` implementation status,
@@ -24,12 +24,12 @@ revision of that document, subject to historical preservation.
 
 ## Draft or revise
 
-For a new document, allocate an RFC ID by the specification process, then use
+For a new document, choose a date and title by the specification process, then use
 the frontmatter and proposal scaffold in `docs/contributing/rfc-template.md` at
-`specs/rfcs/<number>-<topic>.md`. This contributor template is the shared source
+`specs/rfcs/<yyyymmdd>-<title>.md`. This contributor template is the shared source
 for both manual authoring and this skill; do not maintain a second copy in the
 skill assets. If companions are needed, write the main document at
-`specs/rfcs/<number>-<topic>/index.md` and put companions in the same directory.
+`specs/rfcs/<yyyymmdd>-<title>/index.md` and put companions in the same directory.
 When converting an existing single file, preserve its ID and content and update
 all incoming and relative links; do not leave a top-level duplicate.
 Start the file with YAML frontmatter containing `status: Proposed`,
@@ -41,8 +41,8 @@ Markdown notes use an `rfc` frontmatter link to the main document and inherit
 its decision status; do not duplicate the status in companions. When adding
 metadata to historical RFCs, use recorded decision evidence. If no decision is
 established, use `status: Unspecified` with a `status_note` explaining the gap,
-without rewriting historical body text. Recheck that the path and number are not
-already assigned before writing. Use the specification process's old-to-new lookup
+without rewriting historical body text. Recheck the full name against existing files and folders before writing.
+Several RFCs can share a date when their titles differ. Use the specification process's old-to-new lookup
 to resolve historical RFC names; never guess from a duplicated old number.
 
 State the proposed decision early, followed by the behavior and ownership needed
@@ -66,7 +66,7 @@ policy and actual decision evidence.
 
 - Remove unused template prompts and optional sections. Keep links repository
   relative, and verify their paths and any referenced heading anchors.
-- Add or update the RFC’s row in `specs/README.md`, showing its linked number
+- Add or update the RFC’s row in `specs/README.md`, showing its linked ID
   and name in the first column, the emoji for `implementation_status` from the
   index legend in the second,
   evidence or remaining gaps in the third, and the author in the fourth. Keep the row synchronized when the

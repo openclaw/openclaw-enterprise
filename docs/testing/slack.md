@@ -1,20 +1,41 @@
+---
+tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
+---
+
 # Slack and ChatGPT service-account tests
 
 ## Overview
 
-Run live Slack and ChatGPT service-account integration checks. Both need the [Kubernetes runtime](kubernetes.md#kubernetes-model-turns-and-secrets) and a [private environment file](README.md#requirements-and-credentials).
+Run live Slack integration checks with the [Kubernetes runtime](kubernetes.md#kubernetes-model-turns-and-secrets) and a [private environment file](README.md#requirements-and-credentials).
 
 ## Slack
 
-The [QA matrix](ci.md#qa-matrix) checks live ingress and a threaded reply. The focused test below checks root replies, credential placement, proxy isolation, and Socket Mode. Prepare an authorized model credential.
+The [QA matrix](ci/qa-advisory.md) checks live ingress and a threaded reply. The focused test below checks root replies, credential placement, proxy isolation, and Socket Mode. Prepare an authorized model credential.
 
-Use an authorized test channel in one Slack workspace. Both the gateway bot and a distinct sender bot must join it. Use an existing Socket Mode app, an immutable `OCC_TEST_PRODUCTION_CONTROLLER_IMAGE`, a gateway image containing the Slack plugin and its dependencies, and a compatible Codex app-server. Run the [image smoke](docker.md#images-and-helm) first; version output alone does not prove compatibility.
+Use an authorized test channel in one Slack workspace. The gateway bot and the authorized sender must join it. Use a distinct authorized sender bot. Use an existing Socket Mode app and compatible controller, Gateway, and Codex app-server images. CI builds the controller and the runtime with the pinned OpenClaw source, Codex, and Slack plugin when image overrides are absent. To select existing runtime images, supply both `OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and `OCC_TEST_KUBERNETES_AGENT_IMAGE` as digest references; omit both to use the CI build. Direct test execution requires the imported immutable image references from [runtime preparation](kubernetes.md#kubernetes-model-turns-and-secrets). Run the [image smoke](docker.md#images-and-helm) first; version output alone does not prove compatibility.
+
+Install Helm and yq. Enable EnvoyPatchPolicy on the selected Envoy Gateway.
+The fixture renders the production chart's separate egress fleet, listener,
+network and RBAC resources. It verifies the assigned Gateway listener and
+Harness denial, OCC credential and directory requests, and failure with the
+actual Envoy Pods stopped. This proves rendered resources and real API/worker Pods, not
+an entire Helm release installation or upgrade lifecycle.
+
+`channel-egress-helm-real.test.ts` supplies that separate installation proof. It
+installs the actual OCC chart and a disposable PostgreSQL Helm fixture, binds the
+chart's tenant roles, uses a permitted HTTPS operator peer, and exercises dedicated
+model turns across revision cutover plus Slack delivery. PostgreSQL uses the
+repository's pinned fixture image unless `OCC_TEST_PRODUCTION_POSTGRES_IMAGE`
+selects another qualified immutable reference.
+
+Before provisioning the Slack-enabled topology or posting, the focused test checks each bot’s existing `conversations.info` response. Each response must identify the exact configured public or private channel and explicitly report boolean `false` for both `is_im` and `is_mpim`. This rule also applies to legacy private channels. The test rejects malformed or contradictory type flags. The separate membership check reports which bot needs a channel invitation.
 
 Put these settings in the private environment file:
 
 | Variable                          | Value                                                                            |
 | --------------------------------- | -------------------------------------------------------------------------------- |
-| `OCC_TEST_SLACK_PROXY_URL`        | Approved literal IP URL with explicit port; the API and gateway use this proxy.  |
 | `OCC_TEST_SLACK_CHANNEL_ID`       | Shared test channel.                                                             |
 | `SLACK_APP_TOKEN`                 | Gateway Socket Mode token, starting with `xapp-`.                                |
 | `SLACK_BOT_TOKEN`                 | Gateway bot token, starting with `xoxb-`.                                        |
@@ -25,33 +46,47 @@ OCC_TEST_SLACK_LIVE=1 \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/harness-topology-k3d-slack-real.test.mjs
 ```
 
+`OCC_TEST_SLACK_EVIDENCE_PATH` optionally retains the nonsecret delivery receipt
+outside the checkout. The test verifies the sender against Slack history and
+correlates the reply with one completed native Codex turn.
+
+The same lane runs `channel-egress-kubernetes-real.test.ts` through normal Agent
+APIs and real workers. It covers distinct Driver generations, concurrent
+allocation, rejected allocation writes, capacity refusal, retry, channel disable,
+port reuse and deletion. A unique DNS name in the disposable cluster points first
+to a public Slack address, then to private and mixed answers. The test restores
+its DNS configuration during teardown. Private addresses are negative cases only.
+Its controlled endpoint checks are transport proof, not a second provider integration.
+
 The test posts a real message and leaves it in the channel. It checks the reply and delayed duplicates. Run live Slack suites serially so Socket Mode consumers do not compete. The fixture enables bot mentions only for the test channel and keeps `requireMention` enabled. Do not enable bot access account-wide. Run the ordinary runtime file separately for its coverage; this Slack test does not verify Teams.
 
-## ChatGPT service accounts
+## Service-account coverage
 
-This test creates a real ChatGPT service account and credential, then runs a dedicated Codex model turn. Prepare a migrated disposable database and immutable images.
+The [ServiceAccount Driver conformance suite](../../tests/conformance/service-account-driver.test.ts)
+covers the provider contract with synthetic data. The
+[ServiceAccount HTTP suite](../../tests/integration/occ-service-account-lifecycle.test.ts)
+covers native accounts, credential privacy, and Namespace access.
+The [PostgreSQL compensation suite](../../tests/integration/postgres-service-account-compensation.test.ts)
+checks forced deletion and audit details with PostgreSQL and loopback HTTPS
+fixtures. It requires `openssl`. Use the [PostgreSQL setup](postgresql.md).
+Live provider revocation and model turns require separate verification.
 
-Use an authorized workspace and an admin-key file with mode `0600`. The environment file must not contain `OCC_TEST_CHATGPT_ADMIN_KEY`: that value takes precedence over the key file. Select a model supported by the issued account with `OCC_TEST_OPENAI_MODEL`; API-key model availability does not prove support. The default is `gpt-6-astra`. This test uses the issued credential and does not require `OPENAI_API_KEY`.
-
-```sh
-(
-  unset OCC_TEST_CHATGPT_ADMIN_KEY
-  export OCC_TEST_CHATGPT_ADMIN_KEY_PATH=/absolute/path/to/private/chatgpt-admin-key
-  export OCC_TEST_CHATGPT_WORKSPACE_ID='<authorized-workspace-id>'
-  OCC_TEST_CHATGPT_SERVICE_ACCOUNT_REAL=1 \
-    node --env-file="$TEST_ENV_FILE" --test tests/integration/service-account-driver-real.test.mjs
-)
-```
-
-The test attempts to delete the provider account and its scoped resources. Investigate any cleanup failure before rerunning. Selecting the test makes missing prerequisites fail; without the flag it skips. The protected CI lane builds and imports its runtime image if either gateway or Agent image is unset; direct local runs must import immutable images first.
-
-## Local and provider coverage
-
-`tests/conformance/service-account-driver.test.mjs` and `tests/integration/occ-api.test.mjs` cover lifecycle and API behavior with synthetic providers. The loopback HTTPS Backend regression requires `openssl`. [PostgreSQL tests](postgresql.md) cover persistence and deletion constraints. These do not prove live provider credential revocation or a model turn.
-
-[`postgres-service-account-issuance-recovery.test.mjs`](../../tests/integration/postgres-service-account-issuance-recovery.test.mjs)
+[`postgres-service-account-issuance-recovery.test.ts`](../../tests/integration/postgres-service-account-issuance-recovery.test.ts)
 runs the ChatGPT ServiceAccount Driver through OCC over PostgreSQL after an
 issuance that never committed. The next issuance and account deletion reclaim
 the leftover Secret and credential. Ending a session during reclamation must
 preserve a later issuance. The provider and Secret store are in-memory; conformance
 tests cover their behavior. Use the [PostgreSQL setup](postgresql.md).
+
+## One-off channel upgrade proof
+
+Use the explicit `channel-egress-upgrade` QA scenario with Kubernetes and Codex.
+Its [upgrade case](../../tests/integration/channel-egress-upgrade-helm-real.test.ts)
+shares the real workflow with the fresh-install case. Supply the Slack lane inputs plus `OCC_TEST_CHANNEL_EGRESS_SOURCE_CONTROLLER_IMAGE` and `OCC_TEST_CHANNEL_EGRESS_SOURCE_CHART` for the matching pre-PR-6529 source. Supply
+`OCC_TEST_CHANNEL_EGRESS_NEXT_CONTROLLER_IMAGE` for the subsequent ordinary image
+upgrade; that image must be built from the target source commit with a different
+image digest. This operator-selected scenario runs the actual script and regular Agent workflow; it is outside the default advisory matrix.
+
+Run the one-off scenario once with `OCC_TEST_CHANNEL_EGRESS_DATABASE_MODE=hook`
+and once with `separate`. The separate case executes the chart-selected migrator
+and its require-current check during each handoff.

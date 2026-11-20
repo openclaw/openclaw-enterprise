@@ -1,0 +1,182 @@
+import type { Diagram } from "../diagram.ts";
+
+export default {
+  title: "How OpenShell gets a GitHub token",
+  subtitle:
+    "The worker prepares tokens in the background. Startup waits for installation readback.",
+  layout: { board: [1180, 702] },
+  groups: [
+    {
+      id: "worker",
+      title: "OpenClaw Enterprise worker",
+      role: "control",
+      pin: [20, 76, 735, 559],
+    },
+    {
+      id: "github-api",
+      title: "External service",
+      role: "external",
+      pin: [946, 83, 214, 117],
+    },
+    {
+      id: "openshell",
+      title: "OpenShell runtime",
+      role: "runtime",
+      pin: [866, 266, 294, 369],
+    },
+    {
+      id: "sandbox",
+      title: "Sandbox",
+      role: "boundary",
+      parent: "openshell",
+      pin: [18, 253, 258, 103],
+    },
+  ],
+  nodes: [
+    {
+      id: "preparation",
+      title: "GitHub preparation owner",
+      detail: "Uses the App signer to\nprepare or renew tokens",
+      group: "worker",
+      pin: [370, 38, 265, 75],
+    },
+    {
+      id: "token-store",
+      title: "PostgreSQL token store",
+      detail: "Holds the sealed token",
+      group: "worker",
+      pin: [28, 38, 229, 75],
+    },
+    {
+      id: "github",
+      title: "GitHub",
+      detail: "Issues an installation token",
+      group: "github-api",
+      pin: [12, 31, 190, 75],
+    },
+    {
+      id: "proxy-driver",
+      title: "CredentialProxyDriver",
+      detail: "Supplies the repository Git binding",
+      group: "worker",
+      pin: [28, 312, 245, 75],
+    },
+    {
+      id: "adapter",
+      title: "Git transport adapter",
+      detail: "Installs committed material\nand checks the readback",
+      group: "worker",
+      pin: [405, 312, 320, 75],
+    },
+    {
+      id: "gateway",
+      title: "OpenShell Gateway",
+      detail: "Attaches the provider to Sandbox policy",
+      group: "openshell",
+      pin: [20, 122, 254, 75],
+    },
+    {
+      id: "supervisor",
+      title: "Credential Proxy",
+      detail: "Loads the provider generation",
+      group: "openshell",
+      pin: [20, 34, 254, 55],
+    },
+    {
+      id: "compute",
+      title: "Kubernetes Compute",
+      detail: "Rechecks installation before release",
+      group: "worker",
+      pin: [405, 482, 320, 55],
+    },
+    {
+      id: "harness",
+      title: "Harness",
+      detail: "Held at startup",
+      group: "sandbox",
+      pin: [19, 39, 220, 55],
+    },
+  ],
+  edges: [
+    {
+      from: "preparation",
+      to: "github",
+      label: "POST /app/installations/{id}/access_tokens\nSigned App JWT",
+      pin: { label: [666, 118] },
+    },
+    {
+      from: "github",
+      to: "preparation",
+      label: "Installation token",
+      pin: {
+        from: "bottom",
+        to: "bottom",
+        via: [
+          [1053, 224],
+          [522.5, 224],
+        ],
+        label: [810, 214],
+      },
+    },
+    {
+      from: "preparation",
+      to: "token-store",
+      label: "Validates and\ncommits",
+      pin: { label: [290, 119] },
+    },
+    {
+      from: "token-store",
+      to: "adapter",
+      label: "Committed token for startup or renewal",
+      kind: "setup",
+      pin: {
+        from: "bottom",
+        to: "top",
+        via: [
+          [162.5, 302],
+          [585, 302],
+        ],
+        label: [220, 292],
+      },
+    },
+    {
+      from: "proxy-driver",
+      to: "adapter",
+      label: "Binds transport",
+      kind: "setup",
+      pin: { label: [309, 415] },
+    },
+    {
+      from: "adapter",
+      to: "gateway",
+      label: "Install or renew\nwith readback",
+      kind: "setup",
+      pin: { label: [762, 395] },
+    },
+    {
+      from: "gateway",
+      to: "supervisor",
+      label: "Provider settings",
+      kind: "setup",
+      pin: { from: "top", to: "bottom", label: [1025, 375] },
+    },
+    {
+      from: "adapter",
+      to: "compute",
+      label: "Verified recipient\nand generation",
+      kind: "setup",
+      pin: { from: "bottom", to: "top", label: [601, 501] },
+    },
+    {
+      from: "compute",
+      to: "harness",
+      label: "Startup only\nSigned release",
+      kind: "setup",
+      pin: { label: [760, 556] },
+    },
+  ],
+  notes: [
+    "At selected-repository startup, OCE matches the held launcher request to an authenticated denial before issuing the token.",
+    "Renewal updates the provider for an existing Sandbox. Each Git request still needs authorization.",
+  ],
+} satisfies Diagram;

@@ -1,38 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { registerStreamReceiptPersistenceCases } from "./credential-proxy-stream-lease-cases.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import {
   encodeSyntheticEvents,
   outputWithIndependentCitation,
 } from "../fixtures/synthetic-egress-provider.mjs";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { readFileSync } from "node:fs";
-import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { EgressSendReceipts } from "../../packages/occ/src/egress-send-receipts.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
-import { OpenClawController } from "../../packages/occ/src/index.ts";
-import {
-  installationControllerOptions,
-  loadInstallationConfiguration,
-} from "../../apps/controller/src/composition/installation-config.ts";
-import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.mjs";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { PROXY_REGISTRATION_UNAVAILABLE } from "../helpers/refusal-text.mjs";
-import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { OpenShellEgressIdentity } from "../../apps/controller/src/drivers/egress-proxy/openshell-identity.ts";
 import {
-  CREDENTIAL_PROXY_CAPACITY_MAXIMUM,
   CredentialProxy,
-  DEFAULT_CREDENTIAL_PROXY_CAPACITY,
-  OPERATION_AUTHENTICATION_BUDGET,
-  OPERATION_CAPACITY,
   OPERATION_SANDBOX_SHARE,
-  REPLAY_SANDBOX_SHARE,
-  REPLAY_TABLE_CAPACITY,
-  STREAM_LEASE_CEILING_MS,
-  STREAM_LEASE_IDLE_MS,
-  STREAM_LEASE_RECHECK_MS,
   egressInjectionDigest,
 } from "../../packages/occ/src/credential-proxy.ts";
 import { deploymentErrorForWork } from "../../packages/occ/src/state/controller-work.ts";
@@ -44,13 +28,302 @@ import {
 import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
 import {
   staticEgressFixture,
+  staticEgressAdmissionFixture,
   loadGatewayDefinition,
   supervisorBearer,
-  syntheticDispatchFixture,
-  requestId,
   unary,
-  wireTime,
 } from "../helpers/static-egress.mjs";
+
+import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
+import { registerStaticEgressRequestCapacityCases } from "./static-egress-request-capacity-cases.ts";
+
+const retirementError = {
+  code: "RESOURCE_CONFLICT",
+  message:
+    "The selected Driver has retired new uses of this protected static credential provider. Ask an Installation administrator to configure a supported model access path.",
+};
+
+function assertRetired(response) {
+  assert.equal(response.status, 409, JSON.stringify(response.body));
+  assert.deepEqual(response.body.error, retirementError);
+}
+
+async function admissionSnapshot(f) {
+  return {
+    rows: structuredClone(
+      await f.controller.transact((unit) =>
+        unit.credentialSources.listCredentialSources(f.namespace.id),
+      ),
+    ),
+    audit: structuredClone(await f.controller.transact((unit) => unit.audit.list())),
+    materialReads: { ...f.materialReads },
+    secretReads: f.countSecretReads(),
+    gatewayEffects: [...f.gatewayEffects],
+    providers: structuredClone([...f.providers]),
+    requests: [...f.providerRequests],
+  };
+}
+
+async function assertAdmissionUnchanged(f, before) {
+  const after = await admissionSnapshot(f);
+  // Denial audit is allowed; neither registration nor another success may be recorded.
+  assert.deepEqual(
+    after.audit.filter((event) => event.outcome === "success"),
+    before.audit.filter((event) => event.outcome === "success"),
+  );
+  assert.deepEqual({ ...after, audit: [] }, { ...before, audit: [] });
+}
+
+test("bundled OpenShell startup refuses mixed static CREATE before material or registration; Gateway-only CREATE and PATCH remain ordinary", async (t) => {
+  for (const gatewayOnly of [false, true]) {
+    const f = await staticEgressAdmissionFixture(t, { gatewayOnly });
+    const before = await admissionSnapshot(f);
+    const result = await f.request("POST", f.path, {
+      body: {
+        name: "retirement-control",
+        type: "openai",
+        config: { authorized_base_url: f.modelProvider.baseUrl },
+        secrets: { api_key: f.secret.ref },
+      },
+    });
+    if (!gatewayOnly) {
+      assertRetired(result);
+      await assertAdmissionUnchanged(f, before);
+    } else {
+      assert.equal(result.status, 201, JSON.stringify(result.body));
+      assert.equal(result.data.egress, undefined);
+      assert.equal(f.materialReads.ordinary, before.materialReads.ordinary + 1);
+      assert.equal(f.materialReads.versioned, before.materialReads.versioned);
+      assert.deepEqual(f.gatewayEffects, [...before.gatewayEffects, "registerSource"]);
+      const rows = await f.controller.transact((unit) =>
+        unit.credentialSources.listCredentialSources(f.namespace.id),
+      );
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].ownerCapability, "credential_gateway");
+      assert.equal(rows[0].driverId, "openshell-credentials");
+      assert.deepEqual(rows[0].secrets, { api_key: f.secret.ref });
+      assert.equal(
+        [...f.providers.values()][0].credentials.OPENAI_API_KEY,
+        "synthetic-key-initial",
+      );
+      assert.deepEqual(f.providerRequests, []);
+
+      const replacement = await f.request("POST", `/namespaces/${f.namespace.id}/secrets`, {
+        body: { name: "ordinary-replacement", value: "synthetic-key-replacement" },
+      });
+      assert.equal(replacement.status, 201, JSON.stringify(replacement.body));
+      const original = structuredClone(rows[0]);
+      const [[name, provider]] = structuredClone([...f.providers]);
+      const profiles = structuredClone([...f.profiles]);
+      const updateBefore = await admissionSnapshot(f);
+      const wireStart = f.gatewayRequests.length;
+      const updated = await f.request("PATCH", `${f.path}/${original.id}`, {
+        body: { secrets: { api_key: replacement.data.ref } },
+      });
+      assert.equal(updated.status, 200, JSON.stringify(updated.body));
+      assert.deepEqual(updated.data, {
+        ...result.data,
+        secrets: { api_key: replacement.data.ref },
+        status: { state: "ready" },
+      });
+      const updatedRows = await f.controller.transact((unit) =>
+        unit.credentialSources.listCredentialSources(f.namespace.id),
+      );
+      assert.deepEqual(updatedRows, [{ ...original, secrets: { api_key: replacement.data.ref } }]);
+      assert.equal(updatedRows[0].egress, undefined);
+      assert.equal(updatedRows[0].state, "ready");
+      assert.deepEqual(
+        [...f.providers],
+        [
+          [
+            name,
+            {
+              ...provider,
+              metadata: { ...provider.metadata, resource_version: "2" },
+              credentials: { OPENAI_API_KEY: "synthetic-key-replacement" },
+            },
+          ],
+        ],
+      );
+      assert.deepEqual([...f.profiles], profiles);
+      const wire = f.gatewayRequests.slice(wireStart);
+      assert.equal(wire.length, 2);
+      assert.match(wire[1].request.request_id, /^[0-9a-f-]{36}$/);
+      assert.deepEqual(wire, [
+        {
+          method: "GetProvider",
+          request: { name, workspace_scope: { workspace: f.namespace.name } },
+          found: true,
+        },
+        {
+          method: "UpdateProvider",
+          request: {
+            provider: {
+              metadata: { name },
+              credentials: { OPENAI_API_KEY: "synthetic-key-replacement" },
+            },
+            workspace_scope: { workspace: f.namespace.name },
+            // The empty credential_expiration_times map is omitted on the wire.
+            request_id: wire[1].request.request_id,
+          },
+        },
+      ]);
+      assert.equal(f.materialReads.ordinary, updateBefore.materialReads.ordinary + 1);
+      assert.equal(f.materialReads.versioned, updateBefore.materialReads.versioned);
+      assert.equal(f.countSecretReads(), updateBefore.secretReads + 1);
+      assert.deepEqual(f.gatewayEffects, [...updateBefore.gatewayEffects, "updateSource"]);
+      assert.deepEqual(f.providerRequests, []);
+
+      // A bound source must be unbound before adoption, even without a Proxy.
+      const config = await f.createConfiguration(f.namespace.id, {
+        agents: {
+          defaults: {
+            model: { primary: "codex/fixture-model" },
+            models: { "codex/fixture-model": { agentRuntime: { id: "codex" } } },
+          },
+        },
+      });
+      const agent = await f.request("POST", `/namespaces/${f.namespace.id}/agents`, {
+        body: {
+          name: "bound-model",
+          configurationId: config.id,
+          executionMode: "dedicated",
+          harnessAuth: { method: "credential_source", sourceId: original.id },
+          credentialSources: [{ sourceId: original.id }],
+        },
+      });
+      assert.equal(agent.status, 201, JSON.stringify(agent.body));
+      const prior = await admissionSnapshot(f);
+      const bound = await f.request("PATCH", `${f.path}/${original.id}`, {
+        body: { adoption: "live", authorityScope: "execution" },
+      });
+      assert.deepEqual(
+        { status: bound.status, reason: bound.body.error?.message },
+        { status: 409, reason: "Protected source changes require an unbound source." },
+      );
+      await assertAdmissionUnchanged(f, prior);
+    }
+  }
+});
+
+test("bundled OpenShell startup refuses unbound legacy adoption; original Gateway DELETE remains available", async (t) => {
+  let clock = Date.now();
+  const f = await staticEgressAdmissionFixture(t, {
+    includeLegacy: true,
+    now: () => new Date(clock),
+  });
+  const replacement = await f.request("POST", `/namespaces/${f.namespace.id}/secrets`, {
+    body: { name: "replacement", value: "synthetic-key-replacement" },
+  });
+  assert.equal(replacement.status, 201, JSON.stringify(replacement.body));
+  const before = await admissionSnapshot(f);
+  assertRetired(
+    await f.request("PATCH", `${f.path}/${f.legacySource.id}`, {
+      body: {
+        adoption: "live",
+        authorityScope: "execution",
+        secrets: { api_key: replacement.data.ref },
+      },
+    }),
+  );
+  await assertAdmissionUnchanged(f, before);
+
+  // The original unbound Gateway copy remains deletable in the mixed installation.
+  const legacy = await f.controller.transact((unit) =>
+    unit.credentialSources.findCredentialSource(f.namespace.id, f.legacySource.id),
+  );
+  assert.equal(legacy.ownerCapability, "credential_gateway");
+  assert.equal(legacy.driverId, "openshell-credentials");
+  assert.equal(legacy.state, "ready");
+  assert.equal(legacy.egress, undefined);
+  assert.equal(legacy.createdAt, new Date(clock).toISOString());
+  assert.deepEqual(legacy.secrets, { api_key: f.secret.ref });
+  assert.deepEqual(f.legacySource.ref, {
+    kind: "credential_source",
+    namespaceId: f.namespace.id,
+    id: legacy.id,
+  });
+  const [[name, provider]] = [...f.providers];
+  assert.equal(f.providers.size, 1);
+  assert.equal(provider.metadata.labels["openclaw.dev/credential-source-id"], legacy.id);
+  assert.ok(f.profiles.has(name));
+  // An unrelated fake provider is a sentinel, never a substitute for the real target.
+  const unrelated = structuredClone(provider);
+  unrelated.metadata = {
+    ...unrelated.metadata,
+    name: "unrelated-provider",
+    id: "unrelated-id",
+    labels: {},
+  };
+  f.providers.set(unrelated.metadata.name, unrelated);
+  const deleteBefore = await admissionSnapshot(f);
+  const profilesBefore = structuredClone([...f.profiles]);
+  const wireStart = f.gatewayRequests.length;
+  // Two 30-second Gateway operation windows plus the 10-second registration grace.
+  clock = Date.parse(legacy.createdAt) + 70_001;
+  const deleted = await f.request("DELETE", `${f.path}/${legacy.id}`);
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  const wire = f.gatewayRequests.slice(wireStart);
+  assert.equal(wire.length, 4);
+  for (const index of [1, 3]) {
+    assert.match(wire[index].request.request_id, /^[0-9a-f-]{36}$/);
+  }
+  assert.deepEqual(wire, [
+    {
+      method: "GetProvider",
+      request: { name, workspace_scope: { workspace: f.namespace.name } },
+      found: true,
+    },
+    {
+      method: "DeleteProvider",
+      request: {
+        name,
+        workspace_scope: { workspace: f.namespace.name },
+        allow_missing: true,
+        request_id: wire[1].request.request_id,
+      },
+    },
+    {
+      method: "GetProvider",
+      request: { name, workspace_scope: { workspace: f.namespace.name } },
+      found: false,
+    },
+    {
+      method: "DeleteProviderProfile",
+      request: {
+        id: name,
+        workspace_scope: { workspace: f.namespace.name },
+        allow_missing: true,
+        request_id: wire[3].request.request_id,
+      },
+    },
+  ]);
+  assert.deepEqual(
+    [...f.providers],
+    deleteBefore.providers.filter(([id]) => id !== name),
+  );
+  assert.equal(f.providers.has(name), false);
+  assert.equal(f.profiles.has(name), false);
+  assert.deepEqual(
+    [...f.profiles],
+    profilesBefore.filter(([id]) => id !== name),
+  );
+  const deleteAfter = await admissionSnapshot(f);
+  assert.deepEqual(
+    deleteAfter.rows,
+    deleteBefore.rows.filter((row) => row.id !== legacy.id),
+  );
+  assert.equal(
+    await f.controller.transact((unit) =>
+      unit.credentialSources.findCredentialSource(f.namespace.id, legacy.id),
+    ),
+    undefined,
+  );
+  assert.deepEqual(deleteAfter.materialReads, deleteBefore.materialReads);
+  assert.equal(deleteAfter.secretReads, deleteBefore.secretReads);
+  assert.deepEqual(f.gatewayEffects, [...deleteBefore.gatewayEffects, "removeSource"]);
+  assert.deepEqual(f.providerRequests, []);
+});
 
 test("credential header digest uses ordered UTF-8 bytes and u64 lengths", () => {
   assert.equal(
@@ -313,11 +586,13 @@ test("provider authentication rejection fences the exact material version and en
 });
 
 test("protected admission requires the actual counterpart and exact loaded policy; revision removal deletes only its owned Sandbox", async (t) => {
-  const f = await staticEgressFixture(t);
+  const f = await staticEgressFixture(t, { includeLegacy: true });
   // Inspect the production attachment before protobuf can erase an explicit zero.
   // OpenShell requires omission for automatic TLS termination, not TERMINATE or SKIP.
   for (const [index, route] of f.context.plan.routes.entries()) {
-    const endpoints = f.attachment.configuration.network_policies[`oce-egress-${index}`].endpoints;
+    const { binaries, endpoints } =
+      f.attachment.configuration.network_policies[`oce-egress-${index}`];
+    assert.deepEqual(binaries, [{ path: "/**" }]);
     assert.equal(Object.hasOwn(endpoints[0], "tls"), false);
     const origin = new URL(route.origin);
     assert.deepEqual(endpoints, [
@@ -385,9 +660,21 @@ test("protected admission requires the actual counterpart and exact loaded polic
   assert.equal(refused.status, 503, JSON.stringify(refused.body));
   assert.equal(
     (await f.request("GET", f.path)).data.length,
-    1,
+    2,
     "failed candidate cannot leave admitted source metadata",
   );
+  // Retained Gateway sources need explicit adoption and the same available peer.
+  const retainedBefore = (await f.request("GET", `${f.path}/${f.legacySource.id}`)).data;
+  const gatewayBefore = structuredClone([...f.providers.entries()]);
+  const effectsBefore = [...f.gatewayEffects];
+  const adoption = await f.request("PATCH", `${f.path}/${f.legacySource.id}`, {
+    body: { adoption: "live", authorityScope: "execution" },
+  });
+  assert.equal(adoption.status, 503, JSON.stringify(adoption.body));
+  assert.equal(retainedBefore.egress, undefined);
+  assert.deepEqual((await f.request("GET", `${f.path}/${f.legacySource.id}`)).data, retainedBefore);
+  assert.deepEqual([...f.providers.entries()], gatewayBefore);
+  assert.deepEqual(f.gatewayEffects, effectsBefore);
   await assert.rejects(f.egress.configureRevision(f.context), {
     name: "RetryLaterError",
     message: PROXY_REGISTRATION_UNAVAILABLE,
@@ -400,6 +687,18 @@ test("protected admission requires the actual counterpart and exact loaded polic
     false,
     "verification cannot discover a missing installation Sandbox identity",
   );
+  // A previously generated route without a binary matcher cannot stand in for
+  // the canonical attachment or establish a new installation.
+  const oldConfiguration = structuredClone(f.attachment.configuration);
+  delete oldConfiguration.network_policies["oce-egress-0"].binaries;
+  await assert.rejects(
+    f.egress.wiringStatus(f.context, { ...f.attachment, configuration: oldConfiguration }),
+    /changed protected egress routes/,
+  );
+  delete f.observed.policy.network_policies["oce-egress-0"].binaries;
+  await assert.rejects(f.egress.wiringStatus(f.context, f.attachment), /differs/);
+  assert.equal(await f.egress.verifyInstallation(f.context, f.installation), false);
+  f.observed.policy = structuredClone(expectedPolicy);
   // A reported TLS bypass must fail both initial installation and receipt revalidation,
   // even when the supplier still reports the original loaded-enforcement evidence.
   f.observed.policy.network_policies["oce-egress-0"].endpoints[0].tls = "NETWORK_TLS_MODE_SKIP";
@@ -481,6 +780,87 @@ test("legacy approved copies survive Secret rotation and failed live adoption; o
   assert.equal((await f.request("GET", path)).data.egress, undefined);
   assert.deepEqual([...f.providers.values()], before);
   f.observed.available = true;
+  // A provider that needs managed login tokens cannot adopt a static key.
+  const proxy = f.controller.selectedDriver("credential_proxy");
+  const control = proxy.sourceControl;
+  const original = control.providers.find((entry) => entry.sourceType.type === "openai");
+  assert.ok(original);
+  const providerType = structuredClone(original.sourceType);
+  const gateway = f.controller.selectedDriver("credential_gateway");
+  const listTypes = gateway.listSourceTypes;
+  let gatewayType;
+  let changeDuringAdmission;
+  const reads = f.secretReads;
+  try {
+    // Simulate a Driver returning a retained mutable catalog entry. Keep the
+    // real catalog, peer availability check, and Secret transport.
+    gateway.listSourceTypes = async (...args) => {
+      const catalog = await listTypes.apply(gateway, args);
+      return catalog.map((entry) => {
+        if (entry.type !== "openai") {
+          return entry;
+        }
+        gatewayType ??= structuredClone(entry);
+        return gatewayType;
+      });
+    };
+    assert.ok(
+      Reflect.set(proxy, "sourceControl", {
+        ...control,
+        providers: control.providers.map((p) =>
+          p === original ? { ...p, sourceType: providerType } : p,
+        ),
+        async assertAvailable(signal) {
+          await control.assertAvailable(signal);
+          if (changeDuringAdmission) {
+            changeDuringAdmission.harnessAuth.loginMode = "chatgptAuthTokens";
+          }
+        },
+      }),
+    );
+    assert.equal(providerType.harnessAuth.loginMode, "api_key");
+    providerType.harnessAuth.loginMode = "chatgptAuthTokens";
+    const catalog = await f.request("GET", `/namespaces/${f.namespace.id}/agent-capabilities`);
+    assert.equal(catalog.status, 200);
+    const offered = catalog.data.capabilities.credentialSources.types.some(
+      (entry) => entry.type === "openai",
+    );
+    const create = await f.request("POST", f.path, {
+      body: {
+        name: "incompatible-lifecycle",
+        type: "openai",
+        config: { authorized_base_url: f.modelProvider.baseUrl },
+        secrets: { api_key: f.secret.ref },
+      },
+    });
+    const patch = await f.request("PATCH", path, { body: consent });
+    assert.deepEqual(
+      { offered, create: create.status, patch: patch.status, reads: f.secretReads - reads },
+      { offered: false, create: 409, patch: 409, reads: 0 },
+    );
+    providerType.harnessAuth.loginMode = "api_key";
+    for (const [side, type] of [
+      ["Proxy", providerType],
+      ["Gateway", gatewayType],
+    ]) {
+      // Change one declaration across the await while its counterpart stays static.
+      assert.equal(type.harnessAuth.loginMode, "api_key");
+      changeDuringAdmission = type;
+      const raced = await f.request("PATCH", path, { body: consent });
+      assert.equal(type.harnessAuth.loginMode, "chatgptAuthTokens");
+      assert.deepEqual(
+        { status: raced.status, reads: f.secretReads - reads },
+        { status: 409, reads: 0 },
+        side + " lifecycle changed before Secret access",
+      );
+      type.harnessAuth.loginMode = "api_key";
+      assert.equal((await f.request("GET", path)).data.egress, undefined);
+      assert.deepEqual([...f.providers.values()], before);
+    }
+  } finally {
+    gateway.listSourceTypes = listTypes;
+    Reflect.set(proxy, "sourceControl", control);
+  }
   const adopted = await f.request("PATCH", path, { body: consent });
   assert.equal(adopted.status, 200, JSON.stringify(adopted.body));
   assert.deepEqual(adopted.data.egress, { adoption: "live", retention: "none" });
@@ -564,6 +944,46 @@ test("current supplier evidence is required at access and send; stored receipts 
     f.controller.transact((unit) => unit.credentialSources.recordEgressInstallation(replacement)),
     /already bound/,
   );
+});
+
+test("retained Sandbox policy versions are independent of plan generation but still fence installation", async (t) => {
+  const f = await staticEgressFixture(t, { recordInstallation: false });
+  assert.equal(f.context.plan.generation, 1);
+  f.observed.policyVersion = 4;
+  f.observed.activePolicyVersion = 4;
+  f.observed.evidence.policy_version = 4;
+  const installed = await f.egress.wiringStatus(f.context, f.attachment);
+  assert.ok(installed, "matching loaded policy must enroll after retained-Sandbox updates");
+  assert.equal(await f.egress.verifyInstallation(f.context, installed), true);
+
+  // Independent supplier fields must agree; none can borrow the OCE generation
+  // or claim readiness for a policy that is still loading or failed.
+  for (const change of [
+    { policyVersion: 1 },
+    { activePolicyVersion: 1 },
+    { policyStatus: 1 },
+    { policyStatus: 3 },
+    { policyVersion: 0, activePolicyVersion: 0 },
+  ]) {
+    Object.assign(f.observed, change);
+    assert.equal(await f.egress.wiringStatus(f.context, f.attachment), undefined);
+    assert.equal(await f.egress.verifyInstallation(f.context, installed), false);
+    Object.assign(f.observed, { policyVersion: 4, activePolicyVersion: 4, policyStatus: 2 });
+  }
+  f.observed.evidence.policy_version = 1;
+  assert.equal(await f.egress.wiringStatus(f.context, f.attachment), undefined);
+  assert.equal(await f.egress.verifyInstallation(f.context, installed), false);
+
+  // Even unchanged policy content at a new supplier version invalidates the
+  // earlier receipt; changing the comparison must not remove that fence.
+  f.observed.policyVersion = 5;
+  f.observed.activePolicyVersion = 5;
+  f.observed.evidence.policy_version = 5;
+  assert.equal(await f.egress.verifyInstallation(f.context, installed), false);
+  const replacement = await f.egress.wiringStatus(f.context, f.attachment);
+  assert.ok(replacement);
+  assert.notEqual(replacement.enforcement.configurationId, installed.enforcement.configurationId);
+  assert.equal(await f.egress.verifyInstallation(f.context, replacement), true);
 });
 
 test("V1 permits only the exact inert runtime rule and fences both policies before Secret access and send", async (t) => {
@@ -710,6 +1130,141 @@ function responseChecks(f) {
     },
   };
 }
+
+test("shipped exchange withholds material split across one reasoning part", async (t) => {
+  const f = await staticEgressFixture(t);
+  const [prefix, suffix] = splitText(selectedMaterial);
+  const part = (index, text = "") => ({
+    type: "response.reasoning_summary_part.added",
+    item_id: "rs_exchange",
+    output_index: 0,
+    summary_index: index,
+    part: { type: "summary_text", text },
+  });
+  const summaryDelta = (index, text) => ({
+    type: "response.reasoning_summary_text.delta",
+    item_id: "rs_exchange",
+    output_index: 0,
+    summary_index: index,
+    delta: text,
+  });
+  const textDelta = (index, text) => ({
+    type: "response.reasoning_text.delta",
+    item_id: "rs_exchange",
+    output_index: 0,
+    content_index: index,
+    delta: text,
+  });
+  const textDone = (index, text) => ({
+    type: "response.reasoning_text.done",
+    item_id: "rs_exchange",
+    output_index: 0,
+    content_index: index,
+    text,
+  });
+  const stream = (inner, doneSummary) => {
+    let sequence = 0;
+    const numbered = (event) => ({ sequence_number: sequence++, ...event });
+    const reasoning = { type: "reasoning", id: "rs_exchange", summary: [] };
+    const response = (status) => ({
+      id: "resp_reasoning_exchange",
+      object: "response",
+      model: wire.request.model,
+      created_at: 1791985502,
+      status,
+      output: status === "completed" ? [{ type: "reasoning", summary: doneSummary }] : [],
+    });
+    return [
+      numbered({ type: "response.created", response: response("in_progress") }),
+      numbered({ type: "response.output_item.added", output_index: 0, item: reasoning }),
+      ...inner.map((event) => numbered(event)),
+      numbered({
+        type: "response.output_item.done",
+        output_index: 0,
+        item: { ...reasoning, summary: doneSummary },
+      }),
+      numbered({ type: "response.completed", response: response("completed") }),
+    ];
+  };
+  const redacted = [
+    { type: "summary_text", text: "redacted" },
+    { type: "summary_text", text: "aside" },
+  ];
+  const cases = [
+    {
+      label: "harmless-summary",
+      blocked: false,
+      events: stream(
+        [
+          part(0),
+          summaryDelta(0, "hello "),
+          part(1),
+          summaryDelta(1, "aside"),
+          summaryDelta(0, "world"),
+        ],
+        [
+          { type: "summary_text", text: "hello world" },
+          { type: "summary_text", text: "aside" },
+        ],
+      ),
+    },
+    {
+      label: "harmless-reasoning-text-completion",
+      blocked: false,
+      events: stream([textDelta(0, "ordinary response"), textDone(0, "ordinary response")], []),
+    },
+    {
+      label: "withheld-skipped-summary-index",
+      blocked: true,
+      // Summary parts append: skipping index zero cannot open a later part.
+      events: stream([part(1, "ok")], []),
+    },
+    {
+      label: "withheld-unopened-reasoning-text-completion",
+      blocked: true,
+      // A completion may finish an open index, but cannot open the next one.
+      events: stream([textDelta(0, "ordinary response"), textDone(1, "aside")], []),
+    },
+    {
+      label: "withheld-summary",
+      blocked: true,
+      events: stream(
+        [
+          part(0),
+          summaryDelta(0, prefix),
+          part(1),
+          summaryDelta(1, "aside"),
+          summaryDelta(0, suffix),
+        ],
+        redacted,
+      ),
+    },
+    {
+      label: "withheld-reasoning-text",
+      blocked: true,
+      events: stream([textDelta(0, prefix), textDelta(1, "aside"), textDelta(0, suffix)], redacted),
+    },
+  ];
+  for (const entry of cases) {
+    const rawBody = encode(entry.events);
+    const result = await f.exchangeResponse(
+      { status: 200, contentType: "text/event-stream", rawBody },
+      wire.request,
+    );
+    const released = result.blocked ? 0 : Buffer.byteLength(result.body ?? "");
+    console.log(
+      `exchange ${entry.label}: ${result.blocked ? "withheld" : "delivered"} released_bytes=${released}`,
+    );
+    if (entry.blocked) {
+      assert.equal(result.blocked, true, entry.label);
+      assert.equal(released, 0, entry.label);
+    } else {
+      assert.equal(result.response_complete, true, entry.label);
+      assert.equal(result.body?.toString(), rawBody, entry.label);
+      assert.equal(released, Buffer.byteLength(rawBody), entry.label);
+    }
+  }
+});
 
 test("Responses output text assembled across parts and messages cannot reveal selected material", async (t) => {
   const f = await staticEgressFixture(t);
@@ -1174,6 +1729,164 @@ test("Responses incremental text snapshots cannot reveal selected material", asy
   await check.events(laterProgress, false, "later in_progress snapshot");
 });
 
+test("Responses follow-up replays assistant text with empty provider metadata", async (t) => {
+  const f = await staticEgressFixture(t);
+  const check = responseChecks(f);
+  const events = responseEvents();
+  const assistant = events.at(-1).response.output[0];
+  assistant.content[0].logprobs = [];
+  const tool = {
+    type: "custom_tool_call",
+    id: "ct_local",
+    call_id: "call_local",
+    name: "fixture_custom_0",
+    input: "fixture input",
+  };
+  events.splice(
+    -1,
+    0,
+    { type: "response.output_item.added", output_index: 1, item: { ...tool, input: "" } },
+    { type: "response.output_item.done", output_index: 1, item: tool },
+  );
+  events.at(-1).response.output.push(tool);
+  const initial = {
+    ...wire.request,
+    tools: [...wire.request.tools, { type: "custom", name: tool.name }],
+  };
+  // The local tool call and assistant message must pass the response policy before replay.
+  await check.events(events, false, "the first exchange releases a local call", true, initial);
+
+  const output = {
+    type: "custom_tool_call_output",
+    call_id: tool.call_id,
+    output: [{ type: "input_text", text: "fixture result" }],
+  };
+  const followup = {
+    ...initial,
+    input: [...initial.input, assistant, tool, output],
+  };
+  await check.events(responseEvents(), false, "the follow-up admits the replay", true, followup);
+  assert.deepEqual(f.providerRequests.at(-1).body, followup);
+
+  const [part] = assistant.content;
+  const withPart = (content) => ({ ...assistant, content: [content] });
+  // Keep the metadata confined to replayed assistant output text.
+  const deniedInputs = [
+    ...["system", "developer", "user"].map((role) => [{ ...assistant, role }, tool, output]),
+    [assistant, tool, { ...output, output: [part] }],
+    [withPart({ ...part, type: "input_text" }), tool, output],
+    [withPart({ ...part, annotations: [{}] }), tool, output],
+    [withPart({ ...part, logprobs: [{}] }), tool, output],
+    [withPart({ ...part, annotations: null }), tool, output],
+    [withPart({ ...part, logprobs: null }), tool, output],
+    [withPart({ ...part, unknown: [] }), tool, output],
+  ];
+  const reads = f.secretReads;
+  const sends = f.providerRequests.length;
+  for (const input of deniedInputs) {
+    const request = { ...followup, input: [...initial.input, ...input] };
+    assert.ok((await f.resolve(f.capture(request))).refused);
+  }
+  assert.equal(f.secretReads, reads, "unsupported metadata cannot read credentials");
+  assert.equal(f.providerRequests.length, sends, "unsupported metadata cannot send");
+});
+
+test("Responses admits bounded native agent messages", async (t) => {
+  const f = await staticEgressFixture(t);
+  const check = responseChecks(f);
+  const message = {
+    type: "agent_message",
+    id: "amsg_fixture",
+    author: "/root",
+    recipient: "/root/worker",
+    content: [{ type: "input_text", text: "Synthetic task" }],
+  };
+  const encrypted = { type: "encrypted_content", encrypted_content: "synthetic-ciphertext" };
+  const requestWith = (item) => ({ ...wire.request, input: [...wire.request.input, item] });
+
+  for (const content of [message.content, [...message.content, encrypted]]) {
+    const request = requestWith({ ...message, content });
+    await check.events(responseEvents(), false, "native agent input completes", true, request);
+    assert.deepEqual(f.providerRequests.at(-1).body, request);
+  }
+
+  const reads = f.secretReads;
+  const sends = f.providerRequests.length;
+  for (const item of [
+    { ...message, author: "https://example.invalid/agent" },
+    { ...message, recipient: "/other/worker" },
+    { ...message, recipient: "/root/../other" },
+    { ...message, tools: [{ type: "web_search" }] },
+    { ...message, content: [] },
+    { ...message, content: [encrypted] },
+    { ...message, content: [...message.content, encrypted, encrypted] },
+    { ...message, content: [{ type: "input_image", image_url: "https://example.invalid/image" }] },
+    { ...message, content: [...message.content, { ...encrypted, encrypted_content: {} }] },
+  ]) {
+    assert.ok((await f.resolve(f.capture(requestWith(item)))).refused);
+  }
+  assert.equal(f.secretReads, reads, "unsupported agent messages cannot read credentials");
+  assert.equal(f.providerRequests.length, sends, "unsupported agent messages cannot send");
+});
+
+test("Codex manual compaction forwards its closed metadata through protected inference", async (t) => {
+  const f = await staticEgressFixture(t);
+  const key = "x-codex-turn-metadata";
+  const metadata = JSON.parse(wire.request.client_metadata[key]);
+  const compaction = {
+    trigger: "manual",
+    reason: "user_requested",
+    implementation: "responses",
+    phase: "standalone_turn",
+    strategy: "memento",
+  };
+  function request(record, kind = "compaction") {
+    return {
+      ...wire.request,
+      client_metadata: {
+        ...wire.request.client_metadata,
+        [key]: JSON.stringify({ ...metadata, request_kind: kind, compaction: record }),
+      },
+    };
+  }
+  const manual = request(compaction);
+  const check = responseChecks(f);
+  await check.events(responseEvents(), false, "manual compaction", true, manual);
+  assert.deepEqual(f.providerRequests.at(-1).body, manual);
+
+  // Codex serializes reasoning content as null when a prior provider item omitted it.
+  const reasoning = {
+    type: "reasoning",
+    id: "rs_fixture",
+    summary: [{ type: "summary_text", text: "Earlier reasoning" }],
+    content: null,
+    encrypted_content: "opaque reasoning fixture",
+  };
+  const replay = { ...manual, input: [...manual.input, reasoning] };
+  await check.events(responseEvents(), false, "manual compaction replays reasoning", true, replay);
+  assert.deepEqual(f.providerRequests.at(-1).body, replay);
+
+  const reads = f.secretReads;
+  const sends = f.providerRequests.length;
+  for (const invalid of [
+    request({ ...compaction, strategy: "unknown" }),
+    request({ ...compaction, phase: undefined }),
+    request({ ...compaction, authority: "owner" }),
+    request(compaction, "turn"),
+    { ...manual, tools: [{ type: "web_search" }] },
+    { ...manual, model: "outside-the-grant" },
+    ...[{}, "text", [{ type: "input_text", text: "unexpected" }]].map((content) => ({
+      ...replay,
+      input: [...manual.input, { ...reasoning, content }],
+    })),
+    { ...replay, input: [...manual.input, { ...reasoning, unknown: null }] },
+  ]) {
+    assert.ok((await f.resolve(f.capture(invalid))).refused);
+  }
+  assert.equal(f.secretReads, reads);
+  assert.equal(f.providerRequests.length, sends);
+});
+
 test("selected Codex Responses wire admits local tools and finite SSE while rejecting remote tools and unprotected events", async (t) => {
   const f = await staticEgressFixture(t);
   // Sanitized packaged 0.163.0-alpha.2 request and synthetic response consumed by that
@@ -1190,24 +1903,66 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
   const inline = JSON.parse(
     readFileSync(new URL("../fixtures/static-egress/codex-inline-tools.json", import.meta.url)),
   );
-  const captured = f.capture(inline.request);
-  captured.request.headers.push(
-    ...Object.entries(inline.headers).map(([name, value]) => ({ name, value })),
-  );
-  const { ready } = await f.resolve(captured);
-  assert.ok(ready, "packaged inline local tools resolve through the installed provider");
-  assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
-  f.setResponse({ status: 200, contentType: "text/event-stream", rawBody: body });
-  const protectedReply = await f.protect(captured, await f.send(captured, ready));
-  assert.equal(protectedReply.response_complete, true);
-  assert.equal(protectedReply.body.toString(), body);
-  assert.deepEqual(f.providerRequests.at(-1).body, inline.request);
+  inline.request.client_metadata.mcp_attribution = JSON.stringify({ status: "none" });
+  const metadataKey = "x-codex-turn-metadata";
+  const turnMetadata = JSON.parse(inline.request.client_metadata[metadataKey]);
+  const repositoryRoot = "/workspace/repository";
+  const origin = "https://example.invalid/owner/repository.git";
+  // Extend the sanitized request with the metadata Codex sends from a Git checkout.
+  const workspace = {
+    latest_git_commit_hash: "a".repeat(40),
+    has_changes: false,
+    associated_remote_urls: {
+      origin,
+      mirror: "git@example.invalid:owner/repository.git",
+    },
+  };
+  const captureInline = (request) => {
+    const captured = f.capture(request);
+    captured.request.headers.push(
+      ...Object.entries(inline.headers).map(([name, value]) => ({ name, value })),
+    );
+    return captured;
+  };
+  // Captured native requests paired telemetry "ultra" with wire "xhigh". Preserve each field's
+  // supported spelling through authorization and the actual TLS provider request.
+  for (const [effort, metadata] of [
+    [inline.request.reasoning.effort, turnMetadata],
+    [
+      inline.request.reasoning.effort,
+      { ...turnMetadata, workspaces: { [repositoryRoot]: workspace } },
+    ],
+    ["high", { ...turnMetadata, reasoning_effort: "high" }],
+    ["xhigh", { ...turnMetadata, reasoning_effort: "ultra" }],
+    ["max", { ...turnMetadata, reasoning_effort: "max" }],
+  ]) {
+    inline.request.reasoning.effort = effort;
+    inline.request.client_metadata[metadataKey] = JSON.stringify(metadata);
+    const captured = captureInline(inline.request);
+    const { ready } = await f.resolve(captured);
+    assert.ok(ready, "native metadata and inline tools resolve through the installed provider");
+    assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
+    f.setResponse({ status: 200, contentType: "text/event-stream", rawBody: body });
+    const protectedReply = await f.protect(captured, await f.send(captured, ready));
+    assert.equal(protectedReply.response_complete, true);
+    assert.equal(protectedReply.body.toString(), body);
+    assert.deepEqual(f.providerRequests.at(-1).body, inline.request);
+  }
 
   // Inline declarations cannot expand the admitted local-tool grant or let
   // client metadata select authority. Refuse before another Secret read/send.
   const inlineReads = f.secretReads;
   const inlineSends = f.providerRequests.length;
   const mutations = [
+    ...[
+      { status: "none" },
+      " ".repeat(8192) + '{"status":"none"}',
+      '{"status":"none","status":"none"}',
+      '{"status":"active"}',
+      '{"status":"none","server":"https://remote.example.test"}',
+    ].map((attribution) => (request) => {
+      request.client_metadata.mcp_attribution = attribution;
+    }),
     ...["system", "user", "assistant"].map((role) => (request) => {
       request.input[0].role = role;
     }),
@@ -1227,12 +1982,57 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
       request.input[0].tools[1].tools[0].parameters.properties.message.type = "number";
     },
     (request) => {
-      const metadata = JSON.parse(request.client_metadata["x-codex-turn-metadata"]);
+      const metadata = JSON.parse(request.client_metadata[metadataKey]);
       metadata.reasoning_effort = "unrecognized";
-      request.client_metadata["x-codex-turn-metadata"] = JSON.stringify(metadata);
+      request.client_metadata[metadataKey] = JSON.stringify(metadata);
+    },
+    ...["ultra", "unrecognized"].map((effort) => (request) => {
+      request.reasoning.effort = effort;
+    }),
+    ...[
+      { relative: workspace },
+      { ["/".repeat(4097)]: workspace },
+      { ["/workspace/line\nbreak"]: workspace },
+      { [repositoryRoot]: workspace, "/workspace/another-repository": workspace },
+      { [repositoryRoot]: {} },
+      { [repositoryRoot]: { namespace_id: f.namespace.id } },
+      { [repositoryRoot]: { latest_git_commit_hash: "1234" } },
+      { [repositoryRoot]: { has_changes: "false" } },
+      ...[
+        {},
+        { "up\u017ftream": origin },
+        { origin: "https://\u212A.example.invalid/owner/repository.git" },
+        { origin: "https://example.invalid/owner/repo\u017fitory.git" },
+        {
+          origin: syntheticCredentialUrl({
+            username: "fixture-user",
+            password: "fixture-password",
+            host: "example.invalid",
+            pathname: "/owner/repository.git",
+          }),
+        },
+        { origin: origin + "?query=value" },
+        { origin: origin + "#fragment" },
+        { origin: "ssh://git@example.invalid/owner/repository.git" },
+        { origin: "fixture-user@example.invalid:owner/repository.git" },
+        { origin: "helper::git@example.invalid:owner/repository.git" },
+        { origin: "https://example.invalid/" + "a".repeat(2048) },
+        Object.fromEntries(Array.from({ length: 17 }, (_, index) => [index, origin])),
+      ].map((associated_remote_urls) => ({
+        [repositoryRoot]: { associated_remote_urls },
+      })),
+    ].map((workspaces) => (request) => {
+      request.client_metadata[metadataKey] = JSON.stringify({ ...turnMetadata, workspaces });
+    }),
+    (request) => {
+      request.client_metadata[metadataKey] =
+        '{"workspaces":{"/workspace/repository":{"has_changes":false,"has_changes":true}}}';
     },
     (request) => {
       request.client_metadata.namespace_id = f.namespace.id;
+    },
+    (request) => {
+      request.model = "model-outside-the-inference-grant";
     },
     (request) => {
       request.text.format = {
@@ -1248,7 +2048,7 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
   for (const mutate of mutations) {
     const request = structuredClone(inline.request);
     mutate(request);
-    assert.ok((await f.resolve(f.capture(request))).refused);
+    assert.ok((await f.resolve(captureInline(request))).refused);
   }
   assert.equal(f.secretReads, inlineReads, "unsupported inline requests cannot read credentials");
   assert.equal(f.providerRequests.length, inlineSends, "unsupported inline requests cannot send");
@@ -1257,6 +2057,7 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
     { ...wire.request, tools: [...wire.request.tools, ...wire.refusedTools] },
     { ...wire.request, tools: [{ type: "mcp", server_url: "https://remote.example.test" }] },
     { ...wire.request, tools: [{ type: "namespace", name: "remote", tools: wire.refusedTools }] },
+    { ...wire.request, tools: [{ ...wire.request.tools[0], strict: null }] },
     { ...wire.request, previous_response_id: "unadmitted-state" },
     {
       ...wire.request,
@@ -1471,6 +2272,77 @@ test("live-shaped Responses envelopes pass while undeclared or credential-bearin
     { ...completed, sequence_number: base.length + 1 },
   ];
   await check.events(live, false, "documented envelope fields on every envelope event");
+  // The provider reports its effective image policy even when the request omits it.
+  // Check each envelope event and preserve its original bytes through signed egress.
+  const withImage = (image) =>
+    live.map((event) =>
+      event.response ? { ...event, response: { ...event.response, image } } : event,
+    );
+  for (const context_compression of ["enabled", "disabled"]) {
+    await check.events(
+      withImage({ context_compression }),
+      false,
+      `documented image context compression: ${context_compression}`,
+    );
+  }
+  for (const [label, image] of [
+    ["null image policy", null],
+    ["missing image context compression", {}],
+    ["request-only automatic image policy", { context_compression: "auto" }],
+    ["wrong image context compression type", { context_compression: true }],
+    ["unknown image policy member", { context_compression: "enabled", extra: false }],
+    ["image policy reflects selected material", { context_compression: selectedMaterial }],
+  ]) {
+    await check.events(withImage(image), true, label);
+  }
+  // The admitted local declarations omit optional fields. Responses may echo their
+  // documented null defaults; they must not turn an otherwise valid turn into a 502.
+  const functionTool = {
+    type: "function",
+    name: "fixture_local",
+    parameters: { type: "object", properties: {} },
+  };
+  const customTool = { type: "custom", name: "fixture_custom" };
+  const localTools = [
+    functionTool,
+    customTool,
+    { type: "namespace", name: "fixture_namespace", tools: [functionTool, customTool] },
+  ];
+  const localRequest = { ...wire.request, tools: localTools };
+  const responseFunction = {
+    ...functionTool,
+    description: null,
+    strict: null,
+    defer_loading: null,
+  };
+  const responseCustom = { ...customTool, description: null, defer_loading: null, format: null };
+  const echoedTools = [
+    responseFunction,
+    responseCustom,
+    { ...localTools[2], tools: [responseFunction, responseCustom] },
+  ];
+  const withTools = (tools) =>
+    live.map((event) =>
+      event.response ? { ...event, response: { ...event.response, tools } } : event,
+    );
+  await check.events(
+    withTools(echoedTools),
+    false,
+    "nullable local-tool response defaults",
+    true,
+    localRequest,
+  );
+  for (const [label, tools] of [
+    ["wrong strict type", [{ ...responseFunction, strict: "false" }]],
+    ["wrong description type", [{ ...responseCustom, description: {} }]],
+    ["wrong defer_loading type", [{ ...responseFunction, defer_loading: 0 }]],
+    ["unknown custom format", [{ ...responseCustom, format: { type: "remote" } }]],
+    ["unknown function field", [{ ...responseFunction, remote_execution: true }]],
+    ["hosted tool", [{ type: "web_search" }]],
+    ["nested hosted tool", [{ ...localTools[2], tools: [{ type: "web_search" }] }]],
+  ]) {
+    await check.events(withTools(tools), true, label, true, localRequest);
+  }
   // Documented fields that the admitted request cannot ask for still have to be absent,
   // and documented optional structures are typed, not free-form.
   const nullableStructures = structuredClone(live);
@@ -1513,713 +2385,9 @@ test("live-shaped Responses envelopes pass while undeclared or credential-bearin
   }
 });
 
-test("signed supervisor instance and UUIDv7 creation horizon refuse old callers and deadline-extension replay", async (t) => {
-  let elapsed = 0;
-  const now = () => new Date(Date.now() + elapsed);
-  const f = await staticEgressFixture(t, { now });
-  const reads = f.secretReads;
-  const operation = JSON.parse(
-    readFileSync(new URL("../fixtures/static-egress/openshell-operation.json", import.meta.url)),
-  );
-  const serializedCreation = Number.parseInt(
-    operation.request_context.request_id.replaceAll("-", "").slice(0, 12),
-    16,
-  );
-  const serializedDeadline =
-    Number(operation.deadline.seconds) * 1000 + operation.deadline.nanos / 1e6;
-  assert.equal(serializedCreation, operation.creation_ms);
-  assert.equal(serializedDeadline, serializedCreation + 30_000);
-  assert.equal(operation.capture_delay_ms, 100);
-  // The independently captured delayed sender wire is historical, never a reusable
-  // authorization. Rebind only the fixture Sandbox to reach the real horizon check.
-  const historical = f.capture();
-  historical.request.context.request_id = operation.request_context.request_id;
-  historical.deadline = operation.deadline;
-  assert.ok((await f.resolve(historical)).refused);
-  assert.equal(f.secretReads, reads);
-  for (const claims of [
-    { instance_id: undefined },
-    { instance_id: "10000000-0000-4000-8000-000000000001" },
-    { instance_id: f.namespace.id },
-  ]) {
-    if (claims.instance_id?.startsWith("10000000-")) {
-      assert.ok((await f.resolve(f.capture(), f.metadata(claims))).refused);
-    } else {
-      await assert.rejects(f.resolve(f.capture(), f.metadata(claims)), { code: 7 });
-    }
-  }
-  assert.equal(f.secretReads, reads);
-  const captured = f.capture();
-  captured.deadline = wireTime(now().getTime() + 1000);
-  const ready = (await f.resolve(captured)).ready;
-  assert.ok(ready);
-  // A short submitted deadline does not shorten replay retention for this immutable operation ID.
-  elapsed = 2000;
-  captured.deadline = wireTime(now().getTime() + 20_000);
-  assert.ok((await f.resolve({ ...captured, response_custody: randomBytes(32) })).refused);
-  elapsed = 31_000;
-  captured.deadline = wireTime(now().getTime() + 1000);
-  assert.ok((await f.resolve({ ...captured, response_custody: randomBytes(32) })).refused);
-  assert.equal(
-    f.secretReads,
-    reads + 1,
-    "eviction cannot make an expired UUID into a new operation",
-  );
-  assert.ok((await f.resolve(f.capture())).ready);
-});
-
-test(
-  "sustained sequential operations outlive replay capacity without waiting for JWT expiry",
-  { timeout: 30_000 },
-  async (t) => {
-    // A fixed base keeps real time out of the advanced clock, so the horizon margin below holds
-    // on a runner of any speed. The base is set again after setup (below).
-    let start = Date.now();
-    let elapsed = 0;
-    // Configured bounds, validated like an Installation's requestCapacity, release through the
-    // same registry code as the defaults, so the loop needs only about a hundred operations.
-    const capacity = {
-      operations: 16,
-      authenticatingOperations: 4,
-      sandboxOperations: 4,
-      requestIds: 256,
-      sandboxRequestIds: 64,
-    };
-    const f = await staticEgressFixture(t, {
-      now: () => new Date(start + elapsed),
-      credentialProxyCapacity: capacity,
-    });
-    assert.deepEqual(
-      f.controller.createCredentialProxy({}).capacity,
-      capacity,
-      "the controller builds the exchange's proxy with the configured bounds",
-    );
-    const peer = f.metadata({ exp: Math.floor(Date.now() / 1000) + 3600 });
-    // Advance the controller's supported clock while keeping genuine signed identity, IAM,
-    // Secret SDK, authority transport and HTTPS provider. Completion must release active capacity;
-    // fixed operation horizons must release replay capacity during the same long-lived JWT.
-    // One Sandbox at one request per 800 ms holds about 38 replay entries per 30 s horizon,
-    // under its share of 64; a horizon twice as long would reach it. Its share is the first
-    // replay bound it meets, so each operation past the share needs an expired entry released.
-    // Operation slots must also return on completion, or the loop stops at the operation share
-    // or capacity. "one Sandbox's replay share bounds it without refusing other Sandboxes"
-    // covers the installation-wide table's expiry.
-    const step = 800;
-    const operations = capacity.sandboxRequestIds + 64;
-    assert.ok(30_000 / step < capacity.sandboxRequestIds);
-    assert.ok(60_000 / step > capacity.sandboxRequestIds);
-    assert.ok(capacity.sandboxRequestIds < capacity.requestIds);
-    assert.ok(capacity.operations < operations);
-    // The Kubernetes Secret driver stamps each read with the wall clock, and the proxy refuses
-    // material observed after its own clock. Setup can take longer than one step on a busy
-    // runner, so start the advanced clock from the wall clock after setup, not before it.
-    start = Date.now();
-    for (let i = 0; i < operations; i += 1) {
-      elapsed += step;
-      const captured = f.capture();
-      const ready = (await f.resolve(captured, peer)).ready;
-      assert.ok(ready, `sequential operation ${i} should resolve`);
-      assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
-      assert.ok((await f.protect(captured, await f.send(captured, ready))).body);
-    }
-    assert.equal(f.providerRequests.length, operations);
-    assert.ok(
-      f.providerRequests.every(
-        (request) => request.authorization === "Bearer synthetic-key-initial",
-      ),
-    );
-  },
-);
-
-test("send receipt records the digest of the accepted request", async (t) => {
-  const receipts = new EgressSendReceipts(new InMemoryPlatformState());
-  const f = await syntheticDispatchFixture(t, receipts);
-  // In this request, body precedes deadlineAt. Moving it to the end while copying the
-  // request must not silently change the digest we commit to the authorization receipt.
-  const accepted = { ...f.request, body: f.request.body.toString("base64") };
-  const expectedDigest = createHash("sha256").update(JSON.stringify(accepted)).digest("hex");
-
-  assert.equal((await f.resolve()).kind, "ready");
-  assert.equal((await f.authorizeSend()).kind, "allow");
-  const stored = await receipts.recover(f.sender, f.attempt());
-  assert.equal(stored.authorization.requestDigest, expectedDigest);
-  assert.equal(f.arrivals, 0, "committing the authorization is not evidence of a send");
-});
-
-for (const bodyType of ["Uint8Array", "Buffer"]) {
-  test(`credential proxy detaches ${bodyType} and request fields before identity verification`, async (t) => {
-    const f = await syntheticDispatchFixture(t);
-    const verification = Promise.withResolvers();
-    const entered = Promise.withResolvers();
-    const callerRequest = {
-      ...f.request,
-      headers: f.request.headers.map((pair) => [...pair]),
-      body: bodyType === "Buffer" ? Buffer.from(f.request.body) : new Uint8Array(f.request.body),
-    };
-    const proxy = new CredentialProxy({
-      ...f.ports,
-      exchangeOwner: {
-        ...f.ports.exchangeOwner,
-        async verify(authorization) {
-          entered.resolve();
-          await verification.promise;
-          return f.ports.exchangeOwner.verify(authorization);
-        },
-      },
-    });
-    const cancellation = new AbortController();
-    t.after(() => cancellation.abort());
-    const resolving = proxy.resolve(
-      "synthetic-peer",
-      f.association.installation.sandboxId,
-      callerRequest,
-      cancellation.signal,
-    );
-    await entered.promise;
-    // The caller reuses its buffers while authentication is pending. Classification and
-    // custody must still use the originally accepted request, including Buffer bytes.
-    callerRequest.body.fill(0);
-    callerRequest.headers[0][1] = "application/octet-stream";
-    callerRequest.headers.push(["authorization", "caller-controlled"]);
-    callerRequest.url = "https://changed.example.test/";
-    callerRequest.deadlineAt = "invalid";
-    verification.resolve();
-    assert.equal((await resolving).kind, "ready");
-    assert.equal(f.reads, 1);
-  });
-}
-
-test("credential proxy rejects an oversized body before copying request fields", async (t) => {
-  const f = await syntheticDispatchFixture(t);
-  const proxy = new CredentialProxy(f.ports);
-  const request = {
-    ...f.request,
-    body: new Uint8Array(1024 * 1024 + 1),
-    get headers() {
-      throw new Error("an oversized request must not be copied");
-    },
-  };
-  assert.deepEqual(
-    await proxy.resolve(
-      "synthetic-peer",
-      f.association.installation.sandboxId,
-      request,
-      new AbortController().signal,
-    ),
-    { kind: "refused", error: { kind: "denied", code: "unsupported_operation" } },
-  );
-  assert.equal(f.reads, 0);
-});
+registerStaticEgressRequestCapacityCases();
 
 const saturated = { kind: "refused", error: { kind: "unavailable", code: "resolver" } };
-
-test("in-flight Secret selection and outstanding handles consume the same bounded capacity", async (t) => {
-  // Exercise the actual 1024-slot registry, not a race to finish 1024 TLS handshakes,
-  // native IAM checks and Kubernetes reads inside their intentionally short deadlines.
-  const f = await syntheticDispatchFixture(t);
-  let reads = 0;
-  let target = 0;
-  let filled;
-  const gate = Promise.withResolvers();
-  const s = f.sandboxes((ports) => ({
-    ...ports,
-    async read(...args) {
-      if (++reads === target) {
-        filled.resolve();
-      }
-      await gate.promise;
-      return ports.read(...args);
-    },
-  }));
-  const first = new AbortController();
-  const other = new AbortController().signal;
-  // Four Sandboxes fill their shares; each burst exactly fits the authentication budget.
-  assert.equal(OPERATION_SANDBOX_SHARE * 4, OPERATION_CAPACITY);
-  assert.equal(OPERATION_AUTHENTICATION_BUDGET, OPERATION_SANDBOX_SHARE);
-  const pending = [];
-  for (const name of ["a", "b", "c", "d"]) {
-    filled = Promise.withResolvers();
-    target += OPERATION_SANDBOX_SHARE;
-    for (let i = 0; i < OPERATION_SANDBOX_SHARE; i += 1) {
-      pending.push(s.resolve(name, undefined, pending.length === 0 ? first.signal : other));
-    }
-    await filled.promise;
-  }
-  assert.deepEqual(
-    await s.resolve("e", undefined, other),
-    saturated,
-    "pending selection is charged before material returns",
-  );
-  assert.deepEqual(
-    await s.proxy.resolve(
-      "e",
-      "unauthenticated-sandbox",
-      {
-        ...f.request,
-        get headers() {
-          throw new Error("an exhausted registry must reject before copying request fields");
-        },
-      },
-      other,
-    ),
-    saturated,
-  );
-  assert.equal(reads, OPERATION_CAPACITY, "the excess resolution never starts selection");
-  gate.resolve();
-  assert.ok((await Promise.all(pending)).every((decision) => decision.kind === "ready"));
-  assert.deepEqual(
-    await s.resolve("e", undefined, other),
-    saturated,
-    "ready handles remain charged",
-  );
-  first.abort();
-  assert.equal(
-    (await s.resolve("e", undefined, other)).kind,
-    "ready",
-    "closing the owning sender frees exactly its slot",
-  );
-  assert.deepEqual(await s.resolve("e", undefined, other), saturated);
-});
-
-test("one Sandbox's open handles leave operation capacity to other Sandboxes", async (t) => {
-  const f = await syntheticDispatchFixture(t);
-  const s = f.sandboxes();
-  const held = new AbortController();
-  // As many requests as the installation-wide cap, each holding its handle open.
-  const decisions = [];
-  for (let i = 0; i < OPERATION_CAPACITY; i += 1) {
-    decisions.push(await s.resolve("a", undefined, held.signal));
-  }
-  assert.equal((await s.resolve("b")).kind, "ready", "another Sandbox's first request");
-  assert.ok(decisions.slice(0, OPERATION_SANDBOX_SHARE).every((d) => d.kind === "ready"));
-  for (const decision of decisions.slice(OPERATION_SANDBOX_SHARE)) {
-    assert.deepEqual(decision, saturated, "a Sandbox holds at most its share");
-  }
-  assert.equal(f.reads, OPERATION_SANDBOX_SHARE + 1, "a refused request starts no selection");
-  // Closing the handles returns the share, and so does their deadline.
-  held.abort();
-  const again = new AbortController();
-  for (let i = 0; i < OPERATION_SANDBOX_SHARE; i += 1) {
-    assert.equal((await s.resolve("a", undefined, again.signal)).kind, "ready");
-  }
-  assert.deepEqual(await s.resolve("a"), saturated);
-  f.advance(20_000);
-  assert.equal((await s.resolve("a")).kind, "ready", "expired handles were discarded");
-});
-
-test("requests still authenticating share a small budget charged before verification", async (t) => {
-  const f = await syntheticDispatchFixture(t);
-  let gate;
-  let verified = 0;
-  let filled;
-  const s = f.sandboxes((ports) => ({
-    ...ports,
-    exchangeOwner: {
-      ...ports.exchangeOwner,
-      async verify(name) {
-        verified += 1;
-        if (gate && name === "a") {
-          if (verified === OPERATION_AUTHENTICATION_BUDGET) {
-            filled.resolve();
-          }
-          await gate.promise;
-        }
-        return ports.exchangeOwner.verify(name);
-      },
-    },
-  }));
-  gate = Promise.withResolvers();
-  filled = Promise.withResolvers();
-  const pending = Array.from({ length: OPERATION_AUTHENTICATION_BUDGET }, () => s.resolve("a"));
-  await filled.promise;
-  assert.deepEqual(await s.resolve("b"), saturated, "the budget is global before verification");
-  assert.equal(verified, OPERATION_AUTHENTICATION_BUDGET, "the excess request is never verified");
-  gate.resolve();
-  assert.ok((await Promise.all(pending)).every((decision) => decision.kind === "ready"));
-  gate = undefined;
-  // Verified requests moved to their Sandbox's share and left the budget.
-  assert.equal((await s.resolve("b")).kind, "ready");
-});
-
-test("every refusal returns its operation slot", async (t) => {
-  const f = await syntheticDispatchFixture(t);
-  let mode;
-  let gate;
-  let gated = 0;
-  let filled;
-  const s = f.sandboxes((ports) => ({
-    ...ports,
-    exchangeOwner: {
-      ...ports.exchangeOwner,
-      async verify(name) {
-        if (mode === "gated" && name === "a") {
-          if (++gated === OPERATION_AUTHENTICATION_BUDGET) {
-            filled.resolve();
-          }
-          await gate.promise;
-        }
-        if (mode === "verification throws") {
-          throw new Error("synthetic verification failure");
-        }
-        return mode === "unknown peer" ? undefined : ports.exchangeOwner.verify(name);
-      },
-    },
-    installation: async (peer) =>
-      mode === "installation missing" ? undefined : ports.installation(peer),
-    async check(use) {
-      if (mode === "policy throws") {
-        throw new Error("synthetic policy failure");
-      }
-      return mode === "policy denies" ? { kind: "denied", code: "withdrawn" } : ports.check(use);
-    },
-    async read(...args) {
-      if (mode === "Secret read throws") {
-        throw new Error("synthetic Secret failure");
-      }
-      return ports.read(...args);
-    },
-  }));
-  const denied = (code) => ({ kind: "refused", error: { kind: "denied", code } });
-  const unavailable = (code) => ({ kind: "refused", error: { kind: "unavailable", code } });
-  const unsupported = {
-    body: Buffer.from(JSON.stringify({ model: "other-model", input: "hello", store: false })),
-  };
-  const paths = [
-    // Before verification settles: the authentication budget.
-    [
-      "cancelled before verification",
-      () => s.resolve("a", undefined, AbortSignal.abort()),
-      { kind: "refused", error: { kind: "cancelled" } },
-    ],
-    ["unknown peer", () => s.resolve("a"), denied("identity")],
-    [
-      "verification throws",
-      () => s.resolve("a").catch((error) => error.message),
-      "synthetic verification failure",
-    ],
-    [
-      "another Sandbox's ID",
-      () => s.proxy.resolve("a", "other-sandbox", s.request(), new AbortController().signal),
-      denied("identity"),
-    ],
-    // After verification: the Sandbox's share.
-    [
-      "deadline already passed",
-      () => s.resolve("a", { deadlineAt: new Date(f.ports.now()).toISOString() }),
-      { kind: "refused", error: { kind: "deadline_exceeded" } },
-    ],
-    [
-      "installation missing",
-      () => s.resolve("a"),
-      { kind: "refused", error: { kind: "not_ready", code: "attachment_pending" } },
-    ],
-    ["unsupported route", () => s.resolve("a", unsupported), denied("unsupported_operation")],
-    ["policy denies", () => s.resolve("a"), denied("withdrawn")],
-    ["policy throws", () => s.resolve("a"), unavailable("authority")],
-    ["Secret read throws", () => s.resolve("a"), unavailable("secret_store")],
-  ];
-  // Each path refuses more requests than the budget or a share holds, and all of them
-  // together more than the installation-wide cap.
-  for (const [name, attempt, refused] of paths) {
-    mode = name;
-    for (let i = 0; i <= OPERATION_SANDBOX_SHARE; i += 1) {
-      assert.deepEqual(await attempt(), refused, name);
-    }
-    mode = undefined;
-    const closed = new AbortController();
-    assert.equal((await s.resolve("a", undefined, closed.signal)).kind, "ready", name);
-    closed.abort();
-  }
-  // No slot was returned twice either: the share and the budget still hold exactly.
-  const held = new AbortController();
-  for (let i = 0; i < OPERATION_SANDBOX_SHARE; i += 1) {
-    assert.equal((await s.resolve("a", undefined, held.signal)).kind, "ready");
-  }
-  assert.deepEqual(await s.resolve("a"), saturated, "the share still holds");
-  held.abort();
-  mode = "gated";
-  gate = Promise.withResolvers();
-  filled = Promise.withResolvers();
-  const pending = Array.from({ length: OPERATION_AUTHENTICATION_BUDGET }, () => s.resolve("a"));
-  await filled.promise;
-  assert.deepEqual(await s.resolve("b"), saturated, "the budget still holds");
-  mode = undefined;
-  gate.resolve();
-  assert.ok((await Promise.all(pending)).every((decision) => decision.kind === "ready"));
-});
-
-test("requests refused before capture leave the replay table to every Sandbox", async (t) => {
-  const f = await syntheticDispatchFixture(t);
-  const s = f.sandboxes();
-  const unsupported = {
-    body: Buffer.from(JSON.stringify({ model: "other-model", input: "hello", store: false })),
-  };
-  const refused = { kind: "refused", error: { kind: "denied", code: "unsupported_operation" } };
-  for (let i = 0; i < REPLAY_TABLE_CAPACITY; i += 1) {
-    assert.deepEqual(await s.resolve("a", unsupported), refused);
-  }
-  assert.equal((await s.resolve("b")).kind, "ready", "another Sandbox's first request");
-  assert.equal((await s.resolve("a")).kind, "ready", "the refused Sandbox's next request");
-  // Nothing used an ID refused before capture, so it remains the sender's to use.
-  const id = requestId(f.ports.now());
-  assert.deepEqual(await s.resolve("a", { ...unsupported, id }), refused);
-  assert.equal((await s.resolve("a", { id })).kind, "ready");
-  assert.equal(f.reads, 3);
-});
-
-test("one Sandbox's replay share bounds it without refusing other Sandboxes", async (t) => {
-  const f = await syntheticDispatchFixture(t);
-  let gate;
-  let entered;
-  const s = f.sandboxes((ports) => ({
-    ...ports,
-    async installation(peer) {
-      entered?.resolve();
-      await gate?.promise;
-      return ports.installation(peer);
-    },
-  }));
-  // Material was selected, so each ID stays reserved after its handle closes.
-  const use = async (name) => {
-    const closed = new AbortController();
-    const decision = await s.resolve(name, undefined, closed.signal);
-    closed.abort();
-    return decision.kind === "ready" ? "ready" : decision;
-  };
-  for (let i = 0; i < REPLAY_SANDBOX_SHARE; i += 1) {
-    assert.equal(await use("a"), "ready");
-  }
-  assert.deepEqual(await use("a"), saturated, "a Sandbox past its share is refused");
-  assert.equal(await use("b"), "ready", "another Sandbox keeps its share");
-  for (const name of ["b", "c", "d"]) {
-    for (let i = name === "b" ? 1 : 0; i < REPLAY_SANDBOX_SHARE; i += 1) {
-      assert.equal(await use(name), "ready");
-    }
-  }
-  assert.equal(REPLAY_SANDBOX_SHARE * 4, REPLAY_TABLE_CAPACITY);
-  assert.deepEqual(await use("e"), saturated, "the installation-wide bound still holds");
-  // Fixed 30-second horizons return both the shares and the table, including
-  // horizons that pass while a request's installation lookup is pending.
-  f.advance(29_000);
-  gate = Promise.withResolvers();
-  entered = Promise.withResolvers();
-  const crossing = use("a");
-  await Promise.race([entered.promise, crossing]);
-  f.advance(1_000);
-  gate.resolve();
-  assert.equal(await crossing, "ready");
-  gate = undefined;
-  entered = undefined;
-  assert.equal(await use("e"), "ready");
-});
-
-test("request-time capacity defaults to today's bounds and is set once per controller", async (t) => {
-  const f = await syntheticDispatchFixture(t);
-  const today = {
-    operations: OPERATION_CAPACITY,
-    authenticatingOperations: OPERATION_AUTHENTICATION_BUDGET,
-    sandboxOperations: OPERATION_SANDBOX_SHARE,
-    requestIds: REPLAY_TABLE_CAPACITY,
-    sandboxRequestIds: REPLAY_SANDBOX_SHARE,
-  };
-  assert.deepEqual(today, {
-    operations: 1024,
-    authenticatingOperations: 256,
-    sandboxOperations: 256,
-    requestIds: 8192,
-    sandboxRequestIds: 2048,
-  });
-  assert.deepEqual(DEFAULT_CREDENTIAL_PROXY_CAPACITY, today);
-  assert.deepEqual(new CredentialProxy(f.ports).capacity, today);
-  const installation = { id: "installation", name: "installation", createdAt: f.startedAt };
-  const owner = f.ports.exchangeOwner;
-  assert.deepEqual(
-    new OpenClawController(installation).createCredentialProxy(owner).capacity,
-    today,
-  );
-  const configured = {
-    operations: 64,
-    authenticatingOperations: 8,
-    sandboxOperations: 16,
-    requestIds: 512,
-    sandboxRequestIds: 128,
-  };
-  const controller = new OpenClawController(installation, { credentialProxyCapacity: configured });
-  assert.deepEqual(controller.createCredentialProxy(owner).capacity, configured);
-  // Direct composition refuses what Installation startup refuses, before any request.
-  for (const capacity of [
-    { operations: 0 },
-    { sandboxOperations: OPERATION_CAPACITY + 1 },
-    { requestIds: 16, sandboxRequestIds: 17 },
-    { requestIds: CREDENTIAL_PROXY_CAPACITY_MAXIMUM.requestIds + 1 },
-    { operations: "64" },
-  ]) {
-    assert.throws(() => new CredentialProxy(f.ports, capacity), RangeError);
-    assert.throws(
-      () => new OpenClawController(installation, { credentialProxyCapacity: capacity }),
-      RangeError,
-    );
-  }
-});
-
-test("configured operation bounds limit each Sandbox, the process and authentication", async (t) => {
-  const f = await syntheticDispatchFixture(t);
-  const s = f.sandboxes(undefined, { operations: 7, sandboxOperations: 2 });
-  assert.equal(s.proxy.capacity.authenticatingOperations, 1, "a quarter of the configured pool");
-  const held = new Map();
-  const hold = async (name) => {
-    const closed = held.get(name) ?? new AbortController();
-    held.set(name, closed);
-    const decision = await s.resolve(name, undefined, closed.signal);
-    return decision.kind === "ready" ? "ready" : decision;
-  };
-  for (const name of ["a", "b", "c"]) {
-    assert.equal(await hold(name), "ready");
-    assert.equal(await hold(name), "ready");
-    assert.deepEqual(await hold(name), saturated, `${name} holds at most its configured share`);
-  }
-  // Three full shares leave one slot of the configured process bound.
-  assert.equal(await hold("d"), "ready");
-  assert.deepEqual(await hold("d"), saturated, "the configured process bound holds");
-  held.get("a").abort();
-  assert.equal(await hold("d"), "ready", "a closed handle returns its slot");
-
-  let gate = Promise.withResolvers();
-  let verified = 0;
-  const filled = Promise.withResolvers();
-  const g = f.sandboxes(
-    (ports) => ({
-      ...ports,
-      exchangeOwner: {
-        ...ports.exchangeOwner,
-        async verify(name) {
-          if (++verified === 2) {
-            filled.resolve();
-          }
-          await gate?.promise;
-          return ports.exchangeOwner.verify(name);
-        },
-      },
-    }),
-    { authenticatingOperations: 2 },
-  );
-  const pending = [g.resolve("a"), g.resolve("b")];
-  await filled.promise;
-  assert.deepEqual(await g.resolve("c"), saturated, "the configured budget holds");
-  assert.equal(verified, 2, "the excess request is never verified");
-  gate.resolve();
-  gate = undefined;
-  assert.ok((await Promise.all(pending)).every((decision) => decision.kind === "ready"));
-  assert.equal((await g.resolve("c")).kind, "ready");
-});
-
-test("configured replay bounds limit each Sandbox and the process", async (t) => {
-  const f = await syntheticDispatchFixture(t);
-  const s = f.sandboxes(undefined, { requestIds: 5, sandboxRequestIds: 3 });
-  // Material was selected, so each ID stays reserved after its handle closes.
-  const use = async (name) => {
-    const closed = new AbortController();
-    const decision = await s.resolve(name, undefined, closed.signal);
-    closed.abort();
-    return decision.kind === "ready" ? "ready" : decision;
-  };
-  for (let i = 0; i < 3; i += 1) {
-    assert.equal(await use("a"), "ready");
-  }
-  assert.deepEqual(await use("a"), saturated, "a Sandbox past its configured share");
-  assert.equal(await use("b"), "ready");
-  assert.equal(await use("b"), "ready");
-  assert.deepEqual(await use("c"), saturated, "the configured table bound holds");
-  f.advance(30_000);
-  assert.equal(await use("c"), "ready", "expired IDs return both bounds");
-  assert.equal(await use("a"), "ready");
-});
-
-test("an Installation's request capacity bounds the actual exchange and recovers on release", async (t) => {
-  // Startup loads the operator's block, and the API compositions spread these options
-  // into the controller unchanged; the fixture's controller takes the same value.
-  const configuration = createCredentialProxyInstallationConfiguration();
-  configuration.drivers.credential_proxy.requestCapacity = { sandboxOperations: 1 };
-  const directory = await temporaryDirectory(t, "oce-request-capacity-");
-  const path = join(directory, "installation.yaml");
-  await writeFile(path, JSON.stringify(configuration));
-  const loaded = await loadInstallationConfiguration({
-    mode: "development",
-    environment: { OCC_CONFIG_PATH: path },
-  });
-  const { credentialProxyCapacity } = installationControllerOptions(loaded.installation);
-  assert.equal(credentialProxyCapacity?.sandboxOperations, 1);
-  const f = await staticEgressFixture(t, { credentialProxyCapacity });
-  // The Sandbox's only operation slot is held by a ready handle on an open exchange.
-  const held = await f.beginExchange();
-  held.stream.write(held.opening(f.capture()));
-  assert.ok((await held.next()).resolved.ready, "the first request is ready");
-  const reads = f.secretReads;
-  const refused = await f.resolve(f.capture());
-  assert.equal(refused.refused?.code, f.refusalCode("UNAVAILABLE"), JSON.stringify(refused));
-  assert.equal(f.secretReads, reads, "a request past the configured share reads no Secret");
-  // Closing the exchange releases its handle and with it the slot. The authority sees the
-  // cancellation asynchronously, so the next request may briefly still be refused.
-  held.stream.cancel();
-  const deadline = Date.now() + 10_000;
-  let next = await f.resolve(f.capture());
-  while (!next.ready && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    next = await f.resolve(f.capture());
-  }
-  assert.ok(next.ready, `the released slot serves the next request: ${JSON.stringify(next)}`);
-});
-
-test("a request ID stays reserved once policy or Secret work can start", async (t) => {
-  const f = await syntheticDispatchFixture(t);
-  let checks = 0;
-  let lookups = 0;
-  let gate;
-  let entered;
-  const s = f.sandboxes((ports) => ({
-    ...ports,
-    async installation(peer) {
-      lookups += 1;
-      entered?.resolve();
-      await gate?.promise;
-      return ports.installation(peer);
-    },
-    async check(use) {
-      checks += 1;
-      return checks === 1 ? { kind: "denied", code: "withdrawn" } : ports.check(use);
-    },
-  }));
-  const replay = { kind: "refused", error: { kind: "denied", code: "invalid_handle" } };
-  // A policy refusal is effectful: the ID cannot be used again in its window.
-  const denied = s.request();
-  assert.deepEqual(await s.resolve("a", denied), {
-    kind: "refused",
-    error: { kind: "denied", code: "withdrawn" },
-  });
-  assert.deepEqual(await s.resolve("a", denied), replay);
-  assert.deepEqual([checks, lookups], [1, 1], "a known replay is refused before any lookup");
-  const ready = s.request();
-  assert.equal((await s.resolve("a", ready)).kind, "ready");
-  assert.deepEqual(await s.resolve("a", ready), replay);
-  // Concurrent duplicates both pass the early check; only one may reserve after the lookup.
-  gate = Promise.withResolvers();
-  const duplicate = s.request();
-  const both = Promise.all([s.resolve("a", duplicate), s.resolve("a", duplicate)]);
-  gate.resolve();
-  const decisions = (await both).map((decision) => decision.kind);
-  assert.deepEqual(decisions.toSorted(), ["ready", "refused"]);
-  assert.equal(lookups, 4, "both duplicates passed the early check");
-  assert.equal(f.reads, 2);
-  // A lookup that outlasts the deadline reserves nothing and starts no policy work.
-  gate = Promise.withResolvers();
-  entered = Promise.withResolvers();
-  const late = s.resolve("a");
-  await Promise.race([entered.promise, late]);
-  f.advance(30_000);
-  gate.resolve();
-  assert.deepEqual(await late, { kind: "refused", error: { kind: "deadline_exceeded" } });
-  assert.equal(checks, 3);
-});
 
 test("cancelled and denied exchanges retain capacity until receipt work settles", async (t) => {
   for (const phase of ["begin", "authorize", "deny", "observe", "expiry"]) {
@@ -2532,310 +2700,7 @@ for (const stage of ["check", "read"]) {
   });
 }
 
-// A permitted model stream outlives the 30-second operation deadline only through the
-// renewable lease: progress renews it, idling and the ceiling end it, and current
-// policy is checked on renewal and again before release. The test clock advances; nothing sleeps.
-async function leasedStreamFixture(t, overrides = () => ({}), peerLifetimeMs = 3_600_000) {
-  const receipts = new EgressSendReceipts(new InMemoryPlatformState());
-  const f = await syntheticDispatchFixture(t, receipts);
-  const peer = await f.ports.exchangeOwner.verify("synthetic-peer");
-  const longLived = { ...peer, expiresAt: new Date(f.ports.now() + peerLifetimeMs).toISOString() };
-  const proxy = new CredentialProxy({
-    ...f.ports,
-    exchangeOwner: { ...f.ports.exchangeOwner, verify: async () => longLived },
-    ...overrides(f),
-  });
-  const sandboxId = f.association.installation.sandboxId;
-  const controller = new AbortController();
-  const { signal } = controller;
-  const ready = await proxy.resolve("synthetic-peer", sandboxId, f.request, signal);
-  assert.equal(ready.kind, "ready");
-  const decision = await proxy.authorizeSend(
-    "synthetic-peer",
-    sandboxId,
-    f.request.id,
-    ready.handle,
-    ready.evidence,
-    ready.injectionDigest,
-    f.request.deadlineAt,
-    signal,
-  );
-  assert.equal(decision.kind, "allow");
-  const safeBody = JSON.stringify({ output: "fixture answer" });
-  return {
-    f,
-    receipts,
-    createdAt: Date.parse(f.startedAt),
-    deadline: Date.parse(f.request.deadlineAt),
-    renew: (bodyBytes, headReceived = true) =>
-      proxy.renewResponse("synthetic-peer", sandboxId, f.request.id, { headReceived, bodyBytes }),
-    async complete() {
-      const handle = await proxy.beginResponse("synthetic-peer", sandboxId, f.request.id);
-      if (!handle) {
-        return undefined;
-      }
-      const response = await proxy.protectResponse(
-        handle,
-        {
-          status: 200,
-          headers: [["content-type", "application/json"]],
-          body: Buffer.from(safeBody),
-          trailers: [],
-        },
-        signal,
-        true,
-      );
-      return response && Buffer.from(response.body).toString();
-    },
-    safeBody,
-    abort: () => controller.abort(),
-    async observation() {
-      const stored = await receipts.recover(f.sender, {
-        sender: f.sender,
-        instanceId: peer.instanceId,
-        useId: f.request.id,
-        attemptId: f.request.id,
-        material: ready.evidence,
-        deadlineAt: f.request.deadlineAt,
-      });
-      return stored?.observation;
-    },
-  };
-}
-
-test("a renewed model stream completes after the operation deadline", async (t) => {
-  const s = await leasedStreamFixture(t);
-  s.f.advance(20_000);
-  const first = await s.renew(0);
-  assert.deepEqual(first, {
-    renewBy: new Date(s.f.ports.now() + STREAM_LEASE_IDLE_MS).toISOString(),
-    expiresAt: new Date(s.createdAt + STREAM_LEASE_CEILING_MS).toISOString(),
-  });
-  s.f.advance(40_000);
-  assert.ok(s.f.ports.now() > s.deadline, "the stream is now past the original deadline");
-  const second = await s.renew(1024);
-  assert.equal(second.renewBy, new Date(s.f.ports.now() + STREAM_LEASE_IDLE_MS).toISOString());
-  s.f.advance(100_000);
-  assert.equal(await s.complete(), s.safeBody, "the complete stream is released after 160 s");
-  assert.deepEqual(await s.observation(), { kind: "response", dispatch: "confirmed", status: 200 });
-  assert.equal(await s.renew(2048), undefined, "a released operation has nothing to renew");
-});
-
-test("without progress the operation deadline still bounds the first response byte", async (t) => {
-  const s = await leasedStreamFixture(t);
-  s.f.advance(s.deadline - s.f.ports.now());
-  assert.equal(await s.renew(0), undefined, "no renewal starts at the deadline");
-  assert.equal(await s.complete(), undefined);
-  assert.equal(await s.observation(), null);
-  const headless = await leasedStreamFixture(t);
-  headless.f.advance(10_000);
-  assert.equal(await headless.renew(0, false), undefined, "progress needs the response head");
-  assert.equal(await headless.complete(), undefined, "a head-less frame discards the operation");
-});
-
-test("a model stream idle past the lease horizon expires", async (t) => {
-  const s = await leasedStreamFixture(t);
-  s.f.advance(10_000);
-  assert.ok(await s.renew(10));
-  s.f.advance(STREAM_LEASE_IDLE_MS + 1);
-  assert.equal(await s.renew(20), undefined);
-  assert.equal(await s.complete(), undefined);
-  assert.equal(await s.observation(), null, "expiry settles nothing; the attempt stays uncertain");
-});
-
-test("progress without new bytes keeps the lease but cannot extend it", async (t) => {
-  const s = await leasedStreamFixture(t);
-  s.f.advance(10_000);
-  const lease = await s.renew(100);
-  s.f.advance(200_000);
-  assert.deepEqual(await s.renew(100), lease, "the same byte count returns the unchanged lease");
-  assert.deepEqual(await s.renew(99), lease);
-  s.f.advance(STREAM_LEASE_IDLE_MS - 200_000 + 1);
-  assert.equal(await s.renew(200), undefined, "the unextended lease expired");
-  assert.equal(await s.complete(), undefined);
-});
-
-test("the stream ceiling holds against continued progress", async (t) => {
-  const s = await leasedStreamFixture(t);
-  const ceiling = s.createdAt + STREAM_LEASE_CEILING_MS;
-  let bytes = 0;
-  let lease;
-  s.f.advance(10_000);
-  while (s.f.ports.now() < ceiling) {
-    lease = await s.renew(++bytes);
-    assert.ok(lease, `progress at ${(s.f.ports.now() - s.createdAt) / 1000} s renews`);
-    assert.ok(Date.parse(lease.renewBy) <= ceiling);
-    assert.equal(Date.parse(lease.expiresAt), ceiling);
-    s.f.advance(Math.min(250_000, ceiling - s.f.ports.now()));
-  }
-  assert.equal(Date.parse(lease.renewBy), ceiling, "the last lease ends at the ceiling");
-  assert.equal(await s.renew(bytes + 1), undefined, "no progress extends past the ceiling");
-  assert.equal(await s.complete(), undefined);
-});
-
-test("the stream ceiling is also the peer's expiry", async (t) => {
-  const s = await leasedStreamFixture(t, () => ({}), 120_000);
-  s.f.advance(10_000);
-  const lease = await s.renew(1);
-  assert.equal(Date.parse(lease.renewBy), s.createdAt + 120_000);
-  assert.equal(Date.parse(lease.expiresAt), s.createdAt + 120_000);
-});
-
-test("progress sooner than the recheck interval keeps the lease unchanged", async (t) => {
-  let checks = 0;
-  const s = await leasedStreamFixture(t, (f) => ({
-    check: async (...args) => {
-      checks += args[2] ? 1 : 0;
-      return f.ports.check(...args);
-    },
-  }));
-  s.f.advance(10_000);
-  const lease = await s.renew(1);
-  assert.equal(checks, 1);
-  s.f.advance(STREAM_LEASE_RECHECK_MS - 1);
-  assert.deepEqual(await s.renew(2), lease, "no second policy check inside the interval");
-  assert.equal(checks, 1);
-  s.f.advance(1);
-  const extended = await s.renew(3);
-  assert.equal(checks, 2);
-  assert.ok(Date.parse(extended.renewBy) > Date.parse(lease.renewBy));
-});
-
-test("an unavailable authority leaves the lease unchanged instead of cutting the stream", async (t) => {
-  let outage = false;
-  const s = await leasedStreamFixture(t, (f) => ({
-    check: async (...args) => {
-      if (outage && args[2]) {
-        throw new Error("synthetic policy outage");
-      }
-      return f.ports.check(...args);
-    },
-  }));
-  s.f.advance(10_000);
-  const lease = await s.renew(1);
-  outage = true;
-  s.f.advance(STREAM_LEASE_RECHECK_MS);
-  assert.deepEqual(await s.renew(2), lease, "the bound stands; it is not extended");
-  assert.equal(await s.observation(), null);
-  outage = false;
-  s.f.advance(STREAM_LEASE_RECHECK_MS);
-  assert.ok(Date.parse((await s.renew(3)).renewBy) > Date.parse(lease.renewBy));
-  assert.equal(await s.complete(), s.safeBody);
-});
-
-test("a withdrawal cuts a model stream at its next renewal", async (t) => {
-  let withdrawn = false;
-  const s = await leasedStreamFixture(t, (f) => ({
-    check: async (use, evidence, stream) =>
-      withdrawn && stream
-        ? { kind: "denied", code: "withdrawn" }
-        : f.ports.check(use, evidence, stream),
-  }));
-  s.f.advance(10_000);
-  assert.ok(await s.renew(0));
-  withdrawn = true;
-  s.f.advance(20_000);
-  assert.equal(await s.renew(100), undefined);
-  assert.equal(await s.complete(), undefined, "the withdrawn stream releases no bytes");
-  assert.deepEqual(await s.observation(), {
-    kind: "response_blocked",
-    dispatch: "confirmed",
-    code: "response_policy",
-  });
-});
-
-for (const policy of ["withdrawn", "source changed", "unavailable", "never available"]) {
-  test(`a quiet stream cannot release bytes if policy is ${policy} during receipt persistence`, async (t) => {
-    let persisting = false;
-    let checkedUntil;
-    const s = await leasedStreamFixture(t, (f) => ({
-      check: async (use, evidence, stream) => {
-        const source = await f.ports.check(use, evidence, stream);
-        if (!stream || (!persisting && policy !== "never available")) {
-          return source;
-        }
-        checkedUntil = stream.until;
-        if (policy === "withdrawn") {
-          return { kind: "denied", code: "withdrawn" };
-        }
-        if (policy === "source changed") {
-          return { ...source, materialRefId: "replacement" };
-        }
-        throw new Error("synthetic policy outage");
-      },
-    }));
-    const lease = await s.renew(s.safeBody.length);
-    assert.ok(lease);
-    const saving = Promise.withResolvers();
-    const resume = Promise.withResolvers();
-    const observe = s.receipts.observe.bind(s.receipts);
-    t.mock.method(s.receipts, "observe", async (...args) => {
-      saving.resolve();
-      await resume.promise;
-      return observe(...args);
-    });
-
-    // No more progress. Finish inside the recheck interval, then change policy while
-    // the observation is pending and the proxy still holds the complete response.
-    s.f.advance(STREAM_LEASE_RECHECK_MS - 1);
-    const response = s.complete();
-    await saving.promise;
-    persisting = true;
-    resume.resolve();
-    assert.equal(await response, undefined, "the upstream response must not be released");
-    assert.equal(checkedUntil, lease.renewBy, "release uses the current lease deadline");
-    assert.deepEqual(await s.observation(), {
-      kind: "response",
-      dispatch: "confirmed",
-      status: 200,
-    });
-    assert.equal(await s.complete(), undefined, "the observed response cannot be claimed again");
-  });
-}
-
-for (const loss of ["lease expires", "exchange closes", "owner changes"]) {
-  test(`a final policy check cannot release the response after the ${loss}`, async (t) => {
-    const checking = Promise.withResolvers();
-    const resume = Promise.withResolvers();
-    let finishing = false;
-    const s = await leasedStreamFixture(t, (f) => ({
-      check: async (...args) => {
-        if (finishing && args[2]) {
-          checking.resolve();
-          await resume.promise;
-        }
-        return f.ports.check(...args);
-      },
-    }));
-    const lease = await s.renew(s.safeBody.length);
-    finishing = true;
-    const response = s.complete();
-    await checking.promise;
-    if (loss === "lease expires") {
-      s.f.advance(Date.parse(lease.renewBy) - s.f.ports.now());
-    }
-    if (loss === "exchange closes") {
-      s.abort();
-    }
-    if (loss === "owner changes") {
-      s.f.replaceCustody();
-    }
-    resume.resolve();
-    assert.equal(await response, undefined);
-    assert.deepEqual(await s.observation(), {
-      kind: "response",
-      dispatch: "confirmed",
-      status: 200,
-    });
-  });
-}
-
-test("stream progress beyond the response bound is refused", async (t) => {
-  const s = await leasedStreamFixture(t);
-  s.f.advance(10_000);
-  assert.equal(await s.renew(4 * 1024 * 1024 + 1), undefined);
-  assert.equal(await s.complete(), undefined);
-});
+registerStreamReceiptPersistenceCases(() => new EgressSendReceipts(new InMemoryPlatformState()));
 
 test("authenticated sender receipts survive authority restart without replay permission and distinguish observations", async (t) => {
   const f = await staticEgressFixture(t);
@@ -3146,13 +3011,21 @@ function admissionCases(revision) {
 test("production Compute refuses protected admission and release, including empty plans", async (t) => {
   const compute = createTestKubernetesComputeDriver("admission-cutoff");
   const f = await staticEgressFixture(t);
-  const { unprotected, refused } = admissionCases(f.revision);
+  const admittingCompute = createTestKubernetesComputeDriver("admission-origin", {
+    gatewayRuntime: true,
+  });
+  // Keep valid resolved-provider admission while testing the independent protection gate.
+  const admitted = {
+    ...f.revision,
+    compute: { ...f.revision.compute, admission: admittingCompute.admitRevision(f.revision) },
+  };
+  const { unprotected, refused } = admissionCases(admitted);
   const cases = [
     ...refused,
-    [f.revision, /Protected execution is unavailable/],
+    [admitted, /Protected execution is unavailable/],
     [
       {
-        ...f.revision,
+        ...admitted,
         credentialSources: [],
         egressPlan: { ...f.revision.egressPlan, routes: [] },
       },
@@ -3175,19 +3048,16 @@ test("production Compute refuses protected admission and release, including empt
   await compute.activateRevision({
     ...unprotected,
     gatewayManagedMode: false,
-    compute: { id: compute.id, implementation: compute.implementation },
+    compute: { ...unprotected.compute, id: compute.id, implementation: compute.implementation },
   });
 
-  // Protection comes from the selected execution policy, not the number of credentials.
-  // Runtime-auth fixtures carry no credential source; their durable plan remains deny-all.
+  // Source-free runtime authentication retains an empty protected plan. Compute without
+  // a qualified protected release must refuse it, even though no credentials are granted.
   const emptyAgent = await f.createAgent(
     f.namespace.id,
     "credential-free",
     f.revision.configuration,
-    {
-      executionMode: "dedicated",
-      harnessAuth: { method: "runtime" },
-    },
+    { executionMode: "dedicated", harnessAuth: { method: "runtime" } },
   );
   const emptyMetadata = await f.deployAgent(f.namespace.id, emptyAgent.id);
   const emptyRevision = await f.controller.transact((unit) =>

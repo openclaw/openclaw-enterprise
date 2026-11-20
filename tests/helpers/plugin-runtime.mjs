@@ -62,6 +62,8 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
       ? []
       : [[WORKSPACE_NODE_BINDING_PATH, workspaceNodeBinding(options.workspaceNodeId)]]),
   ]);
+  const writeDescriptors = new Map();
+  let nextDescriptor = 3;
   let temporaryDirectory = 0;
   const gatewayUnavailable = new Error("Gateway unavailable");
   const sandbox = {
@@ -152,6 +154,12 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
           existsSync(path) {
             return files.has(path);
           },
+          lstatSync(path) {
+            if (!files.has(path)) {
+              throw Object.assign(new Error("File not found"), { code: "ENOENT" });
+            }
+            return { isFile: () => true, mode: 0o600 };
+          },
           mkdirSync() {},
           chmodSync() {},
           mkdtempSync(prefix) {
@@ -173,7 +181,19 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
             }
             return files.get(path);
           },
-          writeFileSync(path, data) {
+          openSync(path, flags) {
+            assert.equal(flags, "w");
+            const descriptor = nextDescriptor++;
+            files.set(path, "");
+            writeDescriptors.set(descriptor, path);
+            return descriptor;
+          },
+          closeSync(descriptor) {
+            assert.ok(writeDescriptors.delete(descriptor), "unknown file descriptor");
+          },
+          writeFileSync(file, data) {
+            const path = typeof file === "number" ? writeDescriptors.get(file) : file;
+            assert.notEqual(path, undefined, "unknown file descriptor");
             files.set(path, String(data));
           },
           renameSync(from, to) {

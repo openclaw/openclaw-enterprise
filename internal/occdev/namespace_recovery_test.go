@@ -36,6 +36,21 @@ func recoveryFixture(t *testing.T, namespace, sandbox, engine, outcome string) (
 	if err != nil {
 		t.Fatal(err)
 	}
+	if sandbox == "openshell" {
+		// Historical OpenShell receipts must remain readable for cleanup after
+		// retirement. Write raw wire fields so deleting a Go field cannot silently
+		// remove it from this fixture and hide a strict-decoder regression.
+		var receipt map[string]any
+		if err := json.Unmarshal(data, &receipt); err != nil {
+			t.Fatal(err)
+		}
+		receipt["protectedEgress"] = true
+		receipt["openShellHostGatewayIP"] = "172.30.42.1"
+		data, err = json.Marshal(receipt)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	for name, contents := range map[string][]byte{".openclaw-development": []byte(stateMarker), "state.json": data} {
 		if err := os.WriteFile(filepath.Join(directory, name), contents, 0600); err != nil {
 			t.Fatal(err)

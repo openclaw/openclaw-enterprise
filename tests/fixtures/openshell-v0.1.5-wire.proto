@@ -28,6 +28,8 @@ service OpenShell {
   rpc GetSandboxProviderStatus(GetSandboxProviderStatusRequest)
       returns (GetSandboxProviderStatusResponse);
   rpc CreateProvider(CreateProviderRequest) returns (ProviderResponse);
+  rpc GetProvider(GetProviderRequest) returns (ProviderResponse);
+  rpc GetProviderProfile(GetProviderProfileRequest) returns (ProviderProfileResponse);
   rpc UpdateProvider(UpdateProviderRequest) returns (ProviderResponse);
   rpc DetachSandboxProvider(DetachSandboxProviderRequest)
       returns (DetachSandboxProviderResponse);
@@ -579,6 +581,20 @@ message ProviderResponse {
   string mutation_id = 3;
 }
 
+message GetProviderRequest {
+  WorkspaceSelector workspace_scope = 2;
+  string name = 1;
+}
+
+message GetProviderProfileRequest {
+  WorkspaceSelector workspace_scope = 2;
+  string id = 1;
+}
+
+message ProviderProfileResponse {
+  ProviderProfile profile = 1;
+}
+
 message UpdateProviderRequest {
   WorkspaceSelector workspace_scope = 3;
   reserved 2;
@@ -639,6 +655,7 @@ message ProviderProfileCredential {
   string query_param = 7;
   ProviderCredentialRefresh refresh = 8;
   string path_template = 9;
+  bool stable_placeholder = 12;
 }
 
 message ProviderProfile {

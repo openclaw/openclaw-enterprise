@@ -9,7 +9,7 @@ import {
   selectedGitAdoption,
   protectedGitAdoption,
   type RepositoryGitRecipientEvidence,
-} from "../repo/credentials/protected-repository-git-installation.ts";
+} from "../repo/access/protected-repository-git-installation.ts";
 
 // The route stores the observed provider name, id, resource and profile versions. Its owner
 // verifies the complete profile, not just this name. Keep the installed observation schema and
@@ -46,10 +46,15 @@ export const protectedRepositoryGitInstallationSql = `
     .map((key) => `nullif(p.installation#>>'{enforcement,${key}}', '') IS NOT NULL`)
     .join(" AND ")}
   AND ${repositoryGitRecipientFields
-    .map(
-      (key) =>
-        `nullif(r.observed->>'${key}', '') = p.installation#>>'{enforcement,repositoryGitRecipient,${key}}'`,
-    )
+    .map((key) => {
+      const exact = `nullif(r.observed->>'${key}', '') = p.installation#>>'{enforcement,repositoryGitRecipient,${key}}'`;
+      return key === "processInstanceId" || key === "networkInstanceId"
+        ? `(CASE WHEN ${admittedAuthorization}='online-request' AND NOT (${recipient} ? '${key}')
+              THEN nullif(r.observed#>>'{enrollment,configurationId}', '') = p.installation#>>'{enforcement,configurationId}'
+                AND p.installation#>>'{enforcement,instanceId}' = r.observed->>'sandboxId'
+              ELSE ${exact} END)`
+        : exact;
+    })
     .join(" AND ")}`;
 
 const openShellRoute = "occ.credential_deliveries";
@@ -74,9 +79,17 @@ export const openShellPreviewEnded = `EXISTS (
 /** Read the bundled observer's existing fenced route; no duplicate registration or adoption. */
 export const openShellGitRecipientEvidence: RepositoryGitRecipientEvidence = Object.freeze({
   join: `${openShellRoute} r USING(namespace_id, agent_id, revision_id)`,
-  released: `${protectedRepositoryGitInstallationSql} AND r.live_revision_id IS NOT NULL AND r.settlement='snapshot' AND r.blocked IS NULL`,
+  // Background preparation discovers sessions before the live transport starts.
+  // Historical evidence remains valid for verification and detach, but issuance requires
+  // online authorization or the explicit observed-hook installation preview.
+  released: `${protectedRepositoryGitInstallationSql}
+    AND ${admittedAuthorization} IN ('online-request','request-hook-observed')
+    AND (${recipient}->>'deliveryProfile' IS DISTINCT FROM 'github_installation'
+      OR ${admittedAuthorization}='request-hook-observed')
+    AND r.live_revision_id IS NOT NULL AND r.settlement='snapshot' AND r.blocked IS NULL`,
   observed: openShellObserved,
   installed: `${openShellObserved} AND observed->>'credentialState'='active' AND write_pending IS NULL
+    AND (NOT (observed ? 'enrollment') OR observed#>>'{enrollment,release}'='acknowledged')
     AND desired->>'credentialState'='active'
     AND observed->>'providerId'=desired->>'providerId'
     AND observed->>'providerResourceVersion'=desired->>'resourceVersion'

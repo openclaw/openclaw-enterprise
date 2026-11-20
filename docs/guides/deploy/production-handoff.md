@@ -7,22 +7,139 @@ your organization's private operations record. The deployment guides cover
 installation and runtime checks; your organization is responsible for service
 commitments, regulatory compliance, and recovery targets for the workload.
 
+## Record the initialization Job for handoff
+
+Use the CLI from the chart's source revision. Exclude other install, upgrade and
+Job writers until the installer exits. Choose a new receipt directory under a
+private, durable parent for this target. Use a filesystem that enforces owner-only
+permissions and supports hard links and directory sync. Keep the receipt after install.
+
+Record the chart source commit and the matching CLI release or build commit and
+binary checksum in a separate private handoff record. The receipt's `version` is
+its file-format version, not the OCE release; an unversioned local CLI build can
+print `dev`. Keep this source identity with the receipt without editing its files.
+
+The CLI syncs `intent.json` (target, attempt ID, time and input hashes) and prints
+the receipt notice before preparing generated credentials. `bootstrap-secret.json`
+records their private directory and Secret selection, never values. Separate
+Secret dispatch/result records distinguish an unknown create from confirmed UID
+and data. Missing confirmation requires reconciliation, not regenerated inputs
+or another create. Credential files remain separate from the shareable receipt.
+The CLI syncs `dispatch.json` before starting Helm once. If the notice write returns an error, the command exits unsuccessfully
+and names the preserved receipt directory in its error. That error confirms
+that this attempt created no `dispatch.json` and started no Helm install.
+Keep the receipt, repair the stdout destination, and confirm the target is still
+unused before selecting a new attempt with a new receipt directory.
+
+While Helm waits, it can save the first recognized, attempt-marked Job UID in
+`job.json`. `helm-result.json` records Helm's separate outcome. After dispatch, a
+missing result means unknown. A failed or disconnected Helm client can leave the
+Job running and the database changed. Do not rerun install or switch to upgrade.
+
+The installer removes private temporary copies of the kubeconfig, chart and
+values on normal exit. After a forced kill, confirm its Helm process has exited
+before removing that installation's `occ-install-*` temporary directory. A forced kill during handoff can also leave an `occ-handoff-*`
+directory with the reader's private kubeconfig.
+Share only the receipt and this source identity record with the authorized reader.
+
+If install reports a template validation failure, run offline `helm template`
+with the same local chart, values, release, namespace and recorded
+`installation.attemptId`. Use the same Helm version. Keep rendered manifests and
+stderr in owner-only local outputs outside the receipt; they may contain secrets.
+For the shared DNS suffix refusal, the host in `auth.baseUrl` and
+`agentNativeAdmin.domain` must share a non-public DNS suffix. Correct a copy of
+the inputs and render again. Neither a render result nor a missing Job establishes
+cluster effects or authorizes retry; preserve the receipt and reconcile the
+original attempt below.
+
+Handoff reports unconfirmed Secret preparation even without a Job. Read-only `doctor`/`plan` neither open recovery files nor recreate Secrets or authenticate keys. See the
+[installer flow](../../flows/installation-preparation.md).
+
+## Resume an installation in progress
+
+Use the matching CLI, `kubectl`, your own trusted kubeconfig, and permission to
+get the named Job (normally `<release>-initialization`). The CLI may also read API
+discovery and check whether the Namespace exists after a missing Job. Neither
+Namespace access nor permission to list Jobs or Pods is required. If the CLI
+release is unavailable, run `go run ./cmd/occ` from the matching checkout.
+
+Run `plan` for the Job result and recovery steps, or use `doctor` to inspect the Job.
+The example uses the release name and Kubernetes namespace from the custom Helm
+guide. Substitute the values recorded for your installation.
+
+```bash
+target=(--kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT"
+        --kube-namespace openclaw-system --release oce)
+# For an installation started by occ, use its original receipt directory.
+target+=(--receipt "$INSTALL_RECEIPT_DIRECTORY")
+# For an older installation without a receipt, instead use
+# --expect-job-uid "$RECORDED_JOB_UID" only if captured during that attempt.
+occ installation plan "${target[@]}"
+```
+
+With a receipt, the commands compare the recorded cluster connection, namespace
+and release before reading the Job. A different context name or credential can
+select the same connection. Keep the same server URL (including path), TLS and
+kubeconfig proxy settings. Neither command changes the receipt or cluster.
+
+- **Completed.** For the original checkpoint, match the first-install marker,
+  captured UID, chart steps and terminal completion. Without a captured UID, a
+  copy of the marker on a replacement can look identical. The commands report
+  the current Job but leave the original outcome unknown. For a legacy install,
+  supply only a UID recorded while the installer excluded replacement. Without
+  a receipt or UID, exit zero describes the current Job only.
+  Ask the release operator to verify Helm status and API and worker readiness.
+  Job completion does not establish current database state or authorize replay.
+- **Recorded Job replaced or missing.** Recover the original installation record.
+  A later Job with the same name and a different UID cannot establish what happened
+  to that attempt, even if its chart labels have changed.
+- **Not found, no UID recorded.** Confirm with the database, identity, and volume owners whether
+  this is a first installation. A missing Job is not permission to bootstrap again.
+- **Failed.** With a matching Job UID, `plan` shows a Pod lookup for an operator
+  who can already list Pods in that namespace; it does not list Pods itself. That
+  operator sets `POD_READER_KUBECONFIG` to their own trusted kubeconfig and
+  `POD_READER_CONTEXT` to its matching context in their shell, then runs the
+  displayed command. Match the Pod's controlling owner UID to the recorded Job UID
+  before interpreting the migration and bootstrap exit codes; a label alone is
+  insufficient. `<none>` means no current terminated exit code was reported;
+  neither `<none>` nor an empty result proves that no Pod ran or no effects occurred.
+  The selected columns limit what is printed, not what Kubernetes authorizes or
+  returns. If needed, ask for a short, redacted diagnostic, not raw logs or
+  credentials. Ask the database and storage owners for current state and output
+  provenance; treat unverified state or provenance as unknown. Preserve the attempt
+  and do not retry.
+- **Unknown or incomplete.** An unreadable Job remains unknown, even if kubectl
+  reports a login problem or refusal; it is not evidence that the Job is absent.
+  Completion with an older selected-image wrapper or direct historical `.mjs`
+  entry cannot establish a flag-dependent migration check; that checkpoint remains
+  unknown.
+  Confirm the target. For a reported login problem, use a separately authorized
+  read-only session. For a reported refusal, confirm the intended reader with the
+  access owner without restoring temporary privilege or requesting broader access.
+  `FailureTarget` alone does not establish terminal failure. An interrupted
+  initialization may already have changed state.
+
+The Job UID identifies the initialization, not a later API operation. If an API
+attempt had an uncertain outcome, reconcile that original attempt before another
+write; do not replay the uncertain operation. Confirm removal of temporary
+access with its owner, then use the [workload checks](#verify-the-deployed-workflow)
+below.
+
 ## Choose the first workflow
 
-Start with one task and a small group. For example, let an Agent read a
-support queue and draft replies before enabling customer-facing sends. Name the
-business owner, acceptable output quality, response time, cost, and the person
-who handles exceptions. Use test records and a private test channel for the
-initial checks.
+Start with one task and a small group, such as an Agent that reads a support
+queue and drafts replies before customer-facing sends. Name the business owner,
+quality criteria, response time, cost and exception handler. Use test records
+and a private channel.
 
-Confirm that the organization can operate the host infrastructure, database,
-credentials, and integrations before relying on the workflow.
+Confirm infrastructure, database, credential and integration operations before
+relying on the workflow.
 
 ## Assign operating ownership
 
-Record a primary and backup contact, the exact scope they manage, and how to
-reach them when the platform is unavailable. The same person can own several
-areas; each responsibility still needs an explicit handoff.
+Record primary and backup contacts, their scope and how to reach them during
+outages. One person can own several areas, but each responsibility needs an
+explicit handoff.
 
 | Area                   | Decision to record                                                                                        | Owning guidance                                                                                         |
 | ---------------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |

@@ -61,6 +61,18 @@ kind: ClusterRole
 metadata:
   name: {{ .Release.Name }}-openclaw-tenant-worker
 rules:
+  {{- if .Values.strandsBox.workerReadiness }}
+  # Authenticate the Pod's controller chain before binding a Strands listener.
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get]
+  {{- end }}
+  {{- if .Values.channelEgress.enabled }}
+  # Fence old Gateway controllers before reusing a channel listener port.
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get, list]
+  {{- end }}
   # Read canonical control-plane sources and manage revision-owned runtime material.
   - apiGroups: [""]
     resources: [secrets]
@@ -83,16 +95,16 @@ rules:
     verbs: [get]
   - apiGroups: [""]
     resources: [persistentvolumeclaims]
-    verbs: [get, create, patch, delete]
+    verbs: [get, list, create, patch, delete]
   - apiGroups: [apps]
-    resources: [deployments]
+    resources: [deployments, statefulsets]
     verbs: [get, list, create, patch, delete]
   - apiGroups: [batch]
     resources: [jobs]
     verbs: [get, create, delete]
   - apiGroups: [networking.k8s.io]
     resources: [networkpolicies]
-    verbs: [get, list, create, patch, delete]
+    verbs: [get, list, create, update, patch, delete]
   - apiGroups: [gateway.networking.k8s.io]
     resources: [httproutes]
     verbs: [get, create, patch, delete]

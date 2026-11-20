@@ -39,5 +39,61 @@ exact CI. The receipt's base digest must still match `CONTAINER_NODE_BASE_IMAGE`
 The two images are not an atomic transaction. Inspect the remote digests after
 partial failure; do not remove or replace tags automatically.
 
-Local contract checks: `node --test tests/integration/container-promote.test.mjs`.
+Local contract checks: `node --test tests/integration/container-promote.test.ts`.
 These tests do not authenticate to either registry or prove a live transfer.
+
+## Verify the served Console
+
+After approved promotion and traffic selection, verify the Console served to
+users. On a POSIX host, use Node.js 24 and Git with `--no-lazy-fetch`. Select the
+full lowercase source commit from the receipt for the routed controller image.
+For a runtime-only upgrade, use the previous controller receipt and commit when
+checking the unchanged controller. Use a trusted checkout containing the
+verifier and release producers. The source repository may be a separate local
+checkout and need not be at the verifier's commit. Set `UPGRADE_EVIDENCE` to an
+existing private directory for the result.
+
+```bash
+umask 077
+export CONTROLLER_SOURCE_SHA='<full-lowercase-source-commit>'
+export UPGRADE_EVIDENCE='/secure/occ/upgrades/<private-directory>'
+cd /secure/tools/openclaw-enterprise # trusted checkout containing the verifier
+node scripts/verify-console-release.ts /secure/src/openclaw-enterprise \
+  "$CONTROLLER_SOURCE_SHA" 'https://console.example.com/console/' \
+  > "$UPGRADE_EVIDENCE/console-verification.json"
+```
+
+To verify the entry module too, add `--entry-sha256 "$CONTROLLER_ENTRY_SHA256"`
+after the URL. Set `CONTROLLER_ENTRY_SHA256` to the 64-character lowercase
+SHA-256 of the JavaScript served by the selected immutable controller image.
+Use an independent receipt that binds the expected bytes to that image and its
+Node runtime. The controller produces the served JavaScript from TypeScript.
+Hash the served identity bytes from the selected image, rather than the
+TypeScript source or the response under verification.
+
+| Input or limit | Requirement                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Source         | Supply a nonempty local repository path containing the commit and its Console source objects. An empty path returns `invalid-input`. Missing objects or a source template unsupported by this verifier return `invalid-source`; the command does not fetch objects or execute source from the selected commit. Inherited Git repository and object-store selectors are ignored.                                                                                                                                                                            |
+| URL            | Use the canonical HTTPS URL without credentials, query, fragment, dot segments, or a path beginning with `//`. Numeric host aliases and other spellings changed by URL normalization are refused. TLS verification stays enabled. The command sends no cookies or tokens and follows no redirects or page links.                                                                                                                                                                                                                                           |
+| Responses      | Anonymous requests retrieve the HTML and then `/console/console.css` on the same origin. With the optional digest, the verified HTML must declare the stock module at `/console/console.mjs`. The command requests only that fixed path on the same origin. Each response needs one `Content-Length` and one `Content-Type` (`text/html`, `text/css`, or `text/javascript` respectively, with only an optional `charset=utf-8`, quoted or unquoted). Compression, chunked or close-delimited bodies, ambiguous headers, and incomplete bodies are refused. |
+| Budgets        | HTML is limited to 256 KiB. CSS and the entry module are limited to 2 MiB each. Git commands and idle HTTPS sockets time out after five seconds. A 20-second deadline covers the whole check.                                                                                                                                                                                                                                                                                                                                                              |
+
+Keep the JSON result with the private publication and upgrade evidence. The
+command emits no response contents, URL, or exception details.
+
+| Result                                                       | Meaning and next action                                                                                                                                                          |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `verified` (exit 0)                                          | The delivered Console shell and base CSS match the source commit. The record includes `revision` and `assetSha256`. When the entry check passes, it also includes `entrySha256`. |
+| `wrong-shell`, `wrong-asset`, `wrong-entry`                  | The shell failed verification, the CSS differs, or the entry digest differs, respectively. Inspect the routed controller and caches before repeating the check.                  |
+| `invalid-source`, `invalid-input`                            | Check the local commit and objects, receipt, URL, and optional digest.                                                                                                           |
+| `redirect-refused`, `authentication-required`, `unavailable` | Inspect routing and access policy. `authentication-required` means HTTP 401 or 403.                                                                                              |
+| Other refusals                                               | Check the response framing, content types, size, markup, or timeout named by the result. Correct the cause before repeating the check.                                           |
+
+The command exits 1 for refusals. It checks one delivered shell and base CSS,
+with optional byte verification for one entry module. Theme names and image paths must fit the
+[production theme format](../guides/deploy/console-theme.md). Theme settings and assets are
+installation-owned and their values are not authenticated by this check. Browser
+execution, other assets and replicas, image digest, Pod health, and backend
+migrations require separate evidence. Keep TLS verification enabled and do not
+supply service credentials when correcting a refusal. Continue the
+[rollout and application checks](../guides/deploy/production-upgrade.md#verify-the-release).
