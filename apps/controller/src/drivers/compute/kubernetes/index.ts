@@ -1255,7 +1255,10 @@ const COMPUTE_PRIVATE_STATUS_ENVIRONMENT = new Set([
 ]);
 const AGENT_REVISION_ANNOTATION = "openclaw.dev/agent-revision";
 const AGENT_REVISION_ID_ANNOTATION = "openclaw.dev/agent-revision-id";
-const CREDENTIAL_DEPLOYMENT_SANDBOX_ANNOTATION = "openclaw.dev/credential-deployment-sandbox-id";
+const CREDENTIAL_DEPLOYMENT_TARGET_ANNOTATION = "openclaw.dev/credential-deployment-target";
+type CredentialDeploymentTargetState =
+  | { readonly state: "provisioning" }
+  | { readonly state: "provisioned"; readonly sandboxId: string };
 const APPLY_CONTENT_TYPE = "application/apply-patch+yaml";
 const MERGE_PATCH_CONTENT_TYPE = "application/merge-patch+json";
 const GATEWAY_API_VERSION = "gateway.networking.k8s.io/v1";
@@ -7742,79 +7745,100 @@ export class KubernetesComputeDriver implements ComputeDriver {
             "The staged Sandbox cannot withdraw the enrolled Harness exposure.",
           );
         }
+        let mayHaveUnboundProxy = false;
         try {
           if (staged === undefined) {
             sandbox = await this.prepareRevisionStage("sandbox_provision", () =>
               harnessRuntime.prepare(harnessContext),
             );
-          } else if (nodeEnrolled) {
-            // Provisioning has no enrollment input and may recreate the startup status route.
-            // Finish an uncertain first withdrawal, then recover only the retained exact target.
-            await withdrawProviderExposure();
-            const sandboxId = await this.credentialDeploymentSandboxId(revision, releaseNamespace!);
-            if (sandboxId === undefined) {
-              throw new DependencyUnavailableError(
-                "The enrolled staged Sandbox has no retained deployment target.",
-              );
-            }
-            expected = {
-              targetRef: { ...deployment, sandboxId },
-              configurationId: revision.configurationId,
-            };
           } else {
-            const stagedProxy = await this.prepareRevisionStage("sandbox_provision", () =>
-              proxy!.deployProxy(proxyContext, {
-                deployment,
-                networkAccessPolicy: staged.networkAccessPolicy,
-                injectionPolicies: staged.injectionPolicies,
-              }),
-            );
-            if (stagedProxy.proxyRouting !== undefined) {
+            // A released process can still be pending before enrollment. Never provision its
+            // target again: the provider could reopen a startup route already closed at release.
+            if (nodeEnrolled) {
+              await withdrawProviderExposure();
+            }
+            const target = await this.credentialDeploymentTargetState(revision, releaseNamespace!);
+            if (target?.state === "provisioning") {
               throw new DependencyUnavailableError(
-                "Staged proxy routing requires qualified mandatory-route enforcement.",
+                "The staged Sandbox provisioning outcome is uncertain.",
               );
             }
-            const {
-              credentialAttachments: _attachments,
-              proxyWiring: _wiring,
-              ...workload
-            } = requirements;
-            const targetRef = await this.prepareRevisionStage("sandbox_provision", () =>
-              stagedSandbox!.provisionHarness(
-                {
+            if (target?.state === "provisioned") {
+              expected = {
+                targetRef: { ...deployment, sandboxId: target.sandboxId },
+                configurationId: revision.configurationId,
+              };
+            } else {
+              if (nodeEnrolled) {
+                throw new DependencyUnavailableError(
+                  "The enrolled staged Sandbox has no retained deployment target.",
+                );
+              }
+              mayHaveUnboundProxy = true;
+              const stagedProxy = await this.prepareRevisionStage("sandbox_provision", () =>
+                proxy!.deployProxy(proxyContext, {
                   deployment,
-                  workload,
-                  restrictions: [
-                    {
-                      role: "harness",
-                      image: workload.image,
-                      mounts: workload.workspaceMounts.map(({ mountPath, readOnly }) => ({
-                        path: mountPath,
-                        readOnly,
-                      })),
-                    },
-                  ],
-                },
-                sandboxContext.signal,
-              ),
-            );
-            if (
-              targetRef.namespaceId !== deployment.namespaceId ||
-              targetRef.agentId !== deployment.agentId ||
-              targetRef.revisionId !== deployment.revisionId ||
-              !isNonEmptyString(targetRef.sandboxId)
-            ) {
-              throw new OwnershipFailure("The staged Sandbox returned another deployment target.");
+                  networkAccessPolicy: staged.networkAccessPolicy,
+                  injectionPolicies: staged.injectionPolicies,
+                }),
+              );
+              if (stagedProxy.proxyRouting !== undefined) {
+                throw new DependencyUnavailableError(
+                  "Staged proxy routing requires qualified mandatory-route enforcement.",
+                );
+              }
+              const {
+                credentialAttachments: _attachments,
+                proxyWiring: _wiring,
+                ...workload
+              } = requirements;
+              // A lost provision reply leaves no trustworthy incarnation to observe. Record
+              // dispatch before the provider call and refuse to repeat that uncertain call.
+              await this.credentialDeploymentTargetState(revision, releaseNamespace!, {
+                expected: undefined,
+                desired: { state: "provisioning" },
+              });
+              // From dispatch onward the Sandbox may exist and the Proxy may be bound, even
+              // when the provider's reply is lost. Unbound cleanup is no longer justified.
+              mayHaveUnboundProxy = false;
+              const targetRef = await this.prepareRevisionStage("sandbox_provision", () =>
+                stagedSandbox!.provisionHarness(
+                  {
+                    deployment,
+                    workload,
+                    restrictions: [
+                      {
+                        role: "harness",
+                        image: workload.image,
+                        mounts: workload.workspaceMounts.map(({ mountPath, readOnly }) => ({
+                          path: mountPath,
+                          readOnly,
+                        })),
+                      },
+                    ],
+                  },
+                  sandboxContext.signal,
+                ),
+              );
+              if (
+                targetRef.namespaceId !== deployment.namespaceId ||
+                targetRef.agentId !== deployment.agentId ||
+                targetRef.revisionId !== deployment.revisionId ||
+                !isNonEmptyString(targetRef.sandboxId)
+              ) {
+                throw new OwnershipFailure(
+                  "The staged Sandbox returned another deployment target.",
+                );
+              }
+              expected = { targetRef, configurationId: revision.configurationId };
+              await this.credentialDeploymentTargetState(revision, releaseNamespace!, {
+                expected: { state: "provisioning" },
+                desired: { state: "provisioned", sandboxId: targetRef.sandboxId },
+              });
             }
-            expected = { targetRef, configurationId: revision.configurationId };
-            await this.credentialDeploymentSandboxId(
-              revision,
-              releaseNamespace!,
-              targetRef.sandboxId,
-            );
           }
         } catch (error) {
-          if (staged !== undefined && !nodeEnrolled && expected === undefined) {
+          if (mayHaveUnboundProxy && expected === undefined) {
             await proxy!.removeDeployment(proxyContext, { unboundDeployment: deployment });
           }
           if (sandboxDriver.repositoryAccess?.isRouteBlockedError(error)) {
@@ -17215,13 +17239,15 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   }
 
   /** The revision-owned signer Secret is never projected. Its immutable data keeps the key;
-   * CAS-protected metadata retains the provider's exact incarnation so an enrolled retry can
-   * observe it without provisioning and reopening the startup status route. */
-  private async credentialDeploymentSandboxId(
+   * CAS-protected metadata records dispatch and then the provider's exact incarnation. */
+  private async credentialDeploymentTargetState(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
-    provisionedSandboxId?: string,
-  ): Promise<string | undefined> {
+    update?: {
+      readonly expected: CredentialDeploymentTargetState | undefined;
+      readonly desired: CredentialDeploymentTargetState;
+    },
+  ): Promise<CredentialDeploymentTargetState | undefined> {
     const name = this.executionReleaseSecretName(revision);
     const ownership = this.pluginRuntimeOwnership(revision);
     const secret = await this.getOwned("Secret", name, namespace, ownership);
@@ -17234,19 +17260,34 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     ) {
       throw new DependencyUnavailableError("The Compute execution release Secret is unavailable.");
     }
-    const retained = secret.metadata.annotations?.[CREDENTIAL_DEPLOYMENT_SANDBOX_ANNOTATION];
-    if (retained !== undefined && !isNonEmptyString(retained)) {
-      throw new OwnershipFailure("The retained staged Sandbox target is invalid.");
-    }
-    if (provisionedSandboxId === undefined) {
-      return retained;
-    }
-    if (retained !== undefined) {
-      if (retained !== provisionedSandboxId) {
-        throw new OwnershipFailure("The staged Sandbox changed its retained deployment target.");
+    const encoded = secret.metadata.annotations?.[CREDENTIAL_DEPLOYMENT_TARGET_ANNOTATION];
+    let retained: CredentialDeploymentTargetState | undefined;
+    if (encoded !== undefined) {
+      let value: Record<string, unknown> | undefined;
+      try {
+        value = asRecord(JSON.parse(encoded));
+      } catch {
+        throw new OwnershipFailure("The retained staged Sandbox target is invalid.");
       }
+      if (value?.state === "provisioning" && Object.keys(value).length === 1) {
+        retained = { state: "provisioning" };
+      } else if (
+        value?.state === "provisioned" &&
+        Object.keys(value).length === 2 &&
+        isNonEmptyString(value.sandboxId)
+      ) {
+        retained = { state: "provisioned", sandboxId: value.sandboxId };
+      } else {
+        throw new OwnershipFailure("The retained staged Sandbox target is invalid.");
+      }
+    }
+    if (update === undefined) {
       return retained;
     }
+    if (!isDeepStrictEqual(retained, update.expected)) {
+      throw new OwnershipFailure("The staged Sandbox provisioning state changed.");
+    }
+    const desired = JSON.stringify(update.desired);
     const clients = await this.clients(namespace.plane);
     await this.request(
       () =>
@@ -17259,7 +17300,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               ...secret.metadata,
               annotations: {
                 ...secret.metadata.annotations,
-                [CREDENTIAL_DEPLOYMENT_SANDBOX_ANNOTATION]: provisionedSandboxId,
+                [CREDENTIAL_DEPLOYMENT_TARGET_ANNOTATION]: desired,
               },
             },
           },
@@ -17272,12 +17313,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       observed.metadata.resourceVersion === secret.metadata.resourceVersion ||
       observed.immutable !== true ||
       observed.data?.signer !== secret.data.signer ||
-      observed.metadata.annotations?.[CREDENTIAL_DEPLOYMENT_SANDBOX_ANNOTATION] !==
-        provisionedSandboxId
+      observed.metadata.annotations?.[CREDENTIAL_DEPLOYMENT_TARGET_ANNOTATION] !== desired
     ) {
-      throw new DependencyUnavailableError("The staged Sandbox target was not retained.");
+      throw new DependencyUnavailableError("The staged Sandbox target state was not retained.");
     }
-    return provisionedSandboxId;
+    return update.desired;
   }
 
   private executionReleaseSecretName(revision: AgentRevision): string {

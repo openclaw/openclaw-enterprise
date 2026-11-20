@@ -862,7 +862,9 @@ test("staged Compute release requires both ready observations, this held acknowl
       events.push("release");
       assert.deepEqual(held, startup);
       assert.deepEqual(signedRelease.startup, held);
-      // The first post-release observation has not yet confirmed serving.
+      // A provider may close its startup exposure when releasing the process, before its
+      // authenticated serving observation or workspace enrollment becomes visible.
+      startupExposure = false;
       observation = { state: "pending" };
     },
   };
@@ -1038,6 +1040,18 @@ test("staged Compute release requires both ready observations, this held acknowl
   assert.equal((await prepare()).ready, false, "release alone does not prove serving");
   assert.deepEqual(events.slice(-3), ["verify", "release", "status:pending"]);
   const configured = events.filter((event) => event === "configure").length;
+  const provisionsAtRelease = events.filter((event) => event === "provision").length;
+  const deploysAtRelease = events.filter((event) => event === "deploy").length;
+  assert.equal((await prepare()).ready, false, "pending release remains unready before enrollment");
+  assert.equal(
+    events.filter((event) => event === "provision").length,
+    provisionsAtRelease,
+    "a pending-release retry must observe the saved target without provisioning",
+  );
+  assert.equal(events.filter((event) => event === "deploy").length, deploysAtRelease);
+  assert.equal(events.filter((event) => event === "configure").length, configured);
+  assert.equal(events.filter((event) => event === "release").length, 1);
+  assert.equal(startupExposure, false, "the retry must not restore the closed startup exposure");
   observation = { state: "serving", startup };
   state.providerPod = readyNativeHarnessPod(namespace, workloadLabels);
   state.connected = true;
@@ -1053,14 +1067,20 @@ test("staged Compute release requires both ready observations, this held acknowl
   // Enrolled retries must use the exact saved incarnation without calling it at all.
   provisionFailure = new Error("provider failed after recreating exposure");
   const releaseSecret = read("Secret", driver.executionReleaseSecretName(revision));
-  const annotation = "openclaw.dev/credential-deployment-sandbox-id";
-  assert.equal(releaseSecret.metadata.annotations[annotation], startup.targetRef.sandboxId);
+  const annotation = "openclaw.dev/credential-deployment-target";
+  assert.deepEqual(JSON.parse(releaseSecret.metadata.annotations[annotation]), {
+    state: "provisioned",
+    sandboxId: startup.targetRef.sandboxId,
+  });
   const missingTarget = structuredClone(releaseSecret);
   delete missingTarget.metadata.annotations[annotation];
   save(missingTarget);
   await assert.rejects(prepare(), /no retained deployment target/);
   const mismatchedTarget = structuredClone(releaseSecret);
-  mismatchedTarget.metadata.annotations[annotation] = "another-sandbox";
+  mismatchedTarget.metadata.annotations[annotation] = JSON.stringify({
+    state: "provisioned",
+    sandboxId: "another-sandbox",
+  });
   save(mismatchedTarget);
   await assert.rejects(prepare(), /reported another startup/);
   save(releaseSecret);
@@ -1079,6 +1099,29 @@ test("staged Compute release requires both ready observations, this held acknowl
   assert.equal(events.filter((event) => event === "provision").length, provisionsAtEnrollment);
   assert.equal(events.filter((event) => event === "configure").length, configured);
   assert.equal(events.filter((event) => event === "release").length, 1);
+
+  // A provider can create its target and lose the reply. A later worker has no exact
+  // incarnation to observe, so the dispatch fence must prevent another provision attempt.
+  const uncertain = dedicatedFirstDeployFixture({
+    sandboxDriver,
+    credentialDeliveryRegistration: selectedOwner,
+    context,
+    revision: stagedRevision,
+  });
+  assert.equal((await uncertain.prepare()).ready, false);
+  uncertain.markReady(uncertain.gatewayName);
+  const removalsBeforeFailure = events.filter((event) => event === "remove-unbound").length;
+  await assert.rejects(uncertain.prepare(), /provider failed after recreating exposure/);
+  assert.equal(
+    events.filter((event) => event === "remove-unbound").length,
+    removalsBeforeFailure,
+    "a lost provision reply does not prove the Proxy is unbound",
+  );
+  const provisionsAfterFailure = events.filter((event) => event === "provision").length;
+  const deploysAfterFailure = events.filter((event) => event === "deploy").length;
+  await assert.rejects(uncertain.prepare(), /provisioning outcome is uncertain/);
+  assert.equal(events.filter((event) => event === "provision").length, provisionsAfterFailure);
+  assert.equal(events.filter((event) => event === "deploy").length, deploysAfterFailure);
 });
 
 test("shared providers render OpenClaw adapters and refuse unsupported Codex protocols", async () => {
