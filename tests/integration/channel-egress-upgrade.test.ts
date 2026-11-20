@@ -247,8 +247,8 @@ test("one-off preparation never uses a values file swapped in after inspection",
   const replacement = join(f.directory, "replacement.yaml");
   const output = join(f.directory, "prepared");
   const tools = join(f.directory, "bin");
-  const display = "USER-SUPPLIED VALUES:\nmetrics:\n  enabled: false\n";
-  await writeFile(replacement, display, { mode: 0o600 });
+  const replacementValues = JSON.stringify({ ...f.values, metrics: { enabled: false } });
+  await writeFile(replacement, replacementValues, { mode: 0o600 });
   await mkdir(tools);
   // Replace the path at the first parser invocation, then run the real yq.
   await writeFile(
@@ -269,15 +269,10 @@ exec yq "$@"
     TEST_YQ_INPUT: input,
     TEST_YQ_REPLACEMENT: replacement,
   });
-  assert.equal(await readFile(input, "utf8"), display);
-  if (result.status === 1) {
-    await assert.rejects(access(output), { code: "ENOENT" });
-    return;
-  }
+  assert.equal(await readFile(input, "utf8"), replacementValues);
   assert.equal(result.status, 0, result.stderr);
 
   const values = JSON.parse(await readFile(join(output, "values.yaml"), "utf8"));
-  assert.equal(Object.hasOwn(values, "USER-SUPPLIED VALUES"), false);
   assert.deepEqual(values.metrics, f.values.metrics);
 });
 
@@ -308,19 +303,22 @@ test("one-off requires machine-readable Helm values captures", async (t) => {
       const display = join(f.directory, "display.yaml");
       const refused = join(f.directory, "refused");
       const recapture = /helm get values RELEASE --output yaml/;
-      await writeFile(display, `${heading}: \n${baseline}`, { mode: 0o600 });
-      // The display header can reach either side of validation.
-      for (const result of [
-        f.run("prepare", ["--values", display, "--out-dir", refused]),
-        validate(display, candidate),
-        validate(input, display),
-      ]) {
-        assert.equal(result.status, 1, result.stderr);
-        assert.match(result.stderr, new RegExp(`${heading} display header`));
-        assert.match(result.stderr, recapture);
-        assert.equal(result.stdout, "");
+      // Helm can display a payload with a key that repeats the display heading.
+      // The header must still be rejected on either side of validation.
+      for (const payload of [baseline, `${heading}: keep\n${baseline}`]) {
+        await writeFile(display, `${heading}: \n${payload}`, { mode: 0o600 });
+        for (const result of [
+          f.run("prepare", ["--values", display, "--out-dir", refused]),
+          validate(display, candidate),
+          validate(input, display),
+        ]) {
+          assert.equal(result.status, 1, result.stderr);
+          assert.match(result.stderr, new RegExp(`${heading} display header`));
+          assert.match(result.stderr, recapture);
+          assert.equal(result.stdout, "");
+        }
+        await assert.rejects(access(refused), { code: "ENOENT" });
       }
-      await assert.rejects(access(refused), { code: "ENOENT" });
 
       // Helm prints a flow mapping after the header when there are no values.
       await writeFile(display, `${heading}: \n{}\n`);
