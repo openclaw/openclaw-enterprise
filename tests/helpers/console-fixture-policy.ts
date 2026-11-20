@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 
 import type {
-  Agent,
   AuthorizationRequest,
   Permission,
   Principal,
@@ -13,6 +12,7 @@ import {
   IAMRoleListResponse,
   IAMRoleResponse,
   NamespaceResponse,
+  type AgentWire,
 } from "../../packages/contracts/src/api/resources.ts";
 import type { AuthPrincipalSeed, NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import type { OpenClawController } from "../../packages/occ/src/index.ts";
@@ -23,8 +23,8 @@ type MutablePolicy = Omit<ReturnType<typeof principalIAMState>, "roles"> & {
   roles: ReturnType<typeof grantRole>["role"][];
 };
 type Grant = readonly [Permission["action"], Permission["resourceKind"]];
-type GrantAgent = Pick<Agent, "id" | "namespaceId" | "servicePrincipalId">;
-type GrantSecret = Pick<SecretReference, "id">;
+type GrantAgent = AgentWire | Pick<AgentWire, "id" | "namespaceId" | "servicePrincipalId">;
+type GrantSecret = SecretReference | Pick<SecretReference, "id">;
 type GrantOptions = { listed?: boolean | undefined; modelGrant?: boolean | undefined };
 type FixtureRequest = (
   method: "GET" | "POST",
