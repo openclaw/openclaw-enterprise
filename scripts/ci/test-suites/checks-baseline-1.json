@@ -75,6 +75,7 @@
     "tests/conformance/workspace-files-configuration.test.ts",
     "tests/integration/common-logging.test.ts",
     "tests/docs/docs-length.test.mjs",
+    "tests/integration/eks-address-inventory.test.ts",
     "tests/integration/production-image-upgrade.test.ts",
     "tests/integration/production-upgrade-chart-inputs.test.ts",
     "tests/conformance/test-files.test.ts",
@@ -84,6 +85,7 @@
     "tests/integration/production-controller-security.test.ts",
     "tests/conformance/kubernetes-runtime-credentials.test.ts",
     "tests/conformance/openshell-gateway-wire.test.ts",
+    "tests/conformance/openshell-staged-credential-proxy.test.ts",
     "tests/conformance/openshell-provider-profile-wire.test.ts",
     "tests/conformance/oauth-connection.test.mjs",
     "tests/conformance/openshell-managed-bootstrap.test.ts",
@@ -356,6 +358,9 @@
       "path": "tests/conformance/openshell-gateway-wire.test.ts"
     },
     {
+      "path": "tests/conformance/openshell-staged-credential-proxy.test.ts"
+    },
+    {
       "path": "tests/conformance/openshell-provider-profile-wire.test.ts",
       "expectedTests": ["provider profile wire defaults preserve Git overlap enforcement"]
     },
@@ -618,6 +623,9 @@
     },
     {
       "path": "tests/integration/production-healthcheck.test.ts"
+    },
+    {
+      "path": "tests/integration/eks-address-inventory.test.ts"
     },
     {
       "path": "tests/integration/production-image-upgrade.test.ts"

@@ -9,7 +9,7 @@ import {
 import { openShellWorkspaceName } from "../../apps/controller/src/backends/openshell.ts";
 import { harnessEgressEnrollment } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import {
-  OpenShellCredentialProxyDriver,
+  OpenShellLegacyEgressProxyDriver,
   type OpenShellProxyOptions,
   openShellEgressConfiguration,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
@@ -154,11 +154,11 @@ export async function verifyManagedGitReplacement(
 ): Promise<void> {
   const git = sandbox["openShellGit"];
   assert.ok(git, "the protected fixture has a Git runtime");
-  assert.ok(selectedProxy instanceof OpenShellCredentialProxyDriver);
+  assert.ok(selectedProxy instanceof OpenShellLegacyEgressProxyDriver);
   const runtime = observeGitRuntime(git);
   const proxy = {
     options: requireConfiguration<OpenShellProxyOptions>(
-      OpenShellCredentialProxyDriver,
+      OpenShellLegacyEgressProxyDriver,
       asRecord(selectedProxy)?.options,
     ),
   };

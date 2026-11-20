@@ -11,11 +11,41 @@ import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/driv
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "./console-app.mjs";
+import { unexpectedNodeEnrollment } from "./kubernetes-compute.ts";
+import type {
+  AccessBinding,
+  Agent,
+  Role,
+  SecretDriver,
+  SecretMetadata,
+  ServicePrincipal,
+} from "../../packages/contracts/src/index.ts";
+import { IAMRoleResponse } from "../../packages/contracts/src/api/resources.ts";
+import type { NativeIAMState } from "../../packages/iam/src/index.ts";
+import type { PlatformStateStore } from "../../packages/occ/src/index.ts";
+import type { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
+import type { CleanupRegistrar } from "./cleanup-registrar.ts";
+
+type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
+type CoreClient = InstanceType<KubernetesSdk["CoreV1Api"]>;
+type AppsClient = InstanceType<KubernetesSdk["AppsV1Api"]>;
+type KubernetesNamespace = Awaited<ReturnType<CoreClient["readNamespace"]>>;
+type KubernetesSecret = Awaited<ReturnType<CoreClient["readNamespacedSecret"]>>;
+type StoredNamespace = {
+  metadata: NonNullable<KubernetesNamespace["metadata"]> & { name: string };
+  status: { phase: string };
+};
+type ManagedPolicy = Pick<NativeIAMState, "identities" | "roles" | "bindings">;
+type RepositoryLaunchOptions = {
+  secretDriver?: SecretDriver;
+  filesystemConfiguration?: boolean;
+};
+type AgentPrincipal = Pick<Agent, "servicePrincipalId">;
 
 /** Real Console/API/Drivers with passive storage, but no cluster or external providers. */
 export async function createConsoleRepositoryLaunchFixture(
-  t,
-  { secretDriver: suppliedSecretDriver, filesystemConfiguration } = {},
+  t: CleanupRegistrar,
+  { secretDriver: suppliedSecretDriver, filesystemConfiguration }: RepositoryLaunchOptions = {},
 ) {
   const resources = {
     requests: { cpu: "100m", memory: "64Mi" },
@@ -56,12 +86,16 @@ export async function createConsoleRepositoryLaunchFixture(
         channelEgress: channelEgressOptions,
       },
     },
-    { id: "console-launch-compute", nodeEnrollment: {}, channelDrivers: slackChannelDrivers },
+    {
+      id: "console-launch-compute",
+      nodeEnrollment: unexpectedNodeEnrollment(),
+      channelDrivers: slackChannelDrivers,
+    },
   );
   // This draft/deploy fixture has no PostgreSQL provisioning queue.
-  compute.agentProvisioning = undefined;
-  const namespaces = new Map();
-  const secrets = new Map();
+  assert.ok(Reflect.set(compute, "agentProvisioning", undefined));
+  const namespaces = new Map<string, StoredNamespace>();
+  const secrets = new Map<string, KubernetesSecret>();
   const notFound = () =>
     Object.assign(new Error("Fixture Kubernetes resource missing."), {
       statusCode: 404,
@@ -70,11 +104,12 @@ export async function createConsoleRepositoryLaunchFixture(
   // credentials and validates ownership/completeness; no workload is started.
   const clients = {
     core: {
-      async listNamespace({ labelSelector }) {
+      async listNamespace({ labelSelector } = {}) {
+        assert.ok(typeof labelSelector === "string");
         const [label, value] = labelSelector.split("=");
         return {
           items: [...namespaces.values()].filter(
-            ({ metadata }) => metadata.labels[label] === value,
+            ({ metadata }) => label !== undefined && metadata.labels?.[label] === value,
           ),
         };
       },
@@ -93,9 +128,11 @@ export async function createConsoleRepositoryLaunchFixture(
         return structuredClone(value);
       },
       async createNamespacedSecret({ namespace, body }) {
+        assert.ok(body.metadata?.name);
         const key = `${namespace}/${body.metadata.name}`;
         assert.equal(secrets.has(key), false);
         const { stringData, ...rest } = body;
+        assert.ok(stringData);
         const saved = {
           ...structuredClone(rest),
           metadata: { ...body.metadata, uid: randomUUID() },
@@ -115,28 +152,34 @@ export async function createConsoleRepositoryLaunchFixture(
         return { items: [] };
       },
     },
+  } satisfies {
+    core: Pick<
+      CoreClient,
+      "listNamespace" | "readNamespace" | "readNamespacedSecret" | "createNamespacedSecret"
+    >;
+    apps: Pick<AppsClient, "listNamespacedDeployment">;
   };
-  compute.apiClients = Promise.resolve(clients);
+  assert.ok(Reflect.set(compute, "apiClients", Promise.resolve(clients)));
   const secretDriver =
     suppliedSecretDriver ?? new KubernetesSecretDriver({ authentication: { mode: "inCluster" } });
   if (suppliedSecretDriver === undefined) {
-    secretDriver.client = Promise.resolve(clients.core);
+    assert.ok(Reflect.set(secretDriver, "client", Promise.resolve(clients.core)));
   }
   const state = new InMemoryPlatformState();
-  let managedPolicy = { identities: [], roles: [], bindings: [] };
-  const storage = {
+  let managedPolicy: ManagedPolicy = { identities: [], roles: [], bindings: [] };
+  const storage: PlatformStateStore = {
     read: (work) => state.read(work),
     async transact(work) {
       const result = await state.transact(work);
       // IAM reads a committed projection, including during a subsequent State
       // transaction. Reentering memory State.read there would wait on itself.
       managedPolicy = await state.read(async (unit) => {
-        const identities = [];
-        const roles = [];
-        const bindings = [];
+        const identities: ServicePrincipal[] = [];
+        const roles: Role[] = [];
+        const bindings: AccessBinding[] = [];
         for (const namespace of await unit.namespaces.listNamespaces()) {
           identities.push(
-            ...(await unit.agents.listAgents(namespace.id)).map((agent) => ({
+            ...(await unit.agents.listAgents(namespace.id)).map<ServicePrincipal>((agent) => ({
               id: agent.servicePrincipalId,
               kind: "service_principal",
               namespaceId: namespace.id,
@@ -177,7 +220,7 @@ export async function createConsoleRepositoryLaunchFixture(
   const namespaceName = kubernetesNamespaceName(namespace.id);
   // Single-cluster workloads and canonical storage use the same tenant namespace.
   // Seed completed provisioning with the real Driver's ownership and storage labels.
-  const controlNamespace = compute.gatewayNamespaceManifest({ namespaceId: namespace.id });
+  const controlNamespace = compute["gatewayNamespaceManifest"]({ namespaceId: namespace.id });
   assert.equal(controlNamespace.metadata.name, namespaceName);
   namespaces.set(controlNamespace.metadata.name, {
     ...controlNamespace,
@@ -212,6 +255,7 @@ export async function createConsoleRepositoryLaunchFixture(
     ),
     { sessionDurationSeconds: 600 },
   );
+  assert.ok(fixture.controller);
   fixture.controller.registerDriver(repo);
   fixture.controller.selectDriver("repo", repo.id);
   // Read managed policy written through the actual IAM API. The adapter supplies
@@ -238,17 +282,19 @@ export async function createConsoleRepositoryLaunchFixture(
   );
   // Grants the Agent operate on one Secret through the Namespace IAM API, as an Installation
   // administrator's console does; the console's policy reads list these grants.
-  let secretRole;
-  async function grantSecretAccess(agent, secret) {
-    if (!secretRole) {
+  let secretRoleId: string | undefined;
+  async function grantSecretAccess(
+    agent: AgentPrincipal,
+    secret: Pick<SecretMetadata, "id">,
+  ): Promise<void> {
+    if (secretRoleId === undefined) {
       const role = await fixture.request("POST", `/namespaces/${namespace.id}/iam/roles`, {
         body: {
           name: "Agent Secret access",
           permissions: [{ action: "operate", resourceKind: "secret" }],
         },
       });
-      assert.equal(role.status, 201);
-      secretRole = role.data;
+      secretRoleId = fixture.fixtureResponse(role, 201, IAMRoleResponse, "create Role").data.id;
     }
     const binding = await fixture.request(
       "POST",
@@ -257,7 +303,7 @@ export async function createConsoleRepositoryLaunchFixture(
         body: {
           subjectKind: "identity",
           subjectId: agent.servicePrincipalId,
-          roleId: secretRole.id,
+          roleId: secretRoleId,
           resourceKind: "secret",
           resourceId: secret.id,
         },
@@ -265,6 +311,6 @@ export async function createConsoleRepositoryLaunchFixture(
     );
     assert.equal(binding.status, 201);
   }
-  const grantModelAccess = (agent) => grantSecretAccess(agent, modelSecret);
+  const grantModelAccess = (agent: AgentPrincipal) => grantSecretAccess(agent, modelSecret);
   return { fixture, namespace, modelSecret, grantModelAccess, grantSecretAccess };
 }
