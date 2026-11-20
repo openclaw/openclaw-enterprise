@@ -1,7 +1,7 @@
 ---
 created: "2026-11-20"
 updated: 2026-11-20
-last_updated_session: authoring-run/1a7c3a53-041d-40fe-bdea-664eca7f6d97
+last_updated_session: authoring-run/14d74b53-196d-48d9-acc2-99f736399ebd
 ---
 
 # Internal static TokenService custody flow
@@ -9,10 +9,11 @@ last_updated_session: authoring-run/1a7c3a53-041d-40fe-bdea-664eca7f6d97
 ## Overview
 
 OpenClaw Control Plane (OCC) can select an internal TokenService owner that holds
-static OpenAI keys in Installation-private Secret storage. Internal controller
+static credentials in Installation-private Secret storage. Internal controller
 calls register, update, and retire these sources. The serving credential-source
 API, Console, CLI, and Agent delivery continue to use their existing owners;
 they do not expose or consume these registrations.
+Custody does not select a provider, endpoint, authentication method, or consumer.
 
 ## Entry Points
 
@@ -59,11 +60,14 @@ cannot replace an instance while sources still reference it.
 
 OCC authorizes source creation, locks the ready Namespace, reserves a
 `registering` source, binds the creator, and commits a source-targeted
-registration-start audit. It commits a dispatch claim before sending key
-material to the selected owner. The owner validates the static OpenAI input and
-stores it under the exact instance and source reference. OCC commits the private
-registration receipt, configuration, `ready` state, and completion audit together.
-The source row contains no Namespace Secret reference or key value.
+registration-start audit. It commits a dispatch claim before sending credential
+material to the selected owner. The internal lifecycle type is `static`, with no
+settings. The owner requires one nonempty UTF-8 secret value; its field name has
+no provider meaning. The owner stores that value under the exact instance and
+source reference. The registration receipt is empty because those identities
+already locate the material. OCC commits the receipt, configuration, `ready`
+state, and completion audit together. The source row contains no Namespace
+Secret reference or credential value.
 
 If no write was sent, OCC removes the reservation and bindings. If the write may
 have happened without a receipt, OCC leaves the source `deleting`; retirement
@@ -79,9 +83,10 @@ A failed cleanup also leaves the source `deleting` for a later internal retry.
 Update rechecks the caller's exact grant and the recorded instance under the
 source lock before replacing private material. Retirement refuses live references,
 marks the source `deleting`, and commits its start audit before the owner erases
-the key. After the owner confirms removal, OCC removes the source and its bindings
+the value. After the owner confirms removal, OCC removes the source and its bindings
 with the completion audit. A missing owner or uncertain erasure retains the source.
-Serving list, GET, PATCH, and DELETE operations cannot access these records.
+Static credentials do not support refresh. Serving list, GET, PATCH, and DELETE
+operations cannot access these records.
 
 ## Debugging and Verification
 
@@ -107,5 +112,7 @@ Serving list, GET, PATCH, and DELETE operations cannot access these records.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 06:40: Describe generic static custody without provider or consumption metadata. (authoring-run/14d74b53-196d-48d9-acc2-99f736399ebd - 03953946b50d68a6f2fc69d41936db039d8bff2e)
 
 - 2026-11-20 04:20: Document internal static custody and its serving boundary. (authoring-run/1a7c3a53-041d-40fe-bdea-664eca7f6d97 - edd728580)
