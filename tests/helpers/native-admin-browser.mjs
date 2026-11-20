@@ -3,19 +3,14 @@ import {
   submitChatTurnWithAssistantProof,
   textFromFrame,
   waitForStockUi,
-} from "../helpers/native-ui-chat.mjs";
+} from "../helpers/native-ui-chat.ts";
 import assert from "node:assert/strict";
 import { keycloakRealmAdmin } from "./ci-keycloak-realm.mjs";
-import { tlsPeerCertificate } from "./tls-peer-certificate.mjs";
-import { execFile } from "node:child_process";
+import { tlsPeerCertificate } from "./tls-peer-certificate.ts";
 import { createHash, randomUUID, X509Certificate } from "node:crypto";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { createServer as createHttpsServer } from "node:https";
-import { request as httpRequest } from "node:http";
-import { connect as connectTcp } from "node:net";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 
 import { chromium } from "playwright";
 
@@ -29,7 +24,7 @@ import {
   waitForReadyGatewayPod,
 } from "../helpers/harness-topology-k3d-real.mjs";
 
-const executeFile = promisify(execFile);
+import { createNativeIngressTransport } from "./native-admin-ingress-transport.ts";
 
 function hostSuffixPattern(domain) {
   return new RegExp(`\\.${domain.replaceAll(".", "\\.")}$`);
@@ -48,34 +43,10 @@ function expectedNativeAdminTarget(topology, publicOrigin, domain) {
 
 async function createNativeIngress(context, { artifacts, nativeDomain }) {
   const publicHost = `oce-native.${nativeDomain}`;
-  const certificate = await createLocalCertificate({ artifacts, nativeDomain, publicHost });
-  // Trust only this disposable ingress certificate. Chromium can loop on
-  // certificate-error retries for stylesheets with context ignoreHTTPSErrors.
-  const certificateSpki = createHash("sha256")
-    .update(new X509Certificate(certificate.cert).publicKey.export({ type: "spki", format: "der" }))
-    .digest("base64");
-  let upstream;
-  const sockets = new Set();
-  const trackSocket = (socket) => {
-    sockets.add(socket);
-    socket.once("close", () => sockets.delete(socket));
-    return socket;
-  };
-  const server = createHttpsServer(certificate, (request, response) => {
-    if (upstream === undefined) {
-      response.writeHead(503).end("native admin ingress upstream not ready");
-      return;
-    }
-    proxyHttpRequest(upstream, request, response);
-  });
-  server.on("connection", trackSocket);
-  server.on("upgrade", (request, socket, head) => {
-    trackSocket(socket);
-    if (upstream === undefined) {
-      socket.destroy();
-      return;
-    }
-    proxyUpgrade(upstream, request, socket, head, trackSocket);
+  const { server, sockets, certificateSpki, setUpstream } = await createNativeIngressTransport({
+    artifacts,
+    nativeDomain,
+    publicHost,
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -99,97 +70,8 @@ async function createNativeIngress(context, { artifacts, nativeDomain }) {
       `--host-resolver-rules=MAP ${publicHost} 127.0.0.1,MAP *.${nativeDomain} 127.0.0.1`,
       `--ignore-certificate-errors-spki-list=${certificateSpki}`,
     ],
-    setUpstream(url) {
-      upstream = new URL(url);
-      assert.equal(
-        upstream.protocol,
-        "http:",
-        "local native ingress expects controller HTTP port-forward",
-      );
-    },
+    setUpstream,
   };
-}
-
-async function createLocalCertificate({ artifacts, nativeDomain, publicHost }) {
-  const keyPath = join(artifacts, "native-ingress.key");
-  const certPath = join(artifacts, "native-ingress.crt");
-  const configPath = join(artifacts, "native-ingress-openssl.cnf");
-  await writeFile(
-    configPath,
-    `[req]\n` +
-      `prompt = no\n` +
-      `distinguished_name = dn\n` +
-      `x509_extensions = v3_req\n` +
-      `[dn]\n` +
-      `CN = ${publicHost}\n` +
-      `[v3_req]\n` +
-      `subjectAltName = @alt_names\n` +
-      `[alt_names]\n` +
-      `DNS.1 = ${publicHost}\n` +
-      `DNS.2 = *.${nativeDomain}\n`,
-  );
-  await executeFile("openssl", [
-    "req",
-    "-x509",
-    "-newkey",
-    "rsa:2048",
-    "-nodes",
-    "-keyout",
-    keyPath,
-    "-out",
-    certPath,
-    "-days",
-    "1",
-    "-sha256",
-    "-config",
-    configPath,
-  ]);
-  return { key: await readFile(keyPath, "utf8"), cert: await readFile(certPath, "utf8") };
-}
-
-function proxyHttpRequest(upstream, incoming, outgoing) {
-  const request = httpRequest(
-    {
-      hostname: upstream.hostname,
-      port: upstream.port,
-      method: incoming.method,
-      path: incoming.url,
-      headers: incoming.headers,
-    },
-    (response) => {
-      outgoing.writeHead(response.statusCode ?? 502, response.headers);
-      response.pipe(outgoing);
-    },
-  );
-  request.on("error", (error) => {
-    outgoing.writeHead(502).end(String(error?.message ?? error));
-  });
-  incoming.pipe(request);
-}
-
-function proxyUpgrade(upstream, request, socket, head, trackSocket) {
-  const upstreamSocket = trackSocket(
-    connectTcp(Number(upstream.port), upstream.hostname, () => {
-      upstreamSocket.write(`${request.method} ${request.url} HTTP/${request.httpVersion}\r\n`);
-      for (const [name, value] of Object.entries(request.headers)) {
-        if (Array.isArray(value)) {
-          for (const entry of value) {
-            upstreamSocket.write(`${name}: ${entry}\r\n`);
-          }
-        } else if (value !== undefined) {
-          upstreamSocket.write(`${name}: ${value}\r\n`);
-        }
-      }
-      upstreamSocket.write("\r\n");
-      if (head.length > 0) {
-        upstreamSocket.write(head);
-      }
-      upstreamSocket.pipe(socket);
-      socket.pipe(upstreamSocket);
-    }),
-  );
-  upstreamSocket.on("error", () => socket.destroy());
-  socket.on("error", () => upstreamSocket.destroy());
 }
 
 async function launchBrowser(context, ingress) {
@@ -1014,16 +896,23 @@ async function assertSharedNativeSessions(
   );
   await assertNativeDenied(unaffected.page);
 
-  const reconnect = nativePage.getByRole("link", {
-    name: "Reconnect in browser",
-    exact: true,
+  // The refused reconnect opens the Agent UI's sign-in dialog; Sign in opens the root in a
+  // new tab while the first tab keeps its conversation.
+  const dialog = nativePage
+    .locator("openclaw-modal-dialog")
+    .filter({ hasText: "Sign in to continue loading content" });
+  await dialog.waitFor({ timeout: 45_000 });
+  const rootLoad = nativePage.context().waitForEvent("response", {
+    predicate: (response) =>
+      response.url() === status.url && response.request().isNavigationRequest(),
+    timeout: 15_000,
   });
-  const [root] = await Promise.all([
-    nativePage.waitForResponse(
-      (response) => response.url() === status.url && response.request().isNavigationRequest(),
-    ),
-    reconnect.click({ timeout: 15_000 }),
+  const [signInPage] = await Promise.all([
+    nativePage.context().waitForEvent("page", { timeout: 15_000 }),
+    dialog.getByRole("button", { name: "Sign in", exact: true }).click({ timeout: 15_000 }),
   ]);
+  const root = await rootLoad;
+  assert.equal(root.frame().page(), signInPage, "Sign in loads the root in the new tab");
   assert.equal(root.status(), 302);
   const agentKey = status.host.split(".")[0].slice("agent-".length);
   // Console removes the fragment before showing sign-in. Check the redirect itself.
@@ -1032,26 +921,37 @@ async function assertSharedNativeSessions(
     ingress.origin + "/console/#native-agent=" + agentKey,
   );
   const [resolved] = await Promise.all([
-    nativePage.waitForResponse(ingress.origin + "/native-admin/return/" + agentKey),
-    login(nativePage, unaffected.credentials),
+    signInPage.waitForResponse(ingress.origin + "/native-admin/return/" + agentKey),
+    login(signInPage, unaffected.credentials),
   ]);
   assert.equal(resolved.status(), 200);
   const { agentId, namespaceId } = (await resolved.json()).data;
   assert.equal(agentId, topology.agent.id);
   assert.equal(namespaceId, topology.agent.namespaceId);
+  await signInPage.close();
 
-  const reopened = await openNativeAdminConsole(nativePage, status.origin);
-  await waitFor("a live Gateway hello on the page opened after signing back in", () =>
+  // Back on the first tab, focus or Check again rechecks access and closes the dialog; the
+  // tab then reconnects on its own.
+  await nativePage.bringToFront();
+  const checkAgain = dialog.getByRole("button", { name: "Check again", exact: true });
+  await waitFor("the first tab to recheck access and close the sign-in dialog", async () => {
+    if ((await dialog.count()) === 0) {
+      return true;
+    }
+    await checkAgain.click({ timeout: 2_000 }).catch(() => {});
+    return undefined;
+  });
+  await waitFor("a live Gateway hello on the first tab after signing back in", () =>
     unaffected.frames.find(
       (frame) =>
-        frame.page === reopened &&
+        frame.page === nativePage &&
         !frame.socket.isClosed() &&
         JSON.parse(textFromFrame(frame)).payload?.type === "hello-ok",
     ),
   );
   // A positive ingress-log control proves the observer sees real upstream I/O.
   // Denied requests precede it and must never reach Envoy or the native Gateway.
-  const allowedProbe = await nativeProbe(reopened, 200);
+  const allowedProbe = await nativeProbe(nativePage, 200);
   const routing = topology.workspaceGateway.routing;
   const ingressLog = await waitFor("authorized native probe in Envoy access log", async () => {
     const log = await kubectl(

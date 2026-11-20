@@ -151,7 +151,7 @@ checks the Harness authentication binding (Kubernetes Compute also runs the shar
 `requireOpenClawRoster`, the dedicated OpenClaw and Codex `main` Agent rules, and
 [the rules](../../../apps/controller/src/drivers/compute/kubernetes/configuration-rules.ts)
 preparation and the Gateway entrypoint apply after a dedicated deployment stops its
-predecessors: enabled channels need a dedicated workload and `runtime.channels`, a
+predecessors: enabled channels need a dedicated workload and `runtime.channelEgress`, a
 Gateway hosting a workspace node needs the file-transfer plugin, and a Dedicated Codex
 Gateway needs its codex plugin left on) and, through optional
 `validateGatewaySettings`, the native gateway settings: Kubernetes and Docker Compute
@@ -181,6 +181,15 @@ principal, and any selected Secret Driver identity and normalized bindings.
 Backend locators and value bytes are not stored in the Agent revision. Subsequent nested
 Configuration edits increment its generation but affect only later explicit
 deployments; historical Agent revisions and their admitted snapshots remain unchanged.
+
+OCC saves the selected Driver's optional `snapshotRuntimeInputs` result in
+`compute.runtimeInputs`. For locally managed dedicated Codex without protected
+egress, Kubernetes uses the admitted Gateway and Agent images during preparation
+and activation, including Gateway-based workspace setup. Missing snapshots use
+current settings. Malformed or unknown snapshots fail validation. When immutable
+images are required, saved tags fail before reconciliation. Deploy a new revision
+with digest-pinned images. See [immutable runtime inputs](../../reference/drivers/compute-admission.md#immutable-runtime-inputs).
+
 PostgreSQL enforces the supported kind, positive generation, exact admitted
 snapshot shape, ownership, and Agent revision immutability. OCC records an
 attributable sanitized admission event and hands the Agent revision to

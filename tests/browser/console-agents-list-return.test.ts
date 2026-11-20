@@ -25,7 +25,7 @@ import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-account
 import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { refocus, tagView, viewTag } from "./console-refocus-helpers.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 
 type ReadyNamespace = Awaited<ReturnType<typeof createReadyConsoleNamespace>>;
@@ -156,6 +156,15 @@ const deploymentCells = (page: Page) =>
       }),
     ),
   );
+
+async function assertCompletedDeployments(page: Page, agents: readonly { name: string }[]) {
+  const cells = await deploymentCells(page);
+  const names = agents.map((agent) => agent.name);
+  assert.deepEqual(Object.keys(cells).sort(), [...names].sort(), "expected Agent rows after reads");
+  for (const [name, text] of Object.entries(cells)) {
+    assert.match(text, /^v1 · Completed/, name);
+  }
+}
 
 // Records, after every DOM change, how many rows of the active (revealed) view show a deployment
 // other than "Reading deployment…", and every Agent it shows, so a stale value painted for even
@@ -605,9 +614,7 @@ for (const visit of ["a first visit", "a return"]) {
     });
     rows.release();
     await page.getByText(READING).first().waitFor({ state: "detached" });
-    for (const text of Object.values(await deploymentCells(page))) {
-      assert.match(text, /^v1 · Completed/);
-    }
+    await assertCompletedDeployments(page, agents);
   });
 }
 
@@ -659,6 +666,7 @@ async function returnWithHeldRows(t: TestContext, name: string) {
   return {
     namespace,
     page,
+    agents,
     readingCells,
     // Ends every row's delay animation `ms` after the last step, so "Reading deployment…" shows,
     // and waits until the page has handled the animations' end.
@@ -730,7 +738,7 @@ for (const [shownAt, landsAt, fillsAt] of [
   [280, 300, 430],
 ] as const) {
   void test(`Rows shown at ${shownAt ?? "no"} ms whose reread lands at ${landsAt} ms fill at ${fillsAt} ms`, async (t) => {
-    const { page, readingCells, reveal, land } = await returnWithHeldRows(
+    const { page, agents, readingCells, reveal, land } = await returnWithHeldRows(
       t,
       `Steady rows ${shownAt ?? "hidden"} ${landsAt}`,
     );
@@ -746,9 +754,7 @@ for (const [shownAt, landsAt, fillsAt] of [
       assert.equal(await readingCells(), 3, "the shown text stays 150 ms");
       await page.clock.runFor(1);
     }
-    for (const text of Object.values(await deploymentCells(page))) {
-      assert.match(text, /^v1 · Completed/);
-    }
+    await assertCompletedDeployments(page, agents);
     assert.equal(await viewTag(page), "kept");
   });
 }
@@ -864,9 +870,7 @@ void test("A list left again during its rows' rereads is reused on the next retu
   assert.equal((await revealed(page)).deployments, 0, "no stale deployment was revealed");
   rereads.release();
   await page.getByText(READING).first().waitFor({ state: "detached" });
-  for (const text of Object.values(await deploymentCells(page))) {
-    assert.match(text, /^v1 · Completed/);
-  }
+  await assertCompletedDeployments(page, agents);
 });
 
 // On a phone the Agents table scrolled sideways: 5 columns, the deployment one a fixed 14 rem, so

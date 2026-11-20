@@ -21,8 +21,8 @@ provider login, credential-service persistence, refresh rotation, or runtime tok
    never access or refresh tokens. Confirm creation opens the saved draft; deploy it
    separately from Agent detail because guided provisioning does not support credential sources.
 4. Check **ChatGPT login permission denied (Experimental)**, **ChatGPT login exchange failed (Experimental)**,
-   and **ChatGPT device login expired (Experimental)**. Failed or expired polls stop; recovery
-   requires cancelling and starting a new login. Other form choices remain usable.
+   and **ChatGPT device login expired (Experimental)**. For an expired login or a failed
+   exchange, cancel and start a new login. Other form choices remain usable.
 5. Open **ChatGPT login unavailable (Experimental)**. Confirm the message says sign-in
    is unavailable for this Installation, gives the API's reason (no Credential Refresh
    Driver) and suggests another authentication method. **Sign in with OAuth** stays
@@ -43,6 +43,15 @@ provider login, credential-service persistence, refresh rotation, or runtime tok
 8. Switch the harness to OpenClaw. ChatGPT OAuth disappears and API-key
    authentication is selected. Switching providers also clears the selected model
    credential. A staged login is discarded only through its explicit control.
+
+## Check a refused poll
+
+Open **Components/Credentials → ChatGPT login poll denied (Experimental)** and choose
+**Sign in with OAuth**. The simulated API starts the login, then refuses the first poll.
+Confirm the refusal names the missing CredentialSource operate permission and shows a
+request ID. The fixture withholds the source ID from a caller who lacks read access.
+Choose **Retry login check**. The fixture simulates restored access and the login becomes
+ready. The request log shows two polls for the same login and one start.
 
 ## Return after an interrupted start
 

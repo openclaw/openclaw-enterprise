@@ -5,15 +5,14 @@ import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { DEVICE_LOGIN_FAILED } from "../helpers/refusal-text.mjs";
-import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
+import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 
 function jwt(payload) {
   return `${Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.synthetic`;
@@ -121,10 +120,8 @@ test("Console device login completes through the paired OpenShell Refresh Driver
       return { ...namespace, name: "oauth-api-fixture" };
     },
   });
-  const secrets = createTestSecretDriver();
   const fixture = await createConsoleAppFixture(t, {
     computeDriver: compute,
-    secretDriver: secrets,
     logger,
     now: () => new Date(clock.wallNow()),
   });
@@ -266,9 +263,10 @@ test("Console device login completes through the paired OpenShell Refresh Driver
   assert.equal(updated.status, 409, JSON.stringify(updated.body));
   assert.deepEqual(operations, settled);
   const sessionRecord = await fixture.controller.transact((unit) =>
-    unit.secrets.findSecret(namespace.id, started.data.session.id),
+    unit.authenticationStates.findDevice(namespace.id, started.data.session.id),
   );
-  const session = JSON.parse(secrets.valueFor(sessionRecord));
+  assert.ok(sessionRecord);
+  const session = sessionRecord;
   assert.equal(session.credentialGatewayId, gateway.id);
   assert.equal(session.credentialRefreshId, refresh.id);
   assert.equal(session.privateState, undefined);
@@ -306,9 +304,10 @@ test("Console device login completes through the paired OpenShell Refresh Driver
   );
   assert.equal(exchanges, 2);
   const failedRecord = await fixture.controller.transact((unit) =>
-    unit.secrets.findSecret(namespace.id, interrupted.data.session.id),
+    unit.authenticationStates.findDevice(namespace.id, interrupted.data.session.id),
   );
-  const failedSession = JSON.parse(secrets.valueFor(failedRecord));
+  assert.ok(failedRecord);
+  const failedSession = failedRecord;
   assert.equal(failedSession.phase, "cancelled");
   assert.equal(failedSession.privateState, undefined);
   assert.equal((await fixture.request("POST", interruptedPath, { body: {} })).status, 409);

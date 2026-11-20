@@ -1,4 +1,4 @@
-import { redactedQaTail } from "./qa-secrets.mjs";
+import { redactedQaTail } from "./qa-secrets.ts";
 
 const stageSummaries = new WeakMap();
 

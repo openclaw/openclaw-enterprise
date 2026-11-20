@@ -6,7 +6,7 @@ import type {
 } from "../../packages/contracts/src/api/resources.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import {
   apiRequests,
   detailUrl,

@@ -8,12 +8,14 @@ import type {
   Agent,
   ComputeDriver,
   RuntimeFailureEvidence,
+  SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import {
   requiresPostgres,
   setup as setupSingletonWorker,
 } from "../helpers/compute-singleton-worker.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 interface SeededRevision {
   readonly id: string;
@@ -44,10 +46,77 @@ interface RevisionEffect {
   readonly activeRevisionId: string | null;
 }
 
-async function setup(context: TestContext): Promise<MaintenanceFixture> {
-  const fixture = await setupSingletonWorker(context);
+async function setup(
+  context: TestContext,
+  sandboxDriver?: SandboxDriver,
+): Promise<MaintenanceFixture> {
+  const fixture = await setupSingletonWorker(context, { sandboxDriver });
   // The JavaScript fixture infers a zero-argument default emitter. The Worker supplies the event.
   return { ...fixture, start: fixture.start as MaintenanceFixture["start"] };
+}
+
+function maintenanceSandbox(maintenanceIntervalMs: number): SandboxDriver {
+  return {
+    id: "maintenance-sandbox",
+    implementation: "fixture",
+    capability: "sandbox",
+    facets: ["process"],
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    maintenanceIntervalMs,
+    // A maintenance interval requires a provider-owned Harness. The fixture Compute owns
+    // its workload and never calls the provider, so these cases prove only the worker's
+    // schedule and dispatch flag.
+    async provisionHarness() {
+      throw new Error("The fixture Compute does not provision Sandbox Harnesses.");
+    },
+    async cleanup() {},
+  };
+}
+
+async function waitForMaintenanceSuccessor(
+  fixture: MaintenanceFixture,
+  revision: { readonly id: string },
+  expectedMs: number,
+  previous = "",
+) {
+  return waitFor("one successor for the active revision", async () => {
+    const work = await fixture.observerPool.query<{
+      idempotency_key: string;
+      available_at: Date;
+      created_at: Date;
+      state: string;
+      is_future: boolean;
+    }>(
+      `SELECT idempotency_key, available_at, created_at, state,
+              available_at > clock_timestamp() AS is_future
+       FROM occ.controller_work
+       WHERE namespace_id = $1 AND revision_id = $2 AND idempotency_key LIKE $3
+         AND ($4 = '' OR created_at > (
+           SELECT created_at FROM occ.controller_work WHERE idempotency_key = $4
+         ))
+       ORDER BY created_at`,
+      [fixture.namespace.id, revision.id, `agent_revision:${revision.id}:maintenance:%`, previous],
+    );
+    const [next] = work.rows;
+    if (next !== undefined) {
+      assertMaintenanceDelay(next, expectedMs);
+      assert.equal(next.state, "queued");
+      assert.equal(next.is_future, true, "the database must see the successor as ineligible");
+    }
+    assert.ok(work.rows.length <= 1, "a pass must produce exactly one successor");
+    return next;
+  });
+}
+
+function assertMaintenanceDelay(
+  work: { available_at: Date; created_at: Date },
+  expectedMs: number,
+): void {
+  const delayMs = work.available_at.getTime() - work.created_at.getTime();
+  assert.ok(
+    Math.abs(delayMs - expectedMs) < 2_000,
+    `expected ${expectedMs} ms, scheduled ${delayMs} ms`,
+  );
 }
 
 export function registerComputeSingletonMaintenanceCases(): void {
@@ -132,6 +201,126 @@ export function registerComputeSingletonMaintenanceCases(): void {
       );
     },
   );
+
+  test(
+    "a Sandbox schedules active maintenance without granting that pass permission to create a Harness",
+    requiresPostgres,
+    async (context) => {
+      const fixture = await setup(context, maintenanceSandbox(75));
+      const owner = await fixture.agent();
+      const candidate = await fixture.revision(owner, 1);
+      const observations: {
+        revisionId: string;
+        active: string | null;
+        existingOnly: true | undefined;
+      }[] = [];
+      await fixture.start({
+        ...fixture.compute,
+        activationOrder: "beforeCommit",
+        async preflight() {},
+        async activateRevision() {},
+        async prepareRevision(revision, dispatch) {
+          observations.push({
+            revisionId: revision.id,
+            active: await fixture.activeRevision(owner),
+            existingOnly: dispatch?.existingHarnessOnly,
+          });
+          return fixture.compute.prepareRevision(revision);
+        },
+      });
+      await fixture.work(candidate);
+      await waitFor(
+        "the worker to revisit the active revision",
+        () => observations.length >= 2 || undefined,
+      );
+      await fixture.stop();
+      assert.deepEqual(observations.slice(0, 2), [
+        { revisionId: candidate.id, active: null, existingOnly: undefined },
+        { revisionId: candidate.id, active: candidate.id, existingOnly: true },
+      ]);
+    },
+  );
+
+  test(
+    "startup refuses a Sandbox maintenance interval for a Compute-owned Harness",
+    requiresPostgres,
+    async (context) => {
+      // Compute applies its own Harness Deployment and ignores existingHarnessOnly, so a
+      // restricted maintenance pass could recreate a Harness whose enrollment inputs retired.
+      const { provisionHarness: _provisionHarness, ...computeOwned } = maintenanceSandbox(60_000);
+      const fixture = await setup(context, computeOwned);
+      assert.throws(
+        () => fixture.start(fixture.compute),
+        /A Sandbox maintenance interval requires provider-owned Harnesses/,
+      );
+    },
+  );
+
+  for (const initialInterval of [60_000, 30_000]) {
+    test(
+      `Sandbox maintenance keeps a durable cadence across restart from ${initialInterval} to 60000 ms`,
+      requiresPostgres,
+      async (context) => {
+        const fixture = await setup(context, maintenanceSandbox(initialInterval));
+        const owner = await fixture.agent();
+        const revision = await fixture.revision(owner, 1);
+        const compute: ComputeDriver = {
+          ...fixture.compute,
+          activationOrder: "beforeCommit",
+          async preflight() {},
+          async activateRevision() {},
+        };
+        const wallNow = Date.now.bind(Date);
+        let clockOffsetMs = 0;
+        context.mock.method(Date, "now", () => wallNow() + clockOffsetMs);
+
+        await fixture.start(compute);
+        await fixture.work(revision);
+        const first = await waitForMaintenanceSuccessor(fixture, revision, initialInterval);
+        await fixture.stop();
+
+        // The replacement processes share the real queue and contend for each existing row.
+        // Only the due time is advanced by the test so the real worker claims the original key.
+        const replacement = await setup(context, maintenanceSandbox(60_000));
+        const contender = await setup(context, maintenanceSandbox(60_000));
+        await replacement.start(compute);
+        await contender.start(compute);
+        let previous = first;
+        // Keep both replacements more than a full interval behind PostgreSQL.
+        // The final pass also checks that a fast worker cannot extend the cadence.
+        for (const offsetMs of [-120_000, -130_000, 120_000]) {
+          clockOffsetMs = offsetMs;
+          const madeDue = await fixture.observerPool.query(
+            "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1 AND state = 'queued'",
+            [previous.idempotency_key],
+          );
+          assert.equal(madeDue.rowCount, 1);
+          const next = await waitForMaintenanceSuccessor(
+            fixture,
+            revision,
+            60_000,
+            previous.idempotency_key,
+          );
+          assert.ok(
+            Number(next.idempotency_key.split(":").at(-1)) >
+              Number(previous.idempotency_key.split(":").at(-1)),
+            "every pass needs a new increasing durable key",
+          );
+          const completed = await fixture.observerPool.query<{
+            state: string;
+            attempt_count: number;
+          }>("SELECT state, attempt_count FROM occ.controller_work WHERE idempotency_key = $1", [
+            previous.idempotency_key,
+          ]);
+          assert.deepEqual(completed.rows, [{ state: "succeeded", attempt_count: 1 }]);
+          previous = next;
+        }
+        await replacement.stop();
+        await contender.stop();
+        assert.equal(await fixture.activeRevision(owner), revision.id);
+      },
+    );
+  }
 
   for (const failure of ["observation", "binding"] as const) {
     test(

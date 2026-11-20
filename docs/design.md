@@ -85,7 +85,10 @@ The API, console, durable worker, PostgreSQL persistence, and Kubernetes packagi
 are implemented. Single-cluster Kubernetes execution places Gateway and Harness in one tenant
 namespace with separate Pods, identities and storage. External access-gateway admission, workload
 token authentication to OCC, and general credential-free model inference remain
-planned. The two-cluster profile is experimental.
+planned. The two-cluster profile is experimental. The Kubernetes Compute Driver's experimental
+[managed OpenShell runtime](reference/drivers/kubernetes-openshell-compute.md)
+uses OpenShell-managed Harness namespaces and storage with a stable Sandbox per
+Agent. Its cluster integration and generation-fenced replacement remain unverified.
 
 <a id="current-limitations"></a>
 <a id="near-term-future-work"></a>
@@ -104,8 +107,9 @@ These approved requirements are not established by the implemented architecture:
 | Runtime trust                | Separate placement is implemented; general mutually authenticated, workload-bound transport and complete two-cluster runtime acceptance remain pending. See [Kubernetes Compute](reference/drivers/kubernetes-compute.md).                                                                                                                             |
 | Resource and policy coverage | Agent-owned SandboxPolicy network additions are implemented. General shared containment policies, the published Harness and Channel resource model, and Restrictions across every integration remain beyond the current contracts. See [resource requirements](design/resources.md) and [Sandbox contract](reference/drivers/sandbox.md).              |
 
-Agent and Plugin Directories, plugin invocation approval workflows, broader audit
-export and retention, Budgets, and Routers remain future work. Existing logging
+Dedicated OpenClaw MCP tools can require human approval for native Gateway-dispatched
+calls; scripts using the credential directly are outside that approval boundary.
+Agent and Plugin Directories, broader plugin approval workflows, audit export and retention, Budgets, and Routers remain future work. Existing logging
 and metrics integrations have their own [operational contracts](guides/observability.md).
 
 ## Control Plane
@@ -130,8 +134,8 @@ ownership and read-only views; the [worker flow](flows/controller-worker.md)
 traces dispatch and persistence.
 
 Compose and Helm initialize the Installation after database migration and before
-starting the API and worker. Only the initializer mounts bootstrap credential
-output. See [startup](flows/platform-startup.md) and
+starting the API and worker. Only the initializer mounts operator-supplied
+bootstrap credential input; upgrades need no retained input. See [startup](flows/platform-startup.md) and
 [bootstrap recovery](guides/deploy/service-keys.md#recover-an-incomplete-bootstrap).
 
 | Component            | Responsibility                                                |
@@ -166,6 +170,12 @@ limits, and [Agent deployment](design/workloads.md#current-provisioning-sequence
 for the provisioning sequence.
 
 ## Drivers
+
+Channel Drivers declare provider destinations. Kubernetes Compute enforces each
+Agent's enabled-channel requirements through a dedicated Envoy egress fleet,
+separate from private workspace ingress. Protected listener ports select Agent
+policies until verified Gateway workload identities are available. See
+[channel egress](reference/drivers/kubernetes-compute/channel-egress.md).
 
 Installation configuration selects compute, configuration, IAM, and Secret
 implementations, plus channel and optional service-account, plugin, repository, Sandbox, and

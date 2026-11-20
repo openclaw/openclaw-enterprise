@@ -1,85 +1,42 @@
+import { installManagedChannelEgressFixture } from "./managed-channel-egress-k3d.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { loadYaml, dumpYaml, waitFor, yamlDocuments } from "./qa-utils.mjs";
-import { protectedText, grantQaSecret } from "./qa-secrets.mjs";
-import { slackApi } from "./harness-topology-k3d-real.mjs";
-import { allMessages, assertSlackBotAuthor, verifySingleSlackDelivery } from "./slack-delivery.mjs";
-import { sessionEvidenceScript } from "./normal-agent-tools.mjs";
+import { waitFor } from "./qa-wait.ts";
+import { protectedText, grantQaSecret } from "./qa-secrets.ts";
+import { slackApi } from "./slack-web-api.ts";
+import { allMessages, assertSlackBotAuthor, verifySingleSlackDelivery } from "./slack-delivery.ts";
+import { parseGatewayObservation } from "./normal-agent-observation-receipts.ts";
+import { sessionEvidenceScript } from "./normal-agent-gateway-evidence.ts";
 
 export async function prepareQaSlack(f) {
+  assert.equal(
+    f.controlPlane,
+    "kubernetes",
+    "live channel egress proof requires the Helm-installed Kubernetes control plane",
+  );
   const configuration = f.configuration.drivers.compute.configuration;
-  if (f.controlPlane === "compose") {
-    const path = join(f.stateDirectory, "compose.yaml");
-    const compose = loadYaml(await readFile(path, "utf8"));
-    compose.services["slack-proxy"] = {
-      image: f.controllerDockerImage,
-      entrypoint: ["node", "apps/controller/src/slack-proxy.mjs"],
-      environment: { NODE_ENV: "production", OCC_SLACK_PROXY_PORT: "3128" },
-      networks: { development: {} },
-      read_only: true,
-      cap_drop: ["ALL"],
-      security_opt: ["no-new-privileges:true"],
-      mem_limit: "128m",
-    };
-    await writeFile(path, dumpYaml(compose), { mode: 0o600 });
-    await f.compose("up", "-d", "--no-deps", "slack-proxy");
-    const id = (await f.compose("ps", "-q", "slack-proxy")).trim();
-    const ip = JSON.parse(await f.run("docker", ["inspect", id]))[0].NetworkSettings.Networks[
-      `${f.cluster}_development`
-    ].IPAddress;
-    const proxyUrl = `http://${ip}:3128`;
-    configuration.runtime.channels = { proxyUrl };
-    compose.services.controller.environment.OCC_CHANNEL_DIRECTORY_PROXY_URL = proxyUrl;
-    await writeFile(path, dumpYaml(compose), { mode: 0o600 });
-  } else {
-    const hostname = `openclaw-enterprise-slack-proxy.${f.state.platformNamespace}.svc`;
-    configuration.runtime.channels = {
-      proxyUrl: `http://${hostname}:3128`,
-      managedProxy: {
-        hostname,
-        namespace: f.state.platformNamespace,
-        podLabels: {
-          "app.kubernetes.io/name": "openclaw-enterprise",
-          "app.kubernetes.io/instance": "openclaw-enterprise",
-          "app.kubernetes.io/component": "slack-proxy",
-        },
-        port: 3128,
-      },
-    };
-    const path = join(f.stateDirectory, "helm-values.json");
-    const values = JSON.parse(await readFile(path, "utf8"));
-    values.slackProxy = { enabled: true };
-    await writeFile(path, JSON.stringify(values), { mode: 0o600 });
-    const manifests = await f.run("helm", [
-      "template",
-      "openclaw-enterprise",
-      "deploy/helm/openclaw-enterprise",
-      "-n",
-      f.state.platformNamespace,
-      "-f",
-      path,
-    ]);
-    const selected = yamlDocuments(manifests)
-      .filter((doc) => {
-        const object = loadYaml(doc);
-        return (
-          object?.metadata?.name?.includes("slack-proxy") ||
-          (["Deployment", "NetworkPolicy"].includes(object?.kind) &&
-            object?.metadata?.name === "openclaw-enterprise-api")
-        );
-      })
-      .join("\n---\n");
-    await f.kubectl(
-      "-n",
-      f.state.platformNamespace,
-      "apply",
-      "-f",
-      await f.write("slack-resources.yaml", selected),
-    );
-  }
+  const path = join(f.stateDirectory, "helm-values.json");
+  const values = JSON.parse(await readFile(path, "utf8"));
+  const { channelEgress } = await installManagedChannelEgressFixture({
+    namespace: f.state.platformNamespace,
+    controllerImage: values.images.controller,
+    workspaceGateway: {
+      apiPodLabels: { "app.kubernetes.io/instance": "openclaw-enterprise" },
+      routing: configuration.gatewayRouting,
+    },
+    controller: { account: "openclaw-enterprise-worker", apiAccount: "openclaw-enterprise-api" },
+    resource: async (kind, name, namespace) =>
+      JSON.parse(await f.kubectl("get", kind, name, "--namespace", namespace, "-o", "json")),
+    kubectl: (...args) => f.kubectl(...args),
+    applyManifest: async (manifest) =>
+      f.kubectl("apply", "-f", await f.write("channel-egress-resources.json", manifest)),
+  });
+  configuration.runtime.channelEgress = channelEgress;
+  values.channelEgress = { ...channelEgress, enabled: true };
+  await writeFile(path, JSON.stringify(values), { mode: 0o600 });
   await f.saveInstallation(f.configuration);
 }
 
@@ -166,7 +123,7 @@ export async function verifyQaSlack(f, agent) {
     const keys = JSON.parse((await f.execRole(agent, "gateway", ["node", "-e", probe])).stdout);
     const matches = [];
     for (const key of keys.filter((key) => key.includes("slack"))) {
-      const proof = JSON.parse(
+      const proof = parseGatewayObservation(
         (
           await f.execRole(agent, "gateway", [
             "node",
@@ -266,8 +223,9 @@ async function verifyNativeSlackRoot(f, agent, slack, identity) {
     await delay(4_000);
   }
   assert.ok(reply, "native message tool must create its intended root message");
+  /** @param {string[]} tools @param {string} pattern */
   const read = async (tools, pattern) =>
-    JSON.parse(
+    parseGatewayObservation(
       (
         await f.execRole(agent, "gateway", [
           "node",
@@ -282,13 +240,19 @@ async function verifyNativeSlackRoot(f, agent, slack, identity) {
       ).stdout,
     );
   const discovered = await read([], reply.ts);
+  assert.ok(discovered.diagnostics, "missing Gateway tool inventory");
   const names = discovered.diagnostics.observedToolNames.filter((name) =>
     /(?:^|[_.])message$/.test(name),
   );
   assert.equal(names.length, 1, "root send must use the native message tool");
   const evidence = await read(names, reply.ts);
+  assert.ok(
+    evidence.calls && evidence.results && evidence.codexTurns,
+    "missing Gateway transcript",
+  );
   assert.equal(evidence.calls.length, 1, "native root send must be attempted only once");
   const call = evidence.calls[0];
+  assert.ok(call?.id, "the native message call must have an identity");
   const result = evidence.results.find((value) => value.toolCallId === call.id);
   assert.ok(
     result && !result.isError && result.matchesResult && result.seq > call.seq,

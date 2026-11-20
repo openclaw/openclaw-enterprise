@@ -17,9 +17,6 @@ import type {
   ChannelDirectoryResult,
 } from "../../packages/contracts/src/index.ts";
 import type { ControllerWorkspaceFilesAccess } from "../../apps/controller/src/gateway/contracts.ts";
-
-import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
-import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion.mjs";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -73,7 +70,6 @@ import {
   GENERIC_DENIAL,
   MALFORMED_REQUEST,
   RESOURCE_CONFLICT,
-  SANDBOX_POLICY_READ_DENIED,
   STOP_REPEAT_CONFIRMATION,
   STOPPED_NO_VERSION,
   WORKSPACE_FILES_UNAVAILABLE,
@@ -81,10 +77,11 @@ import {
   BOUND_SECRET_UNLISTED,
   notIncluded,
   deleteRefused,
-  NAMESPACE_UNAVAILABLE,
   VERSION_READ_DENIED_HEADING,
 } from "../helpers/refusal-text.mjs";
-import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { SANDBOX_POLICY_READ_DENIED, NAMESPACE_UNAVAILABLE } from "../helpers/refusal-access.ts";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 function deferred<T>() {
   let resolve: (value: T | PromiseLike<T>) => void = () =>
@@ -135,6 +132,8 @@ async function slackSelectionValue(locator: Locator): Promise<string> {
 
 export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof fileConsoleApp>) {
   test("Agent delete confirmation can be canceled without sending a write request", async (t) => {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
+    const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
     const fixture = await detailApp(t);
     const namespace = await fixture.createNamespace("Delete cancellation", { ready: true });
     const agent = await fixture.createAgent(namespace.id, "Cancel Candidate", nativeValues("keep"));
@@ -170,7 +169,8 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     const secret = `${cli} secret delete ${harnessSource.id}`;
     assert.equal(await dialog.getByText(configuration, { exact: true }).isVisible(), false);
     assert.equal(await dialog.getByText(secret, { exact: true }).isVisible(), false);
-    await dialog.getByText("View separate cleanup commands").press("Enter");
+    const disclosure = dialog.getByText("View separate cleanup commands");
+    await disclosure.press("Enter");
     await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
     for (const [kind, command] of [
       ["Configuration", configuration],
@@ -185,6 +185,130 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
         .waitFor();
       assert.equal(await page.evaluate(() => globalThis.navigator.clipboard.readText()), command);
     }
+    const clipboard = await page.evaluateHandle(() => {
+      const writes = new Map<string, { accept(): void; deny(): void }>();
+      Object.defineProperty(globalThis.navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: (command: string) =>
+            new Promise<void>((resolve, reject) => {
+              writes.set(command, {
+                accept: resolve,
+                deny: () => reject(new Error("Clipboard denied by test")),
+              });
+            }),
+        },
+      });
+      return (command: string) => {
+        const write = writes.get(command);
+        if (!write) {
+          throw new Error(`No clipboard write for ${command}`);
+        }
+        writes.delete(command);
+        return write;
+      };
+    });
+    function commandRow(command: string) {
+      const row = dialog.locator(".agent-kept-command").filter({ hasText: command });
+      return {
+        command,
+        button: row.getByRole("button"),
+        status: row.getByRole("status", { includeHidden: true }),
+      };
+    }
+    type CommandRow = ReturnType<typeof commandRow>;
+    const configRow = commandRow(configuration);
+    const secretRow = commandRow(secret);
+    async function startCopy(row: CommandRow) {
+      await row.button.press("Enter");
+      const write = await clipboard.evaluateHandle((take, command) => take(command), row.command);
+      return async (outcome: "accept" | "deny") => {
+        await write.evaluate((pending, result) => pending[result](), outcome);
+        await write.dispose();
+      };
+    }
+    const selectionText = () => page.evaluate(() => globalThis.document.getSelection()?.toString());
+    async function assertManualCopy(current: CommandRow, previous: CommandRow) {
+      assert.equal(
+        await current.status.textContent(),
+        "Command selected. Use your copy shortcut to copy it.",
+      );
+      assert.equal(await previous.status.textContent(), "");
+      assert.equal(await selectionText(), current.command);
+      assert.equal(
+        await current.button.evaluate((node) => node.ownerDocument.activeElement === node),
+        true,
+      );
+    }
+
+    // A late success must not replace a newer manual selection, even for the same command.
+    const firstConfig = await startCopy(configRow);
+    assert.equal(await secretRow.status.textContent(), "", "Pending copy clears prior success");
+    const retryConfig = await startCopy(configRow);
+    await retryConfig("deny");
+    await firstConfig("accept");
+    await assertManualCopy(configRow, secretRow);
+
+    // Once denial has settled, switching rows must retire its selection notice in either direction.
+    for (const [current, previous] of [
+      [secretRow, configRow],
+      [configRow, secretRow],
+    ] as const) {
+      const next = await startCopy(current);
+      assert.equal(await previous.status.textContent(), "");
+      await next("deny");
+      await assertManualCopy(current, previous);
+    }
+
+    const pendingConfig = await startCopy(configRow);
+    const latestSecret = await startCopy(secretRow);
+    await latestSecret("deny");
+    await pendingConfig("deny");
+    await assertManualCopy(secretRow, configRow);
+
+    // Collapse ends this attempt. Neither completion while closed nor a rejection after reopening
+    // may select the hidden command or leave feedback for the next visit.
+    const pendingWhileHidden = await startCopy(configRow);
+    await disclosure.press("Enter");
+    assert.equal(await configRow.button.isVisible(), false);
+    await pendingWhileHidden("accept");
+    assert.equal(await configRow.status.textContent(), "");
+
+    await disclosure.press("Enter");
+    const pendingAcrossReopen = await startCopy(configRow);
+    await disclosure.press("Enter");
+    await disclosure.press("Enter");
+    await page.evaluate(() => globalThis.document.getSelection()?.removeAllRanges());
+    await pendingAcrossReopen("deny");
+    assert.equal(await selectionText(), "");
+    assert.equal(await configRow.status.textContent(), "");
+    assert.equal(await secretRow.status.textContent(), "");
+
+    // Keep rejection and reopening in one browser task so the rejection handler runs after both toggles.
+    await configRow.button.press("Enter");
+    await clipboard.evaluate((take, command) => {
+      const details = globalThis.document.activeElement?.closest("details");
+      if (!details?.open) {
+        throw new Error("Expected focus inside the open cleanup disclosure");
+      }
+      take(command).deny();
+      details.open = false;
+      details.open = true;
+    }, configuration);
+    assert.equal(await selectionText(), "");
+    assert.equal(await configRow.status.textContent(), "");
+
+    const canceled = await startCopy(configRow);
+    await cancel.click();
+    await dialog.waitFor({ state: "detached" });
+    await page.getByRole("button", { name: "Delete Agent" }).click();
+    await disclosure.press("Enter");
+    const reopened = await startCopy(secretRow);
+    await reopened("deny");
+    await canceled("deny");
+    await assertManualCopy(secretRow, configRow);
+    await clipboard.dispose();
+
     // Attach the rejection check when the timed wait starts: on a loaded runner the click can
     // outlast the 300 ms window, and a wait that times out with no handler fails the test as an
     // unhandled rejection (finding 1986). This only catches a DELETE sent soon after Cancel; the
@@ -296,6 +420,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     t: TestContext,
     { moveFocusDuringPoll }: { moveFocusDuringPoll: boolean },
   ) {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
     const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["scoped-deleter"] });
     await fixture.bootstrap();
     const namespace = await fixture.createNamespace("Delete scoped", { ready: true });
@@ -553,6 +678,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
   });
 
   test("Repeat deletion preserves bounded retry ownership feedback and ordinary denial guidance", async (t) => {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
     const fixture = await detailApp(t);
     const namespace = await fixture.createNamespace("Retry refusal feedback", {
       ready: true,
@@ -672,6 +798,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
   });
 
   test("failed repeat deletion preserves feedback when a poll was rearmed during its request", async (t) => {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
     // The API's 400 and 409 answers for this route (contractMessage and occ's deleteAgent). Delete
     // has no form, so a schema refusal does not ask to check entered values, and the API's typed
     // 409 sentence shows with the step that recovers (finding 2538).
@@ -768,6 +895,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     t: TestContext,
     { endsAccess, readFails = false }: { endsAccess: boolean; readFails?: boolean },
   ) {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
     const fixture = await detailApp(t);
     const namespace = await fixture.createNamespace(
       `Read before repeat${endsAccess ? " ending access" : ""}${readFails ? " failing" : ""}`,
@@ -881,6 +1009,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
   }
 
   test("An uncertain repeat deletion stays blocked until a successful deleting readback", async (t) => {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
     const fixture = await detailApp(t);
     const namespace = await fixture.createNamespace("Repeat deletion uncertainty", {
       ready: true,

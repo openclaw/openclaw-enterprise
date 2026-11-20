@@ -11,7 +11,7 @@ import { ActivationFailedError } from "../../packages/occ/src/errors.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { selfSigned } from "../helpers/certificates.ts";
 import { observeOpenShellPermissionRefusal } from "../helpers/openshell-permission-diagnostic.ts";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 import { completeSandboxRevision } from "./sandbox-driver-revision-fixture.ts";
@@ -343,9 +343,9 @@ async function fixture(t: TestContext, options: Options = {}) {
   };
   const driver = new OpenShellSandboxDriver(
     {
-      gateway: { workspaceMode: "operator" },
+      integrationMode: "legacy",
+      gateway: {},
       kubernetes: {
-        runtimeClassName: "openshell-sandbox",
         serviceAccount: { mode: "gatewayConfigured" },
         sandboxDataMount: {
           subPath: "workspace",
@@ -416,6 +416,7 @@ async function fixture(t: TestContext, options: Options = {}) {
           image: "runtime@sha256:" + "a".repeat(64),
           command: ["codex", "app-server"],
           workspaceMounts: [],
+          retainedDirectories: [],
           environment: [{ name: "APP_SERVER_PORT", value: "8080" }],
           files: [],
           credentialAttachments: [],

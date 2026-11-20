@@ -67,6 +67,11 @@ func (app *application) installationHandoffCommand(action string) *cobra.Command
 					return err
 				}
 				result = readInstallationAttempt(ctx, frozen, kubeContext, intent, uid)
+				progress, err := installationBootstrapProgress(receipt)
+				if err != nil {
+					return err
+				}
+				fmt.Fprint(out, progress)
 				fmt.Fprintf(out, "Helm outcome: %s.\n", outcome)
 			} else {
 				result = readInitialization(ctx, kubeconfig, kubeContext, namespace, name, release, expectedUID)
@@ -320,22 +325,50 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID, 
 			return initializationResult{state: initializationUnresolved, message: "Initialization: unknown. The Job runs an initialization step as a sidecar; Job completion does not show that step succeeded."}
 		}
 	}
-	hook := "install"
 	// Match the chart's Node invocation and the exact contents of
 	// deploy/helm/openclaw-enterprise/files/check-installation.mjs.
-	if len(init) == 2 && init[0].Name == "installation-check" && slices.Equal(init[0].Command, []string{"node"}) &&
+	checked := len(init) == 2 && init[0].Name == "installation-check" && slices.Equal(init[0].Command, []string{"node"}) &&
 		len(init[0].Args) == 3 && init[0].Args[0] == "--input-type=module" && init[0].Args[1] == "-e" &&
-		supportedInstallationCheck(init[0].Args[2]) {
-		init, hook = init[1:], "upgrade"
+		supportedInstallationCheck(init[0].Args[2])
+	if checked {
+		init = init[1:]
 	}
 	is := func(cs []container, name string, args ...string) bool {
 		return len(cs) == 1 && cs[0].Name == name && len(cs[0].Command) == 0 && slices.Equal(cs[0].Args, args)
 	}
-	// Match the current chart: first installs require the empty-database guard.
-	const migrate = "scripts/migrate-production.mjs"
-	migrationMatches := hook == "upgrade" && is(init, "migration", migrate) ||
-		hook == "install" && is(init, "migration", migrate, "--expect-empty")
-	if (expectedAttempt != "" && hook != "install") || !migrationMatches || !is(p.Containers, "bootstrap", "scripts/bootstrap-installation.mjs") {
+	const guardedMigrationSHA256 = "c8719ed6cf87bca2f389663f517c7191b0118d7045ebb359344905234c5f2282"
+	const legacyMigrationSHA256 = "4a6a55d777d238c127c3e0b9d357d87bdcdd91ad9937a2e5460a43e6dd7dd202"
+	// Match the chart wrapper exactly, while recognizing retained direct-path Jobs.
+	migration := func(flags ...string) bool {
+		if len(init) != 1 || init[0].Name != "migration" || len(init[0].Command) != 0 {
+			return false
+		}
+		a := init[0].Args
+		if len(a) == 3+len(flags) && a[0] == "-e" && a[2] == "--" && slices.Equal(a[3:], flags) {
+			switch fmt.Sprintf("%x", sha256.Sum256([]byte(a[1]))) {
+			case guardedMigrationSHA256:
+				return true
+			case legacyMigrationSHA256:
+				// Older wrappers could invoke image programs that ignored flags.
+				return len(flags) == 0
+			}
+		}
+		// A direct historical JavaScript entry may also ignore mode flags.
+		return is(init, "migration", append([]string{"scripts/migrate-production.ts"}, flags...)...) ||
+			(len(flags) == 0 && is(init, "migration", "scripts/migrate-production.mjs"))
+	}
+	var hook string
+	switch {
+	case checked && migration("--expect-empty"):
+		hook = "install"
+	case checked && expectedAttempt == "" && migration():
+		hook = "upgrade"
+	case checked && expectedAttempt == "" && migration("--require-current"):
+		hook = "separate upgrade"
+	}
+	bootstrap := is(p.Containers, "bootstrap", "scripts/bootstrap-installation.mjs") ||
+		(hook == "install" && is(p.Containers, "bootstrap", "scripts/bootstrap-installation.mjs", "--require-fresh"))
+	if hook == "" || !bootstrap {
 		return initializationResult{state: initializationUnresolved, message: "Initialization: unknown. Job steps do not match the supported chart."}
 	}
 	state := job.Status.state()
@@ -344,7 +377,11 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID, 
 	case initializationFailed:
 		message = "Initialization Job: failed. Inspect this attempt; migration or bootstrap might already have taken effect."
 	case initializationComplete:
-		message = "Initialization Job (" + hook + " hook): complete. The chart reports migration and bootstrap completed (created or verified existing installation). Current database state and external provisioning are not verified. This Job does not establish Helm release status or whether the API and worker Deployments rolled out and are ready."
+		steps := "migration and bootstrap completed (created or verified existing installation)"
+		if hook == "separate upgrade" {
+			steps = "schema verification and bootstrap completed (created or verified existing installation)"
+		}
+		message = "Initialization Job (" + hook + " hook): complete. The chart reports " + steps + ". Current database state and external provisioning are not verified. This Job does not establish Helm release status or whether the API and worker Deployments rolled out and are ready."
 	}
 	// Helm reuses the name; the UID identifies this Job, not an API attempt.
 	message += fmt.Sprintf("\nObserved Job %s/%s, UID %+q", namespace, name, m.UID)

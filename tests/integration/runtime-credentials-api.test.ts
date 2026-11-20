@@ -40,22 +40,22 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
-import { createControllerAuth } from "../helpers/password-hasher.mjs";
+import { createControllerAuth } from "../helpers/password-hasher.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
-import { jsonRequestInit } from "../helpers/inject-json.mjs";
+import { jsonRequestInit } from "../helpers/inject-json.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver, registerAndSelectDrivers } from "../helpers/development.mjs";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
+import { selfSigned } from "../helpers/certificates.ts";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { reservePort } from "../helpers/available-port.ts";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
 import { EMBEDDED_API_KEY_REQUIRED } from "../helpers/refusal-text.mjs";
 
 const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
@@ -1190,7 +1190,7 @@ test("first deployment requires Agent read and operate only when generating cred
   for (const { label, agentActions, deniedAction } of [
     { label: "without-agent-read", agentActions: [], deniedAction: "read" },
     { label: "without-agent-operate", agentActions: ["read"], deniedAction: "operate" },
-  ]) {
+  ] as const) {
     const { principal, session } = await fixture.createPrincipal(label, (identity) => {
       const roleId = `deploy-${randomUUID()}`;
       grantRole(fixture.policy, identity.id, {

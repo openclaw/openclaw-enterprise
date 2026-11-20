@@ -1,4 +1,3 @@
-import { extractImageFile as extractOpenShellImageFile } from "../../scripts/lib/image-file.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -18,15 +17,14 @@ import {
   projectOpenShellGitRetention,
   selectOpenShellGitWithdrawalDenials,
 } from "../../scripts/ci/openshell-git-retention.mjs";
-import { createTlsMaterial, run } from "../fixtures/repository-credentials/process.mjs";
+import { extractImageFile } from "../../scripts/lib/image-file.ts";
+import { createTlsMaterial, run } from "../fixtures/repository-credentials/process.ts";
 import { startSkipperPrivateGitOrigin } from "../fixtures/skipper-private-git-origin.mjs";
-import { availablePort } from "./available-port.mjs";
-import { listen } from "./listen.mjs";
+import { availablePort } from "./available-port.ts";
+import { listen } from "./listen.ts";
 import { localFirstAgentStack, ownFirstAgentWork } from "./local-first-agent-stack.mjs";
 import { localOpenShellGatewayOptions } from "./local-openshell-gateway.mjs";
 import { stopProcess } from "./stop-process.mjs";
-
-export { extractOpenShellImageFile };
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { loadYaml } = await import(require.resolve("@kubernetes/client-node"));
@@ -199,19 +197,25 @@ async function certificates(command, directory, originHost, authorityHost) {
   };
 }
 
+/**
+ * @param {{
+ *   command: (executable: "docker" | "k3d", args: string[], options?: import("../../scripts/lib/image-file.ts").ImageFileTextOptions) => Promise<string>,
+ *   cleanup: Array<() => Promise<unknown>>,
+ *   directory: string, cluster: string, ca: string,
+ *   checkpoint: (event: string, data: Record<string, string>) => Promise<void>
+ * }} options
+ */
 async function trustedSupervisor({ command, cleanup, directory, cluster, ca, checkpoint }) {
   // Read the same stock pin used by Local Setup rather than maintaining another
   // independent image version. Candidate supplier builds are rejected at entry.
   const source = await readFile(join(root, "internal/occdev/openshell.go"), "utf8");
-  const parent = source.match(/openShellSupervisorImage\s*=\s*"([^"]+)"/)?.[1];
-  assert.match(
-    parent ?? "",
-    /^ghcr\.io\/nvidia\/openshell\/supervisor:0\.1\.8@sha256:[a-f0-9]{64}$/,
-  );
+  const parent = source.match(/openShellSupervisorImage\s*=\s*"([^"]+)"/)?.[1] ?? "";
+  assert.match(parent, /^ghcr\.io\/nvidia\/openshell\/supervisor:0\.1\.8@sha256:[a-f0-9]{64}$/);
   const context = join(directory, "supervisor-trust");
   await mkdir(context, { mode: 0o700 });
+  /** @type {(image: string, filename: string, destination: string) => Promise<void>} */
   const extract = (image, filename, destination) =>
-    extractOpenShellImageFile({ command, cleanup, image, filename, destination });
+    extractImageFile({ command, cleanup, image, filename, destination });
   const stockCertificates = join(directory, "stock-ca-certificates.crt");
   await extract(parent, "/etc/ssl/certs/ca-certificates.crt", stockCertificates);
   await extract(parent, "/openshell-supervisor", join(directory, "stock-supervisor"));
@@ -389,7 +393,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     "--namespace",
     platform,
   ];
-  const serviceKeyFile = join(stack.directory, "initial-admin-service-key.json");
+  const serviceKeyFile = state.keyPath;
   const admin = JSON.parse(await readFile(serviceKeyFile, "utf8"));
   const request = createOpenShellGitApi({
     origin: stack.environment.OCC_URL,
@@ -397,6 +401,11 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     signal: t.signal,
     after: (operation) => cleanup.push(operation),
   });
+  // Locally prepared bootstrap JSON contains only data.key. Confirm access
+  // and obtain Installation metadata from the installed API, not the key file.
+  const installed = await request("GET", "/installation");
+  assert.equal(typeof installed.id, "string");
+  assert.ok(installed.id);
   const namespaces = await request("GET", "/namespaces");
   const defaults = namespaces.filter(({ name }) => name === "default");
   assert.equal(defaults.length, 1);
@@ -408,27 +417,6 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
   assert.equal(namespaceList.items.length, 1);
   const sandboxNamespace = namespaceList.items[0].metadata.name;
   assert.equal(namespaceList.items[0].metadata.labels["openshell.ai/openclaw-workspace"], "true");
-  const secret = await request("POST", `/namespaces/${namespace.id}/secrets`, {
-    name: "installed-git-model",
-    value: process.env.OPENAI_API_KEY,
-  });
-  const registeredModel = await request("POST", `/namespaces/${namespace.id}/credential-sources`, {
-    name: "installed-git-model",
-    type: "openai",
-    config: { authorized_base_url: "https://api.openai.com/v1" },
-    secrets: { api_key: secret.ref },
-  });
-  const modelSource = await eventually("Gateway-owned model source", async () => {
-    const current = await request(
-      "GET",
-      `/namespaces/${namespace.id}/credential-sources/${registeredModel.id}`,
-    );
-    assert.equal(current.ownerCapability, "credential_gateway");
-    assert.equal(current.egress, undefined);
-    assert.notEqual(current.status?.state, "failed", "model source registration failed");
-    return current.state === "ready" && current.status?.state === "ready" ? current : undefined;
-  });
-
   const network = JSON.parse(
     await command("docker", ["network", "inspect", `k3d-${state.cluster}`]),
   );
@@ -648,9 +636,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
   if (allowStandingApprovals) {
     // The production helper verifies that the authenticated API and Helm target
     // belong to the same Installation before reading the fleet inventory.
-    const { id } = await request("GET", "/installation");
-    assert.equal(typeof id, "string");
-    installationSecret.metadata.annotations = { "openclaw.dev/installation-id": id };
+    installationSecret.metadata.annotations = { "openclaw.dev/installation-id": installed.id };
   }
   await apply([installationSecret]);
   const values = JSON.parse(await readFile(join(stack.directory, "helm-values.json"), "utf8"));
@@ -694,6 +680,29 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     ],
     { timeout: 190_000 },
   );
+
+  // Register after enabling repository.openShell: Git configuration must not divert model
+  // registration into the Git-only Proxy. All installed Git journeys use this fresh source.
+  const secret = await request("POST", `/namespaces/${namespace.id}/secrets`, {
+    name: "installed-git-model",
+    value: process.env.OPENAI_API_KEY,
+  });
+  const registeredModel = await request("POST", `/namespaces/${namespace.id}/credential-sources`, {
+    name: "installed-git-model",
+    type: "openai",
+    config: { authorized_base_url: "https://api.openai.com/v1" },
+    secrets: { api_key: secret.ref },
+  });
+  const modelSource = await eventually("Gateway-owned model source", async () => {
+    const current = await request(
+      "GET",
+      `/namespaces/${namespace.id}/credential-sources/${registeredModel.id}`,
+    );
+    assert.equal(current.ownerCapability, "credential_gateway");
+    assert.equal(current.egress, undefined);
+    assert.notEqual(current.status?.state, "failed", "model source registration failed");
+    return current.state === "ready" && current.status?.state === "ready" ? current : undefined;
+  });
 
   const supervisor = await trustedSupervisor({
     command,

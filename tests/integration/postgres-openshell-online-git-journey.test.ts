@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { narrowOnlineGitJourney } from "../helpers/postgres-repository-set-journey.ts";
-import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
+import { fixtureRepository } from "../fixtures/repository-credentials/github.ts";
 import { gitCommandBodies } from "../helpers/openshell-online-git-journey.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { standingExecutionPlatform } from "../helpers/postgres-standing-execution.ts";
@@ -53,7 +53,11 @@ for (const { name, action, expectedDenial } of [
         admissionId,
         removeBinding,
         withdraw,
+        recover,
       }) => {
+        // The production route and custody joins must preserve an ongoing execution across
+        // fresh supervisor evidence. The stop/removal checks below still withdraw that authority.
+        await recover();
         assert.equal(await heldCredentialStatus(), 200);
         const receipts = async () =>
           (

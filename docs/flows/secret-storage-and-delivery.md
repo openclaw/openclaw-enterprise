@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: "2026-11-10"
-last_updated_session: "authoring-run/d6e637ad-6f81-4bcd-9a8e-c6bc1e9bff7b"
+updated: "2026-11-16"
+last_updated_session: "authoring-run/c2d26d3b-d809-484b-b391-f6736ce6c822"
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -94,18 +94,23 @@ a Namespace-derived name, exact Namespace ownership metadata, and a fixed
 persists immutable Namespace, driver, and backend metadata while public metadata
 omits the backend locator and returns `{ kind: "secret", namespaceId, id }`.
 
-Known OCC transaction failure can compensate the exact created object. An
-unknown commit outcome must not trigger destructive compensation. A failed create
-deletes the owned object it may have stored under its name. A create refused because
-its stored object was rewritten deletes it, pinned to the answered UID and
-resourceVersion. There is no value journal or automatic replay; a create still in
-flight can require operator recovery.
+A definite OCC transaction failure can compensate the created object; an unknown
+commit cannot. A failed create deletes the owned object under its requested name.
+A successful but refused create uses the returned UID and resourceVersion.
+There is no value journal or automatic replay; a pending create can require
+operator recovery.
 
-Secret create, update and delete share the 12-second Kubernetes budget of
-[Configuration writes](configuration-driver/persistence-and-revisions.md). A Kubernetes
-write is sent only with at least 2 seconds of it left; otherwise the request fails with
-`503` and the write is not sent. A create that was sent and failed is cleaned up after
-the budget; a create that was not sent stored nothing and gets no cleanup read.
+`privateSecretStore` applies the same conditional removal to confirmed but
+refused OAuth-client creates. OCC keeps the hidden registration and selected
+Driver until `cleanupOAuthClients` confirms deletion or absence. Ordinary private
+ownership checks and unknown SQL outcomes remain unchanged. See
+[private registration behavior](../reference/drivers/kubernetes-secret.md#installation-private-oauth-client-secrets).
+
+Secret mutations share the 12-second Kubernetes budget of
+[Configuration writes](configuration-driver/persistence-and-revisions.md).
+A write needs at least 2 seconds remaining; otherwise it returns `503` without
+being sent. Cleanup for a sent create runs outside that budget. A create refused
+before sending needs no cleanup read.
 
 ### 3. Bind a source, then admit references
 
@@ -147,36 +152,32 @@ execution topology.
 `scripts/first-agent.ts:main`;
 `scripts/first-agent.ts:assertManagedRevision`;
 `internal/occdev/kubernetes.go:openShellInstallationConfiguration`;
-`scripts/first-agent-database.mjs:grantFirstAgentSecret`
+`scripts/first-agent.ts:ensureModelCredentialGrant`
 
-The [tool](../../scripts/first-agent.mjs) uses the persistent `./bin/occ dev up`
-installation. Before Kubernetes or OCC calls, it requires same-checkout v3
-Kubernetes development state and marker. Both Sandbox Drivers require the
-recorded canonical HTTPS Console origin, browser port, and cluster Agent domain.
-API requests use the recorded loopback HTTP endpoint. With `sandboxDriver: "none"`,
-the helper defaults to embedded OpenClaw. Use `--harness codex` for dedicated Codex.
-OpenShell requires `--harness codex`, and `--control-ui` requires OpenShell.
-`scripts/first-agent.ts:loadLocalInstallation` selects the recorded Unix socket
-and removes inherited Docker TLS settings. Compose queries the recorded
-controller port and PostgreSQL service without another daemon's certificates.
-With the [bootstrap service key](../../packages/iam/src/index.ts), it creates a
-Secret, Configuration, and named Agent through the OCC HTTP API. A new Agent uses
-`openai/gpt-6-astra` unless `OPENCLAW_FIRST_AGENT_MODEL` selects another authorized
-plain model ID; a repeat without an override keeps the recorded model, and a
-conflicting override is rejected. Bootstrap already has Secret `operate`; the
-Agent does not.
+The [tool](../../scripts/first-agent.ts) requires the same checkout's v3
+Kubernetes state and marker. Both Sandbox Drivers require the recorded HTTPS
+Console origin, browser port, and Agent domain; OCC uses recorded loopback HTTP.
+Embedded OpenClaw uses `sandboxDriver: "none"`. OpenShell requires `--harness codex`;
+`--control-ui` requires OpenShell.
+`loadLocalInstallation` uses the recorded Unix socket and clears inherited Docker
+TLS settings before Compose queries the controller port and PostgreSQL service.
+Local Setup saves its authenticated Installation ID in private state. Before
+provisioning, the tool checks that ID against OCC and reads only `data.key` from
+the credential file. It creates the Secret, Configuration, and named Agent through
+the OCC HTTP API. New Agents default to
+`openai/gpt-6-astra`; `OPENCLAW_FIRST_AGENT_MODEL` accepts an authorized plain model
+ID. Reruns retain that choice and reject conflicts.
 
-Without OpenShell, the tool opens the recorded local PostgreSQL service. One
-transaction verifies the Namespace, Agent, and Secret, then grants the Agent's
-existing principal `operate` on that exact Secret. It verifies the bootstrap
-identity, honors IAM restrictions, and audits a new grant.
+Without OpenShell, the tool grants the Agent's returned `servicePrincipalId`
+exact `secret:operate` through Namespace IAM operations. The server resolves the
+caller from its key, authorizes through IAM, and audits mutations. Reruns reuse
+exact bindings and verify Role permissions, including a Role left by a failed
+binding. Database access only reads existing Secret metadata.
 
-With OpenShell, the tool registers the Secret as an `openai` or `codex-pat`
-CredentialSource and uses the public Namespace IAM API to grant the Agent principal exact
-`credential_source:operate`. It does not grant Secret access. `--replace-key`
-updates the Secret and asks the Credential Gateway to reread it before deploying
-a new version. The private helper record freezes the Harness and Sandbox Driver
-choices so a rerun cannot silently change topology.
+With OpenShell, it registers an `openai` or `codex-pat` CredentialSource and grants
+the Agent exact `credential_source:operate`, not Secret access, through IAM.
+`--replace-key` updates the Secret and requests a Credential Gateway reread before
+deployment. The private record prevents Harness or Sandbox Driver changes on reruns.
 `scripts/first-agent.ts:withRecord` creates the PID lock and atomic record
 replacement with explicit owner read/write mode `0600`, independent of the
 process umask. An existing lock stops the command before record access or
@@ -195,11 +196,13 @@ with the `occ agent deploy` command. Local OpenShell requires the Driver-owned
 and `approvalsReviewer: "user"` for API-key and PAT sources. Prior PAT revisions
 with `workspace-write` are recognized; new deployments use current policy.
 Other workspace or Configuration differences fail drift checks.
-After OCC selects the version, [`findGateway`](../../scripts/first-agent-model.mjs)
+After OCC selects the version, [`findGateway`](../../scripts/first-agent-model.ts)
 resolves `openclaw.dev/namespace`. In this single-cluster setup, embedded and
 dedicated Gateways share the provider-owned Harness namespace. It requires exact Agent
 labels, the revision ConfigMap mount, and a Running, Ready Gateway Pod before
-sending the prompt. Embedded OpenClaw requires the key in the Gateway container;
+sending the prompt. [The verifier](../../scripts/first-agent-model.ts) passes its
+type-stripped JavaScript probe to `kubectl exec`. The nonce and optional prompt
+travel on standard input. Embedded OpenClaw requires the key in the Gateway container;
 dedicated Codex keeps it in its Pod or Sandbox. Experimental two-cluster placement
 belongs to Kubernetes Compute; this helper never infers placement from execution mode.
 `scripts/first-agent.ts:main` distinguishes credential rejection from policy refusal
@@ -335,6 +338,10 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-16 14:46: Bind the first-Agent helper to confirmed Installation state and use authenticated IAM operations for exact model credential grants. (authoring-run/c2d26d3b-d809-484b-b391-f6736ce6c822 - 6255bbe8fe564e52941b311a7ce8ce8699d1f236)
+
+- 2026-11-11 08:41: Compensate confirmed but refused Installation-private Secret creation without changing ordinary ownership or cleanup custody. (authoring-run/ed486d39-4be4-45b1-a9ac-46e7f93d38bc - 228632a152f96c22a4d7c9aa7554c6ba22911bd4)
 
 - 2026-11-10 17:23: Require inspected recovery for existing first-Agent locks; preserve creator-only cleanup. (authoring-run/d6e637ad-6f81-4bcd-9a8e-c6bc1e9bff7b - 6e4cf8ff54412aa15773039ffc471e029a8dbfa8)
 

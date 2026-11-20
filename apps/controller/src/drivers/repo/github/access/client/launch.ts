@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { readClientConfiguration, requireGhMaterial } from "./config.ts";
 import { parseGhInvocation, prepareGhCommand, type ClientCommand } from "./commands.ts";
 import { createClientEnvironment } from "./environment.ts";
+import { requireCurrentBinding } from "./manifest.ts";
 import { singleSessionGitConfiguration } from "./native-git.ts";
 
 export async function executeClientCommand(
@@ -60,13 +61,9 @@ export async function launchClient(
       process.env,
     );
   }
-  if (configuration.deadlineWallMs <= Date.now()) {
-    throw new Error("repository-session-expired");
-  }
+  requireCurrentBinding(configuration);
   await requireGhMaterial(configuration, sessionDirectory);
-  if (configuration.deadlineWallMs <= Date.now()) {
-    throw new Error("repository-session-expired");
-  }
+  requireCurrentBinding(configuration);
   const env = createClientEnvironment(
     configuration,
     sessionDirectory,

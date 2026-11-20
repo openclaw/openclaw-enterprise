@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-11-12
-last_updated_session: authoring-run/5c61b5ae-c933-43cd-8aef-ad925fada92c
+updated: 2026-11-19
+last_updated_session: authoring-run/08c23986-7eaa-48cf-aeff-d53da1475676
 ---
 
 # Agent Native Admin UI Flow
@@ -12,7 +12,7 @@ OCC authorizes exact-Agent browser access through the OCE session or a host-only
 
 ## Entry Points
 
-- Trigger: Console opts into native admin during Agent creation, opens an Agent native admin URL, or `scripts/first-agent.mjs --control-ui` creates a compatible Agent in Local Setup with OpenShell.
+- Trigger: Console opts into native admin during Agent creation, opens an Agent native admin URL, or `scripts/first-agent.ts --control-ui` creates a compatible Agent in Local Setup with OpenShell.
 - Source: `scripts/first-agent.ts:nativeConfiguration`
 - Source: `apps/controller/src/console/agents/native-admin.mts:renderNativeAdminAccess`
 - Source: `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
@@ -49,7 +49,7 @@ graph TD
   J -->|no| Y["Return unavailable"]
   I -->|yes| K{"Agent desired running?"}
   K -->|no| ST["Return stopped with derived origin"]
-  K -->|yes| R2{"Newer exclusive replacement?"}
+  K -->|yes| R2{"Newer exclusive replacement<br/>without a matching pre-stop record?"}
   R2 -->|yes| Y
   R2 -->|no| M{"Native config supported?"}
   M -->|no| N["Return unsupported with derived origin"]
@@ -111,17 +111,16 @@ admin independently of device scopes. Existing helper-owned names keep this sele
 
 `apps/controller/src/console/agents/native-admin.mts:renderNativeAdminAccess`
 
-Agent detail reads `${path}/native-admin` when `operate` or `administer` is allowed
-or unknown. Disabled/denied access stays hidden; other refusals explain why.
-Only `available` enables **Open chat** or **Open Agent UI**. Shared-cookie mode
-uses `noopener noreferrer`. Host-only exchange opens a window and completes
-step 5a, accepting challenges only from that window and origin. Redemption
-clears `window.opener`; errors close the pending window. An audited `403` in tab `sessionStorage` suppresses reads
-until logout, sign-in, or a new tab. `activeRevisionId` or `desiredRuntimeState`
-changes refresh access; concurrent requests coalesce into one follow-up.
-Browsing a historical version does not change the selected destination.
-Stopped/unsupported states offer **Open draft**. Unavailable states offer
-**View deployment** for readable versions, otherwise **Refresh access**.
+Agent detail reads `${path}/native-admin` if either permission is allowed or
+unknown. Disabled or denied access stays hidden. Only `available` offers
+**Open chat** or **Open Agent UI**. Shared cookies use `noopener noreferrer`.
+Step 5a accepts challenges from the opened window and origin. Redemption clears
+`window.opener`. Errors close the window. An audited `403` suppresses reads via
+`sessionStorage` until logout, sign-in or a new tab. Changes to `activeRevisionId`
+or `desiredRuntimeState` refresh access. Concurrent reads coalesce into one
+follow-up. Historical browsing keeps the selected destination. Stopped or
+unsupported offers **Open draft**. Unavailable offers **View deployment** if
+readable or **Refresh access**.
 
 OCE owns durable configuration. Runtime notices come from
 `apps/controller/src/drivers/compute/runtime-startup.ts:gatewayManagedModeEnvironment`;
@@ -149,14 +148,16 @@ admission remains in `apps/controller/src/index.ts`.
 
 `ResourceConflictError` becomes only `status: "stopped"` for an authorized stopped Agent without a selected version, or for an operator whose Agent is stopping. `NoActiveAgentRevisionError` for a running Agent awaiting activation returns `unavailable`. Other dependencies, including IAM/State outages, remain `503` before gateway routing.
 
-With a selected version, OCC derives its native target. An administrator viewing a non-running Agent with a selected version receives `stopped` with host/origin; a newer exclusive replacement returns `unavailable`. Unsupported trusted-proxy auth, machine admin grants/device auto-approval, `controlUi.enabled`, exact `allowedOrigins`, or host-header/device-auth settings return `unsupported` with the target and `reason`.
+OCC derives the selected version's target. An administrator viewing a non-running Agent receives `stopped` with the host and origin. For a newer exclusive replacement, OCC rechecks access to the selected predecessor. The saved record must name that predecessor and have phase `pre-stop`. OCC returns `unavailable` after the worker records [`stopping`](../reference/agents/planned-replacement.md) or if the matching record is missing.
 
-Compute `id` and `implementation` must match `revision.compute`; changing selection does not migrate versions. A mismatch raises `503 DEPENDENCY_UNAVAILABLE` before endpoint/key/transport. Chat selects `getGatewayChatEndpoint`, administration selects `getGatewayEndpoint`. Missing or unclean private `wss:` endpoints return `unsupported`; chat never falls back to administration. Only `available` carries `gatewayBase`, omitted from browser responses by `nativeAdminAvailabilityData`.
+The target accompanies an [`unsupported` reason](../reference/agent-native-admin.md#unsupported-reasons). `not-enabled` means the Configuration did not opt this Agent into browser chat. `configuration` means another native setting prevents access.
+
+Compute `id` and `implementation` must match `revision.compute`. A mismatch returns `503 DEPENDENCY_UNAVAILABLE` before endpoint or key lookup or transport. Chat uses `getGatewayChatEndpoint` with no fallback. Administration uses `getGatewayEndpoint`. A missing or invalid private `wss:` endpoint returns `unsupported` with reason `compute`. Only `available` carries `gatewayBase`, which `nativeAdminAvailabilityData` omits from browser responses.
 
 ### 4. OCC derives the isolated Agent host
 
 `apps/controller/src/gateway/native-admin.ts:nativeAdminTarget`
-`apps/controller/src/gateway/native-admin-host.mjs:deriveNativeAdminHost`
+`apps/controller/src/gateway/native-admin-host.ts:deriveNativeAdminHost`
 
 Overlong suffixes refuse native targets after authorization; opt-in fails before persistence.
 
@@ -202,46 +203,36 @@ account or grant. See [session limits](../reference/agent-native-admin.md#host-o
 `apps/controller/src/http/native-admin.ts:interceptNativeAdminHttp`
 `apps/controller/src/http/native-admin.ts:resolveNativeAdminAgentHost`
 
-The `onRequest` hook keeps ordinary controller routes off subdomains of the
-configured Agent domain, except the Console host. This also applies when native
-access is disabled and the domain is retained.
+The `onRequest` hook blocks ordinary controller routes on Agent subdomains
+except the Console host, even when native access is disabled.
 
-For proxy admission, OCC authenticates the session or handle and resolves the IAM
-identity. Before Agent-reference lookup, OCC requires a normalized hostname of
-`agent-` followed by exactly 32 lowercase hexadecimal characters, a dot, and the
-exact configured domain. Malformed hostnames fail before lookup or proxying.
-For well-formed keys, the same resolver scans Installation Agent references and
-refuses unknown, deleted or ambiguous hosts. OCC selects `admin` or `chat` and
-checks version and configuration.
+OCC authenticates the session or handle and resolves the IAM identity. Before
+lookup it requires the host `agent-<32 lowercase hex>.<configured domain>`. It
+scans Installation Agent references and rejects unknown, deleted or ambiguous
+hosts. OCC selects `admin` or `chat` and checks the version and Configuration.
 
 Attributable IAM denials get one audit attempt, even after the five-second
 admission wait, disconnect or shutdown. Timely denials await that append before
-returning `403`. Classified dependency failures, append failures and admission
-timeouts return `503`; unavailable Agents remain `403`.
+returning `403`. Classified dependency failures, append failures, admission
+timeouts and, for an authorized caller, a deployment replacing or activating the
+version (`agent_transition`) return `503`, so the Agent UI keeps reconnecting.
+Stopped and unsupported Agents remain `403`; an authorized page load gets **Agent
+unavailable**.
 For HTTP admission refusals, `http.completed` records a fixed `nativeAdmissionReason`,
 without URLs, cookies, identities or error text. Early guards and post-admission
 failures may omit it.
 
-Without a session, supported top-level HTML navigations with
-`Sec-Fetch-User: ?1` redirect to the Console, carrying only the opaque host key.
-Without that header (including Safari), they get a 403 **Sign in** link.
-Link previews, APIs, writes and WebSockets remain refused. See the supported
-[paths and session segments](../reference/agent-native-admin.md#authorization-and-availability).
-
-Different-version refusals return eligible navigations an HTTP 403
-**Agent version changed** page linking to the Console. Other refusals retain their
-handling; cookies remain unchanged and no automatic relaunch occurs.
-
-Browser permission denials return HTTP 403 linking to `/console/agents` on the
-configured public origin. JSON refusals name the required permission. Neither
-names the Agent; unknown hosts get identical text. WebSocket refusals remain unchanged.
+See [navigation and sign-in rules](../reference/agent-native-admin.md#authorization-and-availability)
+for Console redirects, **Sign in**, and **Agent version changed**. Version
+refusals leave cookies intact and do not relaunch. Permission refusals link to
+`/console/agents` on the public origin or name the required permission in JSON.
+The text omits Agent identity and matches unknown-host refusals.
 
 Status and proxy checks reuse one Better Auth lookup for identity, expiry and
 attribution. Each WebSocket lease checks the original session, selected mode and Agent again. After handling
 stopped, replacing or unsupported Agents, admission rechecks both Compute owner
 fields. A mismatch returns HTTP `403` or closes an upgrading socket without an
-HTTP response, before gateway-key lookup or connection. A failed lease closes
-both sockets.
+HTTP response, before gateway-key lookup. A failed lease closes both sockets.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminHttp`
 
@@ -259,10 +250,10 @@ The proxy blocks service-worker scripts, adds CSP `worker-src 'none'`, rewrites
 same-upstream redirects to the Agent origin, and strips upstream `Set-Cookie`
 and `Clear-Site-Data`.
 
-An upstream transfer failure stops the request. Before sending response headers,
-the proxy returns `503`; afterwards it aborts the response. An avatar `502`
-becomes an empty `404` for the initials fallback, and the proxy cancels its
-upstream body.
+A transfer failure, or the route proxy's `503` for an unreachable Gateway, before
+response headers gives `503` (a page load: **Agent not responding**); afterwards
+the proxy aborts the response. An avatar `502` becomes an empty `404` (initials
+fallback).
 
 ### 7. OCC proxies native WebSocket upgrades
 
@@ -339,6 +330,14 @@ admin Configuration remains Pod-local.
 
 ## Changelog
 
+- 2026-11-19 06:03: Add the **Agent unavailable** page. (authoring-run/08c23986-7eaa-48cf-aeff-d53da1475676 - 4c2da280f8ee1c143ac1d34c63b6e7fac6a3ac83)
+
+- 2026-11-19 01:23: A deployment in progress answers authorized Agent-host HTTP with `503`. (authoring-run/ef3e9c03-7ddd-43c6-a55f-0460c8daed7b - 50ba6e3c180341cddc63528b98c21da57508ad2b)
+
+- 2026-11-13 06:32: Clarify replacement records and native access reasons. (authoring-run/97aeaabf-7b1c-40d2-bd48-f7e3e105e434 - 4ab097ffe6f1bce048629dcdec005ed666e536c0)
+
+- 2026-11-13 06:14: Integrate replacement stop and native status behavior. (authoring-run/cd6f8893-5bd3-40ea-b1c2-9767439f54b9 - 4ab097ffe6f1bce048629dcdec005ed666e536c0)
+
 - 2026-11-12 11:33: Document connect and follow-on close audit draining in the accompanying fix. (authoring-run/5c61b5ae-c933-43cd-8aef-ad925fada92c - 2e2f7efbb0c1d430bc30a0185fc21ae1ffbdf581)
 
 - 2026-11-12 00:02: Shorten relay trace. (authoring-run/bae4d18e-05ed-457e-9c6a-96ef2b959619 - cbca5166c168531ada145c95da19ef04c7a34488)
@@ -356,6 +355,8 @@ admin Configuration remains Pod-local.
 - 2026-11-11 17:17: Normalize opt-in admission; accompanying changes. (authoring-run/73aeafdb-519f-47fb-b027-583d0eb74522 - a6d44b96ce4c4029e6e2e24be61b97d71da75df1)
 
 - 2026-11-11 09:26: Classify native admission failures. (authoring-run/28db5867-56df-4145-a1c5-07be7a7874ee - f0b9c002c0577bcc8854913b0eafa5449bd5fbe3)
+
+- 2026-11-11 01:50: Share the predecessor stop boundary. (authoring-run/01a17edc-73a7-74a3-86e5-aa8c53bfb1b9)
 
 - 2026-11-10 08:30: Add named chat and stale-version browser recovery. (authoring-run/37c71df8-7e9c-4224-bc36-e4091f387620 - eef0b3f10d0e0f4ed09fd32086c84628c41f1b93)
 

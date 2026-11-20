@@ -1,21 +1,24 @@
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
+import type { OpenShellSandboxDriverOptions } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
   ConfigurationValidationError,
   type OpenShellBackendConfiguration,
 } from "../../packages/contracts/src/index.ts";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 
 type RefusalDetail = ConfigurationValidationError["error"]["details"][number];
 
 export function openShellWorkspaceHarnessConfiguration() {
-  return {
-    gateway: { workspaceMode: "operator" },
+  const configuration = {
+    integrationMode: "legacy" as NonNullable<OpenShellSandboxDriverOptions["integrationMode"]>,
+    gateway: {},
     kubernetes: {
-      runtimeClassName: "openshell-sandbox",
       userNamespaces: false,
-      serviceAccount: { mode: "gatewayConfigured" },
+      serviceAccount: {
+        mode: "gatewayConfigured",
+      } satisfies OpenShellSandboxDriverOptions["kubernetes"]["serviceAccount"],
       sandboxDataMount: {
         subPath: "workspace",
         mountPath: "/sandbox/enterprise",
@@ -33,6 +36,7 @@ export function openShellWorkspaceHarnessConfiguration() {
       ],
     },
   };
+  return configuration satisfies OpenShellSandboxDriverOptions;
 }
 
 export function buildSandboxInstallation() {

@@ -87,8 +87,9 @@ other published ports must differ. k3d publishes ports at creation; changes
 require `dev-down` and fresh `dev-up`.
 
 The persistent realm attaches `alice` to the existing administrator through
-[OIDC](oidc-sign-in.md), makes passwords recovery-only, and disables
-[Agent native administration](../../reference/agent-native-admin.md). OpenShell
+[OIDC](oidc-sign-in.md), makes passwords recovery-only, and keeps
+[Agent native administration](../../reference/agent-native-admin.md) enabled.
+OpenShell
 is unsupported; password-only remains the default.
 
 Import `browser-ca.crt` and `gateway-ca.crt` into your browser; add the printed
@@ -205,11 +206,10 @@ accounting for node source NAT.
 
 Back up both generated files in the private state directory, then update them:
 
-- `installation.yaml`: set `drivers.compute.configuration.runtime.channels.proxyUrl`
-  for gateway Slack messaging.
-- `helm-values.json`: set `api.channelDirectoryProxyUrl` for Console user and
-  channel lookup. Kubernetes-only mode runs the production API, where lookup
-  stays disabled without this setting.
+- `installation.yaml`: configure `drivers.compute.configuration.runtime.channelEgress`.
+- `helm-values.json`: enable `channelEgress` with matching fleet and listener
+  settings, and the actual Pod, Service and node address exclusions.
+  Follow [managed channel egress](../../reference/drivers/kubernetes-compute/channel-egress.md).
 
 Apply the edits to the existing release as shown below. Use the chart
 source matching the installed controller, retain its image references and other

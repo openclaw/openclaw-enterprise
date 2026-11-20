@@ -5,9 +5,12 @@ import {
   FirstAgentModelError,
   gatewayProbeCommand,
   verifyFirstAgentModel,
-} from "../../scripts/first-agent-model.mjs";
-import { FixtureCommandTimeoutError } from "../fixtures/repository-credentials/process.mjs";
-import { ConversationReplyError, createNativePluginAssertions } from "./plugin-driver-real.mjs";
+} from "../../scripts/first-agent-model.ts";
+import { FixtureCommandTimeoutError } from "../fixtures/repository-credentials/process.ts";
+import {
+  ConversationReplyError,
+  createGatewaySessionEvidence,
+} from "./plugin-gateway-session-evidence.ts";
 
 const conversationStages = [
   "execution identity",
@@ -322,14 +325,9 @@ export function createFiniteGitConversation({
     await guard(target);
     return output;
   }
-  const reader = createNativePluginAssertions({
+  const reader = createGatewaySessionEvidence({
     proofMode: "codex",
-    gatewayUrl: undefined,
-    execCodex: undefined,
-    waitFor: undefined,
-    readRuntimeLogs: undefined,
-    recordRuntimeLogs: undefined,
-    execGateway: async (requested: Agent, argv: string[]) => {
+    execGateway: async (requested, argv) => {
       if (!isDeepStrictEqual(requested, selected) || !pinned) {
         return fail();
       }
@@ -364,7 +362,7 @@ export function createFiniteGitConversation({
       let observed: ReturnType<typeof identity> | undefined;
       stage = "target discovery";
       const proof = await verifyFirstAgentModel(
-        async (...arguments_: (string | Options)[]) => {
+        async (...arguments_: unknown[]) => {
           try {
             const options = arguments_.pop();
             if (!options || typeof options !== "object") {

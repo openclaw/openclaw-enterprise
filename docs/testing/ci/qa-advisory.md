@@ -9,10 +9,9 @@ last_verified: "2026-11-04"
 
 ## Overview
 
-Scheduled QA runs Console Secret management on Compose/Kubernetes, OpenShell
-security and lifecycle files, local installation, and OIDC Agent chat. Jobs use
-real dependencies on disposable installations. Results are advisory, not merge
-or publication gates.
+Scheduled QA covers Console Secrets on Compose/Kubernetes, OpenShell security and
+lifecycle, local installation, and OIDC Agent chat. Jobs use disposable installations
+and real dependencies. Results do not gate merge or publication.
 
 <a id="when-it-runs"></a>
 
@@ -29,14 +28,15 @@ or publication gates.
 | Push to `main`, when `QA_ADVISORY_ON_PUSH=true`    | QA matrix, OIDC Agent chat and all OpenShell jobs; no local installation job |
 
 Maintainers label reviewed same-repository PRs. Dependabot authors and triggers
-are ineligible. Narrow labels select their union. `full-qa` overrides them and
-runs the default Codex/`console-secrets` cells. The focused Compose job checks
+are ineligible. Narrow labels select their union. `full-qa` runs `console-secrets` for Codex,
+`agent-audit` in Compose, and `http-chat` for both presets and placements.
+The Compose job checks
 native redeployment and required-worker execution on Kubernetes workloads.
 
 PR runs test the merge commit. New commits replace opted-in runs; unrelated
 labels cannot restart or cancel them. Remove labels before pushing unreviewed
 code; removal stops future selection but does not cancel active runs. Eligible
-main pushes finish independently. The author of a breaking change owns triage.
+main pushes finish independently. Authors triage regressions.
 
 Keycloak needs no model credential and allows 180 minutes; OpenClaw allows 120.
 Together they allow 300 runtime runner-minutes per attempt, plus selection—not
@@ -47,34 +47,38 @@ OpenClaw requires `OPENAI_API_KEY` and nonblank `OCC_TEST_OPENAI_MODEL` in
 before the lane. Each cell materializes only its provider credential, removed
 after success or failure.
 
-Push execution is opt-in through `QA_ADVISORY_ON_PUSH`; the schedule does not
-require that variable. Credentialed QA and OpenShell jobs use
-[`integration-qa-pr`](configuration.md#environments). Dependabot cannot start a
-manual advisory run.
+The schedule does not require `QA_ADVISORY_ON_PUSH`. Credentialed QA and OpenShell
+jobs use [`integration-qa-pr`](configuration.md#environments).
 
 ## Scenarios
 
-The [QA matrix](../../../scripts/ci/test-suites/qa-matrix.json) creates separate
-Agents on disposable control planes with Kubernetes compute, preserving existing
-clusters and kubeconfig. Both Plugin catalogs stay enabled across presets; setup
-checks Google Workspace for OpenClaw and Linear for Codex.
+The [QA matrix](../../../scripts/ci/test-suites/qa-matrix.json) preserves existing
+clusters and kubeconfig. Setup checks Google Workspace for OpenClaw and Linear
+for Codex.
 
-| Scenario                | In advisory          | Presets         | Checks                                                                                                                                                                           |
-| ----------------------- | -------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sandbox-policy`        | Yes — OpenShell jobs | Codex           | Discover and preview configuration, then apply, update, and withdraw OpenShell network policy in a prepared environment.                                                         |
-| `plugin-install`        | Yes — OpenShell jobs | Codex           | Install a dedicated Codex plugin, find it after the Codex process restarts, then remove it from the Agent selection.                                                             |
-| `model-ui`              | Focused label only   | OpenClaw        | Real model turn and native browser response.                                                                                                                                     |
-| `scratch-volume`        | Yes — OpenShell job  | Codex           | Admitted scratch and workspace access through real tools, frozen selection, and missing/wrong-UID claim refusal.                                                                 |
-| `oidc-agent-chat`       | Yes, separate job    | OpenClaw        | First-login Default user enrollment, returning Keycloak sign-in, signed admission claims, owner creation and deployment, browser reply, administrative and sibling-Agent denial. |
-| `console-secrets`       | Yes (Codex)          | OpenClaw, Codex | Create and manage Console Secrets referenced by Agent drafts. Refusing Namespace deletion identifies the deployed Agent and links to its cleanup controls.                       |
-| `git-write`             | No                   | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                                                                      |
-| `git-push-denied`       | No                   | Codex           | Reject a push to any other branch and dispose credentials.                                                                                                                       |
-| `slack`                 | No                   | Codex           | Threaded reply and new root message.                                                                                                                                             |
-| `openshell-linear-read` | No                   | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                                                    |
-| `codex-search-config`   | No                   | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.                                                  |
+| Scenario                         | In advisory          | Presets         | Checks                                                                                                                                                                           |
+| -------------------------------- | -------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sandbox-policy`                 | Yes — OpenShell jobs | Codex           | Discover and preview configuration, then apply, update, and withdraw OpenShell network policy in a prepared environment.                                                         |
+| `plugin-install`                 | Yes — OpenShell jobs | Codex           | Install a dedicated Codex plugin, find it after the Codex process restarts, then remove it from the Agent selection.                                                             |
+| `model-ui`                       | Focused label only   | OpenClaw        | Real model turn and native browser response.                                                                                                                                     |
+| `scratch-volume`                 | Yes — OpenShell job  | Codex           | Admitted scratch and workspace access through real tools, frozen selection, and missing/wrong-UID claim refusal.                                                                 |
+| `oidc-agent-chat`                | Yes, separate job    | OpenClaw        | First-login Default user enrollment, returning Keycloak sign-in, signed admission claims, owner creation and deployment, browser reply, administrative and sibling-Agent denial. |
+| `console-secrets`                | Yes (Codex)          | OpenClaw, Codex | Create and manage Console Secrets referenced by Agent drafts. Refusing Namespace deletion identifies the deployed Agent and links to its cleanup controls.                       |
+| `agent-audit`                    | Yes (Compose)        | Codex           | Check the exact Agent grant and link the deployed Agent's queue, claim, and result records. Check the record for a successful Agent read.                                        |
+| `git-write`                      | No                   | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                                                                      |
+| `git-push-denied`                | No                   | Codex           | Reject a push to any other branch and dispose credentials.                                                                                                                       |
+| `slack`                          | No                   | Codex           | Threaded reply and new root message.                                                                                                                                             |
+| `channel-egress-upgrade`         | No                   | Codex           | [One-off channel upgrade](../slack.md#one-off-channel-upgrade-proof).                                                                                                            |
+| `openshell-linear-read`          | No                   | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                                                    |
+| `codex-search-config`            | No                   | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.                                                  |
+| `openshell-git-model`            | No                   | Codex           | Register after enabling Git; verify model turns with and without repositories, Git expiry, and worker restart.                                                                   |
+| `openshell-provider-replacement` | No                   | Codex           | [Managed Provider replacement](../openshell-managed.md#provider-replacement), network changes, model turns and peer isolation.                                                   |
+| `openshell-git-replacement`      | No                   | Codex           | [Managed Git recovery](../openshell-git-replacement.md), workspace retention and revision-scoped repository grants.                                                              |
 
-[QA matrix](../../../tests/integration/qa-matrix-real.test.mjs) and
-[scenario selection](../../../tests/helpers/qa-selection.mjs) own these checks.
+Source: [QA matrix](../../../tests/integration/qa-matrix-real.test.mjs),
+[scenario selection](../../../tests/helpers/qa-selection.mjs).
+
+See [HTTP chat verification](../agent-http-chat.md).
 
 ### Scenario details
 
@@ -83,14 +87,16 @@ To run OpenShell scenarios locally, prepare the matching fixture for
 [scratch storage](../openshell.md#openshell-sandbox), or
 [plugin installation](../openshell.md#codex-plugin-installation).
 
-The OpenClaw `model-ui` case checks the example Console theme through sign-in
-and Agent use. It also redeploys the Agent with a provider alias, the existing OCC
-Secret, and `OCE_MODEL_API_KEY`, then requires a real model turn.
+`model-ui` checks Console sign-in and Agent use, then redeploys with a provider
+alias, the existing Secret, and `OCE_MODEL_API_KEY` for a real model turn.
+
+`openshell-git-model` requires Kubernetes, Codex, `OCC_TEST_QA_SANDBOX_ENV`,
+`OCC_TEST_QA_OPENAI_KEY_FILE`, and `OCC_TEST_QA_OPENAI_MODEL`. Its disposable stack
+uses a controlled Git origin and real model provider.
 
 ### Harness destination overrides
 
-The explicit `harness-overrides` QA scenario runs dedicated Codex and OpenClaw
-through an installed Kubernetes/OpenShell workflow. It deploys two Agents with
+`harness-overrides` runs dedicated Codex and OpenClaw on Kubernetes/OpenShell. It deploys two Agents with
 distinct authorized destinations and a third inheriting the default, performs real
 model turns, restarts the controllers with changed and removed defaults, and
 withdraws one Agent's source while the other Agents continue serving.
@@ -178,11 +184,17 @@ Local instructions run the **QA matrix only**. For other suites, follow
 `OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
 `OCC_TEST_QA_SCENARIOS` accepts `all` (default) or comma-separated selectors.
-`all` excludes `namespace-lifecycle`, `sandbox-policy`, `scratch-volume`, `plugin-install`,
-`openshell-linear-read`, `codex-search-config`, `harness-overrides` and
+`all` excludes `native-restart`, `namespace-lifecycle`, `sandbox-policy`, `scratch-volume`, `plugin-install`,
+`openshell-linear-read`, `openshell-git-model`, `codex-search-config`, `harness-overrides` and
 `oidc-agent-chat` selectors.
-Invalid or wholly inapplicable selections fail before provisioning; missing
+Invalid selections fail before provisioning; missing
 inputs fail selected checks. Omitting `OCC_TEST_QA_MATRIX=1` skips the suite.
+
+For `native-restart`, see [recovery qualification](../harness-restart-recovery.md).
+
+Select `agent-audit` with `compose` and `Codex`. It uses the standard Codex
+deployment fixture and development audit settings. It requires the usual Codex
+credential file for Agent startup.
 
 Select `oidc-agent-chat` alone with `kubernetes` and `OpenClaw`. It uses the
 `gateway-routing` lane to prepare Keycloak, PostgreSQL, native routing and
@@ -268,7 +280,7 @@ qa_status="$(git status --porcelain --untracked-files=all)"
 qa_metadata="$(mktemp -d)"
 qa_prefix="localhost/oce-qa-$(date +%s)-$$"
 qa_node_base="$(node -p 'require("./scripts/ci/test-suites/images-packaging.json").prepare.defaultEnv.NODE_BASE_IMAGE')"
-qa_source="$(node scripts/lib/openclaw-source.mjs build-args)"
+qa_source="$(node scripts/lib/openclaw-source.ts build-args)"
 qa_runtime_args=()
 while IFS= read -r argument; do
   qa_runtime_args+=(--build-arg "$argument")
@@ -317,7 +329,7 @@ export OCC_TEST_QA_CONTROLLER_IMAGE="$CONTROLLER_IMAGE"
 export OCC_TEST_QA_RUNTIME_IMAGE="$RUNTIME_IMAGE"
 ```
 
-Reuse the builder's intermediate cache, including Node compilation, with consistent
+Reuse the builder's intermediate cache with consistent
 platform and build arguments. Loading final images does not restore intermediate
 cache. For portability, use Docker's [cache export/import options](https://docs.docker.com/build/cache/backends/);
 `mode=max` includes intermediate stages. Hosted CI cache is separate. These commands
@@ -333,16 +345,13 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
   --test tests/integration/qa-matrix-real.test.mjs
 ```
 
-`TEST_ENV_FILE` is the private environment file described above.
+`TEST_ENV_FILE` names that private file.
 
 ## Results and limits
 
-Check the tested commit, selected scenarios, failed or skipped tests, and cleanup.
-Missing, filtered, or interrupted tests are not passes. The selection summary
-records the run, attempt and tested SHA. Focused PR runs also verify and record
-the merge ref and ordered base/head parents before starting jobs. Compare the
-leaf result's `sourceSha` with that merge SHA; a passing earlier head is not proof
-of the current composition.
+Check that the selected tests and cleanup passed for the tested commit. The
+selection summary records the run, attempt, and SHA. For focused PR runs, compare
+the result's `sourceSha` with the recorded merge SHA and its base and head commits.
 
 For focused Keycloak, require both manifest cases and their cleanup to pass.
 For OpenClaw, inspect `matrix.json`: one `kubernetes/OpenClaw` cell with only
@@ -361,13 +370,10 @@ exit code or signal. `timed out` identifies deadline expiry. A later `SIGPIPE`
 can follow teardown closing output pipes. Failure detail is redacted and
 command arguments and protected output stay private.
 
-When available, `startup timings` in the failure message names a JSON file in the
-same artifact. It retains the last 64 recognized CLI timing records: stage,
-elapsed milliseconds, and failure status, plus the number of older records omitted.
-These describe completed commands, including commands that failed; they do not
-identify an unfinished command. Durations can overlap, so do not sum them as wall
-time. Unknown or malformed records and other stdout remain private. Commands with
-protected output produce no timing artifact.
+The `startup timings` message names a JSON file with up to 64 recognized CLI
+timings and the number of older records omitted. Each timing gives the stage,
+elapsed milliseconds, and failure status of a finished command. Durations can
+overlap. Protected output, unrecognized records, and other stdout stay private.
 
 Artifacts expire after seven days. Each OpenShell job reports `scope: focused`
 because it runs one file; complete advisory OpenShell coverage requires every

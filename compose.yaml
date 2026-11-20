@@ -1,5 +1,9 @@
 name: openclaw-enterprise-development
 
+# Setup-only metadata: Compose resolves shell and env-file precedence without
+# exposing the password in a container environment.
+x-openclaw-bootstrap-password: ${OPENCLAW_DEV_PASSWORD:-openclaw-development-password}
+
 x-development-build: &development-build
   context: .
   target: development
@@ -18,7 +22,7 @@ services:
     build: *development-build
     environment:
       OCC_MIGRATION_DATABASE_URL: postgresql://occ_migrator:occ-migrator-local@postgres:5432/openclaw_enterprise
-    command: ["scripts/migrate-production.mjs"]
+    command: ["scripts/migrate-production.ts"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -70,12 +74,15 @@ services:
       OCC_AUTH_BASE_URL: ${OCC_DEVELOPMENT_BROWSER_ORIGIN:?HTTPS browser origin is required; use occ dev up}
       OCC_AGENT_NATIVE_ADMIN_DOMAIN: ${OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN:?Agent DNS domain is required; use occ dev up}
       OPENCLAW_DEV_EMAIL: ${OPENCLAW_DEV_EMAIL:-admin@openclaw.local}
-      OPENCLAW_DEV_PASSWORD: ${OPENCLAW_DEV_PASSWORD:-openclaw-development-password}
       OPENCLAW_DEV_INSTALLATION_NAME: ${OPENCLAW_DEV_INSTALLATION_NAME:-OpenClaw Local Development}
-      OCC_BOOTSTRAP_SERVICE_KEY_FILE: /var/lib/openclaw/bootstrap/initial-admin-service-key.json
+      OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE: /run/secrets/admin-password
+      OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE: /run/secrets/admin-service-key
     command: ["scripts/bootstrap-installation.mjs"]
-    volumes:
-      - occ_bootstrap_data:/var/lib/openclaw/bootstrap
+    secrets:
+      - source: bootstrap-admin-password
+        target: admin-password
+      - source: bootstrap-admin-service-key
+        target: admin-service-key
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -107,7 +114,12 @@ services:
 volumes:
   occ_postgres_data:
   occ_configuration_data:
-  occ_bootstrap_data:
+
+secrets:
+  bootstrap-admin-password:
+    file: ${OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE:?Run occ dev up to prepare credential inputs}
+  bootstrap-admin-service-key:
+    file: ${OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE:?Run occ dev up to prepare credential inputs}
 
 networks:
   development:

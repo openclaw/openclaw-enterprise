@@ -15,17 +15,20 @@ deployment, prepare the Namespace and follow the
 
 ### Use a driver-managed Kubernetes namespace
 
-Fresh bootstrap creates a platform Namespace named `default`. Run
-`occ namespace list` and export its server-assigned ID:
+Fresh bootstrap creates an OCC Namespace named `default`. Use it or create
+another Namespace with `occ namespace create NAME`. Creation can return while
+the worker is still provisioning. Run `occ namespace list` and export the
+server-assigned ID of the Namespace you selected.
 
 ```bash
 occ namespace list
-export NAMESPACE_ID='<ID shown for default>'
+export NAMESPACE_ID='<ID of the selected Namespace>'
 ```
 
-The worker creates a Kubernetes namespace labeled
-`openclaw.dev/namespace=$NAMESPACE_ID`, separate from Kubernetes' built-in
-`default` namespace. Discover and export its name for tenant RoleBindings:
+The worker creates a separate Kubernetes namespace labeled
+`openclaw.dev/namespace=$NAMESPACE_ID`. As soon as that namespace exists, record
+its name and grant the tenant RoleBindings below before waiting for the OCC
+Namespace to report `ready`.
 
 ```bash
 TENANT_NAMESPACE="$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
@@ -33,29 +36,45 @@ TENANT_NAMESPACE="$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT"
   python3 -c 'import json,sys; items=json.load(sys.stdin)["items"]; print(items[0]["metadata"]["name"]) if len(items)==1 else sys.exit("Expected one backing Namespace; check worker provisioning")')" && export TENANT_NAMESPACE
 ```
 
-If no backing namespace is found, check the worker logs and repeat discovery
-after creation. Complete the tenant RoleBindings below, then wait until
-`GET /namespaces/$NAMESPACE_ID` reports `ready` before creating Configurations.
-If it reports `failed`, inspect audit evidence and worker logs.
-[Exhausted lease recovery](../../reference/controller/reconciliation.md#deferred-namespace-and-agent-convergence)
-stops provisioning permanently.
+If discovery finds no backing namespace, check the worker logs and run
+discovery again after the worker creates it.
 
 ### Grant tenant RoleBindings
 
-Single-cluster Compute uses the same tenant namespace for both runtime roles and
-canonical storage. Grant the worker runtime role and API credential/configuration
-roles there. Replace the `oce-` prefix if the Helm release name differs:
+Single-cluster Compute uses the same tenant namespace for runtime roles and
+canonical storage. Use the Helm release and Kubernetes namespace from the
+control-plane install. The chart prefixes the three tenant ClusterRoles with
+the release name and creates fixed-name ServiceAccounts in the install namespace.
 
 ```bash
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-worker \
-  --clusterrole=oce-openclaw-tenant-worker --serviceaccount=openclaw-system:openclaw-enterprise-worker
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-api-secrets \
-  --clusterrole=oce-openclaw-tenant-api --serviceaccount=openclaw-system:openclaw-enterprise-api
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-api-configuration \
-  --clusterrole=oce-openclaw-tenant-configuration --serviceaccount=openclaw-system:openclaw-enterprise-api
+# Control-plane installation example
+RELEASE=oce
+CONTROL_PLANE_NAMESPACE=openclaw-system
+# For a different install, use its values. Example:
+# RELEASE=openclaw-enterprise
+# CONTROL_PLANE_NAMESPACE=oce-system
+
+tenant_kubectl() {
+  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n "$TENANT_NAMESPACE" "$@"
+}
+WORKER_SA="$CONTROL_PLANE_NAMESPACE:openclaw-enterprise-worker"
+API_SA="$CONTROL_PLANE_NAMESPACE:openclaw-enterprise-api"
+```
+
+For OpenShell Sandbox, first create and bind the tenant-local workspace
+provisioner Role. Use the Role and its RoleBinding from
+[OpenShell Namespace preparation](eks-openshell-installation.md#3-authenticate-and-prepare-the-namespace)
+with the worker ServiceAccount above.
+
+Grant the API credential and configuration roles, then the worker runtime role.
+
+```bash
+tenant_kubectl create rolebinding openclaw-enterprise-api-secrets \
+  --clusterrole="$RELEASE-openclaw-tenant-api" --serviceaccount="$API_SA"
+tenant_kubectl create rolebinding openclaw-enterprise-api-configuration \
+  --clusterrole="$RELEASE-openclaw-tenant-configuration" --serviceaccount="$API_SA"
+tenant_kubectl create rolebinding openclaw-enterprise-worker \
+  --clusterrole="$RELEASE-openclaw-tenant-worker" --serviceaccount="$WORKER_SA"
 ```
 
 The Secret role also grants Deployment list access for credential preflight and
@@ -65,11 +84,23 @@ Custom roles need the same rules; missing log grants return `503 RUNTIME_LOGS_CL
 Missing credential grants return `503 RUNTIME_CREDENTIALS_CLUSTER_RBAC`; API logs
 `agent_runtime_credentials.cluster_denied` identify the denied call and namespace.
 OCC IAM grants remain required. Workload ServiceAccounts receive no Secret API
-access. Wait for Namespace `ready` after these grants. Namespace workload
-managers are trusted for both roles; use disjoint trusted Gateway and Harness
-node pools. For the experimental two-cluster profile, grant these storage roles
-in the separately discovered control target and worker/observer roles in the
-execution target; see [two-cluster testing](../../testing/kubernetes.md#two-cluster-validation).
+access. Namespace workload managers are trusted for both roles. Use disjoint
+trusted Gateway and Harness node pools. For the experimental two-cluster
+profile, grant these storage roles in the separately discovered control target
+and worker/observer roles in the execution target. See [two-cluster testing](../../testing/kubernetes.md#two-cluster-validation).
+
+### Confirm the Namespace is ready
+
+Run `occ namespace get "$NAMESPACE_ID"` after applying the bindings. Wait for
+`STATUS` to report `ready` before creating Configurations or Agents.
+
+If the status stays `provisioning`, check the worker's `namespace.ensure` logs.
+The [`KUBERNETES_TENANT_ACCESS_DENIED` hint](../../reference/drivers/kubernetes-compute.md#failure-conditions)
+indicates a Kubernetes permission denial. Verify the RoleBindings in the
+backing namespace and their ServiceAccounts and roles. After correcting the
+grants, check the same OCC Namespace ID again. If the status is `failed`,
+inspect audit evidence and worker logs for
+[exhausted lease recovery](../../reference/controller/reconciliation.md#deferred-namespace-and-agent-convergence).
 
 ## Prepare each Agent
 

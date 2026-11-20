@@ -1,7 +1,18 @@
+import { migrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import type {
+  V1ContainerStatus,
+  V1EndpointSliceList,
+  V1Job,
+  V1Node,
+  V1Pod,
+  V1PodList,
+} from "../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js";
+import { protectedJSON } from "./production-rehearsal-custody.ts";
 import { assertRunningController, type rehearsePopulatedReturn } from "./staging-upgrade-return.ts";
 
 type Inputs = Pick<
@@ -42,7 +53,8 @@ export async function rehearseOnlineMigration({
   record,
 }: Inputs) {
   const kube = (...args: string[]) => kubectl("--namespace", namespace, ...args);
-  const get = async (...args: string[]) => JSON.parse(await kube("get", ...args, "-o", "json"));
+  const get = async <T>(...args: string[]) =>
+    protectedJSON<T>(await kube("get", ...args, "-o", "json"));
   const sql = async (...statements: string[]) =>
     (
       await custody.postgres(
@@ -55,18 +67,22 @@ export async function rehearseOnlineMigration({
       )
     ).trim();
   const ledger = async () =>
-    JSON.parse(
+    protectedJSON<[number, string, number][]>(
       await sql(
         "SELECT COALESCE(json_agg(json_build_array(id,hash,created_at) ORDER BY id), '[]') FROM drizzle.__drizzle_migrations",
       ),
-    ) as [number, string, number][];
+    );
   const catalog = async (checkout: string) => {
-    const { entries } = JSON.parse(
+    const { entries } = protectedJSON<{ entries: { sha256: string; when: number }[] }>(
       await readFile(join(checkout, "migrations/meta/_canonical-history.json"), "utf8"),
-    ) as {
-      entries: { sha256: string; when: number }[];
-    };
-    return entries.map(({ sha256, when }) => [sha256, when]);
+    );
+    return entries.map(({ sha256, when }) => {
+      assert.ok(
+        typeof sha256 === "string" && sha256.length > 0 && Number.isSafeInteger(when),
+        "canonical migration is missing its hash or timestamp",
+      );
+      return [sha256, when] as const;
+    });
   };
   const assertLedger = (
     rows: Awaited<ReturnType<typeof ledger>>,
@@ -90,66 +106,52 @@ export async function rehearseOnlineMigration({
     assert.ok(typeof id === "string" && id.length > 0, "Installation read has no identity");
     return id;
   };
-  const node = await get(`node/${localCluster.node}`);
+  const node = await get<V1Node>(`node/${localCluster.node}`);
+  assert.ok(node.metadata?.uid);
   assert.equal(node.metadata.uid, localCluster.nodeUID);
-  const platform = `${node.status.nodeInfo.operatingSystem}/${node.status.nodeInfo.architecture}`;
-  type ImageStatus = {
-    name: string;
-    imageID: string;
-    containerID: string;
-    restartCount: number;
-    ready?: boolean;
-    state?: { terminated?: { exitCode: number } };
-  };
-  const verifyImage = async (
-    image: typeof previous,
-    pod: { metadata: { uid: string }; spec: { nodeName: string } },
-    status: ImageStatus,
-  ) => {
-    assert.equal(pod.spec.nodeName, localCluster.node);
+  const nodeInfo = node.status?.nodeInfo;
+  assert.ok(nodeInfo);
+  const platform = `${nodeInfo.operatingSystem}/${nodeInfo.architecture}`;
+  const verifyImage = async (image: typeof previous, pod: V1Pod, status: V1ContainerStatus) => {
+    assert.equal(pod.spec?.nodeName, localCluster.node);
     assert.equal(status.restartCount, 0);
-    return assertRunningController(image, platform, status.imageID, () =>
-      localCluster.runningConfigDigest(status.containerID, pod.metadata.uid),
-    );
+    return assertRunningController(image, platform, status.imageID, () => {
+      assert.ok(status.containerID && pod.metadata?.uid);
+      return localCluster.runningConfigDigest(status.containerID, pod.metadata.uid);
+    });
   };
   const incumbent = async () => {
-    const identities = await Promise.all(
-      (["api", "worker"] as const).map(async (role) => {
-        const { items: pods } = await get(
-          "pods",
-          "-l",
-          `app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/instance=${release},app.kubernetes.io/component=${role}`,
-        );
-        assert.equal(pods.length, 1, `expected exactly one incumbent ${role}`);
-        const [pod] = pods;
-        assert.ok(!pod.metadata.deletionTimestamp);
-        assert.equal(
-          pod.spec.containers.find(({ name }: { name: string }) => name === role)?.image,
-          previous.reference,
-        );
-        const status = (pod.status.containerStatuses as ImageStatus[] | undefined)?.find(
-          ({ name }) => name === role,
-        );
-        assert.ok(status?.ready);
-        return { uid: pod.metadata.uid, image: await verifyImage(previous, pod, status) };
-      }),
-    );
-    const { items: slices } = await get(
+    const identity = async (role: "api" | "worker") => {
+      const { items: pods } = await get<V1PodList>(
+        "pods",
+        "-l",
+        `app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/instance=${release},app.kubernetes.io/component=${role}`,
+      );
+      assert.equal(pods.length, 1, `expected exactly one incumbent ${role}`);
+      const [pod] = pods;
+      assert.ok(pod?.metadata?.uid && !pod.metadata.deletionTimestamp);
+      assert.equal(
+        pod.spec?.containers.find(({ name }) => name === role)?.image,
+        previous.reference,
+      );
+      const status = pod.status?.containerStatuses?.find(({ name }) => name === role);
+      assert.ok(status?.ready);
+      return { uid: pod.metadata.uid, image: await verifyImage(previous, pod, status) };
+    };
+    const identities = await Promise.all([identity("api"), identity("worker")]);
+    const { items: slices } = await get<V1EndpointSliceList>(
       "endpointslices",
       "-l",
       `kubernetes.io/service-name=${service}`,
     );
     const ready = slices
-      .flatMap(
-        (slice: {
-          endpoints: { conditions?: { ready?: boolean }; targetRef?: { uid: string } }[];
-        }) => slice.endpoints,
-      )
-      .filter(
-        (endpoint: { conditions?: { ready?: boolean } }) => endpoint.conditions?.ready === true,
-      );
+      .flatMap((slice) => {
+        assert.ok(slice.endpoints, "EndpointSlice is missing its endpoints");
+        return slice.endpoints;
+      })
+      .filter((endpoint) => endpoint.conditions?.ready === true);
     assert.deepEqual(
-      ready.map((endpoint: { targetRef?: { uid: string } }) => endpoint.targetRef?.uid),
+      ready.map((endpoint) => endpoint.targetRef?.uid),
       [identities[0].uid],
     );
     return identities;
@@ -193,13 +195,22 @@ export async function rehearseOnlineMigration({
     ],
     { cwd: candidate.checkout },
   );
-  const initializer = JSON.parse(await run("yq", ["-o=json", ".", "-"], { input: rendered }));
+  const initializer = protectedJSON<V1Job>(
+    await run("yq", ["-o=json", ".", "-"], { input: rendered }),
+  );
   assert.equal(initializer.kind, "Job");
-  const { spec } = initializer.spec.template;
-  const migration = spec.initContainers.find(({ name }: { name: string }) => name === "migration");
-  assert.equal(migration?.image, candidate.reference);
-  assert.deepEqual(migration.args, ["scripts/migrate-production.mjs"]);
-  const mounts = new Set((migration.volumeMounts ?? []).map(({ name }: { name: string }) => name));
+  const template = initializer.spec?.template;
+  const spec = template?.spec;
+  assert.ok(spec);
+  const migration = spec.initContainers?.find(({ name }) => name === "migration");
+  assert.ok(migration);
+  assert.equal(migration.image, candidate.reference);
+  // Both generations of chart must request an apply with no migration mode flags.
+  assert.ok(
+    migration.args && isDeepStrictEqual(migrationEntry(migration.args), migration.args),
+    "the candidate chart did not render its migration apply command",
+  );
+  const mounts = new Set(migration.volumeMounts?.map(({ name }) => name));
   const job = "online-migration";
   const appName = `lock-${namespace}`;
   assert.match(appName, /^[a-z0-9-]{1,63}$/u);
@@ -247,7 +258,7 @@ export async function rehearseOnlineMigration({
         template: {
           metadata: {
             labels: {
-              ...initializer.spec.template.metadata.labels,
+              ...template?.metadata?.labels,
               ...custody.metadata(job).labels,
             },
           },
@@ -255,33 +266,36 @@ export async function rehearseOnlineMigration({
             ...spec,
             containers: [migration],
             initContainers: [],
-            volumes: (spec.volumes ?? []).filter(({ name }: { name: string }) => mounts.has(name)),
+            volumes: (spec.volumes ?? []).filter(({ name }) => mounts.has(name)),
           },
         },
       },
     };
     const jobUID = await custody.create(jobSpec);
     const jobPod = async () => {
-      const { items } = await get("pods", "-l", `batch.kubernetes.io/controller-uid=${jobUID}`);
+      const { items } = await get<V1PodList>(
+        "pods",
+        "-l",
+        `batch.kubernetes.io/controller-uid=${jobUID}`,
+      );
       assert.ok(items.length <= 1, "candidate migration Job created multiple Pods");
       const [pod] = items;
-      if (!pod?.status.podIP) {
+      if (!pod?.status?.podIP) {
         return false;
       }
       assert.ok(
-        pod.metadata.ownerReferences.some(
-          ({ uid, controller }: { uid: string; controller: boolean }) =>
-            uid === jobUID && controller,
-        ),
+        pod.metadata?.uid &&
+          pod.metadata.ownerReferences?.some(({ uid, controller }) => uid === jobUID && controller),
       );
-      assert.equal(pod.spec.containers[0]?.image, candidate.reference);
+      assert.equal(pod.spec?.containers[0]?.image, candidate.reference);
       return pod;
     };
     const pod = await waitFor("candidate migration Pod identity", jobPod, 35_000);
-    assert.ok(isIP(pod.status.podIP), "migration Pod has no valid IP address");
+    const podIP = pod.status?.podIP;
+    assert.ok(podIP && isIP(podIP), "migration Pod has no valid IP address");
     const waiter = () =>
       sql(
-        `SELECT a.pid ${locks} AND NOT l.granted AND a.usename = 'occ_migrator' AND a.client_addr = '${pod.status.podIP}'::inet AND ${holderPID} = ANY(pg_blocking_pids(a.pid))`,
+        `SELECT a.pid ${locks} AND NOT l.granted AND a.usename = 'occ_migrator' AND a.client_addr = '${podIP}'::inet AND ${holderPID} = ANY(pg_blocking_pids(a.pid))`,
       );
     const waiterPID = await waitFor(
       "candidate migration blocked by the owned PostgreSQL lock",
@@ -310,21 +324,19 @@ export async function rehearseOnlineMigration({
     await waitFor(
       "candidate migration Job completion",
       async () => {
-        const current = await get(`job/${job}`);
-        assert.equal(current.metadata.uid, jobUID);
+        const current = await get<V1Job>(`job/${job}`);
+        assert.equal(current.metadata?.uid, jobUID);
         assert.ok(!current.status?.failed, "candidate migration Job failed");
         return current.status?.conditions?.some(
-          ({ type, status }: { type: string; status: string }) =>
-            type === "Complete" && status === "True",
+          ({ type, status }) => type === "Complete" && status === "True",
         );
       },
       75_000,
     );
     const completed = await jobPod();
-    assert.equal(completed?.metadata.uid, pod.metadata.uid);
-    const status = (completed.status.containerStatuses as ImageStatus[] | undefined)?.find(
-      ({ name }) => name === "migration",
-    );
+    assert.ok(completed && pod.metadata?.uid);
+    assert.equal(completed.metadata?.uid, pod.metadata.uid);
+    const status = completed.status?.containerStatuses?.find(({ name }) => name === "migration");
     assert.equal(status?.state?.terminated?.exitCode, 0);
     assert.ok(status);
     const image = await verifyImage(candidate, completed, status);

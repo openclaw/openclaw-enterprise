@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rmdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rmdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const script = join(repository, "scripts/upgrade-production-images");
@@ -80,6 +80,7 @@ exec "$SIGNAL_PYTHON" "$@"
   const env = {
     PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`,
     HOME: directory,
+    KUBERC: "off",
     OCC_URL: "https://control.invalid",
     OCC_SERVICE_KEY_FILE: join(directory, "service-key"),
     SIGNAL_PYTHON: python,
@@ -125,7 +126,7 @@ exec "$SIGNAL_PYTHON" "$@"
     assert.match(result.stderr, /evidence directory is locked/);
     assert.equal(await commands(), before, "locked resume entered an external command");
   };
-  return { lock, release, start, commands, waitReady, assertLockedResume };
+  return { evidence, lock, release, start, commands, waitReady, assertLockedResume };
 }
 
 for (const [signal, status] of [
@@ -154,14 +155,20 @@ for (const [signal, status] of [
         );
         assert.equal(await f.commands(), "binding-start\nbinding-end\n");
         await f.assertLockedResume();
-        // Only after the child has settled may the operator remove the retained lock.
+        // Binding never wrote original parameters or a journal. Removing a
+        // settled lock cannot authorize replay of that interrupted attempt.
         await rmdir(f.lock);
+        const before = await f.commands();
+        assert.deepEqual(await readdir(f.evidence), []);
         const resumed = await f.start("--resume").done;
-        assert.equal(resumed.code, 73, resumed.stderr);
+        assert.equal(resumed.code, 1, resumed.stderr);
+        assert.match(resumed.stderr, /Cannot read the original private parameters/);
         assert.equal(
           await f.commands(),
-          "binding-start\nbinding-end\nbinding-start\nbinding-end\n",
+          before,
+          "resume repeated binding or contacted a dependency",
         );
+        assert.deepEqual(await readdir(f.evidence), []);
         assert.equal(existsSync(f.lock), false, "terminal error left a stale lock");
       } finally {
         await writeFile(f.release, "settle\n");

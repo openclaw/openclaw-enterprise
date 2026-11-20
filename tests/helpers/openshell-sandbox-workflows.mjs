@@ -1,12 +1,20 @@
-import { createReplacementNodeObservation } from "./openshell-workspace-node-observation.mjs";
+import { createReplacementNodeObservation } from "./openshell-workspace-node-observation.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
-import { runOpenShellStage } from "./openshell-stage.mjs";
+import { runOpenShellStage } from "./openshell-stage.ts";
 import { observeOpenShellPermissionRefusal } from "./openshell-permission-diagnostic.ts";
-import { openShellTurnoverQualification } from "../../scripts/ci/reporter.mjs";
+import {
+  assertOpenShellModelId,
+  normalizeOpenShellModelId,
+} from "../../scripts/ci/openshell-model-inputs.ts";
+import { openShellTurnoverQualification } from "../../scripts/ci/reporter.ts";
 import {
   openShellGatewayGrpcChannel,
   openShellGatewayGrpcMetadata,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import {
+  openShellPolicyCandidate,
+  sameOpenShellPolicy,
+} from "../../apps/controller/src/drivers/sandbox/openshell-policy.ts";
 import { fileURLToPath } from "node:url";
 import { isWorkspaceNodeDeviceId } from "../../packages/utils/src/index.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
@@ -20,8 +28,9 @@ import {
   maskPrivateKeyLines,
   newestMatchingLogLines,
   redactLogLine,
-} from "../../scripts/ci/failure-redaction.mjs";
+} from "../../scripts/ci/failure-redaction.ts";
 import assert from "node:assert/strict";
+import { isArray, readString, record } from "./egress-observation-values.ts";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import dns from "node:dns";
@@ -38,14 +47,16 @@ import { promisify } from "node:util";
 import { inflateRawSync } from "node:zlib";
 import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-import { selectPolicyProbeCommand } from "./openshell-policy-probe.mjs";
+import { selectPolicyProbeCommand } from "./openshell-policy-probe.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { assertNativeCronRunSucceeded } from "./native-cron-evidence.ts";
+import { createNativePluginAssertions } from "./native-plugin-assertions.ts";
 import {
-  assertNativeCronRunSucceeded,
   assertCodexPolicyChild,
   findCodexPolicyChild,
-  createNativePluginAssertions,
-} from "../helpers/plugin-driver-real.mjs";
+  findCodexPolicyReplyThread,
+  readCodexPolicyAgent,
+} from "./codex-policy-thread-evidence.ts";
 import {
   assertAllowedCredentialRoute,
   assertExposedCodexInitializes,
@@ -62,40 +73,64 @@ import {
   registerOpenShellInstallationCleanups,
   waitForOpenShellRevisionActivation,
 } from "../helpers/openshell-kubernetes-real.mjs";
+import { boundedTeardown } from "../helpers/bounded-teardown.ts";
 import {
-  boundedTeardown,
   deleteNamespaceExplained,
   diagnosticDeadlineMs,
   diagnosticDeadlinePassed,
   diagnosticRequestTimeout,
   retryKubectlRead,
   withinDiagnosticDeadline,
-} from "../helpers/kubernetes-real.mjs";
+} from "../helpers/kubernetes-real.ts";
 import {
   assertGatewayPolicyRunSucceeded,
   openShellStaleRelay,
   openShellSettingsChange,
   observeSandboxProbe,
+  observedTurn,
   tokenEchoDigest,
   tokenEchoReply,
-  summarizeWorkerEvents,
   createOpenShellWorkerLogEmitter,
-  workerDiagnosticLines,
   workerFailureDetail,
   rethrowOpenShellFailure,
 } from "../helpers/k3d-failure-diagnostics.ts";
 import {
   createEnvoyWorkspaceGatewayPlan,
   ensureEnvoyGatewayControllers,
-  startWorkspaceGatewayHostRelay,
 } from "../helpers/envoy-workspace-gateway.mjs";
+import { startWorkspaceGatewayHostRelay } from "./workspace-gateway-host-relay.ts";
 import {
-  defaultKeycloakImage,
   issueServingCertificate,
   keycloakServiceClient,
   keycloakUserClient,
-  startKeycloak,
-} from "../helpers/keycloak-real.mjs";
+} from "./keycloak-issuer-material.ts";
+import { defaultKeycloakImage, startKeycloak } from "./keycloak-real.mjs";
+import {
+  pollReplacementActivation,
+  redeployOpenShellReplacement,
+} from "./openshell-replacement-activation.ts";
+import {
+  diagnosticQuery,
+  diagnosticQueryTimeoutMs,
+  writeWorkerCompletionDiagnostics,
+} from "./openshell-worker-diagnostics.ts";
+
+/** @param {unknown} turn */
+function turnMessages(turn) {
+  const items = record(turn).items;
+  assert.ok(isArray(items), "expected Codex turn messages");
+  return items.map((message) => {
+    assert.ok(message != null, "expected a Codex message");
+    return record(message);
+  });
+}
+
+/** @param {unknown} turn */
+function completedTurnItems(turn) {
+  return turnMessages(turn)
+    .filter(({ method }) => method === "item/completed")
+    .map(({ params }) => record(params).item);
+}
 
 const executeFile = promisify(execFile);
 const selectedScenario = process.env.OCC_TEST_OPENSHELL_SCENARIO ?? "full";
@@ -131,10 +166,8 @@ const openShellSupervisorImage = process.env.OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE
 const openShellHelmPath = process.env.OCC_TEST_OPENSHELL_HELM;
 const openShellHelmChart = process.env.OCC_TEST_OPENSHELL_HELM_CHART;
 const openShellWorkspaceHelmChart = process.env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART;
-const openShellRuntimeClass = process.env.OCC_TEST_OPENSHELL_RUNTIME_CLASS ?? "openshell-sandbox";
-const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).replace(
-  /^(?:openai|codex)\//,
-  "",
+const providerModel = normalizeOpenShellModelId(
+  process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel,
 );
 const openShellModelBaseUrl = process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim() || undefined;
 const modelCredentialVariable =
@@ -216,7 +249,6 @@ if (demoStatePath !== undefined) {
   process.once("SIGTERM", resolveDemoStop);
 }
 const portableCommandArgumentBytes = 30 * 1024;
-const diagnosticQueryTimeoutMs = 3_000;
 const observerPoolConnectionTimeoutMs = 5_000;
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
@@ -231,7 +263,6 @@ const fixture = createOpenShellKubernetesFixture({
   openShellGatewayImage,
   openShellSandboxImage,
   openShellSupervisorImage,
-  openShellRuntimeClass,
   openShellHelmPath,
   openShellHelmChart,
   openShellWorkspaceHelmChart,
@@ -255,6 +286,7 @@ const {
   assertProviderOwnedHarness,
   assertWorkspaceMounts,
   assertApprovedOpenShellPrivileges,
+  assertRestrictedPodSecurity,
   assertGatewayBootstrapPolicies,
   assertNoSecretBytes,
   requestCodexTurnFromGatewayPod,
@@ -442,22 +474,22 @@ export async function createScopedController(context, identifier, platformNamesp
   return { ...identity, tokenMintedAt, tenantRole, apiSecretRole, apiIdentity };
 }
 
+function nativeGatewayConfiguration(gateway, gatewayAuth) {
+  return {
+    ...gateway,
+    auth: {
+      ...gatewayAuth.auth,
+      password: gateway.auth.password,
+    },
+    allowRealIpFallback: gatewayAuth.allowRealIpFallback,
+    trustedProxies: gatewayAuth.trustedProxies,
+  };
+}
+
 function nativeCodexConfiguration(gatewayAuth) {
   const configuration = createHarnessConfiguration("codex", providerModel);
   if (gatewayAuth !== undefined) {
-    configuration.gateway = {
-      ...configuration.gateway,
-      auth: {
-        ...gatewayAuth.auth,
-        password: {
-          source: "env",
-          provider: "default",
-          id: "OPENCLAW_GATEWAY_PASSWORD",
-        },
-      },
-      allowRealIpFallback: gatewayAuth.allowRealIpFallback,
-      trustedProxies: gatewayAuth.trustedProxies,
-    };
+    configuration.gateway = nativeGatewayConfiguration(configuration.gateway, gatewayAuth);
   }
   // Native Codex tools are one capability; a narrow allowlist disables that surface.
   // OpenShell supplies the filesystem and network boundaries verified below.
@@ -483,22 +515,10 @@ function nativeOpenClawConfiguration(gatewayAuth, controlUiOrigins = []) {
     id: "OPENAI_API_KEY",
   };
   if (gatewayAuth !== undefined) {
-    configuration.gateway = {
-      ...configuration.gateway,
-      auth: {
-        ...gatewayAuth.auth,
-        password: {
-          source: "env",
-          provider: "default",
-          id: "OPENCLAW_GATEWAY_PASSWORD",
-        },
-      },
-      allowRealIpFallback: gatewayAuth.allowRealIpFallback,
-      trustedProxies: gatewayAuth.trustedProxies,
-      ...(controlUiOrigins.length === 0
-        ? {}
-        : { controlUi: { enabled: true, allowedOrigins: controlUiOrigins } }),
-    };
+    configuration.gateway = nativeGatewayConfiguration(configuration.gateway, gatewayAuth);
+    if (controlUiOrigins.length !== 0) {
+      configuration.gateway.controlUi = { enabled: true, allowedOrigins: controlUiOrigins };
+    }
   }
   return configuration;
 }
@@ -507,79 +527,6 @@ function workspaceGatewayHostname(workspaceGateway) {
   return `occ-gateway-${hash(
     `${workspaceGateway.routing.gatewayNamespace}/${workspaceGateway.routing.gatewayName}`,
   )}.${workspaceGateway.routing.envoyNamespace}.svc.cluster.local`;
-}
-
-async function diagnosticQuery(pool, text, values) {
-  return pool.query({ text, values, query_timeout: diagnosticQueryTimeoutMs });
-}
-
-async function readWorkerRevisionState(pool, { namespaceId, agentId, revisionId }) {
-  const [agent, revision, work] = await Promise.all([
-    diagnosticQuery(
-      pool,
-      "SELECT active_revision_id FROM occ.agents WHERE namespace_id = $1 AND id = $2",
-      [namespaceId, agentId],
-    ),
-    diagnosticQuery(
-      pool,
-      `SELECT revision_number
-       FROM occ.agent_revisions
-       WHERE namespace_id = $1 AND agent_id = $2 AND id = $3`,
-      [namespaceId, agentId, revisionId],
-    ),
-    diagnosticQuery(
-      pool,
-      `SELECT revision_id, namespace_target, state, attempt_count, completed_at IS NOT NULL AS completed
-       FROM occ.controller_work
-       WHERE namespace_id = $1 AND (revision_id = $2 OR agent_id = $3)
-       ORDER BY updated_at DESC, created_at DESC
-       LIMIT 8`,
-      [namespaceId, revisionId, agentId],
-    ),
-  ]);
-
-  return {
-    activeRevisionId: agent.rows[0]?.active_revision_id,
-    revision: revision.rows[0]
-      ? { revisionId, revisionNumber: revision.rows[0].revision_number }
-      : undefined,
-    queue: work.rows.map((row) => ({
-      operation:
-        row.revision_id === null
-          ? row.namespace_target === null
-            ? "work.reconcile"
-            : `namespace.${row.namespace_target}`
-          : "agent_revision.reconcile",
-      revisionId: row.revision_id ?? undefined,
-      state: row.state,
-      attempt: row.attempt_count,
-      completed: row.completed,
-    })),
-  };
-}
-
-// The reporter keeps 1,000 characters of each output line, so the persisted state comes before
-// the event list. Returns the diagnostic for callers that also put it in a failure message.
-async function writeWorkerCompletionDiagnostics(options) {
-  let persisted;
-  try {
-    persisted = await readWorkerRevisionState(options.pool, options);
-  } catch {
-    persisted = { readError: "unavailable" };
-  }
-  const diagnostic = {
-    operation: "agent_revision.reconcile",
-    revisionId: options.revisionId,
-    persisted,
-    events: summarizeWorkerEvents(options.events, options.revisionId),
-  };
-  for (const line of workerDiagnosticLines(diagnostic)) {
-    if (diagnosticDeadlinePassed()) {
-      break;
-    }
-    process.stderr.write(`${line}\n`);
-  }
-  return diagnostic;
 }
 
 async function assertWorkerCompleted(options) {
@@ -1181,13 +1128,6 @@ function integrationGatewayClient(
       observeServiceUrl(created.serviceUrls[""]);
       return created;
     },
-    async getServiceUrl(request, signal) {
-      const serviceUrl = await gateway.getServiceUrl(request, signal);
-      if (serviceUrl !== undefined) {
-        observeServiceUrl(serviceUrl);
-      }
-      return serviceUrl;
-    },
   };
   return new Proxy(gateway, {
     get(target, property) {
@@ -1390,9 +1330,11 @@ function createIntegrationSandboxDriverFactory(
           return value;
         }
         return async (...args) => {
+          let policyWrite;
           try {
             if (property === "updatePolicy") {
-              policyWrites.push({ sandbox: args[0].sandbox, requestId: args[0].requestId });
+              policyWrite = { sandbox: args[0].sandbox, requestId: args[0].requestId };
+              policyWrites.push(policyWrite);
             }
             const result = await value.apply(target, args);
             if (property === "updatePolicy") {
@@ -1400,6 +1342,13 @@ function createIntegrationSandboxDriverFactory(
             }
             return result;
           } catch (error) {
+            if (
+              policyWrite !== undefined &&
+              error?.message ===
+                "OpenShell UpdateConfig failed with gRPC status 10 (reason RESOURCE_VERSION_CONFLICT)."
+            ) {
+              policyWrite.refusedResourceVersion = true;
+            }
             process.stderr.write(
               `OpenShell gateway ${String(property)} failed: ${error?.code ?? ""} ${error?.details ?? error?.message}\n`,
             );
@@ -2024,6 +1973,9 @@ async function prepareProductionInstallation(
     enableCompatibilityBridges = harnessId === "openclaw",
   } = {},
 ) {
+  if (process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1") {
+    assertOpenShellModelId(providerModel);
+  }
   const kubeconfig = await validateOpenShellPrerequisites();
   const policyFixtureUrl = process.env.OCC_TEST_OPENSHELL_POLICY_MIGRATION_DATABASE_URL;
   if (harnessId === "codex") {
@@ -2113,7 +2065,6 @@ async function prepareProductionInstallation(
     platformNamespace,
     gatewayImage,
     codexImage,
-    openShellRuntimeClass,
     cluster: "k3d-openshell-sandboxdriver",
   });
   if (pluginInstallOnly) {
@@ -2478,6 +2429,7 @@ async function prepareProductionInstallation(
   });
   await waitForOpenShellGateway(placement);
   await assertGatewayBootstrapPolicies(placement);
+  await assertRestrictedPodSecurity(placement);
   if (harnessId === "codex") {
     // Each test Namespace runs its own OpenShell gateway, so its address is known only now. An
     // operator configures the dedicated Agent Gateway's route to the gateway that exposes Codex
@@ -3740,11 +3692,14 @@ async function assertRefreshCredentialSources(topology) {
         `(2) curl -sS --max-time 20 -H "Authorization: Bearer $${refreshToken.environmentName}" ` +
         `${refreshToken.url}. Then reply with exactly ${nonce}.`,
     });
-    assert.match(result.assistant, new RegExp(nonce), "the model source must keep working");
-    const commands = result.items
-      .filter(({ method }) => method === "item/completed")
-      .map(({ params }) => params?.item)
-      .filter((item) => item?.type === "commandExecution");
+    assert.match(
+      readString(record(result).assistant),
+      new RegExp(nonce),
+      "the model source must keep working",
+    );
+    const commands = completedTurnItems(result)
+      .map(record)
+      .filter(({ type }) => type === "commandExecution");
     // Output that is not the echo's JSON (finding 1883) is kept, redacted and bounded, so a
     // failed check shows what the command printed. It has no `placeholder` or `jwt`, so every
     // check below treats it as a missing token.
@@ -4060,11 +4015,14 @@ async function assertNonModelCredentialSource(topology) {
     for (const { token } of toolSources) {
       assert.equal(JSON.stringify(result).includes(token), false);
     }
-    assert.match(result.assistant, new RegExp(nonce), "the model source must keep working");
-    const commands = result.items
-      .filter(({ method }) => method === "item/completed")
-      .map(({ params }) => params?.item)
-      .filter((item) => item?.type === "commandExecution");
+    assert.match(
+      readString(record(result).assistant),
+      new RegExp(nonce),
+      "the model source must keep working",
+    );
+    const commands = completedTurnItems(result)
+      .map(record)
+      .filter(({ type }) => type === "commandExecution");
     const environment = commands.find(({ command }) => String(command).includes("cut -c1-9"));
     assert.ok(environment, "the Harness must read its tool placeholder");
     // Each tool's echo reply carries `shown`: the command, its exit code and what it printed,
@@ -4611,7 +4569,10 @@ async function assertCredentialSourceUpdateAndLiveWithdrawal(topology) {
       prompt,
     });
   const before = `OCC-OPENSHELL-BEFORE-${randomUUID()}`;
-  assert.match((await turn(`Reply with exactly ${before}.`)).assistant, new RegExp(before));
+  assert.match(
+    readString(record(await turn(`Reply with exactly ${before}.`)).assistant),
+    new RegExp(before),
+  );
   // The same Pod and containers must serve both turns: revocation reaches the running Harness.
   const harnessProcess = async () => {
     const pod = await resource("pod", harnessPod.metadata.name, topology.placement);
@@ -5846,7 +5807,7 @@ PYTHON`;
       prompt: `Run exactly this command once through the exec tool, without changing it or attempting other network tools. Report its exit status and output: ${command}`,
     });
     return selectPolicyProbeCommand(
-      result.items,
+      turnMessages(result),
       { uri: `http://${grant.host}:${port}/policy-probe`, port },
       diagnostic,
     );
@@ -6054,14 +6015,16 @@ PYTHON`;
     });
     assert.equal(saved.status, 200, JSON.stringify(saved.error));
     version = saved.data.version;
-    const writes = topology.policyWrites.length;
     let wrote = false;
+    let writesAtInterruption;
+    let applicationId;
     if (interruptAfterWrite) {
       // The real UpdateConfig has committed. Withhold its receipt until worker shutdown
       // aborts the in-flight pass; no provider behavior or policy result is replaced.
       topology.setPolicyWriteBarrier(async (signal) => {
         topology.setPolicyWriteBarrier(undefined);
         wrote = true;
+        writesAtInterruption = topology.policyWrites.length;
         await new Promise((_, reject) => {
           if (signal.aborted) {
             reject(signal.reason);
@@ -6071,23 +6034,115 @@ PYTHON`;
         });
       });
     }
-    // Stage the application while the real worker is stopped, then prove durable recovery
-    // through a new worker and database pool before any provider effect occurs.
-    await topology.pauseWorker();
-    try {
+    const submitApplication = async () => {
       const applied = await topology.request("POST", `${policyPath}/apply`, {
         expectedVersion: version,
         revisionId: topology.revision.id,
       });
       assert.equal(applied.status, 202, JSON.stringify(applied.error));
       assert.equal(applied.data.application.state, "pending");
+      const previous = applicationId;
+      applicationId = applied.data.application.id;
+      assert.notEqual(
+        applicationId,
+        previous,
+        "each explicit application needs a new operation ID",
+      );
+    };
+    // Stage the application while the real worker is stopped, then prove durable recovery
+    // through a new worker and database pool before any provider effect occurs.
+    await topology.pauseWorker();
+    try {
+      await submitApplication();
     } finally {
       await topology.resumeWorker();
     }
+    let reapplied = false;
+    const reapplyAfterStaleVersion = async (view) => {
+      const application = view.data.policy.application;
+      assert.equal(application?.id, applicationId);
+      assert.equal(
+        application?.reason,
+        "SANDBOX_POLICY_PROVIDER_FAILED",
+        JSON.stringify(application),
+      );
+      assert.equal(reapplied, false, "only one explicit application retry is allowed");
+      assert.equal(wrote, false, "an interrupted or ambiguous write must not be reapplied");
+      const previousWrites = topology.policyWrites.filter(
+        (write) => write.requestId === applicationId,
+      );
+      assert.ok(
+        previousWrites.length === 0 ||
+          (previousWrites.length === 1 && previousWrites[0].refusedResourceVersion === true),
+        "reapply requires no dispatch or a definitive structured resource-version conflict",
+      );
+      const pinned = await topology.observerPool.query(
+        "SELECT document->'application'->>'expectedProviderVersion' AS version, document->'application'->'snapshot' AS snapshot FROM occ.sandbox_policies WHERE namespace_id=$1 AND agent_id=$2 AND document->'application'->>'id'=$3",
+        [topology.namespaceId, topology.agent.id, applicationId],
+      );
+      assert.equal(pinned.rows.length, 1);
+      assert.match(pinned.rows[0].version ?? "", /^[1-9][0-9]*$/);
+      const current = await topology
+        .gatewayClient()
+        .getSandbox(
+          { workspace: topology.placement, name: topology.sandbox.metadata.name },
+          AbortSignal.timeout(10_000),
+        );
+      assert.ok(current);
+      assert.notEqual(
+        current.resourceVersion,
+        pinned.rows[0].version,
+        "reapply requires proof that the provider moved past the fixed CAS version",
+      );
+      const status = await providerPolicy();
+      assert.notEqual(
+        status.state,
+        "POLICY_STATUS_FAILED",
+        "a failed committed policy must not be reapplied",
+      );
+      assert.notEqual(
+        status.state,
+        "POLICY_STATUS_SUPERSEDED",
+        "a superseded committed policy must not be reapplied",
+      );
+      assert.ok(current.spec?.policy);
+      assert.equal(
+        sameOpenShellPolicy(
+          status.policy,
+          openShellPolicyCandidate(current.spec.policy, pinned.rows[0].snapshot),
+        ),
+        false,
+        "a matching provider policy must not be reapplied under a fresh operation ID",
+      );
+      const refreshed = await topology.request("GET", policyPath);
+      assert.equal(refreshed.status, 200, JSON.stringify(refreshed.error));
+      assert.equal(refreshed.data.policy.version, version);
+      assert.equal(refreshed.data.policy.application.id, applicationId);
+      reapplied = true;
+      process.stderr.write(
+        "OpenShell integration: caller refreshed and explicitly reapplied after a stale provider version.\n",
+      );
+      await submitApplication();
+    };
+    const applicationView = async () => {
+      const view = await topology.request("GET", policyPath);
+      assert.equal(view.status, 200, JSON.stringify(view.error));
+      if (view.data.policy.application?.state === "failed") {
+        await reapplyAfterStaleVersion(view);
+        return undefined;
+      }
+      return view;
+    };
     if (interruptAfterWrite) {
       await waitFor(
         "native UpdateConfig before interruption",
-        async () => (wrote ? true : undefined),
+        async () => {
+          if (wrote) {
+            return true;
+          }
+          await applicationView();
+          return wrote ? true : undefined;
+        },
         30_000,
       );
       await topology.pauseWorker();
@@ -6096,14 +6151,8 @@ PYTHON`;
     await waitFor(
       "matching loaded live network policy",
       async () => {
-        const view = await topology.request("GET", policyPath);
-        assert.equal(view.status, 200, JSON.stringify(view.error));
-        assert.notEqual(
-          view.data.policy.application?.state,
-          "failed",
-          JSON.stringify(view.data.policy.application),
-        );
-        return view.data.policy.application?.state === "applied" ? view.data : undefined;
+        const view = await applicationView();
+        return view?.data.policy.application?.state === "applied" ? view.data : undefined;
       },
       120_000,
     );
@@ -6111,8 +6160,13 @@ PYTHON`;
     if (interruptAfterWrite) {
       assert.equal(
         topology.policyWrites.length,
-        writes + 1,
+        writesAtInterruption,
         "recovery must confirm the committed native write without issuing it again",
+      );
+      assert.equal(
+        topology.policyWrites.filter((write) => write.requestId === applicationId).length,
+        1,
+        "the interrupted application must issue UpdateConfig only once",
       );
       process.stderr.write(
         "OpenShell integration: interrupted native policy write recovered without a duplicate UpdateConfig.\n",
@@ -6304,16 +6358,19 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
       `READONLY_DENIED, ESCAPE_DENIED, OPENCLAW_ALLOWED, and ACME_DENIED ` +
       `if and only if those outcomes occurred.`,
   });
-  const completedCommands = result.items
-    .filter(({ method }) => method === "item/completed")
-    .map(({ params }) => params?.item)
+  const completedCommands = completedTurnItems(result)
+    .map((item) => {
+      assert.ok(item != null, "expected the completed Codex item");
+      return record(item);
+    })
     .filter(({ type }) => type === "commandExecution");
   // The Harness records either the command itself or its shell invocation.
   const findCurl = (expected) =>
     completedCommands.find(
       ({ command }) =>
         command === expected ||
-        /^(?:[\w./-]+\/)?(?:bash|sh|zsh) -l?c (["'])([^"']+)\1$/u.exec(command)?.[2] === expected,
+        /^(?:[\w./-]+\/)?(?:bash|sh|zsh) -l?c (["'])([^"']+)\1$/u.exec(String(command))?.[2] ===
+          expected,
     );
   const approvedCommand = findCurl(approvedCurl);
   const deniedCommand = findCurl(deniedCurl);
@@ -6363,41 +6420,50 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
           `which is expected to fail: ${deniedConfigCommand}. ` +
           `Then reply with exactly ${backendNonce}.`,
       });
+    /** @param {unknown} turn */
     const startedCommands = (turn) =>
-      turn.items.filter(
+      turnMessages(turn).filter(
         ({ method, params }) =>
-          method === "item/started" && params?.item?.type === "commandExecution",
+          method === "item/started" && record(record(params).item).type === "commandExecution",
       ).length;
-    const hasCommandActivity = ({ items }) => {
-      // The collector validates turn/completed and can return command output without a start or
-      // completion. Ignore that output only if it explicitly belongs to another thread or turn.
-      const { threadId, turn } = items.find(({ method }) => method === "turn/completed").params;
+    /** @param {unknown} result */
+    const hasCommandActivity = (result) => {
+      const items = turnMessages(result);
+      // Ignore a command delta only when it explicitly belongs to another thread or turn.
+      const terminal = items.find(({ method }) => method === "turn/completed");
+      assert.ok(terminal, "expected a completed Codex turn");
+      const { threadId, turn } = record(terminal.params);
       const couldMatchId = (id, expected) => typeof id !== "string" || id === "" || id === expected;
       return items.some(({ method, params }) => {
+        const data = record(params);
         if (method === "item/commandExecution/outputDelta") {
-          return couldMatchId(params?.threadId, threadId) && couldMatchId(params?.turnId, turn.id);
+          return (
+            couldMatchId(data.threadId, threadId) && couldMatchId(data.turnId, record(turn).id)
+          );
         }
         return (
           method === "item/commandExecution/requestApproval" ||
           ((method === "item/started" || method === "item/completed") &&
-            params?.item?.type === "commandExecution")
+            record(data.item).type === "commandExecution")
         );
       });
     };
-    let backendTurn = await requestBackendTurn();
+    let backendTurn = record(await requestBackendTurn());
     const skippedTurns = [];
     // Ask once more only when the turn showed no command activity at all. A rewritten,
     // declined, approval-gated or unsettled command is still judged below.
     if (!hasCommandActivity(backendTurn)) {
       skippedTurns.push({
-        items: backendTurn.items.length,
-        replyHasNonce: new RegExp(backendNonce).test(backendTurn.assistant),
+        items: turnMessages(backendTurn).length,
+        replyHasNonce: new RegExp(backendNonce).test(String(backendTurn.assistant)),
       });
-      backendTurn = await requestBackendTurn();
+      backendTurn = record(await requestBackendTurn());
     }
-    const backendCommands = backendTurn.items
-      .filter(({ method }) => method === "item/completed")
-      .map(({ params }) => params?.item)
+    const backendCommands = completedTurnItems(backendTurn)
+      .map((item) => {
+        assert.ok(item != null, "expected the completed Codex item");
+        return record(item);
+      })
       .filter(({ type }) => type === "commandExecution");
     const deniedConfigRequest = backendCommands.find(({ command }) =>
       String(command).includes(deniedBackend),
@@ -6418,10 +6484,10 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
         exitCode: command.exitCode,
         durationMs: command.durationMs ?? null,
       })),
-      approvalRequests: backendTurn.items.filter(
+      approvalRequests: turnMessages(backendTurn).filter(
         ({ method }) => method === "item/commandExecution/requestApproval",
       ).length,
-      replyHasNonce: new RegExp(backendNonce).test(backendTurn.assistant),
+      replyHasNonce: new RegExp(backendNonce).test(String(backendTurn.assistant)),
     };
     assert.ok(
       deniedConfigRequest,
@@ -6429,10 +6495,12 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
     );
     assert.ok(
       Number.isSafeInteger(deniedConfigRequest.exitCode),
-      `the forbidden backend request must execute (status=${deniedConfigRequest.status}, approvalRequested=${backendTurn.items.some(
+      `the forbidden backend request must execute (status=${deniedConfigRequest.status}, approvalRequested=${turnMessages(
+        backendTurn,
+      ).some(
         ({ method, params }) =>
           method === "item/commandExecution/requestApproval" &&
-          params?.itemId === deniedConfigRequest.id,
+          record(params).itemId === deniedConfigRequest.id,
       )}).`,
     );
     assert.notEqual(deniedConfigRequest.exitCode, 0);
@@ -6470,15 +6538,16 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
       },
       30_000,
     );
-    assert.match(backendTurn.assistant, new RegExp(backendNonce));
+    assert.match(readString(backendTurn.assistant), new RegExp(backendNonce));
   }
-  assert.match(result.assistant, new RegExp(nonce));
-  assert.match(result.assistant, /WORKSPACE_WRITABLE/);
-  assert.match(result.assistant, /APPROVED_PATH_READABLE/);
-  assert.match(result.assistant, /READONLY_DENIED/);
-  assert.match(result.assistant, /ESCAPE_DENIED/);
-  assert.match(result.assistant, /OPENCLAW_ALLOWED/);
-  assert.match(result.assistant, /ACME_DENIED/);
+  const assistant = readString(record(result).assistant);
+  assert.match(assistant, new RegExp(nonce));
+  assert.match(assistant, /WORKSPACE_WRITABLE/);
+  assert.match(assistant, /APPROVED_PATH_READABLE/);
+  assert.match(assistant, /READONLY_DENIED/);
+  assert.match(assistant, /ESCAPE_DENIED/);
+  assert.match(assistant, /OPENCLAW_ALLOWED/);
+  assert.match(assistant, /ACME_DENIED/);
 }
 
 // Prints NAME_EXIT and NAME_OUT for one probe command; stderr is dropped.
@@ -6553,7 +6622,7 @@ async function runSandboxProbe(topology, nonce, script, harnessPod = topology.ha
         false,
         "a probe turn must not expose a credential.",
       );
-      return turn;
+      return observedTurn(turn);
     },
   });
   if (run === undefined) {
@@ -6587,7 +6656,7 @@ async function runSandboxProbe(topology, nonce, script, harnessPod = topology.ha
       `OpenShell integration: the probe ran after these turns without a probe command:\n${traces.join("\n")}\n`,
     );
   }
-  assert.match(result.assistant, new RegExp(nonce));
+  assert.match(readString(record(result).assistant), new RegExp(nonce));
   const output = String(run.aggregatedOutput ?? "");
   const value = (name) => new RegExp(`^${name}=(.*)$`, "m").exec(output)?.[1]?.trim() ?? null;
   const exitCode = (name) => {
@@ -7779,7 +7848,7 @@ async function assertModelProviderOutageFailsClosed(topology) {
   const after = await request("GET", agentPath);
   const observed = {
     turnRejected: rejected,
-    recoveredTurn: new RegExp(nonce).test(recovered.assistant),
+    recoveredTurn: new RegExp(nonce).test(String(record(recovered).assistant)),
     sameRevision: after.data.activeRevisionId === revisionId,
   };
   process.stderr.write(
@@ -8133,6 +8202,7 @@ async function assertOpenShellGatewayOutage(topology) {
   );
   const source = await request("GET", sourcePath);
   const listed = await request("GET", `/namespaces/${namespaceId}/credential-sources`);
+  /** @type {{ redeployActivated: boolean, work: unknown, sourceState: unknown, registrationRecord: unknown, turn?: boolean }} */
   observed.recovery = {
     redeployActivated: activated,
     work: work.rows[0] ?? null,
@@ -8168,7 +8238,7 @@ async function assertOpenShellGatewayOutage(topology) {
       throw error;
     }
     assert.equal(JSON.stringify(turn).includes(modelCredential), false);
-    observed.recovery.turn = new RegExp(nonce).test(turn.assistant);
+    observed.recovery.turn = new RegExp(nonce).test(String(record(turn).assistant));
   }
   // The gateway mints OAuth2 tokens itself, and its first refresh sweep runs at startup. Since
   // NVIDIA/OpenShell#4527 that sweep waits for the operator namespace listing and reports a
@@ -8290,6 +8360,16 @@ async function assertOpenShellGatewayOutage(topology) {
   }
 }
 
+/**
+ * @param {Parameters<typeof pollReplacementActivation>[0] & {
+ *   replacementNode?: Pick<ReturnType<typeof createReplacementNodeObservation>, "begin" | "finish">,
+ *   diagnoseRevision: (revisionId: string) => Promise<unknown>
+ * }} topology
+ * @param {{ data: { id: string } }} redeployed
+ * @param {import("node:test").TestContext} testContext
+ * @param {typeof waitFor} [poll]
+ * @param {typeof replacementActivationDiagnostic} [diagnose]
+ */
 export async function waitForReplacementActivation(
   topology,
   redeployed,
@@ -8297,34 +8377,9 @@ export async function waitForReplacementActivation(
   poll = waitFor,
   diagnose = replacementActivationDiagnostic,
 ) {
-  const agentPath = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
-  const deploymentPath = `${agentPath}/deployments/${redeployed.data.id}`;
   topology.replacementNode?.begin(redeployed.data.id);
   try {
-    await poll(`replacement OpenShell revision ${redeployed.data.id} activation`, async () => {
-      const observed = await topology.request("GET", agentPath);
-      assert.equal(observed.status, 200, JSON.stringify(observed.error));
-      if (observed.data.activeRevisionId === redeployed.data.id) {
-        return observed.data;
-      }
-      // Finding 1532: a Harness holding a failed startup model probe fails the deployment for
-      // good on its first attempt. Stop then: the error names the probe's classified cause, and
-      // the diagnostic is captured near the failure, not after 240 s of Gateway reconnect noise.
-      const deployment = await topology.request("GET", deploymentPath);
-      // A temporary failure to read that diagnostic is not a failed replacement. Keep the
-      // original activation deadline; only the Agent naming this revision can satisfy the wait.
-      const { status } = deployment;
-      if (status === 408 || status === 429 || (status >= 500 && status < 600)) {
-        return undefined;
-      }
-      assert.equal(status, 200, JSON.stringify(deployment.error));
-      assert.notEqual(
-        deployment.data.status,
-        "failed",
-        `Replacement OpenShell revision ${redeployed.data.id} failed: ${JSON.stringify(deployment.data)}`,
-      );
-      return undefined;
-    });
+    await pollReplacementActivation(topology, redeployed.data.id, poll);
   } catch (error) {
     const observation = topology.replacementNode?.finish();
     if (observation !== undefined) {
@@ -8353,7 +8408,11 @@ export async function waitForReplacementActivation(
   }
 }
 
-async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology, testContext) {
+async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(
+  topology,
+  testContext,
+  reportProgress,
+) {
   // Suspending the upstream Sandbox removes its Pod while retaining the provider resource.
   // Replacement must still discover and retire that Sandbox without relying on Pod observation.
   await kubectl(
@@ -8384,13 +8443,9 @@ async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology, 
   );
   assert.equal(suspendedSandbox.spec.operatingMode, "Suspended");
 
-  const redeployed = await topology.request(
-    "POST",
-    `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/deploy`,
+  const redeployed = await redeployOpenShellReplacement(topology, reportProgress, (response) =>
+    waitForReplacementActivation(topology, response, testContext),
   );
-  assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
-  assert.notEqual(redeployed.data.id, topology.revision.id);
-  await waitForReplacementActivation(topology, redeployed, testContext);
   // Activation already required the replacement's workspace node to reconnect. Dedicated Codex
   // enrolls that node through OpenShell provider files, so the Pod carries no node-state mount.
   await waitForProviderHarnessPod(topology.placement, redeployed.data);
@@ -9279,20 +9334,13 @@ export function registerGatewayToolPolicyTest() {
               gatewayPod: topology.gatewayPod.metadata.name,
               threadId: childId,
             });
-            return observed.turns?.some(
-              (turn) =>
-                turn.status === "completed" &&
-                turn.items.some(
-                  (item) => item.type === "agentMessage" && item.text.includes(childMarker),
-                ),
-            )
-              ? observed
-              : undefined;
+            return findCodexPolicyReplyThread(observed, childMarker);
           },
           600_000,
         );
-        const parentMetadata = await native.readCodexThreadMetadata(topology.agent, parent);
-        const childMetadata = await native.readCodexThreadMetadata(topology.agent, child);
+        const agent = readCodexPolicyAgent(topology.agent);
+        const parentMetadata = await native.readCodexThreadMetadata(agent, parent);
+        const childMetadata = await native.readCodexThreadMetadata(agent, child);
         proof.modelTurns.push({
           kind: "fresh-native-child",
           ...assertCodexPolicyChild({
@@ -9553,7 +9601,8 @@ export function registerGatewayToolPolicyTest() {
           gatewayPod: topology.gatewayPod.metadata.name,
           threadId: afterBinding.threadId,
         });
-        const metadata = await native.readCodexThreadMetadata(topology.agent, thread);
+        const agent = readCodexPolicyAgent(topology.agent);
+        const metadata = await native.readCodexThreadMetadata(agent, thread);
         retainedDeclaration = metadata.tools.some((tool) => tool.name === "agents_list");
       }
       if (retainedDeclaration) {
@@ -9893,7 +9942,11 @@ export function registerProviderLifecycleTest(workflow) {
           // Retire the Harness used by the positive turns before changing DNS. A fresh
           // lookup alone cannot redirect its already established model connection.
           await measureOpenShellStage(testContext, "replacement", () =>
-            assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology, testContext),
+            assertDuplicateReconciliationDoesNotDuplicateOpenShell(
+              topology,
+              testContext,
+              workflow === "upstream" && selectedScenario === "full",
+            ),
           );
         }
         if (workflow === "upstream") {

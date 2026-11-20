@@ -2,7 +2,7 @@ import { execFile, type ExecFileOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
-import { redactedQaTail } from "./qa-secrets.mjs";
+import { redactedQaTail } from "./qa-secrets.ts";
 
 const executeFile = promisify(execFile);
 const diagnosticOptions = {
