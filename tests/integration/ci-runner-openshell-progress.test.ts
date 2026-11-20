@@ -15,6 +15,7 @@ import {
 import { isRecord } from "../../scripts/ci/records.ts";
 import reporter from "../../scripts/ci/reporter.ts";
 import { readFileEvidence, type FileEvidence } from "../../scripts/ci/runner-reporter-output.ts";
+import type { OpenShellReplacementChildOptions } from "../fixtures/ci-runner-openshell-replacement-child.ts";
 import {
   observeDeadline,
   pendingMessage,
@@ -502,9 +503,10 @@ async function observeRequest(root: string) {
 test("CI records only observed upstream replacement checkpoints on failure", async (t) => {
   const upstreamFile = "tests/integration/openshell-upstream-real.test.ts";
   const title = "OpenShell model and tool upstream outages fail closed";
-  const stageModule = new URL("tests/helpers/openshell-stage.ts", repositoryUrl).href;
-  const workflowModule = new URL("tests/helpers/openshell-sandbox-workflows.mjs", repositoryUrl)
-    .href;
+  const replacementChildModule = new URL(
+    "tests/fixtures/ci-runner-openshell-replacement-child.ts",
+    repositoryUrl,
+  ).href;
   const progressModule = new URL("scripts/ci/openshell-progress.mjs", repositoryUrl).href;
   const reporterPath = fileURLToPath(new URL("scripts/ci/reporter.ts", repositoryUrl));
 
@@ -649,143 +651,25 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
            return { cleanup: () => writeFile(${JSON.stringify(cleanupMarker)}, "cleaned") };
          }`,
       );
+      const childOptions: OpenShellReplacementChildOptions = {
+        mode,
+        requestOrderPath: requestReceipts.order,
+        requestStart: requestStart.join("\n") + "\n",
+        requestBeforeFailure: requestBeforeFailure.join("\n") + "\n",
+        requestAttempted: requestReceipts.attempted,
+        sameRevisionRefusal: requestReceipts.sameRevisionRefusal,
+        activationPoll,
+        pendingMessage,
+      };
       await writeFile(
         join(root, "tests/helpers", declaration),
-        `import assert from "node:assert/strict";
-         import { existsSync, readFileSync, watch, writeFileSync } from "node:fs";
-         import test from "node:test";
-         import { runOpenShellStage } from ${JSON.stringify(stageModule)};
-         import { emitOpenShellProgress, emitOpenShellReplacementCheckpoint, openShellProgressPrefix } from ${JSON.stringify(progressModule)};
-         import { redeployOpenShellReplacement } from ${JSON.stringify(workflowModule)};
-
-         const mode = ${JSON.stringify(mode)};
+        `import test from "node:test";
+         import { prepareOpenShellReplacementChild } from ${JSON.stringify(replacementChildModule)};
          const credential = process.env.CI_RUNNER_FIXTURE_CREDENTIAL;
          const failure = new Error("controlled failure " + credential);
-         const response = { status: 202, data: { id: "private-replacement-id" } };
-         const agentPath = "/namespaces/fixture/agents/fixture";
-         function waitForReceipt(expected, signal) {
-           const path = ${JSON.stringify(requestReceipts.order)};
-           const observed = () => existsSync(path) ? readFileSync(path, "utf8") : "";
-           return new Promise((resolve, reject) => {
-             const watcher = watch("state", { signal }, check);
-             watcher.once("error", reject);
-             watcher.once("close", () => {
-               if (observed() === expected) resolve();
-               else reject(new Error("request reporter did not acknowledge the case"));
-             });
-             function check() {
-               const order = observed();
-               if (order === expected || !expected.startsWith(order)) watcher.close();
-             }
-             check();
-           });
-         }
+         const runScenario = await prepareOpenShellReplacementChild(${JSON.stringify(childOptions)});
          test(${JSON.stringify(name)}, ${caseDeadline ? "{ timeout: 1200 }, " : runnerDeadline ? "{ timeout: 15000 }, " : ""}async (t) => {
-           if (mode === "completed-wrapper-emitter") {
-             // Supply the genuine failed measurement and terminal, but none of the earlier progress.
-             emitOpenShellProgress("replacement", "failed");
-             t.diagnostic('openclaw-ci-measurement {"kind":"openshell-stage","stage":"replacement","outcome":"failed","elapsedMs":1}');
-             throw failure;
-           }
-           if (${observedRequest}) {
-             await waitForReceipt(${JSON.stringify(requestStart.join("\n") + "\n")}, t.signal);
-           }
-           for (const step of ["installation", "exposure-auth", "initial-model"]) {
-             await runOpenShellStage(t, step, async () => {});
-           }
-           let sameRevisionError;
-           const replacement = runOpenShellStage(t, "replacement", async () => {
-             if (mode === "setup") throw failure;
-             if (mode === "out-of-order") {
-               emitOpenShellReplacementCheckpoint("activation");
-               emitOpenShellReplacementCheckpoint("redeploy-request");
-               throw failure;
-             }
-             if (mode === "extra-field") {
-               process.stdout.write(openShellProgressPrefix + JSON.stringify({
-                 kind: "openshell-replacement-checkpoint", checkpoint: "redeploy-request", extra: "private-progress-extra",
-               }) + "\\n");
-               throw failure;
-             }
-             // The equal-revision assertion must quote the fixture credential for the redaction check.
-             const previousRevisionId = ${sameRevision} ? credential : "private-previous-id";
-             assert.ok(previousRevisionId);
-             const topology = {
-               namespaceId: "fixture",
-               agent: { id: "fixture" },
-               revision: { id: previousRevisionId },
-               async request(method, path) {
-                 if (method === "POST") {
-                   assert.equal(path, agentPath + "/deploy");
-                   if (${observedRequest}) {
-                     writeFileSync(${JSON.stringify(requestReceipts.attempted)}, "invoked", { flag: "wx" });
-                   }
-                   if (mode === "request") throw failure;
-                   if (${sameRevision}) return { status: 202, data: { id: previousRevisionId } };
-                   return response;
-                 }
-                 assert.equal(method, "GET");
-                 if (${sameRevision}) writeFileSync(${JSON.stringify(activationPoll)}, "polling");
-                 if (path === agentPath) {
-                 if (${pendingActivation}) {
-                   writeFileSync(${JSON.stringify(activationPoll)}, "polling");
-                   if (${controlledDeadline}) t.log(${JSON.stringify(pendingMessage)});
-                   // Keep Node alive while the real activation poll and its caller are pending.
-                   const hold = setInterval(() => {
-                     // Wake a pending stdout read without emitting progress.
-                     if (${controlledDeadline}) process.stdout.write("\\n");
-                   }, 1000);
-                   t.signal.addEventListener("abort", () => clearInterval(hold), { once: true });
-                   return new Promise(() => {});
-                 }
-                   return { status: 200, data: {
-                     activeRevisionId: mode === "activation" ? topology.revision.id : response.data.id,
-                   }};
-                 }
-                 assert.equal(path, agentPath + "/deployments/" + response.data.id);
-                 assert.equal(mode, "activation");
-                 throw failure;
-               },
-               async diagnoseRevision() { return {}; },
-             };
-             try {
-               const deployed = await redeployOpenShellReplacement(topology, t, true, async () => "");
-               assert.equal(deployed, response);
-             } catch (error) {
-               if (mode === "activation" || mode === "request") assert.equal(error, failure);
-               if (
-                 ${sameRevision} &&
-                 error instanceof assert.AssertionError &&
-                 error.operator === "notStrictEqual" &&
-                 error.actual === previousRevisionId &&
-                 error.expected === previousRevisionId
-               ) {
-                 sameRevisionError = error;
-               }
-               throw error;
-             }
-             if (mode === "reconciliation" || mode.startsWith("wrong-")) throw failure;
-           }, "pod-replacement");
-           if (${observedRequest}) {
-             try {
-               await replacement;
-             } catch (error) {
-               const expectedFailure = ${sameRevision} ? sameRevisionError : failure;
-               if (expectedFailure !== undefined && error === expectedFailure) {
-                 // Wait for the last progress row while the native case is still active.
-                 await waitForReceipt(${JSON.stringify(requestBeforeFailure.join("\n") + "\n")}, t.signal);
-                 if (${sameRevision}) {
-                   writeFileSync(${JSON.stringify(requestReceipts.sameRevisionRefusal)}, "refused", { flag: "wx" });
-                 }
-               }
-               throw error;
-             }
-           } else {
-             await replacement;
-           }
-           if (mode === "later-stage") {
-             await runOpenShellStage(t, "untrusted-upstream", async () => { throw failure; });
-           }
+           await runScenario(t, failure);
          });`,
       );
       await writeRunnerManifest(root, {
