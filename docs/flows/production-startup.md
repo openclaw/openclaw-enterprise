@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-18"
-last_updated_session: "authoring-run/fcffdcd5-85ba-4fd1-ad35-bfbbcd6953b6"
+updated: "2026-11-20"
+last_updated_session: "authoring-run/c6f50703-9ebb-4292-b6e2-99a7f0c87324"
 ---
 
 # Production Startup Flow
@@ -168,11 +168,12 @@ On SIGINT/SIGTERM, a second migrator connection terminates the uniquely named
 session. Cleanup ignores repeated signals and finishes before exit. If the
 connection fails, the command reports `migration.cancellation-failed` and waits
 for migration completion.
-Under the advisory lock, the migration client verifies roles, receipts, catalogs and
-grants against native or reviewed restore digests. Unsupported history fails
-before DDL/bootstrap. After option guards, completed apply skips Drizzle only
-when `SHOW transaction_read_only` returns `off`. Drizzle otherwise retains pending
-migration and read-only refusal. `finally` releases the lock and client
+Under the advisory lock, preflight checks roles, receipts, catalogs, and grants
+against native or reviewed digests, including upgraded restored archives. It rejects
+unsupported history before DDL or bootstrap.
+Completed apply skips Drizzle only when `SHOW transaction_read_only` is `off`;
+otherwise, Drizzle retains pending migration and read-only refusal. `finally`
+releases the lock and client
 ([history](../reference/settings/operations.md#migration-history)).
 
 `scripts/lib/bootstrap-configuration.ts:bootstrapConfiguration` requires an HTTPS
@@ -381,6 +382,8 @@ The shell initializes the missing annotation, patches with UID and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 06:20: Qualify upgraded restore catalogs. (authoring-run/c6f50703-9ebb-4292-b6e2-99a7f0c87324 - 4752d7183a1bf05501e25863f07ba98bf29abad6)
 
 - 2026-11-18 13:48: Recognize migration hooks (PST). (authoring-run/fcffdcd5-85ba-4fd1-ad35-bfbbcd6953b6 - 62b4fb61d91580e4080fe3bd22da3e981bffb603)
 

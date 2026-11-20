@@ -38,7 +38,7 @@ export async function retainGatewaySourcesAcrossProxyAdmission(
   async function sources(omitAnnotations: boolean) {
     return (
       await app.query(
-        `SELECT to_jsonb(s) ${omitAnnotations ? "- 'owner_capability' - 'egress'" : ""} AS source
+        `SELECT to_jsonb(s) ${omitAnnotations ? "- 'owner_capability' - 'egress' - 'token_service_instance_id' - 'registration' - 'registration_dispatched_at'" : ""} AS source
          FROM occ.credential_sources s WHERE id=ANY($1) ORDER BY id`,
         [ids],
       )
@@ -58,8 +58,28 @@ export async function retainGatewaySourcesAcrossProxyAdmission(
     assert.deepEqual(await sources(true), before, "main source fields survive unchanged");
     assert.deepEqual(await relationships(), secretsBefore, "Secret ownership remains exact");
     assert.deepEqual(
-      (await sources(false)).map(({ owner_capability, egress }) => ({ owner_capability, egress })),
-      ids.map(() => ({ owner_capability: "credential_gateway", egress: null })),
+      (await sources(false)).map(
+        ({
+          owner_capability,
+          egress,
+          token_service_instance_id,
+          registration,
+          registration_dispatched_at,
+        }) => ({
+          owner_capability,
+          egress,
+          token_service_instance_id,
+          registration,
+          registration_dispatched_at,
+        }),
+      ),
+      ids.map(() => ({
+        owner_capability: "credential_gateway",
+        egress: null,
+        token_service_instance_id: null,
+        registration: null,
+        registration_dispatched_at: null,
+      })),
       "main sources retain Gateway ownership without acquiring proxy authority",
     );
     const relabel =
