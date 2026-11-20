@@ -315,7 +315,7 @@ test("a staged credential source refuses an ungranted Agent principal before rev
     outcome: "success",
     ...(phase ? { details: { phase } } : {}),
   });
-  const source = await fixture.controller.registerManagedCredentialSource(
+  const source = await fixture.controller.createManagedCredentialSource(
     fixture.principal.id,
     namespace.id,
     {

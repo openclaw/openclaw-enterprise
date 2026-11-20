@@ -2258,15 +2258,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         }
         if (row) {
           const id = text(row, "id");
-          if (
-            id === candidate.id ||
-            (
-              await client.query(
-                "SELECT 1 FROM occ.credential_sources WHERE token_service_instance_id=$1 LIMIT 1",
-                [id],
-              )
-            ).rowCount !== 0
-          ) {
+          if (id === candidate.id) {
             throw new ResourceStateConflictError(
               "The TokenService instance still has registrations.",
             );
@@ -2274,7 +2266,11 @@ export class PostgresPlatformState implements PlatformStateStore {
           try {
             await client.query("DELETE FROM occ.token_service_instances WHERE id=$1", [id]);
           } catch (error) {
-            if (asRecord(error)?.code === "23503") {
+            const failure = asRecord(error);
+            if (
+              (failure?.code === "23001" || failure?.code === "23503") &&
+              failure.constraint === "credential_sources_token_service_instance_id_fkey"
+            ) {
               throw new ResourceStateConflictError(
                 "The TokenService instance still has registrations.",
               );

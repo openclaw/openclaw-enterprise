@@ -72,23 +72,6 @@ function decodeCredential(value: string): ResolvedCredential {
   return { credential: record.credential, version: record.version };
 }
 
-function tokenServiceSecretRef(
-  installationId: string,
-  tokenServiceInstanceId: string,
-  source: CredentialSourceReference,
-): InstallationSecretRef {
-  return {
-    installationId,
-    id: JSON.stringify([
-      "token_service",
-      tokenServiceInstanceId,
-      source.kind,
-      source.namespaceId,
-      source.id,
-    ]),
-  };
-}
-
 export class OCCTokenServiceDriver implements TokenServiceDriver {
   static readonly configurationSchema: JSONSchema = Object.freeze({
     type: "object",
@@ -148,7 +131,16 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
   }
 
   private storageRef(ref: CredentialSourceReference): InstallationSecretRef {
-    return tokenServiceSecretRef(this.installationId, this.tokenServiceInstanceId, ref);
+    return {
+      installationId: this.installationId,
+      id: JSON.stringify([
+        "token_service",
+        this.tokenServiceInstanceId,
+        ref.kind,
+        ref.namespaceId,
+        ref.id,
+      ]),
+    };
   }
 
   async registerSource(

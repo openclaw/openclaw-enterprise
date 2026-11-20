@@ -42,6 +42,7 @@ import {
   CONTROLLER_WORK_AUDIT_ACTIONS,
   connectionValuesChanged,
   isOAuthScopeToken,
+  isSourceProviderPresetId,
   normalizeConnectionDestinations,
   validateConnectionTemplateAuthorization,
   ConnectionTemplateValidationError,
@@ -61,7 +62,6 @@ import {
   validPluginDriverIdentity,
   codexRepositoryBrokerNetworkProxy,
   inferenceKeyDestination,
-  isSourceProviderPresetId,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
   validateDeploymentPolicy,
 } from "@openclaw-enterprise/contracts";
@@ -205,6 +205,7 @@ import type {
   TokenServiceRegistration,
   SourceRegistrationInput,
   SourceUpdate,
+  SourceProviderPresetId,
   CredentialSourceMetadata,
   CredentialSourceSnapshot,
   CredentialSourceStatus,
@@ -1171,6 +1172,14 @@ export interface CreateCredentialSourceInput {
   readonly secrets?: Readonly<Record<string, SecretReference>>;
 }
 
+export type UpdateManagedCredentialSourceInput =
+  | (SourceUpdate & { readonly providerPreset?: SourceProviderPresetId | null })
+  | {
+      readonly providerPreset: SourceProviderPresetId | null;
+      readonly secret?: never;
+      readonly lifecycleConfig?: never;
+    };
+
 export interface AgentCredentialSourceInput {
   readonly namespaceId: string;
   readonly agentId: string;
@@ -1349,6 +1358,35 @@ function isManagedTokenServiceSource(
   return (
     source?.ownerCapability === "token_service" && typeof source.tokenServiceInstanceId === "string"
   );
+}
+
+function assertManagedSourceLifecycleSettings(settings: Readonly<Record<string, string>>): void {
+  if (Object.hasOwn(settings, SOURCE_PROVIDER_PRESET_CONFIG_KEY)) {
+    throw new ScopeViolationError("Provider preset approval is not a lifecycle setting.");
+  }
+}
+
+function assertSourceProviderPreset(value: unknown): asserts value is SourceProviderPresetId {
+  if (!isSourceProviderPresetId(value)) {
+    throw new ScopeViolationError("Choose an approved source provider preset.");
+  }
+}
+
+function managedSourceConfig(
+  source: Readonly<CredentialSource>,
+  input: UpdateManagedCredentialSourceInput,
+): Readonly<Record<string, string>> {
+  const config = { ...(input.lifecycleConfig?.settings ?? source.config) };
+  const approved = source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY];
+  if (input.lifecycleConfig !== undefined && approved !== undefined) {
+    config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] = approved;
+  }
+  if (input.providerPreset === null) {
+    delete config[SOURCE_PROVIDER_PRESET_CONFIG_KEY];
+  } else if (input.providerPreset !== undefined) {
+    config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] = input.providerPreset;
+  }
+  return config;
 }
 
 const CONNECTION_OPERATION_TIMEOUT_MS = 30_000;
@@ -8586,12 +8624,6 @@ export class OpenClawController {
     return { plan, assertProvidersCurrent };
   }
 
-  /**
-   * Registration records the source as `registering` before the gateway write, so an uncertain
-   * gateway outcome always leaves a record an operator can list and delete. `audit` builds the
-   * success event, committed with the transition to `ready`. `registrationAudit` records
-   * the initial `registering` row before any external effect, for multi-step callers.
-   */
   /** Bind the configured adapter to the actual durable credential store before use. */
   async activateTokenServiceInstance(driverId: string, storeIdentity: string): Promise<string> {
     if (!isNonEmptyString(driverId) || !isNonEmptyString(storeIdentity)) {
@@ -8635,15 +8667,16 @@ export class OpenClawController {
     return owner;
   }
 
-  async registerManagedCredentialSource(
+  async createManagedCredentialSource(
     principalId: string,
     namespaceId: string,
     input: Omit<SourceRegistrationInput, "sourceRef" | "tokenServiceInstanceId"> & {
       readonly name: string;
+      readonly providerPreset?: SourceProviderPresetId;
     },
     audit: (resource: CredentialSourceReference, phase?: "registration_started") => AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata>> {
-    this.requireIndependentMutation("Credential source registration");
+    this.requireIndependentMutation("Credential source creation");
     this.namespaceIdentity(namespaceId);
     let reservation:
       | {
@@ -8665,6 +8698,10 @@ export class OpenClawController {
         if (namespace.status !== "ready") {
           throw new NamespaceNotReadyError();
         }
+        assertManagedSourceLifecycleSettings(input.lifecycleConfig.settings);
+        if (input.providerPreset !== undefined) {
+          assertSourceProviderPreset(input.providerPreset);
+        }
         const owner = this.ownedTokenServiceDriver();
         const instanceId = this.currentTokenServiceInstanceId();
         const source = await state.credentialSources.createCredentialSource({
@@ -8675,7 +8712,10 @@ export class OpenClawController {
           ownerCapability: "token_service",
           tokenServiceInstanceId: instanceId,
           state: "registering",
-          config: {},
+          config:
+            input.providerPreset === undefined
+              ? {}
+              : { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: input.providerPreset },
           secrets: {},
           createdAt: this.timestamp(),
         });
@@ -8795,14 +8835,22 @@ export class OpenClawController {
           namespaceId,
           ref.id,
           registration,
-          input.lifecycleConfig.settings,
+          { ...input.lifecycleConfig.settings, ...pending.config },
         );
         if (!isManagedTokenServiceSource(ready)) {
           throw new ResourceStateConflictError(
             "The credential source changed during registration.",
           );
         }
-        await state.audit.append(audit(ref));
+        const completed = audit(ref);
+        await state.audit.append(
+          input.providerPreset === undefined
+            ? completed
+            : {
+                ...completed,
+                details: { ...completed.details, providerPreset: input.providerPreset },
+              },
+        );
         return this.credentialSourceMetadata(ready);
       });
     } catch (error) {
@@ -8832,9 +8880,10 @@ export class OpenClawController {
           }
           return { error };
         }
-        await state.credentialSources.markCredentialSourceDeleting(namespaceId, ref.id);
         if (!writeUnsent) {
-          if (registration === undefined) {
+          await state.credentialSources.markCredentialSourceDeleting(namespaceId, ref.id);
+          const receipt = registration;
+          if (receipt === undefined) {
             // A dispatched write without a receipt may still arrive. A later DELETE
             // waits for the registration fence before the owner can settle absence.
             return {
@@ -8850,7 +8899,7 @@ export class OpenClawController {
                   {
                     sourceRef: ref,
                     tokenServiceInstanceId: instanceId,
-                    ...(registration && { registration }),
+                    registration: receipt,
                   },
                   AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
                 ),
@@ -8867,7 +8916,6 @@ export class OpenClawController {
           }
         }
         // Either no write was issued or the recorded owner has confirmed removal.
-        await accessBindingsTargeting(state, namespaceId, "credential_source", ref.id);
         await state.credentialSources.deleteCredentialSource(namespaceId, ref.id);
         return { error };
       });
@@ -8881,7 +8929,7 @@ export class OpenClawController {
   async updateManagedCredentialSource(
     principalId: string,
     ref: { readonly namespaceId: string; readonly credentialSourceId: string },
-    input: SourceUpdate,
+    input: UpdateManagedCredentialSourceInput,
     audit: (resource: CredentialSourceReference, phase?: "update_started") => AuditEvent,
     failureAudit: (reasonCode: string) => AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata>> {
@@ -8892,6 +8940,15 @@ export class OpenClawController {
       namespaceId: ref.namespaceId,
       id: ref.credentialSourceId,
     };
+    let ownerUpdate: SourceUpdate | undefined;
+    if (input.secret !== undefined) {
+      ownerUpdate = {
+        secret: input.secret,
+        ...(input.lifecycleConfig === undefined ? {} : { lifecycleConfig: input.lifecycleConfig }),
+      };
+    } else if (input.lifecycleConfig !== undefined) {
+      ownerUpdate = { lifecycleConfig: input.lifecycleConfig };
+    }
     const authorizeUpdate = async (state: PlatformUnitOfWork, lockSource: boolean) => {
       await this.authorize(principalId, "update", resource);
       await this.holdAuthority(state);
@@ -8900,6 +8957,17 @@ export class OpenClawController {
       await this.authorize(principalId, "update", resource);
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
+      }
+      if (input.providerPreset !== undefined && input.providerPreset !== null) {
+        assertSourceProviderPreset(input.providerPreset);
+      }
+      if (input.lifecycleConfig !== undefined) {
+        assertManagedSourceLifecycleSettings(input.lifecycleConfig.settings);
+      }
+      if (ownerUpdate === undefined && input.providerPreset === undefined) {
+        throw new ScopeViolationError(
+          "A source update requires a provider preset or owner update.",
+        );
       }
       const source = lockSource
         ? await state.credentialSources.lockCredentialSource(
@@ -8925,8 +8993,37 @@ export class OpenClawController {
         );
       }
       const owner = this.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+      if (
+        lockSource &&
+        input.providerPreset !== undefined &&
+        (input.providerPreset ?? undefined) !== source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] &&
+        (await state.credentialSources.hasReferences(ref.namespaceId, source.id))
+      ) {
+        // TODO(source preset replacement): permit bound changes after withdrawal and redeployment can replace the admitted authority.
+        throw new ResourceStateConflictError("Provider preset changes require an unbound source.");
+      }
       return { source, owner };
     };
+    if (ownerUpdate === undefined) {
+      return this.mutate(async (state) => {
+        const { source } = await authorizeUpdate(state, true);
+        const updated = await state.credentialSources.updateCredentialSourceConfig(
+          ref.namespaceId,
+          ref.credentialSourceId,
+          managedSourceConfig(source, input),
+        );
+        if (!updated) {
+          throw new ResourceStateConflictError("The credential source changed during update.");
+        }
+        const completed = audit(resource);
+        await state.audit.append({
+          ...completed,
+          details: { ...completed.details, providerPreset: input.providerPreset },
+        });
+        return this.credentialSourceMetadata(updated);
+      });
+    }
+    const materialUpdate = ownerUpdate;
     // An authorized intent must be durable before private custody can change. The effect
     // transaction rechecks authority and the exact source while holding both fences.
     await this.mutate(async (state) => {
@@ -8944,27 +9041,41 @@ export class OpenClawController {
               tokenServiceInstanceId: source.tokenServiceInstanceId,
               registration: source.registration!,
             },
-            input,
+            materialUpdate,
             AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
           ),
         "TokenService",
       );
       const updated =
-        input.lifecycleConfig === undefined
+        input.lifecycleConfig === undefined && input.providerPreset === undefined
           ? source
           : await state.credentialSources.updateCredentialSourceConfig(
               ref.namespaceId,
               ref.credentialSourceId,
-              input.lifecycleConfig.settings,
+              managedSourceConfig(source, input),
             );
       if (!updated) {
         throw new ResourceStateConflictError("The credential source changed during update.");
       }
-      await state.audit.append(audit(resource));
+      const completed = audit(resource);
+      await state.audit.append(
+        input.providerPreset === undefined
+          ? completed
+          : {
+              ...completed,
+              details: { ...completed.details, providerPreset: input.providerPreset },
+            },
+      );
       return this.credentialSourceMetadata(updated);
     });
   }
 
+  /**
+   * Registration records the source as `registering` before the gateway write, so an uncertain
+   * gateway outcome always leaves a record an operator can list and delete. `audit` builds the
+   * success event, committed with the transition to `ready`. `registrationAudit` records
+   * the initial `registering` row before any external effect, for multi-step callers.
+   */
   async createCredentialSource(
     principalId: string,
     input: CreateCredentialSourceInput,

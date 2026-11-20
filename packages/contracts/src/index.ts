@@ -433,11 +433,14 @@ export type {
   ModelProviderView,
   ModelProviderModel,
   InferenceProtocol,
+  SourceProviderPresetId,
 } from "./model-providers.ts";
 export {
   inferenceKeyDestination,
+  isSourceProviderPresetId,
   modelProviderRequestApproved,
   normalizeInferenceBaseUrl,
+  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
 } from "./model-providers.ts";
 export interface Installation {
   readonly id: string;

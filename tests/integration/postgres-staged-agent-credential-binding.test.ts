@@ -5,7 +5,11 @@ import test from "node:test";
 import { createPostgresAuthAccountProvisioner } from "../../apps/controller/src/auth/index.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import type { CredentialSourceReference } from "../../packages/contracts/src/index.ts";
-import { OpenClawController } from "../../packages/occ/src/index.ts";
+import {
+  OpenClawController,
+  ResourceStateConflictError,
+  type UpdateManagedCredentialSourceInput,
+} from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.ts";
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -113,13 +117,14 @@ test(
       await unit.secrets.deleteSecret(namespaceId, gatewaySecretId);
     });
 
-    const source = await controller.registerManagedCredentialSource(
+    const source = await controller.createManagedCredentialSource(
       principal.id,
       namespaceId,
       {
         name: "Private source",
         lifecycleConfig: { type: "static", settings: {} },
         secret: { opaque: randomUUID() },
+        providerPreset: "openai",
       },
       (ref, phase) => ({
         ...auditEvent(
@@ -233,10 +238,62 @@ test(
       });
     const authorGrant = await grantSource(authorId);
     assert.equal(authorGrant.statusCode, 201, authorGrant.body);
+
+    // Exact source authorization does not permit a staged source to be attached for an
+    // unreviewed consumer. Agent drafts can select it only for Harness authentication.
+    const unattached = await memberRequest("POST", `${base}/agents`, {
+      name: `Unattached source ${randomUUID()}`,
+      configurationId,
+      harnessAuth: null,
+      credentialSources: [{ sourceId }],
+    });
+    assert.equal(unattached.statusCode, 409, unattached.body);
+    assert.match(unattached.json().error.message, /must authenticate the selected Agent Harness/i);
+
     const createdAgent = await createAgent();
     assert.equal(createdAgent.statusCode, 201, createdAgent.body);
     const agent = createdAgent.json().data;
     assert.deepEqual(agent.credentialSources, [{ sourceId }]);
+
+    const updateSource = (input: UpdateManagedCredentialSourceInput) =>
+      controller.updateManagedCredentialSource(
+        principal.id,
+        { namespaceId, credentialSourceId: sourceId },
+        input,
+        (resource, phase) => ({
+          ...auditEvent(
+            controller.installation.id,
+            namespaceId,
+            principal.id,
+            phase
+              ? "openclaw.credential_sources.update.started"
+              : "openclaw.credential_sources.update",
+            resource,
+          ),
+          ...(phase ? { details: { phase } } : {}),
+        }),
+        (reasonCode) => ({
+          ...auditEvent(
+            controller.installation.id,
+            namespaceId,
+            principal.id,
+            "openclaw.credential_sources.update",
+            sourceRef,
+          ),
+          outcome: "failure",
+          reasonCode,
+        }),
+      );
+
+    // The actual Agent draft now references this source. A policy reduction must wait for
+    // withdrawal, while a no-op approval and ordinary material replacement remain available.
+    await assert.rejects(updateSource({ providerPreset: null }), ResourceStateConflictError);
+    assert.deepEqual((await updateSource({ providerPreset: "openai" })).config, {
+      provider_preset: "openai",
+    });
+    assert.deepEqual((await updateSource({ secret: { opaque: randomUUID() } })).config, {
+      provider_preset: "openai",
+    });
 
     // Keeping the selected source and the existing list remains a valid update.
     const retained = await inject("PATCH", `${base}/agents/${agent.id}`, {
