@@ -88,7 +88,6 @@ RUN node_modules/.bin/tsc -p deploy/runtime/repository-credentials/tsconfig.clie
 # rebuilds only that layer and every builder writes the same bytes. With a fixed
 # SOURCE_DATE_EPOCH (CI image lanes) the runtime image ID then matches too.
 COPY deploy/runtime/bin .build/runtime-client/opt/oce/repository-credentials/bin
-COPY --chmod=0444 deploy/runtime/repository-credentials/github-repository-rest/SKILL.md .build/runtime-client/usr/local/share/oce/skills/github-repository-rest/SKILL.md
 RUN set -eu; \
     client=.build/runtime-client/opt/oce/repository-credentials; \
     cp .build/repository-credentials/client/package.json "$client/package.json"; \
@@ -507,7 +506,12 @@ RUN --mount=type=bind,source=scripts/lib/runtime-download-clients.ts,target=/tmp
   && node /tmp/build-runtime-assets.ts inventory /app/node_modules/openclaw /opt/oce/runtime /tmp/additional-download-clients.json \
   && rm /tmp/build-runtime-assets.ts /tmp/lib/openclaw-source.ts
 
-RUN /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig
+# Set the file mode without replacing the base image's /usr directory permissions.
+RUN --mount=type=bind,source=deploy/runtime/repository-credentials/github-repository-rest/SKILL.md,target=/tmp/github-repository-rest.md \
+    /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig \
+    && skill=/usr/local/share/oce/skills/github-repository-rest \
+    && install -D -m 0444 /tmp/github-repository-rest.md "$skill/SKILL.md" \
+    && touch -d @0 "$skill/SKILL.md" "$skill"
 
 ARG OPENCLAW_COMMIT
 ARG OCC_BUILD_REVISION=""
