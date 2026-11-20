@@ -11991,13 +11991,17 @@ export class OpenClawController {
       const authority = this.repositoryGrantAuthority(namespaceId, admission);
       const configuration = this.configurationDriver();
       const { resolveBindings } = admission.policy;
-      const topology = await readRepositoryEditTopology(
-        state,
-        agent,
-        resolveHarness,
-        canRead,
-        (metadata) => this.readExactConfiguration(metadata, configuration),
-      );
+      const topology = await readRepositoryEditTopology(agent, resolveHarness, canRead, {
+        configurationOwnership: (id) =>
+          "audit" in state
+            ? state.configurations.lockConfiguration(namespaceId, id)
+            : state.configurations.findConfiguration(namespaceId, id),
+        configuration: (metadata) => this.readExactConfiguration(metadata, configuration),
+        credentialSource: (id) =>
+          "audit" in state
+            ? state.credentialSources.lockCredentialSource(namespaceId, id)
+            : state.credentialSources.findCredentialSource(namespaceId, id),
+      });
       if (!topology) {
         return undefined;
       }
