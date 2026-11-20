@@ -7,6 +7,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import subprocess
 import sys
@@ -42,7 +43,10 @@ def main():
     for key in ("kubeconfig", "context", "namespace", "values"):
         parser.add_argument("--" + key, required=True)
     parser.add_argument("--timeout-seconds", type=int, default=180)
+    parser.add_argument("--probe-name", help="previously reserved namespace and Gateway name for controller ingress")
     args = parser.parse_args()
+    if args.probe_name is not None and not re.fullmatch(r"oce-channel-probe-[0-9a-f]{12}", args.probe_name):
+        parser.error("--probe-name must be oce-channel-probe- followed by 12 lowercase hexadecimal digits")
     values = json.loads(run(["yq", "-o=json", ".", args.values]))
     egress = values.get("channelEgress", {})
     if egress.get("enabled") is False:
@@ -140,20 +144,67 @@ def main():
     else:
         require(json.loads(existing_class)["spec"]["controllerName"] == "gateway.envoyproxy.io/gatewayclass-controller", "GatewayClass belongs to another controller")
     wait("gatewayclass", gateway_class, "Accepted")
-    probe(kube, namespace, gateway_class, args.timeout_seconds)
+    name = args.probe_name or "oce-channel-probe-" + uuid.uuid4().hex[:12]
+    probe(kube, namespace, gateway_class, args.timeout_seconds, name)
     print("Envoy CRDs, pinned controller, GatewayClass and actual patch delivery verified.")
 
 
-def probe(kube, envoy_namespace, gateway_class, timeout):
-    name = "oce-channel-probe-" + uuid.uuid4().hex[:12]
+def recover_probe_uid(kube, kind, metadata):
+    name = metadata["name"]
+    namespace = metadata.get("namespace")
+    scope = [*kube, *(["-n", namespace] if namespace else [])]
+    attempt = metadata["annotations"]["openclaw.dev/channel-probe-attempt"]
+    try:
+        result = run([*scope, "get", kind.lower(), name, "--ignore-not-found", "-o", "json"])
+        observed = json.loads(result or "{}").get("metadata", {})
+        annotations = observed.get("annotations") or {}
+        uid = observed.get("uid")
+        if (
+            observed.get("name") == name
+            and observed.get("namespace") == namespace
+            and annotations.get("openclaw.dev/channel-probe-attempt") == attempt
+            and isinstance(uid, str)
+            and uid
+        ):
+            return uid
+    except (RuntimeError, ValueError, AttributeError, OSError, subprocess.SubprocessError):
+        pass
+    location = f"{namespace}/{name}" if namespace else name
+    print(f"Unsettled {kind} create for {location} (attempt {attempt}). Reconcile before reusing this probe name.", file=sys.stderr)
+    return None
+
+
+def create_probe_resource(kube, resource, owned_uids):
+    metadata = resource["metadata"]
+    # The marker travels in the create itself. A pre-existing object with the
+    # same reserved name cannot establish custody for this attempt.
+    attempt = uuid.uuid4().hex
+    metadata["annotations"] = {"openclaw.dev/channel-probe-attempt": attempt}
+    kind = resource["kind"]
+    name = metadata["name"]
+    namespace = metadata.get("namespace")
+    location = f"{namespace}/{name}" if namespace else name
+    print(f"Probe create {kind} {location}, attempt {attempt}.", file=sys.stderr)
+    try:
+        created = json.loads(run([*kube, "create", "-f", "-", "-o", "json"], json.dumps(resource)))
+        uid = created["metadata"]["uid"]
+        require(isinstance(uid, str) and uid, "probe create returned no UID")
+    except (RuntimeError, ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError):
+        uid = recover_probe_uid(kube, kind, metadata)
+        if uid is not None:
+            owned_uids[kind] = uid
+        raise
+    owned_uids[kind] = uid
+
+
+def probe(kube, envoy_namespace, gateway_class, timeout, name):
     marker = uuid.uuid4().hex
     print(f"Creating temporary channel probe namespace {name}; retain this name if creation has an uncertain outcome.", file=sys.stderr)
-    created = json.loads(run([*kube, "create", "namespace", name, "-o", "json"]))
-    uid = created["metadata"]["uid"]
-    print(f"Temporary channel probe: namespace {name}, UID {uid}", file=sys.stderr)
     forwarding = None
-    policy_uid = None
+    owned_uids = {}
     try:
+        create_probe_resource(kube, {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": name}}, owned_uids)
+        print(f"Temporary channel probe: namespace {name}, UID {owned_uids['Namespace']}", file=sys.stderr)
         hcm = {"name": "envoy.filters.network.http_connection_manager", "typed_config": {
             "@type": "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager",
             "stat_prefix": "channel_probe", "route_config": {"name": "probe", "virtual_hosts": [{"name": "probe", "domains": ["*"], "routes": [{"match": {"prefix": "/"}, "direct_response": {"status": 200, "body": {"inline_string": marker}}}]}]},
@@ -163,7 +214,7 @@ def probe(kube, envoy_namespace, gateway_class, timeout):
             "policyTypes": ["Ingress", "Egress"], "ingress": [], "egress": [
                 {"to": [{"podSelector": {"matchLabels": {"control-plane": "envoy-gateway"}}}], "ports": [{"protocol": "TCP", "port": 18000}]},
                 {"to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}, "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}}], "ports": [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}]}]}}
-        policy_uid = json.loads(run([*kube, "create", "-f", "-", "-o", "json"], json.dumps(policy)))["metadata"]["uid"]
+        create_probe_resource(kube, policy, owned_uids)
         resources = [
             {"apiVersion": "gateway.envoyproxy.io/v1alpha1", "kind": "EnvoyProxy", "metadata": {"name": name, "namespace": name}, "spec": {"provider": {"type": "Kubernetes", "kubernetes": {"envoyService": {"type": "ClusterIP"}}}}},
             {"apiVersion": "gateway.networking.k8s.io/v1", "kind": "Gateway", "metadata": {"name": name, "namespace": name}, "spec": {"gatewayClassName": gateway_class, "infrastructure": {"parametersRef": {"group": "gateway.envoyproxy.io", "kind": "EnvoyProxy", "name": name}}, "listeners": [{"name": "probe", "protocol": "HTTP", "port": 18080}]}},
@@ -198,17 +249,21 @@ def probe(kube, envoy_namespace, gateway_class, timeout):
         if forwarding is not None:
             forwarding.terminate()
             forwarding.wait(timeout=10)
-        # Deletion is UID-conditioned through the Kubernetes API, so a replaced
-        # namespace is never deleted merely because it reused the probe name.
-        with tempfile.TemporaryDirectory(prefix="oce-probe-cleanup-") as directory:
-            body = Path(directory) / "delete.json"
-            body.write_text(json.dumps({"apiVersion": "v1", "kind": "DeleteOptions", "preconditions": {"uid": uid}}))
-            run([*kube, "delete", "--raw", "/api/v1/namespaces/" + name, "-f", str(body)])
-            run([*kube, "-n", envoy_namespace, "wait", "pods", "-l", f"gateway.envoyproxy.io/owning-gateway-name={name},gateway.envoyproxy.io/owning-gateway-namespace={name}", "--for=delete", f"--timeout={timeout}s"])
-            if policy_uid:
-                body.write_text(json.dumps({"apiVersion": "v1", "kind": "DeleteOptions", "preconditions": {"uid": policy_uid}}))
-                run([*kube, "delete", "--raw", f"/apis/networking.k8s.io/v1/namespaces/{envoy_namespace}/networkpolicies/{name}", "-f", str(body)])
-        run([*kube, "wait", "namespace", name, "--for=delete", f"--timeout={timeout}s"])
+        uid = owned_uids.get("Namespace")
+        if uid is not None:
+            # UID preconditions protect replacements. Let Namespace deletion
+            # remove the Gateway before waiting for its external Pods.
+            with tempfile.TemporaryDirectory(prefix="oce-probe-cleanup-") as directory:
+                body = Path(directory) / "delete.json"
+                body.write_text(json.dumps({"apiVersion": "v1", "kind": "DeleteOptions", "preconditions": {"uid": uid}}))
+                run([*kube, "delete", "--raw", "/api/v1/namespaces/" + name, "-f", str(body)])
+                run([*kube, "wait", "namespace", name, "--for=delete", f"--timeout={timeout}s"])
+                run([*kube, "-n", envoy_namespace, "wait", "pods", "-l", f"gateway.envoyproxy.io/owning-gateway-name={name},gateway.envoyproxy.io/owning-gateway-namespace={name}", "--for=delete", f"--timeout={timeout}s"])
+                policy_uid = owned_uids.get("NetworkPolicy")
+                if policy_uid is not None:
+                    body.write_text(json.dumps({"apiVersion": "v1", "kind": "DeleteOptions", "preconditions": {"uid": policy_uid}}))
+                    run([*kube, "delete", "--raw", f"/apis/networking.k8s.io/v1/namespaces/{envoy_namespace}/networkpolicies/{name}", "-f", str(body)])
+                    run([*kube, "-n", envoy_namespace, "wait", "networkpolicy", name, "--for=delete", f"--timeout={timeout}s"])
 
 
 if __name__ == "__main__":

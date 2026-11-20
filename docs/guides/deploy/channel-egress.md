@@ -25,8 +25,39 @@ If discovery is unavailable or incomplete, the operator must verify the explicit
 list independently. Both verify CRD establishment, controller readiness and version, patch-policy configuration,
 GatewayClass acceptance, and actual Envoy patch delivery. The temporary probe
 uses a unique namespace and private ClusterIP routing. Cleanup deletes only the
-probe resources with their observed UIDs. Retain the reported probe name if
-cleanup fails. Disabled channel candidates exit without dependency changes.
+probe resources with their observed UIDs. It waits for the namespace and its
+Envoy Pods to disappear before removing the NetworkPolicy. If the script
+loses a create response, it can recover that object's UID
+when its annotation matches the create attempt. The operator needs create,
+read, watch, and delete access for the probe namespace and its NetworkPolicy.
+Disabled channel candidates exit without dependency changes.
+
+If NetworkPolicy isolates the existing Envoy controller Pods, work with the
+controller's owner before starting the probe:
+
+1. Verify that a policy selecting only Envoy controller Pods allows TCP 18000
+   from the permanent channel fleet. Select peer Pods in the Envoy namespace.
+   Match their `gateway.envoyproxy.io/owning-gateway-name` to the configured Gateway
+   and their `gateway.envoyproxy.io/owning-gateway-namespace` to the release namespace.
+2. Reserve an unused probe name with the prefix `oce-channel-probe-` and 12
+   random lowercase hexadecimal digits. The script creates the namespace and
+   Gateway under that name.
+3. Have the owner allow TCP 18000 from the probe in a policy that selects only
+   Envoy controller Pods. Match peer Pods in the Envoy namespace with both
+   Gateway ownership labels equal to the probe name. Preserve existing access.
+4. Add `--probe-name "$PROBE_NAME"` to the dependency command. The script refuses
+   an existing probe namespace. Keep the temporary ingress rule through all
+   checks and cleanup. Then have its owner remove that rule and retain the
+   permanent fleet rule.
+
+A successful probe verifies patch delivery for its own Gateway. Check the
+permanent fleet rule before starting an upgrade. If the script reports an
+unsettled create or cleanup, retain the probe name and the reported create attempts.
+Confirm that the command has stopped, then reconcile the create or delete with
+the Kubernetes operator. Inspect the reserved namespace and the NetworkPolicy
+with the same name in the Envoy namespace. Verify ownership before removing
+either resource. Reuse the name after both operations have settled and both
+resources are absent.
 
 The local Kubernetes launcher uses the pinned controller setup and enables patch
 policies before it creates channel resources. It discovers node Pod CIDRs, cluster

@@ -8,6 +8,7 @@ import { createServer } from "node:http";
 import { request } from "node:https";
 import { selfSigned } from "../helpers/certificates.ts";
 import { createUpgradeResponseProxy } from "../helpers/channel-upgrade-response-proxy.ts";
+import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 
 async function fixture(t: TestContext, enabled = true) {
   const directory = await mkdtemp(join(tmpdir(), "oce-channel-upgrade-"));
@@ -176,6 +177,225 @@ test("disabled legacy channels only remove obsolete fields and remain off", asyn
   );
   assert.equal(dependencies.status, 0, dependencies.stderr);
   assert.match(dependencies.stdout, /Channels disabled/);
+});
+
+test("an ingress owner can admit the exact probe fleet before the dependency check", async (t) => {
+  const f = await fixture(t);
+  const output = join(f.directory, "prepared");
+  const prepared = f.run("prepare", [
+    "--out-dir",
+    output,
+    "--excluded-cidr",
+    "10.42.0.0/16",
+    "--excluded-cidr",
+    "10.43.0.0/16",
+    "--excluded-cidr",
+    "192.0.2.3/32",
+  ]);
+  assert.equal(prepared.status, 0, prepared.stderr);
+  const log = join(f.directory, "kubectl.jsonl");
+  const state = join(f.directory, "kubectl-state.json");
+  const probe = "oce-channel-probe-2918ac095bc0";
+  await writeCommand(
+    f.directory,
+    "kubectl",
+    `import json, os, sys
+from pathlib import Path
+args = sys.argv[6:]
+namespace = None
+if args[0] == "-n":
+    namespace = args[1]
+    args = args[2:]
+request = None
+if args[:2] == ["create", "-f"]:
+    request = json.load(sys.stdin)
+elif args[:2] == ["delete", "--raw"]:
+    request = json.loads(Path(args[-1]).read_text())
+with open(os.environ["TEST_KUBE_CALLS"], "a") as log:
+    print(json.dumps([args, request, namespace]), file=log)
+state_path = Path(os.environ["TEST_KUBE_STATE"])
+state = json.loads(state_path.read_text())
+fault = os.environ["TEST_KUBE_FAULT"]
+kind = request["kind"] if request and args[0] == "create" else None
+if args[:2] == ["create", "namespace"] or kind == "Namespace":
+    metadata = request["metadata"] if request else {"name": args[2]}
+    if fault == "foreign-namespace":
+        state["namespace"] = {"metadata": {"name": metadata["name"], "uid": "foreign-uid"}}
+        state_path.write_text(json.dumps(state))
+        sys.exit(1)
+    response = {"metadata": {**metadata, "uid": "probe-namespace-uid"}}
+    state["namespace"] = response
+    state_path.write_text(json.dumps(state))
+    if fault == "namespace-create":
+        sys.exit(1)
+elif kind == "NetworkPolicy":
+    response = {"metadata": {**request["metadata"], "uid": "probe-egress-uid"}}
+    if fault == "foreign-policy":
+        state["networkpolicy"] = {"metadata": {"name": request["metadata"]["name"],
+                                                "namespace": request["metadata"]["namespace"], "uid": "foreign-uid",
+                                                "annotations": {"openclaw.dev/channel-probe-attempt": state["namespace"]["metadata"]["annotations"]["openclaw.dev/channel-probe-attempt"]}}}
+        state_path.write_text(json.dumps(state))
+        sys.exit(1)
+    state["networkpolicy"] = response
+    state_path.write_text(json.dumps(state))
+    if fault == "policy-create":
+        sys.exit(1)
+elif args[0] == "get" and args[1] in state and args[2] == os.environ["TEST_PROBE_NAME"]:
+    response = state[args[1]]
+elif args[:2] == ["get", "deployment"]:
+    response = {"spec": {"template": {"spec": {"containers": [{"image": "envoyproxy/gateway:v1.6.7"}]}}}}
+elif args[:2] == ["get", "configmap"]:
+    response = {"data": {"envoy-gateway.yaml": '{"extensionApis":{"enableEnvoyPatchPolicy":true}}'}}
+elif args[:2] == ["get", "gatewayclass"]:
+    response = {"spec": {"controllerName": "gateway.envoyproxy.io/gatewayclass-controller"}}
+elif args[:2] == ["get", "pods"]:
+    # Stop before port-forward. This test checks fleet identity and resource ownership.
+    response = {"items": []}
+else:
+    response = {}
+print(json.dumps(response))
+`,
+    { interpreter: "python3" },
+  );
+  const env = {
+    ...process.env,
+    PATH: commandPath(f.directory),
+    TEST_KUBE_CALLS: log,
+    TEST_KUBE_STATE: state,
+    TEST_PROBE_NAME: probe,
+  };
+  const run = async (name: string, fault = "none") => {
+    await writeFile(state, "{}");
+    await writeFile(log, "");
+    return spawnSync(
+      "python3",
+      [
+        "scripts/setup-channel-egress",
+        "check",
+        "--values",
+        join(output, "values.yaml"),
+        "--kubeconfig",
+        "unused",
+        "--context",
+        "fixture",
+        "--namespace",
+        "oce-system",
+        "--probe-name",
+        name,
+      ],
+      { encoding: "utf8", env: { ...env, TEST_KUBE_FAULT: fault } },
+    );
+  };
+  const calls = async () =>
+    (await readFile(log, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+  const failed = await run(probe);
+  assert.equal(failed.status, 1, failed.stderr);
+  assert.match(failed.stderr, /probe expected exactly one owned Envoy Pod/u);
+  const recorded = await calls();
+  const creates = recorded.filter(([args]) => args[0] === "create");
+  assert.equal(creates.length, 3);
+  assert.equal(creates[0][1].kind, "Namespace");
+  assert.equal(creates[0][1].metadata.name, probe);
+  const attemptAnnotation = "openclaw.dev/channel-probe-attempt";
+  assert.match(creates[0][1].metadata.annotations[attemptAnnotation], /^[a-f0-9]{32}$/u);
+  assert.match(creates[1][1].metadata.annotations[attemptAnnotation], /^[a-f0-9]{32}$/u);
+  assert.notEqual(
+    creates[0][1].metadata.annotations[attemptAnnotation],
+    creates[1][1].metadata.annotations[attemptAnnotation],
+  );
+  assert.deepEqual(creates[1][1].spec.podSelector.matchLabels, {
+    "gateway.envoyproxy.io/owning-gateway-name": probe,
+    "gateway.envoyproxy.io/owning-gateway-namespace": probe,
+  });
+  assert.deepEqual(creates[1][1].spec.egress[0], {
+    to: [{ podSelector: { matchLabels: { "control-plane": "envoy-gateway" } } }],
+    ports: [{ protocol: "TCP", port: 18000 }],
+  });
+  const gateway = creates[2][1].items.find((item: { kind: string }) => item.kind === "Gateway");
+  assert.deepEqual(gateway.metadata, { name: probe, namespace: probe });
+  assert.deepEqual(
+    recorded.filter(([args]) => args[0] === "delete").map(([, data]) => data.preconditions.uid),
+    ["probe-namespace-uid", "probe-egress-uid"],
+  );
+  const teardown = (records: Awaited<ReturnType<typeof calls>>) =>
+    records
+      .filter(([args]) => args[0] === "delete" || args.includes("--for=delete"))
+      .map(([args, data, namespace]) =>
+        args[0] === "delete" ? [args[0], data.preconditions.uid] : [args[1], namespace],
+      );
+  const settledProbe = [
+    ["delete", "probe-namespace-uid"],
+    ["namespace", null],
+    ["pods", "existing-envoy"],
+    ["delete", "probe-egress-uid"],
+    ["networkpolicy", "existing-envoy"],
+  ];
+  assert.deepEqual(teardown(recorded), settledProbe);
+
+  const invalid = await run("kube-system");
+  assert.equal(invalid.status, 2, invalid.stderr);
+  assert.match(invalid.stderr, /oce-channel-probe- followed by 12 lowercase hexadecimal digits/u);
+  assert.equal(await readFile(log, "utf8"), "");
+
+  const collision = await run(probe, "foreign-namespace");
+  assert.equal(collision.status, 1, collision.stderr);
+  assert.match(collision.stderr, /Unsettled Namespace create/);
+  // A failed namespace create grants no authority over the resources of its current owner.
+  assert.deepEqual(
+    (await calls())
+      .filter(([args]) => args[0] === "create" || args[0] === "delete")
+      .map(([args, data]) => [args[0], data.kind]),
+    [["create", "Namespace"]],
+  );
+  // The server may have committed either create before the client reported failure.
+  for (const [fault, kind, namespace, uids] of [
+    ["namespace-create", "namespace", null, ["probe-namespace-uid"]],
+    [
+      "policy-create",
+      "networkpolicy",
+      "existing-envoy",
+      ["probe-namespace-uid", "probe-egress-uid"],
+    ],
+  ] as const) {
+    const interrupted = await run(probe, fault);
+    assert.equal(interrupted.status, 1, interrupted.stderr);
+    assert.match(interrupted.stderr, /kubectl failed/u);
+    const attempts = await calls();
+    assert.ok(
+      attempts.some(
+        ([args, , observedNamespace]) =>
+          args[0] === "get" &&
+          args[1] === kind &&
+          args[2] === probe &&
+          observedNamespace === namespace,
+      ),
+      fault,
+    );
+    assert.deepEqual(
+      attempts.filter(([args]) => args[0] === "delete").map(([, data]) => data.preconditions.uid),
+      uids,
+      fault,
+    );
+    assert.equal(attempts.filter(([args]) => args[0] === "create").length, uids.length, fault);
+    assert.deepEqual(
+      teardown(attempts),
+      kind === "networkpolicy" ? settledProbe : settledProbe.slice(0, 3),
+      fault,
+    );
+  }
+  const foreignPolicy = await run(probe, "foreign-policy");
+  assert.equal(foreignPolicy.status, 1, foreignPolicy.stderr);
+  assert.match(foreignPolicy.stderr, /Unsettled NetworkPolicy create/);
+  assert.deepEqual(
+    (await calls())
+      .filter(([args]) => args[0] === "delete")
+      .map(([, data]) => data.preconditions.uid),
+    ["probe-namespace-uid"],
+    "the Namespace marker must not establish policy ownership",
+  );
 });
 
 test("one-off preparation refuses wrong release, external proxy, and unprotected input", async (t) => {

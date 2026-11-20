@@ -1,7 +1,7 @@
 ---
 created: 2026-11-19
-updated: 2026-11-19
-last_updated_session: authoring-run/3d885bbf-20eb-48f1-9e9e-975b986c82ab
+updated: 2026-11-20
+last_updated_session: authoring-run/b6a46343-cf19-417a-add5-df3f309d8add
 ---
 
 # Channel egress flow
@@ -75,7 +75,11 @@ defaults and discovered cluster exclusions for local Kubernetes installations.
 `scripts/setup-channel-egress:main` checks the pinned controller, CRDs and
 GatewayClass. Its probe verifies actual patch delivery and deletes only its
 acknowledged resources with UID preconditions. Existing dependencies retain
-ownership; incompatible configuration requires the owner's repair.
+ownership. When the controller owner must allow ingress for a known probe fleet,
+the operator can reserve the probe name before either check. The probe uses
+the name for its namespace and Gateway and refuses an existing namespace.
+The one-off passes the same name to both checks and records it in the upgrade
+parameters for resume.
 
 `scripts/upgrade-channel-egress:prepare` patches actual legacy input files.
 `validate` requires the supported source, matching target channel fields and an
@@ -190,6 +194,8 @@ and remaining acceptance evidence.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 01:31: Allow the controller owner to admit an exact native dependency probe before an upgrade (authoring-run/b6a46343-cf19-417a-add5-df3f309d8add - 46b193ba5b9a45386faa747c53886c43f08ccc7b)
 
 - 2026-11-19 20:41: Verify recorded Agent state before one-off completion and on resume (authoring-run/3d885bbf-20eb-48f1-9e9e-975b986c82ab - 87d5c0d63f6765816d0e4a6dee9cb20f8be1d5c1)
 
