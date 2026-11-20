@@ -10811,6 +10811,8 @@ Register a Credential Gateway source; managed static registration is staged
 
 **RegisterTokenServiceSourceBody (required fields: `name`, `type`, `secret`)**
 
+Staged managed static registration contract. The public route currently returns 501 NOT_IMPLEMENTED after authorization. When enabled, OCC allocates the identity and selects the TokenService owner.
+
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService. |
@@ -11080,6 +11082,8 @@ Update a Credential Gateway source; managed updates are staged
 | `secrets` | `object<string, object>` | No | max properties: 16; Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
 
 **UpdateTokenServiceSourceBody**
+
+Staged managed static update contract. Supply configuration, a credential value, or both. The public route currently returns 501 NOT_IMPLEMENTED after authorization. When enabled, OCC must dispatch by the persisted Source owner; omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Send these changes in separate operations; repeating the current preset with replacement material is allowed.
 
 **Required fields: `config`**
 
@@ -13706,7 +13710,6 @@ Reusable schema names are referenced by operation request and response tables.
 | `PushAgentCredentialsBody` | `object` |
 | `PushAgentCredentialsResponse` | `object` |
 | `RegisterTokenServiceSourceBody` | `object` |
-| `TokenServiceSourceMetadata` | `object` |
 | `UpdateTokenServiceSourceBody` | `object or object` |
 | `SafeJsonValue` | `string or boolean or number or null or array<SafeJsonValue> or object<string, SafeJsonValue>` |
 | `PluginDriverIdentity` | `object` |

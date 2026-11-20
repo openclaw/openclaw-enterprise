@@ -161,29 +161,26 @@ credential source. Kubernetes [rechecks its lifecycle before release](../flows/c
 
 ## Update a source
 
+For managed static PATCH and preset restrictions, see [managed static sources](credential-sources/managed-static.md).
+
 Device-authorized sources reject PATCH with `409` before reading Secrets or
 changing refresh state. Sign in again and replace the Agent binding instead.
 
-For an ordinary static Gateway source, updating the Secret does not change the copy. To push a new
-value, send
-`PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId`. The
-caller needs exact `credential_source:update` and `secret:operate` on every
-Secret the update reads:
+To replace a static Gateway copy, send
+`PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId` with exact
+`credential_source:update` and `secret:operate` on every Secret read. Updating
+the Secret alone does not change the copy:
 
-- An empty body `{}` re-reads the source's current Secrets. An
-  `oauth2-refresh-token` source refuses it; see below.
+- `{}` re-reads current Secrets; `oauth2-refresh-token` refuses it (see below).
 - `{ "secrets": { "api_key": <SecretReference> } }` switches each named field to
   a replacement same-Namespace Secret. The field set stays the source type's
   catalog fields, and non-secret `config` cannot change; register a new source
   instead.
 
-A successful update returns `200` with the source and its live gateway `status`.
-Only a `ready` source can be updated. A gateway failure returns `503` and leaves
-the Secret references unchanged; once the gateway may have changed, the failure
-is audited. The gateway is updated before OCC commits, so
-if the request fails after that, repeating the same request converges. If the
-gateway no longer holds a copy (`absent`), the update also returns `503`;
-delete the source and register it again.
+Only a `ready` source can be updated. Success returns `200` with the source and
+live Gateway `status`. A Gateway failure returns `503`, preserves Secret references,
+and is audited if the Gateway might have changed. The Gateway updates before OCC
+commits, so retrying converges. If its copy is `absent`, delete and register the source again.
 
 Prepared and credential-free sources reject PATCH and rotation with `409`. Register a replacement source. For a live static source, changing the referenced Secret value affects subsequent eligible reads. Changing its reference or adopting a legacy source requires an unbound source. See [protected static inference](credential-sources/protected-inference.md#static-source-and-response-policy).
 

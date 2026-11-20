@@ -18,7 +18,6 @@ import {
   CredentialSourceResponse,
   RegisterTokenServiceSourceBody,
   UpdateTokenServiceSourceBody,
-  TokenServiceSourceMetadata,
   PushAgentCredentialsBody,
   PushAgentCredentialsResponse,
   ErrorDetail as ErrorDetailSchema,
@@ -1415,7 +1414,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.addSchema(ModelProviderSchema);
   app.addSchema(RegisterTokenServiceSourceBody);
   app.addSchema(UpdateTokenServiceSourceBody);
-  app.addSchema(TokenServiceSourceMetadata);
   app.addSchema(PushAgentCredentialsBody);
   app.addSchema(PushAgentCredentialsResponse);
   void app.register(swagger, {
@@ -1428,7 +1426,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           switch (schema.$id) {
             case "RegisterTokenServiceSourceBody":
             case "UpdateTokenServiceSourceBody":
-            case "TokenServiceSourceMetadata":
             case "PushAgentCredentialsBody":
             case "PushAgentCredentialsResponse":
               return schema.$id;

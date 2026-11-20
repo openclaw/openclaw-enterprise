@@ -301,6 +301,7 @@ function schemaTable(schema: unknown, document: unknown): string {
           const variantSchema = resolveSchema(variant, document);
           const required = array(optionalField(variantSchema, "required") ?? []);
           const title = optionalField(variantSchema, "title");
+          const description = title && optionalField(variantSchema, "description");
           const requiredFields = required.map((name) => `\`${text(name)}\``).join(", ");
           const label =
             (title
@@ -312,7 +313,7 @@ function schemaTable(schema: unknown, document: unknown): string {
               : `Optional fields: ${entries(optionalField(variantSchema, "properties") ?? {})
                   .map(([name]) => `\`${name}\``)
                   .join(", ")}`);
-          return `**${label}**\n\n${schemaTable(variant, document)}`;
+          return `**${label}**\n\n${description ? `${text(description)}\n\n` : ""}${schemaTable(variant, document)}`;
         })
         .join("\n\n");
     }
