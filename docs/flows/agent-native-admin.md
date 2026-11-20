@@ -152,7 +152,7 @@ OCC derives the selected version's target. An administrator viewing a non-runnin
 
 The target accompanies an [`unsupported` reason](../reference/agent-native-admin.md#unsupported-reasons). `not-enabled` means the Configuration did not opt this Agent into browser chat. `configuration` means another native setting prevents access.
 
-Compute `id` and `implementation` must match `revision.compute`. A mismatch returns `503 DEPENDENCY_UNAVAILABLE` before endpoint or key lookup or transport. Chat uses `getGatewayChatEndpoint` with no fallback. Kubernetes offers it, and its `/native-chat/` route rules, only when the Gateway configuration it deploys requires `x-openclaw-scopes`; routed rendering adds the header. Administration uses `getGatewayEndpoint`. A missing or invalid private `wss:` endpoint returns `unsupported` with reason `compute`. Only `available` carries `gatewayBase`, which `nativeAdminAvailabilityData` omits from browser responses.
+Compute `id` and `implementation` must match `revision.compute`. A mismatch returns `503 DEPENDENCY_UNAVAILABLE` before endpoint or key lookup or transport. Chat uses `getGatewayChatEndpoint` with no fallback. Kubernetes offers it and adds `/native-chat/` route rules only when its deployed Gateway configuration requires `x-openclaw-scopes`, which routed rendering adds. Routes from earlier releases gain these rules at the next deployment. Administration uses `getGatewayEndpoint`. A missing or invalid private `wss:` endpoint returns `unsupported` with reason `compute`. Only `available` carries `gatewayBase`, which `nativeAdminAvailabilityData` omits from browser responses.
 
 ### 4. OCC derives the isolated Agent host
 
