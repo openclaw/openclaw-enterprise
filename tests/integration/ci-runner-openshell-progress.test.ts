@@ -15,6 +15,7 @@ import {
 import { isRecord } from "../../scripts/ci/records.ts";
 import reporter from "../../scripts/ci/reporter.ts";
 import { readFileEvidence, type FileEvidence } from "../../scripts/ci/runner-reporter-output.ts";
+import type { OpenShellReplacementChildOptions } from "../fixtures/ci-runner-openshell-replacement-child.ts";
 import {
   observeDeadline,
   pendingMessage,
@@ -404,6 +405,7 @@ async function runnerDeadlineDiagnostics(state: string, title: string) {
 
 const requestReceipts = {
   attempted: "state/request-attempted",
+  sameRevisionRefusal: "state/same-revision-refusal",
   order: "state/request-reporter-order",
 };
 const requestStart = ["file:dequeue", "case:dequeue"];
@@ -414,11 +416,9 @@ const requestProgress = [
   ]),
   "replacement:started",
   "redeploy-request",
-  "replacement:failed",
 ];
-const requestBeforeFailure = [...requestStart, ...requestProgress];
 
-async function observeRequest(root: string) {
+async function observeRequest(root: string, entry: string, progress: readonly string[]) {
   const observer = join(root, "request-observer.ts");
   const reporterUrl = new URL("scripts/ci/reporter.ts", repositoryUrl);
   const processUrl = new URL("scripts/ci/runner-process.ts", repositoryUrl).href;
@@ -457,10 +457,10 @@ async function observeRequest(root: string) {
 
      export default async function* requestReporter(source: Parameters<typeof reporter>[0]) {
        const root = process.cwd();
-       const entry = join(root, upstreamOutageCase.entry);
+       const entry = ${JSON.stringify(entry)};
        const declaration = join(root, upstreamOutageCase.declaration);
        const order = join(root, ${JSON.stringify(requestReceipts.order)});
-       const progress = ${JSON.stringify(requestProgress)};
+       const progress = ${JSON.stringify(progress)};
        let count = 0;
        function record(step: string) {
          // The only persisted fields are these closed lifecycle and progress labels.
@@ -501,9 +501,10 @@ async function observeRequest(root: string) {
 test("CI records only observed upstream replacement checkpoints on failure", async (t) => {
   const upstreamFile = "tests/integration/openshell-upstream-real.test.ts";
   const title = "OpenShell model and tool upstream outages fail closed";
-  const stageModule = new URL("tests/helpers/openshell-stage.ts", repositoryUrl).href;
-  const workflowModule = new URL("tests/helpers/openshell-sandbox-workflows.mjs", repositoryUrl)
-    .href;
+  const replacementChildModule = new URL(
+    "tests/fixtures/ci-runner-openshell-replacement-child.ts",
+    repositoryUrl,
+  ).href;
   const progressModule = new URL("scripts/ci/openshell-progress.mjs", repositoryUrl).href;
   const reporterPath = fileURLToPath(new URL("scripts/ci/reporter.ts", repositoryUrl));
 
@@ -592,11 +593,25 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
       const completedWrapper = mode === "runner-deadline-after-wrapper";
       const controlledDeadline = mode === "runner-deadline-after-activation" || completedWrapper;
       const runnerDeadline = wallDeadline || controlledDeadline;
+      // Controlled deadlines must wait for reporter readiness even when startup
+      // takes longer than the nominal file budget. Wall-clock cases keep a real timer.
+      const runnerTimeoutMs = controlledDeadline ? 1 : 5000;
+      const fileTimeoutMs = runnerDeadline ? runnerTimeoutMs : 10000;
       const pendingActivation = caseDeadline || controlledDeadline;
-      const requestCase = mode === "request";
+      const sameRevision = mode === "same-revision";
+      const reconciliation = mode === "reconciliation";
+      const observedActivation = mode === "activation" || reconciliation;
+      const observedRequest = mode === "request" || sameRevision || observedActivation;
+      const observedProgress = [
+        ...requestProgress,
+        ...(observedActivation ? ["activation"] : []),
+        ...(reconciliation ? ["reconciliation"] : []),
+        "replacement:failed",
+      ];
+      const beforeFailure = [...requestStart, ...observedProgress];
       const success = mode === "success";
       const name = mode === "wrong-case" ? "another case" : title;
-      const upstreamLane = mode === "reconciliation" ? "openshell" : "openshell-installers";
+      const upstreamLane = reconciliation ? "openshell" : "openshell-installers";
       const lane = mode === "wrong-lane" ? "other-installers" : upstreamLane;
       const file =
         mode === "wrong-file" ? "tests/integration/other-upstream.test.ts" : upstreamFile;
@@ -643,120 +658,25 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
            return { cleanup: () => writeFile(${JSON.stringify(cleanupMarker)}, "cleaned") };
          }`,
       );
+      const childOptions: OpenShellReplacementChildOptions = {
+        mode,
+        requestOrderPath: requestReceipts.order,
+        requestStart: requestStart.join("\n") + "\n",
+        requestBeforeFailure: beforeFailure.join("\n") + "\n",
+        requestAttempted: requestReceipts.attempted,
+        sameRevisionRefusal: requestReceipts.sameRevisionRefusal,
+        activationPoll,
+        pendingMessage,
+      };
       await writeFile(
         join(root, "tests/helpers", declaration),
-        `import assert from "node:assert/strict";
-         import { existsSync, readFileSync, watch, writeFileSync } from "node:fs";
-         import test from "node:test";
-         import { runOpenShellStage } from ${JSON.stringify(stageModule)};
-         import { emitOpenShellProgress, emitOpenShellReplacementCheckpoint, openShellProgressPrefix } from ${JSON.stringify(progressModule)};
-         import { redeployOpenShellReplacement } from ${JSON.stringify(workflowModule)};
-
-         const mode = ${JSON.stringify(mode)};
-         const failure = new Error("controlled failure " + process.env.CI_RUNNER_FIXTURE_CREDENTIAL);
-         const response = { status: 202, data: { id: "private-replacement-id" } };
-         const agentPath = "/namespaces/fixture/agents/fixture";
-         function waitForReceipt(expected, signal) {
-           const path = ${JSON.stringify(requestReceipts.order)};
-           const observed = () => existsSync(path) && readFileSync(path, "utf8") === expected;
-           return new Promise((resolve, reject) => {
-             const watcher = watch("state", { signal }, check);
-             watcher.once("error", reject);
-             watcher.once("close", () => {
-               if (observed()) resolve();
-               else reject(new Error("request reporter did not acknowledge the case"));
-             });
-             function check() { if (observed()) watcher.close(); }
-             check();
-           });
-         }
+        `import test from "node:test";
+         import { prepareOpenShellReplacementChild } from ${JSON.stringify(replacementChildModule)};
+         const credential = process.env.CI_RUNNER_FIXTURE_CREDENTIAL;
+         const failure = new Error("controlled failure " + credential);
+         const runScenario = await prepareOpenShellReplacementChild(${JSON.stringify(childOptions)});
          test(${JSON.stringify(name)}, ${caseDeadline ? "{ timeout: 1200 }, " : runnerDeadline ? "{ timeout: 15000 }, " : ""}async (t) => {
-           if (mode === "completed-wrapper-emitter") {
-             // Supply the genuine failed measurement and terminal, but none of the earlier progress.
-             emitOpenShellProgress("replacement", "failed");
-             t.diagnostic('openclaw-ci-measurement {"kind":"openshell-stage","stage":"replacement","outcome":"failed","elapsedMs":1}');
-             throw failure;
-           }
-           if (mode === "request") await waitForReceipt(${JSON.stringify(requestStart.join("\n") + "\n")}, t.signal);
-           for (const step of ["installation", "exposure-auth", "initial-model"]) {
-             await runOpenShellStage(t, step, async () => {});
-           }
-           const replacement = runOpenShellStage(t, "replacement", async () => {
-             if (mode === "setup") throw failure;
-             if (mode === "out-of-order") {
-               emitOpenShellReplacementCheckpoint("activation");
-               emitOpenShellReplacementCheckpoint("redeploy-request");
-               throw failure;
-             }
-             if (mode === "extra-field") {
-               process.stdout.write(openShellProgressPrefix + JSON.stringify({
-                 kind: "openshell-replacement-checkpoint", checkpoint: "redeploy-request", extra: "private-progress-extra",
-               }) + "\\n");
-               throw failure;
-             }
-             const topology = {
-               namespaceId: "fixture",
-               agent: { id: "fixture" },
-               revision: { id: "private-previous-id" },
-               async request(method, path) {
-                 if (method === "POST") {
-                   assert.equal(path, agentPath + "/deploy");
-                   if (mode === "request") {
-                     writeFileSync(${JSON.stringify(requestReceipts.attempted)}, "invoked", { flag: "wx" });
-                     throw failure;
-                   }
-                   if (mode === "same-revision") {
-                     topology.revision = { id: "same-test-revision" };
-                     return { status: 202, data: topology.revision };
-                   }
-                   return response;
-                 }
-                 assert.equal(method, "GET");
-                 if (path === agentPath) {
-                 if (${pendingActivation}) {
-                   writeFileSync(${JSON.stringify(activationPoll)}, "polling");
-                   if (${controlledDeadline}) t.log(${JSON.stringify(pendingMessage)});
-                   // Keep Node alive while the real activation poll and its caller are pending.
-                   const hold = setInterval(() => {
-                     // Wake a pending stdout read without emitting progress.
-                     if (${controlledDeadline}) process.stdout.write("\\n");
-                   }, 1000);
-                   t.signal.addEventListener("abort", () => clearInterval(hold), { once: true });
-                   return new Promise(() => {});
-                 }
-                   return { status: 200, data: {
-                     activeRevisionId: mode === "activation" ? topology.revision.id : response.data.id,
-                   }};
-                 }
-                 assert.equal(path, agentPath + "/deployments/" + response.data.id);
-                 assert.equal(mode, "activation");
-                 throw failure;
-               },
-               async diagnoseRevision() { return {}; },
-             };
-             try {
-               const deployed = await redeployOpenShellReplacement(topology, t, true, async () => "");
-               assert.equal(deployed, response);
-             } catch (error) {
-               if (mode === "activation" || mode === "request") assert.equal(error, failure);
-               throw error;
-             }
-             if (mode === "reconciliation" || mode.startsWith("wrong-")) throw failure;
-           }, "pod-replacement");
-           if (mode === "request") {
-             try {
-               await replacement;
-             } catch (error) {
-               // The last failed-stage row also needs to arrive before the native failure.
-               await waitForReceipt(${JSON.stringify(requestBeforeFailure.join("\n") + "\n")}, t.signal);
-               throw error;
-             }
-           } else {
-             await replacement;
-           }
-           if (mode === "later-stage") {
-             await runOpenShellStage(t, "untrusted-upstream", async () => { throw failure; });
-           }
+           await runScenario(t, failure);
          });`,
       );
       await writeRunnerManifest(root, {
@@ -765,18 +685,25 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
         },
       });
       let execArgv = runnerDeadline ? observeDeadline(controlledDeadline) : [];
-      if (requestCase) {
-        execArgv = await observeRequest(root);
+      if (observedRequest) {
+        execArgv = await observeRequest(root, join(runnerRoot, file), observedProgress);
       }
       const runner = await runRunnerAsync(
         laneArgs(runnerRoot, lane, state, results),
-        { CI_RUNNER_TEST_TIMEOUT_MS: runnerDeadline ? "5000" : "10000" },
+        { CI_RUNNER_TEST_TIMEOUT_MS: String(fileTimeoutMs) },
         {
           timeout: 30_000,
           execArgv,
         },
       );
       assert.equal(runner.error, undefined);
+      if (sameRevision) {
+        assert.equal(
+          await readFile(join(root, requestReceipts.sameRevisionRefusal), "utf8"),
+          "refused",
+        );
+        await assert.rejects(readFile(activationPoll), { code: "ENOENT" });
+      }
       assert.equal(runner.status, success ? 0 : 1, runner.stderr);
       const artifact = await readFile(results, "utf8");
       const summary: {
@@ -791,7 +718,7 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
           tests: {
             name: string;
             status: string;
-            error?: { message: string; failureType?: string };
+            error?: { message: string; failureType?: string; cause?: unknown };
           }[];
           measurements: { kind: string; stage: string; outcome: string }[];
         }[];
@@ -814,16 +741,20 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
           {
             trigger: controlledDeadline ? "readiness" : "wall",
             elapsedMs,
-            delay: 5000,
+            delay: fileTimeoutMs,
             code: "ETIMEDOUT",
             status: 1,
             signal: null,
             ...(controlledDeadline ? { orderedBeforeBarrier: true } : {}),
           },
-          "the actual file timer must fire from the expected trigger",
+          "the original file timeout callback must run from the expected trigger",
         );
-        // Node/libuv timers use millisecond ticks. Allow one tick of quantization.
-        assert.ok(controlledDeadline ? elapsedMs < 5000 : elapsedMs >= 4999);
+        if (controlledDeadline) {
+          assert.ok(elapsedMs >= fileTimeoutMs, "readiness must survive the nominal deadline");
+        } else {
+          // Node/libuv timers use millisecond ticks. Allow one tick of quantization.
+          assert.ok(elapsedMs >= fileTimeoutMs - 1);
+        }
         assert.deepEqual([result.nodeExitCode, result.signal], [1, null]);
       }
       if (controlledDeadline) {
@@ -866,14 +797,14 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
           "the native reporter must consume the exact lifecycle and nine ordered rows before timeout",
         );
       }
-      if (requestCase) {
+      if (observedRequest) {
         const order = await readFile(join(root, requestReceipts.order), "utf8").catch((error) => {
           if (isRecord(error) && error.code === "ENOENT") {
             return "";
           }
           throw error;
         });
-        const context = `request child: ${JSON.stringify({
+        const context = `${mode} child: ${JSON.stringify({
           exit: result.nodeExitCode,
           signal: result.signal,
           issues: result.issues.map(({ code }) => code),
@@ -889,7 +820,18 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
           [[title, "failed"]],
           context,
         );
-        assert.match(result.tests[0]?.error?.message ?? "", /^controlled failure \[env:/u, context);
+        const error = result.tests[0]?.error;
+        const message = error?.message ?? "";
+        if (sameRevision) {
+          assert.deepEqual(
+            error?.cause,
+            { code: "ERR_ASSERTION", name: "AssertionError" },
+            context,
+          );
+          assert.ok(message.includes("[env:CI_RUNNER_FIXTURE_CREDENTIAL]"), context);
+        } else {
+          assert.match(message, /^controlled failure \[env:/u, context);
+        }
         assert.equal(await readFile(join(root, requestReceipts.attempted), "utf8"), "invoked");
         assert.deepEqual(
           result.measurements
@@ -899,7 +841,7 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
           context,
         );
         assert.deepEqual(order.trim().split("\n"), [
-          ...requestBeforeFailure,
+          ...beforeFailure,
           "case:complete",
           "case:fail",
           "file:complete",
@@ -976,7 +918,7 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
         const [failure] = diagnostics.failures;
         assert.ok(failure);
         assert.equal(failure.reason, runnerDeadline ? "timeout" : "failed");
-        assert.equal(failure.timeoutMs, runnerDeadline ? 5000 : undefined);
+        assert.equal(failure.timeoutMs, runnerDeadline ? fileTimeoutMs : undefined);
         if (wallDeadline) {
           assert.ok((failure.elapsedMs ?? -1) >= 4999);
         }

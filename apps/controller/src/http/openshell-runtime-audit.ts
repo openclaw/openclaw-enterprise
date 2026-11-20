@@ -3,10 +3,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { PostgresPlatformState } from "@openclaw-enterprise/occ";
 import type { FastifyInstance } from "fastify";
 
-import {
-  createOpenShellAuditDecoder,
-  OPENSHELL_AUDIT_BYTES,
-} from "../drivers/sandbox/openshell-network-audit.ts";
+import { createOpenShellAuditDecoder, OPENSHELL_AUDIT_BYTES } from "./openshell-network-audit.ts";
 import { failure } from "./errors.ts";
 import { auditEvidence, requirePrivateAuditListener } from "./runtime-audit.ts";
 

@@ -815,6 +815,7 @@ print(json.dumps(payload))
       );
       envoyEnabled = phase === "optional";
     },
+    /** @param {Parameters<typeof verifyNetworkAccess>[0]} scenario */
     verify(scenario) {
       return verifyNetworkAccess(scenario, envoyEnabled);
     },

@@ -30,12 +30,29 @@ const pageWindow = `namespace_id = $1
 const pageOrder = "ORDER BY occurred_at DESC, id DESC LIMIT $7";
 const evidenceColumns =
   "id, occurred_at, kind, action, outcome, actor_id, details, resource_kind, resource_id";
+const publicColumns = `id, to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "occurredAt",
+         kind, action, outcome, actor_id AS "actorId",
+         details->'__occAuditMetadata'->>'requestId' AS "requestId"`;
+
+// A message lookup has the same time window as a fresh audit page. The reader
+// holds the Agent row while checking which revision currently serves its chat.
+export const SELECT_LINKED_TURN = `
+  SELECT ${publicColumns}, details AS "runtimeDetails"
+  FROM occ.audit_events
+  WHERE namespace_id = $1 AND resource_kind = 'agent' AND resource_id = $2 AND id = $3
+    AND kind = 'runtime_activity'
+    AND action IN ('openclaw.runtime.turn.started', 'openclaw.runtime.turn.completed')
+    AND occurred_at BETWEEN statement_timestamp() - interval '24 hours' AND statement_timestamp()
+    AND details ? 'messageId'
+    AND details->>'agentRevisionId' = (
+      SELECT active_revision_id FROM occ.agents
+      WHERE namespace_id = $1 AND id = $2 AND desired_runtime_state = 'running'
+    )
+`;
 
 // Bound each source in page order before merging it with the other sources.
 export const SELECT_AGENT_AUDIT = `
-  SELECT id, to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "occurredAt",
-         kind, action, outcome, actor_id AS "actorId",
-         details->'__occAuditMetadata'->>'requestId' AS "requestId",
+  SELECT ${publicColumns},
          details->>'operationId' AS "operationId",
          details->>'workId' AS "workId", details->>'attemptId' AS "attemptId",
          details->>'workState' AS "workState",

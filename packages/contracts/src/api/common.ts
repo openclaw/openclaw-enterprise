@@ -398,7 +398,7 @@ export const AgentCredentialSourcesSchema = Type.Array(
     maxItems: MAX_AGENT_CREDENTIAL_SOURCES,
     uniqueItems: true,
     description:
-      "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+      "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
   },
 );
 
@@ -628,6 +628,7 @@ export const PermissionActionSchema = Type.Union([
   Type.Literal("read_logs"),
   Type.Literal("manage_policy"),
   Type.Literal("read_audit"),
+  Type.Literal("read_audit_content"),
 ]);
 
 export const ResourceKindSchema = Type.Union([

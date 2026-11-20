@@ -8,11 +8,13 @@ import {
 } from "@openclaw-enterprise/contracts";
 import {
   AgentAuditDisclosureUnavailableError,
+  type DeployAgentAuthorization,
   type OpenClawController,
 } from "@openclaw-enterprise/occ";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
 import type { AuthenticatedSession, ControllerAuth } from "../auth/index.ts";
+import { readAgentAuditMessage } from "../gateway/audit-message-client.ts";
 import { failure } from "./errors.ts";
 
 const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -20,6 +22,96 @@ const CURSOR_LIFETIME_MS = 15 * 60 * 1000;
 const DEFAULT_PAGE_LIMIT = 50;
 const NONCE_LENGTH = 12;
 const TAG_LENGTH = 16;
+
+interface AgentAuditRead {
+  readonly controller: OpenClawController;
+  readonly auth: ControllerAuth;
+  readonly session: AuthenticatedSession;
+  readonly factory: AuditEventFactory;
+  readonly actorId: string;
+  readonly admissionDecisionId: string;
+  readonly namespaceId: string;
+  readonly agentId: string;
+  readonly request: FastifyRequest;
+  readonly reply: FastifyReply;
+}
+
+function disclosure(
+  input: AgentAuditRead,
+  { request: authorization, decision }: DeployAgentAuthorization,
+  action: string,
+  details: Record<string, string | number>,
+) {
+  const { factory, controller, namespaceId, agentId, actorId, request, admissionDecisionId } =
+    input;
+  const resource: ResourceRef = { kind: "agent", id: agentId, namespaceId };
+  return factory.create({
+    kind: "access",
+    installationId: controller.installation.id,
+    namespaceId,
+    resource,
+    actor: { principalId: actorId, kind: "principal" },
+    action,
+    requestId: request.id,
+    admissionDecisionId,
+    iamDriverId: decision.driverId,
+    authorization,
+    details,
+  });
+}
+
+function reportFailure(input: AgentAuditRead, error: unknown): never {
+  if (error instanceof AgentAuditDisclosureUnavailableError) {
+    input.request.log.warn({
+      event: "agent_audit.disclosure_unavailable",
+      requestId: input.request.id,
+    });
+  }
+  throw error;
+}
+
+export async function getAgentAuditEventMessage(
+  input: AgentAuditRead,
+  auditEventId: string,
+  gatewayApiKey: (() => Promise<string>) | undefined,
+) {
+  const { controller, auth, session, actorId, namespaceId, agentId, request, reply } = input;
+  reply.header("cache-control", "no-store");
+  const record = (decision: DeployAgentAuthorization) =>
+    disclosure(input, decision, "openclaw.audit.agent.message.read", { auditEventId });
+  const select = (onRead?: typeof record) =>
+    auth.withSessionAuthority(session, () =>
+      controller.selectAgentAuditMessage(
+        actorId,
+        namespaceId,
+        agentId,
+        auditEventId,
+        (unit) => auth.holdSession(unit, session, request),
+        onRead,
+      ),
+    );
+
+  // Read the immutable event by ID. The client cannot choose a session or message.
+  const { revision, event } = await select();
+  const { sessionId, turnId, messageId } = event.details;
+  const message = await readAgentAuditMessage({
+    computeDriver: controller.selectedDriver("compute"),
+    revision,
+    gatewayApiKey,
+    sessionId,
+    turnId,
+    messageId,
+    signal: request.signal,
+  });
+  if (message === undefined) {
+    throw failure(404, "NOT_FOUND", "The linked user message is unavailable.");
+  }
+
+  // Release the database locks during the Gateway call. Recheck the session,
+  // both grants and the active revision, and commit disclosure before sending text.
+  await select(record).catch((error: unknown) => reportFailure(input, error));
+  reply.send({ data: { event, message }, meta: { requestId: request.id } });
+}
 
 interface AuditCursor {
   readonly start: string;
@@ -66,32 +158,9 @@ export function createAgentAuditReader(secret: string) {
     return Buffer.concat([nonce, cipher.getAuthTag(), encrypted]).toString("base64url");
   }
 
-  return async (input: {
-    readonly controller: OpenClawController;
-    readonly auth: ControllerAuth;
-    readonly session: AuthenticatedSession;
-    readonly factory: AuditEventFactory;
-    readonly actorId: string;
-    readonly admissionDecisionId: string;
-    readonly namespaceId: string;
-    readonly agentId: string;
-    readonly request: FastifyRequest;
-    readonly reply: FastifyReply;
-  }): Promise<void> => {
-    const {
-      controller,
-      auth,
-      session,
-      factory,
-      actorId,
-      admissionDecisionId,
-      namespaceId,
-      agentId,
-      request,
-      reply,
-    } = input;
+  return async (input: AgentAuditRead): Promise<void> => {
+    const { controller, auth, session, actorId, namespaceId, agentId, request, reply } = input;
     const query = request.query as AgentAuditQuery;
-    const resource: ResourceRef = { kind: "agent", id: agentId, namespaceId };
     const scope = Buffer.from(
       JSON.stringify([
         AGENT_AUDIT_PROJECTION_VERSION,
@@ -121,33 +190,16 @@ export function createAgentAuditReader(secret: string) {
           agentId,
           selection,
           (unit) => auth.holdSession(unit, session, request),
-          (count, { request: authorization, decision }) =>
-            factory.create({
-              kind: "access",
-              installationId: controller.installation.id,
-              namespaceId,
-              resource,
-              actor: { principalId: actorId, kind: "principal" },
-              action: "openclaw.audit.agent.read",
-              requestId: request.id,
-              admissionDecisionId,
-              iamDriverId: decision.driverId,
-              authorization,
-              details: {
-                windowStart: start,
-                windowEnd: end,
-                returnedCount: count,
-                projectionVersion: AGENT_AUDIT_PROJECTION_VERSION,
-              },
+          (count, decision) =>
+            disclosure(input, decision, "openclaw.audit.agent.read", {
+              windowStart: start,
+              windowEnd: end,
+              returnedCount: count,
+              projectionVersion: AGENT_AUDIT_PROJECTION_VERSION,
             }),
         ),
       )
-      .catch((error: unknown) => {
-        if (error instanceof AgentAuditDisclosureUnavailableError) {
-          request.log.warn({ event: "agent_audit.disclosure_unavailable", requestId: request.id });
-        }
-        throw error;
-      });
+      .catch((error: unknown) => reportFailure(input, error));
     const last = page.events.at(-1);
     const data: AgentAuditPage = {
       projectionVersion: AGENT_AUDIT_PROJECTION_VERSION,

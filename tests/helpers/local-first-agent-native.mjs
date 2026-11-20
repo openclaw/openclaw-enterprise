@@ -5,244 +5,24 @@ import { fileURLToPath } from "node:url";
 
 import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.ts";
 import {
+  nativePlacementReadRetryable,
+  nativeWorkerPlacementObservation,
+  nativeWorkerSessionPlacement,
+} from "./local-first-agent-native-placement.ts";
+import {
   nativeWorkerHistoryEvidence,
   nativeWorkerProofProgram,
 } from "./native-worker-history-proof.ts";
 
+export {
+  nativePlacementReadRetryable,
+  nativeWorkerPlacementObservation,
+  nativeWorkerSessionPlacement,
+};
+
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const proofPrefix = "OCE_NATIVE_FIRST_AGENT_PROOF ";
 export const nativeFirstAgentProofTimeout = 10 * 60_000;
-
-// Project public RPC observations before crossing the controller stdout boundary.
-// Keep this function self-contained: the trusted controller executes its source.
-export function nativeWorkerPlacementObservation({
-  placement,
-  placementLookup,
-  environment,
-  nodes,
-  expectedNodeId,
-  sessionId,
-  environmentLookup,
-  nodeLookup,
-  elapsedMs,
-}) {
-  const category = (value, values) => {
-    if (value == null) {
-      return "absent";
-    }
-    return values.includes(value) ? value : "other";
-  };
-  const errorCategory = (value) => {
-    if (value == null) {
-      return "absent";
-    }
-    if (typeof value !== "string") {
-      return "other";
-    }
-    // Upstream provider/bootstrap owners wrap the cause before publishing placement errors.
-    // Strip only their fixed prefixes, never arbitrary peer text or identifiers.
-    let detail = value.slice(0, 4096);
-    let fallback = "other";
-    let bundleInstall = false;
-    const wrappers = [
-      ["Worker node bootstrap failed: ", "worker-bootstrap-failed"],
-      ["Device worker bundle installation failed: ", "bundle-install-failed"],
-      ["worker-bundle-install-failed: ", "bundle-install-failed"],
-      ["Worker provider preparation failed: ", "provider-preparation-failed"],
-      ["Worker provider operation failed: ", "provider-operation-failed"],
-      ["Worker provider rejected profile: ", "provider-profile-rejected"],
-    ];
-    for (let depth = 0; depth < 4; depth += 1) {
-      const wrapper = wrappers.find(([prefix]) => detail.startsWith(prefix));
-      if (!wrapper) {
-        break;
-      }
-      detail = detail.slice(wrapper[0].length);
-      fallback = wrapper[1];
-      bundleInstall ||= fallback === "bundle-install-failed";
-    }
-    if (bundleInstall) {
-      const http = /^gateway returned ([0-9]{1,3})(?:\b|$)/.exec(detail);
-      if (http) {
-        const status = Number(http[1]);
-        if ([401, 403, 404].includes(status)) {
-          return `bundle-http-${status}`;
-        }
-        if (status >= 400 && status < 500) {
-          return "bundle-http-client-error";
-        }
-        if (status >= 500 && status < 600) {
-          return "bundle-http-server-error";
-        }
-        return "bundle-http-unexpected-status";
-      }
-      const errno =
-        /^(EACCES|EPERM|EROFS|ENOSPC|ENOENT):/.exec(detail) ??
-        /^spawn .+ (EACCES|EPERM|EROFS|ENOSPC|ENOENT)(?:\b|$)/.exec(detail);
-      if (errno) {
-        return {
-          EACCES: "bundle-storage-access-denied",
-          EPERM: "bundle-operation-denied",
-          EROFS: "bundle-storage-readonly",
-          ENOSPC: "bundle-storage-full",
-          ENOENT: "bundle-file-missing",
-        }[errno[1]];
-      }
-      if (detail.startsWith("Command failed:")) {
-        return "bundle-prewarm-failed";
-      }
-    }
-    // These phrases come from the pinned OpenClaw worker environment and node tunnel owners.
-    const errors = [
-      ["Worker tunnel did not connect within 3 minutes", "tunnel-timeout"],
-      ["node worker workspace command timed out", "workspace-command-timeout"],
-      ["node workspace command failed (", "workspace-command-failed"],
-      ["device worker node transport is unavailable", "node-transport-unavailable"],
-      ["Device worker node transport is unavailable", "node-transport-unavailable"],
-      [
-        "Device worker node is not connected with the installer dialect",
-        "node-installer-disconnected",
-      ],
-      [
-        "Device worker installation connection is no longer current",
-        "node-install-connection-stale",
-      ],
-      [
-        "Device worker bundle installer returned a mismatched build receipt",
-        "bundle-receipt-mismatch",
-      ],
-      ["Device worker bundle installation failed", "bundle-install-failed"],
-      ["Device worker node does not support bundle prefetch", "bundle-prefetch-unsupported"],
-      [
-        "OpenClaw worker deploy artifact is missing; build the running package",
-        "worker-deploy-artifact-missing",
-      ],
-      ["Unsafe worker deploy artifact:", "worker-deploy-artifact-unsafe"],
-      ["Cloud bootstrap requires a built Gateway;", "gateway-build-missing"],
-      ["Cloud bootstrap is missing its built CLI entry;", "gateway-cli-missing"],
-      ["Node bootstrap distribution exceeds its artifact limits", "bootstrap-artifact-too-large"],
-      ["Node bootstrap archive exceeds the transfer limit", "bootstrap-transfer-too-large"],
-      ["INVALID_REQUEST: invalid node worker bundle install request", "bundle-request-invalid"],
-      ["gateway returned an unexpected worker bundle range", "bundle-range-invalid"],
-      ["gateway returned an unexpected worker bundle length", "bundle-transfer-length-invalid"],
-      [
-        "worker bundle download stopped after 3 consecutive no-progress failures",
-        "bundle-download-no-progress",
-      ],
-      ["prepared worker bundle archive has an unexpected length", "bundle-archive-length-invalid"],
-      ["worker bundle archive exceeded its byte limit", "bundle-archive-too-large"],
-      ["worker bundle transfer response exceeded its byte limit", "bundle-response-too-large"],
-      ["worker bundle archive failed integrity validation", "bundle-archive-integrity-failed"],
-      ["published worker bundle failed validation", "bundle-published-invalid"],
-      ["gateway TLS fingerprint mismatch", "bundle-tls-mismatch"],
-      ["Cloudflare Access credentials require HTTPS", "bundle-https-required"],
-      ["gateway transfer is unavailable", "bundle-transfer-unavailable"],
-      [
-        "Worker bundle archive manifest does not match its expected hash",
-        "bundle-manifest-hash-mismatch",
-      ],
-      [
-        "Extracted worker bundle does not match its expected hash",
-        "bundle-extracted-hash-mismatch",
-      ],
-      ["Invalid worker bundle archive path:", "bundle-entry-invalid"],
-      ["Duplicate worker bundle archive path:", "bundle-entry-invalid"],
-      ["Invalid worker bundle archive size:", "bundle-entry-invalid"],
-      ["Invalid worker bundle tar entry:", "bundle-entry-invalid"],
-      ["Worker bundle contains an unsupported entry:", "bundle-entry-invalid"],
-      ["Worker bundle archive exceeds its entry limit", "bundle-extraction-limit"],
-      ["Worker bundle archive exceeds its expanded byte limit", "bundle-extraction-limit"],
-      ["Worker bundle directory exceeds its limits", "bundle-extraction-limit"],
-      ["Worker bundle contains a symbolic link:", "bundle-symlink-refused"],
-      ["Worker bundle file changed while hashing:", "bundle-file-changed"],
-      [
-        "device worker node is not connected with the supervisor dialect",
-        "node-supervisor-disconnected",
-      ],
-      ["node worker workspace is unavailable before sync", "workspace-not-synced"],
-      ["Device folder does not belong to this workspace runner", "workspace-device-mismatch"],
-      ["Device folder validation failed", "workspace-validation-failed"],
-      ["Node workspace sync does not match its bound session", "workspace-session-mismatch"],
-      ["Worker tunnel owner credential is not current", "owner-credential-stale"],
-      ["node worker tunnel owner epoch is stale", "owner-epoch-stale"],
-      ["node worker tunnel owner binding changed within one epoch", "owner-binding-changed"],
-      ["node worker tunnel stopped before connecting", "tunnel-stopped"],
-    ];
-    return errors.find(([phrase]) => detail.startsWith(phrase))?.[1] ?? fallback;
-  };
-  const present = (value) => typeof value === "string" && value.length > 0;
-  const count = (value) =>
-    Array.isArray(value) && value.length <= 4096 ? value.length : undefined;
-  const validNodes = count(nodes) !== undefined ? nodes : undefined;
-  const matches = validNodes?.filter(
-    (node) => present(expectedNodeId) && node?.nodeId === expectedNodeId,
-  );
-  const exact = matches?.length === 1 ? matches[0] : undefined;
-  const bool = (value) => (typeof value === "boolean" ? value : undefined);
-  const attached = environment?.worker?.attachedSessionIds;
-  return {
-    placementLookup:
-      placementLookup === undefined
-        ? undefined
-        : category(placementLookup, ["fresh", "fallback", "absent"]),
-    placementState: category(placement?.state, [
-      "local",
-      "requested",
-      "provisioning",
-      "syncing",
-      "starting",
-      "active",
-      "draining",
-      "reconciling",
-      "reclaimed",
-      "failed",
-    ]),
-    recoveryError: errorCategory(placement?.recoveryError),
-    terminalReason: errorCategory(placement?.terminalReason),
-    workspaceReferencePresent: present(placement?.remoteWorkspaceDir),
-    environmentLookup: category(environmentLookup, ["absent", "found", "unavailable", "mismatch"]),
-    environmentState: category(environment?.worker?.state, [
-      "requested",
-      "provisioning",
-      "bootstrapping",
-      "ready",
-      "attached",
-      "idle",
-      "draining",
-      "destroying",
-      "destroyed",
-      "failed",
-      "orphaned",
-    ]),
-    environmentError: errorCategory(environment?.worker?.error),
-    tunnelStatus: category(environment?.worker?.tunnelStatus, [
-      "stopped",
-      "connecting",
-      "connected",
-      "reconnecting",
-    ]),
-    attachedSessionCount: count(attached),
-    attachedSessionMatches:
-      count(attached) === undefined
-        ? undefined
-        : present(sessionId) && attached.includes(sessionId),
-    nodeLookup: category(nodeLookup, ["found", "unavailable", "invalid"]),
-    nodeCount: count(validNodes),
-    connectedNodeCount: validNodes?.filter((node) => node?.connected === true).length,
-    expectedNodeIdPresent: present(expectedNodeId),
-    expectedNodeMatches: matches?.length,
-    expectedNodeConnected: bool(exact?.connected),
-    expectedNodePaired: bool(exact?.paired),
-    expectedNodeSessionHost: bool(exact?.sessionHost),
-    expectedNodeCaps: count(exact?.caps),
-    expectedNodeCommands: count(exact?.commands),
-    expectedNodeWorkerBundle: category(exact?.workerBundle?.status, ["installed", "missing"]),
-    elapsedMs:
-      Number.isSafeInteger(elapsedMs) && elapsedMs >= 0 && elapsedMs <= 3_600_000
-        ? elapsedMs
-        : undefined,
-  };
-}
 
 // Classify only the selected turn. Error text and transcript bytes stay in the controller.
 export function nativeWorkerTurnObservation({ outcome, error, messages, runId, historyLookup }) {
@@ -257,6 +37,17 @@ export function nativeWorkerTurnObservation({ outcome, error, messages, runId, h
     }
     const detail = value.slice(0, 4096);
     const patterns = [
+      ["workspace-discovery", /Remote workspace skill discovery failed/],
+      ["worker-model-output", /Runtime-local inference failed its output boundary/],
+      [
+        "worker-model-setup",
+        /(?:Invalid node-local inference startup configuration|Node-local inference (?:startup|workspace binding)|Native runtime (?:credential is unavailable|model selection is not configured|requires the exact selected local model|workspace does not match)|Worker-local inference cannot use)/,
+      ],
+      [
+        "worker-transcript-authority",
+        /Cloud worker (?:transcript (?:identity|authority)|placement authority changed)/,
+      ],
+      ["worker-turn-failed", /^(?:Error: )?(?:Cloud worker turn failed|Worker turn failed)$/i],
       [
         "session-read-changed",
         /^(?:Error: )?Session changed while preparing its description; retry the request$/,
@@ -522,35 +313,13 @@ export async function collectNativeWorkerFailure({
   };
 }
 
-// Validate before reading placement so a foreign response cannot poison failure evidence.
-// Self-contained because the controller receives this function as source.
-export function nativeWorkerSessionPlacement(description, sessionId) {
-  if (
-    typeof sessionId !== "string" ||
-    sessionId.length === 0 ||
-    description?.session?.sessionId !== sessionId
-  ) {
-    throw new Error("Native worker session identity mismatch");
-  }
-  return description.session.placement;
-}
-
-// The pinned Gateway returns this plain read-generation error through
-// UNAVAILABLE + formatForLog. The SDK separately proves response correlation.
-export function nativePlacementReadRetryable(error, correlatedResponse) {
-  return (
-    correlatedResponse === true &&
-    error?.code === "UNAVAILABLE" &&
-    error.message === "Error: Session changed while preparing its description; retry the request"
-  );
-}
-
 // Run in the existing trusted controller: it already has the private route key,
 // cluster DNS and CA. Native admin sign-in is neither enabled nor required.
 async function nativeWorkerProof({
   namespaceId,
   agentId,
   timeout,
+  plainChat,
   workspaceFile,
   expectedNodeId,
   session: existingSession,
@@ -720,32 +489,34 @@ async function nativeWorkerProof({
     // A retained placement may recover when the next turn is sent. Check its
     // current directory after that turn, rather than trusting the old owner.
     const sessionFileContent = `FIRST_AGENT_SESSION_${randomUUID()}\n`;
-    const sessionFile =
-      existingSession === undefined
-        ? {
-            path: `.first-agent-native-${randomUUID()}.txt`,
-            sha256: createHash("sha256").update(sessionFileContent).digest("hex"),
-          }
-        : retainedSessionFile;
+    const sessionFile = retainedSessionFile ?? {
+      path: `.first-agent-native-${randomUUID()}.txt`,
+      sha256: createHash("sha256").update(sessionFileContent).digest("hex"),
+    };
     assert.match(sessionFile?.path ?? "", /^\.first-agent-native-[a-z0-9-]+\.txt$/);
     assert.match(sessionFile.sha256, /^[a-f0-9]{64}$/);
     const marker = `FIRST_AGENT_NATIVE_${randomUUID()}`;
     const toolPrefix = "FIRST_AGENT_NATIVE_TOOL ";
-    const program = nativeWorkerProofProgram({
-      sessionFile,
-      sessionFileContent,
-      workspaceFile,
-      toolPrefix,
-      createSessionFile: existingSession === undefined,
-    });
-    const command = `node -e '${program.replaceAll("'", "'\\''")}'`;
+    let command;
+    let message = `Reply with exactly ${marker}. Do not use tools.`;
+    if (!plainChat) {
+      const program = nativeWorkerProofProgram({
+        sessionFile,
+        sessionFileContent,
+        workspaceFile,
+        toolPrefix,
+        createSessionFile: retainedSessionFile === undefined,
+      });
+      command = `node -e '${program.replaceAll("'", "'\\''")}'`;
+      message = `Use exec to run exactly this command: ${command}. After exec succeeds, reply with exactly ${marker}. Do not print environment values or credentials.`;
+    }
     stage = "send";
     selectedTurn = { key, runId: randomUUID() };
-    const sent = await call("sessions.send", {
-      key,
+    const sent = await call(plainChat ? "chat.send" : "sessions.send", {
+      ...(plainChat ? { sessionKey: key } : { key }),
       agentId: "main",
       idempotencyKey: selectedTurn.runId,
-      message: `Use exec to run exactly this command: ${command}. After exec succeeds, reply with exactly ${marker}. Do not print environment values or credentials.`,
+      message,
     });
     assert.ok(sent.runId);
     runId = sent.runId;
@@ -761,7 +532,9 @@ async function nativeWorkerProof({
     }
     signal.throwIfAborted();
     stage = "model-outcome";
-    assert.equal(outcome.status, "ok");
+    if (!plainChat) {
+      assert.equal(outcome.status, "ok");
+    }
     // The model turn is already terminal. Allow history delivery to settle,
     // but do not spend the remaining model-execution budget on a missing proof.
     historySignal = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
@@ -781,13 +554,9 @@ async function nativeWorkerProof({
       });
       historyPredicates = evidence.observation;
       const { tool, final, messages } = evidence;
-      if (tool && final) {
-        stage = "exec-proof";
-        const output = evidence.output;
-        const line = output.split(/\r?\n/).find((line) => line.startsWith(toolPrefix));
-        assert.ok(line);
-        const proof = JSON.parse(line.slice(toolPrefix.length));
-        assert.ok(typeof proof.hostname === "string" && proof.hostname.length > 0);
+      // A failed model can still leave the submitted user message in history.
+      // Return its ID for the audit check. The caller checks the reply separately.
+      if (plainChat ? final || outcome.status !== "ok" : final && tool) {
         stage = "current-placement";
         const current = await call("sessions.describe", { key, agentId: "main" });
         assert.equal(current.session?.sessionId, session.sessionId);
@@ -797,6 +566,33 @@ async function nativeWorkerProof({
         assert.equal(placement.providerId, required.providerId);
         assert.equal(placement.inference, "worker");
         assert.ok(placement.environmentId && placement.remoteWorkspaceDir);
+        const verified = {
+          verified: true,
+          runId: sent.runId,
+          profileId: required.id,
+          providerId: required.providerId,
+          environmentId: placement.environmentId,
+          session,
+        };
+        if (plainChat) {
+          const input = history.messages.find(
+            (entry) => entry.role === "user" && entry.idempotencyKey === `${sent.runId}:user`,
+          );
+          const messageId = input?.__openclaw?.id;
+          assert.ok(typeof messageId === "string" && messageId.length > 0);
+          emit({
+            ...verified,
+            replied: outcome.status === "ok" && Boolean(final),
+            source: { messageId, text: message },
+          });
+          return;
+        }
+        stage = "exec-proof";
+        const output = evidence.output;
+        const line = output.split(/\r?\n/).find((line) => line.startsWith(toolPrefix));
+        assert.ok(line);
+        const proof = JSON.parse(line.slice(toolPrefix.length));
+        assert.ok(typeof proof.hostname === "string" && proof.hostname.length > 0);
         assert.equal(proof.cwd, placement.remoteWorkspaceDir);
         assert.equal(proof.modelCredentialPresent, false);
         assert.equal(proof.sessionFileSha256, sessionFile.sha256);
@@ -806,15 +602,7 @@ async function nativeWorkerProof({
             createHash("sha256").update(workspaceFile.content).digest("hex"),
           );
         }
-        emit({
-          verified: true,
-          profileId: required.id,
-          providerId: required.providerId,
-          environmentId: placement.environmentId,
-          hostname: proof.hostname,
-          session,
-          sessionFile,
-        });
+        emit({ ...verified, hostname: proof.hostname, sessionFile });
         return;
       }
       assert.ok(
@@ -844,6 +632,7 @@ export async function assertNativeWorkerProofInController(
     environment,
     namespaceId,
     agentId,
+    plainChat = false,
     workspaceFile,
     expectedNodeId,
     session,
@@ -860,7 +649,7 @@ export async function assertNativeWorkerProofInController(
   delete safeEnvironment.OPENAI_API_KEY_FILE;
   delete safeEnvironment.CODEX_ACCESS_TOKEN;
   delete safeEnvironment.CODEX_ACCESS_TOKEN_FILE;
-  const input = `const nativePlacementReadRetryable = (${nativePlacementReadRetryable.toString()});\nconst nativeWorkerProofProgram = (${nativeWorkerProofProgram.toString()});\nconst nativeWorkerHistoryEvidence = (${nativeWorkerHistoryEvidence.toString()});\nconst nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst nativeWorkerTurnEventObservation = (${nativeWorkerTurnEventObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
+  const input = `const nativePlacementReadRetryable = (${nativePlacementReadRetryable.toString()});\nconst nativeWorkerProofProgram = (${nativeWorkerProofProgram.toString()});\nconst nativeWorkerHistoryEvidence = (${nativeWorkerHistoryEvidence.toString()});\nconst nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst nativeWorkerTurnEventObservation = (${nativeWorkerTurnEventObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: plainChat ? 3 * 60_000 : nativeFirstAgentProofTimeout, plainChat, workspaceFile, expectedNodeId, session, sessionFile })});`;
   const command = state.deploymentMode === "k3d" ? "kubectl" : state.containerEngine;
   const args =
     state.deploymentMode === "k3d"
@@ -945,8 +734,10 @@ export async function assertNativeWorkerProofInController(
   }
   assert.equal(result.proof?.verified, true);
   assert.ok(result.proof.profileId && result.proof.providerId && result.proof.environmentId);
-  assert.ok(typeof result.proof.hostname === "string" && result.proof.hostname.length > 0);
   assert.ok(result.proof.session?.key && result.proof.session.sessionId);
-  assert.ok(result.proof.sessionFile?.path && result.proof.sessionFile.sha256);
+  if (!plainChat) {
+    assert.ok(typeof result.proof.hostname === "string" && result.proof.hostname.length > 0);
+    assert.ok(result.proof.sessionFile?.path && result.proof.sessionFile.sha256);
+  }
   return result.proof;
 }

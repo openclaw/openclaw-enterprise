@@ -8,6 +8,7 @@ import {
   tenant,
   digest,
   preparedAuth,
+  routedGatewayConfiguration,
   routedOptions,
   routedRevision,
   labelSelectorLabels,
@@ -89,7 +90,7 @@ export function providerReadinessFixture({
     configuration: admitLoggingConfiguration(
       {
         agents: { defaults: { model: "codex/gpt-5" } },
-        gateway: { ...routedRevision(driver).configuration.gateway, controlUi: { enabled: false } },
+        gateway: { ...routedGatewayConfiguration(), controlUi: { enabled: false } },
       },
       "info",
     ),
@@ -116,8 +117,10 @@ export function providerReadinessFixture({
     undefined,
     preparedAuth(driver, namespace, false),
   );
-  /** @type {Pick<import("../../packages/contracts/src/index.ts").HarnessWorkloadRequirements, "labels">} */
-  const { labels } = driver.harnessRequirementsFromDeployment(deployment, "api_key", false);
+  const labels = {
+    ...deployment.spec.template.metadata.labels,
+    "openclaw.dev/network-profile": "provider-fenced-v1",
+  };
   const requests = [];
   let observe = () => ({ apiVersion: "v1", kind: "PodList", items: [] });
   const core = {

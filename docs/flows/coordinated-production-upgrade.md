@@ -9,6 +9,8 @@ last_updated_session: "authoring-run/aed0a2bc-9691-4859-8bd6-1e7b3549c9b4"
 ## Overview
 
 Upgrades OpenClaw Control Plane (OCC) and Agent runtimes.
+See [channel transitions](channel-egress.md#0-install-or-upgrade-channel-routing)
+for the explicit one-off entrypoint.
 
 ## Entry Points
 
@@ -251,6 +253,12 @@ failed verification Job permits a verification retry. Resume requires completed
 verification for journaled migrations and rechecks both Secret identities.
 Kubernetes Jobs reference these Secrets by name, so keep edits fenced throughout.
 
+After quiescence and the relocated `verify_pair_nodes` re-check, a fresh
+`helm status` must match the reconciliation read except for live
+`.info.resources` added by Helm v4. A mismatch leaves the writers stopped.
+This attempt does not write the protected files or the Installation Secret.
+On resume, either can already contain candidate settings from the previous attempt.
+
 Protected files change atomically. Resource-version checks preserve unrelated
 mutable Secret data. Reference switches preserve both Secrets; both OCC templates
 select the successor and checksum.
@@ -401,13 +409,5 @@ requires no Agents or Secrets.
 - 2026-11-18 10:33: Reconcile profile/inventory traces. (authoring-run/251425f8-895a-4c1e-ac56-e666545f89ab - 98f60a1b965aa7129256c0802b60969519bc8a86)
 
 - 2026-11-18 10:20: Trace the private profile handoff alongside progress output. (authoring-run/f93ed972-08b6-4310-8194-a6c8c9aeef37 - 2cedf84d05b8c05d812264dffd179eb3ca537fee)
-
-- 2026-11-18 10:13: Preserve progress output and batched inventory reads. (authoring-run/583f9a7a-3375-4446-852d-2dc671c1b88c - 2fd6ef95c30345f242d260cd513c6a36ae3ba805)
-
-- 2026-11-18 08:31: Trace the batched deployment work lookup and its refusal. (authoring-run/049ea467-b4fd-42d2-813a-b0721126ef70 - a1cdbddc6cfb49781cb0a6337aba3aa9a729e798)
-
-- 2026-11-18 05:39: Trace progress output. (authoring-run/19a81e0c-0cb0-48eb-828d-e65e72b6c576 - 8cbb31a6893016f3aa74be9471fce69d3dbc60e7)
-
-- 2026-11-14 07:25: Trace initialization Job selection and migration Pod label validation. (authoring-run/9b1d4770-fd45-4533-9bc4-99395d39837a - ba5b0832956ac3ad93695aab92db952f388ae7da)
 
 [Production image upgrade flow documentation history](coordinated-production-upgrade/history.md) preserves the older dated entries.

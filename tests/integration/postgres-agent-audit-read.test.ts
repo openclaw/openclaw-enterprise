@@ -6,6 +6,7 @@ import type { AgentAuditPage } from "@openclaw-enterprise/contracts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, withPool } from "../helpers/postgres-database.mjs";
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.ts";
@@ -209,9 +210,15 @@ test(
 
     // A reader's exact Agent grant excludes a peer in the same Namespace,
     // including the peer's revision records.
+    const configuration = await inject("POST", `/namespaces/${namespace.id}/configurations`, {
+      kind: "agent",
+      values: createHarnessConfiguration("codex", "gpt-4.1"),
+    });
+    assert.equal(configuration.statusCode, 201, configuration.body);
     const peer = await inject("POST", `/namespaces/${namespace.id}/agents`, {
       name: "Audit peer",
-      configurationId: agent.configurationId,
+      configurationId: configuration.json().data.id,
+      executionMode: "dedicated",
       harnessAuth: { method: "api_key", source: secretRef },
     });
     assert.equal(peer.statusCode, 201, peer.body);
@@ -284,6 +291,11 @@ test(
     }
 
     await t.test("the Gateway can write only for its registered Agent revision", async (child) => {
+      const peerGrant = await inject("POST", `${iamPath}/access-bindings`, {
+        ...binding,
+        resourceId: peerAgent.id,
+      });
+      assert.equal(peerGrant.statusCode, 201, peerGrant.body);
       await checkGatewayAudit(child, {
         app,
         pool,
@@ -291,13 +303,69 @@ test(
         migrationUrl,
         revision,
         other: other.revision,
+        codex: peerDeployment.json().data,
         replacementId: deploymentId,
-        readPage: async () => {
-          const response = await inject("GET", auditPath);
+        readPage: async (agentId) => {
+          const response = await inject(
+            "GET",
+            `/namespaces/${namespace.id}/agents/${agentId}/audit-events`,
+          );
           assert.equal(response.statusCode, 200, response.body);
           return response.json().data;
         },
       });
     });
+
+    await t.test(
+      "an analyst needs both direct grants before looking up a turn message",
+      async () => {
+        const page = await inject("GET", auditPath);
+        assert.equal(page.statusCode, 200, page.body);
+        const events: AgentAuditPage["events"] = page.json().data.events;
+        const turn = events.find(
+          (event) =>
+            event.event === "runtime_activity" && event.action === "openclaw.runtime.turn.started",
+        );
+        assert.ok(turn);
+        const path = `${auditPath}/${turn.id}/message`;
+        const read = () => inject("GET", path);
+        assert.equal((await app.inject({ method: "GET", url: path })).statusCode, 401);
+        assert.equal((await read()).statusCode, 403);
+        const permission = { action: "read_audit_content", resourceKind: "agent" };
+        const contentRole = await inject("POST", `${iamPath}/roles`, { permissions: [permission] });
+        assert.equal(contentRole.statusCode, 201, contentRole.body);
+        const subject = {
+          subjectKind: "identity",
+          subjectId: principal.id,
+          roleId: contentRole.json().data.id,
+        };
+        const bind = async (resourceId: string) => {
+          const response = await inject("POST", `${iamPath}/access-bindings`, {
+            ...subject,
+            resourceKind: "agent",
+            resourceId,
+          });
+          assert.equal(response.statusCode, 201, response.body);
+        };
+        // A peer grant gives no access to this chat, even when the caller knows the event ID.
+        await bind(peerAgent.id);
+        assert.equal((await read()).statusCode, 403);
+        const peerRead = await inject("GET", `${peerPath}/audit-events/${turn.id}/message`);
+        assert.equal(peerRead.statusCode, 404, peerRead.body);
+
+        // Both exact grants allow the lookup. This turn has no live link to open.
+        await bind(agent.id);
+        const missing = await read();
+        assert.equal(missing.statusCode, 404, missing.body);
+        assert.equal(missing.json().data, undefined);
+        assert.equal((await inject("GET", `${path}?messageId=other`)).statusCode, 400);
+        const removed = await inject(
+          "DELETE",
+          `${iamPath}/access-bindings/${grantedAgain.json().data.id}`,
+        );
+        assert.equal(removed.statusCode, 204, removed.body);
+        assert.equal((await read()).statusCode, 403);
+      },
+    );
   },
 );

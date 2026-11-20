@@ -16421,7 +16421,7 @@
                                 "type": "string"
                               },
                               "credentialSources": {
-                                "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                                "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
                                 "items": {
                                   "additionalProperties": false,
                                   "properties": {
@@ -16924,7 +16924,7 @@
                     "type": "string"
                   },
                   "credentialSources": {
-                    "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                    "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
                     "items": {
                       "additionalProperties": false,
                       "properties": {
@@ -17229,7 +17229,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -21125,7 +21125,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -21562,7 +21562,7 @@
                               "type": "string"
                             },
                             "credentialSources": {
-                              "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                              "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
                               "items": {
                                 "additionalProperties": false,
                                 "properties": {
@@ -22088,7 +22088,7 @@
                     "type": "string"
                   },
                   "credentialSources": {
-                    "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                    "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
                     "items": {
                       "additionalProperties": false,
                       "properties": {
@@ -22413,7 +22413,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -22803,7 +22803,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/audit-events": {
       "get": {
-        "description": "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API request, worker, session, turn, and model call records from the preceding 24 hours.",
+        "description": "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API request, worker, session, turn, model call, and model response records from the preceding 24 hours.",
         "operationId": "listAgentAuditEvents",
         "parameters": [
           {
@@ -22882,6 +22882,7 @@
                             "action": "openclaw.runtime.turn.completed",
                             "details": {
                               "agentRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+                              "messageId": "7501adc8-16ab-45d7-8ed8-a63bf342629f",
                               "outcome": "succeeded",
                               "runtimeSource": "openclaw",
                               "sessionId": "123e4567-e89b-42d3-a456-426614174000",
@@ -23153,84 +23154,6 @@
                                           "agentRevisionId",
                                           "runtimeSource",
                                           "sessionId"
-                                        ],
-                                        "type": "object"
-                                      },
-                                      "event": { "const": "runtime_activity", "type": "string" },
-                                      "id": {
-                                        "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                        "type": "string"
-                                      },
-                                      "occurredAt": {
-                                        "format": "date-time",
-                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
-                                        "type": "string"
-                                      },
-                                      "outcome": {
-                                        "anyOf": [
-                                          { "const": "success", "type": "string" },
-                                          { "const": "denied", "type": "string" },
-                                          { "const": "failure", "type": "string" }
-                                        ]
-                                      },
-                                      "requestId": {
-                                        "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                        "type": "string"
-                                      }
-                                    },
-                                    "required": [
-                                      "id",
-                                      "occurredAt",
-                                      "outcome",
-                                      "event",
-                                      "action",
-                                      "details"
-                                    ],
-                                    "type": "object"
-                                  },
-                                  {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "action": {
-                                        "const": "openclaw.runtime.turn.admitted",
-                                        "type": "string"
-                                      },
-                                      "actorId": {
-                                        "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
-                                        "type": "string"
-                                      },
-                                      "details": {
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "agentRevisionId": {
-                                            "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                            "type": "string"
-                                          },
-                                          "messageId": {
-                                            "maxLength": 256,
-                                            "minLength": 1,
-                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
-                                            "type": "string"
-                                          },
-                                          "runtimeSource": { "enum": ["openclaw", "codex"] },
-                                          "sessionId": {
-                                            "maxLength": 256,
-                                            "minLength": 1,
-                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
-                                            "type": "string"
-                                          },
-                                          "turnId": {
-                                            "maxLength": 256,
-                                            "minLength": 1,
-                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
-                                            "type": "string"
-                                          }
-                                        },
-                                        "required": [
-                                          "agentRevisionId",
-                                          "runtimeSource",
-                                          "sessionId",
-                                          "turnId"
                                         ],
                                         "type": "object"
                                       },
@@ -23642,6 +23565,103 @@
                                     "additionalProperties": false,
                                     "properties": {
                                       "action": {
+                                        "const": "openclaw.runtime.model_response.observed",
+                                        "type": "string"
+                                      },
+                                      "actorId": {
+                                        "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                        "type": "string"
+                                      },
+                                      "details": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "agentRevisionId": {
+                                            "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          },
+                                          "messageId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "model": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "provider": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "responseIdHash": {
+                                            "pattern": "^sha256:[0-9a-f]{16}$",
+                                            "type": "string"
+                                          },
+                                          "runtimeSource": { "enum": ["openclaw", "codex"] },
+                                          "sessionId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "turnId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "agentRevisionId",
+                                          "runtimeSource",
+                                          "sessionId",
+                                          "turnId",
+                                          "model",
+                                          "provider",
+                                          "responseIdHash"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "event": { "const": "runtime_activity", "type": "string" },
+                                      "id": {
+                                        "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "occurredAt": {
+                                        "format": "date-time",
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                        "type": "string"
+                                      },
+                                      "outcome": {
+                                        "anyOf": [
+                                          { "const": "success", "type": "string" },
+                                          { "const": "denied", "type": "string" },
+                                          { "const": "failure", "type": "string" }
+                                        ]
+                                      },
+                                      "requestId": {
+                                        "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "occurredAt",
+                                      "outcome",
+                                      "event",
+                                      "action",
+                                      "details"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "action": {
                                         "const": "openclaw.runtime.tool_call.requested",
                                         "type": "string"
                                       },
@@ -23656,6 +23676,7 @@
                                             "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                             "type": "string"
                                           },
+                                          "boundary": { "enum": ["gateway_hook", "runtime"] },
                                           "invocationId": {
                                             "maxLength": 256,
                                             "minLength": 1,
@@ -23692,7 +23713,8 @@
                                           "sessionId",
                                           "turnId",
                                           "invocationId",
-                                          "toolName"
+                                          "toolName",
+                                          "boundary"
                                         ],
                                         "type": "object"
                                       },
@@ -23746,12 +23768,7 @@
                                             "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                             "type": "string"
                                           },
-                                          "attemptId": {
-                                            "maxLength": 256,
-                                            "minLength": 1,
-                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
-                                            "type": "string"
-                                          },
+                                          "boundary": { "enum": ["gateway_hook", "runtime"] },
                                           "decision": {
                                             "enum": ["allow", "deny", "require_approval"]
                                           },
@@ -23770,10 +23787,8 @@
                                           "policy": {
                                             "enum": [
                                               "tool_policy",
-                                              "file_policy",
+                                              "gateway_tool_audit",
                                               "exec_policy",
-                                              "managed_mcp_policy",
-                                              "codex_policy",
                                               "codex_guardian"
                                             ]
                                           },
@@ -23802,6 +23817,7 @@
                                           "turnId",
                                           "invocationId",
                                           "toolName",
+                                          "boundary",
                                           "policy",
                                           "decision"
                                         ],
@@ -23863,6 +23879,7 @@
                                             "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
                                             "type": "string"
                                           },
+                                          "boundary": { "enum": ["gateway_hook", "runtime"] },
                                           "invocationId": {
                                             "maxLength": 256,
                                             "minLength": 1,
@@ -23900,6 +23917,7 @@
                                           "turnId",
                                           "invocationId",
                                           "toolName",
+                                          "boundary",
                                           "approvalId"
                                         ],
                                         "type": "object"
@@ -23960,6 +23978,7 @@
                                             "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
                                             "type": "string"
                                           },
+                                          "boundary": { "enum": ["gateway_hook", "runtime"] },
                                           "decision": {
                                             "enum": [
                                               "allow-once",
@@ -24008,6 +24027,7 @@
                                           "turnId",
                                           "invocationId",
                                           "toolName",
+                                          "boundary",
                                           "approvalId",
                                           "decision"
                                         ],
@@ -24075,6 +24095,7 @@
                                             "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
                                             "type": "string"
                                           },
+                                          "boundary": { "enum": ["gateway_hook", "runtime"] },
                                           "invocationId": {
                                             "maxLength": 256,
                                             "minLength": 1,
@@ -24112,6 +24133,7 @@
                                           "turnId",
                                           "invocationId",
                                           "toolName",
+                                          "boundary",
                                           "attemptId"
                                         ],
                                         "type": "object"
@@ -24172,6 +24194,7 @@
                                             "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
                                             "type": "string"
                                           },
+                                          "boundary": { "enum": ["gateway_hook", "runtime"] },
                                           "invocationId": {
                                             "maxLength": 256,
                                             "minLength": 1,
@@ -24222,6 +24245,580 @@
                                           "turnId",
                                           "invocationId",
                                           "toolName",
+                                          "boundary",
+                                          "attemptId",
+                                          "outcome"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "event": { "const": "runtime_activity", "type": "string" },
+                                      "id": {
+                                        "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "occurredAt": {
+                                        "format": "date-time",
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                        "type": "string"
+                                      },
+                                      "outcome": {
+                                        "anyOf": [
+                                          { "const": "success", "type": "string" },
+                                          { "const": "denied", "type": "string" },
+                                          { "const": "failure", "type": "string" }
+                                        ]
+                                      },
+                                      "requestId": {
+                                        "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "occurredAt",
+                                      "outcome",
+                                      "event",
+                                      "action",
+                                      "details"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "action": {
+                                        "const": "openclaw.runtime.tool_call.requested",
+                                        "type": "string"
+                                      },
+                                      "actorId": {
+                                        "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                        "type": "string"
+                                      },
+                                      "details": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "agentRevisionId": {
+                                            "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          },
+                                          "boundary": { "const": "managed_mcp", "type": "string" },
+                                          "invocationId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "runtimeSource": { "enum": ["openclaw", "codex"] },
+                                          "sessionId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "toolName": {
+                                            "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,255}$",
+                                            "type": "string"
+                                          },
+                                          "turnId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "agentRevisionId",
+                                          "runtimeSource",
+                                          "invocationId",
+                                          "toolName",
+                                          "boundary"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "event": { "const": "runtime_activity", "type": "string" },
+                                      "id": {
+                                        "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "occurredAt": {
+                                        "format": "date-time",
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                        "type": "string"
+                                      },
+                                      "outcome": {
+                                        "anyOf": [
+                                          { "const": "success", "type": "string" },
+                                          { "const": "denied", "type": "string" },
+                                          { "const": "failure", "type": "string" }
+                                        ]
+                                      },
+                                      "requestId": {
+                                        "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "occurredAt",
+                                      "outcome",
+                                      "event",
+                                      "action",
+                                      "details"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "action": {
+                                        "const": "openclaw.runtime.policy.decided",
+                                        "type": "string"
+                                      },
+                                      "actorId": {
+                                        "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                        "type": "string"
+                                      },
+                                      "details": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "agentRevisionId": {
+                                            "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          },
+                                          "boundary": { "const": "managed_mcp", "type": "string" },
+                                          "decision": {
+                                            "enum": ["allow", "deny", "require_approval"]
+                                          },
+                                          "invocationId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "policy": {
+                                            "const": "managed_mcp_policy",
+                                            "type": "string"
+                                          },
+                                          "runtimeSource": { "enum": ["openclaw", "codex"] },
+                                          "sessionId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "toolName": {
+                                            "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,255}$",
+                                            "type": "string"
+                                          },
+                                          "turnId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "agentRevisionId",
+                                          "runtimeSource",
+                                          "invocationId",
+                                          "toolName",
+                                          "boundary",
+                                          "policy",
+                                          "decision"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "event": { "const": "runtime_activity", "type": "string" },
+                                      "id": {
+                                        "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "occurredAt": {
+                                        "format": "date-time",
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                        "type": "string"
+                                      },
+                                      "outcome": {
+                                        "anyOf": [
+                                          { "const": "success", "type": "string" },
+                                          { "const": "denied", "type": "string" },
+                                          { "const": "failure", "type": "string" }
+                                        ]
+                                      },
+                                      "requestId": {
+                                        "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "occurredAt",
+                                      "outcome",
+                                      "event",
+                                      "action",
+                                      "details"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "action": {
+                                        "const": "openclaw.runtime.approval.requested",
+                                        "type": "string"
+                                      },
+                                      "actorId": {
+                                        "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                        "type": "string"
+                                      },
+                                      "details": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "agentRevisionId": {
+                                            "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          },
+                                          "approvalId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "boundary": { "const": "managed_mcp", "type": "string" },
+                                          "invocationId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "runtimeSource": { "enum": ["openclaw", "codex"] },
+                                          "sessionId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "toolName": {
+                                            "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,255}$",
+                                            "type": "string"
+                                          },
+                                          "turnId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "agentRevisionId",
+                                          "runtimeSource",
+                                          "invocationId",
+                                          "toolName",
+                                          "boundary",
+                                          "approvalId"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "event": { "const": "runtime_activity", "type": "string" },
+                                      "id": {
+                                        "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "occurredAt": {
+                                        "format": "date-time",
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                        "type": "string"
+                                      },
+                                      "outcome": {
+                                        "anyOf": [
+                                          { "const": "success", "type": "string" },
+                                          { "const": "denied", "type": "string" },
+                                          { "const": "failure", "type": "string" }
+                                        ]
+                                      },
+                                      "requestId": {
+                                        "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "occurredAt",
+                                      "outcome",
+                                      "event",
+                                      "action",
+                                      "details"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "action": {
+                                        "const": "openclaw.runtime.approval.resolved",
+                                        "type": "string"
+                                      },
+                                      "actorId": {
+                                        "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                        "type": "string"
+                                      },
+                                      "details": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "agentRevisionId": {
+                                            "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          },
+                                          "approvalId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "boundary": { "const": "managed_mcp", "type": "string" },
+                                          "decision": {
+                                            "enum": [
+                                              "allow-once",
+                                              "allow-always",
+                                              "allow-session",
+                                              "deny",
+                                              "expired",
+                                              "cancelled",
+                                              "unavailable"
+                                            ]
+                                          },
+                                          "invocationId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "runtimeSource": { "enum": ["openclaw", "codex"] },
+                                          "sessionId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "toolName": {
+                                            "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,255}$",
+                                            "type": "string"
+                                          },
+                                          "turnId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "agentRevisionId",
+                                          "runtimeSource",
+                                          "invocationId",
+                                          "toolName",
+                                          "boundary",
+                                          "approvalId",
+                                          "decision"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "event": { "const": "runtime_activity", "type": "string" },
+                                      "id": {
+                                        "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "occurredAt": {
+                                        "format": "date-time",
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                        "type": "string"
+                                      },
+                                      "outcome": {
+                                        "anyOf": [
+                                          { "const": "success", "type": "string" },
+                                          { "const": "denied", "type": "string" },
+                                          { "const": "failure", "type": "string" }
+                                        ]
+                                      },
+                                      "requestId": {
+                                        "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "occurredAt",
+                                      "outcome",
+                                      "event",
+                                      "action",
+                                      "details"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "action": {
+                                        "const": "openclaw.runtime.tool_attempt.admitted",
+                                        "type": "string"
+                                      },
+                                      "actorId": {
+                                        "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                        "type": "string"
+                                      },
+                                      "details": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "agentRevisionId": {
+                                            "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          },
+                                          "approvalId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "attemptId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "boundary": { "const": "managed_mcp", "type": "string" },
+                                          "invocationId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "runtimeSource": { "enum": ["openclaw", "codex"] },
+                                          "sessionId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "toolName": {
+                                            "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,255}$",
+                                            "type": "string"
+                                          },
+                                          "turnId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "agentRevisionId",
+                                          "runtimeSource",
+                                          "invocationId",
+                                          "toolName",
+                                          "boundary",
+                                          "attemptId"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "event": { "const": "runtime_activity", "type": "string" },
+                                      "id": {
+                                        "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "occurredAt": {
+                                        "format": "date-time",
+                                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                        "type": "string"
+                                      },
+                                      "outcome": {
+                                        "anyOf": [
+                                          { "const": "success", "type": "string" },
+                                          { "const": "denied", "type": "string" },
+                                          { "const": "failure", "type": "string" }
+                                        ]
+                                      },
+                                      "requestId": {
+                                        "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "occurredAt",
+                                      "outcome",
+                                      "event",
+                                      "action",
+                                      "details"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "action": {
+                                        "const": "openclaw.runtime.tool_attempt.completed",
+                                        "type": "string"
+                                      },
+                                      "actorId": {
+                                        "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                        "type": "string"
+                                      },
+                                      "details": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "agentRevisionId": {
+                                            "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          },
+                                          "attemptId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "boundary": { "const": "managed_mcp", "type": "string" },
+                                          "invocationId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "outcome": {
+                                            "anyOf": [
+                                              {
+                                                "enum": [
+                                                  "succeeded",
+                                                  "failed",
+                                                  "cancelled",
+                                                  "unknown"
+                                                ]
+                                              },
+                                              { "const": "blocked", "type": "string" }
+                                            ]
+                                          },
+                                          "runtimeSource": { "enum": ["openclaw", "codex"] },
+                                          "sessionId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          },
+                                          "toolName": {
+                                            "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,255}$",
+                                            "type": "string"
+                                          },
+                                          "turnId": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "agentRevisionId",
+                                          "runtimeSource",
+                                          "invocationId",
+                                          "toolName",
+                                          "boundary",
                                           "attemptId",
                                           "outcome"
                                         ],
@@ -24632,6 +25229,369 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "read_audit", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/audit-events/{auditEventId}/message": {
+      "get": {
+        "description": "Requires a human session with direct read_audit and read_audit_content grants on the requested Agent. Returns a linked turn event from the preceding 24 hours and its saved user message from the active revision. OCC records the disclosure before it returns the text.",
+        "operationId": "getAgentAuditEventMessage",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "agt_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "aud_019e8451-865d-4daf-a30d-b2be921186ce"
+              }
+            },
+            "in": "path",
+            "name": "auditEventId",
+            "required": true,
+            "schema": {
+              "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "event": {
+                          "action": "openclaw.runtime.turn.completed",
+                          "details": {
+                            "agentRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+                            "messageId": "7501adc8-16ab-45d7-8ed8-a63bf342629f",
+                            "outcome": "succeeded",
+                            "runtimeSource": "openclaw",
+                            "sessionId": "123e4567-e89b-42d3-a456-426614174000",
+                            "turnId": "0f8a6dad-40e1-4121-8521-676796fdcf83"
+                          },
+                          "event": "runtime_activity",
+                          "id": "aud_019e8451-865d-4daf-a30d-b2be921186ce",
+                          "occurredAt": "2026-10-01T11:31:00.000000Z",
+                          "outcome": "success"
+                        },
+                        "message": { "role": "user", "text": "Summarize the release notes." }
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "event": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "action": {
+                                  "const": "openclaw.runtime.turn.started",
+                                  "type": "string"
+                                },
+                                "actorId": {
+                                  "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                  "type": "string"
+                                },
+                                "details": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "agentRevisionId": {
+                                      "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    },
+                                    "messageId": {
+                                      "maxLength": 256,
+                                      "minLength": 1,
+                                      "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                      "type": "string"
+                                    },
+                                    "runtimeSource": { "enum": ["openclaw", "codex"] },
+                                    "sessionId": {
+                                      "maxLength": 256,
+                                      "minLength": 1,
+                                      "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                      "type": "string"
+                                    },
+                                    "turnId": {
+                                      "maxLength": 256,
+                                      "minLength": 1,
+                                      "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "agentRevisionId",
+                                    "runtimeSource",
+                                    "sessionId",
+                                    "turnId",
+                                    "messageId"
+                                  ],
+                                  "type": "object"
+                                },
+                                "event": { "const": "runtime_activity", "type": "string" },
+                                "id": {
+                                  "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "occurredAt": {
+                                  "format": "date-time",
+                                  "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                  "type": "string"
+                                },
+                                "outcome": {
+                                  "anyOf": [
+                                    { "const": "success", "type": "string" },
+                                    { "const": "denied", "type": "string" },
+                                    { "const": "failure", "type": "string" }
+                                  ]
+                                },
+                                "requestId": {
+                                  "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "occurredAt",
+                                "outcome",
+                                "event",
+                                "action",
+                                "details"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "action": {
+                                  "const": "openclaw.runtime.turn.completed",
+                                  "type": "string"
+                                },
+                                "actorId": {
+                                  "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                  "type": "string"
+                                },
+                                "details": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "agentRevisionId": {
+                                      "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    },
+                                    "messageId": {
+                                      "maxLength": 256,
+                                      "minLength": 1,
+                                      "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                      "type": "string"
+                                    },
+                                    "outcome": {
+                                      "anyOf": [
+                                        { "enum": ["succeeded", "failed", "cancelled", "unknown"] },
+                                        { "const": "blocked", "type": "string" }
+                                      ]
+                                    },
+                                    "runtimeSource": { "enum": ["openclaw", "codex"] },
+                                    "sessionId": {
+                                      "maxLength": 256,
+                                      "minLength": 1,
+                                      "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                      "type": "string"
+                                    },
+                                    "turnId": {
+                                      "maxLength": 256,
+                                      "minLength": 1,
+                                      "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "agentRevisionId",
+                                    "runtimeSource",
+                                    "sessionId",
+                                    "turnId",
+                                    "messageId",
+                                    "outcome"
+                                  ],
+                                  "type": "object"
+                                },
+                                "event": { "const": "runtime_activity", "type": "string" },
+                                "id": {
+                                  "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "occurredAt": {
+                                  "format": "date-time",
+                                  "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                  "type": "string"
+                                },
+                                "outcome": {
+                                  "anyOf": [
+                                    { "const": "success", "type": "string" },
+                                    { "const": "denied", "type": "string" },
+                                    { "const": "failure", "type": "string" }
+                                  ]
+                                },
+                                "requestId": {
+                                  "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "occurredAt",
+                                "outcome",
+                                "event",
+                                "action",
+                                "details"
+                              ],
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        "message": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "role": { "const": "user", "type": "string" },
+                            "text": { "maxLength": 65536, "type": "string" }
+                          },
+                          "required": ["role", "text"],
+                          "type": "object"
+                        }
+                      },
+                      "required": ["event", "message"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The selected Driver does not support this operation."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "security": [{ "sessionCookie": [] }],
+        "summary": "Read the saved user message linked to an Agent turn",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "read_audit", "resourceKind": "agent", "scope": "requested" },
+          { "action": "read_audit_content", "resourceKind": "agent", "scope": "requested" }
         ]
       }
     },
@@ -25281,7 +26241,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -32543,7 +33503,7 @@
                               "type": "string"
                             },
                             "credentialSources": {
-                              "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                              "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
                               "items": {
                                 "additionalProperties": false,
                                 "properties": {
@@ -35237,7 +36197,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -35974,7 +36934,7 @@
                           "type": "string"
                         },
                         "credentialSources": {
-                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "description": "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -41082,7 +42042,8 @@
                                     { "const": "administer", "type": "string" },
                                     { "const": "read_logs", "type": "string" },
                                     { "const": "manage_policy", "type": "string" },
-                                    { "const": "read_audit", "type": "string" }
+                                    { "const": "read_audit", "type": "string" },
+                                    { "const": "read_audit_content", "type": "string" }
                                   ]
                                 },
                                 "resourceKind": {
@@ -41252,7 +42213,8 @@
                             { "const": "administer", "type": "string" },
                             { "const": "read_logs", "type": "string" },
                             { "const": "manage_policy", "type": "string" },
-                            { "const": "read_audit", "type": "string" }
+                            { "const": "read_audit", "type": "string" },
+                            { "const": "read_audit_content", "type": "string" }
                           ]
                         },
                         "resourceKind": {
@@ -41334,7 +42296,8 @@
                                   { "const": "administer", "type": "string" },
                                   { "const": "read_logs", "type": "string" },
                                   { "const": "manage_policy", "type": "string" },
-                                  { "const": "read_audit", "type": "string" }
+                                  { "const": "read_audit", "type": "string" },
+                                  { "const": "read_audit_content", "type": "string" }
                                 ]
                               },
                               "resourceKind": {
@@ -41666,7 +42629,8 @@
                                   { "const": "administer", "type": "string" },
                                   { "const": "read_logs", "type": "string" },
                                   { "const": "manage_policy", "type": "string" },
-                                  { "const": "read_audit", "type": "string" }
+                                  { "const": "read_audit", "type": "string" },
+                                  { "const": "read_audit_content", "type": "string" }
                                 ]
                               },
                               "resourceKind": {

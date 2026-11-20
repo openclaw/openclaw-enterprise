@@ -9,7 +9,7 @@ import type { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { loadSync } = require("@grpc/proto-loader");
 const schema = new URL(
-  "../../apps/controller/src/drivers/sandbox/proto/otlp-audit-logs.proto",
+  "../../apps/controller/src/http/proto/otlp-audit-logs.proto",
   import.meta.url,
 );
 const { serialize } = loadSync(fileURLToPath(schema), { keepCase: true })[

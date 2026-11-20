@@ -3,10 +3,7 @@
 {{- range $component := list "api" "worker" }}
 {{- $oidcCa := and (eq $component "api") $.Values.auth.oidc $.Values.auth.oidc.enabled $.Values.auth.oidc.caSecretName }}
 {{- $privateRuntimeAudit := and $.Values.controlPlaneAudit.enabled $.Values.gatewayRouting.enabled }}
-{{- $openShellAudit := $.Values.controlPlaneAudit.openShellExporterSecret }}
-{{- if and $openShellAudit (not $privateRuntimeAudit) }}
-{{- fail "OpenShell audit requires controlPlaneAudit.enabled and gatewayRouting.enabled" }}
-{{- end }}
+{{- $openShellAudit := and $privateRuntimeAudit $.Values.controlPlaneAudit.openShellExporterSecret }}
 {{- $gatewayCa := and $.Values.gatewayRouting.enabled (or (not $.Values.gatewayRouting.issuerRef.name) $.Values.gatewayRouting.caSecretName) }}
 ---
 apiVersion: apps/v1

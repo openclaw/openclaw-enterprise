@@ -22,19 +22,14 @@ const model = {
   provider: reference,
 };
 const outcome = Type.Enum(["succeeded", "failed", "cancelled", "unknown"]);
-const tool = {
-  ...turn,
+const toolFields = {
   invocationId: reference,
   toolName: Type.String({ pattern: "^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,255}$" }),
 };
-const approval = { ...tool, approvalId: reference };
-const attempt = { ...tool, attemptId: reference };
-const toolPolicy = Type.Enum([
+const gatewayToolPolicy = Type.Enum([
   "tool_policy",
-  "file_policy",
+  "gateway_tool_audit",
   "exec_policy",
-  "managed_mcp_policy",
-  "codex_policy",
   "codex_guardian",
 ]);
 
@@ -77,45 +72,83 @@ function runtimeEvent<
   };
 }
 
+function turnSchemas<Fields extends TProperties>(fields: Fields) {
+  return [
+    runtimeEvent("openclaw.runtime.turn.started", fields),
+    runtimeEvent("openclaw.runtime.turn.completed", {
+      ...fields,
+      outcome: Type.Union([outcome, Type.Literal("blocked")]),
+    }),
+  ] as const;
+}
+
+export function linkedTurnEntry<Common extends TProperties>(common: Common) {
+  const linked = turnSchemas({ ...turn, messageId: reference });
+  return schemaUnion(linked.map((schema) => schema.pageEntry(common)));
+}
+
+function toolSchemas<Fields extends TProperties, Policy extends TSchema>(
+  tool: Fields,
+  policy: Policy,
+) {
+  const approval = { ...tool, approvalId: reference };
+  const attempt = { ...tool, attemptId: reference };
+  return [
+    runtimeEvent("openclaw.runtime.tool_call.requested", tool),
+    runtimeEvent("openclaw.runtime.policy.decided", {
+      ...tool,
+      policy,
+      decision: Type.Enum(["allow", "deny", "require_approval"]),
+    }),
+    runtimeEvent("openclaw.runtime.approval.requested", approval),
+    runtimeEvent("openclaw.runtime.approval.resolved", {
+      ...approval,
+      decision: Type.Enum([
+        "allow-once",
+        "allow-always",
+        "allow-session",
+        "deny",
+        "expired",
+        "cancelled",
+        "unavailable",
+      ]),
+    }),
+    runtimeEvent("openclaw.runtime.tool_attempt.admitted", {
+      ...attempt,
+      approvalId: Type.Optional(reference),
+    }),
+    runtimeEvent("openclaw.runtime.tool_attempt.completed", {
+      ...attempt,
+      outcome: Type.Union([outcome, Type.Literal("blocked")]),
+    }),
+  ] as const;
+}
+
 const gatewaySchemas = [
   runtimeEvent("openclaw.runtime.session.started", session),
   runtimeEvent("openclaw.runtime.session.ended", session),
-  runtimeEvent("openclaw.runtime.turn.admitted", turn),
-  runtimeEvent("openclaw.runtime.turn.started", turn),
-  runtimeEvent("openclaw.runtime.turn.completed", {
-    ...turn,
-    outcome: Type.Union([outcome, Type.Literal("blocked")]),
-  }),
+  ...turnSchemas(turn),
   runtimeEvent("openclaw.runtime.model_call.started", model),
   runtimeEvent("openclaw.runtime.model_call.completed", { ...model, outcome }),
-  runtimeEvent("openclaw.runtime.tool_call.requested", tool),
-  runtimeEvent("openclaw.runtime.policy.decided", {
-    ...tool,
-    policy: toolPolicy,
-    decision: Type.Enum(["allow", "deny", "require_approval"]),
-    attemptId: Type.Optional(reference),
+  runtimeEvent("openclaw.runtime.model_response.observed", {
+    ...turn,
+    model: reference,
+    provider: reference,
+    responseIdHash: Type.String({ pattern: "^sha256:[0-9a-f]{16}$" }),
   }),
-  runtimeEvent("openclaw.runtime.approval.requested", approval),
-  runtimeEvent("openclaw.runtime.approval.resolved", {
-    ...approval,
-    decision: Type.Enum([
-      "allow-once",
-      "allow-always",
-      "allow-session",
-      "deny",
-      "expired",
-      "cancelled",
-      "unavailable",
-    ]),
-  }),
-  runtimeEvent("openclaw.runtime.tool_attempt.admitted", {
-    ...attempt,
-    approvalId: Type.Optional(reference),
-  }),
-  runtimeEvent("openclaw.runtime.tool_attempt.completed", {
-    ...attempt,
-    outcome: Type.Union([outcome, Type.Literal("blocked")]),
-  }),
+  ...toolSchemas(
+    { ...turn, ...toolFields, boundary: Type.Enum(["gateway_hook", "runtime"]) },
+    gatewayToolPolicy,
+  ),
+  ...toolSchemas(
+    {
+      ...toolFields,
+      boundary: Type.Literal("managed_mcp"),
+      sessionId: Type.Optional(reference),
+      turnId: Type.Optional(reference),
+    },
+    Type.Literal("managed_mcp_policy"),
+  ),
 ];
 
 const network = runtimeEvent(

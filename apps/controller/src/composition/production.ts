@@ -9,6 +9,8 @@ import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.t
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
+import { installTokenServiceDriver } from "./token-service.ts";
+import { installSelectedSandboxDrivers } from "./sandbox-drivers.ts";
 import { validatePersistedNativeIAMState } from "@openclaw-enterprise/iam";
 import {
   createPostgresPool,
@@ -235,12 +237,8 @@ export async function composeProduction(
     controller.selectDriver("secret", secretDriver.id);
     controller.registerDriver(channelDriver);
     controller.selectDriver("channel", channelDriver.id);
-    if (protectedDriver !== undefined) {
-      controller.installDriver(protectedDriver, ["sandbox", "credential_proxy"]);
-    } else if (sandboxDriver !== undefined) {
-      controller.registerDriver(sandboxDriver);
-      controller.selectDriver("sandbox", sandboxDriver.id);
-    }
+    installSelectedSandboxDrivers(controller, config.drivers);
+    await installTokenServiceDriver(controller, config.drivers);
     if (credentialGatewayDriver !== undefined) {
       controller.registerDriver(credentialGatewayDriver);
       controller.selectDriver("credential_gateway", credentialGatewayDriver.id);

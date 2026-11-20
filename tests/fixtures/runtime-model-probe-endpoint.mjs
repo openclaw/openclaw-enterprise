@@ -25,6 +25,7 @@ const echoPattern =
     ? undefined
     : new RegExp(process.env.PROBE_ENDPOINT_ECHO_PATTERN, "g");
 const observing = process.env.PROBE_OBSERVE_NATIVE_PORT !== undefined;
+const workspaceHistory = process.env.PROBE_ENDPOINT_WORKSPACE_HISTORY === "1";
 const publicReadJourney = process.env.PROBE_PUBLIC_READ_JOURNEY === "1";
 const codexAuditFailures = process.env.PROBE_CODEX_AUDIT_FAILURES === "1";
 const skipperFixture =
@@ -134,7 +135,8 @@ function auditFault(transport, model, request, caller) {
 // A minimal Responses API stream: one assistant message saying READY, or the
 // caller's echoed nonce.
 function answerEvents(model, text) {
-  const id = "resp_runtime_probe";
+  const id =
+    codexAuditFailures && text.startsWith("OCE_SMOKE_") ? `resp_${text}` : "resp_runtime_probe";
   const message = {
     type: "message",
     id: "msg_runtime_probe",
@@ -251,93 +253,143 @@ function publicReadEvents(model, request) {
   ];
 }
 
-// The reply must contain a marker seeded in the workspace by the runner. The
-// provider learns it only from the installed read tool's result.
-function fileAuditEvents(model, request, caller, nonce) {
+// The provider learns the marker only from a real workspace read result.
+function fileAuditEvents(model, request, caller) {
   if (!publicReadJourney || caller !== "embedded") {
     return undefined;
   }
-  const initialId = /^OCE_SMOKE_tool-read-([0-9a-f-]{36})$/u.exec(nonce)?.[1];
-  let input;
+  let body;
   try {
-    input = JSON.parse(request)?.input;
+    body = JSON.parse(request);
   } catch {
     return undefined;
   }
+  const { input, tools } = body ?? {};
   if (!Array.isArray(input)) {
     return undefined;
   }
-  // Incremental Responses requests may include tool results and omit the prompt.
-  const resultId = input
-    .find(
-      (item) =>
-        item?.type === "function_call_output" &&
-        /^file-audit-(?:allowed|denied)-[0-9a-f-]{36}$/u.test(item.call_id),
-    )
-    ?.call_id.slice(-36);
-  const id = initialId ?? resultId;
+  const output = input.findLast(
+    (item) =>
+      item.type === "function_call_output" && /^call_audit_read_[a-f0-9-]{36}$/u.test(item.call_id),
+  );
+  if (output) {
+    const marker = JSON.stringify(output.output ?? "").match(/AUDIT_TOOL_[a-f0-9-]{36}/u)?.[0];
+    return answerEvents(model, marker ?? "AUDIT_READ_BLOCKED");
+  }
+  const user = input.findLast((item) => item.role === "user");
+  const id = /OCE_SMOKE_audit-read-([a-f0-9-]{36})/u.exec(JSON.stringify(user?.content ?? ""))?.[1];
   if (!id) {
     return undefined;
   }
-  const allowedCall = `file-audit-allowed-${id}`;
-  const deniedCall = `file-audit-denied-${id}`;
-  const output = (callId) =>
-    input.find((item) => item?.type === "function_call_output" && item.call_id === callId);
-  const allowed = output(allowedCall);
-  const denied = output(deniedCall);
-  if (allowed || denied) {
-    const marker = JSON.stringify(allowed?.output ?? "").match(
-      /AUDIT_TOOL_ALLOWED_[0-9a-f-]{36}/u,
-    )?.[0];
-    const escaped = JSON.stringify(denied?.output ?? "").includes("AUDIT_TOOL_DENIED_");
-    return answerEvents(
-      model,
-      allowed && denied && marker && !escaped ? marker : "FILE_TOOL_PROBE_FAILED",
-    );
+  if (
+    !Array.isArray(tools) ||
+    !tools.some((tool) => tool.type === "function" && tool.name === "read")
+  ) {
+    return answerEvents(model, "AUDIT_READ_TOOL_MISSING");
   }
-  const base = {
-    id: `resp_file_audit_${id}`,
-    object: "response",
-    model,
-    created_at: Math.floor(Date.now() / 1000),
-  };
-  const outputs = [
-    { call_id: allowedCall, path: `audit-probe-${id}.txt` },
-    { call_id: deniedCall, path: `/tmp/audit-probe-${id}.txt` },
-  ].map(({ call_id, path: file }) => ({
+  return fileReadEvents(model, {
+    responseId: `resp_audit_read_${id}`,
+    itemId: `fc_audit_read_${id}`,
+    callId: `call_audit_read_${id}`,
+    path: `audit-probe-${id}.txt`,
+  });
+}
+
+function fileReadEvents(model, { responseId, itemId, callId, path }) {
+  const item = {
+    id: itemId,
     type: "function_call",
-    id: `fc_${call_id}`,
-    call_id,
-    name: "read",
-    arguments: JSON.stringify({ path: file }),
     status: "completed",
-  }));
+    call_id: callId,
+    name: "read",
+    arguments: JSON.stringify({ path }),
+  };
+  const slot = { item_id: item.id, output_index: 0 };
+  const base = { id: responseId, object: "response", model, created_at: 1 };
   return [
     { type: "response.created", response: { ...base, status: "in_progress", output: [] } },
-    ...outputs.flatMap((item, output_index) => [
-      {
-        type: "response.output_item.added",
-        output_index,
-        item: { ...item, status: "in_progress", arguments: "" },
-      },
-      {
-        type: "response.function_call_arguments.delta",
-        item_id: item.id,
-        output_index,
-        delta: item.arguments,
-      },
-      { type: "response.output_item.done", output_index, item },
-    ]),
     {
-      type: "response.completed",
-      response: {
-        ...base,
-        status: "completed",
-        output: outputs,
-        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
-      },
+      type: "response.output_item.added",
+      output_index: 0,
+      item: { ...item, arguments: "", status: "in_progress" },
     },
+    { type: "response.function_call_arguments.delta", ...slot, delta: item.arguments },
+    { type: "response.function_call_arguments.done", ...slot, arguments: item.arguments },
+    { type: "response.output_item.done", output_index: 0, item },
+    { type: "response.completed", response: { ...base, status: "completed", output: [item] } },
   ];
+}
+
+// The replacement gets only a continuation prompt. Return a successful
+// continuation answer only when the incoming request already carries the tool
+// result and prior reply. The provider never asks for a second file read.
+function workspaceHistoryEvents(model, request) {
+  if (!workspaceHistory) {
+    return undefined;
+  }
+  const { input, tools } = JSON.parse(request);
+  if (!Array.isArray(input)) {
+    return undefined;
+  }
+  const userIndex = input.findLastIndex((item) => item.role === "user");
+  const prompt = JSON.stringify(input[userIndex]?.content ?? "");
+  const continuation = prompt.includes("Report the retained workspace result.");
+  const callId = "call_gateway_history_read";
+  const marker = /workspace-history-[a-f0-9]{32}/u;
+  const outputIndex = input.findIndex(
+    (item) => item.type === "function_call_output" && item.call_id === callId,
+  );
+  const output = input[outputIndex];
+  if (
+    !continuation &&
+    !output &&
+    !prompt.includes("Read gateway-history.txt and report its value.")
+  ) {
+    return undefined;
+  }
+  const value = JSON.stringify(output?.output ?? "").match(marker)?.[0];
+  if (continuation) {
+    const callIndex = input.findIndex(
+      (item) => item.type === "function_call" && item.call_id === callId && item.name === "read",
+    );
+    const replyIndex = input.findIndex(
+      (item) =>
+        item.role === "assistant" && JSON.stringify(item.content ?? "").includes(`Read ${value}`),
+    );
+    if (
+      value &&
+      callIndex >= 0 &&
+      callIndex < outputIndex &&
+      outputIndex < replyIndex &&
+      replyIndex < userIndex
+    ) {
+      return answerEvents(model, `Retained ${value}`);
+    }
+    // A fresh session has no function history or leaked workspace value.
+    const hasHistory =
+      input.some((item) => item.type === "function_call" || item.type === "function_call_output") ||
+      marker.test(JSON.stringify(input));
+    return answerEvents(model, hasHistory ? "History incomplete" : "History missing");
+  }
+  if (output) {
+    return answerEvents(model, value ? `Read ${value}` : "Workspace read failed");
+  }
+  if (
+    !tools?.every((tool) => tool.type === "function") ||
+    !tools.some((tool) => tool.name === "read")
+  ) {
+    emit({
+      event: "workspace-history-tools",
+      tools: tools?.map(({ name, type }) => ({ name, type })),
+    });
+    return answerEvents(model, "Ordinary workspace read tool missing");
+  }
+  return fileReadEvents(model, {
+    responseId: "resp_gateway_history",
+    itemId: "fc_gateway_history",
+    callId,
+    path: "gateway-history.txt",
+  });
 }
 
 // Answer one model turn after the configured delay, unless the caller left.
@@ -362,7 +414,8 @@ function turn(transport, model, request, respond, closed, caller) {
     respond(
       skipperFixture?.({ model, request, answerEvents, emit }) ??
         publicReadEvents(model, request) ??
-        fileAuditEvents(model, request, caller, text) ??
+        fileAuditEvents(model, request, caller) ??
+        workspaceHistoryEvents(model, request) ??
         answerEvents(model, text),
     );
     emit({ event: "turn-answered", transport, status: 200, ...evidence });

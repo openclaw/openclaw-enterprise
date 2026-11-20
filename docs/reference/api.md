@@ -90,7 +90,7 @@ the paths.
 | [Connections](#connections) | 15 operations |
 | [Installation](#installation) | 10 operations |
 | [Namespaces](#namespaces) | 7 operations |
-| [Agents](#agents) | 54 operations |
+| [Agents](#agents) | 55 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
@@ -4443,6 +4443,7 @@ Example response
 | [`GET /namespaces/{namespaceId}/agents/{agentId}`](#get-namespacesnamespaceidagentsagentid) | Get an exact Namespace-owned Agent |
 | [`PATCH /namespaces/{namespaceId}/agents/{agentId}`](#patch-namespacesnamespaceidagentsagentid) | Replace an exact Namespace-owned Agent's editable draft |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/audit-events`](#get-namespacesnamespaceidagentsagentidauditevents) | List audit metadata for one Agent |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/audit-events/{auditEventId}/message`](#get-namespacesnamespaceidagentsagentidauditeventsauditeventidmessage) | Read the saved user message linked to an Agent turn |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdraw`](#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw) | Revoke one credential source from the selected Agent revision |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdrawal`](#get-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdrawal) | Get the withdrawal state of a credential source for an Agent |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/deploy`](#post-namespacesnamespaceidagentsagentiddeploy) | Save an Agent revision from the Agent's saved settings |
@@ -4697,7 +4698,7 @@ Create a Namespace-owned Agent
 | --- | --- | --- | --- |
 | `backendId` | `string or null` | No | — |
 | `configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `credentialSources` | `array<object>` | No | max items: 64; unique items: true; Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values. |
+| `credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values. |
 | `credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `executionMode` | `"embedded" or "dedicated"` | No | — |
 | `expectedConfigurationGeneration` | `integer` | No | minimum: 1; maximum: 9007199254740991 |
@@ -4759,7 +4760,7 @@ Example request
 | `data.backendId` | `string or null` | Yes | — |
 | `data.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
-| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values. |
+| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values. |
 | `data.credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
 | `data.executionMode` | `"embedded" or "dedicated"` | Yes | — |
@@ -5989,7 +5990,7 @@ Begin or retry deletion of the requested Agent and its Agent revisions
 | `data.backendId` | `string or null` | Yes | — |
 | `data.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
-| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values. |
+| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values. |
 | `data.credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
 | `data.executionMode` | `"embedded" or "dedicated"` | Yes | — |
@@ -6158,7 +6159,7 @@ Replace an exact Namespace-owned Agent's editable draft
 | --- | --- | --- | --- |
 | `backendId` | `string or null` | No | — |
 | `configurationId` | `string` | No | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `credentialSources` | `array<object>` | No | max items: 64; unique items: true; Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values. |
+| `credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values. |
 | `credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `executionMode` | `"embedded" or "dedicated"` | No | — |
 | `gatewayManagedMode` | `boolean` | No | Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment. |
@@ -6216,7 +6217,7 @@ Example request
 | `data.backendId` | `string or null` | Yes | — |
 | `data.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
-| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values. |
+| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values. |
 | `data.credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
 | `data.executionMode` | `"embedded" or "dedicated"` | Yes | — |
@@ -6285,7 +6286,7 @@ List audit metadata for one Agent
 
 **Operation ID:** `listAgentAuditEvents`
 
-**Permissions:** Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API request, worker, session, turn, and model call records from the preceding 24 hours.
+**Permissions:** Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API request, worker, session, turn, model call, and model response records from the preceding 24 hours.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -6318,7 +6319,7 @@ List audit metadata for one Agent
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
-| `data.events` | `array<object or object or object or object or object or object or object or object or object or object or object or object or object or object or object or object or object or object>` | Yes | max items: 100 |
+| `data.events` | `array<object or object or object or object or object or object or object or object or object or object or object or object or object or object or object or object or object or object or object or object or object or object or object or object>` | Yes | max items: 100 |
 | `data.nextCursor` | `string or null` | Yes | — |
 | `data.projectionVersion` | `3` | Yes | — |
 | `data.window` | `object` | Yes | — |
@@ -6336,6 +6337,7 @@ Example response
         "action": "openclaw.runtime.turn.completed",
         "details": {
           "agentRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+          "messageId": "7501adc8-16ab-45d7-8ed8-a63bf342629f",
           "outcome": "succeeded",
           "runtimeSource": "openclaw",
           "sessionId": "123e4567-e89b-42d3-a456-426614174000",
@@ -6370,6 +6372,84 @@ Example response
     "window": {
       "end": "2026-10-01T12:00:00.000Z",
       "start": "2026-09-30T12:00:00.000Z"
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/audit-events/{auditEventId}/message`
+
+<span id="get-namespacesnamespaceidagentsagentidauditeventsauditeventidmessage"></span>
+
+Read the saved user message linked to an Agent turn
+
+**Operation ID:** `getAgentAuditEventMessage`
+
+**Permissions:** Requires a human session with direct read_audit and read_audit_content grants on the requested Agent. Returns a linked turn event from the preceding 24 hours and its saved user message from the active revision. OCC records the disclosure before it returns the text.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `read_audit` | `agent` | `requested` |
+| `read_audit_content` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `auditEventId` | path | `string` | Yes | pattern: `^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "aud_019e8451-865d-4daf-a30d-b2be921186ce" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.event` | `object or object` | Yes | — |
+| `data.message` | `object` | Yes | — |
+| `data.message.role` | `"user"` | Yes | — |
+| `data.message.text` | `string` | Yes | max length: 65536 |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "event": {
+      "action": "openclaw.runtime.turn.completed",
+      "details": {
+        "agentRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+        "messageId": "7501adc8-16ab-45d7-8ed8-a63bf342629f",
+        "outcome": "succeeded",
+        "runtimeSource": "openclaw",
+        "sessionId": "123e4567-e89b-42d3-a456-426614174000",
+        "turnId": "0f8a6dad-40e1-4121-8521-676796fdcf83"
+      },
+      "event": "runtime_activity",
+      "id": "aud_019e8451-865d-4daf-a30d-b2be921186ce",
+      "occurredAt": "2026-10-01T11:31:00.000000Z",
+      "outcome": "success"
+    },
+    "message": {
+      "role": "user",
+      "text": "Summarize the release notes."
     }
   },
   "meta": {
@@ -6596,7 +6676,7 @@ Example request
 | `data.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.configurationKind` | `"agent"` | Yes | — |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
-| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values. |
+| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values. |
 | `data.credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.gatewayManagedMode` | `boolean` | Yes | Gateway managed mode requested for this Agent version. It does not report Gateway runtime state. |
 | `data.harness` | `object` | Yes | — |
@@ -8869,7 +8949,7 @@ Example request
 | `data.backendId` | `string or null` | Yes | — |
 | `data.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
-| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values. |
+| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values. |
 | `data.credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
 | `data.executionMode` | `"embedded" or "dedicated"` | Yes | — |
@@ -9052,7 +9132,7 @@ Stop one Agent and keep its saved Agent revision and persistent state
 | `data.backendId` | `string or null` | Yes | — |
 | `data.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
-| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values. |
+| `data.credentialSources` | `array<object>` | No | max items: 64; unique items: true; Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values. |
 | `data.credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
 | `data.executionMode` | `"embedded" or "dedicated"` | Yes | — |
@@ -11588,7 +11668,7 @@ List exact Namespace IAM Roles
 | `data[].name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `data[].permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit"` | Yes | — |
+| `data[].permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit" or "read_audit_content"` | Yes | — |
 | `data[].permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -11656,7 +11736,7 @@ Create an immutable Namespace IAM Role
 | --- | --- | --- | --- |
 | `name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit"` | Yes | — |
+| `permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit" or "read_audit_content"` | Yes | — |
 | `permissions[].resourceKind` | `"namespace" or "agent" or "agent_revision" or "configuration" or "credential_source" or "sandbox_policy" or "preset" or "secret" or "service_account"` | Yes | — |
 
 Example request
@@ -11696,7 +11776,7 @@ Example request
 | `data.name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit"` | Yes | — |
+| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit" or "read_audit_content"` | Yes | — |
 | `data.permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -11799,7 +11879,7 @@ Get an exact Namespace IAM Role
 | `data.name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit"` | Yes | — |
+| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit" or "read_audit_content"` | Yes | — |
 | `data.permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |

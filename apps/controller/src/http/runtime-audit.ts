@@ -181,14 +181,23 @@ export function registerGatewayRuntimeAudit(
         if (
           request.headers["x-openclaw-runtime-audit-source"] !== grant.runtimeSource ||
           ("policy" in event &&
-            (event.policy === "codex_policy" || event.policy === "codex_guardian") &&
-            grant.runtimeSource !== "codex")
+            ((event.policy === "codex_guardian" && grant.runtimeSource !== "codex") ||
+              (event.policy === "exec_policy" && grant.runtimeSource !== "openclaw")))
         ) {
           throw failure(
             403,
             "FORBIDDEN",
             "The runtime audit credential does not match the source.",
           );
+        }
+        if (
+          (event.action === "openclaw.runtime.model_response.observed" &&
+            grant.runtimeSource !== "codex") ||
+          ((event.action === "openclaw.runtime.model_call.started" ||
+            event.action === "openclaw.runtime.model_call.completed") &&
+            grant.runtimeSource !== "openclaw")
+        ) {
+          throw failure(403, "FORBIDDEN", "The runtime source cannot report this model event.");
         }
         return auditEvidence(installationId, grant, event);
       });

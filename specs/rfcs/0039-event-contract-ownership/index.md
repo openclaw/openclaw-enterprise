@@ -162,8 +162,11 @@ The [Milestone 3 network proposal](network-audit-producer.md) defines how
 the Sandbox Driver registers the source of network decisions. For tool calls,
 extend the enrolled runtime's reporting role to cover requests, local policy
 decisions, approval requests and resolutions, and attempt admissions and results.
-The executor must wait for durable admission before dispatch. The repository
-and egress services should link their own receipt when they authorize a send.
+Require durable admission wherever the Gateway plugin can stop a call.
+The managed MCP policy can stop the node invocation after review. A runtime
+hook can stop the call at the hook. Label each boundary so a reader can
+distinguish permission to proceed from a reported result. The repository and
+egress services should link their own receipt when they authorize a send.
 Use each service's verified identifiers for correlation.
 
 ## Rationale and alternatives

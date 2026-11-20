@@ -628,12 +628,12 @@ export function registerHelmRollbackCases({ fixture }: { fixture: RecoveryFixtur
   });
 
   test("a staged retry with replaced local values still cannot replace the published attempt", async (t) => {
-    const f = await fixture(t);
+    const f = await fixture(t, { failBeforeHelmIntent: true });
     await runWithInjectedFault(f, "fail-migration");
     const original = await assertHelmIntent(f, 1, 2);
     const preparation = await f.readEvidence("parameters.json");
-    // Simulate loss at the last native read after local values replacement, before
-    // publishing the next intent. Resume must require explicit reconciliation.
+    // Simulate loss on the local record command after local values replacement,
+    // before publishing the next intent. Resume must require explicit reconciliation.
     await runWithInjectedFault(
       f,
       "fail-before-helm-intent",

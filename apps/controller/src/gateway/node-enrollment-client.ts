@@ -1,9 +1,9 @@
 import {
-  GatewayClient,
+  type GatewayClient,
   GatewayClientRequestError,
   GatewayClientRequestTimeoutError,
-  type GatewayClientOptions,
 } from "@openclaw/gateway-client";
+import { privateGatewayUrl, withPrivateGatewayClient } from "./private-client.ts";
 import { recordWorkspaceNodeObservation } from "./workspace-node-observation.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { TransientDependencyError } from "@openclaw-enterprise/occ";
@@ -57,8 +57,6 @@ type GatewayRequest = (
 // One status read per interval while a caller waits for a node to pair.
 export const NODE_SETUP_POLL_MS = 250;
 const GATEWAY_CONNECT_BUDGET_MS = 10_000;
-
-type GatewayHello = Parameters<NonNullable<GatewayClientOptions["onHelloOk"]>>[0];
 
 // The Gateway's route answers these while it converges: 404 until Envoy has the
 // HTTPRoute, 502-504 until it has a ready endpoint for the new Pod.
@@ -292,16 +290,7 @@ async function withGateway<T>(
   operation: (client: GatewayClient, signal: AbortSignal) => Promise<T>,
   waitMs = 0,
 ): Promise<T> {
-  const endpoint = new URL(url);
-  if (
-    endpoint.protocol !== "wss:" ||
-    endpoint.username ||
-    endpoint.password ||
-    endpoint.search ||
-    endpoint.hash
-  ) {
-    throw new Error("Node enrollment requires a private WSS Gateway endpoint.");
-  }
+  privateGatewayUrl(url);
   const apiKey = await readApiKey();
   const budget = AbortSignal.timeout(GATEWAY_CONNECT_BUDGET_MS + waitMs);
   const signal = AbortSignal.any([ownerSignal, budget]);
@@ -321,48 +310,14 @@ async function withGateway<T>(
     }
     return transientGatewayFailure(error) ?? error;
   };
-  let resolveHello!: (hello: GatewayHello) => void;
-  let rejectHello!: (error: unknown) => void;
-  const hello = new Promise<GatewayHello>((resolve, reject) => {
-    resolveHello = resolve;
-    rejectHello = reject;
-  });
-  const abort = () => rejectHello(signal.reason);
-  const client = new GatewayClient({
-    url,
-    clientName: "gateway-client",
-    mode: "backend",
-    role: "operator",
-    deviceIdentity: null,
-    scopes: [],
-    edgeAuthHeaders: { "x-api-key": apiKey },
-    onHelloOk: resolveHello,
-    onConnectError: rejectHello,
-  });
-  signal.addEventListener("abort", abort, { once: true });
   try {
-    try {
-      client.start();
-    } catch (error) {
-      rejectHello(error);
-    }
-    let connected: GatewayHello;
-    try {
-      connected = await hello;
-    } catch (error) {
-      throw failure(error);
-    }
-    if (connected.auth?.role !== "operator" || !connected.auth.scopes?.includes("operator.admin")) {
-      throw new Error("Node enrollment requires the Gateway administrative service identity.");
-    }
-    try {
-      return await operation(client, signal);
-    } catch (error) {
-      throw failure(error);
-    }
-  } finally {
-    signal.removeEventListener("abort", abort);
-    client.stop();
-    await client.stopAndWait({ timeoutMs: 1_000 }).catch(() => undefined);
+    return await withPrivateGatewayClient(url, apiKey, signal, (client, { auth }) => {
+      if (auth?.role !== "operator" || !auth.scopes?.includes("operator.admin")) {
+        throw new Error("Node enrollment requires the Gateway administrative service identity.");
+      }
+      return operation(client, signal);
+    });
+  } catch (error) {
+    throw failure(error);
   }
 }

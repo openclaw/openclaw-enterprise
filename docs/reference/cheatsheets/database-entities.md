@@ -207,9 +207,15 @@ Tracks the Token Service secret reference, the published access token version an
 - `scheduled_version`
 - `next_refresh_at`
 
+### `token_service_instances`
+
+Binds an Installation to its selected TokenService Driver and private-store identity.
+
+- `installation_id`, `id`, `driver_id`, `store_identity`
+
 ### `credential_sources`
 
-Records the owner of each source. A Credential Gateway or Credential Proxy source identifies its admitting Driver. The Token Service owns saved account sources.
+Records each source owner. Gateway and Proxy sources identify their Driver. Internal static registrations identify their TokenService instance and its private receipt; saved accounts retain their existing Token Service owner.
 
 - `id`
 - `namespace_id`
@@ -217,20 +223,22 @@ Records the owner of each source. A Credential Gateway or Credential Proxy sourc
 - `type`
 - `config`
 - `egress` (optional admitted source and versioned resolver references)
-- `owner_capability` (`credential_gateway`, `credential_proxy`, or `token_service` for a saved account)
+- `owner_capability` (`credential_gateway`, `credential_proxy`, or `token_service`)
 - `driver_id` (Gateway and Proxy sources)
+- `token_service_instance_id`, `registration`, `registration_dispatched_at` (internal static registrations)
 - `state`
 - `created_at`
 
 ### `egress_installations`
 
 Binds authenticated supervisor/Sandbox identity and an immutable loaded-enforcement
-instance/configuration fingerprint to the exact admitted revision plan.
+instance/configuration fingerprint to the exact admitted revision plan. Retains retired
+receipts while allowing one current enrollment per sender and Sandbox.
 See [protected inference](../credential-sources/protected-inference.md).
 
 - `sender_id`, `sandbox_id`
 - `namespace_id`, `agent_id`, `revision_id`
-- `installation`
+- `installation`, `retired`
 
 ### `credential_deliveries`
 
@@ -471,8 +479,9 @@ Defines native IAM rules that deny actions on a resource kind or specific resour
 
 Keeps an append-only record of bootstrap, changes to resources, and authorization denials.
 When Control Plane audit is enabled, it also records covered API requests,
-worker activity, and disclosures of Agent audit records. It stores session, turn, and model call records
-from registered Gateways. See the [audit guide](../../guides/topics/audit-log.md).
+worker activity, and disclosures of Agent audit records. It stores the session,
+turn, model call, and model response events that registered Gateways report.
+See the [audit guide](../../guides/topics/audit-log.md).
 
 - `id`
 - `occurred_at`

@@ -426,7 +426,15 @@ test("private Git installer retains its process exit through wrapper cleanup", a
   // Give the owner a clean source identity and an isolated CLI without touching the developer's bin/occ.
   await mkdir(join(checkout, "scripts"), { recursive: true });
   await cp("scripts/ci", join(checkout, "scripts/ci"), { recursive: true });
-  for (const path of ["scripts/lib", "apps", "tests", "go.mod", "compose.yaml", "package.json"]) {
+  for (const path of [
+    "scripts/lib",
+    "scripts/first-agent-model.ts",
+    "apps",
+    "tests",
+    "go.mod",
+    "compose.yaml",
+    "package.json",
+  ]) {
     await symlink(resolve(path), join(checkout, path));
   }
   await mkdir(bin);

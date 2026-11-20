@@ -54,6 +54,7 @@ owns their deployment, workspace resource rendering, and image import.
 | `apps/controller/src/auth/`                               | Authentication integrations.                                                                                 |
 | `apps/controller/src/composition/`                        | Runtime assembly and wiring of selected implementations.                                                     |
 | `apps/controller/src/drivers/`                            | Bundled infrastructure Driver implementations, organized by capability.                                      |
+| `apps/controller/src/drivers/credential-proxy/`           | Native credential delivery Driver and its private OpenShell Provider handling.                               |
 | `apps/controller/src/drivers/plugin/google-workspace/`    | Google Workspace operation loading and request authorization for the shared plugin guard.                    |
 | `apps/controller/src/backends/`                           | Backend implementations.                                                                                     |
 | `apps/controller/src/gateway/`                            | Agent gateway transport and workspace access.                                                                |
@@ -88,6 +89,11 @@ shared resource definitions and the public package exports.
 The container release command starts at `scripts/ci/container-release.ts`.
 Its modules under `scripts/ci/container-release/` own release admission,
 receipt validation, OCI verification, native smoke, and registry publication.
+
+`apps/controller/src/drivers/compute/kubernetes/harness/` owns internal Harness
+runtimes and workspace handling for the single Kubernetes Compute Driver.
+`drivers/sandbox/openshell/managed.ts` owns managed OpenShell reconciliation;
+see the [prototype boundary](reference/drivers/kubernetes-openshell-compute.md).
 
 Within controller composition, `installation-presets.ts` owns Preset file loading
 and bundled-version assembly; `installation-config.ts` owns Driver composition.
@@ -128,7 +134,7 @@ The quickstart’s shared operator-session helpers, Agent onboarding, cluster in
 | `deploy/helm/openclaw-execution/`                        | Execution-cluster access roles and authenticated Harness routing infrastructure.                 |
 | `deploy/helm/openclaw-plugin-request-guard/`             | Shared OpenShell request middleware for managed plugins in an execution cluster.                 |
 | `deploy/runtime/`, `deploy/logging/`, `deploy/examples/` | Runtime packaging, logging configuration, and deployment examples.                               |
-| `deploy/runtime/codex-audit/`                            | Source patch and build script for the Codex App Server that reports model attempts.              |
+| `deploy/runtime/managed-runtime-audit/`                  | OCE Gateway plugin that sends runtime observations to the private audit listener.                |
 | `deploy/presets/`                                        | Installable Agent Preset requests; see [standard Codex](guides/topics/standard-codex-preset.md). |
 | `Dockerfile`, `compose*.yaml`                            | Controller image and local stack definitions or overlays.                                        |
 | `migrations/`, `drizzle.config.ts`                       | Database migrations and Drizzle tooling configuration.                                           |

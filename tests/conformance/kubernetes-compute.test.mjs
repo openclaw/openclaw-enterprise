@@ -833,24 +833,9 @@ test("dedicated Gateway waits for its own audit grant and reuses the winning Sec
       assert.ok(!JSON.stringify(gatewayPod).includes(winningToken));
       assert.ok(!JSON.stringify(harnessPod).includes("runtime-audit"));
       const gatewayContainer = gatewayPod.containers[0];
-      assert.equal(
-        gatewayContainer.env.find(({ name }) => name === "OPENCLAW_RUNTIME_AUDIT_SOURCE")?.value,
-        grant.runtimeSource,
-      );
-      const modelAuditSelector = "OPENCLAW_CODEX_PROVIDER_ATTEMPT_AUDIT";
-      // Only the Gateway paired with this Compute-owned Codex Harness can accept its model receipts.
-      assert.equal(
-        gatewayContainer.env.find(({ name }) => name === modelAuditSelector)?.value,
-        "1",
-      );
-      assert.ok(!harnessPod.containers[0].env.some(({ name }) => name === modelAuditSelector));
-      assert.equal(
-        gatewayContainer.env.find(({ name }) => name === "OPENCLAW_RUNTIME_AUDIT_URL")?.value,
-        target.endpoint,
-      );
-      assert.equal(
-        gatewayContainer.env.find(({ name }) => name === "OPENCLAW_RUNTIME_AUDIT_CA_PATH")?.value,
-        "/etc/openclaw-runtime-audit/ca.pem",
+      assert.deepEqual(
+        gatewayContainer.volumeMounts.find(({ name }) => name === "runtime-audit"),
+        { name: "runtime-audit", mountPath: "/var/run/openclaw-runtime-audit", readOnly: true },
       );
       assert.match(
         gatewayContainer.env.find(({ name }) => name === "NODE_EXTRA_CA_CERTS")?.value,
@@ -860,7 +845,35 @@ test("dedicated Gateway waits for its own audit grant and reuses the winning Sec
         gatewayContainer.volumeMounts.find(({ name }) => name === "runtime-audit-ca"),
         { name: "runtime-audit-ca", mountPath: "/etc/openclaw-runtime-audit", readOnly: true },
       );
-      assert.deepEqual(gateway.read("ConfigMap", `${name}-ca`).data, { "ca.pem": target.caBundle });
+      const destination = gateway.read("ConfigMap", `${name}-ca`);
+      assert.equal(destination.immutable, true);
+      assert.equal(destination.data["ca.pem"], target.caBundle);
+      assert.deepEqual(JSON.parse(destination.data["destination.json"]), {
+        url: target.endpoint,
+        source: grant.runtimeSource,
+      });
+      const plugin = "oce-runtime-audit";
+      const { plugins } = JSON.parse(destination.data["openclaw.json"]);
+      assert.equal(plugins.entries[plugin].enabled, true);
+      assert.ok(plugins.load.paths.includes(`/app/oce-plugins/${plugin}`));
+      // Keep the admitted revision intact and expose the effective configuration read-only.
+      const configVolume = "openclaw-configuration";
+      assert.equal(
+        gatewayContainer.volumeMounts.find(({ name }) => name === configVolume).readOnly,
+        true,
+      );
+      const [snapshot, effective] = gatewayPod.volumes.find(({ name }) => name === configVolume)
+        .projected.sources;
+      const original = gateway.read("ConfigMap", snapshot.configMap.name).data["openclaw.json"];
+      assert.ok(!original.includes(plugin));
+      assert.equal(
+        snapshot.configMap.items.find(({ key }) => key === "openclaw.json").path,
+        "revision/openclaw.json",
+      );
+      assert.equal(effective.configMap.name, destination.metadata.name);
+      assert.deepEqual(effective.configMap.items, [
+        { key: "openclaw.json", path: "openclaw.json" },
+      ]);
       assert.deepEqual(gateway.read("NetworkPolicy", `allow-${name}`).spec, {
         podSelector: {
           matchLabels: {
@@ -6753,7 +6766,18 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
     preparedAuth(driver, kubernetesNamespaceName(tenant.id), false),
   );
 
-  const requirements = driver.harnessRequirementsFromDeployment(workload, "api_key", false);
+  const launch = (selected) =>
+    selected.harnessLaunch({
+      name: "agent-projected-identity",
+      ownership,
+      image: "agent:local",
+      serviceAccountName: "agent-projected-identity",
+      environment: {},
+      loggingLevel: "info",
+      auth: preparedAuth(selected, kubernetesNamespaceName(tenant.id), false),
+      provider: true,
+    });
+  const requirements = launch(driver);
   assert.equal(requirements.loginMode, "api_key");
   // Backend requirements must carry readable identities unchanged into Pod labels and selectors.
   for (const [key, value] of Object.entries({
@@ -6778,76 +6802,8 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
     },
   });
 
-  for (const mutate of [
-    (spec) => {
-      spec.volumes = spec.volumes.filter(({ name }) => name !== "openclaw-service-principal");
-    },
-    (spec) => {
-      spec.volumes.find(
-        ({ name }) => name === "openclaw-service-principal",
-      ).projected.sources[0].serviceAccountToken.audience = "another-audience";
-    },
-    (spec) => {
-      spec.volumes.find(
-        ({ name }) => name === "openclaw-service-principal",
-      ).projected.sources[0].serviceAccountToken.expirationSeconds = 901;
-    },
-    (spec) => {
-      spec.volumes.find(
-        ({ name }) => name === "openclaw-service-principal",
-      ).projected.sources[0].serviceAccountToken.path = "another-token";
-    },
-    (spec) => {
-      spec.containers[0].volumeMounts.find(
-        ({ name }) => name === "openclaw-service-principal",
-      ).readOnly = false;
-    },
-    (spec) => {
-      spec.containers[0].volumeMounts.find(
-        ({ name }) => name === "openclaw-service-principal",
-      ).mountPath = "/another-token-path";
-    },
-  ]) {
-    // A provider must receive exactly the same audience, expiry, token path, and readonly mount.
-    const altered = structuredClone(workload);
-    mutate(altered.spec.template.spec);
-    assert.throws(
-      () => driver.harnessRequirementsFromDeployment(altered, "api_key", false),
-      /ServicePrincipal/i,
-    );
-  }
-
   const withoutProjection = createKubernetesComputeDriver(options({ runtime }));
-  const unprojected = withoutProjection.deployment(
-    "agent-projected-identity",
-    ownership,
-    { name: kubernetesNamespaceName(tenant.id), plane: "execution" },
-    { runtime: "agent:local", workspaceSetup: withoutProjection.options.images.gateway },
-    "agent-projected-identity",
-    "agent",
-    {},
-    "info",
-    undefined,
-    undefined,
-    undefined,
-    preparedAuth(withoutProjection, kubernetesNamespaceName(tenant.id), false),
-  );
-  assert.equal(
-    withoutProjection.harnessRequirementsFromDeployment(unprojected, "api_key", false)
-      .workloadIdentity,
-    undefined,
-  );
-
-  const unexpectedProjection = structuredClone(unprojected);
-  unexpectedProjection.spec.template.spec.volumes.push({
-    name: "openclaw-service-principal",
-    projected: { sources: [] },
-  });
-  assert.throws(
-    () =>
-      withoutProjection.harnessRequirementsFromDeployment(unexpectedProjection, "api_key", false),
-    /credentials disabled must not project/i,
-  );
+  assert.equal(launch(withoutProjection).workloadIdentity, undefined);
 });
 
 // The pinned OpenShell gateway's allowed_pod_labels check, ported from NVIDIA/OpenShell
@@ -6880,28 +6836,25 @@ test("the OpenShell gateway allowlist admits every label Compute puts on a Harne
       },
     }),
   );
-  // Every optional ownership field is set, so the Pod carries the widest label set Compute emits.
-  const workload = driver.deployment(
-    "agent-label-admission",
-    {
+  // Every optional ownership field is set, so the Harness carries the widest label set.
+  const agentId = "agt_00000000-0000-4000-8000-000000000002";
+  const launch = driver.harnessLaunch({
+    name: "agent-label-admission",
+    ownership: {
       namespaceId: tenant.id,
-      agentId: "agt_00000000-0000-4000-8000-000000000002",
+      agentId,
       revisionId: "rev_00000000-0000-4000-8000-000000000002",
       serviceAccountId: "sa_00000000-0000-4000-8000-000000000002",
       servicePrincipalId: "service-agent-agt_00000000-0000-4000-8000-000000000002",
     },
-    { name: kubernetesNamespaceName(tenant.id), plane: "execution" },
-    { runtime: "agent:local", workspaceSetup: driver.options.images.gateway },
-    "agent-label-admission",
-    "agent",
-    {},
-    "info",
-    undefined,
-    undefined,
-    undefined,
-    preparedAuth(driver, kubernetesNamespaceName(tenant.id), false),
-  );
-  const requirements = driver.harnessRequirementsFromDeployment(workload, "api_key");
+    image: "agent:local",
+    serviceAccountName: "agent-label-admission",
+    environment: {},
+    loggingLevel: "info",
+    auth: preparedAuth(driver, kubernetesNamespaceName(tenant.id), false),
+    provider: true,
+  });
+  const requirements = driver.sandboxRequirements(launch, agentId);
   // The OpenShell Sandbox Driver forwards these labels as CreateSandbox template.labels. A key
   // the gateway does not admit fails every create, as app.kubernetes.io/managed-by once did.
   const refused = Object.keys(requirements.labels).filter(
@@ -7016,21 +6969,6 @@ test("provider Harness requires its assigned network profile before readiness an
     await assert.rejects(
       fixture.driver.activateRevision(fixture.revision, authContext(fixture.revision)),
       /invalid or incomplete provider Harness Pod list/,
-    );
-  }
-
-  // An unclassified template never yields provider requirements.
-  for (const profile of [undefined, "", "unknown-profile"]) {
-    const unapproved = structuredClone(fixture.deployment);
-    const labels = unapproved.spec.template.metadata.labels;
-    if (profile === undefined) {
-      delete labels["openclaw.dev/network-profile"];
-    } else {
-      labels["openclaw.dev/network-profile"] = profile;
-    }
-    assert.throws(
-      () => fixture.driver.harnessRequirementsFromDeployment(unapproved, "api_key", false),
-      /Dedicated Harness requires the ordinary network profile/,
     );
   }
 });
@@ -8146,26 +8084,6 @@ for (const embedded of [true, false]) {
       );
       assert.equal(containerProgram(gatewayPod.containers[0]).includes(setup.id), false);
     }
-    if (!embedded) {
-      const requirements = driver.harnessRequirementsFromDeployment(
-        harness,
-        "api_key",
-        false,
-        [],
-        [],
-        setup,
-      );
-      assert.deepEqual(requirements.workspaceSetup, {
-        id: setup.id,
-        secretKeyRef: { name: secret.metadata.name, key: "setup.json" },
-      });
-      assert.equal(JSON.stringify(requirements).includes(setup.files["AGENTS.md"]), false);
-      assert.throws(
-        () => driver.harnessRequirementsFromDeployment(harness, "api_key", false),
-        /requires its exact private setup delivery/,
-        "an initializing workload cannot silently lose its setup identity at the Sandbox boundary",
-      );
-    }
     const initializer = pod.initContainers.find(({ name }) => name === "initialize-workspace");
     assert.equal(initializer.image, driver.options.images.gateway);
     assert.deepEqual(initializer.resources, driver.options.resources.gateway);
@@ -8544,11 +8462,21 @@ test("SandboxDriver Harness Pods get transport ingress and only workspace-node e
   const execution = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
   const control = { name: kubernetesNamespaceName(tenant.id), plane: "control" };
   const ordinaryAgent = profileNetworkWorkload(driver, revision, "agent");
-  const { labels: harness } = driver.harnessRequirementsFromDeployment(
-    ordinaryAgent,
-    "api_key",
-    false,
-  );
+  const { labels: harness } = driver.harnessLaunch({
+    name: ordinaryAgent.metadata.name,
+    ownership: {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      revisionId: revision.id,
+      servicePrincipalId: revision.servicePrincipalId,
+    },
+    image: driver.options.images.agent,
+    serviceAccountName: ordinaryAgent.spec.template.spec.serviceAccountName,
+    environment: {},
+    loggingLevel: "info",
+    auth: preparedAuth(driver, execution.name, false),
+    provider: true,
+  });
   assert.equal(harness[ORDINARY_PROFILE_LABEL], "provider-fenced-v1");
   const gatewayLabels = profileNetworkWorkload(driver, revision, "gateway").spec.template.metadata
     .labels;

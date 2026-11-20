@@ -11,6 +11,11 @@ network policy. Record each supported decision as
 
 ## Enroll the Sandbox
 
+Use the `legacy` Sandbox integration, which creates one Sandbox per Agent
+revision. With the `service` integration, the Sandbox ID survives a revision
+change. Its delayed exports need a workload identifier before OCC can
+attribute them to a revision.
+
 The Installation administrator enables Control Plane audit and configures the
 OpenShell security event exporter. The OpenShell Sandbox Driver obtains the
 provider's Sandbox ID when it creates or verifies a Sandbox for an Agent
@@ -44,8 +49,7 @@ with its exact grant and disclosure check.
 
 OpenShell exports observations after enforcement. Acknowledgement follows the
 PostgreSQL commit. Identical retries return one record. A source outage or a
-full exporter queue can cause loss. The tool executor still needs a durable
-admission record before dispatch.
+full exporter queue can cause loss.
 
 ## Verification
 

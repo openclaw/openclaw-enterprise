@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: "2026-11-19 18:56"
-last_updated_session: "01a1f528-3827-7cb0-9d72-19b91cbb6f69"
+updated: "2026-11-19 23:19"
+last_updated_session: "authoring-run/b428bcb4-c4a3-4e68-b09d-cb10d3b8fc60"
 ---
 
 # CI resource preparation
@@ -34,7 +34,7 @@ Pagefind succeeds; Baseline and browser part 1 only restore it. Keys include OS,
 architecture, Node.js, pnpm and lockfile hash; prefix matches can cross lockfiles.
 Frozen installation fetches missing packages.
 
-First Agent Smoke and `run-ci-lane` restore yq and k3d outside `PATH`.
+First Agent Smoke and `run-ci-lane` restore yq, k3d and kubectl outside `PATH`.
 `scripts/ci/setup-tools.sh` selects platform checksums;
 `scripts/ci/download-pinned.sh` verifies bytes in private staging before atomic
 0755 publication. Missing or corrupt entries trigger pinned downloads; cache
@@ -51,12 +51,13 @@ each APT command allows 120 plus 10 seconds, three acquisition retries and
 installation. APT output and failure status are preserved.
 The final probe must pass.
 
-`scripts/ci/image-pull.ts:pullImage` logs failed attempts, elapsed time, timeout
-status and up to eight known Docker layer states with hexadecimal IDs. It omits
-unmatched and partial lines. First Agent Smoke forwards both streams. Diagnostics
-are best effort; Docker's non-terminal output can omit progress. The summary
-reports missing matches. Diagnostics do not change retries, timeouts or digest
-checks, or establish registry health or stall causes.
+`scripts/ci/image-pull.ts:pullImage` logs each failed attempt's time, timeout
+status and up to eight layer states. After a
+`docker.io/<path>[:tag]@sha256:<digest>` pull times out, it pulls that digest
+once from `mirror.gcr.io`, then retries the original. A failed seed changes
+neither the error nor the retries; a stalled one costs up to one attempt
+timeout. `ensureK3dCluster` pulls the K3s node image this way before
+`k3d cluster create`.
 
 The PR advisory OpenShell job uses Ubuntu 24.04 for Landlock and selects packaged Google Chrome through `OCC_TEST_BROWSER_EXECUTABLE`. The OpenShell manifest lists this optional input so test children receive it. Before image builds, `scripts/ci/setup-tools.sh:install_browser_dependencies` checks a headless sandboxed renderer and logs its version; errors fail setup. The browser inherits only `PATH`, with private `HOME` and `TMPDIR`. Ubuntu’s existing AppArmor profile permits its user namespaces. Without an override, Playwright uses its default headless shell.
 
@@ -260,14 +261,14 @@ PSA exemption. The full lane checks filesystem, privilege, and binary-scoped Lay
 network policy enforcement by the supervisor. The Harness and supervisor receive
 neither `SYS_PTRACE` nor `DAC_READ_SEARCH`.
 
-Logging preparation starts an owned OpenTelemetry Collector and passes JSONL
-evidence to selected tests. The [setup-test-docker action](../../../.github/actions/setup-test-docker/action.yml)
-replaces the runner's daemon with Docker 29.9.2 for Collector and Docker Model
-Runtime jobs. This version supports `fluentd-write-timeout`. The action uses the
-pinned official Docker setup action and connects the CLI, Compose, and Driver to
-its socket at `/var/run/docker.sock`. Other jobs keep the runner daemon.
-See [Full Integration delivery status](../../../specs/plans/19-github-actions-test-coverage/delivery-status.md#delivery-status)
-for hosted proof and remaining coverage.
+On terminal failure, Logging Collector’s `scripts/ci/prepare.ts:prepareLane`
+stops queued pulls, drains active acquisitions and fails without exporting test inputs.
+`prepareLaneLogging` starts an owned Collector for JSONL evidence in other lanes.
+
+[Docker setup](../../../.github/actions/setup-test-docker/action.yml) connects the
+CLI, Compose and Driver to Docker 29.9.2 at `/var/run/docker.sock` for
+`fluentd-write-timeout` in Collector and Docker Model Runtime jobs.
+Others keep runner defaults. See [hosted coverage](../../../specs/plans/19-github-actions-test-coverage/delivery-status.md#delivery-status).
 
 The OpenShell test owns management port-forwards throughout the test. Teardown stops the worker, drains forwards, then attempts app, database, namespace and directory cleanup even after an earlier failure. Forward shutdown allows two seconds after `SIGTERM`, then sends `SIGKILL` if necessary and waits two more seconds. Cleanup errors fail the test.
 
@@ -283,6 +284,8 @@ See [lane verification](../../testing/ci/run-lanes.md).
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 23:19: Stop queued logging pulls after failure. (authoring-run/b428bcb4-c4a3-4e68-b09d-cb10d3b8fc60 - d271eef41c4169a072750dca326fd4a00d19da00)
 
 - 2026-11-19 18:56: Restore stock-Node image build budgets after removing Node compilation. (01a1f528-3827-7cb0-9d72-19b91cbb6f69 - 32662b9d2)
 

@@ -42,6 +42,7 @@ import {
   CONTROLLER_WORK_AUDIT_ACTIONS,
   connectionValuesChanged,
   isOAuthScopeToken,
+  isSourceProviderPresetId,
   normalizeConnectionDestinations,
   validateConnectionTemplateAuthorization,
   ConnectionTemplateValidationError,
@@ -60,6 +61,7 @@ import {
   codexProxiesRepositoryBroker,
   validPluginDriverIdentity,
   codexRepositoryBrokerNetworkProxy,
+  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
 } from "@openclaw-enterprise/contracts";
 import { EgressSendReceipts } from "./egress-send-receipts.ts";
 import type {
@@ -189,6 +191,11 @@ import type {
   CredentialRefreshStatus,
   CredentialSource,
   CredentialSourceReference,
+  TokenServiceDriver,
+  TokenServiceRegistration,
+  SourceRegistrationInput,
+  SourceUpdate,
+  SourceProviderPresetId,
   CredentialSourceMetadata,
   CredentialSourceSnapshot,
   CredentialSourceStatus,
@@ -371,6 +378,7 @@ import {
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
   ScopeViolationError,
+  TokenServiceRegistrationRefusedError,
   SecretBindingDriverError,
   ServiceAccountBackendBindingError,
   ServiceAccountDriverNotConfiguredError,
@@ -415,6 +423,7 @@ import {
   validateServiceAccountBackendBinding,
 } from "./backends.ts";
 import type { StoredOAuthClient } from "./ports/oauth-client.ts";
+import type { TokenServiceInstance } from "./ports/token-service.ts";
 import type { AgentAuditSelection, AgentAuditState } from "./ports/agent-audit.ts";
 import {
   InMemoryPlatformState,
@@ -567,6 +576,8 @@ export {
   SandboxWorkspaceSetupRefusedError,
   RepositorySessionWithdrawnError,
   ScopeViolationError,
+  TokenServiceSourceInputError,
+  TokenServiceRegistrationRefusedError,
   SecretBindingDriverError,
   ServiceAccountBackendBindingError,
   ServiceAccountCredentialSecretExistsError,
@@ -1116,6 +1127,14 @@ export interface CreateCredentialSourceInput {
   readonly secrets?: Readonly<Record<string, SecretReference>>;
 }
 
+export type UpdateManagedCredentialSourceInput =
+  | (SourceUpdate & { readonly providerPreset?: SourceProviderPresetId | null })
+  | {
+      readonly providerPreset: SourceProviderPresetId | null;
+      readonly secret?: never;
+      readonly lifecycleConfig?: never;
+    };
+
 export interface AgentCredentialSourceInput {
   readonly namespaceId: string;
   readonly agentId: string;
@@ -1282,10 +1301,54 @@ const BUNDLED_KUBERNETES_COMPUTE: ReadonlySet<string> = new Set([
 ]);
 /** Bounds each synchronous Credential Gateway call made while serving an API request. */
 const CREDENTIAL_GATEWAY_TIMEOUT_MS = 30_000;
+function credentialSourceRef(source: Readonly<CredentialSource>): CredentialSourceReference {
+  return { kind: "credential_source", id: source.id, namespaceId: source.namespaceId };
+}
+
+function isManagedTokenServiceSource(
+  source: Readonly<CredentialSource> | undefined,
+): source is Readonly<
+  CredentialSource & { ownerCapability: "token_service"; tokenServiceInstanceId: string }
+> {
+  return (
+    source?.ownerCapability === "token_service" && typeof source.tokenServiceInstanceId === "string"
+  );
+}
+
+function assertManagedSourceLifecycleSettings(settings: Readonly<Record<string, string>>): void {
+  if (Object.hasOwn(settings, SOURCE_PROVIDER_PRESET_CONFIG_KEY)) {
+    throw new ScopeViolationError("Provider preset approval is not a lifecycle setting.");
+  }
+}
+
+function assertSourceProviderPreset(value: unknown): asserts value is SourceProviderPresetId {
+  if (!isSourceProviderPresetId(value)) {
+    throw new ScopeViolationError("Choose an approved source provider preset.");
+  }
+}
+
+function managedSourceConfig(
+  source: Readonly<CredentialSource>,
+  input: UpdateManagedCredentialSourceInput,
+): Readonly<Record<string, string>> {
+  const config = { ...(input.lifecycleConfig?.settings ?? source.config) };
+  const approved = source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY];
+  if (input.lifecycleConfig !== undefined && approved !== undefined) {
+    config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] = approved;
+  }
+  if (input.providerPreset === null) {
+    delete config[SOURCE_PROVIDER_PRESET_CONFIG_KEY];
+  } else if (input.providerPreset !== undefined) {
+    config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] = input.providerPreset;
+  }
+  return config;
+}
+
 const CONNECTION_OPERATION_TIMEOUT_MS = 30_000;
 const CONNECTION_SESSION_TTL_MS = 10 * 60 * 1000;
 /** Only a claimed server-side consent attempt may operate on its still-pending source. */
 const PENDING_CONNECTION: unique symbol = Symbol("pending-connection");
+const MANAGED_SOURCE: unique symbol = Symbol("managed-source");
 const CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES =
   "Credential source Secrets cannot cross Namespaces.";
 // Bounds the Sandbox Driver's Harness record read that runs beside Compute diagnostics.
@@ -2304,6 +2367,7 @@ export class OpenClawController {
   private readonly credentialProxyCapacity: CredentialProxyCapacity;
   private readonly registry = new Map<string, RegisteredDriver>();
   private readonly pluginSourceReader: ControllerOptions["pluginSourceReader"];
+  private tokenServiceInstance: Readonly<TokenServiceInstance> | undefined;
   private readonly preparedTokens: TokenService | undefined;
   private readonly selections = new Map<DriverCapability, RegisteredDriver>();
   private readonly namespaceLifecycleBindings: readonly NamespaceLifecycleBinding[];
@@ -2554,6 +2618,17 @@ export class OpenClawController {
   }
 
   async validateBackendConfiguration(): Promise<void> {
+    const delivery = this.selections.get("credential_proxy_delivery");
+    if (
+      delivery !== undefined &&
+      (!delivery.owner ||
+        delivery.owner !== this.selections.get("sandbox")?.owner ||
+        delivery.owner.require("credential_proxy_delivery") !== delivery.driver)
+    ) {
+      throw new DriverSelectionError(
+        "Credential delivery and Sandbox must come from the same registered Driver.",
+      );
+    }
     const selected = Object.fromEntries(
       [...this.selections.entries()].map(([capability, selection]) => [
         capability,
@@ -3524,13 +3599,17 @@ export class OpenClawController {
     });
   }
 
-  async listAgentAuditEvents(
+  private async withAgentAuditAuthority<T>(
     principalId: string,
     namespaceId: string,
     agentId: string,
-    selection: AgentAuditSelection,
     holdSession: AuthorityFence,
-    disclosure: (count: number, decision: DeployAgentAuthorization) => AuditEvent,
+    access: "metadata" | "message",
+    read: (
+      state: AgentAuditState<PlatformUnitOfWork>,
+      unit: PlatformUnitOfWork,
+      decision: DeployAgentAuthorization,
+    ) => Promise<{ result: T; disclosure?: AuditEvent }>,
   ) {
     const state = this.agentAuditState;
     const driver = this.authorizationAuthority(principalId);
@@ -3545,27 +3624,94 @@ export class OpenClawController {
       );
     }
     const target = { kind: "agent", id: agentId, namespaceId } as const;
+    const check = async () => {
+      const metadata = await this.authorize(principalId, "read_audit", target, driver, authorize);
+      if (access === "message") {
+        return this.authorize(principalId, "read_audit_content", target, driver, authorize);
+      }
+      return metadata;
+    };
     return state.transact(this.installation.id, async (unit) => {
       await holdSession(unit);
       // An unauthorized caller cannot lock Agent or Namespace records. Recheck after
       // taking the locks so no policy change can commit between approval and disclosure.
-      await this.authorize(principalId, "read_audit", target, driver, authorize);
+      await check();
       if (!(await state.holdResource(unit, this.installation.id, namespaceId, agentId))) {
         throw new ScopeViolationError(
           "The active Agent does not belong to the exact ready Namespace.",
         );
       }
-      const decision = await this.authorize(principalId, "read_audit", target, driver, authorize);
-      const entries = await state.list(unit, namespaceId, agentId, selection);
-      const events = entries.slice(0, selection.limit);
-      try {
-        await unit.audit.append(disclosure(events.length, decision));
-      } catch {
-        throw new AgentAuditDisclosureUnavailableError();
+      const { result, disclosure } = await read(state, unit, await check());
+      if (disclosure !== undefined) {
+        try {
+          await unit.audit.append(disclosure);
+        } catch {
+          throw new AgentAuditDisclosureUnavailableError();
+        }
       }
       await holdSession(unit);
-      return { events, hasNextPage: entries.length > selection.limit };
+      return result;
     });
+  }
+
+  async listAgentAuditEvents(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    selection: AgentAuditSelection,
+    holdSession: AuthorityFence,
+    disclosure: (count: number, decision: DeployAgentAuthorization) => AuditEvent,
+  ) {
+    return this.withAgentAuditAuthority(
+      principalId,
+      namespaceId,
+      agentId,
+      holdSession,
+      "metadata",
+      async (state, unit, decision) => {
+        const entries = await state.list(unit, namespaceId, agentId, selection);
+        const events = entries.slice(0, selection.limit);
+        return {
+          result: { events, hasNextPage: entries.length > selection.limit },
+          disclosure: disclosure(events.length, decision),
+        };
+      },
+    );
+  }
+
+  async selectAgentAuditMessage(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    auditEventId: string,
+    holdSession: AuthorityFence,
+    disclosure?: (decision: DeployAgentAuthorization) => AuditEvent,
+  ) {
+    return this.withAgentAuditAuthority(
+      principalId,
+      namespaceId,
+      agentId,
+      holdSession,
+      "message",
+      async (state, unit, decision) => {
+        const event = await state.findLinkedTurn(unit, namespaceId, agentId, auditEventId);
+        if (event === undefined) {
+          throw new ScopeViolationError("The Agent has no current message link for this event.");
+        }
+        const revision = await unit.revisions.findRevision(
+          namespaceId,
+          agentId,
+          event.details.agentRevisionId,
+        );
+        if (revision === undefined) {
+          throw new ScopeViolationError("The linked revision is unavailable.");
+        }
+        return {
+          result: { event, revision },
+          ...(disclosure === undefined ? {} : { disclosure: disclosure(decision) }),
+        };
+      },
+    );
   }
 
   async getAgentRuntimeImages(principalId: string, namespaceId: string, agentId: string) {
@@ -8541,6 +8687,459 @@ export class OpenClawController {
     return { plan, assertProvidersCurrent };
   }
 
+  /** Bind the configured adapter to the actual durable credential store before use. */
+  async activateTokenServiceInstance(driverId: string, storeIdentity: string): Promise<string> {
+    if (!isNonEmptyString(driverId) || !isNonEmptyString(storeIdentity)) {
+      throw new DriverSelectionError("The TokenService store identity is unavailable.");
+    }
+    const selected = await this.mutate((state) =>
+      state.installations.selectTokenServiceInstance({
+        id: crypto.randomUUID(),
+        driverId,
+        storeIdentity,
+      }),
+    );
+    this.tokenServiceInstance = selected;
+    return selected.id;
+  }
+
+  currentTokenServiceInstanceId(): string {
+    if (!this.tokenServiceInstance) {
+      throw new DependencyUnavailableError("The selected TokenService store is unavailable.");
+    }
+    return this.tokenServiceInstance.id;
+  }
+
+  private ownedTokenServiceDriver(instanceId?: string): TokenServiceDriver {
+    let owner: TokenServiceDriver;
+    try {
+      owner = this.selectedDriver("token_service");
+    } catch {
+      throw new DependencyUnavailableError("The selected TokenService Driver is unavailable.");
+    }
+    const instance = this.tokenServiceInstance;
+    if (
+      !instance ||
+      owner.id !== instance.driverId ||
+      (instanceId !== undefined && instance.id !== instanceId)
+    ) {
+      throw new DependencyUnavailableError(
+        "The selected TokenService instance does not own this registration.",
+      );
+    }
+    return owner;
+  }
+
+  async createManagedCredentialSource(
+    principalId: string,
+    namespaceId: string,
+    input: Omit<SourceRegistrationInput, "sourceRef" | "tokenServiceInstanceId"> & {
+      readonly name: string;
+      readonly providerPreset?: SourceProviderPresetId;
+    },
+    audit: (resource: CredentialSourceReference, phase?: "registration_started") => AuditEvent,
+  ): Promise<Readonly<CredentialSourceMetadata>> {
+    this.requireIndependentMutation("Credential source creation");
+    this.namespaceIdentity(namespaceId);
+    let reservation:
+      | {
+          readonly owner: TokenServiceDriver;
+          readonly ref: CredentialSourceReference;
+          readonly instanceId: string;
+        }
+      | undefined;
+    try {
+      await this.mutate(async (state) => {
+        await this.holdAuthority(state);
+        const target = { kind: "credential_source" as const, id: namespaceId, namespaceId };
+        await this.authorize(principalId, "create", target);
+        const namespace = await this.lockNamespace(state, namespaceId);
+        await this.authorize(principalId, "create", target);
+        if (!isName(input.name)) {
+          throw new ScopeViolationError("The credential source name is invalid.");
+        }
+        if (namespace.status !== "ready") {
+          throw new NamespaceNotReadyError();
+        }
+        assertManagedSourceLifecycleSettings(input.lifecycleConfig.settings);
+        if (input.providerPreset !== undefined) {
+          assertSourceProviderPreset(input.providerPreset);
+        }
+        const owner = this.ownedTokenServiceDriver();
+        const instanceId = this.currentTokenServiceInstanceId();
+        const source = await state.credentialSources.createCredentialSource({
+          id: this.nextIdentifier("credential_source"),
+          namespaceId,
+          name: input.name,
+          type: input.lifecycleConfig.type,
+          ownerCapability: "token_service",
+          tokenServiceInstanceId: instanceId,
+          state: "registering",
+          config:
+            input.providerPreset === undefined
+              ? {}
+              : { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: input.providerPreset },
+          secrets: {},
+          createdAt: this.timestamp(),
+        });
+        const ref = credentialSourceRef(source);
+        await this.bindCreator(state, principalId, ref);
+        // Custody can outlive an uncertain owner response, so commit attributable intent
+        // with the source identity and creator binding before the owner can receive material.
+        await state.audit.append(audit(ref, "registration_started"));
+        reservation = { owner, ref, instanceId };
+      });
+    } catch (error) {
+      const pending = reservation;
+      if (!(error instanceof PostgresCommitOutcomeUnknownError) || pending === undefined) {
+        throw error;
+      }
+      try {
+        await this.mutate(async (state) => {
+          await this.lockNamespace(state, namespaceId);
+          const source = await state.credentialSources.lockCredentialSource(
+            namespaceId,
+            pending.ref.id,
+          );
+          if (source === undefined) {
+            return;
+          }
+          if (
+            !isManagedTokenServiceSource(source) ||
+            source.tokenServiceInstanceId !== pending.instanceId ||
+            source.state !== "registering" ||
+            source.registration !== undefined ||
+            source.registrationDispatchedAt !== undefined
+          ) {
+            throw new ResourceStateConflictError("The reservation changed before recovery.");
+          }
+          await state.credentialSources.deleteCredentialSource(namespaceId, source.id);
+        });
+      } catch {
+        throw new DependencyUnavailableError(
+          `The TokenService reservation ${pending.ref.id} could not be reconciled. Inspect that registration before retrying.`,
+        );
+      }
+      throw error;
+    }
+    if (reservation === undefined) {
+      throw new DependencyUnavailableError("The TokenService reservation is unavailable.");
+    }
+    const { owner, ref, instanceId } = reservation;
+
+    let registration: TokenServiceRegistration | undefined;
+    let registrationStarted = false;
+    try {
+      // Commit the dispatch claim before any external write. If this process stops during
+      // the owner call, a different API process must still ask the owner to confirm removal.
+      const claimed = await this.mutate((state) =>
+        state.credentialSources.setCredentialSourceRegistrationDispatch(
+          namespaceId,
+          ref.id,
+          this.timestamp(),
+        ),
+      );
+      if (!claimed) {
+        throw new ResourceStateConflictError("The credential source changed before registration.");
+      }
+      return await this.mutate(async (state) => {
+        await this.holdAuthority(state);
+        const namespace = await this.lockNamespace(state, namespaceId);
+        if (namespace.status !== "ready") {
+          throw new NamespaceNotReadyError();
+        }
+        const pending = await state.credentialSources.lockCredentialSource(namespaceId, ref.id);
+        if (
+          pending?.state !== "registering" ||
+          pending.ownerCapability !== "token_service" ||
+          pending.tokenServiceInstanceId !== instanceId
+        ) {
+          throw new ResourceStateConflictError(
+            "The credential source changed before registration.",
+          );
+        }
+        await this.authorize(principalId, "create", {
+          kind: "credential_source",
+          id: namespaceId,
+          namespaceId,
+        });
+        this.ownedTokenServiceDriver(instanceId);
+        // Leave both the owner call and a possibly late dependency write inside the
+        // durable deletion fence. IAM or transaction acquisition may have stalled
+        // since the claim committed; such a claim must not start a new owner write.
+        const dispatchWindowEndsAt =
+          Date.parse(pending.registrationDispatchedAt ?? "") +
+          CREDENTIAL_REGISTRATION_FENCE_MS -
+          2 * CONNECTION_OPERATION_TIMEOUT_MS;
+        if (
+          !Number.isFinite(dispatchWindowEndsAt) ||
+          this.clock().getTime() > dispatchWindowEndsAt
+        ) {
+          throw new ResourceStateConflictError(
+            "The credential source registration dispatch expired before the owner call.",
+          );
+        }
+        registrationStarted = true;
+        registration = await this.driverOperation(
+          () =>
+            owner.registerSource(
+              {
+                sourceRef: ref,
+                tokenServiceInstanceId: instanceId,
+                secret: input.secret,
+                lifecycleConfig: input.lifecycleConfig,
+              },
+              AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
+            ),
+          "TokenService",
+        );
+        this.ownedTokenServiceDriver(instanceId);
+        const ready = await state.credentialSources.markCredentialSourceReady(
+          namespaceId,
+          ref.id,
+          registration,
+          { ...input.lifecycleConfig.settings, ...pending.config },
+        );
+        if (!isManagedTokenServiceSource(ready)) {
+          throw new ResourceStateConflictError(
+            "The credential source changed during registration.",
+          );
+        }
+        const completed = audit(ref);
+        await state.audit.append(
+          input.providerPreset === undefined
+            ? completed
+            : {
+                ...completed,
+                details: { ...completed.details, providerPreset: input.providerPreset },
+              },
+        );
+        return this.credentialSourceMetadata(ready);
+      });
+    } catch (error) {
+      // A lost commit acknowledgement can leave a ready source. A concurrent DELETE may also
+      // have claimed the reservation. Only the request that still owns it can compensate.
+      const writeUnsent =
+        !registrationStarted ||
+        (registration === undefined && error instanceof TokenServiceRegistrationRefusedError);
+      const recovery = await this.mutate(async (state) => {
+        await this.lockNamespace(state, namespaceId);
+        const source = await state.credentialSources.lockCredentialSource(namespaceId, ref.id);
+        if (!isManagedTokenServiceSource(source) || source.tokenServiceInstanceId !== instanceId) {
+          return { error };
+        }
+        if (source.state === "ready") {
+          return { source: this.credentialSourceMetadata(source) };
+        }
+        if (source.state !== "registering") {
+          // A DELETE between dispatch authorization and the owner call may already have
+          // tried removal. Only this POST can attest that its single write was never sent.
+          if (writeUnsent && source.registrationDispatchedAt) {
+            await state.credentialSources.setCredentialSourceRegistrationDispatch(
+              namespaceId,
+              ref.id,
+              undefined,
+            );
+          }
+          return { error };
+        }
+        if (!writeUnsent) {
+          await state.credentialSources.markCredentialSourceDeleting(namespaceId, ref.id);
+          const receipt = registration;
+          if (receipt === undefined) {
+            // A dispatched write without a receipt may still arrive. A later DELETE
+            // waits for the registration fence before the owner can settle absence.
+            return {
+              error: new DependencyUnavailableError(
+                "The TokenService could not confirm credential source removal.",
+              ),
+            };
+          }
+          try {
+            await this.driverOperation(
+              () =>
+                owner.removeSource(
+                  {
+                    sourceRef: ref,
+                    tokenServiceInstanceId: instanceId,
+                    registration: receipt,
+                  },
+                  AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
+                ),
+              "TokenService",
+            );
+          } catch {
+            // An absent object cannot settle a write whose acknowledgement was lost.
+            // Commit the deleting state and report that the outcome still needs reconciliation.
+            return {
+              error: new DependencyUnavailableError(
+                "The TokenService could not confirm credential source removal.",
+              ),
+            };
+          }
+        }
+        // Either no write was issued or the recorded owner has confirmed removal.
+        await state.credentialSources.deleteCredentialSource(namespaceId, ref.id);
+        return { error };
+      });
+      if (recovery.source) {
+        return recovery.source;
+      }
+      throw recovery.error;
+    }
+  }
+
+  async updateManagedCredentialSource(
+    principalId: string,
+    ref: { readonly namespaceId: string; readonly credentialSourceId: string },
+    input: UpdateManagedCredentialSourceInput,
+    audit: (resource: CredentialSourceReference, phase?: "update_started") => AuditEvent,
+    failureAudit: (reasonCode: string) => AuditEvent,
+  ): Promise<Readonly<CredentialSourceMetadata>> {
+    this.requireIndependentMutation("Credential source update");
+    this.namespaceIdentity(ref.namespaceId);
+    const resource: CredentialSourceReference = {
+      kind: "credential_source",
+      namespaceId: ref.namespaceId,
+      id: ref.credentialSourceId,
+    };
+    let ownerUpdate: SourceUpdate | undefined;
+    if (input.secret !== undefined) {
+      ownerUpdate = {
+        secret: input.secret,
+        ...(input.lifecycleConfig === undefined ? {} : { lifecycleConfig: input.lifecycleConfig }),
+      };
+    } else if (input.lifecycleConfig !== undefined) {
+      ownerUpdate = { lifecycleConfig: input.lifecycleConfig };
+    }
+    const authorizeUpdate = async (state: PlatformUnitOfWork, lockSource: boolean) => {
+      await this.authorize(principalId, "update", resource);
+      await this.holdAuthority(state);
+      const namespace = await this.lockNamespace(state, ref.namespaceId);
+      // AccessBinding revocation uses the same policy lock. A request that waited must reauthorize before custody changes.
+      await this.authorize(principalId, "update", resource);
+      if (namespace.status !== "ready") {
+        throw new NamespaceNotReadyError();
+      }
+      if (input.providerPreset !== undefined && input.providerPreset !== null) {
+        assertSourceProviderPreset(input.providerPreset);
+      }
+      if (input.lifecycleConfig !== undefined) {
+        assertManagedSourceLifecycleSettings(input.lifecycleConfig.settings);
+      }
+      if (ownerUpdate === undefined && input.providerPreset === undefined) {
+        throw new ScopeViolationError(
+          "A source update requires a provider preset or owner update.",
+        );
+      }
+      const source = lockSource
+        ? await state.credentialSources.lockCredentialSource(
+            ref.namespaceId,
+            ref.credentialSourceId,
+          )
+        : await state.credentialSources.findCredentialSource(
+            ref.namespaceId,
+            ref.credentialSourceId,
+          );
+      if (!source) {
+        throw new ScopeViolationError(
+          "The credential source does not belong to the exact Namespace.",
+        );
+      }
+      if (
+        !isManagedTokenServiceSource(source) ||
+        source.state !== "ready" ||
+        !source.registration
+      ) {
+        throw new ResourceStateConflictError(
+          "This credential source cannot be updated through the selected TokenService.",
+        );
+      }
+      const owner = this.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+      const presetChanges =
+        input.providerPreset !== undefined &&
+        (input.providerPreset ?? undefined) !== source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY];
+      if (presetChanges && ownerUpdate !== undefined) {
+        throw new ResourceStateConflictError(
+          "Change the provider preset separately from credential material or lifecycle settings.",
+        );
+      }
+      if (
+        lockSource &&
+        presetChanges &&
+        (await state.credentialSources.hasReferences(ref.namespaceId, source.id))
+      ) {
+        // TODO(source preset replacement): permit bound changes after withdrawal and redeployment can replace the admitted authority.
+        throw new ResourceStateConflictError("Provider preset changes require an unbound source.");
+      }
+      return { source, owner };
+    };
+    if (ownerUpdate === undefined) {
+      return this.mutate(async (state) => {
+        const { source } = await authorizeUpdate(state, true);
+        const updated = await state.credentialSources.updateCredentialSourceConfig(
+          ref.namespaceId,
+          ref.credentialSourceId,
+          managedSourceConfig(source, input),
+        );
+        if (!updated) {
+          throw new ResourceStateConflictError("The credential source changed during update.");
+        }
+        const completed = audit(resource);
+        await state.audit.append({
+          ...completed,
+          details: { ...completed.details, providerPreset: input.providerPreset },
+        });
+        return this.credentialSourceMetadata(updated);
+      });
+    }
+    const materialUpdate = ownerUpdate;
+    // An authorized intent must be durable before private custody can change. The effect
+    // transaction rechecks authority and the exact source while holding both fences.
+    await this.mutate(async (state) => {
+      await authorizeUpdate(state, false);
+      await state.audit.append(audit(resource, "update_started"));
+    });
+    return this.mutate(async (state) => {
+      const { source, owner } = await authorizeUpdate(state, true);
+      this.auditUncommittedCredentialEffect(failureAudit, "CREDENTIAL_SOURCE_UPDATE_FAILED");
+      await this.driverOperation(
+        () =>
+          owner.updateSource(
+            {
+              sourceRef: resource,
+              tokenServiceInstanceId: source.tokenServiceInstanceId,
+              registration: source.registration!,
+            },
+            materialUpdate,
+            AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
+          ),
+        "TokenService",
+      );
+      const updated =
+        input.lifecycleConfig === undefined && input.providerPreset === undefined
+          ? source
+          : await state.credentialSources.updateCredentialSourceConfig(
+              ref.namespaceId,
+              ref.credentialSourceId,
+              managedSourceConfig(source, input),
+            );
+      if (!updated) {
+        throw new ResourceStateConflictError("The credential source changed during update.");
+      }
+      const completed = audit(resource);
+      await state.audit.append(
+        input.providerPreset === undefined
+          ? completed
+          : {
+              ...completed,
+              details: { ...completed.details, providerPreset: input.providerPreset },
+            },
+      );
+      return this.credentialSourceMetadata(updated);
+    });
+  }
+
   /**
    * Registration records the source as `registering` before the gateway write, so an uncertain
    * gateway outcome always leaves a record an operator can list and delete. `audit` builds the
@@ -8655,10 +9254,11 @@ export class OpenClawController {
           );
         }
       }
-      const read =
-        egress === undefined
-          ? await this.readCredentialSourceSecrets(state, principalId, locked, secretRefs)
-          : {};
+      let read: Record<string, string> = {};
+      if (egress === undefined) {
+        await this.authorizeCredentialSourceSecrets(principalId, locked.id, secretRefs);
+        read = await this.readCredentialSourceSecrets(state, locked.id, secretRefs);
+      }
 
       const registering = await state.credentialSources.createCredentialSource(
         Object.freeze({
@@ -8808,30 +9408,34 @@ export class OpenClawController {
     );
   }
 
-  /**
-   * Authorizes `operate` on each referenced same-Namespace Secret and reads its current value
-   * for a Credential Gateway call. Values stay in memory for that call only.
-   */
-  private async readCredentialSourceSecrets(
-    state: PlatformUnitOfWork,
+  /** Authorize exact Secret references before inspecting private source bindings or reading values. */
+  private async authorizeCredentialSourceSecrets(
     principalId: string,
-    namespace: Readonly<Namespace>,
+    namespaceId: string,
     references: Readonly<Record<string, SecretReference>>,
-  ): Promise<Record<string, string>> {
+  ): Promise<void> {
     // Reject a foreign reference before any authorization or Secret lookup, as Secret bindings do.
-    if (Object.values(references).some((reference) => reference.namespaceId !== namespace.id)) {
+    if (Object.values(references).some((reference) => reference.namespaceId !== namespaceId)) {
       throw new SecretBindingValidationError(CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES);
     }
     for (const reference of Object.values(references)) {
       await this.authorize(principalId, "operate", reference);
     }
+  }
+
+  /** Read already-authorized Secret values for a single Credential Gateway call. */
+  private async readCredentialSourceSecrets(
+    state: PlatformUnitOfWork,
+    namespaceId: string,
+    references: Readonly<Record<string, SecretReference>>,
+  ): Promise<Record<string, string>> {
     // Locked in Secret ID order, so two updates whose sources share Secrets cannot deadlock.
     const ordered = Object.entries(references).sort(([, left], [, right]) =>
       left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
     );
     const values: Record<string, string> = {};
     for (const [field, reference] of ordered) {
-      const secret = await state.secrets.lockSecret(namespace.id, reference.id);
+      const secret = await state.secrets.lockSecret(namespaceId, reference.id);
       if (secret === undefined) {
         throw new ScopeViolationError("The credential source Secret is unavailable.");
       }
@@ -8871,10 +9475,11 @@ export class OpenClawController {
       // Lock order matches Agent admission: the source, then the Secrets it reads. Admission
       // with a Secret-method harnessAuth locks that Secret first; if the same Secret also backs
       // this source, PostgreSQL ends the cycle by failing one request.
-      const source = await state.credentialSources.lockCredentialSource(
+      const recorded = await state.credentialSources.lockCredentialSource(
         namespace.id,
         input.credentialSourceId,
       );
+      const source = isManagedTokenServiceSource(recorded) ? undefined : recorded;
       if (source?.ownerCapability !== "token_service") {
         this.assertCredentialSourceOwnerSelected();
       }
@@ -8908,6 +9513,7 @@ export class OpenClawController {
       const secretRefs = Object.freeze({ ...(input.secrets ?? source.secrets) });
       credentialSourceFieldsMatch(type, "secrets", secretRefs);
       if (type.rotation === "refresh") {
+        await this.authorizeCredentialSourceSecrets(principalId, namespace.id, secretRefs);
         refuseIssuerRotatedResend(type, source.secrets, secretRefs);
       }
       if (
@@ -8962,12 +9568,10 @@ export class OpenClawController {
         }
         return this.credentialSourceMetadata(updated, { state: "ready" });
       }
-      const values = await this.readCredentialSourceSecrets(
-        state,
-        principalId,
-        namespace,
-        secretRefs,
-      );
+      if (type.rotation !== "refresh") {
+        await this.authorizeCredentialSourceSecrets(principalId, namespace.id, secretRefs);
+      }
+      const values = await this.readCredentialSourceSecrets(state, namespace.id, secretRefs);
       // The gateway sees Compute's runtime placement, the same Workspace as the paired Sandbox.
       const placed = await this.credentialNamespace(namespace);
       const context = () => ({
@@ -9050,7 +9654,7 @@ export class OpenClawController {
         namespace.id,
         input.credentialSourceId,
       );
-      if (!source) {
+      if (!source || isManagedTokenServiceSource(source)) {
         throw new ScopeViolationError(
           "The credential source does not belong to the exact Namespace.",
         );
@@ -9209,7 +9813,7 @@ export class OpenClawController {
         namespaceId,
         credentialSourceId,
       );
-      if (!found) {
+      if (!found || isManagedTokenServiceSource(found)) {
         throw new ScopeViolationError(
           "The credential source does not belong to the exact Namespace.",
         );
@@ -9285,6 +9889,9 @@ export class OpenClawController {
     return this.read(async (state) => {
       const readable: Readonly<CredentialSourceMetadata>[] = [];
       for (const source of await state.credentialSources.listCredentialSources(namespace.id)) {
+        if (isManagedTokenServiceSource(source)) {
+          continue;
+        }
         if (
           await this.canRead(principalId, {
             kind: "credential_source",
@@ -9312,6 +9919,38 @@ export class OpenClawController {
     audit?: (removedAccessBindings: readonly RemovedAccessBinding[]) => AuditEvent,
     connection?: typeof PENDING_CONNECTION,
   ): Promise<void> {
+    return this.deleteRecordedCredentialSource(
+      principalId,
+      namespaceId,
+      credentialSourceId,
+      audit,
+      connection,
+    );
+  }
+
+  /** Internal retirement path for staged registrations. The serving API cannot select it. */
+  async deleteManagedCredentialSource(
+    principalId: string,
+    namespaceId: string,
+    credentialSourceId: string,
+    audit: (removed: readonly RemovedAccessBinding[], phase?: "retirement_started") => AuditEvent,
+  ): Promise<void> {
+    return this.deleteRecordedCredentialSource(
+      principalId,
+      namespaceId,
+      credentialSourceId,
+      audit,
+      MANAGED_SOURCE,
+    );
+  }
+
+  private async deleteRecordedCredentialSource(
+    principalId: string,
+    namespaceId: string,
+    credentialSourceId: string,
+    audit?: (removed: readonly RemovedAccessBinding[], phase?: "retirement_started") => AuditEvent,
+    connection?: typeof PENDING_CONNECTION | typeof MANAGED_SOURCE,
+  ): Promise<void> {
     this.requireIndependentMutation("Credential source registration and deletion");
     this.namespaceIdentity(namespaceId);
     const { namespace, source, gateway } = await this.mutate(async (state) => {
@@ -9323,19 +9962,23 @@ export class OpenClawController {
               id: credentialSourceId,
               namespaceId,
             });
-      const found = await state.credentialSources.lockCredentialSource(
+      const recorded = await state.credentialSources.lockCredentialSource(
         locked.id,
         credentialSourceId,
       );
+      const found =
+        connection !== MANAGED_SOURCE && isManagedTokenServiceSource(recorded)
+          ? undefined
+          : recorded;
       if (found?.ownerCapability !== "token_service") {
         this.assertCredentialSourceOwnerSelected();
       }
-      if (!found) {
+      if (!found || (connection === MANAGED_SOURCE && !isManagedTokenServiceSource(found))) {
         throw new ScopeViolationError(
           "The credential source does not belong to the exact Namespace.",
         );
       }
-      if (found.ownerCapability === "token_service") {
+      if (found.ownerCapability === "token_service" && !isManagedTokenServiceSource(found)) {
         const saved = await state.savedConnections.findSavedConnection(
           namespaceId,
           credentialSourceId,
@@ -9356,12 +9999,20 @@ export class OpenClawController {
       }
       const owner =
         found.ownerCapability === "token_service" ? undefined : this.credentialSourceOwner(found);
+      if (isManagedTokenServiceSource(found) && found.state === "ready") {
+        // A ready source must remain usable if its recorded owner cannot perform retirement.
+        this.ownedTokenServiceDriver(found.tokenServiceInstanceId);
+      }
       const deleting =
         found.state === "deleting"
           ? found
           : await state.credentialSources.markCredentialSourceDeleting(locked.id, found.id);
       if (deleting === undefined) {
         throw new ResourceStateConflictError("The credential source changed during deletion.");
+      }
+      if (isManagedTokenServiceSource(deleting) && audit !== undefined) {
+        // This attempt is attributable before private custody can be irreversibly retired.
+        await state.audit.append(audit([], "retirement_started"));
       }
       return {
         namespace: locked,
@@ -9399,6 +10050,39 @@ export class OpenClawController {
     source: Readonly<CredentialSource>,
     gateway: CredentialGatewayDriver | undefined,
   ): Promise<void> {
+    if (isManagedTokenServiceSource(source)) {
+      // The registration writer must claim dispatch while the source is registering. A
+      // deleting reservation without that claim cannot have sent material to any owner.
+      if (!source.registration && !source.registrationDispatchedAt) {
+        return;
+      }
+      const owner = this.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+      if (!source.registration && source.registrationDispatchedAt) {
+        const remaining =
+          Date.parse(source.registrationDispatchedAt) +
+          CREDENTIAL_REGISTRATION_FENCE_MS -
+          this.clock().getTime();
+        if (!Number.isFinite(remaining)) {
+          throw new ResourceStateConflictError("The registration dispatch time is invalid.");
+        }
+        if (remaining > 0) {
+          throw new RetryLaterError("registrationFence", remaining / 1000);
+        }
+      }
+      await this.driverOperation(
+        () =>
+          owner.removeSource(
+            {
+              sourceRef: credentialSourceRef(source),
+              tokenServiceInstanceId: source.tokenServiceInstanceId,
+              ...(source.registration && { registration: source.registration }),
+            },
+            AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
+          ),
+        "TokenService",
+      );
+      return;
+    }
     if (source.ownerCapability === "token_service") {
       await this.connectionTokenIssuer().retire(
         { kind: "oauth_refresh_token", namespaceId: namespace.id, sourceId: source.id },
@@ -12613,7 +13297,28 @@ export class OpenClawController {
               auth,
             );
       if (requestedSources === undefined && requestedAuth !== undefined) {
-        this.assertHarnessSourceListed(agent.credentialSources ?? [], requestedAuth);
+        const retained = agent.credentialSources ?? [];
+        this.assertHarnessSourceListed(retained, requestedAuth);
+        // Admission permits a managed TokenService source only as the Harness source, so
+        // changing authentication can leave only the previous selection attached incorrectly.
+        if (
+          previousAuth?.method === "credential_source" &&
+          (requestedAuth?.method !== "credential_source" ||
+            requestedAuth.sourceId !== previousAuth.sourceId) &&
+          retained.some(({ sourceId }) => sourceId === previousAuth.sourceId)
+        ) {
+          // Owner metadata is immutable and the Namespace fence excludes deletion. A
+          // nonlocking read avoids taking a source lock after a newly selected Secret.
+          const source = await state.credentialSources.findCredentialSource(
+            namespace.id,
+            previousAuth.sourceId,
+          );
+          if (isManagedTokenServiceSource(source)) {
+            throw new ResourceStateConflictError(
+              "This TokenService source must remain the selected Harness authentication source.",
+            );
+          }
+        }
       }
       // Unlike the Agent's own bindings above, the named Configuration's Secret bindings get the
       // full check even when `configurationId` is unchanged: deploy needs them usable, and only a
@@ -15266,17 +15971,23 @@ export class OpenClawController {
         namespaceId,
         id: binding.sourceId,
       });
-      this.assertCredentialGatewaySelected();
       const source = await state.credentialSources.lockCredentialSource(
         namespaceId,
         binding.sourceId,
       );
+      if (!isManagedTokenServiceSource(source)) {
+        this.assertCredentialGatewaySelected();
+      }
       if (source === undefined || source.state !== "ready") {
         throw new ScopeViolationError(
           "The Harness credential source is unavailable in the exact Namespace.",
         );
       }
-      this.ownedCredentialGatewayDriver(source);
+      if (isManagedTokenServiceSource(source)) {
+        this.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+      } else {
+        this.ownedCredentialGatewayDriver(source);
+      }
     } else {
       if (binding.source.namespaceId !== namespaceId) {
         throw new SecretBindingValidationError(SERVICE_ACCOUNT_CROSS_NAMESPACE);
@@ -15413,8 +16124,10 @@ export class OpenClawController {
         namespaceId,
         id: sourceId,
       });
-      this.assertCredentialSourceOwnerSelected();
       const source = await state.credentialSources.lockCredentialSource(namespaceId, sourceId);
+      if (!isManagedTokenServiceSource(source)) {
+        this.assertCredentialSourceOwnerSelected();
+      }
       if (source === undefined || source.state !== "ready") {
         throw new ScopeViolationError(
           "The credential source is unavailable in the exact Namespace.",
@@ -15429,11 +16142,20 @@ export class OpenClawController {
         // no source (finding 2536); resolving the missing owner answered a 500.
         throw new CredentialProxyAdmissionError("sourcesWithoutProxy");
       }
-      // TODO(Agent connection attachment): admit a saved account after verifying this Agent's grant.
-      if (source.ownerCapability === "token_service") {
-        throw new ResourceStateConflictError("This Agent has no grant for the saved account.");
+      if (isManagedTokenServiceSource(source)) {
+        this.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+        if (harnessAuth?.method !== "credential_source" || harnessAuth.sourceId !== source.id) {
+          throw new ResourceStateConflictError(
+            "This TokenService source must authenticate the selected Agent Harness.",
+          );
+        }
+      } else {
+        // TODO(Agent connection attachment): admit a saved account after verifying this Agent's grant.
+        if (source.ownerCapability === "token_service") {
+          throw new ResourceStateConflictError("This Agent has no grant for the saved account.");
+        }
+        this.credentialSourceOwner(source);
       }
-      this.credentialSourceOwner(source);
       sources.push(source);
     }
     this.assertHarnessSourceListed(bindings, harnessAuth);
@@ -17051,6 +17773,12 @@ export class OpenClawController {
     if (source === undefined || source.state !== "ready") {
       throw new ScopeViolationError("The Harness credential source is unavailable.");
     }
+    if (isManagedTokenServiceSource(source)) {
+      // TODO: Replace this refusal when revision delivery can freeze and dispatch this owner.
+      throw new ResourceStateConflictError(
+        "Agent revision delivery for this TokenService source is not available. To deploy, select supported Harness authentication and remove this staged source from the Agent's credential sources.",
+      );
+    }
     const gateway = this.ownedCredentialGatewayDriver(source);
     const type = await this.credentialSourceType(gateway, source.type);
     if (type.harnessAuth === undefined) {
@@ -18606,7 +19334,7 @@ export class OpenClawController {
 
   private async driverOperation<T>(
     operation: () => Promise<T>,
-    capability: "Configuration" | "ServiceAccount" | "Compute" = "Configuration",
+    capability: "Configuration" | "ServiceAccount" | "Compute" | "TokenService" = "Configuration",
   ): Promise<T> {
     try {
       return await operation();

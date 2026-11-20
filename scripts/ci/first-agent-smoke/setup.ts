@@ -434,9 +434,9 @@ export async function setLocalSetupAudit(
 
 type InstalledAuditStack = Pick<LocalSetup, "kubeconfig" | "context" | "state">;
 
-async function queryRevision(
+async function queryAudit(
   stack: InstalledAuditStack,
-  revisionId: string,
+  parameters: Record<string, string>,
   query: string,
   options?: RunOptions,
 ) {
@@ -458,8 +458,7 @@ async function queryRevision(
       "-A",
       "--set",
       "ON_ERROR_STOP=1",
-      "--set",
-      `revision_id=${revisionId}`,
+      ...Object.entries(parameters).flatMap(([name, value]) => ["--set", `${name}=${value}`]),
       "--username",
       "postgres",
       "--dbname",
@@ -470,39 +469,124 @@ async function queryRevision(
   return stdout.trim();
 }
 
+function queryRevision(
+  stack: InstalledAuditStack,
+  revisionId: string,
+  query: string,
+  options?: RunOptions,
+) {
+  return queryAudit(stack, { revision_id: revisionId }, query, options);
+}
+
+export async function checkMessageDisclosure(
+  stack: InstalledAuditStack,
+  eventId: string,
+  text: string,
+  readMessage: (id: string) => Promise<unknown>,
+) {
+  const query = (sql: string) => queryAudit(stack, { event_id: eventId }, sql);
+  const match = `action = 'openclaw.audit.agent.message.read' AND details->>'auditEventId' = :'event_id'`;
+  // The receipt names the linked event. Neither its details nor its metadata may copy the text.
+  const receipt = await query(`SELECT details FROM occ.audit_events WHERE ${match};`);
+  assert.ok(!receipt.includes(text), "the disclosure receipt contains the chat message");
+  const details = JSON.parse(receipt) as Record<string, unknown>;
+  delete details.__occAuditMetadata;
+  assert.deepEqual(details, { auditEventId: eventId });
+  // Refuse only this message's next receipt. Fail closed despite valid grants and history.
+  const constraint = `smoke_disclosure_${randomUUID().replaceAll("-", "")}`;
+  await query(
+    `ALTER TABLE occ.audit_events ADD CONSTRAINT ${constraint} CHECK (NOT (${match})) NOT VALID;`,
+  );
+  try {
+    await assert.rejects(readMessage(eventId), /HTTP 503$/);
+  } finally {
+    await query(`ALTER TABLE occ.audit_events DROP CONSTRAINT ${constraint};`);
+  }
+}
+
 const runtimeRows = `FROM occ.audit_events
   WHERE kind = 'runtime_activity' AND details->>'agentRevisionId' = :'revision_id'`;
 
-export async function withRefusedTurnAdmission(
+export async function withRefusedToolAdmission<T>(
   stack: InstalledAuditStack,
   revisionId: string,
-  send: () => Promise<unknown>,
+  send: () => Promise<T>,
 ) {
-  const marker = `smoke_admission_${randomUUID().replaceAll("-", "")}`;
+  const constraint = `smoke_tool_${randomUUID().replaceAll("-", "")}`;
   const query = (sql: string) => queryRevision(stack, revisionId, sql);
-  // Sequence increments survive rollback. Only an admission for this revision
-  // advances the sequence and fails the check. Existing rows remain valid.
+  // Reject the admission for the real file read while allowing its request and turn records.
+  await query(`ALTER TABLE occ.audit_events ADD CONSTRAINT ${constraint} CHECK (NOT (
+    kind = 'runtime_activity' AND details->>'agentRevisionId' = :'revision_id'
+    AND action = 'openclaw.runtime.tool_attempt.admitted' AND details->>'toolName' = 'read'
+  )) NOT VALID;`);
+  try {
+    const reply = await send();
+    const { stdout } = await kubectl(stack, [
+      "logs",
+      "-n",
+      stack.state.platformNamespace,
+      "statefulset/postgres",
+      "-c",
+      "postgres",
+      "--since=2m",
+    ]);
+    assert.ok(stdout.includes(constraint), "PostgreSQL did not receive the refused tool admission");
+    return reply;
+  } finally {
+    await query(`ALTER TABLE occ.audit_events DROP CONSTRAINT ${constraint};`);
+  }
+}
+
+export async function interruptRefusedObservation<T>(
+  stack: InstalledAuditStack,
+  revisionId: string,
+  send: () => Promise<T>,
+  restart: () => Promise<void>,
+) {
+  const marker = `smoke_audit_${randomUUID().replaceAll("-", "")}`;
+  const query = (sql: string) => queryRevision(stack, revisionId, sql);
+  // The rejected transaction leaves its audit ID in the disposable database log.
+  // Compare that ID with the API record after the Gateway restarts and retries.
+  const pattern = new RegExp(`${marker} (aud_[a-f0-9-]{36})`);
   try {
     await query(`
       BEGIN;
-      CREATE SEQUENCE occ.${marker};
-      GRANT USAGE ON SEQUENCE occ.${marker} TO occ_app;
-      ALTER TABLE occ.audit_events ADD CONSTRAINT ${marker}
-        CHECK (CASE WHEN kind = 'runtime_activity'
-          AND details->>'agentRevisionId' = :'revision_id'
-          AND action = 'openclaw.runtime.turn.admitted'
-          THEN nextval('occ.${marker}') = 0 ELSE true END) NOT VALID;
+      CREATE FUNCTION occ.${marker}() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION '% %', TG_NAME, NEW.id; END;
+      $$;
+      CREATE TRIGGER ${marker} BEFORE INSERT ON occ.audit_events FOR EACH ROW
+        WHEN (NEW.kind = 'runtime_activity'
+          AND NEW.details->>'agentRevisionId' = :'revision_id'
+          AND NEW.action = 'openclaw.runtime.turn.started')
+        EXECUTE FUNCTION occ.${marker}();
       COMMIT;
     `);
-    const result = await send();
-    const called = await query(`SELECT is_called FROM occ.${marker};`);
-    assert.equal(called, "t", `PostgreSQL never refused a turn admission for ${revisionId}.`);
-    return result;
+    const turn = await send();
+    const refusedId = await waitFor(
+      `PostgreSQL to refuse the turn observation on ${revisionId}`,
+      async () => {
+        const { stdout } = await kubectl(stack, [
+          "logs",
+          "-n",
+          stack.state.platformNamespace,
+          "statefulset/postgres",
+          "-c",
+          "postgres",
+          "--since=2m",
+        ]);
+        const id = pattern.exec(stdout)?.[1];
+        return { done: id !== undefined, value: id };
+      },
+      minute,
+    );
+    assert.ok(refusedId);
+    await restart();
+    return { turn, refusedId };
   } finally {
     await query(`
       BEGIN;
-      ALTER TABLE occ.audit_events DROP CONSTRAINT IF EXISTS ${marker};
-      DROP SEQUENCE IF EXISTS occ.${marker};
+      DROP TRIGGER IF EXISTS ${marker} ON occ.audit_events;
+      DROP FUNCTION IF EXISTS occ.${marker}();
       COMMIT;
     `);
   }

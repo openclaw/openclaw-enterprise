@@ -35,29 +35,6 @@ RUN --network=none \
     --mount=type=bind,source=deploy/runtime/native-tools/install.sh,target=/tmp/install-native-tools.sh \
     sh /tmp/install-native-tools.sh
 
-# Keep the stock CLI and its lockfile intact. Compile only the standalone App
-# Server for audited managed Codex runs, with upstream's paired bwrap digest.
-FROM docker.io/library/rust:1.99.1-slim-bookworm@sha256:f2c004e3d2d8b547e8cf7ffbc29205385f4e71d23e53e4e383065db5e9f822cd AS codex-audit-source
-ARG TARGETARCH
-RUN apt-get update --error-on=any && apt-get install -y --no-install-recommends \
-      binutils ca-certificates clang cmake curl g++ git libclang-dev libssl-dev make pkg-config protobuf-compiler python3 \
-    && rm -rf /var/lib/apt/lists/*
-COPY deploy/runtime/codex-audit/ /codex-audit/
-RUN --mount=type=secret,id=build-ca,required=false \
-    set -eu; \
-    if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca CARGO_HTTP_SSL_CAINFO=/run/secrets/build-ca; fi; \
-    sh /codex-audit/build.sh fetch "$TARGETARCH"
-
-FROM codex-audit-source AS codex-audit-build
-ARG TARGETARCH
-ENV CARGO_TARGET_DIR=/codex-target CARGO_BUILD_JOBS=4
-RUN --network=none \
-    --mount=type=cache,target=/codex-target,id=codex-audit-target-${TARGETARCH},sharing=locked \
-    sh /codex-audit/build.sh build "$TARGETARCH"
-
-FROM scratch AS codex-audit-artifact
-COPY --from=codex-audit-build /out/ /
-
 FROM ${NODE_RUNTIME_BASE_IMAGE} AS node-runtime-base
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 RUN apt-get update --error-on=any && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
@@ -172,7 +149,7 @@ RUN echo 'f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc  /tmp
     && git apply /tmp/openclaw-codex-read-only-paths.patch
 # TODO: Remove this bridge patch when OpenClaw selects the native full-access profile.
 COPY deploy/runtime/openclaw-codex-full-access-profile.patch /tmp/openclaw-codex-full-access-profile.patch
-RUN echo '06161c5863c7116daa568d7ad65381e9b95a35fbd2e772cbddde4052ce8479a0  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
+RUN echo 'a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-full-access-profile.patch
 # Keep the reviewed Codex 0.164.0 (seccomp profile and artifact rules) until OCE moves to the
 # Codex the pinned OpenClaw bundles. Remove this pin with that upgrade.
@@ -256,15 +233,6 @@ COPY deploy/runtime/openclaw-planned-completion.patch /tmp/openclaw-planned-comp
 RUN echo '402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15  /tmp/openclaw-planned-completion.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-planned-completion.patch
 
-# Record managed runtime evidence at the OpenClaw and Codex execution owners.
-COPY deploy/runtime/openclaw-runtime-audit.patch /tmp/openclaw-runtime-audit.patch
-RUN echo '497d5dfe283186212d82512b47f6fb1c118b73f7fe519e2a25e1c5dcfc53dd5a  /tmp/openclaw-runtime-audit.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-runtime-audit.patch
-
-COPY deploy/runtime/openclaw-codex-runtime-audit.patch /tmp/openclaw-codex-runtime-audit.patch
-RUN echo '606f8b7c6fb0f87ad35058a602efcc56cca675f289f5e5fbb36b3063459f378f  /tmp/openclaw-codex-runtime-audit.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-codex-runtime-audit.patch
-
 # Broad source verification is an explicit target, separate from image assembly.
 # Native container CI requires this target before exporting and smoking the image.
 FROM openclaw-patched-source AS openclaw-bridge-tests
@@ -315,20 +283,9 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     src/node-host/codex-node-plugin.integration.test.ts \
     test/node-host-launcher.test.ts \
     src/daemon/program-args.test.ts \
-    src/gateway/server-methods/sessions-lifecycle-dormant.test.ts src/infra/openclaw-runtime-audit.test.ts \
-    src/agents/agent-tools.workspace-outside.test.ts src/gateway/node-invoke-plugin-policy.test.ts \
-    src/worker/worker-local-mcp.test.ts \
-    src/gateway/worker-environments/inference-runtime.model.test.ts \
-    src/gateway/worker-environments/worker-turn-admission.test.ts \
-    extensions/codex/src/app-server/run-attempt-runtime-audit.test.ts \
-    src/agents/harness/codex-runtime-audit.test.ts \
-    extensions/codex/src/app-server/thread-lifecycle.test.ts \
     && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/cli/gateway-cli/run-loop.test.ts \
     -t "keeps the fenced process alive until the supervisor sends SIGTERM" \
-    && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
-    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/worker/worker.runtime.test.ts \
-    -t "revokes an active native provider" \
     && rm -rf .artifacts
 # Type-check production and the native/UI test graphs touched by the bridges.
 # The upstream runner generates database types and compiler cache under .artifacts.
@@ -505,9 +462,13 @@ RUN --mount=type=secret,id=build-ca,required=false \
     node /tmp/install-gog.mts /usr/local/lib/oce/plugins/google "linux-${TARGETARCH:-amd64}" /usr/local/lib/oce/plugins/google/bin /tmp/download-pinned.sh
 
 COPY apps/controller/plugins/ /usr/local/lib/oce/plugin-catalog/
+COPY deploy/runtime/managed-runtime-audit/ /app/oce-plugins/oce-runtime-audit/
 COPY deploy/runtime/managed-mcp-policy/ /usr/local/lib/oce/platform-plugins/oce-managed-mcp-policy/
 
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
+COPY --chmod=0444 deploy/runtime/openshell-bootstrap.cjs /opt/oce/runtime/openshell-bootstrap.cjs
+# OpenShell selects the workload UID. Its private child directory stays on the workload filesystem.
+RUN install -d -m 1777 -o root -g root /opt/oce/managed
 COPY --from=openclaw-runtime-assets /source/ /app/node_modules/openclaw/
 # Both gateway plugins and the Dedicated Harness resolve the same pinned Codex.
 RUN mkdir -p node_modules/.bin \
@@ -517,17 +478,6 @@ RUN mkdir -p node_modules/.bin \
 
 COPY scripts/build-runtime-assets.ts /tmp/build-runtime-assets.ts
 COPY scripts/lib/openclaw-source.ts /tmp/lib/openclaw-source.ts
-
-RUN --network=none \
-    --mount=type=bind,from=codex-audit-artifact,source=/,target=/tmp/codex-audit-artifact \
-    set -eu; \
-    node /tmp/build-runtime-assets.ts install-codex-audit /app/node_modules/openclaw /opt/oce/runtime /tmp/codex-audit-artifact; \
-    server=/opt/oce/runtime/bin/codex-audit-app-server; \
-    LC_ALL=C ldd "$server" > /tmp/codex-audit-linkage; \
-    if grep 'not found' /tmp/codex-audit-linkage; then exit 1; fi; \
-    codex_home="$(mktemp -d)"; \
-    test "$(CODEX_HOME="$codex_home" "$server" --version)" = "codex-app-server ${OPENAI_CODEX_VERSION}"; \
-    rm -rf "$codex_home" /tmp/codex-audit-linkage
 
 RUN --mount=type=bind,source=scripts/lib/runtime-download-clients.ts,target=/tmp/lib/runtime-download-clients.ts \
     --mount=type=bind,source=deploy/runtime/additional-download-clients.json,target=/tmp/additional-download-clients.json \

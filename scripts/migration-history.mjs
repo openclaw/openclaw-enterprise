@@ -127,9 +127,15 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preNativeRestartRecovery";
   }
   if (count === 83 && completedCount > 83) {
+    return "preRevisionEgressInstallations";
+  }
+  if (count === 85 && completedCount > 85) {
     return "preRuntimeAudit";
   }
-  if (count === 84 && completedCount > 84) {
+  if (count === 86 && completedCount > 86) {
+    return "preAuditMessageRead";
+  }
+  if (count === 87 && completedCount > 87) {
     return "preSandboxAudit";
   }
   if (count === completedCount) {

@@ -1,10 +1,15 @@
 # Record OpenShell network decisions
 
-Use this procedure with OpenShell 0.1.8 and dedicated Agent Sandboxes in the
-same Kubernetes cluster as OpenClaw Control Plane (OCC). Enable Helm-managed
-Gateway routing. OpenShell must run each supervisor in a separate Pod from
-the Agent workload. You need permission to update both Helm releases, manage
-Secrets, and configure workspace network policies.
+Use this procedure with OpenShell 0.1.8 in the same Kubernetes cluster as
+OpenClaw Control Plane (OCC). The Sandbox Driver must use `integrationMode:
+legacy`, which gives each Agent revision a separate Sandbox ID. The exporter
+uses this ID to identify the workload. In `service` mode, revisions share a
+Sandbox ID. OCC rejects exporter configuration in this mode because a delayed
+event could belong to the previous revision.
+
+Enable Helm-managed Gateway routing. OpenShell must run each supervisor in a
+separate Pod from the Agent workload. You need permission to update both Helm
+releases, manage Secrets, and configure workspace network policies.
 
 ## Configure the private receiver
 

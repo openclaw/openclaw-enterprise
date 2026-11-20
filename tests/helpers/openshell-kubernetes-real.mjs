@@ -694,8 +694,8 @@ export function createOpenShellInstallationConfiguration({
   configuration.drivers.sandbox = {
     id: "sandbox-openshell-kubernetes",
     configuration: {
+      integrationMode: "legacy",
       gateway: {
-        workspaceMode: "operator",
         readiness: {
           serviceName: "openshell-gateway",
           podSelector: { "app.kubernetes.io/name": "openshell" },
@@ -1810,6 +1810,7 @@ export function createOpenShellKubernetesFixture({
     // so Node's own startup diagnostics cannot accidentally contain a valid frame.
     const nativeTag = gatewayTurn && commandTimeoutMs !== undefined ? randomUUID() : undefined;
     const script = String.raw`
+      const WebSocket = require("ws");
       const nativeTag = ${JSON.stringify(nativeTag)};
       let timeout, socket;
       let urlShape = "unknown", tokenPresent = null;
@@ -2184,7 +2185,7 @@ export function createOpenShellKubernetesFixture({
           fail(error);
         }
       });
-      socket.addEventListener("error", () => {
+      socket.addEventListener("error", (event) => {
         if (finished) return;
         if (commandDeadline) return unknownCommandOutcome("websocket-error");
         fail(new Error("Codex harness connection failed"), "websocket-error");

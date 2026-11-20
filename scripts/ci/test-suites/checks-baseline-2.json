@@ -85,6 +85,8 @@
     "tests/integration/ci-download-pinned.test.ts",
     "tests/integration/ci-registry-transport.test.ts",
     "tests/conformance/native-admin-websocket-relay.test.ts",
+    "tests/integration/qa-fixture-credentials-diagnostics.test.ts",
+    "tests/integration/qa-fixture-results.test.ts",
     "tests/integration/qa-fixture-inputs.test.mjs",
     "tests/integration/compose-network.test.ts",
     "tests/integration/qa-repository-installation.test.ts",
@@ -223,6 +225,12 @@
     },
     {
       "path": "tests/helpers/socket-relay.test.ts"
+    },
+    {
+      "path": "tests/integration/qa-fixture-credentials-diagnostics.test.ts"
+    },
+    {
+      "path": "tests/integration/qa-fixture-results.test.ts"
     },
     {
       "path": "tests/integration/qa-fixture-inputs.test.mjs"
@@ -934,6 +942,7 @@
       "path": "tests/integration/workspace-gateway-host-route.test.ts",
       "expectedTests": [
         "Linux Gateway routes reuse distinct bound ports and preserve the HTTPS Service target",
+        "Gateway TLS readiness fails when its forwarder exits after loopback readiness",
         "Gateway Service mapping failure retains forwarder cleanup and reports shutdown failure",
         "Gateway relay rejects a malformed HTTPS Service target before starting a forwarder"
       ]

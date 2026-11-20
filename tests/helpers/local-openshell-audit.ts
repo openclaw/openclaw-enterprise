@@ -3,8 +3,34 @@ import { randomBytes } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
-import { run, type RunOptions } from "../../scripts/ci/first-agent-smoke/process.ts";
+import type { AgentAuditPage } from "../../packages/contracts/src/index.ts";
+import { run, waitFor, type RunOptions } from "../../scripts/ci/first-agent-smoke/process.ts";
 import { kubectl, setLocalSetupAudit } from "../../scripts/ci/first-agent-smoke/setup.ts";
+
+export async function expectOpenShellDecision(
+  readAudit: () => Promise<AgentAuditPage>,
+  revisionId: string,
+  sandboxId: string,
+) {
+  await waitFor(
+    "an OpenShell allow for the active Sandbox",
+    async () => {
+      const done = (await readAudit()).events.some(
+        (event) =>
+          event.event === "runtime_activity" &&
+          event.action === "openclaw.runtime.policy.decided" &&
+          event.details.runtimeSource === "openshell" &&
+          event.details.policy === "network_policy" &&
+          event.details.agentRevisionId === revisionId &&
+          event.details.sandboxId === sandboxId &&
+          event.details.decision === "allow" &&
+          event.outcome === "success",
+      );
+      return { done };
+    },
+    30_000,
+  );
+}
 
 /** Enable the stock supervisor exporter on the disposable stack before it launches any Agents. */
 export async function enableOpenShellAudit(

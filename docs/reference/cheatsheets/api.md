@@ -97,6 +97,7 @@
 - [`listRepositoryOptions`](../api.md#get-namespacesnamespaceidagentsrepositoryoptions): List approved repository choices for Agent creation in one Namespace.
 - [`discoverAgentConfigurations`](../api.md#get-namespacesnamespaceidagentsagentiddriverconfigurations): Discover authorized Agent Driver configuration contributions.
 - [`getAgent`](../api.md#get-namespacesnamespaceidagentsagentid): Get an exact Namespace-owned Agent.
+- [`getAgentAuditEventMessage`](../api.md#get-namespacesnamespaceidagentsagentidauditeventsauditeventidmessage): Read the saved user message linked to an Agent turn.
 - [`getAgentCallerPermissions`](../api.md#get-namespacesnamespaceidagentsagentidpermissions): Report advisory primary IAM permissions on a readable Agent, not authorization for a later operation.
 - [`getAgentCredentialWithdrawal`](../api.md#get-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdrawal): Get the withdrawal state of a credential source for an Agent.
 - [`getAgentHarnessStatus`](../api.md#get-namespacesnamespaceidagentsagentidharnessstatus): Read the Sandbox Driver's record of a running Agent's dedicated Harness Sandbox.

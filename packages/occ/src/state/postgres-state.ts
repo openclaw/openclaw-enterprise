@@ -6,6 +6,7 @@ import {
   projectRuntimeAgentAuditDetails,
   CONFIGURED_IAM_ID_PREFIXES,
   CONTROLLER_WORK_AUDIT_ACTIONS,
+  isAgentAuditLinkedTurn,
   isConfiguredRoleId,
 } from "@openclaw-enterprise/contracts";
 import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
@@ -23,6 +24,7 @@ import { createPostgresAuthTransactionBinding } from "../auth-persistence/postgr
 import type { SchemaAuthBoundaryV1 } from "../auth-persistence/schema-auth-boundary-v1.ts";
 
 import { CREDENTIAL_WITHDRAWAL_TARGET } from "../controller-work.ts";
+import { REPOSITORY_CLEANUP_KEY_SEPARATOR } from "../repository-withdrawal.ts";
 import type { AgentAuditSelection } from "../ports/agent-audit.ts";
 import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
 import { bindRepository } from "../ports/repository-factory.ts";
@@ -32,7 +34,11 @@ import { postgresSavedConnections } from "./postgres-saved-connections.ts";
 import { postgresAuthenticationStates } from "./postgres-authentication-states.ts";
 import { postgresConnectionTemplates } from "./postgres-connection-templates.ts";
 import { postgresRepositorySessions } from "./postgres-repository-sessions.ts";
-import { projectAgentAuditRow, SELECT_AGENT_AUDIT } from "./postgres-agent-audit.ts";
+import {
+  projectAgentAuditRow,
+  SELECT_AGENT_AUDIT,
+  SELECT_LINKED_TURN,
+} from "./postgres-agent-audit.ts";
 import {
   validRepositoryBindingSelections,
   normalizedRepositoryAccess,
@@ -52,6 +58,7 @@ import type {
   AgentRevision,
   AuditEvent,
   CredentialSource,
+  TokenServiceRegistration,
   Group,
   GroupMembership,
   Identity,
@@ -96,6 +103,7 @@ import {
   DependencyUnavailableError,
   PersistedStateInvalidError,
   EGRESS_REVISION_INSTALLED_CONFLICT,
+  EGRESS_SANDBOX_INSTALLED_CONFLICT,
   IAMPolicyValidationError,
   IAMRoleInUseError,
   NAMESPACE_NAME_CONFLICT,
@@ -129,6 +137,7 @@ import type {
   SecretRepository,
   ServiceAccountRepository,
 } from "./platform-state.ts";
+import type { TokenServiceInstance } from "../ports/token-service.ts";
 import {
   copyProvisioningRecord,
   phaseAtLeast,
@@ -620,6 +629,7 @@ function secretFromRow(row: PostgresRow): Readonly<Secret> {
 
 const CREDENTIAL_SOURCE_COLUMNS = `cs.id, cs.namespace_id, cs.name, cs.type, cs.config,
   cs.driver_id, cs.owner_capability, cs.state, cs.created_at, cs.egress,
+  cs.token_service_instance_id, cs.registration, cs.registration_dispatched_at,
   COALESCE((
     SELECT jsonb_object_agg(css.field, css.secret_id)
     FROM occ.credential_source_secrets AS css
@@ -694,7 +704,18 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
       ]),
     ),
     ...(ownerCapability === "token_service"
-      ? { ownerCapability }
+      ? {
+          ownerCapability,
+          ...(row.token_service_instance_id == null
+            ? {}
+            : { tokenServiceInstanceId: text(row, "token_service_instance_id") }),
+          ...(row.registration == null
+            ? {}
+            : { registration: jsonObject(row.registration) as TokenServiceRegistration }),
+          ...(row.registration_dispatched_at == null
+            ? {}
+            : { registrationDispatchedAt: timestamp(row, "registration_dispatched_at") }),
+        }
       : { ownerCapability, driverId: text(row, "driver_id") }),
     state,
     createdAt: timestamp(row, "created_at"),
@@ -958,6 +979,7 @@ const NAME_CONFLICTS: Readonly<Record<string, string>> = Object.freeze({
   // Not a name: the installation's inline UNIQUE (namespace_id, revision_id). A second
   // Sandbox for one revision is the state conflict the memory store raises, not an id collision.
   egress_installations_namespace_id_revision_id_key: EGRESS_REVISION_INSTALLED_CONFLICT,
+  egress_installations_current_sandbox: EGRESS_SANDBOX_INSTALLED_CONFLICT,
 });
 
 const AUDIT_ROW_CHECKS = new Set([
@@ -2155,6 +2177,28 @@ export class PostgresPlatformState implements PlatformStateStore {
     return rows(result.rows).map(projectAgentAuditRow);
   }
 
+  async findAgentAuditLinkedTurn(
+    unit: PlatformUnitOfWork,
+    namespaceId: string,
+    agentId: string,
+    auditEventId: string,
+  ) {
+    const result = await this.queryInTransaction(unit, SELECT_LINKED_TURN, [
+      namespaceId,
+      agentId,
+      auditEventId,
+    ]);
+    const [row] = rows(result.rows);
+    if (row === undefined) {
+      return undefined;
+    }
+    const event = projectAgentAuditRow(row);
+    if (!isAgentAuditLinkedTurn(event)) {
+      throw new PersistedStateInvalidError("The saved audit message reference is invalid.");
+    }
+    return event;
+  }
+
   /**
    * Hold the native IAM policy barrier on the original unit. The SQL supplier
    * verifies the preheld Installation authority. Account and session writers
@@ -2484,6 +2528,58 @@ export class PostgresPlatformState implements PlatformStateStore {
       getInstallation: async () => {
         const installation = await this.currentInstallation(context);
         return installation === undefined ? undefined : immutableCopy(installation);
+      },
+      selectTokenServiceInstance: async (candidate: TokenServiceInstance) => {
+        const installation = await this.requireInitialized(context);
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+          "token_service_instance:" + installation.id,
+        ]);
+        const [row] = rows(
+          (
+            await client.query(
+              "SELECT id, driver_id, store_identity FROM occ.token_service_instances WHERE installation_id=$1",
+              [installation.id],
+            )
+          ).rows,
+        );
+        if (
+          row &&
+          text(row, "driver_id") === candidate.driverId &&
+          text(row, "store_identity") === candidate.storeIdentity
+        ) {
+          return immutableCopy({
+            id: text(row, "id"),
+            driverId: text(row, "driver_id"),
+            storeIdentity: text(row, "store_identity"),
+          });
+        }
+        if (row) {
+          const id = text(row, "id");
+          if (id === candidate.id) {
+            throw new ResourceStateConflictError(
+              "The TokenService instance still has registrations.",
+            );
+          }
+          try {
+            await client.query("DELETE FROM occ.token_service_instances WHERE id=$1", [id]);
+          } catch (error) {
+            const failure = asRecord(error);
+            if (
+              (failure?.code === "23001" || failure?.code === "23503") &&
+              failure.constraint === "credential_sources_token_service_instance_id_fkey"
+            ) {
+              throw new ResourceStateConflictError(
+                "The TokenService instance still has registrations.",
+              );
+            }
+            throw error;
+          }
+        }
+        await client.query(
+          "INSERT INTO occ.token_service_instances (installation_id,id,driver_id,store_identity) VALUES ($1,$2,$3,$4)",
+          [installation.id, candidate.id, candidate.driverId, candidate.storeIdentity],
+        );
+        return immutableCopy(candidate);
       },
       createInstallation: async (installation) => {
         if ((await this.currentInstallation(context)) !== undefined) {
@@ -3258,7 +3354,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
       findEgressInstallation: async (senderId, sandboxId) => {
         const result = await client.query(
-          `${currentEgressInstallation} WHERE sender_id = $1 AND sandbox_id = $2`,
+          `${currentEgressInstallation} WHERE sender_id = $1 AND sandbox_id = $2 AND NOT retired`,
           [senderId, sandboxId],
         );
         const row = rows(result.rows)[0];
@@ -3292,8 +3388,9 @@ export class PostgresPlatformState implements PlatformStateStore {
           `INSERT INTO occ.egress_installations (sender_id, sandbox_id, namespace_id, revision_id, installation, agent_id)
           SELECT $1, $2, $3, $4, $5::jsonb, $7 FROM occ.agent_revisions
           WHERE namespace_id = $3 AND id = $4 AND admitted_spec->'egress_plan' = $6::jsonb
-          ON CONFLICT (sender_id, sandbox_id) DO UPDATE SET installation = occ.egress_installations.installation
-          WHERE occ.egress_installations.installation->'plan' = EXCLUDED.installation->'plan'
+          ON CONFLICT (sender_id, sandbox_id, revision_id) DO UPDATE SET installation = occ.egress_installations.installation
+          WHERE NOT occ.egress_installations.retired
+            AND occ.egress_installations.installation->'plan' = EXCLUDED.installation->'plan'
             AND occ.egress_installations.installation->'sender' = EXCLUDED.installation->'sender'
             AND occ.egress_installations.installation->'enforcement' = EXCLUDED.installation->'enforcement'`,
           [
@@ -3311,6 +3408,12 @@ export class PostgresPlatformState implements PlatformStateStore {
             "Egress installation does not match its admitted execution.",
           );
         }
+      },
+      retireEgressInstallation: async (namespaceId, revisionId) => {
+        await client.query(
+          "UPDATE occ.egress_installations SET retired = true WHERE namespace_id = $1 AND revision_id = $2 AND NOT retired",
+          [namespaceId, revisionId],
+        );
       },
       admitEgressSource: async (namespaceId, sourceId, expectedGeneration, egress) => {
         const updated = await client.query(
@@ -3460,8 +3563,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         }
         await client.query(
           `INSERT INTO occ.credential_sources
-           (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability)
-           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10)`,
+           (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability, token_service_instance_id, registration, registration_dispatched_at)
+           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $11, $12::jsonb, $13)`,
           [
             source.id,
             source.namespaceId,
@@ -3473,6 +3576,15 @@ export class PostgresPlatformState implements PlatformStateStore {
             source.createdAt,
             source.egress === undefined ? null : JSON.stringify(source.egress),
             source.ownerCapability,
+            source.ownerCapability === "token_service"
+              ? (source.tokenServiceInstanceId ?? null)
+              : null,
+            source.ownerCapability === "token_service" && source.registration !== undefined
+              ? JSON.stringify(source.registration)
+              : null,
+            source.ownerCapability === "token_service"
+              ? (source.registrationDispatchedAt ?? null)
+              : null,
           ],
         );
         if (secretInputs.length > 0) {
@@ -3527,13 +3639,46 @@ export class PostgresPlatformState implements PlatformStateStore {
         }
         return findCredentialSource(namespaceId, credentialSourceId);
       },
-      markCredentialSourceReady: async (namespaceId, credentialSourceId) => {
+      setCredentialSourceRegistrationDispatch: async (
+        namespaceId,
+        credentialSourceId,
+        dispatchedAt,
+      ) => {
+        const result = await client.query(
+          `UPDATE occ.credential_sources SET registration_dispatched_at=$3
+          WHERE namespace_id=$1 AND id=$2 AND token_service_instance_id IS NOT NULL AND registration IS NULL AND state=$4
+            AND (($3::timestamptz IS NULL AND registration_dispatched_at IS NOT NULL)
+              OR ($3::timestamptz IS NOT NULL AND registration_dispatched_at IS NULL))`,
+          [
+            namespaceId,
+            credentialSourceId,
+            dispatchedAt ?? null,
+            dispatchedAt === undefined ? "deleting" : "registering",
+          ],
+        );
+        return result.rowCount === 1;
+      },
+      updateCredentialSourceConfig: async (namespaceId, credentialSourceId, config) => {
+        const result = await client.query(
+          "UPDATE occ.credential_sources SET config=$3::jsonb WHERE namespace_id=$1 AND id=$2 AND state='ready' AND token_service_instance_id IS NOT NULL",
+          [namespaceId, credentialSourceId, JSON.stringify(config)],
+        );
+        return result.rowCount === 1
+          ? findCredentialSource(namespaceId, credentialSourceId)
+          : undefined;
+      },
+      markCredentialSourceReady: async (namespaceId, credentialSourceId, registration, config) => {
         const updated = await client.query(
-          `UPDATE occ.credential_sources AS cs SET state = 'ready'
+          `UPDATE occ.credential_sources AS cs SET state = 'ready', registration=$3::jsonb, config=COALESCE($4::jsonb,cs.config)
            FROM occ.namespaces AS n
            WHERE cs.namespace_id = $1 AND cs.id = $2 AND cs.state = 'registering'
              AND n.id = cs.namespace_id AND n.deleted_at IS NULL`,
-          [namespaceId, credentialSourceId],
+          [
+            namespaceId,
+            credentialSourceId,
+            registration === undefined ? null : JSON.stringify(registration),
+            config === undefined ? null : JSON.stringify(config),
+          ],
         );
         return updated.rowCount === 1
           ? findCredentialSource(namespaceId, credentialSourceId)
@@ -5892,6 +6037,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         },
         list: async () => {
           await this.requireInitialized(context);
+          // CASE skips revision-specific regex compilation for ordinary lifecycle work.
           const found = rows(
             (
               await client.query(
@@ -5899,7 +6045,10 @@ export class PostgresPlatformState implements PlatformStateStore {
                         namespace_target, agent_target
                  FROM occ.controller_work
                  WHERE work_kind = 'lifecycle'
-                   AND NOT ${repositoryCleanupSql("controller_work")}
+                   AND CASE
+                     WHEN strpos(idempotency_key, '${REPOSITORY_CLEANUP_KEY_SEPARATOR}') = 0 THEN TRUE
+                     ELSE NOT ${repositoryCleanupSql("controller_work")}
+                   END
                  ORDER BY created_at, idempotency_key`,
               )
             ).rows,

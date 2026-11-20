@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-19"
-last_updated_session: "authoring-run/b27b9b49-3582-4508-b240-99f8b49e047d"
+updated: "2026-11-20"
+last_updated_session: "authoring-run/9a96fecc-0b87-4c37-ac1c-12e77468762a"
 ---
 
 # Audit ledger flow
@@ -52,9 +52,11 @@ graph TD
   Queue["Claim or transition work"] --> QueueSQL["Write work change and evidence"]
   QueueSQL --> Pending
   Runtime["Gateway tool and runtime events"] --> RuntimeScope{"Current revision grant?"}
+  ToolGate["Covered tool waits for admission"] --> RuntimeScope
   Sandbox["OpenShell network decision"] --> RuntimeScope
   RuntimeScope -->|Verified| Pending
   RuntimeScope -->|Invalid or retired| Reject
+  Reject -->|Tool admission refused| ToolStop["Block dispatch"]
   Receipt["Covered send receipt"] --> ReceiptSQL["Commit authorization and evidence together"]
   ReceiptSQL --> Pending
   DirectQueue["Pool-backed stale-work recovery"] --> DirectSQL["Run two SQL statements<br/>with transition evidence"]
@@ -62,6 +64,7 @@ graph TD
   DirectSQL -->|later statement fails| Partial["Earlier statement may<br/>already be committed"]
   Pending --> Commit{"State transaction outcome"}
   Commit -->|COMMIT acknowledged| Ledger[("Committed audit rows<br/>in PostgreSQL")]
+  Ledger -->|Tool admission confirmed| ToolRun["Release covered tool"]
   Commit -->|COMMIT acknowledged| Cleanup{"Client cleanup"}
   Commit -->|definite rollback| RolledBack["Discard transaction changes"]
   Commit -->|unknown COMMIT| Unknown["Report unknown;<br/>do not replay automatically"]
@@ -76,6 +79,9 @@ graph TD
   Rows --> Decode["Decode envelope and<br/>recognized metadata"]
   Decode --> Result["Return immutable events"]
   Decode -->|invalid row or JSON| Error["Reject list"]
+  Linked["Open a linked turn"] -->|Both grants| Lookup["Read the saved message"]
+  Lookup -->|Recheck access| Disclose["Commit the disclosure"]
+  Disclose -->|Confirmed| Text["Return message text"]
 
   classDef storage fill:#EDF2F7,stroke:#879AB0,color:#25364A,stroke-width:1px
   classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
@@ -233,74 +239,82 @@ to the same session, Agent, and window.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:ensureGatewayRuntimeAudit`
 and `apps/controller/src/http/runtime-audit.ts`
 
-With audit and Helm-managed Gateway routing enabled, the chart creates a
-private HTTPS service. The OCC worker creates a Kubernetes Secret for the
-revision and saves the hash of its token in PostgreSQL. The Gateway mounts
-the Secret and the service's public CA certificate. A NetworkPolicy permits
-the Gateway to reach the audit listener. Compute withdraws the grant after
-the revision stops and removes the Secret when the revision retires.
+When audit and managed Gateway routing are enabled, Helm creates a private
+HTTPS listener. The OCC worker creates a token for the revision and saves its
+hash in PostgreSQL. The Gateway mounts the token Secret and the listener's
+public CA certificate. A NetworkPolicy permits this connection. Compute
+revokes the grant after the revision stops and deletes the Secret at retirement.
 
-The Gateway sends session, turn, model-call, tool, and approval records to the
-listener. A dedicated OpenClaw worker reports tool activity over its authenticated
-turn connection. The Gateway checks the current turn and its admitted tool
-surface before it attaches the turn IDs. A worker disconnect can prevent a late
-result from reaching the Gateway. The bundled dedicated Codex App Server uses
-its own connection to the Gateway for native execution evidence.
-OCC checks the token and obtains the revision scope from the grant in the
-transaction that appends the event. A retry with the same event ID and values
-returns success and keeps one row. A retry with different values fails.
-The Agent audit API returns the approved runtime fields with the same grant
-and disclosure check as other Agent events.
+Compute loads the OCE audit plugin in the Gateway. It receives stock session,
+turn, model, tool, and approval events. A dedicated OpenClaw worker forwards
+live previews over its authenticated turn connection. A disconnect can leave
+an observation missing.
 
-The managed Gateway writes replayable observations to
-`$OPENCLAW_STATE_DIR/pending-runtime-audit/observations.sqlite` before sending.
-Tool results, policy denials, and approval results that grant no permission
-can be replayed. Positive admission and approval checks belong to the waiting
-execution. When OCC confirms a replayable write, the Gateway removes the local
-copy. A Gateway process restart in the same Pod can send the same event ID
-again. The Gateway checks the credential fingerprint, source, and destination
-before each recovery. The file holds at most 256 pending observations. It
-contains no credential. Kubernetes removes it when it deletes the Pod.
+The plugin queues observations in
+`/home/node/.openclaw/pending-runtime-audit/observations.sqlite`. It warns and
+omits new observations when the 256-entry queue fills. After a restart in the
+same Pod it checks the credential fingerprint, source, and destination before
+retrying. Pod deletion removes the queue. Chat can continue when an observation
+write fails. Covered tool admission uses a separate request.
 
-The Gateway must receive confirmation for a required admission before
-work starts. Sending a saved observation never starts or resumes a turn.
+OCC derives the revision from the token grant in the append transaction.
+Identical event IDs and values return success with one row. Conflicting values
+fail. The plugin removes confirmed observations from the queue.
 
-### 8. The tool owner admits an attempt and observes its result
+### 8. An analyst opens the user message for a turn
 
-`deploy/runtime/openclaw-runtime-audit.patch:withOpenClawRuntimeToolAudit` and
-`deploy/runtime/openclaw-codex-runtime-audit.patch`
+`deploy/runtime/managed-runtime-audit/index.mjs:recordInput`,
+`apps/controller/src/http/agent-audit.ts:getAgentAuditEventMessage` and
+`apps/controller/src/gateway/audit-message-client.ts:readAgentAuditMessage`
 
-The invocation owns one ID across its admission and approval path. OpenClaw
-checks the actual tool gate. A workspace guard records its decision before
-filesystem access. The Gateway records managed MCP approval through the approval
-manager and admits the attempt before node dispatch. The bundled Codex App
-Server waits for the Gateway to confirm native attempt admission before it
-executes covered native tools. A native sandbox retry receives a new attempt ID.
-The Gateway saves admission at final argument validation for Codex host tools.
+The plugin links a turn to its saved user message when it can verify the match.
+See [supported inputs](../guides/topics/audit-log.md#open-the-message-for-a-turn).
 
-An approval request and verdict share an approval ID. The executor awaits
-the admission write before dispatch. It rechecks live execution authority
-after the wait. Once the attempt runs, completion reports the observed result.
-A denied request can have policy and approval evidence without an admitted
-attempt. A dropped reply can leave an unknown result. These records contain
-execution metadata only. See [tool audit](../guides/topics/audit-log.md#tools-approvals-and-policy)
-for the Agent audit fields.
+1. OCC checks the human session and direct `read_audit` and `read_audit_content`
+   grants. It selects a linked turn from the last 24 hours on the Agent's active
+   revision and requires the Agent's desired state to be `running`.
+2. Through the [private Gateway route](../reference/gateway-routing.md#endpoint-and-route),
+   OCC checks `operator.sessions.read`, resolves the session, and gets the message.
+   It checks the message ID, user role, and turn ID. The API allows four concurrent
+   lookups per process, a five-second wait, and 64 KiB of message text.
+3. OCC rechecks access and commits `openclaw.audit.agent.message.read` with the
+   analyst and event ID before it sends the text with `Cache-Control: no-store`.
+   The text stays in the transcript.
 
-### 9. OpenShell enrolls a Sandbox for network observations
+### 9. The Gateway records a tool request and admission
+
+`deploy/runtime/managed-runtime-audit/tools.mjs:createToolAudit` and
+`deploy/runtime/managed-runtime-audit/sink.mjs:createAuditSink`
+
+The plugin links evidence by session, run, and call ID. The Gateway hook waits
+for OCC to confirm the request and admission for a covered tool, including
+Codex calls that reach its native relay. A refusal blocks the call. Later native
+checks can still refuse execution. Observation replay cannot release work.
+
+The managed MCP policy records its decision and review before it calls the
+node executor. Requested and resolved events share an audit approval ID.
+The policy waits for OCC to confirm admission before dispatch. The completion
+reports what the policy observed. A lost downstream reply can leave the outcome
+unknown. Without authenticated turn scope, the policy uses revision scope.
+
+The Gateway observes worker-local requests and bundled Codex results. A Codex
+result can appear without admission. The result gives no native retry count.
+Records exclude tool content.
+See [tool audit](../guides/topics/audit-log.md#tools-approvals-and-policy).
+
+### 10. OpenShell enrolls a Sandbox for network observations
 
 `apps/controller/src/drivers/sandbox/openshell.ts:OpenShellSandboxDriver` and
 `apps/controller/src/http/openshell-runtime-audit.ts:registerOpenShellRuntimeAudit`
 
-When the optional exporter is configured, the Sandbox Driver binds the owned
-Sandbox ID to the revision's audit grant. Cleanup revokes the binding. The
-supervisor exports its supported network decisions after enforcement. The
-private HTTPS listener authenticates the exporter, checks the reported Sandbox
-identity, and derives Agent and revision scope from the enrollment. OCC
-acknowledges the batch after its ledger write. The record keeps the Sandbox ID,
-decision, and source time. The exporter can miss decisions during an outage.
+The Sandbox Driver enrolls the owned Sandbox ID with the revision's audit grant
+and withdraws the binding at cleanup. The supervisor exports supported network
+decisions after enforcement. OCC authenticates the exporter and verifies Sandbox
+identity and enrollment. It saves the Sandbox ID, decision, and source time
+before acknowledging. An outage can leave observations missing.
 See [OpenShell audit setup](../guides/topics/openshell-audit.md).
 
-### 10. A receipt owner authorizes a covered send
+### 11. A receipt owner authorizes a covered send
 
 `packages/occ/src/state/postgres-state.ts:appendReceiptAuthorization` and
 `apps/controller/src/drivers/repo/github/access/prepared-repository-git.ts`
@@ -327,9 +341,7 @@ response establishes only the facts that the receipt owner observed.
   route with real PostgreSQL, grant revocation, a refused disclosure insert,
   and a lost commit acknowledgement.
 - The [First Agent Smoke checks](../testing/ci/first-agent-smoke.md) look for
-  a linked tool result and a containment denial after a real installed turn.
-  The pinned runtime tests also check refusal before mutation and approval
-  before dispatch.
+  a linked tool result and a refused admission during installed model turns.
 - `tests/integration/postgres-repository-transactions.test.ts` contains
   PostgreSQL append, metadata decoding, rejection, and rollback cases. Those
   cases require the [PostgreSQL test setup](../testing/postgresql.md); their
@@ -347,6 +359,12 @@ response establishes only the facts that the receipt owner observed.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 11:55: Trace tool audit through the Gateway plugin and preserve saved message disclosure. (authoring-run/9a96fecc-0b87-4c37-ac1c-12e77468762a - b994780c5ab32cd59534cfb77c449dfbe31ef28f)
+
+- 2026-11-19 17:16: Trace how OCC links a turn to a saved chat message and authorizes the text read. (authoring-run/bccca424-a66f-4ab2-ad5a-e639f845a228 - 04dbfef7e367b86ee5b5275fb510c21798b759b5)
+
+- 2026-11-19 14:28: Record runtime observations through the OCE Gateway plugin. (authoring-run/4dfd652a-6550-45c4-b86a-ce9b35ec4705 - f637b353b485f8610c0f58df801eb5feb577f291)
 
 - 2026-11-19 13:59: Trace managed tool dispatch, network observations, and send receipt authorization. (authoring-run/b27b9b49-3582-4508-b240-99f8b49e047d - 0a07df5f47c4f46422e79d3bf1a7127e6c20cc9a)
 
