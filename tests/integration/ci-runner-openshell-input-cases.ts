@@ -533,9 +533,12 @@ export function registerOpenShellSelectionCases() {
     const lane = await readOpenShellLane();
     const scratch = "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts";
     const gatewayPolicy = "tests/integration/openshell-gateway-tool-policy-real.test.ts";
+    const credentials = "tests/integration/openshell-credentials-real.test.ts";
     const sibling = "tests/integration/local-first-agent-openshell-real.test.mjs";
     const scratchFile = lane.files.find(({ path }) => path === scratch);
     assert.ok(scratchFile?.requiredEnv);
+    const credentialsFile = lane.files.find(({ path }) => path === credentials);
+    assert.ok(credentialsFile?.requiredEnv);
     const inputs = {
       ...Object.fromEntries(scratchFile.requiredEnv.map((name) => [name, "fixture-input"])),
       OPENAI_API_KEY: "synthetic-model-key",
@@ -572,6 +575,18 @@ test("receives selected model inputs", () => {
 });
 `,
     );
+    // A missing credentials guard must admit a harmless input consumer, rather than
+    // fail on an unrelated prerequisite or invoke the real credential replacement test.
+    await writeFile(
+      join(root, credentials),
+      `import assert from "node:assert/strict";
+import test from "node:test";
+test("receives selected model inputs", () => {
+  assert.equal(process.env.OCC_TEST_OPENSHELL_HARNESS, "openclaw");
+  assert.equal(process.env.CODEX_ACCESS_TOKEN, "synthetic-model-token");
+});
+`,
+    );
     await writeFile(join(root, sibling), 'throw new Error("unselected sibling ran");\n');
     const selections: FocusedSelection[] = [
       { lane: "openshell", outcome: "accepted" },
@@ -582,6 +597,15 @@ test("receives selected model inputs", () => {
         env: { OCC_TEST_OPENSHELL_HARNESS: "openclaw", OCC_TEST_OPENSHELL_MODEL_BASE_URL: "" },
       },
       { env: { OCC_TEST_OPENSHELL_HARNESS: "openclaw" }, outcome: "unsupported-harness" },
+      {
+        file: credentials,
+        env: {
+          ...Object.fromEntries(credentialsFile.requiredEnv.map((name) => [name, "fixture-input"])),
+          CODEX_ACCESS_TOKEN: "synthetic-model-token",
+          OCC_TEST_OPENSHELL_HARNESS: "openclaw",
+        },
+        outcome: "unsupported-harness",
+      },
       {
         env: { OCC_TEST_OPENSHELL_MODEL_BASE_URL: "", CODEX_ACCESS_TOKEN: "synthetic-model-token" },
         outcome: "accepted",
@@ -617,7 +641,7 @@ test("receives selected model inputs", () => {
           [name]: {
             ...lane,
             files: lane.files
-              .filter(({ path }) => [scratch, sibling, gatewayPolicy].includes(path))
+              .filter(({ path }) => [scratch, sibling, gatewayPolicy, credentials].includes(path))
               .map((file) => ({
                 ...file,
                 expectedTests: ["receives selected model inputs"],
@@ -636,7 +660,11 @@ test("receives selected model inputs", () => {
       );
       const summary = await readSummary(resultsPath);
       if (value.outcome === "unsupported-harness") {
-        assert.equal(result.status, 1);
+        assert.equal(result.status, 1, JSON.stringify(summary));
+        assert.deepEqual(
+          summary.issues.map(({ code, file }) => ({ code, file })),
+          [{ code: "invalid-file-selection", file: value.file ?? scratch }],
+        );
         const message = summary.issues[0]?.message;
         assert.ok(typeof message === "string");
         assert.match(message, /requires OCC_TEST_OPENSHELL_HARNESS=codex/);
