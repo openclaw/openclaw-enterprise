@@ -7612,7 +7612,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
         if (providerEndpoint !== undefined) {
           // A successor owns its trust before it replaces the shared Gateway.
           await this.prepareRevisionStage("gateway_config_map", () =>
-            this.reconcileHarnessTrust(revision, providerEndpoint, gatewayNamespace, namespace.name),
+            this.reconcileHarnessTrust(
+              revision,
+              providerEndpoint,
+              gatewayNamespace,
+              namespace.name,
+            ),
           );
         }
         if (
