@@ -369,18 +369,19 @@ test("the Namespace Installation administer answer matches what Installation-wid
   assert.ok(Check(InstallationResponse.properties.data, installation));
   const namespace = await fixture.createNamespace("Administer answer", { ready: true });
   const permissionsPath = `/namespaces/${namespace.id}/permissions`;
+  const read = (path: string, session?: Session) =>
+    fixture.request("GET", path, session === undefined ? {} : { session });
   const answer = async (session?: Session) => {
-    const summary = await fixture.request(
-      "GET",
-      permissionsPath,
-      session === undefined ? {} : { session },
-    );
+    const summary = await read(permissionsPath, session);
     assert.equal(summary.status, 200);
     return checkedResponse(fixture, summary, NamespaceCallerPermissionsResponse).data;
   };
-  const backends = (session?: Session) =>
-    fixture.request("GET", "/backends", session === undefined ? {} : { session });
-  const denials = () => authorizationDenials(fixture.auditSink);
+  const backends = (session?: Session) => read("/backends", session);
+  const denials = () =>
+    authorizationDenials(fixture.auditSink).map(({ action, actor }) => [
+      action,
+      actor?.principalId,
+    ]);
 
   // A member with Namespace-wide Agent create does not administer the Installation.
   const member = await fixture.createNamespaceMember("administer-answer", namespace.id, [
@@ -394,10 +395,64 @@ test("the Namespace Installation administer answer matches what Installation-wid
   // A false answer is not an attempted operation: only the real read is audited as denied.
   assert.deepEqual(denials(), []);
   assertApiError(await backends(session), 403, "FORBIDDEN");
-  assert.deepEqual(
-    denials().map((event) => event.action),
-    ["openclaw.backends.list"],
-  );
+  const denial = ["openclaw.backends.list", member.principal.id];
+  assert.deepEqual(denials(), [denial]);
+
+  const { iamDriver } = fixture;
+  const authorize = iamDriver.authorize.bind(iamDriver);
+  let decisionFault: "wrong-driver" | "sparse-group-ids" | undefined;
+  const originalAllowances: boolean[] = [];
+  const mockAuthorize: typeof authorize = async (request) => {
+    const decision = await authorize(request);
+    const { action, resource } = request;
+    if (
+      action !== "administer" ||
+      resource.kind !== "installation" ||
+      resource.id !== installation.id ||
+      resource.namespaceId !== undefined
+    ) {
+      return decision;
+    }
+    originalAllowances.push(decision.allowed);
+    if (decisionFault === "wrong-driver") {
+      return { ...decision, driverId: "different-iam-driver" };
+    }
+    if (decisionFault === "sparse-group-ids") {
+      const groupIds = [...decision.evidence.groupIds];
+      groupIds.length += 1;
+      return { ...decision, evidence: { ...decision.evidence, groupIds } };
+    }
+    // An allowance exposed through a nonenumerable getter must survive validation.
+    return Object.defineProperty({ ...decision }, "allowed", {
+      enumerable: false,
+      get: () => decision.allowed,
+    });
+  };
+  const interposed = t.mock.method(iamDriver, "authorize", mockAuthorize);
+
+  // Both reads refuse a denial from the wrong Driver and an allowance with a missing group ID.
+  for (const [fault, caller, allowed, description] of [
+    ["wrong-driver", session, false, "A mismatched IAM Driver"],
+    ["sparse-group-ids", undefined, true, "Sparse IAM evidence"],
+  ] as const) {
+    decisionFault = fault;
+    for (const [path, operation] of [
+      [permissionsPath, "permissions"],
+      ["/backends", "backends"],
+    ] as const) {
+      const response = await read(path, caller);
+      assert.deepEqual(originalAllowances.splice(0), [allowed], `${fault} on ${path}`);
+      const label = `${description} must fail the ${operation} read`;
+      assert.equal(response.status, 503, label);
+      assert.equal(
+        checkedResponse(fixture, response, ErrorResponse, 503).error.code,
+        "DEPENDENCY_UNAVAILABLE",
+        label,
+      );
+    }
+    assert.deepEqual(denials(), [denial]);
+  }
+  decisionFault = undefined;
 
   // An administrator whose Restriction denies Agent create in this Namespace still administers
   // the Installation: Agent create says nothing about it. The Restriction is Namespace-wide, so
@@ -407,6 +462,13 @@ test("the Namespace Installation administer answer matches what Installation-wid
   assert.deepEqual(restricted.agents, { create: false });
   assert.deepEqual(restricted.installation, { administer: true });
   assert.equal((await backends()).status, 200);
+  assert.deepEqual(originalAllowances, [true, true]);
+
+  interposed.mock.restore();
+  assert.deepEqual((await answer(session)).installation, { administer: false });
+  assert.deepEqual(denials(), [denial]);
+  assertApiError(await backends(session), 403, "FORBIDDEN");
+  assert.deepEqual(denials(), [denial, denial]);
 
   // A Restriction on Installation administer changes the answer as it changes the read.
   restrict(fixture.policy, "administer", "installation", { resourceId: installation.id });
