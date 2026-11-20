@@ -1943,17 +1943,21 @@ read_restart_inventory() {
     die "the deployment inventory contains nonterminal Agent work; wait for it to finish before upgrading."
   fi
   if [[ -z "$runtime_image" && "$channel_egress_enabled" != true ]]; then
-    local assessment refusals original_worker_only
+    local assessment refusals original_worker_only assessment_unavailable restart_hint=""
     assessment=$(jq -c '
       [.namespaces[] as $namespace | $namespace.agents[] |
         select(.status == "active" and .desiredRuntimeState == "running" and .activeRevisionId != null) |
         select(.repositoryWorkerRestart != "reverification-supported" and .repositoryWorkerRestart != "not-applicable") |
         {namespace: $namespace.id, agent: .id, revision: .activeRevisionId,
-         reason: (if .repositoryWorkerRestart == "original-worker-required" then "original-worker-required" else "unknown" end)}] |
+         reason: (if .repositoryWorkerRestart == "original-worker-required" then "original-worker-required"
+                  elif .repositoryWorkerRestart == null then "assessment-unavailable"
+                  else "unknown" end)}] |
       {originalWorkerOnly: all(.[]; .reason == "original-worker-required"),
+       assessmentUnavailable: any(.[]; .reason == "assessment-unavailable"),
        refusals: ([.[:10][] | "  Namespace \(.namespace | .[:128] | tojson), Agent \(.agent | .[:128] | tojson), revision \(.revision | .[:128] | tojson): \(.reason)"] | join("\n"))}
     ' "$destination")
-    json_fields "$assessment" refusals=refusals original_worker_only=originalWorkerOnly
+    json_fields "$assessment" refusals=refusals original_worker_only=originalWorkerOnly \
+      assessment_unavailable=assessmentUnavailable
     if [[ -z "$refusals" ]]; then
       return
     fi
@@ -1961,8 +1965,12 @@ read_restart_inventory() {
       retained_revision_blockers=$refusals
       return
     fi
+    if [[ "$assessment_unavailable" == true ]]; then
+      restart_hint="
+assessment-unavailable: the deployed controller does not report this assessment. See docs/reference/repository-credentials/worker-replacement.md for the first upgrade."
+    fi
     die "retained Agent revisions cannot safely pass the repository worker-restart preflight:
-$refusals
+$refusals$restart_hint
 Stop and settle these Agents under an authorized interruption, or plan a normal revision replacement. Inspect $destination for the complete inventory. No additional OCC writer was stopped."
   fi
 }

@@ -353,8 +353,9 @@ export function registerRetainedFleetPreflightTests(
   // These cases exercise the shipped shell and real jq against external command
   // responses. Driver integration separately proves the server's assessment.
   test("repository restart preflight refuses unsafe or incomplete retained fleets before writes", async (t) => {
-    const unsafeDisposition =
-      /Namespace "ns_test", Agent "agt_test", revision "rev_old": (original-worker-required|unknown)/u;
+    const disposition = (reason: string) =>
+      new RegExp(`Namespace "ns_test", Agent "agt_test", revision "rev_old": ${reason}`, "u");
+    const unsafeDisposition = disposition("unknown");
     const futureInventory = {
       ...emptyInventory,
       namespaces: [
@@ -365,9 +366,18 @@ export function registerRetainedFleetPreflightTests(
       ],
     };
     for (const [name, response, expected] of [
-      ...(["original-worker-required", "unknown", "missing"] as const).map(
-        (disposition) => [disposition, restartInventory(disposition), unsafeDisposition] as const,
-      ),
+      [
+        "original-worker-required",
+        restartInventory("original-worker-required"),
+        disposition("original-worker-required"),
+      ],
+      ["unknown", restartInventory("unknown"), unsafeDisposition],
+      // An older controller omits the field. The refusal must say so and link the recovery reference.
+      [
+        "missing",
+        restartInventory("missing"),
+        /assessment-unavailable[\s\S]*does not report this assessment[\s\S]*worker-replacement\.md/u,
+      ],
       ["future-value", futureInventory, unsafeDisposition],
       ["denied", "denied", /cannot read the complete deployment inventory/u],
       ["empty output", "", /inventory is incomplete/u],

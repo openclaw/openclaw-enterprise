@@ -230,6 +230,9 @@ revision requires its original worker. The upgrade remains blocked.
 Stop and settle affected Agents in an authorized interruption or plan a revision
 replacement. With `--verify-agent`, preflight observes the workload before the upgrade.
 
+If the deployed controller is older than the assessment, the helper refuses with
+`assessment-unavailable`. See [first upgrade](../../reference/repository-credentials/worker-replacement.md).
+
 Keep the live immutable Installation Secret or
 [stage a successor](immutable-installation-upgrade.md) before preflight.
 
