@@ -15,6 +15,7 @@ import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { setTimeout as delay } from "node:timers/promises";
+import pg from "pg";
 
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
@@ -585,8 +586,11 @@ test(
   },
 );
 
+const auditMigrationUrl = process.env.OCC_TEST_REPOSITORY_AUDIT_MIGRATION_DATABASE_URL;
+
 for (const mode of [
   "Git only",
+  "audit unavailable",
   "connection failed before any write",
   "created",
   "created in GitHub's spelling",
@@ -594,6 +598,10 @@ for (const mode of [
   "mismatched provider 201",
 ]) {
   test("prepared draft pull: " + mode, { ...requiresPostgres, timeout: 45000 }, async (t) => {
+    if (mode === "audit unavailable" && !auditMigrationUrl) {
+      t.skip("Prepare the dedicated postgres-platform file fixture.");
+      return;
+    }
     const draftPull = mode !== "Git only";
     const settles = mode.startsWith("created");
     // The registry lowercases the repository; GitHub answers with its own spelling (finding 2236).
@@ -607,6 +615,9 @@ for (const mode of [
       permissions,
       withdraw,
       admitReplacement,
+      pool,
+      agent,
+      revision,
     } = await fixture<Broker>(t, {
       draftPull,
       draftResponse:
@@ -664,6 +675,33 @@ for (const mode of [
     }
     assert.equal(observed().length, 0);
     assert.equal(gh.issuesOfTokens.length, 1);
+
+    if (mode === "audit unavailable") {
+      // Reject only the audit insert after the owner has claimed the draft allowance.
+      // Rollback must release the claim and withhold the request from GitHub.
+      const migrator = new pg.Client({ connectionString: auditMigrationUrl });
+      await migrator.connect();
+      try {
+        await migrator.query(`ALTER TABLE occ.audit_events ADD CONSTRAINT reject_repo_audit
+          CHECK (details->>'policy' IS DISTINCT FROM 'repository_send') NOT VALID`);
+        try {
+          assert.ok((await send()).status >= 400);
+          assert.equal(observed().length, 0);
+          const claim = await pool.query(
+            "SELECT receipt_id FROM occ.prepared_repository_draft_pulls WHERE operation_id=$1",
+            [operationId],
+          );
+          assert.equal(claim.rowCount, 0);
+        } finally {
+          await migrator.query("ALTER TABLE occ.audit_events DROP CONSTRAINT reject_repo_audit");
+        }
+      } finally {
+        await migrator.end();
+      }
+      assert.equal((await send()).status, 201);
+      assert.equal(observed().length, 1);
+      return;
+    }
 
     if (mode === "connection failed before any write") {
       // Finding 2429: the GitHub connection fails before TLS, so the broker settles the create
@@ -800,6 +838,25 @@ for (const mode of [
       // GitHub may have created this draft, so the operator log records no refusal.
       assert.deepEqual(b.logs, []);
     }
+    // A retry reads the same receipt, including when the provider reply was lost.
+    // The policy decision proves authorization and links to that receipt's independent result.
+    const { rows } = await pool.query(
+      `SELECT a.details - '__occAuditMetadata' AS details, a.outcome, r.receipt_id FROM occ.audit_events a
+       LEFT JOIN occ.prepared_repository_draft_pulls r ON r.operation_id::text = a.details->>'operationId'
+       WHERE a.resource_id=$1 AND a.action='openclaw.runtime.policy.decided' AND a.details->>'operationId'=$2`,
+      [agent.id, operationId],
+    );
+    assert.equal(rows.length, 1);
+    assert.ok(rows[0].receipt_id);
+    assert.equal(rows[0].outcome, "success");
+    assert.deepEqual(rows[0].details, {
+      agentRevisionId: revision.id,
+      runtimeSource: "occ",
+      policy: "repository_send",
+      decision: "allow",
+      receiptId: rows[0].receipt_id,
+      operationId,
+    });
     // Finding 2429: another operation or a changed request gets the spent allowance's receipt.
     // GitHub received nothing for it, so each is one operation_conflict line.
     b.logs.splice(0);

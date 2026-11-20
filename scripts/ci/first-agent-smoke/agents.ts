@@ -26,6 +26,7 @@ import {
   signInConsole,
   wireField,
   interruptRefusedObservation,
+  withRefusedToolAdmission,
   type LocalSetup,
   type SmokeStack,
   type Pod,
@@ -394,6 +395,202 @@ export async function assertAgentTurnAudit(
     `${label}: stored matching turn start and result (${event.details.outcome}) on ${revisionId}`,
   );
   return event;
+}
+
+export async function assertAgentToolAudit(
+  readAudit: () => Promise<AgentAuditPage>,
+  {
+    label,
+    revisionId,
+    runtimeSource,
+    toolName,
+    previousIds,
+    expected,
+  }: {
+    label: string;
+    revisionId: string;
+    runtimeSource: "openclaw" | "codex";
+    toolName: string;
+    previousIds: ReadonlySet<string>;
+    expected: "admitted-success" | "admission-refused";
+  },
+) {
+  return await waitFor(
+    `${label} ${toolName} audit on ${revisionId}`,
+    async () => {
+      const page = await readAudit();
+      const events = page.events
+        .filter((event) => event.event === "runtime_activity")
+        .filter(
+          (event) =>
+            event.details.runtimeSource === runtimeSource &&
+            event.details.agentRevisionId === revisionId &&
+            !previousIds.has(event.id),
+        );
+      const requests = events.filter(
+        (event) =>
+          event.action === "openclaw.runtime.tool_call.requested" &&
+          event.details.toolName === toolName,
+      );
+      const value = requests.find((request) => {
+        if (request.action !== "openclaw.runtime.tool_call.requested") {
+          return false;
+        }
+        const { sessionId, turnId, invocationId } = request.details;
+        const completedTurn = events.some(
+          (event) =>
+            event.action === "openclaw.runtime.turn.completed" &&
+            event.details.sessionId === sessionId &&
+            event.details.turnId === turnId &&
+            event.details.outcome === "succeeded",
+        );
+        if (!completedTurn) {
+          return false;
+        }
+        const admitted = events.find(
+          (event) =>
+            event.action === "openclaw.runtime.tool_attempt.admitted" &&
+            event.details.boundary === "gateway_hook" &&
+            event.details.sessionId === sessionId &&
+            event.details.turnId === turnId &&
+            event.details.invocationId === invocationId &&
+            event.details.toolName === toolName,
+        );
+        if (expected === "admission-refused") {
+          return (
+            admitted === undefined &&
+            events.some(
+              (event) =>
+                event.action === "openclaw.runtime.policy.decided" &&
+                event.details.policy === "gateway_tool_audit" &&
+                event.details.decision === "deny" &&
+                event.details.sessionId === sessionId &&
+                event.details.turnId === turnId &&
+                event.details.invocationId === invocationId,
+            )
+          );
+        }
+        if (admitted?.action !== "openclaw.runtime.tool_attempt.admitted") {
+          return false;
+        }
+        return events.some(
+          (event) =>
+            event.action === "openclaw.runtime.tool_attempt.completed" &&
+            event.details.boundary === "runtime" &&
+            event.details.sessionId === sessionId &&
+            event.details.turnId === turnId &&
+            event.details.invocationId === invocationId &&
+            event.details.toolName === toolName &&
+            event.details.attemptId === admitted.details.attemptId &&
+            event.details.outcome === "succeeded",
+        );
+      });
+      return {
+        done: value !== undefined,
+        value: events,
+        state: { actions: events.map(({ action }) => action) },
+      };
+    },
+    minute,
+  );
+}
+
+export async function enableEmbeddedFileAuditTool(stack: SmokeStack, agent: SmokeAgent) {
+  const base = `/namespaces/${stack.namespaceId}`;
+  const current = await stack.api("GET", `${base}/agents/${agent.id}`);
+  const configurationId = wireField(current, "configurationId");
+  assert.ok(typeof configurationId === "string" && configurationId.startsWith("cfg_"));
+  const route = `${base}/configurations/${configurationId}`;
+  const configuration = await stack.api("GET", route);
+  const values = wireField(configuration, "values");
+  const expectedGeneration = wireField(configuration, "generation");
+  assert.ok(values && typeof values === "object" && !Array.isArray(values));
+  assert.ok(typeof expectedGeneration === "number");
+  // Keep the first revision's zero-tool configuration. The successor can read workspace files.
+  await stack.api("PATCH", route, {
+    expectedGeneration,
+    values: {
+      ...values,
+      tools: { allow: ["read"], fs: { workspaceOnly: true } },
+    },
+  });
+}
+
+export async function proveEmbeddedFileToolAudit(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  revisionId: string,
+  readAudit: () => Promise<AgentAuditPage>,
+) {
+  const gateway = await readyGateway(stack, agent.id, revisionId);
+  for (const admission of ["succeeded", "refused"] as const) {
+    const id = randomUUID();
+    const nonce = `OCE_SMOKE_audit-read-${id}`;
+    const file = `audit-probe-${id}.txt`;
+    const marker = `AUDIT_TOOL_${randomUUID()}`;
+    const fixture = (remove: boolean) =>
+      kubectl(
+        stack,
+        [
+          "exec",
+          "-i",
+          "-n",
+          gateway.namespace,
+          gateway.pod,
+          "-c",
+          "gateway",
+          "--",
+          "node",
+          "--input-type=module",
+          "-",
+        ],
+        {
+          input: `
+          import { readFile, rm, writeFile } from "node:fs/promises";
+          import { join } from "node:path";
+          const config = JSON.parse(await readFile(process.env.OPENCLAW_CONFIG_PATH, "utf8"));
+          const workspace = config.agents?.defaults?.workspace ?? "/home/node/.openclaw/workspace";
+          const file = join(workspace, ${JSON.stringify(file)});
+          if (${remove}) {
+            await rm(file, { force: true });
+          } else {
+            await writeFile(file, ${JSON.stringify(marker)}, { flag: "wx" });
+          }
+        `,
+          timeout: minute,
+        },
+      );
+    const previousIds = new Set((await readAudit()).events.map(({ id }) => id));
+    try {
+      await fixture(false);
+      const send = () => gatewayChat(stack, gateway, `Read the workspace test file for ${nonce}`);
+      const reply =
+        admission === "refused"
+          ? await withRefusedToolAdmission(stack, revisionId, send)
+          : await send();
+      assertChatReply(reply, admission === "refused" ? "AUDIT_READ_BLOCKED" : marker, agent.label);
+      const events = await assertAgentToolAudit(readAudit, {
+        label: agent.label,
+        revisionId,
+        runtimeSource: "openclaw",
+        toolName: "read",
+        previousIds,
+        expected: admission === "refused" ? "admission-refused" : "admitted-success",
+      });
+      const visible = JSON.stringify(events);
+      for (const privateValue of [nonce, file, marker]) {
+        assert.ok(
+          !visible.includes(privateValue),
+          "file-tool audit disclosed private turn content",
+        );
+      }
+    } finally {
+      await fixture(true);
+    }
+  }
+  log(
+    `${agent.label}: workspace read returned its marker after admission and was blocked on refusal`,
+  );
 }
 
 export async function assertAgentAuditMessage(

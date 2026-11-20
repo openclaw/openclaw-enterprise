@@ -1,7 +1,9 @@
 import { CredentialDeliveryReductions } from "./credential-delivery-reductions.ts";
+import { AuditEventFactory } from "@openclaw-enterprise/audit";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
   assertExecutionAdmission,
+  projectRuntimeAgentAuditDetails,
   CONFIGURED_IAM_ID_PREFIXES,
   CONTROLLER_WORK_AUDIT_ACTIONS,
   isAgentAuditLinkedTurn,
@@ -222,6 +224,7 @@ export interface PersistedNativeIAMState {
 }
 
 export interface PostgresPlatformStateOptions {
+  readonly auditReceiptAuthorizations?: boolean;
   /** Installed Token Service binds its custody proof to this exact transaction. */
   readonly preparedTokenProof?:
     ((transaction: PostgresQueryClient) => PreparedTokenCurrentProof) | undefined;
@@ -1117,6 +1120,95 @@ function auditDetails(event: AuditEvent): Record<string, unknown> | undefined {
   return Object.keys(details).length > 0 ? details : undefined;
 }
 
+async function appendAuditRow(client: PostgresQueryClient, event: AuditEvent) {
+  const details = auditDetails(event);
+  const values = [
+    event.id,
+    event.occurredAt,
+    event.kind,
+    event.actorId,
+    event.action,
+    event.namespaceId ?? null,
+    event.resource.kind,
+    event.resource.id,
+    event.outcome,
+    details === undefined ? null : JSON.stringify(details),
+  ];
+  let inserted;
+  try {
+    // Skip known IDs before the insert trigger checks capacity. A concurrent
+    // delivery may still win the insert, so read the stored row on either conflict.
+    inserted = await client.query(
+      `INSERT INTO occ.audit_events
+       (id, occurred_at, kind, actor_id, action, namespace_id, resource_kind, resource_id,
+        outcome, details)
+       SELECT $1, $2::timestamptz, $3, $4, $5, $6, $7, $8, $9, $10::jsonb
+       WHERE NOT EXISTS (SELECT 1 FROM occ.audit_events WHERE id = $1)
+       ON CONFLICT (id) DO NOTHING`,
+      values,
+    );
+  } catch (error) {
+    const mapped = databaseError(error);
+    throw mapped instanceof AuditAppendUnavailableError || mapped instanceof ScopeViolationError
+      ? mapped
+      : new AuditAppendUnavailableError();
+  }
+  if (inserted.rowCount === 0) {
+    const sameEvent = await client.query(
+      `SELECT id FROM occ.audit_events
+       WHERE id = $1 AND occurred_at = $2::timestamptz AND kind = $3
+         AND actor_id = $4 AND action = $5 AND namespace_id IS NOT DISTINCT FROM $6
+         AND resource_kind = $7 AND resource_id = $8 AND outcome = $9
+         AND details IS NOT DISTINCT FROM $10::jsonb`,
+      values,
+    );
+    if (sameEvent.rowCount !== 1) {
+      throw new ResourceConflictError("The audit event ID already identifies different evidence.");
+    }
+  }
+}
+
+// Called by the receipt owner inside the transaction that authorizes its send.
+export async function appendReceiptAuthorization(
+  client: PostgresQueryClient,
+  scope: { installationId: string; namespaceId: string; agentId: string; revisionId: string },
+  receipt:
+    | { policy: "repository_send"; receiptId: string; operationId?: string }
+    | {
+        policy: "egress_send";
+        senderId: string;
+        senderGeneration: number;
+        instanceId: string;
+        useId: string;
+        attemptId: string;
+      },
+) {
+  const action = "openclaw.runtime.policy.decided";
+  const projection = projectRuntimeAgentAuditDetails(action, {
+    ...receipt,
+    decision: "allow",
+    runtimeSource: "occ",
+    agentRevisionId: scope.revisionId,
+  });
+  if (!projection) {
+    throw new ScopeViolationError("Invalid audit receipt reference.");
+  }
+  const event = new AuditEventFactory().create({
+    installationId: scope.installationId,
+    namespaceId: scope.namespaceId,
+    resource: { kind: "agent", id: scope.agentId, namespaceId: scope.namespaceId },
+    kind: "runtime_activity",
+    actor: { unresolved: true },
+    action,
+    outcome: "success",
+    details: projection.details,
+  });
+  if (!isDeepStrictEqual(event.details, projection.details)) {
+    throw new ScopeViolationError("Invalid audit receipt reference.");
+  }
+  await appendAuditRow(client, event);
+}
+
 function auditFromRow(row: PostgresRow, installationId: string): Readonly<AuditEvent> {
   const namespaceId = optionalText(row, "namespace_id");
   const resourceKind = text(row, "resource_kind");
@@ -1376,6 +1468,7 @@ type StoredGatewayRuntimeGrant = GatewayRuntimeAuditGrant & { readonly tokenDige
 export class PostgresPlatformState implements PlatformStateStore {
   readonly auditSink: PlatformAuditSink;
   private readonly pool: PostgresPool;
+  private readonly auditReceiptAuthorizations: boolean;
   private readonly queueOptions: PostgresWorkQueueOptions;
   private readonly preparedTokenProof: NonNullable<
     PostgresPlatformStateOptions["preparedTokenProof"]
@@ -1388,6 +1481,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     this.pool = pool;
     this.preparedTokenProof =
       options.preparedTokenProof ?? (() => ({ current: async () => false }));
+    this.auditReceiptAuthorizations = options.auditReceiptAuthorizations === true;
     this.queueOptions = Object.freeze({ ...(options.workQueue ?? {}) });
     this.bootstrapNativeIAM = options.bootstrapNativeIAM;
     const auditWriteTimeoutMs = options.auditWriteTimeoutMs;
@@ -1777,6 +1871,79 @@ export class PostgresPlatformState implements PlatformStateStore {
       [grant.namespaceId, grant.agentId, grant.agentRevisionId, grant.runtimeSource],
     );
     return grants.length > 0;
+  }
+
+  async bindSandboxRuntimeAudit(
+    revision: { readonly namespaceId: string; readonly agentId: string; readonly id: string },
+    sandboxId: string,
+  ): Promise<void> {
+    // Execution-cluster Gateways have no grant for the control-cluster listener.
+    await this.transactReadCommitted((unit) =>
+      this.queryInTransaction(
+        unit,
+        `INSERT INTO occ.sandbox_runtime_audit_bindings (namespace_id, agent_id, revision_id, sandbox_id)
+         SELECT namespace_id, agent_id, revision_id, $4 FROM occ.gateway_runtime_audit_grants
+         WHERE (namespace_id, agent_id, revision_id) = ($1, $2, $3) FOR KEY SHARE
+         ON CONFLICT (namespace_id, agent_id, revision_id)
+         DO UPDATE SET sandbox_id = EXCLUDED.sandbox_id
+           WHERE sandbox_runtime_audit_bindings.sandbox_id <> EXCLUDED.sandbox_id`,
+        [revision.namespaceId, revision.agentId, revision.id, sandboxId],
+      ),
+    );
+  }
+
+  async unbindSandboxRuntimeAudit(revision: {
+    readonly namespaceId: string;
+    readonly agentId: string;
+    readonly id: string;
+  }): Promise<void> {
+    await this.transact((unit) =>
+      this.queryInTransaction(
+        unit,
+        `DELETE FROM occ.sandbox_runtime_audit_bindings
+         WHERE (namespace_id, agent_id, revision_id) = ($1, $2, $3)`,
+        [revision.namespaceId, revision.agentId, revision.id],
+      ),
+    );
+  }
+
+  async appendSandboxRuntimeAudit(
+    sandboxId: string,
+    build: (
+      installationId: string,
+      grant: Omit<GatewayRuntimeAuditGrant, "runtimeSource">,
+    ) => readonly AuditEvent[],
+  ): Promise<void> {
+    await this.transactReadCommitted(async (unit) => {
+      await this.boundAgentAuditTransaction(unit);
+      // Removing the revision grant cascades to the locked binding. Revocation
+      // and Sandbox replacement must serialize with all appends in this batch.
+      const result = await this.queryInTransaction(
+        unit,
+        `SELECT binding.namespace_id, binding.agent_id, binding.revision_id
+         FROM occ.sandbox_runtime_audit_bindings AS binding
+         JOIN occ.agents AS agent ON (agent.namespace_id, agent.id) = (binding.namespace_id, binding.agent_id)
+         WHERE binding.sandbox_id = $1 AND agent.status = 'active'
+         FOR SHARE OF agent, binding`,
+        [sandboxId],
+      );
+      const row = rows(result.rows)[0];
+      if (row === undefined) {
+        return;
+      }
+      const installation = await unit.installations.getInstallation();
+      if (installation === undefined) {
+        throw new ScopeViolationError("A runtime audit event requires an Installation.");
+      }
+      const events = build(installation.id, {
+        namespaceId: text(row, "namespace_id"),
+        agentId: text(row, "agent_id"),
+        agentRevisionId: text(row, "revision_id"),
+      });
+      for (const event of events) {
+        await unit.audit.append(event);
+      }
+    });
   }
 
   async appendGatewayRuntimeAudit(
@@ -5047,7 +5214,20 @@ export class PostgresPlatformState implements PlatformStateStore {
       iamPolicy,
       repositorySessions: postgresRepositorySessions(client),
       preparedTokenProof: this.preparedTokenProof(client),
-      egressSendReceipts: postgresEgressSendReceipts(client),
+      egressSendReceipts: postgresEgressSendReceipts(
+        client,
+        this.auditReceiptAuthorizations
+          ? (input, authorization) =>
+              appendReceiptAuthorization(client, authorization.association.execution, {
+                policy: "egress_send",
+                senderId: input.sender.id,
+                senderGeneration: input.sender.generation,
+                instanceId: input.instanceId,
+                useId: input.useId,
+                attemptId: input.attemptId,
+              })
+          : undefined,
+      ),
       provisioning: {
         findByWorkId: async (workId) => {
           const found = rows(
@@ -5754,54 +5934,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           if (event.resource.namespaceId !== event.namespaceId) {
             throw new ScopeViolationError("The audit event and resource scopes do not match.");
           }
-          const details = auditDetails(event);
-          const values = [
-            event.id,
-            event.occurredAt,
-            event.kind,
-            event.actorId,
-            event.action,
-            event.namespaceId ?? null,
-            event.resource.kind,
-            event.resource.id,
-            event.outcome,
-            details === undefined ? null : JSON.stringify(details),
-          ];
-          let inserted;
-          try {
-            // Skip known IDs before the insert trigger checks capacity. A concurrent
-            // delivery may still win the insert, so read the stored row on either conflict.
-            inserted = await client.query(
-              `INSERT INTO occ.audit_events
-               (id, occurred_at, kind, actor_id, action, namespace_id, resource_kind, resource_id,
-                outcome, details)
-               SELECT $1, $2::timestamptz, $3, $4, $5, $6, $7, $8, $9, $10::jsonb
-               WHERE NOT EXISTS (SELECT 1 FROM occ.audit_events WHERE id = $1)
-               ON CONFLICT (id) DO NOTHING`,
-              values,
-            );
-          } catch (error) {
-            const mapped = databaseError(error);
-            throw mapped instanceof AuditAppendUnavailableError ||
-              mapped instanceof ScopeViolationError
-              ? mapped
-              : new AuditAppendUnavailableError();
-          }
-          if (inserted.rowCount === 0) {
-            const sameEvent = await client.query(
-              `SELECT id FROM occ.audit_events
-               WHERE id = $1 AND occurred_at = $2::timestamptz AND kind = $3
-                 AND actor_id = $4 AND action = $5 AND namespace_id IS NOT DISTINCT FROM $6
-                 AND resource_kind = $7 AND resource_id = $8 AND outcome = $9
-                 AND details IS NOT DISTINCT FROM $10::jsonb`,
-              values,
-            );
-            if (sameEvent.rowCount !== 1) {
-              throw new ResourceConflictError(
-                "The audit event ID already identifies different evidence.",
-              );
-            }
-          }
+          await appendAuditRow(client, event);
         },
         list: async () => {
           const installation = await this.currentInstallation(context);

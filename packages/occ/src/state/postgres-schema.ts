@@ -1300,6 +1300,34 @@ export const gatewayRuntimeAuditGrants = occSchema.table(
   ],
 );
 
+export const sandboxRuntimeAuditBindings = occSchema.table(
+  "sandbox_runtime_audit_bindings",
+  {
+    sandboxId: uuid("sandbox_id").primaryKey(),
+    namespaceId: text("namespace_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    revisionId: text("revision_id").notNull(),
+  },
+  (table) => [
+    unique("sandbox_runtime_audit_bindings_revision_unique").on(
+      table.namespaceId,
+      table.agentId,
+      table.revisionId,
+    ),
+    foreignKey({
+      name: "sandbox_runtime_audit_bindings_revision_owner",
+      columns: [table.namespaceId, table.agentId, table.revisionId],
+      foreignColumns: [
+        gatewayRuntimeAuditGrants.namespaceId,
+        gatewayRuntimeAuditGrants.agentId,
+        gatewayRuntimeAuditGrants.revisionId,
+      ],
+    })
+      .onDelete("cascade")
+      .onUpdate("restrict"),
+  ],
+);
+
 export const auditEvents = occSchema.table(
   "audit_events",
   {

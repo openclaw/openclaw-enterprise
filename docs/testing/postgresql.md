@@ -69,6 +69,12 @@ retain the state if cleanup fails. The `postgres`, `postgres-platform`, and
 `postgres-auth` lanes use the same prepare, run, and cleanup pattern; see
 [CI lanes](ci/full-integration.md#scenarios).
 
+For the draft pull audit failure case, use `postgres-platform` and select
+`tests/integration/postgres-prepared-repository-git-broker.test.ts` in both
+commands. The file fixture sets `OCC_TEST_REPOSITORY_AUDIT_MIGRATION_DATABASE_URL`
+so the test can reject an audit insert in its disposable database. The broker
+uses the application role throughout the failure and retry.
+
 The container engine assigns each prepared server a loopback host port.
 Preparation records the
 verified mapping before connecting; it does not use the shared development port

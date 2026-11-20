@@ -16,6 +16,8 @@ import { privateBootstrapDirectory } from "../helpers/bootstrap-installation.mjs
 import { selfSigned } from "../helpers/certificates.ts";
 import { withPool } from "../helpers/postgres-database.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
+import { checkManagedMcpAudit } from "./postgres-agent-audit-mcp-case.ts";
+import { checkSandboxAudit } from "./postgres-agent-audit-sandbox-case.ts";
 
 type App = Parameters<typeof startGatewayRuntimeAuditListener>[0];
 const route = "/internal/runtime-audit";
@@ -41,7 +43,7 @@ async function startListener(t: TestContext, app: App) {
   assert.ok(address && typeof address !== "string");
   const agent = new HttpsAgent({ secureContext: createSecureContext({ ca: tls.cert }) });
   t.after(() => agent.destroy());
-  return (event: unknown, token: string, source = "openclaw", path = route) =>
+  const post = (event: unknown, token: string, source = "openclaw", path = route) =>
     new Promise<number | undefined>((resolve, reject) => {
       const request = httpsRequest(
         {
@@ -51,7 +53,7 @@ async function startListener(t: TestContext, app: App) {
           agent,
           method: "POST",
           headers: {
-            "content-type": "application/json",
+            "content-type": Buffer.isBuffer(event) ? "application/x-protobuf" : "application/json",
             "x-openclaw-runtime-audit-source": source,
             authorization: `Bearer ${token}`,
           },
@@ -63,8 +65,9 @@ async function startListener(t: TestContext, app: App) {
         },
       );
       request.once("error", reject);
-      request.end(JSON.stringify(event));
+      request.end(Buffer.isBuffer(event) ? event : JSON.stringify(event));
     });
+  return { post, ca: tls.cert, url: `https://127.0.0.1:${address.port}${route}` };
 }
 
 function credential(revision: AgentRevision, runtimeSource: "openclaw" | "codex" = "openclaw") {
@@ -94,7 +97,7 @@ export async function checkGatewayAudit(
   },
 ) {
   const { app, state, pool, migrationUrl, revision, replacementId } = input;
-  const post = await startListener(t, app);
+  const { post, ca, url } = await startListener(t, app);
   const { grant, token } = credential(revision);
   const replacement = credential({ ...revision, id: replacementId });
   const other = credential(input.other);
@@ -259,5 +262,40 @@ export async function checkGatewayAudit(
   assert.deepEqual(
     persisted.rows.map((row) => row.id),
     events.map((entry) => entry.id),
+  );
+
+  const send = (event: unknown) => post(event, replacement.token);
+  const policy = {
+    ...envelope(),
+    ...turn,
+    boundary: "runtime",
+    action: "openclaw.runtime.policy.decided",
+    toolName: "read",
+    invocationId: randomUUID(),
+    decision: "deny",
+  };
+  assert.equal(await send({ ...policy, policy: "tool_policy", rationale: "private input" }), 400);
+  assert.equal(await send({ ...policy, policy: "codex_guardian" }), 403);
+  for (const owner of [
+    { policy: "network_policy", sandboxId: randomUUID() },
+    { policy: "repository_send", receiptId: randomUUID() },
+  ]) {
+    assert.equal(
+      await send({ ...envelope(), action: policy.action, decision: "allow", ...owner }),
+      400,
+    );
+  }
+  await checkManagedMcpAudit(t, {
+    url,
+    ca,
+    pool,
+    migrationUrl,
+    token: replacement.token,
+    agentId: revision.agentId,
+    revisionId: replacementId,
+    readPage: () => input.readPage(revision.agentId),
+  });
+  await checkSandboxAudit(state, { ...revision, id: replacementId }, replacement, post, () =>
+    input.readPage(revision.agentId),
   );
 }

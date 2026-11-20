@@ -86,6 +86,15 @@ spec:
             matchLabels:
               app.kubernetes.io/managed-by: openclaw-enterprise
               openclaw.dev/workload-role: gateway
+        {{- if .Values.controlPlaneAudit.openShellExporterSecret }}
+        - namespaceSelector:
+            matchLabels:
+              openshell.ai/openclaw-workspace: "true"
+          podSelector:
+            matchLabels:
+              openshell.ai/managed-by: openshell
+              openshell.ai/boundary-role: supervisor
+        {{- end }}
       ports:
         - protocol: TCP
           port: {{ $port }}

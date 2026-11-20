@@ -410,6 +410,9 @@ export async function startApi(env: ApiEnvironment): Promise<void> {
     ? chartRuntimeAudit(env.OCC_CHART_RUNTIME_AUDIT)
     : undefined;
   const compositionSettings = {
+    ...(privateRuntimeAudit !== undefined && env.OCC_CHART_OPENSHELL_AUDIT === "true"
+      ? { openShellAuditHeaders: await readFile("/etc/openclaw/openshell-audit/headers", "utf8") }
+      : {}),
     ...(consoleTheme === undefined ? {} : { consoleTheme }),
     logger,
     logging,

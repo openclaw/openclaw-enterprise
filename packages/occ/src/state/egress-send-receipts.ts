@@ -9,6 +9,7 @@ import {
   outcome,
   receipt,
   type EgressSendReceiptRepository,
+  type AuthorizedSend,
   type SendAttempt,
   type StoredSendReceipt,
 } from "../egress-send-receipts.ts";
@@ -114,9 +115,12 @@ export function memoryEgressSendReceipts(
   };
 }
 
-export function postgresEgressSendReceipts(client: {
-  query(sql: string, values: unknown[]): Promise<{ rows: unknown[] }>;
-}): EgressSendReceiptRepository {
+export function postgresEgressSendReceipts(
+  client: {
+    query(sql: string, values: unknown[]): Promise<{ rows: unknown[] }>;
+  },
+  auditAuthorization?: (attempt: SendAttempt, authorization: AuthorizedSend) => Promise<void>,
+): EgressSendReceiptRepository {
   const where =
     "sender_id=$1 AND sender_generation=$2 AND instance_id=$3 AND use_id=$4 AND attempt_id=$5";
   return {
@@ -156,6 +160,9 @@ export function postgresEgressSendReceipts(client: {
           " AND authorized_dispatch IS NULL AND NOT settled AND observation IS NULL RETURNING sender_id",
         [...key(input), authorization],
       );
+      if (result.rows.length === 1) {
+        await auditAuthorization?.(input, authorization);
+      }
       return result.rows.length === 1;
     },
     save: async (value) => {

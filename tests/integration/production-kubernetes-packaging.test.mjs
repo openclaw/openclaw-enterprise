@@ -80,18 +80,20 @@ const execute = promisify(execFile);
 
 test("the single audit switch configures private Gateway HTTPS and scopes audit Secrets", async () => {
   const cases = [
-    { audit: false, routing: true },
+    { audit: false, routing: true, exporter: true },
     { audit: true, routing: true },
-    { audit: true, routing: true, apiPort: 10445 },
-    { audit: true, routing: false },
+    { audit: true, routing: true, apiPort: 10445, exporter: true },
+    { audit: true, routing: false, exporter: true },
   ];
-  for (const { audit, apiPort, routing } of cases) {
+  for (const { audit, apiPort, routing, exporter = false } of cases) {
     const privateAudit = audit && routing;
+    const openShellAudit = privateAudit && exporter;
     const objects = await resources(
       (
         await renderProductionChart({
           ...(routing ? gatewayRoutingValues : {}),
           "controlPlaneAudit.enabled": String(audit),
+          ...(exporter && { "controlPlaneAudit.openShellExporterSecret": "exporter-secret" }),
           ...(apiPort === undefined ? {} : { "api.port": String(apiPort) }),
         })
       ).stdout,
@@ -107,6 +109,14 @@ test("the single audit switch configures private Gateway HTTPS and scopes audit 
       const pod = spec.template.spec;
       const container = pod.containers.find((item) => item.name === component);
       const auditConfig = container.env.find((item) => item.name === "OCC_CHART_RUNTIME_AUDIT");
+      assert.equal(
+        container.env.some((item) => item.name === "OCC_CHART_OPENSHELL_AUDIT"),
+        openShellAudit,
+      );
+      assert.equal(
+        pod.volumes.some((v) => v.secret?.secretName === "exporter-secret"),
+        openShellAudit && component === "api",
+      );
       assert.equal(Boolean(auditConfig), privateAudit);
       const tlsVolume = pod.volumes.find(({ name }) => name === "runtime-audit-tls");
       const caVolume = pod.volumes.find(({ name }) => name === "runtime-audit-ca");
@@ -130,7 +140,18 @@ test("the single audit switch configures private Gateway HTTPS and scopes audit 
           "openclaw-enterprise-runtime-audit-ingress",
         );
         assert.equal(ingress.spec.ingress.length, 1);
-        assert.equal(ingress.spec.ingress[0].from.length, 1);
+        const peers = ingress.spec.ingress[0].from;
+        assert.equal(peers.length, openShellAudit ? 2 : 1);
+        if (openShellAudit) {
+          assert.equal(
+            peers[1].podSelector.matchLabels["openshell.ai/boundary-role"],
+            "supervisor",
+          );
+          assert.equal(
+            peers[1].namespaceSelector.matchLabels["openshell.ai/openclaw-workspace"],
+            "true",
+          );
+        }
         assert.deepEqual(ingress.spec.ingress[0].from[0].podSelector.matchLabels, {
           "app.kubernetes.io/managed-by": "openclaw-enterprise",
           "openclaw.dev/workload-role": "gateway",

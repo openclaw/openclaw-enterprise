@@ -12,6 +12,7 @@ import { databaseUrl, withPool } from "../helpers/postgres-database.mjs";
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.ts";
 import { waitUntil } from "../helpers/wait-for.ts";
 import { checkGatewayAudit } from "./postgres-agent-audit-gateway-case.ts";
+import { openShellAuditHeaders } from "./postgres-agent-audit-sandbox-case.ts";
 
 const authSecret = "agent-audit-reader-postgres-auth-secret";
 const migrationUrl = process.env.OCC_TEST_AGENT_AUDIT_READ_MIGRATION_DATABASE_URL;
@@ -51,6 +52,7 @@ test(
         label: "agent-audit",
         authSecret,
         requestAudit: true,
+        openShellAuditHeaders,
         transportDatabaseUrl: proxy.url,
         controllerOptions: { recordOperations: true },
         stateOptions: { workQueue: { controlPlaneAuditEnabled: true } },

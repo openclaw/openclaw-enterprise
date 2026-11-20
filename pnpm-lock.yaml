@@ -173,6 +173,9 @@ importers:
       '@azure/identity':
         specifier: 4.14.1
         version: 4.14.1
+      '@openclaw-enterprise/audit':
+        specifier: workspace:*
+        version: link:../audit
       '@openclaw-enterprise/contracts':
         specifier: workspace:*
         version: link:../contracts

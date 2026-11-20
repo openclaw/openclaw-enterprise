@@ -610,6 +610,13 @@
       "when": 1787000000087,
       "tag": "0087_audit_message_read",
       "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1787000000088,
+      "tag": "0088_sandbox_audit",
+      "breakpoints": true
     }
   ]
 }

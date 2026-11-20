@@ -506,6 +506,17 @@ PostgreSQL deletes the matching grant.
 - `revision_id`
 - `runtime_source`
 
+### `sandbox_runtime_audit_bindings`
+
+Maps an OpenShell Sandbox ID to the Agent revision that owns its network
+decisions. PostgreSQL deletes the binding when OCC revokes the revision’s
+Gateway audit grant.
+
+- `sandbox_id`
+- `namespace_id`
+- `agent_id`
+- `revision_id`
+
 ### `controller_work`
 
 Queues and tracks controller work for Namespace and Agent lifecycle changes, Agent provisioning, and version deployments.

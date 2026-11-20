@@ -253,6 +253,73 @@ function publicReadEvents(model, request) {
   ];
 }
 
+// The provider learns the marker only from a real workspace read result.
+function fileAuditEvents(model, request, caller) {
+  if (!publicReadJourney || caller !== "embedded") {
+    return undefined;
+  }
+  let body;
+  try {
+    body = JSON.parse(request);
+  } catch {
+    return undefined;
+  }
+  const { input, tools } = body ?? {};
+  if (!Array.isArray(input)) {
+    return undefined;
+  }
+  const output = input.findLast(
+    (item) =>
+      item.type === "function_call_output" && /^call_audit_read_[a-f0-9-]{36}$/u.test(item.call_id),
+  );
+  if (output) {
+    const marker = JSON.stringify(output.output ?? "").match(/AUDIT_TOOL_[a-f0-9-]{36}/u)?.[0];
+    return answerEvents(model, marker ?? "AUDIT_READ_BLOCKED");
+  }
+  const user = input.findLast((item) => item.role === "user");
+  const id = /OCE_SMOKE_audit-read-([a-f0-9-]{36})/u.exec(JSON.stringify(user?.content ?? ""))?.[1];
+  if (!id) {
+    return undefined;
+  }
+  if (
+    !Array.isArray(tools) ||
+    !tools.some((tool) => tool.type === "function" && tool.name === "read")
+  ) {
+    return answerEvents(model, "AUDIT_READ_TOOL_MISSING");
+  }
+  return fileReadEvents(model, {
+    responseId: `resp_audit_read_${id}`,
+    itemId: `fc_audit_read_${id}`,
+    callId: `call_audit_read_${id}`,
+    path: `audit-probe-${id}.txt`,
+  });
+}
+
+function fileReadEvents(model, { responseId, itemId, callId, path }) {
+  const item = {
+    id: itemId,
+    type: "function_call",
+    status: "completed",
+    call_id: callId,
+    name: "read",
+    arguments: JSON.stringify({ path }),
+  };
+  const slot = { item_id: item.id, output_index: 0 };
+  const base = { id: responseId, object: "response", model, created_at: 1 };
+  return [
+    { type: "response.created", response: { ...base, status: "in_progress", output: [] } },
+    {
+      type: "response.output_item.added",
+      output_index: 0,
+      item: { ...item, arguments: "", status: "in_progress" },
+    },
+    { type: "response.function_call_arguments.delta", ...slot, delta: item.arguments },
+    { type: "response.function_call_arguments.done", ...slot, arguments: item.arguments },
+    { type: "response.output_item.done", output_index: 0, item },
+    { type: "response.completed", response: { ...base, status: "completed", output: [item] } },
+  ];
+}
+
 // The replacement gets only a continuation prompt. Return a successful
 // continuation answer only when the incoming request already carries the tool
 // result and prior reply. The provider never asks for a second file read.
@@ -317,28 +384,12 @@ function workspaceHistoryEvents(model, request) {
     });
     return answerEvents(model, "Ordinary workspace read tool missing");
   }
-  const item = {
-    id: "fc_gateway_history",
-    type: "function_call",
-    status: "completed",
-    call_id: callId,
-    name: "read",
-    arguments: JSON.stringify({ path: "gateway-history.txt" }),
-  };
-  const slot = { item_id: item.id, output_index: 0 };
-  const base = { id: "resp_gateway_history", object: "response", model, created_at: 1 };
-  return [
-    { type: "response.created", response: { ...base, status: "in_progress", output: [] } },
-    {
-      type: "response.output_item.added",
-      output_index: 0,
-      item: { ...item, arguments: "", status: "in_progress" },
-    },
-    { type: "response.function_call_arguments.delta", ...slot, delta: item.arguments },
-    { type: "response.function_call_arguments.done", ...slot, arguments: item.arguments },
-    { type: "response.output_item.done", output_index: 0, item },
-    { type: "response.completed", response: { ...base, status: "completed", output: [item] } },
-  ];
+  return fileReadEvents(model, {
+    responseId: "resp_gateway_history",
+    itemId: "fc_gateway_history",
+    callId,
+    path: "gateway-history.txt",
+  });
 }
 
 // Answer one model turn after the configured delay, unless the caller left.
@@ -363,6 +414,7 @@ function turn(transport, model, request, respond, closed, caller) {
     respond(
       skipperFixture?.({ model, request, answerEvents, emit }) ??
         publicReadEvents(model, request) ??
+        fileAuditEvents(model, request, caller) ??
         workspaceHistoryEvents(model, request) ??
         answerEvents(model, text),
     );

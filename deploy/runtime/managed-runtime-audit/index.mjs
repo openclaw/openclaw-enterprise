@@ -2,12 +2,22 @@ import {
   isAgentLifecycleYieldedWaiting,
   resolveAgentRunLifecycleTerminalFacts,
 } from "openclaw/plugin-sdk/agent-lifecycle";
+import { onInternalDiagnosticEvent } from "openclaw/plugin-sdk/diagnostic-runtime";
+import { getPluginRuntimeGatewayRequestScope } from "openclaw/plugin-sdk/plugin-runtime";
 
-import { subscribeCodexResponses } from "./codex.mjs";
-import { createAuditSink } from "./sink.mjs";
+import { registerCodexGuardianSubscription, subscribeCodexResponses } from "./codex.mjs";
+import { registerManagedMcpAudit } from "./managed-mcp.mjs";
+import { createAuditSink, hasAuditDestination } from "./sink.mjs";
+import {
+  createToolAudit,
+  toolAdmissionBudgetMs,
+  toolAdmissionRefused,
+  toolDiagnosticTypes,
+} from "./tools.mjs";
 
 const id = "oce-runtime-audit";
 const maxTrackedTurns = 4096;
+const toolAdmissionHookTimeoutMs = toolAdmissionBudgetMs + 1_000;
 const terminalOutcomes = {
   completed: "succeeded",
   hard_timeout: "failed",
@@ -125,10 +135,49 @@ function recordModel({ sessionId, runId, callId, model, provider, outcome, failu
   });
 }
 
-function createService(runtime) {
+function managedMcpToolNames(config) {
+  const policy = config.plugins?.entries?.["oce-managed-mcp-policy"];
+  if (policy?.enabled !== true) {
+    return new Set();
+  }
+  return new Set(
+    Object.entries(policy.config?.servers ?? {}).flatMap(([server, tools]) =>
+      Object.keys(tools).map((tool) => `${server}_${tool}`),
+    ),
+  );
+}
+
+function resolveSession(turns, runId) {
+  let sessionId;
+  for (const [key, started] of turns) {
+    if (started) {
+      const [session, run] = JSON.parse(key);
+      if (run === runId) {
+        if (sessionId !== undefined) {
+          return;
+        }
+        sessionId = session;
+      }
+    }
+  }
+  return sessionId;
+}
+
+function resolveToolAdmissionBudget(config) {
+  const hooks = config.plugins?.entries?.[id]?.hooks;
+  const configured = hooks?.timeouts?.before_tool_call ?? hooks?.timeoutMs;
+  if (Number.isSafeInteger(configured) && configured > 0) {
+    return Math.min(toolAdmissionBudgetMs, Math.max(1, configured - 100));
+  }
+  return toolAdmissionBudgetMs;
+}
+
+function createService(runtime, config) {
   let owner;
   let unsubscribe;
   let unsubscribeTranscript;
+  let unsubscribeTools;
+  let unregisterManagedMcp;
   return {
     id,
     start() {
@@ -137,11 +186,27 @@ function createService(runtime) {
         return;
       }
       const inputs = new Map();
-      owner = { sink, turns: new Map(), inputs };
+      const turns = new Map();
+      const mcpTools = sink.source === "openclaw" ? managedMcpToolNames(config) : new Set();
+      const tools = createToolAudit(
+        sink,
+        (sessionId, runId) => inputs.get(JSON.stringify([sessionId, runId])),
+        (tool) => mcpTools.has(tool),
+        resolveToolAdmissionBudget(config),
+      );
+      owner = { sink, turns, inputs, tools };
+      unregisterManagedMcp = registerManagedMcpAudit(
+        sink,
+        (runId) => resolveSession(turns, runId),
+        getPluginRuntimeGatewayRequestScope,
+      );
       active = owner;
       unsubscribeTranscript = runtime.events.onSessionTranscriptUpdate((update) =>
         recordInput(inputs, update),
       );
+      unsubscribeTools = onInternalDiagnosticEvent(tools.observeDiagnostic, {
+        include: toolDiagnosticTypes,
+      });
       if (sink.source === "codex") {
         unsubscribe = subscribeCodexResponses(sink.emit);
       }
@@ -149,6 +214,8 @@ function createService(runtime) {
     stop() {
       unsubscribe?.();
       unsubscribeTranscript?.();
+      unsubscribeTools?.();
+      unregisterManagedMcp?.();
       if (active === owner) {
         active = undefined;
       }
@@ -165,7 +232,7 @@ export default {
     if (api.registrationMode !== "full") {
       return;
     }
-    api.registerService(createService(api.runtime));
+    api.registerService(createService(api.runtime, api.config));
     api.agent.events.registerAgentEventSubscription({
       id,
       streams: ["lifecycle"],
@@ -173,6 +240,30 @@ export default {
       payload: "metadata",
       handle: recordLifecycle,
     });
+    api.agent.events.registerAgentEventSubscription({
+      id: `${id}-tool-observations`,
+      streams: ["tool", "approval"],
+      phases: ["start", "requested", "resolved"],
+      payload: "metadata",
+      handle: (event) => active?.tools.observeAgentEvent(event),
+    });
+    registerCodexGuardianSubscription(api, () =>
+      active?.sink.source === "codex" ? active.tools : undefined,
+    );
+    if (hasAuditDestination()) {
+      api.on(
+        "before_tool_call",
+        (event, context) => {
+          if (active) {
+            return active.tools.beforeToolCall(event, context);
+          }
+          if (context.sessionId && context.runId && event.toolCallId) {
+            return toolAdmissionRefused;
+          }
+        },
+        { timeoutMs: toolAdmissionHookTimeoutMs },
+      );
+    }
     api.on("session_start", ({ sessionId, resumedFrom }) => {
       // Reset can start fresh history while keeping the session ID.
       if (sessionId !== resumedFrom) {

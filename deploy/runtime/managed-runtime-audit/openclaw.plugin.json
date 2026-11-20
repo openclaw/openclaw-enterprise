@@ -1,7 +1,7 @@
 {
   "id": "oce-runtime-audit",
   "name": "Runtime audit",
-  "description": "Report session, turn and model activity to OpenClaw Control Plane.",
+  "description": "Report managed runtime activity and record admission for covered Gateway tools.",
   "activation": { "onStartup": true },
   "configSchema": {
     "type": "object",

@@ -6,14 +6,18 @@ import { AuditEventFactory } from "@openclaw-enterprise/audit";
 import {
   RuntimeAuditObservationSchema,
   type RuntimeAuditObservation,
+  type RuntimeAuditSource,
 } from "@openclaw-enterprise/contracts";
 import type { GatewayRuntimeAuditGrant, PostgresPlatformState } from "@openclaw-enterprise/occ";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { Check } from "typebox/value";
 
 import { failure } from "./errors.ts";
 
 export type GatewayRuntimeAuditWriter = Pick<PostgresPlatformState, "appendGatewayRuntimeAudit">;
+type RuntimeGrant = Omit<GatewayRuntimeAuditGrant, "runtimeSource"> & {
+  runtimeSource: RuntimeAuditSource;
+};
 
 function parseObservation(body: unknown): RuntimeAuditObservation {
   if (!Check(RuntimeAuditObservationSchema, body)) {
@@ -31,7 +35,7 @@ function parseObservation(body: unknown): RuntimeAuditObservation {
 }
 
 // Separate each producer's IDs so a producer cannot reserve an ID for another revision.
-function auditId(installationId: string, grant: GatewayRuntimeAuditGrant, eventId: string): string {
+function auditId(installationId: string, grant: RuntimeGrant, eventId: string): string {
   const digest = createHash("sha256")
     .update(JSON.stringify([installationId, grant.agentRevisionId, grant.runtimeSource, eventId]))
     .digest("hex");
@@ -40,15 +44,27 @@ function auditId(installationId: string, grant: GatewayRuntimeAuditGrant, eventI
 }
 
 function eventOutcome(event: RuntimeAuditObservation) {
+  if ("decision" in event) {
+    if (event.decision === "deny") {
+      return "denied";
+    }
+    if (
+      event.decision === "expired" ||
+      event.decision === "cancelled" ||
+      event.decision === "unavailable"
+    ) {
+      return "failure";
+    }
+  }
   if (!("outcome" in event) || event.outcome === "succeeded") {
     return "success";
   }
   return event.outcome === "blocked" ? "denied" : "failure";
 }
 
-function auditEvidence(
+export function auditEvidence(
   installationId: string,
-  grant: GatewayRuntimeAuditGrant,
+  grant: RuntimeGrant,
   event: RuntimeAuditObservation,
 ) {
   const { action, eventId, occurredAt, ...details } = event;
@@ -80,6 +96,12 @@ function auditEvidence(
 
 const privateGatewayRequests = new WeakSet<IncomingMessage>();
 
+export async function requirePrivateAuditListener(request: FastifyRequest) {
+  if (!privateGatewayRequests.has(request.raw)) {
+    throw failure(404, "NOT_FOUND", "The audit endpoint is unavailable on this listener.");
+  }
+}
+
 export async function startGatewayRuntimeAuditListener(
   app: FastifyInstance,
   options: {
@@ -93,7 +115,11 @@ export async function startGatewayRuntimeAuditListener(
   const server = createServer(
     { ...tls, requestTimeout: 5_000, headersTimeout: 5_000, connectionsCheckingInterval: 1_000 },
     (request, response) => {
-      if (request.method !== "POST" || request.url !== "/internal/runtime-audit") {
+      if (
+        request.method !== "POST" ||
+        (request.url !== "/internal/runtime-audit" &&
+          request.url !== "/internal/openshell-audit/v1/logs")
+      ) {
         response.writeHead(404).end();
         return;
       }
@@ -142,11 +168,7 @@ export function registerGatewayRuntimeAudit(
     {
       bodyLimit: 4096,
       schema: { hide: true },
-      onRequest: async (request) => {
-        if (!privateGatewayRequests.has(request.raw)) {
-          throw failure(404, "NOT_FOUND", "The audit endpoint is unavailable on this listener.");
-        }
-      },
+      onRequest: requirePrivateAuditListener,
     },
     async (request, reply) => {
       const token = request.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1];
@@ -156,7 +178,12 @@ export function registerGatewayRuntimeAudit(
       const event = parseObservation(request.body);
       const digest = createHash("sha256").update(token).digest("hex");
       const saved = await writer.appendGatewayRuntimeAudit(digest, (installationId, grant) => {
-        if (request.headers["x-openclaw-runtime-audit-source"] !== grant.runtimeSource) {
+        if (
+          request.headers["x-openclaw-runtime-audit-source"] !== grant.runtimeSource ||
+          ("policy" in event &&
+            ((event.policy === "codex_guardian" && grant.runtimeSource !== "codex") ||
+              (event.policy === "exec_policy" && grant.runtimeSource !== "openclaw")))
+        ) {
           throw failure(
             403,
             "FORBIDDEN",

@@ -224,6 +224,7 @@ export interface ControllerAppOptions {
   readonly resolveHarness: HarnessResolver;
   readonly auditSink: AuditSink;
   readonly gatewayRuntimeAuditWriter?: GatewayRuntimeAuditWriter;
+  readonly openShellRuntimeAudit?: OpenShellRuntimeAuditOptions;
   /** Durable sink for required HTTP admission and result records. */
   readonly durableRequestAuditSink?: AuditSink;
   readonly agentAuditCursorSecret?: string;
@@ -1497,6 +1498,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   const requestAuditSink = options.durableRequestAuditSink;
   if (options.gatewayRuntimeAuditWriter !== undefined) {
     registerGatewayRuntimeAudit(app, options.gatewayRuntimeAuditWriter);
+  }
+  if (options.openShellRuntimeAudit !== undefined) {
+    registerOpenShellRuntimeAudit(app, options.openShellRuntimeAudit);
   }
   const factory = options.auditEventFactory ?? new AuditEventFactory();
   const readAgentAudit =
@@ -5319,3 +5323,7 @@ export function createControllerApp(options: ControllerAppOptions): ControllerAp
     },
   };
 }
+import {
+  registerOpenShellRuntimeAudit,
+  type OpenShellRuntimeAuditOptions,
+} from "./http/openshell-runtime-audit.ts";

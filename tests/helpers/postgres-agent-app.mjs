@@ -60,6 +60,7 @@ export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
  * @param [options.createAuditSink] receives the PostgreSQL audit sink and returns the sink the
  *   app writes to (default: that sink).
  * @param [options.requestAudit] enables PostgreSQL audit for HTTP requests and the private Gateway listener.
+ * @param [options.openShellAuditHeaders] enables the OpenShell audit receiver with these exporter headers.
  * @param [options.appOptions] extra Fastify app options, such as `agentRuntimeLogs`. They are
  *   spread last, so they may also replace a default above.
  * @param [options.controllerOptions]
@@ -82,6 +83,7 @@ export async function createPostgresAgentApp(
     createAuditSink = (persisted) => persisted,
     requestAudit = false,
     appOptions,
+    openShellAuditHeaders,
     controllerOptions,
     stateOptions,
     sandboxDriver,
@@ -144,6 +146,9 @@ export async function createPostgresAgentApp(
         ? { durableRequestAuditSink: state.auditSink, gatewayRuntimeAuditWriter: state }
         : {}),
       auth,
+      ...(openShellAuditHeaders && {
+        openShellRuntimeAudit: { headers: openShellAuditHeaders, writer: state },
+      }),
       development: { enabled: false },
       ...appOptions,
     });

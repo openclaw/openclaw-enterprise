@@ -847,6 +847,7 @@ export async function loadInstallationConfiguration(options: {
   readonly gatewayRuntimeAudit?: NonNullable<
     ConstructorParameters<typeof KubernetesComputeDriver>[1]
   >["gatewayRuntimeAudit"];
+  readonly sandboxRuntimeAudit?: OpenShellSandboxDriverSelection["runtimeAudit"];
   /** Real-runtime tests replace the transport or the Driver; never a production path. */
   readonly createOpenShellBackend?: (
     definition: OpenShellBackendDefinition,
@@ -1214,6 +1215,11 @@ async function composeInstallationConfiguration(
     sandboxPackage === undefined &&
     (sandbox.configuration as unknown as OpenShellSandboxDriverOptions).integrationMode ===
       "service";
+  if (openShellServiceIntegration && environment.OCC_CHART_OPENSHELL_AUDIT === "true") {
+    throw new Error(
+      "OpenShell network audit requires a separate Sandbox per revision (integrationMode: legacy).",
+    );
+  }
   if (openShellServiceIntegration && options.createSandboxDriver !== undefined) {
     throw new Error(
       "Managed Kubernetes + OpenShell Compute requires its bundled Sandbox collaborator.",
@@ -1256,7 +1262,10 @@ async function composeInstallationConfiguration(
           configuration as unknown as OpenShellSandboxDriverOptions,
           selection,
         )
-      : new bundledSandboxPackage!.OpenShellSandboxDriver(configuration, selection);
+      : new bundledSandboxPackage!.OpenShellSandboxDriver(configuration, {
+          ...selection,
+          ...(options.sandboxRuntimeAudit && { runtimeAudit: options.sandboxRuntimeAudit }),
+        });
   const secret = selected(
     secretSelection,
     "secret",

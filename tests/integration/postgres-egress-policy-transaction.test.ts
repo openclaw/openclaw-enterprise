@@ -293,6 +293,31 @@ for (const storage of ["memory", "postgres"] as const) {
               receipt,
               "restart and retry preserve the original receipt",
             );
+            if (storage === "postgres") {
+              // The permit and its audit decision commit together even if the reply is lost.
+              const audit = await f.controller.transact((unit: PlatformUnitOfWork) =>
+                unit.audit.list(),
+              );
+              const decisions = audit.filter(
+                (row) =>
+                  row.action === "openclaw.runtime.policy.decided" &&
+                  row.details?.attemptId === originalAttempt.attemptId,
+              );
+              const { revisionId, agentId } = receipt.authorization.association.execution;
+              assert.equal(decisions.length, 1);
+              assert.equal(decisions[0]!.resource.id, agentId);
+              assert.deepEqual(decisions[0]!.details, {
+                policy: "egress_send",
+                runtimeSource: "occ",
+                agentRevisionId: revisionId,
+                decision: "allow",
+                senderId: originalAttempt.sender.id,
+                senderGeneration: originalAttempt.sender.generation,
+                instanceId: originalAttempt.instanceId,
+                useId: originalAttempt.useId,
+                attemptId: originalAttempt.attemptId,
+              });
+            }
           } else {
             assert.ok(
               (await f.resolve(capture())).refused,

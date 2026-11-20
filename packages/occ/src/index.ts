@@ -725,6 +725,7 @@ export type {
   RepositoryStandingApproval,
 } from "./ports/repository-sessions.ts";
 export {
+  appendReceiptAuthorization,
   PostgresCertificateRejectedError,
   PostgresPlatformState,
   type GatewayRuntimeAuditGrant,

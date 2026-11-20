@@ -42,12 +42,15 @@ import {
   allowAgentAuditRead,
   checkLinkedChat,
   chatCodexWithAudit,
+  assertAgentToolAudit,
   assertAgentTurnAudit,
   chatWithAudit,
   chatTurn,
   createCodexAgent,
   deployAgent,
+  enableEmbeddedFileAuditTool,
   proveCodexAuditInterruptions,
+  proveEmbeddedFileToolAudit,
   readLogs,
   runFirstAgent,
   stopAgent,
@@ -237,7 +240,25 @@ async function smoke() {
         await expectPersistedRuntimeAudit(stack, embedded.revisionId, await readEmbeddedAudit());
       }),
     ]);
-    await smokeStep("public-read", () => publicReadTurn(stack, codex, reader));
+    await smokeStep("public-read", async () => {
+      const previousIds = new Set((await readCodexAudit()).events.map(({ id }) => id));
+      await publicReadTurn(stack, codex, reader);
+      const events = await assertAgentToolAudit(readCodexAudit, {
+        label: codex.agent.label,
+        revisionId: codex.revisionId,
+        runtimeSource: "codex",
+        toolName: "exec",
+        previousIds,
+        expected: "admitted-success",
+      });
+      const audit = JSON.stringify(events);
+      assert.ok(!audit.includes(reader.marker), "command audit disclosed the tool output");
+      assert.ok(
+        !audit.includes("/repos/example/public-project/pulls/27"),
+        "command audit disclosed its arguments",
+      );
+      await expectPersistedRuntimeAudit(stack, codex.revisionId, await readCodexAudit());
+    });
     const retiredRevision = await smokeStep("reader-retirement", () =>
       proveRetirement(stack, codex, control, reader, proofResults),
     );
@@ -252,9 +273,10 @@ async function smoke() {
         await expectNoRuntimeAuditGrant(stack, revisionId);
       }
     });
-    const [embeddedRevision, codexRevision] = await smokeStep("start-agents", () =>
-      Promise.all([deployAgent(stack, embedded.agent), deployAgent(stack, codex.agent)]),
-    );
+    const [embeddedRevision, codexRevision] = await smokeStep("start-agents", async () => {
+      await enableEmbeddedFileAuditTool(stack, embedded.agent);
+      return Promise.all([deployAgent(stack, embedded.agent), deployAgent(stack, codex.agent)]);
+    });
     assert.notEqual(embeddedRevision, embedded.revisionId, "start must admit a new revision");
     assert.notEqual(codexRevision, retiredRevision, "start must admit a new revision");
     await auditStep(
@@ -270,6 +292,12 @@ async function smoke() {
         // The embedded HTTP route has no confirmed mapping from this run to a user row.
         assert.equal(http.turn.details.messageId, undefined);
         await assert.rejects(embeddedReader.readMessage(http.turn.id), /HTTP 404$/);
+        await proveEmbeddedFileToolAudit(
+          stack,
+          embedded.agent,
+          embeddedRevision,
+          readEmbeddedAudit,
+        );
         await expectPersistedRuntimeAudit(stack, embeddedRevision, await readEmbeddedAudit());
       },
       async () => {

@@ -383,6 +383,7 @@ export async function setLocalSetupAudit(
   stack: Pick<LocalSetup, "directory" | "context" | "kubeconfig" | "state">,
   enabled: boolean,
   options?: RunOptions,
+  openShellExporterSecret?: string,
 ) {
   await run(
     "helm",
@@ -400,6 +401,9 @@ export async function setLocalSetupAudit(
       join(stack.directory, "helm-values.json"),
       "--set",
       `controlPlaneAudit.enabled=${enabled}`,
+      ...(openShellExporterSecret
+        ? ["--set-string", `controlPlaneAudit.openShellExporterSecret=${openShellExporterSecret}`]
+        : []),
       "--wait",
       "--timeout",
       "5m",
@@ -502,6 +506,36 @@ export async function checkMessageDisclosure(
 
 const runtimeRows = `FROM occ.audit_events
   WHERE kind = 'runtime_activity' AND details->>'agentRevisionId' = :'revision_id'`;
+
+export async function withRefusedToolAdmission<T>(
+  stack: InstalledAuditStack,
+  revisionId: string,
+  send: () => Promise<T>,
+) {
+  const constraint = `smoke_tool_${randomUUID().replaceAll("-", "")}`;
+  const query = (sql: string) => queryRevision(stack, revisionId, sql);
+  // Reject the admission for the real file read while allowing its request and turn records.
+  await query(`ALTER TABLE occ.audit_events ADD CONSTRAINT ${constraint} CHECK (NOT (
+    kind = 'runtime_activity' AND details->>'agentRevisionId' = :'revision_id'
+    AND action = 'openclaw.runtime.tool_attempt.admitted' AND details->>'toolName' = 'read'
+  )) NOT VALID;`);
+  try {
+    const reply = await send();
+    const { stdout } = await kubectl(stack, [
+      "logs",
+      "-n",
+      stack.state.platformNamespace,
+      "statefulset/postgres",
+      "-c",
+      "postgres",
+      "--since=2m",
+    ]);
+    assert.ok(stdout.includes(constraint), "PostgreSQL did not receive the refused tool admission");
+    return reply;
+  } finally {
+    await query(`ALTER TABLE occ.audit_events DROP CONSTRAINT ${constraint};`);
+  }
+}
 
 export async function interruptRefusedObservation<T>(
   stack: InstalledAuditStack,

@@ -119,13 +119,22 @@ the saved message. For embedded OpenClaw, the event has no message ID and
 the message request must return HTTP 404.
 
 For embedded OpenClaw, the smoke test finds the model call and its result
-by turn ID. It then disables audit, deploys a new revision, and sends a
-message. The test expects a reply and zero runtime audit records for that revision.
+by turn ID. After restart, the simulated provider requests a workspace read.
+The assistant returns a marker from the real file. The audit API links the
+request, admission, and successful result by turn, invocation, and attempt IDs.
+When PostgreSQL rejects admission for a second read, the tool result contains
+no marker and the audit API shows no admission. The test also checks that the
+records omit the test prompt, workspace path, and file contents. It then
+disables audit, deploys a new revision, and expects a reply with zero runtime
+audit records for that revision.
 
 For dedicated Codex, the test matches the response ID from the test provider
 to its hash in the audit API. It repeats this check after the provider rejects
 the first request and Codex retries. It also checks the session records after
 the first chat and session deletion. It checks the turn result after cancellation.
+The managed public repository read checks that the audit API links the native
+command request, Gateway admission, and observed completion to the turn that
+returned the repository title.
 
 To test recovery, PostgreSQL temporarily rejects the record for the start of
 one Codex turn. The provider receives the request. The test restarts the Gateway

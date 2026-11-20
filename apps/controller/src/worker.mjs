@@ -1,5 +1,9 @@
 import { unlink, writeFile } from "node:fs/promises";
-import { createPostgresPool, PostgresPlatformState } from "@openclaw-enterprise/occ";
+import {
+  appendReceiptAuthorization,
+  createPostgresPool,
+  PostgresPlatformState,
+} from "@openclaw-enterprise/occ";
 import { startRepositoryReceiptServer } from "./backends/repository-credentials/receipt-server.ts";
 import {
   PreparedGitHubAppKeyError,
@@ -190,6 +194,13 @@ try {
   const drivers = await loadInstallationConfiguration({
     mode,
     startupConfiguration,
+    ...(options.controlPlaneAuditEnabled &&
+      process.env.OCC_CHART_OPENSHELL_AUDIT === "true" && {
+        sandboxRuntimeAudit: {
+          bind: (revision, id) => workerState.bindSandboxRuntimeAudit(revision, id),
+          unbind: (revision) => workerState.unbindSandboxRuntimeAudit(revision),
+        },
+      }),
     gatewayRuntimeAudit: {
       register: (grant) => workerState.registerGatewayRuntimeGrant(grant),
       remove: (grant) => workerState.removeGatewayRuntimeGrant(grant),
@@ -218,6 +229,7 @@ try {
     preparedRepositoryGit = await startPreparedGitHubGitOwner({
       ...repositoryOwner,
       ...owner,
+      ...(options.controlPlaneAuditEnabled && { auditAuthorization: appendReceiptAuthorization }),
       ...(issuerCaPath ? { ca: Buffer.from(await readPublicCaBundle(issuerCaPath)) } : {}),
       pool,
       registry: drivers.repositoryRegistry,

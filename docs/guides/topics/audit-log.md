@@ -7,19 +7,14 @@ The [OpenTelemetry Collector](../observability.md) exports operational logs.
 
 ## What is recorded
 
-An event identifies when it occurred, the Installation, actor, action, affected
-resource, and outcome. It can also include a Namespace, request ID, or
-authorization decision when available. A denial's decision names the exact
-permission and resource that was refused, which can differ from the action. An
-Agent update refused for a missing `operate` on the Agent's Secret records
-`openclaw.agents.update` with a decision for `operate` on that Secret. When the
-Agent's own service principal is refused, the event has reason code
-`AGENT_PRINCIPAL_NOT_AUTHORIZED` and its details name that principal and the
-refused grant. Service API key issuance and revocation record the caller, the
-principal ID, and the key's ID and name, not the credential. An API route's
-event for a request made with a
-[service API key](../../reference/authentication/service-api-keys.md#revocation-and-audit)
-records that key's ID in `actorServiceKeyId` on the resource event.
+An event records the time, Installation, actor, action, resource, and outcome.
+It can include a Namespace, request ID, or authorization decision. The decision
+identifies the permission and resource under review. An Agent update can record
+a denied `operate` decision on its Secret. `AGENT_PRINCIPAL_NOT_AUTHORIZED`
+identifies a refused Agent service principal and grant. Key issue and revocation
+record the caller, principal ID, and key ID and name. Resource events for
+[service API key calls](../../reference/authentication/service-api-keys.md#revocation-and-audit)
+include `actorServiceKeyId`. Audit fields exclude the credential.
 
 ### API requests
 
@@ -62,33 +57,26 @@ for both the API and worker.
 
 ### Worker events
 
-With Control Plane audit enabled, PostgreSQL saves jobs from covered API
-requests with an `openclaw.controller_work.queued` event. The event links the
-work ID to the HTTP request ID. Repository cleanup and maintenance recovery
-also save a queue record when they create or reopen follow-up work.
-PostgreSQL saves each claim with its `openclaw.controller_work.claimed` event.
-If that write fails, the job stays queued and the worker does not start it.
+With audit enabled, PostgreSQL saves covered jobs with
+`openclaw.controller_work.queued`, linking work and HTTP request IDs. Repository
+cleanup and maintenance recovery record created or reopened work. An
+`openclaw.controller_work.claimed` write must commit before the worker starts.
+A failed claim write leaves the job queued. The worker waits up to 15 seconds
+for the database, subject to any shorter worker limit.
 
-A new attempt ID identifies each claim. The attempt count can repeat when the
-worker waits for a dependency. Results link to the claim by attempt ID and
-to the job by work ID. The database keeps the lease token in the queue. With
-audit enabled, the worker waits up to 15 seconds for a database connection
-or query. A shorter configured worker limit still applies.
+Results link to the job and claim by work and attempt ID. The queue stores
+the lease token. Waiting can repeat the attempt count. Explicit retries can
+reuse the work ID. `reconcile` records
+retries, expired claims, failures, and completions. Audited claims with repeated
+waiting states record `openclaw.controller_work.deferred`. Terminal failures
+include `final: true`.
 
-The `reconcile` event records retry, failure, expired claim, and completion.
-The worker can combine repeated waiting states in `reconcile`. When audit is
-enabled, it records `openclaw.controller_work.deferred` for each claim whose
-waiting state would otherwise repeat. A terminal failure includes `final: true`.
-When provisioning succeeds, `openclaw.controller_work.completed` links its
-result to the claim. Stop and Delete link a provisioning cancellation to the
-caller and job in `openclaw.agents.provision.cancelled`.
-If the claim already has an audit record, Stop and Delete save the cancellation
-even when collection is off. The cancellation links to that claim.
-
-An explicit retry of failed work can reuse the work ID. Existing authorization
-denials and resource lifecycle evidence apply with either audit setting.
-If PostgreSQL loses confirmation of a result commit, `worker.error` reports
-`COMMIT_OUTCOME_UNKNOWN`. Check the job before requesting a retry.
+`openclaw.controller_work.completed` links successful provisioning to its claim.
+Stop and Delete record `openclaw.agents.provision.cancelled`, linking the
+claim, caller, and job. Already audited claims retain this record with
+collection off. If PostgreSQL loses commit
+confirmation, `worker.error` reports `COMMIT_OUTCOME_UNKNOWN`. Check the job
+before retrying.
 
 ### Agent runtime activity
 
@@ -116,17 +104,55 @@ leaves the outcome unknown. The plugin saves metadata only.
 When a turn includes `details.messageId`, you can
 [open its saved user message](#open-the-message-for-a-turn).
 
-Dedicated OpenClaw reports the turn through its Gateway. Its worker does not
-report individual model calls on that connection. Codex can return a response
-after one or more attempts. Its response record gives no count of failed or
-retried attempts. Embedded OpenClaw reports calls that it starts. A provider
-can retry within one call.
+Dedicated OpenClaw reports turn activity through its Gateway. Embedded
+OpenClaw reports each runtime model call. Provider retries can occur within
+one call. Codex response records give no retry count.
 
-Audit records describe work that the Gateway observed. Chat can continue when
-PostgreSQL cannot accept an event. The Gateway can keep up to 256 pending
-events on local disk and retry after a restart in the same Pod. When the queue
-is full, the plugin warns and omits new events. Deleting the Pod removes
-pending events. The control plane keeps events it already saved in PostgreSQL.
+The Gateway queues up to 256 observations on local disk and retries them
+after restart in the same Pod. A full queue drops new observations and logs
+a warning. Pod deletion removes pending observations. Covered dispatches
+wait for OCC to confirm admission. Replaying observations cannot release work.
+
+#### Tools, approvals, and policy
+
+On a managed OpenClaw revision, [configure Slack search](plugins-configure.md#configure-slack-search)
+with **Every action** approval. After an approved search, use the Agent audit
+API to follow one `invocationId`. Each action has the `openclaw.runtime.` prefix.
+
+| Action                   | What the record shows                                                              |
+| ------------------------ | ---------------------------------------------------------------------------------- |
+| `tool_call.requested`    | The managed policy received the selected Slack tool call.                          |
+| `policy.decided`         | `managed_mcp_policy` required approval.                                            |
+| `approval.requested`     | The policy requested review with an audit `approvalId`.                            |
+| `approval.resolved`      | The reviewer granted `allow-once` for that ID.                                     |
+| `tool_attempt.admitted`  | OCC committed admission before dispatch, linking the `approvalId` and `attemptId`. |
+| `tool_attempt.completed` | The policy observed the result for that `attemptId`. Read `details.outcome`.       |
+
+For managed MCP, a denied review ends before admission. A lost response can
+leave an unknown outcome. Records omit arguments, results, commands, paths,
+and reviewer rationale.
+
+The `boundary` field identifies the source of the evidence.
+
+- `managed_mcp` records the managed policy's actual decision and dispatch.
+  Audited OpenClaw routes eligible worker-local MCP tools through the Gateway.
+  Events can carry revision scope when the turn is unknown.
+- `gateway_hook` admits a covered tool at the Gateway hook. Later native checks
+  can still refuse it. This includes Codex calls that reach the native hook relay.
+- `runtime` reports observed activity. A Codex result can have no admission
+  and gives no count of native retries. Worker-local tools provide limited
+  observations. Direct scripts using plugin credentials are outside this path.
+
+#### Network decisions and external sends
+
+The optional [OpenShell security event exporter](openshell-audit.md) reports
+supported network decisions after enforcement. OCC links the decision to the
+enrolled Sandbox and revision. Exporter outages can leave gaps.
+
+OCC records repository or egress authorization with the existing send receipt.
+Use `receiptId` for a repository send or the sender, generation, instance, use,
+and attempt IDs for egress. Check the receipt owner for the outcome before
+repeating a send whose result is unknown.
 
 ### Agent runtime logs
 
@@ -163,11 +189,10 @@ SELECT pg_total_relation_size('occ.audit_events') AS used_bytes,
        occ.control_plane_audit_capacity_available() AS accepts_new_events;
 ```
 
-If `accepts_new_events` is `false`, the API can block covered requests or
-withhold audit results. Agent chat can continue. Its Gateway queues runtime
-events up to the limit in [Agent runtime activity](#agent-runtime-activity).
-The control plane worker cannot claim covered jobs or save the
-results of audited attempts until space is available. It reports
+If `accepts_new_events` is `false`, OCC can refuse covered requests, tool
+dispatches, and audit reads. Chat can continue when it needs no covered tool.
+The Gateway queues observations up to its local limit. The worker cannot claim
+covered jobs or save audited results until space is available. It reports
 `worker.error` with code `AUDIT_CAPACITY_EXCEEDED`. Preserve the existing
 records. Monitor free disk space separately. Reserve space for other tables,
 transaction logs, and backups. A database administrator can provision

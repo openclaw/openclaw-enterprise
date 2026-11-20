@@ -17,8 +17,8 @@ import {
 import {
   apiProcess,
   expectPersistedRuntimeAudit,
-  setLocalSetupAudit,
 } from "../../scripts/ci/first-agent-smoke/setup.ts";
+import { enableOpenShellAudit, expectOpenShellDecision } from "../helpers/local-openshell-audit.ts";
 import {
   RUNTIME_AUDIT_ACTIONS,
   WORKSPACE_DEFAULTS,
@@ -760,7 +760,7 @@ test(
     if (auditAdministratorPassword !== undefined) {
       assert.equal(recorded.deploymentMode, "k3d");
       sensitiveValues.add(auditAdministratorPassword);
-      await setLocalSetupAudit(chartStack, true, chartOptions);
+      await enableOpenShellAudit(chartStack, chartOptions);
       servingApi = await apiProcess(chartStack, chartOptions);
     }
     const keyFile = await stat(recorded.keyPath);
@@ -1139,6 +1139,18 @@ test(
         "native-initial",
         nativeRequestedAt,
       );
+      if (readAudit !== undefined) {
+        // A provider connection during enrollment already crosses the supervisor.
+        // Check its policy decision independently of the model result.
+        await nativeContext.test(
+          "OpenShell records a network decision for the enrolled Sandbox",
+          async () => {
+            const sandboxId = initialProvider.pod.metadata.labels["openshell.ai/boundary-pair"];
+            assert.ok(sandboxId);
+            await expectOpenShellDecision(readAudit, initialRevisionId, sandboxId);
+          },
+        );
+      }
       const setupSecrets = await readKubernetesJson(
         kube,
         [

@@ -7,6 +7,15 @@ import { DatabaseSync } from "node:sqlite";
 const destinationFile = "/etc/openclaw-runtime-audit/destination.json";
 const queueDirectory = "/home/node/.openclaw/pending-runtime-audit";
 const capacity = 256;
+const maxEventBytes = 4096;
+
+function encodeEvent(event) {
+  return JSON.stringify({
+    ...event,
+    eventId: event.eventId ?? randomUUID(),
+    occurredAt: event.occurredAt ?? new Date().toISOString(),
+  });
+}
 
 function post(url, headers, ca, body, signal) {
   return new Promise((resolve, reject) => {
@@ -19,13 +28,13 @@ function post(url, headers, ca, body, signal) {
   });
 }
 
-function openQueue(scope) {
-  mkdirSync(queueDirectory, { mode: 0o700, recursive: true });
-  const dir = lstatSync(queueDirectory);
+function openQueue(scope, directory) {
+  mkdirSync(directory, { mode: 0o700, recursive: true });
+  const dir = lstatSync(directory);
   if (!dir.isDirectory() || dir.uid !== process.getuid() || (dir.mode & 0o077) !== 0) {
     throw new Error("Invalid runtime audit queue directory.");
   }
-  const path = join(queueDirectory, "observations.sqlite");
+  const path = join(directory, "observations.sqlite");
   const stat = lstatSync(path, { throwIfNoEntry: false });
   if (stat && (!stat.isFile() || stat.nlink !== 1 || stat.uid !== dir.uid)) {
     throw new Error("Invalid runtime audit queue file.");
@@ -47,11 +56,25 @@ function openQueue(scope) {
   }
 }
 
+export function hasAuditDestination() {
+  return existsSync(destinationFile);
+}
+
+export function readAuditDestination() {
+  return hasAuditDestination() ? JSON.parse(readFileSync(destinationFile, "utf8")) : undefined;
+}
+
 export function createAuditSink() {
-  if (!existsSync(destinationFile)) {
+  const destination = readAuditDestination();
+  if (destination === undefined) {
     return undefined;
   }
-  const destination = JSON.parse(readFileSync(destinationFile, "utf8"));
+  const ca = readFileSync("/etc/openclaw-runtime-audit/ca.pem");
+  const token = readFileSync("/var/run/openclaw-runtime-audit/token", "utf8").trim();
+  return createAuditDelivery(destination, ca, token, queueDirectory);
+}
+
+export function createAuditDelivery(destination, ca, token, directory) {
   const url = new URL(destination.url);
   const source = destination.source;
   if (
@@ -65,8 +88,6 @@ export function createAuditSink() {
   ) {
     throw new Error("Invalid runtime audit destination.");
   }
-  const ca = readFileSync("/etc/openclaw-runtime-audit/ca.pem");
-  const token = readFileSync("/var/run/openclaw-runtime-audit/token", "utf8").trim();
   if (!/^[A-Za-z0-9_-]{43}$/.test(token)) {
     throw new Error("Invalid runtime audit credential.");
   }
@@ -78,7 +99,7 @@ export function createAuditSink() {
   const scope = createHash("sha256")
     .update(JSON.stringify([source, url.href, token]))
     .digest("hex");
-  const db = openQueue(scope);
+  const db = openQueue(scope, directory);
   const enqueue = db.prepare(`
     INSERT INTO observations(scope, body)
     SELECT ?, ? WHERE (SELECT count(*) FROM observations) < ?
@@ -139,13 +160,12 @@ export function createAuditSink() {
       if (closed) {
         return;
       }
-      const body = JSON.stringify({
-        ...event,
-        eventId: randomUUID(),
-        occurredAt: event.occurredAt ?? new Date().toISOString(),
-      });
+      const body = encodeEvent(event);
       try {
-        if (Buffer.byteLength(body) <= 4096 && enqueue.run(scope, body, capacity).changes === 1) {
+        if (
+          Buffer.byteLength(body) <= maxEventBytes &&
+          enqueue.run(scope, body, capacity).changes === 1
+        ) {
           void drain();
           return;
         }
@@ -153,6 +173,28 @@ export function createAuditSink() {
         // A storage error must not interrupt the turn that produced the observation.
       }
       process.emitWarning("The Gateway could not queue a runtime audit event.");
+    },
+    async requireRecord(event, signal) {
+      // An admission belongs to this waiting operation. Replaying it from the
+      // observation queue cannot release work after the original caller ends.
+      if (closed) {
+        throw new Error("Runtime audit delivery is closed.");
+      }
+      const body = encodeEvent(event);
+      if (Buffer.byteLength(body) > maxEventBytes) {
+        throw new Error("Runtime audit event is too large.");
+      }
+      const signals = [shutdown.signal, AbortSignal.timeout(2000)];
+      if (signal) {
+        signals.push(signal);
+      }
+      const delivery = AbortSignal.any(signals);
+      delivery.throwIfAborted();
+      const status = await post(url, headers, ca, body, delivery);
+      delivery.throwIfAborted();
+      if (status !== 204) {
+        throw new Error("The control plane did not acknowledge the runtime audit event.");
+      }
     },
     close() {
       if (!closed) {

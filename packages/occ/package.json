@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@azure/identity": "4.14.1",
+    "@openclaw-enterprise/audit": "workspace:*",
     "@openclaw-enterprise/contracts": "workspace:*",
     "@openclaw-enterprise/iam": "workspace:*",
     "@openclaw-enterprise/utils": "workspace:*",
