@@ -8,6 +8,7 @@ import {
   tenant,
   digest,
   preparedAuth,
+  routedGatewayConfiguration,
   routedOptions,
   routedRevision,
   labelSelectorLabels,
@@ -89,7 +90,7 @@ export function providerReadinessFixture({
     configuration: admitLoggingConfiguration(
       {
         agents: { defaults: { model: "codex/gpt-5" } },
-        gateway: { ...routedRevision(driver).configuration.gateway, controlUi: { enabled: false } },
+        gateway: { ...routedGatewayConfiguration(), controlUi: { enabled: false } },
       },
       "info",
     ),
