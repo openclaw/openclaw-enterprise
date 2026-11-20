@@ -1,12 +1,9 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser, type Locator, type Page } from "playwright";
+import { chromium, type Locator, type Page } from "playwright";
 import { Check } from "typebox/value";
 
 import {
@@ -1740,49 +1737,31 @@ for (const revoked of ["configuration", "agent"] as const) {
   });
 }
 
-async function openNativeTabBrowser(t: TestContext, executable: string, args: string[]) {
-  const profile = await mkdtemp(join(tmpdir(), "console-native-tabs-"));
-  const child = spawn(
-    executable,
-    [
-      "--headless",
-      "--no-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-background-networking",
-      "--disable-default-apps",
-      "--no-first-run",
-      "--no-default-browser-check",
+async function openNativeTabBrowser(t: TestContext, fixture: Parameters<typeof newPage>[1]) {
+  // Prefer full Chromium for tabs in one window. CI installs the headless shell,
+  // which assigns each page its own window.
+  const fullBrowser = chromium.executablePath();
+  const executablePath =
+    process.env.OCC_TEST_BROWSER_EXECUTABLE || (existsSync(fullBrowser) ? fullBrowser : undefined);
+  const server = await chromium.launchServer({
+    host: "127.0.0.1",
+    headless: true,
+    ...(executablePath ? { executablePath } : {}),
+    args: [
       "--remote-debugging-address=127.0.0.1",
       "--remote-debugging-port=0",
-      "--window-size=1440,990",
-      `--user-data-dir=${profile}`,
-      ...args,
-      "about:blank",
+      ...(fixture.browserArgs ?? []),
     ],
-    { env: { PATH: process.env.PATH }, stdio: "ignore" },
-  );
-  const launch: { error?: Error; connection?: Browser } = {};
-  child.once("error", (error) => {
-    launch.error = error;
+    env: { PATH: process.env.PATH },
   });
-  t.after(async () => {
-    try {
-      await launch.connection?.close();
-    } finally {
-      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
-        const exited = once(child, "exit");
-        child.kill();
-        await exited;
-      }
-      // Chromium's child processes can finish writing the profile after the browser exits.
-      await rm(profile, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
-    }
-  });
+  t.after(() => server.close());
+  const prefix = "--user-data-dir=";
+  const profile = server
+    .process()
+    .spawnargs.find((arg) => arg.startsWith(prefix))
+    ?.slice(prefix.length);
+  assert.ok(profile, "Playwright launched Chromium with a disposable profile");
   const port = await waitForResult("Chromium's loopback debugging port", async () => {
-    if (launch.error) {
-      throw launch.error;
-    }
-    assert.equal(child.exitCode, null, "Chromium stays open");
     const address = await readFile(join(profile, "DevToolsActivePort"), "utf8").catch((error) => {
       if (error.code !== "ENOENT") {
         throw error;
@@ -1793,53 +1772,71 @@ async function openNativeTabBrowser(t: TestContext, executable: string, args: st
   });
 
   // Use the browser's own focus and visibility instead of Playwright's default focus emulation.
-  launch.connection = await chromium.connectOverCDP({
+  const connection = await chromium.connectOverCDP({
     endpointURL: `http://127.0.0.1:${port}`,
     noDefaults: true,
     timeout: 10_000,
   });
-  const page = launch.connection.contexts()[0]?.pages()[0];
-  assert.ok(page, "Chromium opens a blank tab in its default context");
+  const context = connection.contexts()[0];
+  assert.ok(context);
+  const page = await context.newPage();
   page.setDefaultTimeout(10_000);
   return { page, artifacts: process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR || profile };
 }
 
-async function activateTab(foreground: Page, background: Page) {
-  await foreground.bringToFront();
+async function windowFor(page: Page) {
+  const session = await page.context().newCDPSession(page);
+  const { windowId } = await session.send("Browser.getWindowForTarget");
+  return {
+    page,
+    windowId,
+    setState: (windowState: "minimized" | "normal") =>
+      session.send("Browser.setWindowBounds", { windowId, bounds: { windowState } }),
+  };
+}
+
+type BrowserWindow = Awaited<ReturnType<typeof windowFor>>;
+
+async function activate(foreground: BrowserWindow, background: BrowserWindow) {
+  if (foreground.windowId !== background.windowId) {
+    // Minimize the outgoing shell window so Chromium itself hides and blurs the page.
+    await background.setState("minimized");
+    await foreground.setState("normal");
+  }
+  await foreground.page.bringToFront();
   // Chromium stops animation frames in a hidden tab. Poll the browser state in timer tasks.
   await Promise.all([
-    foreground.waitForFunction(() => !document.hidden && document.hasFocus(), null, {
+    foreground.page.waitForFunction(() => !document.hidden && document.hasFocus(), null, {
       polling: 25,
     }),
-    background.waitForFunction(() => document.hidden && !document.hasFocus(), null, {
+    background.page.waitForFunction(() => document.hidden && !document.hasFocus(), null, {
       polling: 25,
     }),
   ]);
 }
 
-const nativeTabExecutable =
-  process.env.OCC_TEST_BROWSER_EXECUTABLE ||
-  [chromium.executablePath(), "/usr/bin/google-chrome"].find(existsSync);
+async function selectedAgentId(page: Page) {
+  return page.locator(".page-meta-id .resource-id").evaluate((id) => {
+    const selection = document.getSelection();
+    return selection && id.contains(selection.anchorNode) && id.contains(selection.focusNode)
+      ? selection.toString()
+      : "";
+  });
+}
 
 for (const scenario of [
   "foreground completion",
   "second return",
   "moved focus",
+  "selected Agent ID",
   "revoked access",
   "expired session",
   "navigation",
 ] as const) {
-  test(`Configuration draft focus on native tab activation (${scenario})`, async (t) => {
-    if (!nativeTabExecutable) {
-      t.skip(
-        "Native tab visibility requires full Chromium. Run pnpm exec playwright install chromium.",
-      );
-      return;
-    }
+  test(`Configuration draft focus on browser activation (${scenario})`, async (t) => {
     const { fixture, namespace, agent, page, editor, draft, requests, readCount, agentPath, url } =
-      await openRefocusDraft(t, (context, fixture) =>
-        openNativeTabBrowser(context, nativeTabExecutable, fixture.browserArgs ?? []),
-      );
+      await openRefocusDraft(t, openNativeTabBrowser);
+    let selectedId = "";
     const backward = scenario === "second return";
     const original = await editor.evaluateHandle((node, backward) => {
       if (!(node instanceof HTMLTextAreaElement)) {
@@ -1881,28 +1878,21 @@ for (const scenario of [
     await page.evaluate(() => {
       window.open("about:blank", "_blank");
     });
-    const other = await popup;
-    const windowIds = await Promise.all(
-      [page, other].map(async (tab) => {
-        const connection = await tab.context().newCDPSession(tab);
-        try {
-          return (await connection.send("Browser.getWindowForTarget")).windowId;
-        } finally {
-          await connection.detach();
-        }
-      }),
+    const other = await windowFor(await popup);
+    const draftTab = await windowFor(page);
+    t.diagnostic(
+      draftTab.windowId === other.windowId ? "two tabs in one window" : "two browser windows",
     );
-    assert.equal(windowIds[0], windowIds[1], "the tabs share one native browser window");
-    await activateTab(other, page);
+    await activate(other, draftTab);
 
     const firstResponse = responseTo(page, "GET", agentUrl);
-    await activateTab(page, other);
+    await activate(draftTab, other);
     assert.equal((await firstCheck.requested)?.status(), 200);
     await page.locator(heldView).waitFor();
     const repeat = scenario !== "foreground completion";
     if (repeat) {
       // Leave again before access is confirmed. Let the genuine reply settle in the hidden tab.
-      await activateTab(other, page);
+      await activate(other, draftTab);
     }
     firstCheck.release();
     assert.equal((await firstResponse).status(), 200);
@@ -1934,7 +1924,7 @@ for (const scenario of [
           ? await fixture.createNamespace("Other workspace", { ready: true })
           : null;
       const secondResponse = otherNamespace ? null : responseTo(page, "GET", agentUrl);
-      await activateTab(page, other);
+      await activate(draftTab, other);
       const upstream = await secondCheck.requested;
       await page.locator(heldView).waitFor();
       if (otherNamespace) {
@@ -1970,6 +1960,13 @@ for (const scenario of [
         await account.evaluate((node: HTMLElement) => node.blur());
         assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
       }
+      if (scenario === "selected Agent ID") {
+        // Selecting an ID to copy keeps keyboard focus on the body throughout the recheck.
+        await page.locator(".page-meta-id .resource-id").dblclick();
+        selectedId = await selectedAgentId(page);
+        assert.ok(selectedId);
+        assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
+      }
       secondCheck.release();
       assert.equal(
         (await secondResponse)?.status(),
@@ -1996,7 +1993,18 @@ for (const scenario of [
     assert.equal(readCount(agentPath), repeat ? 2 : 1);
     assert.deepEqual(nonAuthWriteRequests(requests), []);
     const restored = await editorState();
-    assert.equal(restored.focused, scenario !== "moved focus", "keyboard focus after admission");
+    if (scenario === "selected Agent ID") {
+      assert.equal(
+        await selectedAgentId(page),
+        selectedId,
+        "the selected ID is still ready to copy",
+      );
+    }
+    assert.equal(
+      restored.focused,
+      scenario !== "moved focus" && scenario !== "selected Agent ID",
+      "keyboard focus after admission",
+    );
     assert.deepEqual(restored, { ...selected, focused: restored.focused });
   });
 }

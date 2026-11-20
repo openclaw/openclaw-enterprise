@@ -3509,6 +3509,8 @@ async function revalidateMountedAgent(current: Route) {
         editorFocus &&
         !editorFocus.cancel.signal.aborted &&
         document.activeElement === document.body &&
+        // Selecting text such as the Agent ID leaves focus on the body.
+        document.getSelection()?.isCollapsed !== false &&
         mountedViewState === state &&
         view.querySelector("#configuration-json") === editorFocus.editor &&
         editorFocus.editor.checkVisibility()
