@@ -14,7 +14,7 @@ import { persistGuardedDeployment } from "./postgres-state-guarded-deployment-ca
 import { persistPluginState } from "./postgres-state-plugin-case.ts";
 import {
   persistRepositoryNetworkPolicy,
-  verifyMemoryRepositoryPolicyLiveApplication,
+  verifyMemoryRepositoryPolicyPersistence,
 } from "./postgres-state-repository-network-policy-case.ts";
 import {
   checkpointProvisioning,
@@ -60,11 +60,11 @@ test(
   persistPluginState,
 );
 test(
-  "memory SandboxPolicy rejects repository network policy in a live application snapshot",
-  verifyMemoryRepositoryPolicyLiveApplication,
+  "memory State saves repository network policy and refuses scoped revisions and live application",
+  verifyMemoryRepositoryPolicyPersistence,
 );
 test(
-  "PostgreSQL fences repository network policy saves and freezes admitted revisions",
+  "PostgreSQL saves repository network policy and refuses scoped revision reads and writes",
   requiresPostgres,
   persistRepositoryNetworkPolicy,
 );

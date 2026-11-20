@@ -19,9 +19,10 @@ reports failure. Normal Harness execution owns the resulting model output.
 - Trigger: Gateway startup after graceful shutdown or recorded process loss.
 - Source: `deploy/runtime/openclaw-source.json` selects native recovery in
   `src/gateway/session-restart-resume.ts:resumeMarkedSessions` in OpenClaw.
-- Bridge: `deploy/runtime/openclaw-restart-harness-readiness.patch` extends
-  native `enqueueSessionEventAttempt` during workspace reconnection and Codex
-  preflight while a remote turn is still active.
+- Waits: the same source retries a restart input during workspace reconnection
+  (`src/auto-reply/reply/session-event-terminal.ts`) and holds Codex preflight
+  while a remote turn is still active
+  (`extensions/codex/src/app-server/thread-policy.ts`).
 - Prerequisites: retained Gateway state, an eligible root session, current source
   authority, and a Harness that can reconnect with its existing identity.
 
@@ -50,7 +51,7 @@ graph TD
   class B,F,I gate
 ```
 
-The diagram describes the runtime source and bridge. Deployment qualification is
+The diagram describes the pinned runtime source. Deployment qualification is
 tracked in the [recovery test guide](../testing/harness-restart-recovery.md).
 
 ## Execution Trace
@@ -87,10 +88,10 @@ transition limit and Stop→Deploy behavior.
 
 ### 2. Wait for a disconnected workspace before execution
 
-`deploy/runtime/openclaw-restart-harness-readiness.patch` changes native
-`src/auto-reply/reply/session-event-handoff.ts:enqueueSessionEventAttempt`.
-A workspace error qualifies only when its cause is `UNAVAILABLE` with
-`details.code = NOT_CONNECTED` and `nodeCommandDispatched = false`.
+Native `src/auto-reply/reply/session-event-terminal.ts:prepareSessionEventReadmission`,
+called from `session-event-handoff.ts:enqueueSessionEventForHost`, decides retry.
+A workspace error qualifies only when a cause has
+`details.nodeError.code = NOT_CONNECTED` and `nodeCommandDispatched = false`.
 
 Only restart inputs qualify. Admission must not have accepted or adopted the
 input, started execution, committed a conversation result, or attempted delivery.
@@ -102,9 +103,9 @@ Cancelled staged input can be reclaimed only by the same occurrence.
 
 ### 3. Transfer to the regular turn owner
 
-`deploy/runtime/Dockerfile:262` applies the bridge and leaves native
-`acceptRestartResumeReceipt` ownership unchanged. Acceptance transfers the
-continuation to the normal reply lifecycle; the admission owner no longer retries it. Codex
+Native `src/gateway/session-restart-resume-failure.ts:acceptRestartResumeReceipt`
+transfers an accepted continuation to the normal reply lifecycle; the admission
+owner no longer retries it. Codex
 preflight can still wait as described below.
 The prompt asks the Agent to inspect saved files, processes, subagents, and
 external actions before continuing. It does not restore the previous process.
@@ -116,12 +117,11 @@ path instead. Shutdown cancellation retains the existing marker write guards.
 
 ### 4. Wait for a surviving remote Codex turn
 
-`deploy/runtime/openclaw-restart-harness-readiness.patch` also changes native
-`extensions/codex/src/app-server/thread-policy.ts:assertAdoptedCodexThreadResumeAllowed`.
-After Gateway process loss, an external Codex app-server can still execute the
-original turn. A host-authored restart input polls that same thread with a
-two-minute budget before continuing through normal adoption. An in-flight read
-retains the native RPC timeout. Each read checks current
+Native `extensions/codex/src/app-server/thread-policy.ts:assertAdoptedCodexThreadResumeAllowed`
+handles this case. After Gateway process loss, an external Codex app-server can
+still execute the original turn. A host-authored restart input polls that same
+thread every second with a two-minute budget before continuing through normal
+adoption. An in-flight read retains the native RPC timeout. Each read checks current
 authority, cancellation, thread identity, and direct-input permission.
 
 The wait does not interrupt the remote turn or change its subscription. Other
@@ -133,14 +133,13 @@ hung executor.
 ## Debugging and Verification
 
 Use the [real-runtime recovery case](../testing/harness-restart-recovery.md).
-Before this bridge, graceful Gateway Pod replacement reproduced
+Without the reconnect retry, graceful Gateway Pod replacement reproduced
 `WorkspaceAccessUnavailableError` / `node not connected`, followed by a terminal
 restart notice while the dedicated node was reconnecting.
 
-Image provenance records the bridge digest through
-`scripts/build-runtime-assets.ts:appliedPatches`. Native bridge checks exercise
-session-event readmission and restart admission. The Kubernetes case must also
-show one continuation and a final result without another user message.
+Image provenance records the source commit. The image's source checks exercise
+session-event readmission, restart admission and the Codex wait. The Kubernetes
+case must also show one continuation and a final result without another user message.
 
 ## Related docs
 

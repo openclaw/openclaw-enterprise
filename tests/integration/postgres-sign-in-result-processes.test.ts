@@ -3,7 +3,7 @@ import { fork } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import test, { type TestContext } from "node:test";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { cookieHeaderFromSetCookie } from "../helpers/auth-session.ts";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import {
   bootstrapProductionInstallation,

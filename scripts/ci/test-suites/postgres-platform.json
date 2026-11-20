@@ -79,7 +79,8 @@
     "tests/integration/postgres-preset-template-validation.test.ts",
     "tests/integration/postgres-readiness-capacity.test.ts",
     "tests/integration/postgres-private-secret-create.test.ts",
-    "tests/integration/postgres-iam-durable-authority.test.ts"
+    "tests/integration/postgres-iam-durable-authority.test.ts",
+    "tests/integration/postgres-egress-replacement.test.ts"
   ],
   "files": [
     {
@@ -140,8 +141,8 @@
         "PostgreSQL rejects platform writes until the singleton Installation is bootstrapped",
         "real OCC Namespace lifecycle persists provisioning, readiness, deletion, and its tombstone",
         "PostgreSQL platform state satisfies memory adapter ownership, immutability, and atomicity",
-        "memory SandboxPolicy rejects repository network policy in a live application snapshot",
-        "PostgreSQL fences repository network policy saves and freezes admitted revisions",
+        "memory State saves repository network policy and refuses scoped revisions and live application",
+        "PostgreSQL saves repository network policy and refuses scoped revision reads and writes",
         "the PostgreSQL worker reloads exact Namespace restrictions and never dispatches revoked provisioning",
         "API SIGTERM finishes an in-flight keep-alive request and exits within the Pod grace",
         "PostgreSQL guarded first deployment persists one private receipt and one reconcile work"
@@ -296,6 +297,7 @@
         "a provisioning failure takes the Namespace lock before its claimed work row",
         "provisioning worker reauthorizes after admission and revoked authority creates no backend effects",
         "failed provisioning can retry through the API and resume without duplicating the Agent",
+        "Guarded stop protects a queued successor and stops the exact deployed Agent",
         "Stop and Delete cancel failed pre-handoff provisioning Agents without deployment resurrection",
         "Stop during an interrupted runtime-credential write lets the Agent deploy once the claim's lease ends",
         "Stop after failed provisioning left its runtime-credential write unsettled lets the Agent deploy",
@@ -479,6 +481,7 @@
       "expectedTests": [
         "only the installed Git recipient owner may use its material or retire its ended admission",
         "changing between repository and installation scope waits for the previous owner to settle its token",
+        "a replacement Git Driver waits out a disposed standing predecessor without taking its custody",
         "OpenShell preparation refuses historical custody and preserves v6 observed-hook custody",
         "selected repository set retires after B session across owner restart",
         "selected repository set retires after B replacement across owner restart",
@@ -580,7 +583,7 @@
       "path": "tests/integration/postgres-openshell-standing-cold-worker.test.ts",
       "expectedTests": [
         "a cold worker persists redeploy-required standing Git status without renewing it",
-        "a cold worker after session expiry checks expired-original-pods",
+        "a cold worker after session expiry checks expired-original-execution",
         "a cold worker after session expiry checks expired-replaced-supervisor"
       ]
     },
@@ -652,6 +655,7 @@
       "path": "tests/integration/credential-proxy-withdrawal.test.ts",
       "expectedTests": [
         "policy reduction preserves another binding then observes deny-all (PostgreSQL)",
+        "static credential exchange rejects a changed control before reading material (PostgreSQL)",
         "Git reduction v7 preserves earlier admission meanings and rejects widening"
       ]
     },
@@ -795,6 +799,9 @@
       "expectedTests": [
         "durable authority writes order configured-policy withdrawal at the real callers"
       ]
+    },
+    {
+      "path": "tests/integration/postgres-egress-replacement.test.ts"
     }
   ]
 }
