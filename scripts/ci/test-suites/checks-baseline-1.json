@@ -38,6 +38,8 @@
     "tests/conformance/strands-box-host.test.ts",
     "tests/conformance/strands-box-ingress.test.ts",
     "tests/conformance/strands-box-ordinary-chat.test.ts",
+    "tests/conformance/strands-box-warm-retry-deploy.test.ts",
+    "tests/conformance/strands-box-warm-retry-host.test.ts",
     "tests/conformance/strands-box-protected.test.ts",
     "tests/conformance/strands-box-turn-network.test.ts",
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
@@ -295,6 +297,12 @@
     },
     {
       "path": "tests/conformance/strands-box-ordinary-chat.test.ts"
+    },
+    {
+      "path": "tests/conformance/strands-box-warm-retry-deploy.test.ts"
+    },
+    {
+      "path": "tests/conformance/strands-box-warm-retry-host.test.ts"
     },
     {
       "path": "tests/conformance/strands-box-protected.test.ts"

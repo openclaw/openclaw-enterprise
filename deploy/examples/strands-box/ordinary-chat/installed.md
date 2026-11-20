@@ -277,3 +277,76 @@ Confirm the same revision, bound claim, Gateway and relay Pod UIDs, Service
 UID, and enrolled device after the checks. A synthetic model reply alone
 does not verify the workspace node. Reconcile any uncertain chat or write
 before deciding whether to submit another request.
+
+## Retry a stopped Agent with one ordinary chat
+
+Before `warm-retry.ts`, verify the Agent is stopped, its latest
+deployment and preceding stop operation are terminal, and no Agent work is queued
+or claimed. An HTTP stop acknowledgment is insufficient. If verification fails,
+leave the Agent stopped.
+
+Enable [HTTP chat](../../../../docs/reference/agent-http-chat.md) and keep the
+credential-free synthetic model running for `READY`. Start a fresh, externally
+supervised Host without `owner.revisionId`. Verify held approval mode, a listening private
+control socket, no execution or Agent workloads, live Worker control mount,
+and original bound volumes. Exclude concurrent Agent, Configuration and Host
+writers; deploy cannot atomically check predecessor or Configuration generation. Reuse
+a durable mode-`0700` state directory and unchanged configuration per attempt.
+
+Create a mode-`0600` JSON configuration file at an absolute path. Pin the
+actual Pod, Helm release, execution Namespace, OCE identities, Configuration
+generation, terminal predecessor, Driver implementation, and Host socket.
+
+```json
+{
+  "kubeContext": "<context>",
+  "apiNamespace": "<installation-namespace>",
+  "release": "<helm-release>",
+  "apiPod": "<api-pod>",
+  "apiPodUid": "<pod-uid>",
+  "namespace": "<execution-namespace>",
+  "namespaceUid": "<namespace-uid>",
+  "namespaceId": "ns_<uuid>",
+  "agentId": "agt_<uuid>",
+  "configurationId": "cfg_<uuid>",
+  "configurationGeneration": 1,
+  "previousRevisionId": "rev_<uuid>",
+  "driverId": "<driver-id>",
+  "implementation": "@<scope>/<package>@<version>",
+  "hostSocketPath": "/absolute/runtime/worker-control/control.sock",
+  "stateDir": "/absolute/private/retry-state"
+}
+```
+
+Set `OCC_SERVICE_KEY_FILE` to an absolute mode-`0600` service-key issuance file.
+Grant `deploy` and `operate` on the Agent and `read` on the Agent, Configuration,
+and all Agent revisions. Kubernetes access must permit Namespace and workload
+reads and API Pod exec. Trust the cluster and release. Exec receives the key on
+stdin. The CLI checks Pod UID before and after exec. When running as root,
+set `hostUid` to the nonroot Host owner's UID. `timeoutSeconds` defaults to 900
+(maximum 1800). Synchronize the operator and API Pod clocks. The Pod enforces
+the expiry before each POST. Receipt verification can finish after expiry.
+
+```sh
+node deploy/examples/strands-box/ordinary-chat/warm-retry.ts check "$RETRY_CONFIG"
+node deploy/examples/strands-box/ordinary-chat/warm-retry.ts start "$RETRY_CONFIG"
+```
+
+`api-preflight-passed` confirms permission and predecessor checks before Host
+checks; `preflight-passed` completes `check`. In another session, independently
+verify and approve the exact pending request, then start ingress as above.
+Success is `terminal-chat-verified`.
+
+Use `resume "$RETRY_CONFIG"` to observe the deployment and submit chat if
+no chat intent exists. If deployment acceptance is ambiguous, first reconcile
+the exact successor externally, then supply its revision ID to `resume`.
+Keep the journal and never replay an ambiguous deploy or chat.
+
+`deploy-not-sent` and `chat-not-sent` confirm that the respective POST was
+never sent. The receipt records the refusal code. After you resolve a deploy
+refusal, run `check` and `start` with a new private state directory only for a
+separately authorized attempt. A chat refusal leaves the accepted deployment
+in place. Obtain separate authorization for any subsequent chat against it.
+`WARM_RETRY_CHAT_NOT_READY` records a completed chat that failed the
+`READY` check, with no reply text saved. Keep the original journal in all
+cases. The helper does not stop or tear down resources.
