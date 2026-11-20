@@ -8,6 +8,14 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 ## Changelog
 
+- 2026-11-19 10:39: Check Git credential and authorization deadlines before Harness release. (authoring-run/49a38c4d-f1b3-44db-a8fc-b46a59e1bde3 - c9f94c1882a9c1b03cd58b76f024f8567e72848b)
+
+- 2026-11-19 09:27: Trace the packaged tool grant and exact Sandbox adoption. (authoring-run/8bccbe00-7528-4259-ac29-fa076bc32b2a - ec602263727fa848a921a86d755cb38293bfab76)
+
+- 2026-11-19 05:56: Retry before dispatch and preserve profile ownership. (authoring-run/db1dbeb6-2423-4378-b292-8e694c9e97e0 - c495c2aa1bc0ab809a92cfe449e17a9d681efad1)
+
+- 2026-11-19 04:29: Verify the loaded repository policy and challenge before releasing selected Git. (authoring-run/a3db59dd-60f7-43de-ae03-81615db94f35 - a2d2cfb139953c1d1675e46c2a65279279726789)
+
 - 2026-11-19 03:46: Bind prepared Git providers to admitted repository grants. (authoring-run/46f2e1fe-81ba-4e99-88e7-53e8acde8687 - 57bef798f650b78f42f279c936a80f705f3450c7)
 
 - 2026-11-18 14:08: Accept Podman cache misses. (authoring-run/cfd6b388-34b4-46c3-8b54-88867893a604 - f07a2b05a8db5e88142ca1a2c9fd90f0ec812284)

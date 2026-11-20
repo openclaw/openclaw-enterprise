@@ -36,6 +36,10 @@ import { loader } from "../helpers/openshell-grpc-sdk.ts";
 import { storedSandbox } from "./sandbox-driver-gateway-response-fixture.ts";
 import { backendFor } from "./sandbox-driver-openshell-fixture.ts";
 import {
+  verifyManagedScopedGitExecution,
+  verifyProtectedOpenShellGitExecution,
+} from "./sandbox-driver-protected-git-execution-cases.ts";
+import {
   verifyProtectedChartListenerRefusals,
   verifyProtectedStartupRefusals,
 } from "./sandbox-driver-protected-startup-guard-cases.ts";
@@ -53,12 +57,11 @@ import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 export type ProtectedOpenShellGitFixture = Awaited<
   ReturnType<typeof configureProtectedOpenShellGit>
 >;
-export type ProtectedOpenShellGitExecution = (
-  subtest: TestContext,
-  fixture: ProtectedOpenShellGitFixture,
-) => Promise<void>;
 
-async function configureProtectedOpenShellGit(t: TestContext) {
+async function configureProtectedOpenShellGit(
+  t: TestContext,
+  mode: "legacy" | "service" = "legacy",
+) {
   const tls = await harnessTlsFixture(t);
   const keys = generateKeyPairSync("ed25519");
   const publicKeyPath = join(tls.directory, "gateway-public.pem");
@@ -80,7 +83,8 @@ async function configureProtectedOpenShellGit(t: TestContext) {
   const [openShellBackend] = base.backend;
   assert.ok(openShellBackend);
   const sandboxConfiguration = base.drivers.sandbox.configuration;
-  const workspaceMountPath = "/sandbox/repository";
+  sandboxConfiguration.integrationMode = mode;
+  const workspaceMountPath = mode === "service" ? "/sandbox/oce/workspace" : "/sandbox/repository";
   sandboxConfiguration.kubernetes.sandboxDataMount.mountPath = workspaceMountPath;
   const providerHarness = {
     namespace: "openshell-system",
@@ -97,6 +101,7 @@ async function configureProtectedOpenShellGit(t: TestContext) {
     appId: "123",
     githubInstallationId: "456",
     maximumDurationSeconds: 3600,
+    allowStandingApprovals: true,
     repositories: [
       {
         repositoryRef: "source",
@@ -129,6 +134,7 @@ async function configureProtectedOpenShellGit(t: TestContext) {
         {
           namespaceId: namespaceContext().namespace.id,
           profiles: ["github-repository"],
+          ...(repositoryRef === "read-source" && { allowStandingApproval: true }),
           permissions: { contents, metadata: "read" },
         },
       ],
@@ -281,6 +287,7 @@ async function configureProtectedOpenShellGit(t: TestContext) {
     const sandbox = storedSandbox(request, {
       spec: object(decoded, "OpenShell SandboxSpec"),
       id: "sandbox-id",
+      resourceVersion: "1",
       phase: "SANDBOX_PHASE_READY",
       restartCount: 0,
       mainProcessInstanceId: randomUUID(),
@@ -291,15 +298,22 @@ async function configureProtectedOpenShellGit(t: TestContext) {
   };
   gateway.getService = async (_workspace, sandbox, service) =>
     harnessService(sandbox, service, gateway.sandboxes.get(sandbox)?.serviceUrls[""]);
-  gateway.getSandboxProviderStatus = async (workspace, sandbox, provider) => {
-    const now = new Date().toISOString();
+  gateway.getSandboxProviderStatus = async (workspace, sandbox, provider, _signal, requested) => {
+    const now = new Date(Date.now()).toISOString();
+    const box = gateway.sandboxes.get(sandbox);
+    const attached = gateway.providers.get(provider);
+    assert.ok(attached?.id && box?.id && box.mainProcessInstanceId);
+    const updated =
+      requested !== undefined && requested === attached.targetReceipts?.[0]?.receipt_id;
+    const receiptId = updated ? requested : provider + "-observe";
+    assert.ok(requested === undefined || requested === receiptId);
     const desired = {
-      sandboxId: "sandbox-id",
+      sandboxId: box.id,
       sandbox,
-      providerId: provider + "-id",
-      providerResourceVersion: "1",
+      providerId: attached.id,
+      providerResourceVersion: attached.resourceVersion,
       attachmentEpoch: "epoch-one",
-      providerEnvRevision: "1",
+      providerEnvRevision: String(box.configurationAdmission?.provider_env_revision ?? "1"),
       configRevision: "1",
       policyHash: "policy-one",
     };
@@ -307,8 +321,15 @@ async function configureProtectedOpenShellGit(t: TestContext) {
       state: "PROVIDER_READINESS_STATE_READY",
       evaluatedTime: now,
       observedTime: now,
-      networkInstanceId: "network-one",
-      receipt: { workspace, provider, desired },
+      networkInstanceId: box.mainProcessInstanceId,
+      completedOperationId: receiptId,
+      receipt: {
+        workspace,
+        provider,
+        desired,
+        receiptId,
+        kind: updated ? "PROVIDER_MUTATION_KIND_UPDATE" : "PROVIDER_MUTATION_KIND_OBSERVE",
+      },
       observed: {
         ...desired,
         sessionId: "supervisor-one",
@@ -317,7 +338,7 @@ async function configureProtectedOpenShellGit(t: TestContext) {
         policyActive: true,
         launchEnvironmentInstalled: true,
         processInstanceId: "process-one",
-        reason: "",
+        reason: "PROVIDER_READINESS_REASON_UNSPECIFIED",
       },
     };
   };
@@ -387,6 +408,7 @@ async function configureProtectedOpenShellGit(t: TestContext) {
     name: inferenceProvider,
     id: "inference-provider-id",
     type: "inference-profile",
+    workspace: openShellWorkspaceName(context.namespace),
     profileWorkspace: openShellWorkspaceName(context.namespace),
     config: {},
     labels: {},
@@ -398,7 +420,7 @@ async function configureProtectedOpenShellGit(t: TestContext) {
     annotations: {},
     definition: {
       credentials: [{ env_vars: ["MODEL_API_KEY"] }],
-      endpoints: [{ host: "api.openai.com", port: 443 }],
+      endpoints: [{ host: "api.openai.com", port: 443, protocol: "rest" }],
     },
   });
   const repositoryCredentials = {
@@ -455,7 +477,7 @@ async function configureProtectedOpenShellGit(t: TestContext) {
 
 // Production configuration and Sandbox provisioning, with controlled gateway observations.
 // This proves the join and fail-closed lifecycle, not an installed stock supervisor or GitHub.
-export function registerProtectedOpenShellGitCases(runExecution: ProtectedOpenShellGitExecution) {
+export function registerProtectedOpenShellGitCases() {
   test(
     "configured protected OpenShell Git admits only the selected execution and network policy",
     { timeout: 30000 },
@@ -465,8 +487,14 @@ export function registerProtectedOpenShellGitCases(runExecution: ProtectedOpenSh
       // model source survives Git; the runtime-files provider cannot stand in for that source.
       await t.test(
         "protected Sandbox accepts only the separately admitted model alongside Git",
-        (subtest) => runExecution(subtest, fixture),
+        (subtest) => verifyProtectedOpenShellGitExecution(subtest, fixture),
       );
     },
+  );
+  test(
+    "managed Sandbox releases scoped Git for a successor of a Git-free revision",
+    { timeout: 30000 },
+    async (t) =>
+      verifyManagedScopedGitExecution(t, await configureProtectedOpenShellGit(t, "service")),
   );
 }

@@ -5,10 +5,7 @@ import {
   SandboxGatewayUnavailableError,
   TransientDependencyError,
 } from "@openclaw-enterprise/occ";
-import type {
-  OpenShellGatewayClient,
-  OpenShellSandboxResponse,
-} from "../sandbox/openshell-gateway-client.ts";
+import type { OpenShellGatewayClient } from "../sandbox/openshell-gateway-client.ts";
 import { witnessOpenShellGitLaunch, type OpenShellGitContinuity } from "./openshell-expired-git.ts";
 import type {
   OpenShellPreparedGitBinding,
@@ -18,6 +15,7 @@ import type {
 import {
   openShellExpectedWireProviderRule,
   type OpenShellExpectedProviderRule,
+  type OpenShellGitSandboxVerifier,
 } from "./openshell-repository-policy-readback.ts";
 import {
   previewPolicyAndRecipient,
@@ -65,7 +63,7 @@ export interface OpenShellGitObservationEntry {
   readonly otherProviders: readonly string[];
   binding: OpenShellPreparedGitBinding;
   readonly preview?: ObservedHookPreview;
-  verify?: (sandbox: OpenShellSandboxResponse, signal: AbortSignal) => void | Promise<void>;
+  verify?: OpenShellGitSandboxVerifier;
   sandboxId?: string;
   unverified?: true | undefined;
   continuity?: OpenShellGitContinuity;
@@ -331,14 +329,15 @@ export async function observeOpenShellGitInstallation(
       ),
     signal,
   );
-  if (!sandbox?.id || !entry.verify) {
+  const verify = entry.verify;
+  if (!sandbox?.id || !verify) {
     return;
   }
   if (![2, "SANDBOX_PHASE_READY"].includes(sandbox.phase as string | number)) {
     return;
   }
   try {
-    await entry.verify(sandbox, signal);
+    await verify(sandbox, signal);
   } catch (error) {
     if (error instanceof OpenShellGitObservationError || error instanceof OpenShellGitRouteError) {
       throw error;
@@ -386,7 +385,12 @@ export async function observeOpenShellGitInstallation(
     Date.parse(entry.binding.expiresAt) <= Date.now()
   ) {
     // Identity only. Lookup and the post-rotation installation check never take this path.
-    const last = await entry.provider.observePredecessor(entry.binding, entry.supervisor, signal);
+    const last = await entry.provider.observePredecessor(
+      entry.binding,
+      entry.supervisor,
+      signal,
+      verify,
+    );
     if (last) {
       if (entry.preview) {
         // Expiry removes credentials, not the released launch's mandatory request hook.
@@ -432,6 +436,7 @@ export async function observeOpenShellGitInstallation(
     sandbox.id,
     signal,
     entry.preview ? undefined : admitted,
+    verify,
   );
   const previous = entry.supervisor;
   const recovered =

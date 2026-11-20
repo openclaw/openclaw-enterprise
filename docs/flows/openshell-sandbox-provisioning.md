@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: "2026-11-19"
-last_updated_session: "authoring-run/3c318cd8-e481-47d2-9b58-d22f1fd3b01e"
+updated: "2026-11-20"
+last_updated_session: "authoring-run/86fcdf8b-1e52-4d27-b315-cd409e4c1c64"
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -352,6 +352,12 @@ and `PRE_CREDENTIALS`.
 requires qualified protected defaults, in-scope grants and no Agent additions.
 The network policy preserves the selected-repository token.
 
+`apps/controller/src/drivers/egress-proxy/openshell-repository-policy-readback.ts:verifyOpenShellRepositoryPolicy`
+checks the loaded source and effective Provider rules. For active Git and standing
+succession on a managed Sandbox, the Sandbox Driver verifies the loaded source and
+Sandbox owner against the launch spec it derives for that Agent revision.
+The Gateway retains the creation policy in `GetSandbox.spec.policy`.
+
 `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:observeHeldPreview`
 checks loaded bootstrap policy and probes upload-pack discovery for the first
 canonical grant with a fresh nonce and no credential. Compute signs the probe and
@@ -430,16 +436,8 @@ setup, retry and restart under setgid parents. It excludes Kubernetes and model 
 
 ## Changelog
 
+- 2026-11-20 05:41: Verify the managed revision's loaded Git policy. (authoring-run/86fcdf8b-1e52-4d27-b315-cd409e4c1c64 - bd7a67734a03949f6d7bc0219e94681a805da3e1)
+
 - 2026-11-19 10:42: Trace Sandbox startup refusal diagnostics. (authoring-run/3c318cd8-e481-47d2-9b58-d22f1fd3b01e - 6ff25175b2158ca12e49137cb980295af001a98c)
-
-- 2026-11-19 10:39: Check Git credential and authorization deadlines before Harness release. (authoring-run/49a38c4d-f1b3-44db-a8fc-b46a59e1bde3 - c9f94c1882a9c1b03cd58b76f024f8567e72848b)
-
-- 2026-11-19 09:27: Trace the packaged tool grant and exact Sandbox adoption. (authoring-run/8bccbe00-7528-4259-ac29-fa076bc32b2a - ec602263727fa848a921a86d755cb38293bfab76)
-
-- 2026-11-18 14:08: Accept Podman cache misses. (authoring-run/cfd6b388-34b4-46c3-8b54-88867893a604 - f07a2b05a8db5e88142ca1a2c9fd90f0ec812284)
-
-- 2026-11-19 05:56: Retry before dispatch and preserve profile ownership. (authoring-run/db1dbeb6-2423-4378-b292-8e694c9e97e0 - c495c2aa1bc0ab809a92cfe449e17a9d681efad1)
-
-- 2026-11-19 04:29: Verify the loaded repository policy and challenge before releasing selected Git. (authoring-run/a3db59dd-60f7-43de-ae03-81615db94f35 - a2d2cfb139953c1d1675e46c2a65279279726789)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

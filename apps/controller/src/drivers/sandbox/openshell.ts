@@ -3694,7 +3694,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         );
       await this.openShellGit!.bind(
         context.revision.id,
-        (observed, signal) => this.verifyGitSandbox(client, observed, create, signal),
+        (observed, signal, sourcePolicy) =>
+          this.verifyGitSandbox(client, observed, create, signal, sourcePolicy),
         originalModel ? continuity : undefined,
       );
     }
@@ -3792,6 +3793,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     observed: OpenShellSandboxResponse,
     create: Omit<OpenShellSandboxCreateRequest, "requestId">,
     _signal: AbortSignal,
+    _sourcePolicy?: Readonly<Record<string, unknown>>,
   ): Promise<void> {
     verifyExistingSandbox(observed, { ...create, requestId: "observation" });
   }

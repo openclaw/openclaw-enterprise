@@ -16,6 +16,7 @@ import {
   openShellExpectedProviderRule,
   verifyOpenShellRepositoryPolicy,
   type OpenShellExpectedProviderRule,
+  type OpenShellGitSandboxVerifier,
 } from "./openshell-repository-policy-readback.ts";
 import { isGitHubWireCredential } from "../repo/github/access/wire-credential.ts";
 import {
@@ -44,6 +45,8 @@ export type OpenShellPreparedGitScope = OpenShellGitNetworkInput & {
   readonly executionId: string;
   /** Sibling Provider rules derived from the same locally selected revision profiles. */
   readonly expectedProviders?: readonly OpenShellExpectedProviderRule[];
+  /** Verify the current revision's policy on a managed Sandbox. */
+  readonly managedSandbox?: true;
 };
 
 /** Only the credential worker supplies this value; no App signing key or OAuth material. */
@@ -623,6 +626,25 @@ export class OpenShellPreparedGitProvider {
     return openShellExpectedProviderRule(this.provider, this.profile).rule;
   }
 
+  private async verifyRepositoryPolicy(
+    installation: OpenShellPreparedGitInstalled,
+    signal: AbortSignal,
+    verify?: OpenShellGitSandboxVerifier,
+  ): Promise<boolean> {
+    const verifyManagedSandbox = this.scope.managedSandbox ? verify : undefined;
+    if (this.scope.managedSandbox && !verifyManagedSandbox) {
+      return false;
+    }
+    return verifyOpenShellRepositoryPolicy(
+      this.client,
+      installation,
+      this.previewNetworkRule(),
+      this.scope.expectedProviders,
+      signal,
+      verifyManagedSandbox,
+    );
+  }
+
   repositoryPolicyIsFresh(installation: OpenShellPreparedGitInstalled): boolean {
     return (
       this.scope.repositoryNetworkPolicy === undefined ||
@@ -644,6 +666,7 @@ export class OpenShellPreparedGitProvider {
     sandboxId: string,
     signal: AbortSignal,
     installed?: OpenShellPreparedGitInstalled,
+    verify?: OpenShellGitSandboxVerifier,
   ): Promise<OpenShellPreparedGitInstalled | undefined> {
     binding = Object.freeze({ ...binding });
     if (
@@ -792,13 +815,7 @@ export class OpenShellPreparedGitProvider {
         const deadline = readStartedAt + 14_999 - (evaluatedAt - observedAt);
         const isFresh = () => performance.now() < deadline;
         if (
-          !(await verifyOpenShellRepositoryPolicy(
-            this.client,
-            currentInstallation,
-            this.previewNetworkRule(),
-            this.scope.expectedProviders,
-            signal,
-          )) ||
+          !(await this.verifyRepositoryPolicy(currentInstallation, signal, verify)) ||
           !isFresh() ||
           (binding.credentialState === "active" && !(Date.parse(binding.expiresAt) > Date.now()))
         ) {
@@ -818,6 +835,7 @@ export class OpenShellPreparedGitProvider {
     binding: OpenShellPreparedGitBinding,
     previous: OpenShellPreparedGitInstalled,
     signal: AbortSignal,
+    verify?: OpenShellGitSandboxVerifier,
   ): Promise<OpenShellPreparedGitInstalled | undefined> {
     if (
       !this.owns(binding) ||
@@ -842,13 +860,7 @@ export class OpenShellPreparedGitProvider {
     this.binding(current, binding.profileVersion, binding.expiresAt);
     if (
       this.scope.repositoryNetworkPolicy !== undefined &&
-      !(await verifyOpenShellRepositoryPolicy(
-        this.client,
-        previous,
-        this.previewNetworkRule(),
-        this.scope.expectedProviders,
-        signal,
-      ))
+      !(await this.verifyRepositoryPolicy(previous, signal, verify))
     ) {
       return;
     }

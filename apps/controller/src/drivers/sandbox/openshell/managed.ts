@@ -434,20 +434,26 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     observed: OpenShellSandboxResponse,
     create: Omit<OpenShellSandboxCreateRequest, "requestId">,
     signal: AbortSignal,
+    sourcePolicy?: Readonly<Record<string, unknown>>,
   ): Promise<void> {
     if (!client.getPolicyStatus) {
       throw new Error("Managed Git requires current Sandbox policy observation.");
     }
-    const policy = await readOpenShellGitEvidence(
-      () => client.getPolicyStatus!({ workspace: create.workspace, sandbox: create.name }, signal),
-      signal,
-    );
+    const policy =
+      sourcePolicy ??
+      (
+        await readOpenShellGitEvidence(
+          () =>
+            client.getPolicyStatus!({ workspace: create.workspace, sandbox: create.name }, signal),
+          signal,
+        )
+      ).policy;
     // GetSandbox retains the creation policy. Check the current policy without masking any
     // workload or owner difference, including the successor's exact middleware binding.
     verifyExistingSandbox(
       {
         ...observed,
-        spec: { ...observed.spec, policy: policy.policy, providers: providerNames(observed.spec) },
+        spec: { ...observed.spec, policy, providers: providerNames(observed.spec) },
       },
       {
         ...withManagedPolicyBaseline(create),

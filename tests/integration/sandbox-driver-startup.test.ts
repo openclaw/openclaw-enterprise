@@ -8,7 +8,6 @@ import {
 import { credentialGatewayOverProviders } from "./sandbox-driver-credential-fixture.ts";
 import { registerSandboxDriverNamespaceProviderCases } from "./sandbox-driver-namespace-provider-cases.ts";
 import { registerProtectedOpenShellGitCases } from "./sandbox-driver-protected-git-configuration-cases.ts";
-import { verifyProtectedOpenShellGitExecution } from "./sandbox-driver-protected-git-execution-cases.ts";
 import {
   codexHarnessChecks,
   credentialWithdrawalChecks,
@@ -168,7 +167,7 @@ registerSandboxDriverNamespaceProviderCases({ sandboxStartupGuardChecks, negotia
 
 registerSandboxDriverHookProbeCases();
 
-registerProtectedOpenShellGitCases(verifyProtectedOpenShellGitExecution);
+registerProtectedOpenShellGitCases();
 
 registerSandboxDriverNamespaceGatewayCleanupCases({
   KubernetesObjectApi,

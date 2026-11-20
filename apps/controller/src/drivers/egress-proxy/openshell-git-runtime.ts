@@ -359,6 +359,7 @@ function gitProvider(
   { delivery, repositoryNetworkPolicy }: OpenShellGitScope,
   observedHookPreview?: true,
   expectedProviders?: readonly OpenShellExpectedProviderRule[],
+  managedSandbox?: true,
 ) {
   return new OpenShellPreparedGitProvider(client, {
     workspace,
@@ -368,6 +369,7 @@ function gitProvider(
     ...delivery,
     ...(repositoryNetworkPolicy !== undefined && { repositoryNetworkPolicy }),
     ...(expectedProviders !== undefined && { expectedProviders }),
+    ...(managedSandbox && { managedSandbox }),
     ...(observedHookPreview && { observedHookPreview }),
     ...openShellGitNetworkDefaults(delivery),
   });
@@ -742,6 +744,7 @@ export class OpenShellGitRuntime {
           scope.repositoryNetworkPolicy === undefined
             ? undefined
             : [...expectedProviders, ...(runtimeFileRule ? [runtimeFileRule] : [])],
+          retainedSandbox ? true : undefined,
         );
         const bindingId = admittedExecutionId;
         const route = {
@@ -1037,7 +1040,7 @@ export class OpenShellGitRuntime {
 
   async bind(
     revisionId: string,
-    verify: (sandbox: OpenShellSandboxResponse, signal: AbortSignal) => void | Promise<void>,
+    verify: NonNullable<Entry["verify"]>,
     continuity?: OpenShellGitContinuity,
   ): Promise<void> {
     const entry = await this.entries.get(revisionId);
