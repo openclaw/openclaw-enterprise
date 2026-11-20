@@ -43,12 +43,8 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
-import {
-  callerDenied,
-  refusedNamed,
-  SECRET_CREATE_DENIED,
-  SLACK_LOOKUP_DENIED,
-} from "../helpers/refusal-text.mjs";
+import { callerDenied, SECRET_CREATE_DENIED } from "../helpers/refusal-text.mjs";
+import { refusedNamed, SLACK_LOOKUP_DENIED } from "../helpers/refusal-access.ts";
 import { restrict } from "../helpers/iam-grants.ts";
 import { within } from "../helpers/wait-for.ts";
 

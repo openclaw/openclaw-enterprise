@@ -2729,17 +2729,16 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   assert.deepEqual(await readFreshRevisions(), []);
   controller.selectDriver("repo", namespacePolicy.id);
 
-  // The same Driver object can expose a different approval method through a
-  // getter. Replacing that method during validation must also block deployment.
-  let selectedApproval = namespacePolicy.repositoryNetworkPolicyAllows;
-  Object.defineProperty(namespacePolicy, "repositoryNetworkPolicyAllows", {
-    configurable: true,
-    get: () => selectedApproval,
-  });
+  // Replacing the approving method with an accessor during Compute validation
+  // invalidates the original approval. Refuse before reading credential status.
+  const approvalGetter = t.mock.fn(() => () => true);
   try {
     validateProtectedRepositoryNetworkPolicy.mock.mockImplementationOnce(async (context) => {
       await validatePolicy(context);
-      selectedApproval = () => true;
+      Object.defineProperty(namespacePolicy, "repositoryNetworkPolicyAllows", {
+        configurable: true,
+        get: approvalGetter,
+      });
     });
     const changedMethod = await deployFresh(true);
     assertApiError(changedMethod, 409, "RESOURCE_CONFLICT");
@@ -2748,16 +2747,62 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
       /Drivers changed during repository network policy admission/,
     );
     assertSteps(...policyChecks);
+    assert.equal(approvalGetter.mock.callCount(), 0);
     assert.deepEqual(await readFreshRevisions(), []);
   } finally {
     Reflect.deleteProperty(namespacePolicy, "repositoryNetworkPolicyAllows");
   }
 
+  // Neither an immediate approval failure nor a getter that fails after the
+  // credential status check may expose Driver diagnostics or provision credentials.
+  for (const late of [false, true]) {
+    await t.test(late ? "approval recheck throws" : "approval throws", async (t) => {
+      const diagnostic = `synthetic repository approval failure ${randomUUID()}`;
+      const fail = () => {
+        throw new ResourceStateConflictError(diagnostic);
+      };
+      if (late) {
+        credentialStatus.mock.mockImplementationOnce(async () => {
+          Object.defineProperty(namespacePolicy, "repositoryNetworkPolicyAllows", {
+            configurable: true,
+            get: fail,
+          });
+          return false;
+        });
+      } else {
+        Object.defineProperty(namespacePolicy, "repositoryNetworkPolicyAllows", {
+          configurable: true,
+          value: fail,
+        });
+      }
+      t.after(() => {
+        Reflect.deleteProperty(namespacePolicy, "repositoryNetworkPolicyAllows");
+      });
+      const refused = await deployFresh(late);
+      assertSteps(...(late ? beforeProvisioning : []));
+      assert.deepEqual(await readFreshRevisions(), []);
+      assert.deepEqual(
+        await controller.transact((unit) => unit.sandboxPolicies.find(namespace.id, freshAgent.id)),
+        freshSaved,
+      );
+      const { error } = checkedResponse(fixture, refused, ErrorResponse, 409);
+      assert.equal(error.code, "RESOURCE_CONFLICT");
+      assert.equal(
+        error.message,
+        late
+          ? "The selected Drivers changed during repository network policy admission. Review the Installation's Driver selections before deploying."
+          : "Cannot verify Namespace repository network grants. Review the Installation repository policy before deploying.",
+      );
+      assert.ok(!JSON.stringify(refused.body).includes(diagnostic));
+    });
+  }
+
   // An asynchronous Driver cannot grant repository access, even if it resolves
   // to true. Its rejection must stay within this request's refusal path.
   for (const approve of [async () => true, async () => Promise.reject(new Error("refused"))]) {
-    const asynchronous = t.mock.method(namespacePolicy, "repositoryNetworkPolicyAllows", () => {
-      return approve() as unknown as boolean;
+    Object.defineProperty(namespacePolicy, "repositoryNetworkPolicyAllows", {
+      configurable: true,
+      value: () => approve() as unknown as boolean,
     });
     try {
       const refused = await deployFresh();
@@ -2769,7 +2814,7 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
       assertSteps();
       assert.deepEqual(await readFreshRevisions(), []);
     } finally {
-      asynchronous.mock.restore();
+      Reflect.deleteProperty(namespacePolicy, "repositoryNetworkPolicyAllows");
     }
   }
 

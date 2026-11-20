@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-20"
-last_updated_session: "authoring-run/a2bef7a4-6af0-434c-9776-68935257de2b"
+last_updated_session: "authoring-run/140d9cef-7de2-45f4-aa02-b53c18c4757e"
 ---
 
 # Agent sandbox policy flow
@@ -45,29 +45,27 @@ Solid arrows trace source paths, not provider verification.
 
 ### 1. Admit and persist desired additions
 
-`internal/occcli/cli.go:validateOptions` accepts JSON and YAML for
-`agentPolicyCommand` and defaults to JSON before sending requests.
-Driver discovery and policy GET share an authorized descriptor with facet URLs.
-[Installation inspection](driver-plugin-loading.md#4-load-current-policy-and-hand-off-lifecycle-ownership)
-shows Driver-projected startup values.
+The CLI defaults to JSON and also accepts YAML. Driver discovery and policy GET
+share an authorized descriptor with facet URLs. [Installation inspection](driver-plugin-loading.md#4-load-current-policy-and-hand-off-lifecycle-ownership)
+shows Driver-projected values.
 
-`validateAgentSandboxPolicy` previews authorization, editing, version, pending
-work, schema and Driver admission. `networkGrantAdmissionDetails` checks ceiling
-coverage, wildcards and port ranges. `internal/occclient/transport.go:APIError.Error`
-prints up to 32 escaped field details and omits Unicode control characters.
+`validateAgentSandboxPolicy` previews edit authority, version, pending work,
+schema and Driver admission. `networkGrantAdmissionDetails` checks the ceiling,
+wildcards and ports. The CLI prints at most 32 escaped details without Unicode controls.
 
 Staged `validateDeploymentPolicy(policy, context)` checks source approval,
-requests and projections. Only proposed proxy configuration gets a source-bound
-resolver. Static approvals match method, host, port and path. A null method
-matches every method. The Sandbox checks HTTP rules and exact MCP paths. Discovery can be credentialless, and providers
-enforce OAuth scopes.
+requests and projections. The source-bound resolver is available for proposed
+proxy configuration. Static approvals match method, host, port and path.
+A null method matches every method. The Sandbox checks HTTP and exact MCP paths;
+discovery can be credentialless. Providers enforce OAuth scopes.
 
 Startup validates the [repository ceiling](../reference/configuration.md).
 GET requires Agent and SandboxPolicy read. It reports saved grants, withdrawal
 availability and the Namespace ceiling. `packages/occ/src/repository-network-policy.ts:delegatedRepositoryCeiling`
-requires synchronous Driver approval. GET returns an empty ceiling if the Driver
-or method changes during filtering. PUT refuses first and nonempty lists. Omission
-preserves the saved list and excludes it from the response.
+requires synchronous Driver approval. GET returns an empty ceiling if checking
+approval throws or if the Driver or method changes during filtering. The saved
+grants and withdrawal availability remain visible. PUT refuses first and nonempty
+lists. Omission preserves the saved list and excludes it from the response.
 
 `packages/occ/src/index.ts:updateAgentSandboxPolicy` requires Agent
 `manage_policy` and SandboxPolicy `update`. It locks the Namespace and Agent
@@ -154,28 +152,25 @@ Omitted additions retain the saved version.
 
 ### 3. Reconcile provider effects
 
-`apps/controller/src/worker/sandbox-policy.ts:reconcileSandboxPolicy` locks the
-same lifecycle owners and rechecks current authority, ceiling, Driver identity,
-and Compute placement. Shared definition and provider admission are rerun before
-provider effects. One pass records the provider CAS version; a later pass
-can mutate with that fixed version and operation ID. Provider reads and effects
-are bounded by the claim lease. Database and audit failures roll back the pass.
+`apps/controller/src/worker/sandbox-policy.ts:reconcileSandboxPolicy` locks the same lifecycle
+owners; rechecks current authority, ceiling, Driver identity and Compute placement;
+reruns shared definition and provider admission. One pass pins provider CAS; later
+mutation uses that version and operation ID. The claim lease bounds reads and
+effects; database or audit failure rolls back.
 
-`apps/controller/src/drivers/sandbox/openshell.ts` verifies exact provider
-ownership, preserves static policy and generated access, and calls native
-status/UpdateConfig RPCs. A mismatched policy at a changed resource version
-fails before any write. After a refused write, the worker rereads provider
-status and confirms its lease. A full match at the loaded active version
-records `applied`. A match still loading waits within the deadline. A mismatch
-at a changed resource version fails with `SANDBOX_POLICY_PROVIDER_FAILED`
-because the pinned version is stale.
+`apps/controller/src/drivers/sandbox/openshell.ts` verifies exact provider ownership,
+preserves static policy and generated access, and calls native status/UpdateConfig
+RPCs. Changed resource version plus policy mismatch fails before writing. After
+refusal the Worker rereads status and confirms its lease. A full active match
+records `applied`. A loading match waits within the deadline. Mismatch at a
+changed version fails with `SANDBOX_POLICY_PROVIDER_FAILED`. Shutdown during reread
+rolls back for claim recovery; other outcomes retry within limits.
 
-Shutdown during that read rolls back for claim recovery. Other outcomes retry
-within limits. The worker calls `failAbandonedSandboxPolicies` inside the
-`transactWithQueue` that recovers exhausted abandoned claims and marks applications as
-unconfirmed failures. Queue failure, application failure, and audit commit
-together or remain recoverable. A failed live request does not deploy another
-revision. OCC stores the last confirmed live evidence separately.
+Recovering exhausted abandoned claims, the worker calls
+`failAbandonedSandboxPolicies` inside `transactWithQueue`. Queue failure,
+unconfirmed application failure and audit commit together or remain recoverable.
+Failed live requests deploy no revision; OCC separately stores last confirmed live
+evidence.
 
 ### 4. Read contextual evidence
 
@@ -257,13 +252,17 @@ hides denial counts and controls.
 
 ## Changelog
 
+- 2026-11-20 08:14: Refuse deployment without returning private approval errors. (authoring-run/140d9cef-7de2-45f4-aa02-b53c18c4757e - 237d0fc8fe3e9b258e06fc84a68caeb3eb93ef33)
+
+- 2026-11-20 08:04: Preserve repository grant withdrawal readback when checking Driver approval throws. (authoring-run/191b53ca-438b-4987-9206-b77590aa9c21 - 7933c6f2ebeb909bb949c45bceabe2ef0428fe5e)
+
 - 2026-11-20 06:11: Trace scoped replacement ownership and held Gateway repair. (authoring-run/a2bef7a4-6af0-434c-9776-68935257de2b - df83476dc44e9deabdc3f34f7634a59621f4c90c)
 
 - 2026-11-20 05:30: Trace the captured Channel validator and Worker repair and retirement holds. (authoring-run/f0454df4-01c9-49e5-babc-8bcc1156c2bd - df83476dc44e9deabdc3f34f7634a59621f4c90c)
 
-- 2026-11-20 04:25: Trace repository approval, scoped revision storage and Worker supersession alongside provider fences. (authoring-run/23ddd614-d8ba-4db3-b0b5-dae0e6590095 - df83476dc44e9deabdc3f34f7634a59621f4c90c)
-
 - 2026-11-20 04:52: Trace synchronous ceiling approval, policy withdrawal and Worker drain. (authoring-run/4c8151f6-8b1e-4a9c-9cab-c76091f92ea4 - b8e2396539ed2e1f91b302371486ebf5938350a3)
+
+- 2026-11-20 04:25: Trace repository approval, scoped revision storage and Worker supersession alongside provider fences. (authoring-run/23ddd614-d8ba-4db3-b0b5-dae0e6590095 - df83476dc44e9deabdc3f34f7634a59621f4c90c)
 
 - 2026-11-20 04:23: Trace scoped revision refusal and Worker drain. (authoring-run/7263c830-6404-45c8-9dc5-a4c9304385df - f6f018182bc5b335701f7b2b5c1f6bfc3b31bf29)
 
@@ -327,9 +326,11 @@ hides denial counts and controls.
 
 - 2026-10-26 10:49: Combine the accompanying policy UX controls with upstream permission hints, unavailable Sandbox log handling, and application failure explanations. (authoring-run/0f3c367f-75d3-40f0-bcfa-3b649b78721f - e89a4e37a0b3dff75739cf6988028f81cd96f5ac)
 
-- 2026-10-25: Hide the empty denial rows and state a refused policy read once. (finding 2522)
-- 2026-10-25: Hide the denial window's controls on the draft. (finding 2509)
 - 2026-10-25: Skip the policy and suggestion reads that the permission answer refuses. (finding 2454)
+
+- 2026-10-25: Hide the empty denial rows and state a refused policy read once. (finding 2522)
+
+- 2026-10-25: Hide the denial window's controls on the draft. (finding 2509)
 
 - 2026-10-24 18:15: Preserve complete Unicode string drafts for owner validation and add a simulated policy Review/Save walkthrough. (authoring-run/b7994562-b460-4667-9017-4c62c3f56eb0 - 6857956afcfee0b88563ea882c95034b5780cbec)
 

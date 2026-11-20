@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
-import { injectJson as inject } from "../helpers/inject-json.mjs";
+import { injectJson as inject } from "../helpers/inject-json.ts";
 import {
   publicOrigin,
   nativeGatewayApiKey,

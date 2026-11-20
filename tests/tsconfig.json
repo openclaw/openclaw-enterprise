@@ -271,7 +271,6 @@
     "helpers/production-tui-otel.ts",
     "helpers/production-tui-restart.ts",
     "helpers/credential-source-owner-upgrade.ts",
-    "helpers/populated-upgrade-return.ts",
     "integration/postgres-historical-agent-migration-cases.ts",
     "integration/postgres-migration-credential-lineage-cases.ts",
     "integration/postgres-migration-schema-admission-cases.ts",

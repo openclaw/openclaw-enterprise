@@ -50,6 +50,7 @@ import {
   InstalledDriver,
   OpenClawController,
   RepositoryGitSenderUnqualifiedError,
+  ResourceStateConflictError,
   SandboxNetworkPolicyConflictError,
 } from "../../packages/occ/src/index.ts";
 import {
@@ -1120,10 +1121,43 @@ test("the SandboxPolicy API refuses unsupported repository grants and keeps save
   assert.deepEqual(initial.data.repositoryNetworkPolicyCeiling, repositoryNetworkPolicyCeiling);
   const repository = f.controller.selectedDriver("repo");
 
+  function installApproval(descriptor) {
+    const key = "repositoryNetworkPolicyAllows";
+    const original = Object.getOwnPropertyDescriptor(repository, key);
+    Object.defineProperty(repository, key, { configurable: true, ...descriptor });
+    return () => {
+      if (original) {
+        Object.defineProperty(repository, key, original);
+      } else {
+        Reflect.deleteProperty(repository, key);
+      }
+    };
+  }
+
+  await t.test("keeps the approved read fallback within the configured ceiling", async (t) => {
+    t.after(
+      installApproval({
+        value: ({ grant }) => {
+          if (grant.repository !== "example/project" || grant.access !== "read") {
+            return false;
+          }
+          // A Driver may approve the read fallback but cannot change what it delegates.
+          Reflect.set(grant, "repository", "example/outside");
+          Reflect.set(grant, "access", "write");
+          return true;
+        },
+      }),
+    );
+    const current = await f.request("GET", policyPath);
+    assert.equal(current.status, 200, JSON.stringify(current));
+    assert.deepEqual(current.data.repositoryNetworkPolicyCeiling, [
+      { repository: "example/project", access: "read" },
+    ]);
+  });
+
   // The Console's policy readback must omit grants when the Driver violates its synchronous contract.
-  const approval = t.mock.method(repository, "repositoryNetworkPolicyAllows", () =>
-    Promise.resolve(false),
-  );
+  const approval = t.mock.fn(() => Promise.resolve(false));
+  const restoreApproval = installApproval({ value: (input) => approval(input) });
   try {
     const denied = await f.request("GET", policyPath);
     assert.equal(denied.status, 200, JSON.stringify(denied));
@@ -1136,14 +1170,16 @@ test("the SandboxPolicy API refuses unsupported repository grants and keeps save
 
     // Discard approvals if the selected policy replaces the method while filtering the ceiling.
     approval.mock.mockImplementation(() => {
-      repository.repositoryNetworkPolicyAllows = () => false;
+      Object.defineProperty(repository, "repositoryNetworkPolicyAllows", {
+        value: () => false,
+      });
       return true;
     });
     const replaced = await f.request("GET", policyPath);
     assert.equal(replaced.status, 200, JSON.stringify(replaced));
     assert.deepEqual(replaced.data.repositoryNetworkPolicyCeiling, [], "method replacement");
   } finally {
-    approval.mock.restore();
+    restoreApproval();
   }
 
   const scope = { namespaceId: f.namespace.id, resourceId: initial.data.policy.id };
@@ -1400,6 +1436,70 @@ test("the SandboxPolicy API refuses unsupported repository grants and keeps save
   assert.equal(view.data.capability, null);
   assert.equal(view.data.repositoryNetworkPolicySaveSupported, true);
   assert.equal(view.data.editingEnabled, false);
+
+  const approvalFailure = new ResourceStateConflictError("synthetic repository Driver diagnostic");
+  async function assertWithdrawalReadback() {
+    const current = await f.request("GET", policyPath);
+    assert.equal(current.status, 200, JSON.stringify(current));
+    assert.deepEqual(current.data.policy, view.data.policy);
+    assert.deepEqual(current.data.repositoryNetworkPolicyCeiling, []);
+    assert.equal(current.data.repositoryNetworkPolicySaveSupported, true);
+  }
+
+  await t.test(
+    "discards earlier approvals if the Driver throws and preserves saved grants",
+    async (t) => {
+      const approval = t.mock.fn(({ grant }) => {
+        if (grant.repository === "example/project") {
+          throw approvalFailure;
+        }
+        return true;
+      });
+      t.after(installApproval({ value: (input) => approval(input) }));
+      const readDenied = restrict(f.iamState, "read", "sandbox_policy", scope);
+      try {
+        const hidden = await f.request("GET", policyPath);
+        assert.equal(hidden.status, 403, JSON.stringify(hidden));
+        assert.equal(hidden.data, undefined);
+        assert.equal(approval.mock.callCount(), 0);
+      } finally {
+        liftRestriction(f.iamState, readDenied);
+      }
+      await assertWithdrawalReadback();
+    },
+  );
+
+  await t.test("preserves withdrawal readback if the approval getter throws", async (t) => {
+    t.after(
+      installApproval({
+        get() {
+          throw approvalFailure;
+        },
+      }),
+    );
+    await assertWithdrawalReadback();
+  });
+
+  await t.test("ignores an approval getter that replaces itself on the final read", async (t) => {
+    const approve = () => true;
+    let reads = 0;
+    t.after(
+      installApproval({
+        get() {
+          // The second read can return the captured approval while installing a denial.
+          if (++reads === 2) {
+            Object.defineProperty(repository, "repositoryNetworkPolicyAllows", {
+              value: () => false,
+            });
+          }
+          return approve;
+        },
+      }),
+    );
+    await assertWithdrawalReadback();
+    assert.equal(reads, 0);
+  });
+
   const reenabled = await f.request("PATCH", editingPath, { enabled: true });
   assert.equal(reenabled.status, 200, JSON.stringify(reenabled));
   const withdrawal = {

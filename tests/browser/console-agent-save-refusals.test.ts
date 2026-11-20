@@ -41,13 +41,15 @@ import {
   AGENT_STOP_DENIED,
   AGENT_UPDATE_DENIED,
   CONFIGURATION_SAVE_DENIED,
-  DIAGNOSTICS_DENIED,
   stopRefused,
+} from "../helpers/refusal-text.mjs";
+import {
+  DIAGNOSTICS_DENIED,
   WORKSPACE_SAVE_DENIED,
   REPOSITORY_CHOICES_AGENT_DENIED,
   SAVE_READ_REFUSED,
   WORKSPACE_SAVE_REFUSED,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-access.ts";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
