@@ -251,6 +251,8 @@ export async function prepareHybridInstallation(f) {
       enabled: false,
       domain: controllerEnv.OCC_AGENT_NATIVE_ADMIN_DOMAIN,
     },
+    // Helm validates the whole chart even when we render only workspace routing.
+    channelEgress: { enabled: false },
     gatewayRouting: {
       enabled: true,
       gatewayClassName: "eg",

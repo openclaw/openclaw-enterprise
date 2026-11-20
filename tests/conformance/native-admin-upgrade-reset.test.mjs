@@ -73,7 +73,10 @@ function within(promise, description, milliseconds = 1_500) {
  * @param {import("node:test").TestContext} t
  * @param {import("./native-admin-upgrade-audit-cases.ts").UpgradeAuditTransportOptions} options
  */
-async function transportOwner(t, { authorize, append, appendSocket = async () => {} }) {
+async function transportOwner(
+  t,
+  { authorize, append, appendSocket = async () => {}, supportsBrowser = () => true },
+) {
   const directory = await mkdtemp(join(tmpdir(), "native-admin-audit-transport-"));
   const previousCertificates = getCACertificates("default");
   /** @type {Set<import("node:stream").Duplex>} */
@@ -175,7 +178,16 @@ async function transportOwner(t, { authorize, append, appendSocket = async () =>
       selectedDriver: () => ({
         id: "compute_test",
         implementation: "native-admin-reset-test",
-        getGatewayEndpoint: () => `wss://127.0.0.1:${gateway.address().port}/`,
+        getGatewayBrowserRequest: supportsBrowser()
+          ? async () => ({
+              endpoint: `wss://127.0.0.1:${gateway.address().port}/`,
+              subject: "test:native-actor-1",
+              headers: {
+                "x-occ-identity": "test:native-actor-1",
+                "x-occ-browser-key": "browser-test-secret",
+              },
+            })
+          : undefined,
       }),
     }),
     selectedIAMDriver: () => ({
@@ -239,6 +251,8 @@ async function transportOwner(t, { authorize, append, appendSocket = async () =>
     gatewayConnections: () => gatewayConnections,
     denials: () => audits.filter((event) => event.kind === "authorization_denial"),
     closeAudit: () => audits.find((event) => event.details?.nativeAdmin?.event === "close"),
+    connectionAudits: () =>
+      audits.filter((event) => ["connect", "close"].includes(event.details?.nativeAdmin?.event)),
     shutdown: () => app.close(),
     async open() {
       const address = app.server.address();
@@ -324,11 +338,46 @@ test(
       assert.equal(auditSettled, false);
       assertTransportDenial(owner, "rev_a");
       assert.equal(owner.closeAudit().details.nativeAdmin.closeReason, "authorization_denied");
+      assert.deepEqual(
+        owner.connectionAudits().map((event) => event.details.nativeAdmin.subject),
+        ["test:native-actor-1", "test:native-actor-1"],
+      );
+      assert.equal(
+        JSON.stringify(owner.connectionAudits()).includes("browser-test-secret"),
+        false,
+        "connection audits must never include the delegation credential",
+      );
     } finally {
       audit.resolve();
       await owner.shutdown();
     }
     assert.equal(owner.denials().length, 1);
+  },
+);
+
+test(
+  "native browser lease closes when the selected Compute loses browser delegation",
+  { timeout: 15_000 },
+  async (t) => {
+    let supported = true;
+    const owner = await transportOwner(t, {
+      authorize: ({ agent, revision }) => Promise.resolve({ agent, revision, mode: "admin" }),
+      append: async () => {},
+      supportsBrowser: () => supported,
+    });
+    const client = await owner.open();
+    assert.match(await within(client.ready, "browser relay opens"), /^HTTP\/1\.1 101 /);
+    supported = false;
+    await within(
+      Promise.all([client.closed, owner.peerClosed]),
+      "withdrawn delegation closes both ends",
+    );
+    assert.equal(
+      owner.gatewayConnections(),
+      1,
+      "renewal must not open a shared-machine connection",
+    );
+    await owner.shutdown();
   },
 );
 
@@ -438,7 +487,11 @@ async function denialOwner(t, overrides = {}) {
       selectedDriver: () => ({
         id: "compute_test",
         implementation: "native-admin-reset-test",
-        getGatewayEndpoint: () => "wss://gateway.example.test",
+        getGatewayBrowserRequest: async () => ({
+          endpoint: "wss://gateway.example.test",
+          subject: "test:native-actor-1",
+          headers: {},
+        }),
       }),
     }),
     selectedIAMDriver: () => ({
@@ -577,7 +630,11 @@ for (const phase of ["admission", "gateway key"]) {
             return {
               id: "compute_test",
               implementation: "native-admin-reset-test",
-              getGatewayEndpoint: () => `wss://127.0.0.1:${gateway.address().port}/`,
+              getGatewayBrowserRequest: async () => ({
+                endpoint: `wss://127.0.0.1:${gateway.address().port}/`,
+                subject: "test:native-actor-1",
+                headers: {},
+              }),
             };
           },
         };

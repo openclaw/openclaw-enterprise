@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { describe, test, type TestContext } from "node:test";
 import type { ProbeSnapshot } from "../helpers/runtime-image-model-probe.ts";
-import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
+import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.ts";
 import { runDocker, failureTail } from "../helpers/runtime-image-docker.ts";
 import { imageTestOptions } from "../helpers/runtime-image-startup.ts";
 import {
