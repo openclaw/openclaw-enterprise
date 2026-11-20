@@ -4,7 +4,6 @@ import { SecretValue } from "@openclaw-enterprise/contracts";
 import type {
   CredentialRefreshStatus,
   CredentialSourceReference,
-  CredentialSourceType,
   ErrorDetail,
   InstallationSecretRef,
   InstallationSecretStore,
@@ -30,32 +29,26 @@ import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { withoutMutationDeadline } from "../../admission/mutation-deadline.ts";
 import { withComputeAbortSignal } from "../compute/operation-context.ts";
 
-const openAiSourceType = Object.freeze({
-  type: "openai",
-  config: [],
-  secrets: [{ name: "api_key", required: true }],
-  rotation: "none",
-  harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
-} as const satisfies CredentialSourceType);
-
 const maxSecretValueBytes: number = Reflect.get(SecretValue, "maxLength");
 
 function checkLifecycle(config: SourceLifecycleConfig): void {
-  if (config.type !== openAiSourceType.type || Object.keys(config.settings).length !== 0) {
-    throw new TokenServiceSourceInputError("A static OpenAI source has no lifecycle settings.");
+  if (config.type !== "static" || Object.keys(config.settings).length !== 0) {
+    throw new TokenServiceSourceInputError("A static source has no lifecycle settings.");
   }
 }
 
 function encodeCredential(secret: SourceRegistrationInput["secret"]): string {
-  const value = secret.api_key;
+  const fields = Object.values(secret);
+  const value = fields[0];
   if (
-    Object.keys(secret).length !== 1 ||
-    !Object.hasOwn(secret, "api_key") ||
+    fields.length !== 1 ||
     !isNonEmptyString(value) ||
     value.includes("\0") ||
     !value.isWellFormed()
   ) {
-    throw new TokenServiceSourceInputError("The source requires one nonempty UTF-8 api_key.");
+    throw new TokenServiceSourceInputError(
+      "A static source requires one nonempty UTF-8 credential value.",
+    );
   }
   const encoded = JSON.stringify({ credential: value, version: randomUUID() });
   if (Buffer.byteLength(encoded, "utf8") > maxSecretValueBytes) {
@@ -77,14 +70,6 @@ function decodeCredential(value: string): ResolvedCredential {
     throw new ResourceStateConflictError("The stored TokenService credential is invalid.");
   }
   return { credential: record.credential, version: record.version };
-}
-
-function validRegistration(registration: TokenServiceRegistration): boolean {
-  return (
-    registration.backendRef !== undefined &&
-    Object.keys(registration.backendRef).length === 1 &&
-    registration.backendRef.type === openAiSourceType.type
-  );
 }
 
 function tokenServiceSecretRef(
@@ -154,7 +139,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
 
   private registeredRef(source: RegisteredTokenServiceSource): CredentialSourceReference {
     const ref = this.ownedRef(source);
-    if (!validRegistration(source.registration)) {
+    if (Object.keys(source.registration).length !== 0) {
       throw new ResourceStateConflictError(
         "This registration does not belong to the OCC TokenService.",
       );
@@ -185,7 +170,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     }
     await withComputeAbortSignal(signal, () => this.store.create(this.storageRef(ref), stored));
     signal.throwIfAborted();
-    return { backendRef: { type: openAiSourceType.type } };
+    return {};
   }
 
   async updateSource(
@@ -226,7 +211,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     signal.throwIfAborted();
     this.registeredRef(source);
     throw new ResourceStateConflictError(
-      "A static API key cannot be refreshed; update the source.",
+      "A static credential cannot be refreshed; update the source.",
     );
   }
 
@@ -236,7 +221,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
   ): Promise<CredentialRefreshStatus> {
     signal.throwIfAborted();
     this.ownedRef(operation);
-    throw new ResourceStateConflictError("A static API key has no refresh operation.");
+    throw new ResourceStateConflictError("A static credential has no refresh operation.");
   }
 
   async removeSource(

@@ -124,11 +124,11 @@ test(
     });
     const createAudit = (ref: CredentialSourceReference, phase?: "registration_started") =>
       event(principal.id, "openclaw.credential_sources.create", ref, phase);
-    const register = (name: string, apiKey: string) =>
+    const register = (name: string, credential: string) =>
       controller.registerManagedCredentialSource(
         principal.id,
         namespaceId,
-        { name, lifecycleConfig: { type: "openai", settings: {} }, secret: { api_key: apiKey } },
+        { name, lifecycleConfig: { type: "static", settings: {} }, secret: { opaque: credential } },
         createAudit,
       );
     const retire = (id: string) =>
@@ -157,6 +157,20 @@ test(
     });
     assert.equal(publicWriter.statusCode, 400, publicWriter.body);
     const createsBefore = core.calls.createNamespacedSecret;
+    // The owner resolves one static value; ambiguous material must fail before custody starts.
+    await assert.rejects(
+      controller.registerManagedCredentialSource(
+        principal.id,
+        namespaceId,
+        {
+          name: "Ambiguous credential",
+          lifecycleConfig: { type: "static", settings: {} },
+          secret: { first: randomUUID(), second: randomUUID() },
+        },
+        createAudit,
+      ),
+      /requires one nonempty UTF-8 credential value/,
+    );
     await assert.rejects(register("Oversized", "a".repeat(65_471)), /encoded credential exceeds/);
     assert.equal(core.calls.createNamespacedSecret, createsBefore);
     assert.deepEqual(await custodyRows(), [{ sources: 0, bindings: 0 }]);
@@ -185,7 +199,7 @@ test(
         id: undispatchedId,
         namespaceId,
         name: "Undispatched reservation",
-        type: "openai",
+        type: "static",
         ownerCapability: "token_service",
         tokenServiceInstanceId: instanceId,
         state: "registering",
@@ -252,7 +266,7 @@ test(
     assert.deepEqual(await custodyRows(), [{ sources: 0, bindings: 0 }]);
 
     const key = randomUUID();
-    const source = await register("Private key", key);
+    const source = await register("Private credential", key);
     const sourceId = source.id;
     const ref = source.ref;
     const persisted = await state.read((view) =>
@@ -260,7 +274,8 @@ test(
     );
     assert.ok(persisted?.ownerCapability === "token_service" && persisted.registration);
     assert.equal(persisted.tokenServiceInstanceId, instanceId);
-    assert.deepEqual(persisted.registration, { backendRef: { type: "openai" } });
+    assert.equal(persisted.type, "static");
+    assert.deepEqual(persisted.registration, {});
     assert.equal(
       (
         await pool.query("SELECT count(*)::int AS count FROM occ.secrets WHERE namespace_id=$1", [
@@ -280,6 +295,19 @@ test(
           AbortSignal.timeout(5_000),
         )
       ).credential;
+    assert.equal(await resolve(), key);
+    // Static custody has no renewal operation; refusal must leave the current value intact.
+    await assert.rejects(
+      owner.forceRefresh(
+        {
+          sourceRef: ref,
+          tokenServiceInstanceId: instanceId,
+          registration: persisted.registration,
+        },
+        AbortSignal.timeout(5_000),
+      ),
+      /static credential cannot be refreshed/i,
+    );
     assert.equal(await resolve(), key);
 
     // Internal records must not become serving source metadata or mutable public resources, even for an administrator.
@@ -303,11 +331,11 @@ test(
     }
     assert.equal((await inject("POST", `${base}/${sourceId}/rotate`)).statusCode, 404);
 
-    const update = (actorId: string, apiKey: string) =>
+    const update = (actorId: string, credential: string) =>
       controller.updateManagedCredentialSource(
         actorId,
         { namespaceId, credentialSourceId: sourceId },
-        { secret: { api_key: apiKey } },
+        { secret: { replacement: credential } },
         (resource, phase) => event(actorId, "openclaw.credential_sources.update", resource, phase),
         (reasonCode) => ({
           ...event(actorId, "openclaw.credential_sources.update", ref),
