@@ -9,8 +9,10 @@ import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
+  assertDrizzleJournalPreserved,
   assertLegacyAgentMigrationRefusal,
   assertLegacyControllerWorkBackfill,
+  assertPresetPolicyUpgrade,
 } from "./postgres-historical-agent-migration-cases.ts";
 import {
   registerPostgresMigrationCredentialLineageCases,
@@ -354,104 +356,13 @@ test(
     context.after(async () => {
       assert.deepEqual(await fileHashes(migrationsDirectory), originalMigrations);
     });
-    const server = await pool.query("SELECT current_setting('server_version_num') AS version");
-    const serverVersion = Number(server.rows[0].version);
-    assert.ok(serverVersion >= 180_000 && serverVersion < 190_000, "PostgreSQL 18 is required.");
-    const dumpVersion = await runCommand(fixture, "docker", [
-      ...fixture.composeArgs,
-      "pg_dump",
-      "--version",
-    ]);
-    assert.match(dumpVersion, /^pg_dump \(PostgreSQL\) 18(?:\.|\s)/);
-    const journalQuery =
-      "SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id";
-    const beforeJournal = (await pool.query(journalQuery)).rows;
-    const sourceJournal = JSON.parse(
-      await readFile(join(migrationsDirectory, "meta", "_journal.json"), "utf8"),
-    );
-    assert.ok(beforeJournal.length > 0, "Native preparation must apply the original migrations.");
-    assert.equal(beforeJournal.length, sourceJournal.entries.length);
-    const dumpArgs = [
-      ...fixture.composeArgs,
-      "pg_dump",
-      "--schema-only",
-      "--restrict-key=phase2compatibility",
-      "-U",
-      "occ_migrator",
-      "-d",
-      fixture.database,
-    ];
-    const beforeSchema = await runCommand(fixture, "docker", dumpArgs);
-    assert.ok(beforeSchema.trim().length > 0);
-
-    // Native preparation performed the first migration; rerun the supported entry point.
-    await runCommand(fixture, "corepack", ["pnpm", "db:migrate"]);
-    assert.deepEqual((await pool.query(journalQuery)).rows, beforeJournal);
-    // The history cases run the script text directly; prove pnpm forwards --check too.
-    const checked = await runCommand(fixture, "corepack", [
-      "pnpm",
-      "db:migrate:production",
-      "--check",
-    ]);
-    assert.ok(
-      checked
-        .split("\n")
-        .some(
-          (line) => line === JSON.stringify({ event: "migration.checked", history: "completed" }),
-        ),
-    );
-
-    // The migration command reads only the logging section of the Installation startup file,
-    // through the controller's own startup reader. A file the controller would refuse fails the
-    // command with no migration output and the usual single structured failure line.
-    const configDirectory = await temporaryDirectory(context, "occ-migration-config-");
-    const startupFile = async (name, contents) => {
-      const path = join(configDirectory, name);
-      await writeFile(path, contents, "utf8");
-      return path;
-    };
-    // One refusal from each layer: the logging section, the file reader, and the path rules.
-    const refused = [
-      await startupFile("trace.yaml", "logging:\n  level: trace\n"),
-      await startupFile("invalid.yaml", "logging: [\n"),
-      "relative/startup.yaml",
-    ];
-    for (const path of refused) {
-      const result = await runMigrationCheck(fixture, path);
-      assert.equal(result.code, 1, path);
-      assert.equal(result.stdout, "", path);
-      assert.deepEqual(
-        logEvents(result.stderr),
-        [
-          {
-            severity: "ERROR",
-            service: "occ-migration",
-            event: "migration.failed",
-            code: "MIGRATION_FAILED",
-          },
-        ],
-        path,
-      );
-    }
-    // An accepted file sets the command's log level: info keeps the success event, warn drops it.
-    const checkedOutput = `${JSON.stringify({ event: "migration.checked", history: "completed" })}\n`;
-    const atInfo = await runMigrationCheck(
-      fixture,
-      await startupFile("info.yaml", "logging:\n  level: info\n"),
-    );
-    assert.equal(atInfo.code, 0);
-    assert.equal(atInfo.stdout, checkedOutput);
-    assert.deepEqual(logEvents(atInfo.stderr), [
-      { severity: "INFO", service: "occ-migration", event: "migration.checked" },
-    ]);
-    const atWarn = await runMigrationCheck(
-      fixture,
-      await startupFile("warn.yaml", "logging:\n  level: warn\n"),
-    );
-    assert.equal(atWarn.code, 0);
-    assert.equal(atWarn.stdout, checkedOutput);
-    assert.deepEqual(logEvents(atWarn.stderr), []);
-    assert.equal(await runCommand(fixture, "docker", dumpArgs), beforeSchema);
+    await assertDrizzleJournalPreserved(context, pool, fixture, {
+      migrationsDirectory,
+      runCommand,
+      runMigrationCheck,
+      logEvents,
+      temporaryDirectory,
+    });
   },
 );
 
@@ -3097,54 +3008,16 @@ test(
         [`binding_admin_${randomUUID()}`, principalId, entry.id],
       );
     }
-    const [{ NativeIAMDriver }, { PostgresPlatformState }] = await Promise.all([
-      import("../../packages/iam/src/index.ts"),
-      import("../../packages/occ/src/state/postgres-state.ts"),
-    ]);
-    const iam = new NativeIAMDriver(new PostgresPlatformState(pool));
-    const presetId = `pre_${randomUUID()}`;
-    const authorize = (principalId, action, kind = "preset") =>
-      iam.authorize({
-        principalId,
-        action,
-        resource: {
-          kind,
-          id:
-            kind === "installation"
-              ? installationId
-              : kind === "preset" && action !== "create"
-                ? presetId
-                : namespaceId,
-          ...(kind === "installation" ? {} : { namespaceId }),
-        },
-      });
-    assert.equal((await authorize(principals[0], "create")).allowed, false);
-    assert.equal((await authorize(principals[0], "administer", "installation")).allowed, true);
-
-    // Run the repository migration itself, not copied UPDATE text or a test-only migrator.
-    await pool.query(await readFile(join(migrationsDirectory, "0024_agent_presets.sql"), "utf8"));
-    await pool.query(
-      "INSERT INTO occ.presets (id, namespace_id, name, template, created_at) VALUES ($1, $2, 'Upgrade', '{}'::jsonb, now())",
-      [presetId, namespaceId],
-    );
-    const upgraded = new Set([stock.id, reordered.id]);
-    for (const entry of roles) {
-      const actual = (await pool.query("SELECT * FROM occ.iam_roles WHERE id = $1", [entry.id]))
-        .rows[0];
-      assert.deepEqual(actual, {
-        ...entry,
-        permissions: upgraded.has(entry.id)
-          ? [...entry.permissions, ...presetPermissions]
-          : entry.permissions,
-      });
-    }
-    for (const { action } of presetPermissions) {
-      assert.equal((await authorize(principals[0], action)).allowed, true);
-      assert.equal((await authorize(principals[1], action)).allowed, false);
-    }
-    assert.equal((await authorize(principals[0], "administer", "installation")).allowed, true);
-    assert.equal((await authorize(principals[0], "read", "namespace")).allowed, true);
-    assert.equal((await authorize(principals[1], "read", "namespace")).allowed, true);
+    await assertPresetPolicyUpgrade(pool, migrationsDirectory, {
+      installationId,
+      namespaceId,
+      roles,
+      stock,
+      reordered,
+      reduced,
+      presetPermissions,
+      principals,
+    });
   },
 );
 
