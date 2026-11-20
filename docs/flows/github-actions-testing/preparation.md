@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: "2026-11-19 18:56"
-last_updated_session: "01a1f528-3827-7cb0-9d72-19b91cbb6f69"
+updated: "2026-11-19 23:19"
+last_updated_session: "authoring-run/b428bcb4-c4a3-4e68-b09d-cb10d3b8fc60"
 ---
 
 # CI resource preparation
@@ -261,14 +261,14 @@ PSA exemption. The full lane checks filesystem, privilege, and binary-scoped Lay
 network policy enforcement by the supervisor. The Harness and supervisor receive
 neither `SYS_PTRACE` nor `DAC_READ_SEARCH`.
 
-Logging preparation starts an owned OpenTelemetry Collector and passes JSONL
-evidence to selected tests. The [setup-test-docker action](../../../.github/actions/setup-test-docker/action.yml)
-replaces the runner's daemon with Docker 29.9.2 for Collector and Docker Model
-Runtime jobs. This version supports `fluentd-write-timeout`. The action uses the
-pinned official Docker setup action and connects the CLI, Compose, and Driver to
-its socket at `/var/run/docker.sock`. Other jobs keep the runner daemon.
-See [Full Integration delivery status](../../../specs/plans/19-github-actions-test-coverage/delivery-status.md#delivery-status)
-for hosted proof and remaining coverage.
+On terminal failure, Logging Collector’s `scripts/ci/prepare.ts:prepareLane`
+stops queued pulls, drains active acquisitions and fails without exporting test inputs.
+`prepareLaneLogging` starts an owned Collector for JSONL evidence in other lanes.
+
+[Docker setup](../../../.github/actions/setup-test-docker/action.yml) connects the
+CLI, Compose and Driver to Docker 29.9.2 at `/var/run/docker.sock` for
+`fluentd-write-timeout` in Collector and Docker Model Runtime jobs.
+Others keep runner defaults. See [hosted coverage](../../../specs/plans/19-github-actions-test-coverage/delivery-status.md#delivery-status).
 
 The OpenShell test owns management port-forwards throughout the test. Teardown stops the worker, drains forwards, then attempts app, database, namespace and directory cleanup even after an earlier failure. Forward shutdown allows two seconds after `SIGTERM`, then sends `SIGKILL` if necessary and waits two more seconds. Cleanup errors fail the test.
 
@@ -284,6 +284,8 @@ See [lane verification](../../testing/ci/run-lanes.md).
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 23:19: Stop queued logging pulls after failure. (authoring-run/b428bcb4-c4a3-4e68-b09d-cb10d3b8fc60 - d271eef41c4169a072750dca326fd4a00d19da00)
 
 - 2026-11-19 18:56: Restore stock-Node image build budgets after removing Node compilation. (01a1f528-3827-7cb0-9d72-19b91cbb6f69 - 32662b9d2)
 
