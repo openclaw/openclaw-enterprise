@@ -391,5 +391,4 @@ ALTER TABLE occ.agent_revisions
           AND NOT COALESCE(jsonb_path_exists(admitted_spec->'credential_sources', '$[*] ? (exists(@.tokenServiceInstanceId))'), false)
         )), false)) NOT VALID;
 --> statement-breakpoint
-ALTER TABLE occ.agent_revisions VALIDATE CONSTRAINT agent_revisions_admitted_snapshot;
 ALTER TABLE occ.agent_revisions VALIDATE CONSTRAINT agent_revisions_execution_admission;
