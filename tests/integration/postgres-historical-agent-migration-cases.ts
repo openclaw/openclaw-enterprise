@@ -545,7 +545,6 @@ type PresetPolicyInput = {
   roles: unknown[];
   stock: unknown;
   reordered: unknown;
-  reduced: unknown;
   presetPermissions: unknown[];
   principals: string[];
 };
@@ -555,7 +554,6 @@ type PresetPolicyFixture = {
   roles: HistoricalRole[];
   stock: HistoricalRole;
   reordered: HistoricalRole;
-  reduced: HistoricalRole;
   presetPermissions: PresetPermission[];
   principals: [string, string];
 };
@@ -619,10 +617,6 @@ function assertPresetPolicyFixture(value: unknown): asserts value is PresetPolic
   assert.ok(isUnknownArray(value.roles) && value.roles.every(isHistoricalRole));
   assert.ok(isHistoricalRole(value.stock));
   assert.ok(isHistoricalRole(value.reordered));
-  assert.ok(isHistoricalRole(value.reduced));
-  assert.equal(value.roles[0], value.stock);
-  assert.equal(value.roles[1], value.reordered);
-  assert.equal(value.roles[2], value.reduced);
   assert.ok(
     isUnknownArray(value.presetPermissions) && value.presetPermissions.every(isPresetPermission),
   );

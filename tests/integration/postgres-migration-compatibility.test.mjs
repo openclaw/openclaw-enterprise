@@ -3014,7 +3014,6 @@ test(
       roles,
       stock,
       reordered,
-      reduced,
       presetPermissions,
       principals,
     });
