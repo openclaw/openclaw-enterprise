@@ -2,15 +2,13 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import net from "node:net";
 import https from "node:https";
-import { EventEmitter, once } from "node:events";
-import { IncomingMessage } from "node:http";
+import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 
-import { AdmissionFailure } from "../../apps/controller/src/admission/admission-verifier.ts";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
 import { createNativeAdminAccess } from "../../apps/controller/src/http/native-admin.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
@@ -22,6 +20,7 @@ import {
   registerUpgradeShutdownAuditCases,
 } from "./native-admin-upgrade-audit-cases.ts";
 import {
+  AdmissionSocket,
   clientResetDuringPendingDenial,
   clientResetDuringUpgradeAdmission,
   registerUpgradeAdmissionRecoveryCases,
@@ -372,8 +371,8 @@ test(
 );
 
 // These cases use real Fastify registration and shutdown without binding a port.
-// Upgrade sockets, HTTP replies, deadlines, external decisions and the HTTPS transport
-// are controlled; the transport cases above separately prove real network behavior.
+// Upgrade sockets, deadlines, external decisions and the HTTPS transport are controlled.
+// The typed HTTP cases use an unbound Fastify probe; the cases above prove real network behavior.
 function pendingValue() {
   let resolve;
   let reject;
@@ -382,46 +381,6 @@ function pendingValue() {
     reject = refuse;
   });
   return { promise, resolve, reject };
-}
-
-/**
- * @extends {EventEmitter<{
- *   close: [];
- *   error: [Error];
- *   upgrade: [{ statusCode: number, headers: import("node:http").IncomingHttpHeaders }, import("./native-admin-upgrade-recovery-cases.ts").UpgradeSocket, Buffer];
- * }>}
- */
-class AdmissionSocket extends EventEmitter {
-  destroyed = false;
-  readableEnded = false;
-  writableEnded = false;
-  writableLength = 0;
-  /** @type {Array<string | Buffer>} */
-  writes = [];
-
-  destroy() {
-    if (!this.destroyed) {
-      this.destroyed = true;
-      this.emit("close");
-    }
-    return this;
-  }
-
-  end() {
-    this.writableEnded = true;
-    return this;
-  }
-
-  /** @param {string | Buffer} value */
-  write(value) {
-    this.writes.push(value);
-    return true;
-  }
-
-  /** @template Destination @param {Destination} destination */
-  pipe(destination) {
-    return destination;
-  }
 }
 
 /**
@@ -557,194 +516,10 @@ async function denialOwner(t, overrides = {}) {
   };
 }
 
-test("native-admin denial ownership closes before a delayed or rejected append", async (t) => {
-  const append = pendingValue();
-  const owner = await denialOwner(t, { append: () => append.promise });
-  const socket = owner.upgrade();
-  try {
-    await settleCallbacks();
-    assert.equal(socket.destroyed, true);
-    assert.equal(owner.denials().length, 1);
-    assert.equal(owner.denials()[0].actor.principalId, "actor_1");
-    assert.equal(owner.denials()[0].authorization.action, "administer");
-    append.reject(new Error("synthetic sink failure"));
-    await settleCallbacks();
-    assert.equal(asRecord(owner.warnings[0])?.event, "native_admin.websocket_denial_audit_failed");
-    assert.equal(owner.denials().length, 1);
-    assert.equal(owner.upstreams.length, 0);
-  } finally {
-    append.resolve();
-    socket.destroy();
-    await settleCallbacks();
-    await owner.shutdown();
-  }
-});
-
 const recoveryFixture = { denialOwner, settleCallbacks, AdmissionSocket };
 registerUpgradeAdmissionRecoveryCases(recoveryFixture);
 
-test("native-admin denial ownership retains HTTP audit failure and timeout responses", async (t) => {
-  const admission = pendingValue();
-  let reads = 0;
-  const owner = await denialOwner(t, {
-    authorize({ denied }) {
-      reads += 1;
-      return reads === 1 ? Promise.reject(denied) : admission.promise;
-    },
-    append: () => Promise.reject(new Error("synthetic sink failure")),
-  });
-  const reply = () => ({
-    request: { id: "request_test" },
-    header() {
-      return this;
-    },
-    status(code) {
-      this.statusCode = code;
-      return this;
-    },
-    send(body) {
-      this.body = body;
-    },
-  });
-  try {
-    const timely = reply();
-    const raw = owner.request();
-    const request = { headers: raw.headers, url: "/", raw };
-    await owner.access.interceptHttp(request, timely);
-    assert.equal(owner.access.httpAdmissionReason(request), "denial_audit_failed");
-    assert.equal(timely.statusCode, 503);
-    assert.equal(timely.body.error.code, "DEPENDENCY_UNAVAILABLE");
-    const late = reply();
-    const lateRequest = { headers: raw.headers, url: "/", raw };
-    const pending = owner.access.interceptHttp(lateRequest, late);
-    await settleCallbacks();
-    t.mock.timers.tick(5_000);
-    await pending;
-    assert.equal(late.statusCode, 503);
-    assert.equal(owner.access.httpAdmissionReason(lateRequest), "admission_unavailable");
-    admission.reject(owner.denied);
-    await settleCallbacks();
-    assert.equal(owner.access.httpAdmissionReason(lateRequest), "admission_unavailable");
-    assert.equal(owner.denials().length, 2);
-    assert.equal(owner.upstreams.length, 0);
-  } finally {
-    admission.reject(owner.denied);
-    await settleCallbacks();
-    await owner.shutdown();
-  }
-});
-
 registerUpgradeLeaseAndResetRecoveryCases(recoveryFixture);
-
-test("native-admin HTTP admission preserves typed refusals and dependency failures", async (t) => {
-  for (const [error, status, reason] of [
-    [new AdmissionFailure(401, "UNAUTHENTICATED", "missing session"), 403, "session_invalid"],
-    [new AdmissionFailure(403, "FORBIDDEN", "scope refused"), 403, "admission_forbidden"],
-    [new Error("session store unavailable"), 503, "dependency_failure"],
-  ]) {
-    await t.test(reason, async (t) => {
-      // The verifier's public failure contract drives the real HTTP admission owner.
-      const owner = await denialOwner(t, { admissionError: error });
-      const raw = owner.request();
-      const request = { headers: raw.headers, url: "/", raw };
-      const reply = {
-        request: { id: "request_test" },
-        header() {
-          return this;
-        },
-        status(code) {
-          this.statusCode = code;
-          return this;
-        },
-        send(body) {
-          this.body = body;
-        },
-      };
-      await owner.access.interceptHttp(request, reply);
-      assert.equal(reply.statusCode, status);
-      assert.equal(owner.access.httpAdmissionReason(request), reason);
-      assert.equal(owner.denials().length, 0, "no attributed IAM operation was attempted");
-      assert.equal(owner.upstreams.length, 0);
-      await owner.shutdown();
-    });
-  }
-});
-
-test("native-admin denial ownership preserves a timely HTTP denial response", async (t) => {
-  const owner = await denialOwner(t);
-  const raw = owner.request();
-  const reply = {
-    request: { id: "request_test" },
-    header() {
-      return this;
-    },
-    status(code) {
-      this.statusCode = code;
-      return this;
-    },
-    send(body) {
-      this.body = body;
-    },
-  };
-  await owner.access.interceptHttp({ headers: raw.headers, url: "/", raw }, reply);
-  assert.equal(reply.statusCode, 403);
-  assert.equal(reply.body.error.code, "FORBIDDEN");
-  assert.equal(owner.denials().length, 1);
-  assert.equal(owner.upstreams.length, 0);
-  await owner.shutdown();
-});
-
-test("native-admin denial ownership permits a completed HTTP request on a live connection", async (t) => {
-  const transport = pendingValue();
-  let transportEntered = false;
-  const owner = await denialOwner(t, {
-    authorize: (selection) => Promise.resolve(selection),
-    transport() {
-      transportEntered = true;
-      return transport.promise;
-    },
-  });
-  // IncomingMessage may finish and auto-destroy while its connection remains live.
-  // Admission must check the connection rather than treating that EOF as disconnect.
-  const raw = new IncomingMessage(new AdmissionSocket());
-  const request = owner.request();
-  raw.method = request.method;
-  raw.url = request.url;
-  raw.headers = request.headers;
-  raw.complete = true;
-  raw.push(null);
-  raw.resume();
-  await settleCallbacks();
-  assert.equal(raw.destroyed, true);
-  assert.equal(raw.socket.destroyed, false);
-  const reply = {
-    request: { id: "request_test" },
-    header() {
-      return this;
-    },
-    status(code) {
-      this.statusCode = code;
-      return this;
-    },
-    send(body) {
-      this.body = body;
-    },
-  };
-  const handling = owner.access.interceptHttp({ headers: raw.headers, url: "/", raw }, reply);
-  try {
-    await settleCallbacks();
-    assert.equal(transportEntered, true);
-    // End before proxying; this case proves admission ordering without a real upstream.
-    transport.resolve("");
-    await handling;
-    assert.equal(reply.statusCode, 503);
-    assert.equal(owner.upstreams.length, 0);
-  } finally {
-    transport.resolve("");
-    await handling;
-    await owner.shutdown();
-  }
-});
 
 test(
   "a client reset during a pending native-admin denial still records the denial",
