@@ -2432,9 +2432,9 @@ jq -er --arg key "$installation_key" '.data[$key]' "$live_installation_secret" |
     >"$evidence_dir/before-live-installation.yaml"
 
 matches_yaml "$evidence_dir/before-values.yaml" "$evidence_dir/before-live-values.yaml" ||
-  die "the protected Helm values differ from the live release; refresh --values before upgrading."
+  die "the protected Helm values differ from the live release. Verify the selected target and privately compare before-values.yaml to before-live-values.yaml in the evidence directory before refreshing --values."
 matches_yaml "$evidence_dir/before-installation.yaml" "$evidence_dir/before-live-installation.yaml" ||
-  die "the protected Installation YAML differs from the live Secret; refresh --installation before upgrading."
+  die "the protected Installation YAML differs from the live Secret. Verify the selected target and privately compare before-installation.yaml to before-live-installation.yaml in the evidence directory before refreshing --installation."
 
 # The bundled Collector reads an operator-created Secret that Helm never
 # updates. Stop before mutation when it still holds another revision's shared
