@@ -9,7 +9,7 @@ import {
   NamespaceListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 import { grantRole } from "../helpers/iam-grants.ts";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { tenantANamespaceId, tenantRequest as request } from "../helpers/tenant-reader-app.ts";
 import {
   bootstrap,

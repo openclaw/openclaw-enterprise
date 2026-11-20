@@ -139,8 +139,6 @@
     "tests/conformance/service-account-driver.test.ts": 600,
     "tests/conformance/slack-channel-directory.test.ts": 2400,
     "tests/conformance/slack-configuration.test.ts": 100,
-    "tests/conformance/slack-proxy-reset.test.mjs": 100,
-    "tests/conformance/slack-proxy-tunnel.test.mjs": 2000,
     "tests/conformance/socket-directory.test.ts": 100,
     "tests/conformance/split-layout-adopt.test.ts": 400,
     "tests/conformance/split-layout-tenants.test.ts": 1200,

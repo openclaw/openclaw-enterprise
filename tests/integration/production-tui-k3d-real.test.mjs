@@ -658,7 +658,6 @@ test(
         agentNativeAdminDomain: "agents.oce.localhost",
         installationName: `Production TUI ${suffix}`,
         apiClients: [{ namespace: system, podLabels: { app: "production-tui-proxy" } }],
-        channelDirectoryProxyUrl: returnSelected ? "http://198.51.100.25:3128" : undefined,
         metrics: rehearsal
           ? undefined
           : {
@@ -1677,7 +1676,6 @@ test(
       const candidateValues = JSON.parse(await run("yq", ["-o=json", ".", valuesPath]));
       candidateValues.api = {
         ...candidateValues.api,
-        channelDirectoryProxyUrl: "http://198.51.100.25:3128",
       };
       const candidateInstallation = JSON.parse(await run("yq", ["-o=json", ".", installationPath]));
       candidateInstallation.drivers.plugin = [
@@ -1834,8 +1832,8 @@ test(
         ({ name }) => name === "api",
       );
       assert.equal(
-        apiContainer.env.find(({ name }) => name === "OCC_CHANNEL_DIRECTORY_PROXY_URL").value,
-        "http://198.51.100.25:3128",
+        apiContainer.env.find(({ name }) => name === "OCC_CONFIG_PATH").value,
+        "/etc/openclaw/installation/installation.yaml",
       );
       const upgradedInstallation = JSON.parse(await run("yq", ["-o=json", ".", installationPath]));
       assert.equal(

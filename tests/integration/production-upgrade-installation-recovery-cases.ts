@@ -965,7 +965,7 @@ export function registerInstallationRecoveryCases({
         }
         if (mode === "remove aliased empty") {
           baseline.api ??= {};
-          mapping(baseline.api).channelDirectoryProxyUrl = "";
+          mapping(baseline.api).postgresCAPath = "";
         }
         for (const file of ["values.json", "live-values"]) {
           await writeFile(join(f.directory, file), JSON.stringify(baseline));
@@ -976,7 +976,7 @@ export function registerInstallationRecoveryCases({
           const yaml: unknown = dumpYaml({ ...settings, agentNativeAdmin });
           assert.ok(typeof yaml === "string", "expected saved Helm YAML");
           const saved = yaml
-            .replace(/channelDirectoryProxyUrl: (?:''|"")/, 'channelDirectoryProxyUrl: &empty ""')
+            .replace(/postgresCAPath: (?:''|"")/, 'postgresCAPath: &empty ""')
             .replace(/sharedCookieDomain: (?:''|"")/, "sharedCookieDomain: *empty");
           await writeFile(join(f.directory, "values.json"), saved);
         }
