@@ -213,10 +213,10 @@ function requireEksTarget(clusterArn: unknown): EksTarget {
           clusterArn,
         )
       : null;
-  if (!arn || typeof clusterArn !== "string") {
+  const [, , region, account, cluster] = arn ?? [];
+  if (typeof clusterArn !== "string" || !region || !account || !cluster) {
     throw new DiagnosticError("eks.clusterArn must identify the intended EKS cluster");
   }
-  const [, , region, account, cluster] = arn;
   return { clusterArn, region, account, cluster };
 }
 
