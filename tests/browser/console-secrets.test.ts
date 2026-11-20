@@ -598,7 +598,9 @@ for (const outcome of ["lost", "versionless"]) {
       true,
     );
     const reloaded = responseTo(page, "GET", fixture.origin + "/connection-templates");
-    await editor.getByRole("button", { name: "Close" }).click();
+    const close = editor.getByRole("button", { name: "Close" });
+    assert.equal(await close.evaluate((button) => button === document.activeElement), true);
+    await page.keyboard.press("Enter");
     const saved = (await (await reloaded).json()).data;
     const committed = saved.filter(
       (template: { namespaceId?: string }) => template.namespaceId === namespace.id,

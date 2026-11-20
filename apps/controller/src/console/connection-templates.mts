@@ -681,6 +681,9 @@ export function openConnectionTemplateEditor(
       }
     } finally {
       setBusy(false);
+      if (uncertain && dialog.open && context.isCurrent()) {
+        close.focus();
+      }
     }
   }
   server.addEventListener("input", () => {
