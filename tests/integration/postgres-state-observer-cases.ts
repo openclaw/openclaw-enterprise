@@ -1,0 +1,589 @@
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import type { TestContext } from "node:test";
+
+import { databaseUrl } from "../helpers/postgres-platform-state.ts";
+import { ensureInstallation } from "../helpers/postgres-state-installation.ts";
+
+export async function acceptCanonicalObserverTimestamp(context: TestContext): Promise<void> {
+  const [{ Pool }, { PostgresPlatformState, PostgresWorkQueue }] = await Promise.all([
+    import("pg"),
+    import("../../packages/occ/src/index.ts"),
+  ]);
+  const pool = new Pool({ connectionString: databaseUrl });
+  context.after(() => pool.end());
+  const state = new PostgresPlatformState(pool);
+  await ensureInstallation(state, "observer-canonical-timestamp");
+
+  const createdAt = new Date().toISOString();
+  const namespaceId = "ns_" + randomUUID();
+  const configurationId = "cfg_" + randomUUID();
+  const agentId = "agt_" + randomUUID();
+  const revisionId = "rev_" + randomUUID();
+  const actorId = "principal-observer-" + randomUUID();
+  const workId = "observer:" + randomUUID();
+  const requestId = "request-" + randomUUID();
+
+  await state.transact(async (unit) => {
+    await unit.namespaces.createNamespace({
+      id: namespaceId,
+      name: "observer-timestamp-" + randomUUID(),
+      status: "ready",
+      createdAt,
+    });
+    await unit.configurations.createConfiguration({
+      id: configurationId,
+      namespaceId,
+      kind: "agent",
+      generation: 1,
+      createdAt,
+    });
+    const agent = await unit.agents.createAgent({
+      id: agentId,
+      namespaceId,
+      name: "Observer timestamp",
+      configurationId,
+      backendId: null,
+      harnessAuth: { method: "runtime" },
+      executionMode: "embedded",
+      servicePrincipalId: "service-agent-" + agentId,
+      desiredRuntimeState: "stopped",
+      status: "active",
+      createdAt,
+    });
+    await unit.revisions.createRevision({
+      id: revisionId,
+      namespaceId,
+      agentId,
+      revision: 1,
+      backendId: null,
+      gatewayManagedMode: agent.gatewayManagedMode,
+      configurationId,
+      configurationKind: "agent",
+      configurationGeneration: 1,
+      configuration: { agents: { defaults: { model: "test/model" } } },
+      harness: {
+        id: "openclaw",
+        version: "1.0.0",
+        mode: "embedded",
+        overrides: {},
+        configuration: {},
+      },
+      compute: { id: "compute-observer-timestamp", implementation: "deterministic-test" },
+      executionAdmission: { version: 2, mode: "unprotected" },
+      harnessAuth: { method: "runtime" },
+      servicePrincipalId: "service-agent-" + agentId,
+      createdAt,
+    });
+  });
+
+  const qualification = {
+    qualificationId: "qualification-v1",
+    backendVersion: "docker-observer-container-v1",
+    imageQualificationId: "observer-image-v1",
+    evidenceContractId: "observer-evidence-v1",
+    securityProfileId: "observer-security-v1",
+    maximumDurationMs: 60_000,
+    maximumCapturedRecords: 100,
+    maximumEncodedOutputBytes: 100_000,
+    maximumCancellationGraceMs: 5_000,
+  };
+  const digest = "sha256:" + "a".repeat(64);
+  const createInput = {
+    workId,
+    namespaceId,
+    agentId,
+    revisionId,
+    actorId,
+    requestId,
+    requestFingerprint: "b".repeat(64),
+    targetRole: "agent" as const,
+    plan: {
+      backendVersion: qualification.backendVersion,
+      image: {
+        reference: "observer.test/runtime@" + digest,
+        digest,
+        qualificationId: qualification.imageQualificationId,
+      },
+      observationScope: {
+        kind: "dns" as const,
+        interfaceName: "eth0",
+        filterIdentity: "dns-filter-v1",
+      },
+      limits: {
+        maximumDurationMs: 60_000,
+        maximumCapturedRecords: 100,
+        maximumEncodedOutputBytes: 100_000,
+      },
+      cancellation: { kind: "claim_abort" as const, gracePeriodMs: 5_000 },
+      evidenceDestination: {
+        contractId: qualification.evidenceContractId,
+        destinationId: "observer-evidence-destination-v1",
+      },
+      cleanupPolicy: "observer_first" as const,
+      securityProfile: {
+        profileId: qualification.securityProfileId,
+        capabilities: [] as const,
+        privileged: false as const,
+      },
+    },
+  };
+  const controllerQueue = new PostgresWorkQueue(pool, {
+    workKind: "controller",
+    maxAttempts: 1,
+    random: () => 0,
+  });
+  const controllerPendingBefore = await controllerQueue.pending();
+  const controllerWaitingBefore = await controllerQueue.claimableWorkWaiting();
+
+  const created = await state.transact((unit) => unit.observer.create(createInput, qualification));
+  assert.equal(created.replayed, false);
+  assert.equal(created.record.completedPhase, "admitted");
+
+  const replayWorkId = "observer:" + randomUUID();
+  const replayed = await state.transact((unit) =>
+    unit.observer.create({ ...createInput, workId: replayWorkId }, qualification),
+  );
+  assert.equal(replayed.replayed, true);
+  assert.equal(replayed.record.workId, workId);
+  assert.deepEqual(replayed.record, created.record);
+  const [byRequest, byWorkId] = await state.read((unit) =>
+    Promise.all([
+      unit.observer.findByRequest(namespaceId, actorId, requestId),
+      unit.observer.findByWorkId(workId),
+    ]),
+  );
+  assert.deepEqual(byRequest, created.record);
+  assert.deepEqual(byWorkId, created.record);
+
+  const conflictingWorkId = "observer:" + randomUUID();
+  await assert.rejects(
+    state.transact((unit) =>
+      unit.observer.create(
+        {
+          ...createInput,
+          workId: conflictingWorkId,
+          requestFingerprint: "c".repeat(64),
+        },
+        qualification,
+      ),
+    ),
+    { name: "ResourceConflictError" },
+  );
+  const persistedReplayState = await pool.query(
+    "SELECT (SELECT count(*)::integer FROM occ.observer_invocations WHERE namespace_id = $1 AND actor_id = $2 AND request_id = $3) AS invocations, (SELECT count(*)::integer FROM occ.controller_work WHERE work_kind = $4 AND namespace_id = $1 AND agent_id = $5 AND revision_id = $6 AND actor_id = $2) AS work, (SELECT count(*)::integer FROM occ.controller_work WHERE idempotency_key = ANY($7::text[])) AS candidate_work",
+    [
+      namespaceId,
+      actorId,
+      requestId,
+      "observer",
+      agentId,
+      revisionId,
+      [replayWorkId, conflictingWorkId],
+    ],
+  );
+  assert.deepEqual(persistedReplayState.rows, [{ invocations: 1, work: 1, candidate_work: 0 }]);
+
+  assert.equal(await controllerQueue.pending(), controllerPendingBefore);
+  assert.equal(await controllerQueue.claimableWorkWaiting(), controllerWaitingBefore);
+
+  const staleClaimToken = randomUUID();
+  const madeStale = await pool.query(
+    "UPDATE occ.controller_work SET state = $2, attempt_count = 1, claim_token = $3::uuid, lease_expires_at = clock_timestamp() - interval '1 second', updated_at = clock_timestamp() WHERE idempotency_key = $1 AND work_kind = $4 AND state = $5",
+    [workId, "claimed", staleClaimToken, "observer", "queued"],
+  );
+  assert.equal(madeStale.rowCount, 1, "test must create one expired observer claim");
+  await controllerQueue.recoverStale();
+  const untouchedObserverClaim = await pool.query(
+    "SELECT state, attempt_count, claim_token FROM occ.controller_work WHERE idempotency_key = $1",
+    [workId],
+  );
+  assert.deepEqual(untouchedObserverClaim.rows, [
+    { state: "claimed", attempt_count: 1, claim_token: staleClaimToken },
+  ]);
+  const restoredObserverWork = await pool.query(
+    "UPDATE occ.controller_work SET state = $2, attempt_count = 0, claim_token = NULL, lease_expires_at = NULL, updated_at = clock_timestamp() WHERE idempotency_key = $1 AND work_kind = $3 AND state = $4 AND claim_token = $5::uuid",
+    [workId, "queued", "observer", "claimed", staleClaimToken],
+  );
+  assert.equal(restoredObserverWork.rowCount, 1, "test must restore the exact observer work item");
+
+  const cancelledBeforeCreationWorkId = "observer:" + randomUUID();
+  const cancelledBeforeCreationRequestId = "request-" + randomUUID();
+  const cancelledBeforeCreation = await state.transact((unit) =>
+    unit.observer.create(
+      {
+        ...createInput,
+        workId: cancelledBeforeCreationWorkId,
+        requestId: cancelledBeforeCreationRequestId,
+        requestFingerprint: "d".repeat(64),
+      },
+      qualification,
+    ),
+  );
+  assert.equal(cancelledBeforeCreation.replayed, false);
+  const cancelledBeforeCreationClaimToken = randomUUID();
+  const claimedCancelledBeforeCreation = await pool.query(
+    "UPDATE occ.controller_work SET state = $2, attempt_count = attempt_count + 1, claim_token = $3::uuid, lease_expires_at = clock_timestamp() + $4::interval, updated_at = clock_timestamp() WHERE idempotency_key = $1 AND work_kind = $5 AND state = $6 RETURNING idempotency_key",
+    [
+      cancelledBeforeCreationWorkId,
+      "claimed",
+      cancelledBeforeCreationClaimToken,
+      "10 minutes",
+      "observer",
+      "queued",
+    ],
+  );
+  assert.equal(claimedCancelledBeforeCreation.rowCount, 1);
+  const cancelledBeforeCreationRecord = await state.transact((unit) =>
+    unit.observer.cancel(
+      {
+        idempotencyKey: cancelledBeforeCreationWorkId,
+        claimToken: cancelledBeforeCreationClaimToken,
+      },
+      {
+        completedPhase: "cleanup",
+        status: "cancelled",
+        progress: {
+          observerAbsence: {
+            reason: "observer_not_created",
+            absenceVerifiedAt: "2026-11-15T17:00:00.000Z",
+            targetTeardownAuthorized: true,
+          },
+        },
+      },
+      { code: "OBSERVER_CANCELLED_BEFORE_CREATION", message: "Observer was not created." },
+    ),
+  );
+  assert.equal(cancelledBeforeCreationRecord.completedPhase, "cleanup");
+  assert.equal(cancelledBeforeCreationRecord.status, "cancelled");
+  assert.deepEqual(cancelledBeforeCreationRecord.progress, {
+    observerAbsence: {
+      reason: "observer_not_created",
+      absenceVerifiedAt: "2026-11-15T17:00:00.000Z",
+      targetTeardownAuthorized: true,
+    },
+  });
+
+  const failedBeforeCreationWorkId = "observer:" + randomUUID();
+  const failedBeforeCreationRequestId = "request-" + randomUUID();
+  const failedBeforeCreation = await state.transact((unit) =>
+    unit.observer.create(
+      {
+        ...createInput,
+        workId: failedBeforeCreationWorkId,
+        requestId: failedBeforeCreationRequestId,
+        requestFingerprint: "e".repeat(64),
+      },
+      qualification,
+    ),
+  );
+  assert.equal(failedBeforeCreation.replayed, false);
+  const failedBeforeCreationClaimToken = randomUUID();
+  const claimedFailedBeforeCreation = await pool.query(
+    "UPDATE occ.controller_work SET state = $2, attempt_count = attempt_count + 1, claim_token = $3::uuid, lease_expires_at = clock_timestamp() + $4::interval, updated_at = clock_timestamp() WHERE idempotency_key = $1 AND work_kind = $5 AND state = $6 RETURNING idempotency_key",
+    [
+      failedBeforeCreationWorkId,
+      "claimed",
+      failedBeforeCreationClaimToken,
+      "10 minutes",
+      "observer",
+      "queued",
+    ],
+  );
+  assert.equal(claimedFailedBeforeCreation.rowCount, 1);
+  const failedBeforeCreationRecord = await state.transact((unit) =>
+    unit.observer.recordFailure(
+      {
+        idempotencyKey: failedBeforeCreationWorkId,
+        claimToken: failedBeforeCreationClaimToken,
+      },
+      {
+        completedPhase: "cleanup",
+        status: "failed",
+        progress: {
+          observerAbsence: {
+            reason: "observer_not_created",
+            absenceVerifiedAt: "2026-11-15T17:00:00.000Z",
+            targetTeardownAuthorized: true,
+          },
+        },
+      },
+      {
+        disposition: "permanent",
+        code: "OBSERVER_FAILED_BEFORE_CREATION",
+        message: "Observer creation did not occur.",
+      },
+    ),
+  );
+  assert.equal(failedBeforeCreationRecord.completedPhase, "cleanup");
+  assert.equal(failedBeforeCreationRecord.status, "failed");
+  assert.deepEqual(failedBeforeCreationRecord.progress, {
+    observerAbsence: {
+      reason: "observer_not_created",
+      absenceVerifiedAt: "2026-11-15T17:00:00.000Z",
+      targetTeardownAuthorized: true,
+    },
+  });
+
+  const claimToken = randomUUID();
+  const claimed = await pool.query(
+    "UPDATE occ.controller_work SET state = $2, attempt_count = attempt_count + 1, claim_token = $3::uuid, lease_expires_at = clock_timestamp() + $4::interval, updated_at = clock_timestamp() WHERE idempotency_key = $1 AND work_kind = $5 AND state = $6 RETURNING idempotency_key",
+    [workId, "claimed", claimToken, "10 minutes", "observer", "queued"],
+  );
+  assert.equal(claimed.rowCount, 1, "test must claim the exact observer work item");
+  const claim = { idempotencyKey: workId, claimToken };
+  const observerAbsence = {
+    reason: "observer_not_created" as const,
+    absenceVerifiedAt: "2026-11-15T17:00:00.000Z",
+    targetTeardownAuthorized: true as const,
+  };
+
+  await assert.rejects(
+    state.transact((unit) =>
+      unit.observer.checkpoint(claim, {
+        completedPhase: "cleanup",
+        status: "succeeded",
+        progress: { observerAbsence },
+      }),
+    ),
+    { name: "ScopeViolationError" },
+  );
+
+  await assert.rejects(
+    state.transact((unit) =>
+      unit.observer.checkpoint(claim, {
+        completedPhase: "cleanup",
+        status: "failed",
+        progress: {
+          observerAbsence,
+          targetResolution: {
+            targetContainerId: "c".repeat(64),
+            namespaceNetworkId: "d".repeat(64),
+            targetIdentity: "agent-runtime-v1",
+            observedAt: "2026-11-15T17:00:00.000Z",
+          },
+          observer: {
+            observerContainerId: "e".repeat(64),
+            createdAt: "2026-11-15T17:00:01.000Z",
+          },
+        },
+      }),
+    ),
+    { name: "ScopeViolationError" },
+  );
+
+  const targetResolution = {
+    targetContainerId: "c".repeat(64),
+    namespaceNetworkId: "d".repeat(64),
+    targetIdentity: "agent-runtime-v1",
+    observedAt: "2026-11-15T17:00:00.000Z",
+  };
+
+  await assert.rejects(
+    state.transact((unit) =>
+      unit.observer.checkpoint(claim, {
+        completedPhase: "target_resolved",
+        status: "running",
+        progress: {
+          targetResolution: {
+            ...targetResolution,
+            observedAt: "2026-11-15T17:00:00Z",
+          },
+        },
+      }),
+    ),
+    { name: "ScopeViolationError" },
+  );
+  const unchanged = await state.read((unit) => unit.observer.findByWorkId(workId));
+  assert.ok(unchanged);
+  assert.equal(unchanged.completedPhase, "admitted");
+  assert.deepEqual(unchanged.progress, {});
+
+  const checkpointed = await state.transact((unit) =>
+    unit.observer.checkpoint(claim, {
+      completedPhase: "target_resolved",
+      status: "running",
+      progress: { targetResolution },
+    }),
+  );
+  assert.equal(checkpointed.completedPhase, "target_resolved");
+  assert.equal(checkpointed.status, "running");
+  assert.equal(checkpointed.progress.targetResolution?.observedAt, targetResolution.observedAt);
+
+  const persisted = await pool.query(
+    "SELECT progress #>> ARRAY[$2, $3] AS observed_at FROM occ.observer_invocations WHERE work_id = $1",
+    [workId, "targetResolution", "observedAt"],
+  );
+  assert.deepEqual(persisted.rows, [{ observed_at: targetResolution.observedAt }]);
+
+  const nullTimestampTerminalValidation = await pool.query(
+    "SELECT occ.observer_terminal_evidence_is_valid($1::jsonb, $2::jsonb) AS valid",
+    [
+      JSON.stringify({
+        startedAt: null,
+        captureDeadlineAt: "2026-11-15T17:01:02.000Z",
+        captureStoppedAt: "2026-11-15T17:00:03.000Z",
+        terminalCompletedAt: "2026-11-15T17:00:04.000Z",
+        startOutcome: "succeeded",
+        stopOutcome: "succeeded",
+        boundsReached: [],
+        capturedRecordCount: 1,
+        encodedOutputBytes: 100,
+      }),
+      JSON.stringify(createInput.plan),
+    ],
+  );
+  assert.deepEqual(nullTimestampTerminalValidation.rows, [{ valid: false }]);
+
+  const completedProgress = {
+    targetResolution,
+    observer: {
+      observerContainerId: "e".repeat(64),
+      createdAt: "2026-11-15T17:00:01.000Z",
+    },
+    readiness: {
+      targetContainerId: targetResolution.targetContainerId,
+      interfaceName: createInput.plan.observationScope.interfaceName,
+      filterIdentity: createInput.plan.observationScope.filterIdentity,
+      readyAt: "2026-11-15T17:00:02.000Z",
+    },
+    terminal: {
+      startedAt: "2026-11-15T17:00:02.000Z",
+      captureDeadlineAt: "2026-11-15T17:01:02.000Z",
+      captureStoppedAt: "2026-11-15T17:00:03.000Z",
+      terminalCompletedAt: "2026-11-15T17:00:04.000Z",
+      startOutcome: "succeeded" as const,
+      stopOutcome: "succeeded" as const,
+      boundsReached: [],
+      capturedRecordCount: 1,
+      encodedOutputBytes: 100,
+    },
+    cleanup: {
+      terminationRequestedAt: "2026-11-15T17:00:04.000Z",
+      graceDeadline: "2026-11-15T17:00:09.000Z",
+      forceRemovalOutcome: "not_required" as const,
+      absenceVerifiedAt: "2026-11-15T17:00:09.000Z",
+      targetTeardownAuthorized: true as const,
+    },
+  };
+
+  const releasedObserverClaim = await pool.query(
+    "UPDATE occ.controller_work SET state = $2, claim_token = NULL, lease_expires_at = NULL, available_at = clock_timestamp(), updated_at = clock_timestamp() WHERE idempotency_key = $1 AND work_kind = $3 AND state = $4 AND claim_token = $5::uuid",
+    [workId, "queued", "observer", "claimed", claimToken],
+  );
+  assert.equal(releasedObserverClaim.rowCount, 1, "test must release the exact observer claim");
+
+  const lifecycleQueue = new PostgresWorkQueue(pool);
+  const deletionWorkId = "agent:" + agentId + ":reconcile:deleted";
+  await lifecycleQueue.enqueue({
+    idempotencyKey: deletionWorkId,
+    namespaceId,
+    agentId,
+    actorId,
+    agentTarget: "deleted",
+    availableAt: new Date(0),
+  });
+  await pool.query(
+    "UPDATE occ.agents SET desired_runtime_state = $3, status = $4 WHERE namespace_id = $1 AND id = $2",
+    [namespaceId, agentId, "stopped", "deleting"],
+  );
+  const deletionClaimToken = randomUUID();
+  const claimedDeletion = await pool.query(
+    "UPDATE occ.controller_work SET state = $2, attempt_count = attempt_count + 1, claim_token = $3::uuid, lease_expires_at = clock_timestamp() + $4::interval, updated_at = clock_timestamp() WHERE idempotency_key = $1 AND work_kind = $5 AND agent_target = $6 AND state = $7 RETURNING idempotency_key",
+    [deletionWorkId, "claimed", deletionClaimToken, "10 minutes", "lifecycle", "deleted", "queued"],
+  );
+  assert.equal(claimedDeletion.rowCount, 1, "test must claim the exact Agent deletion work");
+  const deletionClaim = { idempotencyKey: deletionWorkId, claimToken: deletionClaimToken };
+  assert.equal(
+    await lifecycleQueue.completeAgentDeletion(deletionClaim, namespaceId, agentId),
+    "cleanup-pending",
+  );
+  const retainedForObserverCleanup = await pool.query(
+    "SELECT EXISTS (SELECT 1 FROM occ.agents WHERE namespace_id = $1 AND id = $2) AS agent_exists, EXISTS (SELECT 1 FROM occ.agent_revisions WHERE namespace_id = $1 AND agent_id = $2 AND id = $3) AS revision_exists, EXISTS (SELECT 1 FROM occ.observer_invocations WHERE work_id = $4) AS invocation_exists, EXISTS (SELECT 1 FROM occ.controller_work WHERE idempotency_key = $4 AND work_kind = $5) AS observer_work_exists",
+    [namespaceId, agentId, revisionId, workId, "observer"],
+  );
+  assert.deepEqual(retainedForObserverCleanup.rows, [
+    {
+      agent_exists: true,
+      revision_exists: true,
+      invocation_exists: true,
+      observer_work_exists: true,
+    },
+  ]);
+
+  await lifecycleQueue.defer(deletionClaim, { code: "OBSERVER_CLEANUP_PENDING" }, { delayMs: 1 });
+  const cleanupClaimToken = randomUUID();
+  const claimedObserverCleanup = await pool.query(
+    "UPDATE occ.controller_work SET state = $2, attempt_count = attempt_count + 1, claim_token = $3::uuid, lease_expires_at = clock_timestamp() + $4::interval, updated_at = clock_timestamp() WHERE idempotency_key = $1 AND work_kind = $5 AND state = $6 RETURNING idempotency_key",
+    [workId, "claimed", cleanupClaimToken, "10 minutes", "observer", "queued"],
+  );
+  assert.equal(
+    claimedObserverCleanup.rowCount,
+    1,
+    "test must reclaim the exact observer work for cleanup",
+  );
+  const cleaned = await state.transact((unit) =>
+    unit.observer.checkpoint(
+      { idempotencyKey: workId, claimToken: cleanupClaimToken },
+      {
+        completedPhase: "cleanup",
+        status: "succeeded",
+        progress: completedProgress,
+      },
+    ),
+  );
+  assert.equal(cleaned.completedPhase, "cleanup");
+  assert.equal(cleaned.status, "succeeded");
+
+  await pool.query(
+    "UPDATE occ.controller_work SET available_at = clock_timestamp(), updated_at = clock_timestamp() WHERE idempotency_key = $1 AND work_kind = $2 AND state = $3",
+    [deletionWorkId, "lifecycle", "queued"],
+  );
+  const finalDeletionClaimToken = randomUUID();
+  const reclaimedDeletion = await pool.query(
+    "UPDATE occ.controller_work SET state = $2, attempt_count = attempt_count + 1, claim_token = $3::uuid, lease_expires_at = clock_timestamp() + $4::interval, updated_at = clock_timestamp() WHERE idempotency_key = $1 AND work_kind = $5 AND agent_target = $6 AND state = $7 RETURNING idempotency_key",
+    [
+      deletionWorkId,
+      "claimed",
+      finalDeletionClaimToken,
+      "10 minutes",
+      "lifecycle",
+      "deleted",
+      "queued",
+    ],
+  );
+  assert.equal(reclaimedDeletion.rowCount, 1, "test must reclaim the Agent deletion work");
+  assert.equal(
+    await lifecycleQueue.completeAgentDeletion(
+      { idempotencyKey: deletionWorkId, claimToken: finalDeletionClaimToken },
+      namespaceId,
+      agentId,
+    ),
+    "completed",
+  );
+  const removedAfterObserverCleanup = await pool.query(
+    "SELECT EXISTS (SELECT 1 FROM occ.agents WHERE namespace_id = $1 AND id = $2) AS agent_exists, EXISTS (SELECT 1 FROM occ.agent_revisions WHERE namespace_id = $1 AND agent_id = $2 AND id = $3) AS revision_exists, EXISTS (SELECT 1 FROM occ.observer_invocations WHERE work_id = $4) AS invocation_exists, EXISTS (SELECT 1 FROM occ.controller_work WHERE idempotency_key = $4) AS observer_work_exists, EXISTS (SELECT 1 FROM occ.controller_work WHERE idempotency_key = $5) AS deletion_work_exists, EXISTS (SELECT 1 FROM occ.observer_invocations WHERE work_id = $6) AS cancelled_invocation_exists, EXISTS (SELECT 1 FROM occ.controller_work WHERE idempotency_key = $6) AS cancelled_work_exists, EXISTS (SELECT 1 FROM occ.observer_invocations WHERE work_id = $7) AS failed_invocation_exists, EXISTS (SELECT 1 FROM occ.controller_work WHERE idempotency_key = $7) AS failed_work_exists",
+    [
+      namespaceId,
+      agentId,
+      revisionId,
+      workId,
+      deletionWorkId,
+      cancelledBeforeCreationWorkId,
+      failedBeforeCreationWorkId,
+    ],
+  );
+  assert.deepEqual(removedAfterObserverCleanup.rows, [
+    {
+      agent_exists: false,
+      revision_exists: false,
+      invocation_exists: false,
+      observer_work_exists: false,
+      deletion_work_exists: false,
+      cancelled_invocation_exists: false,
+      cancelled_work_exists: false,
+      failed_invocation_exists: false,
+      failed_work_exists: false,
+    },
+  ]);
+}

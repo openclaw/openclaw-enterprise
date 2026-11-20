@@ -142,6 +142,7 @@
       "expectedTests": [
         "PostgreSQL rejects platform writes until the singleton Installation is bootstrapped",
         "real OCC Namespace lifecycle persists provisioning, readiness, deletion, and its tombstone",
+        "PostgreSQL observer checkpoints accept canonical timestamps and reject noncanonical evidence",
         "PostgreSQL platform state satisfies memory adapter ownership, immutability, and atomicity",
         "the PostgreSQL worker reloads exact Namespace restrictions and never dispatches revoked provisioning",
         "API SIGTERM finishes an in-flight keep-alive request and exits within the Pod grace",

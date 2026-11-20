@@ -43,14 +43,7 @@ the selected version, and clears `activeRevisionId` only if it still identifies
 that version. Version history, credentials, and persistent state remain; a
 later deployment starts a new version.
 
-Deleting an Agent sets its lifecycle status to `deleting`, sets desired runtime
-state to `stopped`, and queues an exact-Agent `deleted` target. Synchronous Agent
-mutations reject this state. The worker reauthorizes `delete`, retires every
-version, and removes runtime credentials before a claim-protected database
-finalizer removes the Agent, Agent revisions, service principal, API keys, exact IAM
-references, and Agent work rows. The function records durable success evidence;
-an expired claim or failed external cleanup leaves the rows intact for safe
-retry. Namespace-owned Configurations and Secrets are not Agent teardown state.
+Deleting an Agent sets status to `deleting`, desired runtime state to `stopped`, and queues its `deleted` target. The worker reauthorizes `delete`, retires every version, and removes runtime credentials. Finalization waits for terminal observer settlement: created observers require terminal and cleanup evidence with teardown authorization; failure or cancellation before creation may instead record verified absence, never success. Unsettled observer work keeps deletion pending for retry. Finalization removes Agent-owned database state, including observer invocation and work rows; Namespace Configurations and Secrets remain.
 
 ## AgentRevision lifecycle
 

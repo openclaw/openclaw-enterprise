@@ -1835,7 +1835,7 @@ test(
       [randomUUID(), randomUUID(), owner.servicePrincipalId, randomUUID()],
     );
 
-    await fixture.requestDeletion(owner);
+    const deletion = await fixture.requestDeletion(owner);
     await waitFor(`Agent ${owner.id} to be removed`, async () => {
       const deleted = await fixture.currentAgent(owner);
       return deleted === undefined ? true : undefined;
@@ -1895,16 +1895,42 @@ test(
       { revisions: 0, identities: 0, bindings: 0, restrictions: 0, api_keys: 0, work: 0 },
     ]);
     const audit = await fixture.observerPool.query(
-      `SELECT outcome, details->>'reasonCode' AS reason_code,
-              (details->>'attemptCount')::integer AS attempt_count
-       FROM occ.audit_events
-       WHERE namespace_id = $1 AND action = 'openclaw.agents.lifecycle.delete'
-         AND resource_id = $2`,
+      `SELECT result.outcome, result.details->>'reasonCode' AS reason_code,
+              (result.details->>'attemptCount')::integer AS attempt_count,
+              result.details->>'workId' AS work_id,
+              result.details->>'attemptId' AS attempt_id,
+              claim.id AS claim_id
+       FROM occ.audit_events AS result
+       LEFT JOIN occ.audit_events AS claim
+         ON claim.id = result.details->>'attemptId'
+        AND claim.namespace_id = result.namespace_id
+        AND claim.resource_kind = result.resource_kind
+        AND claim.resource_id = result.resource_id
+        AND claim.details->>'workId' = result.details->>'workId'
+        AND claim.action = 'openclaw.controller_work.claimed'
+       WHERE result.namespace_id = $1
+         AND result.action = 'openclaw.agents.lifecycle.delete'
+         AND result.resource_id = $2`,
       [fixture.namespace.id, owner.id],
     );
-    assert.deepEqual(audit.rows, [
-      { outcome: "success", reason_code: "AGENT_DELETED", attempt_count: 2 },
-    ]);
+    assert.equal(audit.rowCount, 1);
+    const deletionResult = required(audit.rows[0]);
+    assert.deepEqual(
+      {
+        outcome: deletionResult.outcome,
+        reason_code: deletionResult.reason_code,
+        attempt_count: deletionResult.attempt_count,
+        work_id: deletionResult.work_id,
+      },
+      {
+        outcome: "success",
+        reason_code: "AGENT_DELETED",
+        attempt_count: 2,
+        work_id: deletion.idempotencyKey,
+      },
+    );
+    assert.match(deletionResult.attempt_id, /^aud_[0-9a-f-]{36}$/);
+    assert.equal(deletionResult.claim_id, deletionResult.attempt_id);
   },
 );
 

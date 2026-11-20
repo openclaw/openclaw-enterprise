@@ -18,6 +18,7 @@ import {
   completeProvisioning,
   replayProvisioning,
 } from "./postgres-state-provisioning-cases.ts";
+import { acceptCanonicalObserverTimestamp } from "./postgres-state-observer-cases.ts";
 import { drainApiOnSigterm, recheckNamespaceRestriction } from "./postgres-state-worker-cases.ts";
 
 // These cases share the prepared file database. The startup refusal precedes bootstrap.
@@ -45,6 +46,11 @@ test(
   "PostgreSQL Agent provisioning direct checkpoint still moves ordinary progress",
   requiresPostgres,
   checkpointProvisioning,
+);
+test(
+  "PostgreSQL observer checkpoints accept canonical timestamps and reject noncanonical evidence",
+  requiresPostgres,
+  acceptCanonicalObserverTimestamp,
 );
 test(
   "PostgreSQL platform state satisfies memory adapter ownership, immutability, and atomicity",

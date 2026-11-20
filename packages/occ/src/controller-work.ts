@@ -1,6 +1,6 @@
 export type ControllerWorkState = "queued" | "claimed" | "succeeded" | "failed_permanent";
 
-export type ControllerWorkKind = "lifecycle" | "provisioning";
+export type ControllerWorkKind = "lifecycle" | "provisioning" | "observer";
 
 /**
  * Revision-scoped work that revokes credential sources from a running revision. It names the

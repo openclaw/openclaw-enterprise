@@ -1345,6 +1345,7 @@ export class ControllerWorker {
       throw new Error("Production controller workers require Installation startup configuration.");
     }
     this.queueOptions = {
+      workKind: "controller",
       leaseDurationMs: this.leaseDurationMs,
       maxAttempts: this.maxAttempts,
       controlPlaneAuditEnabled: options.controlPlaneAuditEnabled ?? this.mode === "development",

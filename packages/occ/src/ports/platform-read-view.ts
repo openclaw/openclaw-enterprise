@@ -120,5 +120,11 @@ export function createPlatformReadView(
       "findByConfiguration",
       "findByRequest",
     ]),
+    observer: bindRepository(repositories.observer, lifetime, [
+      "findByWorkId",
+      "findWithWork",
+      "findByRequest",
+      "listRevisionInvocations",
+    ]),
   });
 }

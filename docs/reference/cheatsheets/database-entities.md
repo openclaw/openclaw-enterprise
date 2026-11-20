@@ -537,6 +537,26 @@ Records one Agent provisioning request and its progress. Each row belongs to a
 - `created_at`
 - `updated_at`
 
+### `observer_invocations`
+
+Records one admitted observer invocation and its persisted lifecycle evidence. Each row belongs to a `controller_work` row with `work_kind = 'observer'`. PostgreSQL enforces the admitted plan, progress evidence, phase/status relationships, terminal outcomes, and cleanup settlement.
+
+- `work_id`
+- `namespace_id`
+- `agent_id`
+- `revision_id`
+- `actor_id`
+- `request_id`
+- `request_fingerprint`
+- `target_role`
+- `status`
+- `completed_phase`
+- `qualification`
+- `plan`
+- `progress`
+- `created_at`
+- `updated_at`
+
 ## Browser authentication and service API keys
 
 ### `user`
