@@ -780,6 +780,8 @@ function deploymentErrorMessage(code: string, agentId: string): string {
       return "The Sandbox Driver does not support this revision's Harness settings, such as plugins, network policy additions or ServiceAccount credentials. Change them, or ask an Installation administrator for a Driver that supports them, then deploy again.";
     case "SANDBOX_GATEWAY_UNAUTHORIZED":
       return "The Sandbox gateway refused the controller's identity, or the Workspace is gone, so cleanup is unconfirmed. Check the identity's token file and Workspace role and the gateway's signing-key refresh, then deploy, stop, delete or withdraw again.";
+    case "SANDBOX_RECREATION_REQUIRED":
+      return "The retained Sandbox uses an unsupported workload configuration. Preserve its files, create a replacement Agent and restore the files before deleting the original Agent.";
     case "SANDBOX_POD_LABELS_NOT_PERMITTED":
       return "The Sandbox gateway refuses this revision's Harness Pod labels. Ask an admin to allow them in the gateway configuration, then deploy again.";
     case "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT":

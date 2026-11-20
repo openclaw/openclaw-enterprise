@@ -25,13 +25,13 @@ This is an implementation change, with no new Driver configuration or public int
 
 ## Verification and dependencies
 
-| Required outcome                                  | Proof                                                                                         |
-| ------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| Correct requests and limits reach OpenShell       | Existing protobuf transport coverage plus actual Pod inspection in both modes.                |
-| Managed creation needs no caller driver config    | Real API-to-OpenShell deployment with that permission disabled.                               |
-| Resources remain immutable on managed replacement | Attempt a changed sizing specification; verify refusal without starting the changed workload. |
-| Missing or changed resource readback fails closed | Focused lifecycle coverage using real protobuf encoding and decoding.                         |
-| Operator storage and runtime still work           | Real Agent deployment, workspace access, and model turn with existing mounts.                 |
+| Required outcome                                  | Proof                                                                                                                                       |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Correct requests and limits reach OpenShell       | Existing protobuf transport coverage plus actual Pod inspection in both modes.                                                              |
+| Managed creation needs no caller driver config    | Real API-to-OpenShell deployment with that permission disabled.                                                                             |
+| Resources remain immutable on managed replacement | Controlled Driver test with changed sizing on a stopped Sandbox. Live resize refusal requires a separate installation configuration change. |
+| Missing or changed resource readback fails closed | Focused lifecycle coverage using real protobuf encoding and decoding.                                                                       |
+| Operator storage and runtime still work           | Real Agent deployment, workspace access, and model turn with existing mounts.                                                               |
 
 Live proof requires a disposable cluster with enforcing NetworkPolicies, compatible OpenShell managed-workspace APIs, digest-pinned runtime images, and existing authorized model credentials. Missing prerequisites remain a verification gap, not permission to substitute mocks.
 

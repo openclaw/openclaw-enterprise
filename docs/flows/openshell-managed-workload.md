@@ -91,6 +91,10 @@ response. A retry for the same revision may renew its setup envelope.
 
 `reconcileHarness` verifies Namespace and Agent ownership and requires a
 confirmed stop for replacement. It rejects resource changes.
+Before replacing runtime Provider material or reconciling the owned Sandbox,
+`requireManagedTemplate` refuses the old caller-config layout. The worker treats
+`SandboxRevisionUnsupportedError` as permanent. See
+[recovery before upgrade](../reference/drivers/kubernetes-openshell-compute.md#lifecycle-and-retained-files).
 `reconcilePolicy` reads the latest policy separately from the creation
 specification and checks static policy and non-Git middleware.
 For changed attachments, it clears base rules while stopped.

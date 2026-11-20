@@ -291,6 +291,26 @@ export function registerManagedStartupRenderingCases(): void {
       );
       client.getSandbox = getSandbox;
     }
+    // A predecessor created before template sizing retains its caller config.
+    // Neither resuming it nor deploying a successor can convert its storage in place.
+    const originalTemplate = currentRequest().spec.template;
+    const { resources: previousSizing, ...previousTemplate } = originalTemplate;
+    const config = { resources: { structValue: previousSizing } };
+    const agentConfig = { agent: { structValue: { fields: config } } };
+    const containers = { containers: { structValue: { fields: agentConfig } } };
+    currentRequest().spec.template = {
+      ...previousTemplate,
+      driver_config: { fields: { kubernetes: { structValue: { fields: containers } } } },
+    };
+    for (const target of [revision, successor]) {
+      await assert.rejects(
+        driver.provisionHarness({ ...context, revision: target, requirements }),
+        {
+          code: "SANDBOX_RECREATION_REQUIRED",
+        },
+      );
+    }
+    currentRequest().spec.template = originalTemplate;
     const resized = structuredClone(configuration);
     resized.kubernetes.agentResources.requests.cpu = "1500m";
     const resizedDriver = new ManagedOpenShellSandbox(resized, {

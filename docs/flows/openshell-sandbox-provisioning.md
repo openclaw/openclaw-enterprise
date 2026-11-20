@@ -215,10 +215,11 @@ Labels outside `allowed_pod_labels` fail with `SANDBOX_POD_LABELS_NOT_PERMITTED`
 updates only `node_setup_json`. `sandboxCommand` adds workspace links, setup wait,
 and account bootstrap. OpenShell caps arguments at 32 KiB each and 256 KiB total.
 Tests target 64 KiB serialized.
-`filesystemPolicy` grants read and execute access to `/opt/devtools` by default.
+`filesystemPolicy` defaults to read/execute access for `/opt/devtools`.
 `verifyExistingSandbox` compares the full spec; differences require
 [revision recovery](../guides/topics/agent-troubleshoot.md#an-openshell-agent-stops-answering).
-Compute rolls the Gateway before enrollment; `harnessStatus` gates readiness.
+`internal/occdev/kubernetes.go:openShellInstallationConfiguration` omits the
+development startup delay. Compute rolls the Gateway before enrollment; `harnessStatus` gates readiness.
 
 Dedicated Codex requires one lowercase `APP_TOKEN_SHA` and two runtime files,
 each at most 65,536 bytes. `APP_SERVER_TOKEN` is forbidden. A second model proxy,
@@ -277,7 +278,8 @@ For [Sandbox startup refusals](../reference/drivers/openshell-sandbox/harness-pr
 
 `sandboxLaunchSpec` sends [sizing](../reference/drivers/openshell-sandbox.md#configuration)
 in `template.resources`; `template.driver_config` retains mounts.
-Adoption normalizes both Structs; missing or changed resources fail. Sandbox and preparation omit RuntimeClass and PSA exemptions. Adoption, including `ALREADY_EXISTS`, requires matching Workspace, labels,
+Sandbox and preparation omit RuntimeClass and PSA exemptions. Adoption normalizes
+both Structs. Even on `ALREADY_EXISTS`, it requires matching Workspace, labels,
 annotations/spec and a Sandbox that is neither stopped nor deleting. Workspace `sandbox:write`
 permits replacement. Each Harness has one unnamed bearer-passthrough
 `APP_SERVER_PORT` exposure; only Codex returns a URL. Native held-failure exposure

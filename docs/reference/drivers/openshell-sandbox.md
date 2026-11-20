@@ -117,23 +117,21 @@ An explicit policy replaces these defaults. The Driver still adds required
 mounts, the runtime root, and `/tmp`. Add `/opt/devtools` to
 `policy.filesystem.readOnly` for packaged native tools.
 
-An existing Sandbox keeps its launch policy. Deploy a new Agent revision to
-apply a different policy.
+Deploy a fresh revision to change a Sandbox’s launch policy.
 
 Startup rejects unknown Kubernetes, policy, and Gateway readiness keys. Set
 `kubernetes.agentResources` using quoted, non-negative Kubernetes quantities.
 Sizing uses the `spec.template.resources` protobuf Struct. Ephemeral-storage:
 request `256Mi`, limit `1Gi`. Operator mounts remain in
 `spec.template.driver_config`. Provider templates override sizing;
-verify container resources.
+verify container resources. Legacy adoption and maintenance reject driver-config sizing.
+Redeploy after upgrading. See [service-mode recovery](kubernetes-openshell-compute.md#lifecycle-and-retained-files).
 
 In operator mode, `kubernetes.agentResourceOverrides` binds exact `namespaceId` and `agentId`
 pairs. Set `cpu` or `memory` in `requests` and `limits`. Omitted keys inherit
 `agentResources`. Startup rejects malformed IDs, duplicates, and requests above
-limits. Before replacement, check scheduling. Redeploy after changes. Adoption
-checks the exact Sandbox spec. OCE does not accept installation-wide or per-Agent
-RuntimeClass settings; runtime selection belongs to Kubernetes and the independently
-managed OpenShell deployment.
+limits. Check scheduling before redeploying. Adoption requires an exact spec.
+Configure RuntimeClass in Kubernetes or OpenShell.
 
 Set `policy.process.runAsUser` and `runAsGroup`. The pinned OpenShell runs
 Sandbox processes as the workload identity, normally `10001:10001`.
@@ -406,6 +404,7 @@ status and validation category, and omit provider text and request values.
 For `CreateSandbox`, `worker.completed` reports `grpcStatus` and
 `validationCategory` without resource names or supplier text.
 
+- **9, `CALLER_DRIVER_CONFIG_DISABLED`** — Legacy mounts require `allow_driver_config`.
 - **9, `PVC_ADMISSION_LABELS`**: Check admission labels on the namespaced PersistentVolumeClaim.
 - **9, `CLASS_ADMISSION_LABELS`**: Check RuntimeClass or PriorityClass admission labels. For either refusal, use an approved resource or obtain owner approval before relabeling.
 - **13, `RESOURCE_METADATA_FORBIDDEN`**: Kubernetes denied a metadata read (HTTP 403). Verify the Gateway ServiceAccount's read permission for the claim or cluster-scoped class.

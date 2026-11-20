@@ -35,17 +35,20 @@ both integration modes. The input labels `operator` and `managed` select
 Prepare two disposable loopback k3d installations with
 enforcing NetworkPolicies, this branch's API and worker, compatible OpenShell
 APIs, and digest-pinned Codex and Gateway images. Use an existing authorized model
-Credential Source. The test observer needs Pod-read access in the Harness
-namespaces; OCE does not need that access in managed mode.
+Credential Source. Give the observer permission to list Pods and get
+`sandboxes.agents.x-k8s.io` in the Harness namespace, and to list Pods and
+exec into the Gateway Pod in the tenant namespace.
 
 Create two private input files using the [Provider replacement inputs](#provider-replacement).
-No network-policy ceiling is needed for this scenario. Each file also needs
+In each file set `kubeconfigPath` (absolute path), `kubernetesContext` (the
+corresponding `k3d-*` context) and `harnessNamespace` (where OpenShell runs
+the Agent Pod). The test reads the Sandbox name from the Pod’s controlling
+Sandbox and verifies its ID against the gateway. Each file also needs
 `expectedResources`, the independently selected Kubernetes container requests and
 limits. Include the ephemeral-storage request `256Mi` and limit `1Gi`; use the
 quantity spelling returned by Kubernetes. The operator file also needs
 `expectedMounts`, a nonempty array of approved volume-mount objects such as
-`{ "mountPath": "/sandbox/enterprise", "subPath": "workspace" }`. If configured,
-include `sandboxNamePrefix` (default `sb`). Managed mode uses its stable Agent name.
+`{ "mountPath": "/sandbox/enterprise", "subPath": "workspace" }`.
 
 Disable OpenShell's `allow_driver_config` permission for the managed installation.
 The test first deploys through OCE, then sends a negative-control create request
@@ -63,11 +66,10 @@ OCC_TEST_QA_MATRIX=1 OCC_TEST_QA_INSTALLATION=kubernetes \
   node --test tests/integration/qa-matrix-real.test.mjs
 ```
 
-Also select `OCC_TEST_KUBERNETES_KUBECONFIG` and `OCC_TEST_KUBERNETES_CONTEXT`
-as described below. Both modes must pass without skips: the scenario deploys an
+Both modes must pass without skips. The scenario deploys an
 Agent through the API, compares its real Pod resources, verifies operator mounts,
 reads and writes a workspace file, and completes a real model turn. Cleanup removes
-run-owned Agents, grants, and sources, not the prepared Namespace or source.
+the run-owned Agent, role and grant. Each Agent uses the prepared source directly.
 
 Focused lifecycle tests additionally check missing or changed resource readback,
 protobuf round trips, and refusal of managed sizing changes before update/start.

@@ -173,6 +173,7 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
       | "POLICY_MIDDLEWARE_VALIDATION"
       | "PVC_ADMISSION_LABELS"
       | "CLASS_ADMISSION_LABELS"
+      | "CALLER_DRIVER_CONFIG_DISABLED"
       | "RESOURCE_METADATA_FORBIDDEN"
       | "UNKNOWN";
   };
@@ -1242,6 +1243,7 @@ export class SandboxRevisionUnsupportedError extends Error {
   readonly code:
     | "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED"
     | "SANDBOX_HARNESS_UNSUPPORTED"
+    | "SANDBOX_RECREATION_REQUIRED"
     | "SANDBOX_POD_LABELS_NOT_PERMITTED"
     | "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED";
 

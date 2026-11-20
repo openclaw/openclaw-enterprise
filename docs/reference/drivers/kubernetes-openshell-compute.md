@@ -89,9 +89,16 @@ against the latest stored policy, including credential inspection rules.
 ## Lifecycle and retained files
 
 Managed creation sends `kubernetes.agentResources` in the `spec.template.resources`
-protobuf Struct and omits `driver_config`. Caller driver-config permission is not
-required. Per-Agent sizing overrides remain legacy-mode only. See
+protobuf Struct and omits `driver_config`. New Sandboxes can run with `allow_driver_config` disabled. Per-Agent sizing overrides remain legacy-mode only. See
 [resource settings](openshell-sandbox.md#configuration) for validation and defaults.
+
+Before upgrading a service installation that stores sizing in `driver_config`,
+copy each affected Agent’s retained files outside its Sandbox while it is running.
+After upgrading, create replacement Agents, restore and verify their files, then
+delete the originals. Keep `allow_driver_config` enabled until all Sandboxes that
+use it have been retired. Redeployment stops the predecessor before checking
+its template. Provisioning refuses the old layout with `SANDBOX_RECREATION_REQUIRED`,
+including on resume. Deleting an Agent removes its retained storage.
 
 The Sandbox and runtime Provider names derive from the Agent ID. Stop and
 revision retirement retain the Sandbox and its storage. Replacement updates

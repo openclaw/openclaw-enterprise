@@ -237,7 +237,7 @@ test(
       const inputs = JSON.parse(
         await readFile(process.env.OCC_TEST_OPENSHELL_RESOURCES_INPUT_FILE, "utf8"),
       );
-      const { verifyOpenShellProviderReplacement } =
+      const { verifyOpenShellTemplateResources } =
         await import("../helpers/openshell-provider-replacement.mjs");
       for (const workspaceMode of ["operator", "managed"]) {
         assert.ok(inputs[workspaceMode], `Select the prepared ${workspaceMode} installation`);
@@ -245,12 +245,7 @@ test(
           context,
           `kubernetes/Codex/OpenShell/${workspaceMode}`,
           "template sizing, workspace access and real model turn",
-          () =>
-            verifyOpenShellProviderReplacement(context, {
-              templateResources: true,
-              inputFile: inputs[workspaceMode],
-              workspaceMode,
-            }),
+          () => verifyOpenShellTemplateResources(context, inputs[workspaceMode], workspaceMode),
           "openshell-template-resources",
         );
       }

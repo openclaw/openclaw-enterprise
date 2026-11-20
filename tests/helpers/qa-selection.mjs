@@ -271,11 +271,7 @@ export function selectQaMatrix(env = process.env) {
       "kubernetes",
       "Template resources require explicit Kubernetes selection",
     );
-    requiredEnv.push(
-      "OCC_TEST_OPENSHELL_RESOURCES_INPUT_FILE",
-      "OCC_TEST_KUBERNETES_KUBECONFIG",
-      "OCC_TEST_KUBERNETES_CONTEXT",
-    );
+    requiredEnv.push("OCC_TEST_OPENSHELL_RESOURCES_INPUT_FILE");
   }
   const gitModel = scenarios.includes("openshell-git-model");
   const namespaceLifecycle = scenarios.includes("namespace-lifecycle");
