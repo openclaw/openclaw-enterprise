@@ -1,6 +1,7 @@
 import { enabledChannelEntries } from "@openclaw-enterprise/occ";
 import { resolveChannelRouting, type ChannelProviderDriver } from "../../channel/routing.ts";
 import {
+  ChannelPublicEgressPolicyConflict,
   KubernetesChannelEgress,
   CHANNEL_EGRESS_BINDING_LABEL,
   type PreparedChannelRouting,
@@ -816,6 +817,14 @@ function preparationFailureDiagnostic(error: unknown): ComputePrepareRevisionFai
       code: cause.diagnosticCode,
       stage: failure.stage,
       errorClass: "OpenShellSandboxConfigurationFailure",
+    };
+  }
+  if (cause instanceof ChannelPublicEgressPolicyConflict) {
+    return {
+      code: "KUBERNETES_PREPARATION_FAILED",
+      stage: failure.stage,
+      errorClass: "ChannelPublicEgressPolicyConflict",
+      message: cause.operatorMessage(),
     };
   }
   const status = numericErrorStatus(cause);
