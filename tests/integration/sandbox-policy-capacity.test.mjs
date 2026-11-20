@@ -11,8 +11,9 @@ import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbo
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { partialWrite } from "../helpers/partial-write-authorization.ts";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
 import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.ts";
 
 const grants = (count) =>
@@ -51,9 +52,9 @@ test("Installation startup accepts 16,384 ceiling rules and refuses 16,385", asy
 test("HTTP policy preview and save preserve 16,384 rules and reject excess entries", async (t) => {
   const sandboxDriver = new OpenShellSandboxDriver(
     {
-      gateway: { workspaceMode: "operator" },
+      integrationMode: "legacy",
+      gateway: {},
       kubernetes: {
-        userNamespaces: false,
         serviceAccount: { mode: "gatewayConfigured" },
         sandboxDataMount: {
           subPath: "workspace",
@@ -80,7 +81,7 @@ test("HTTP policy preview and save preserve 16,384 rules and reject excess entri
         drivers: { sandbox: "capacity-openshell", credential_gateway: "capacity-credentials" },
         client: new OpenShellGateway(
           { serviceName: "openshell-gateway" },
-          { gatewayClient: openShellWorkspaceProtocol() },
+          { gatewayClient: completeOpenShellGatewayClient(openShellWorkspaceProtocol()) },
         ),
       },
     },
@@ -100,7 +101,7 @@ test("HTTP policy preview and save preserve 16,384 rules and reject excess entri
   const agent = await fixture.createAgent(
     namespace.id,
     "Policy capacity",
-    {},
+    createHarnessConfiguration("codex", "gpt-4.1"),
     { executionMode: "dedicated" },
   );
   const path = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
@@ -250,7 +251,7 @@ test("HTTP policy preview and save preserve 16,384 rules and reject excess entri
   const otherAgent = await fixture.createAgent(
     namespace.id,
     "Other policy",
-    {},
+    createHarnessConfiguration("codex", "gpt-4.1"),
     { executionMode: "dedicated" },
   );
   // Hold the limiter's clock still while proving burst admission: slow CI must not refill it.

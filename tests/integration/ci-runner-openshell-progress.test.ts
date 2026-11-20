@@ -592,6 +592,10 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
       const completedWrapper = mode === "runner-deadline-after-wrapper";
       const controlledDeadline = mode === "runner-deadline-after-activation" || completedWrapper;
       const runnerDeadline = wallDeadline || controlledDeadline;
+      // Controlled deadlines must wait for reporter readiness even when startup
+      // takes longer than the nominal file budget. Wall-clock cases keep a real timer.
+      const runnerTimeoutMs = controlledDeadline ? 1 : 5000;
+      const fileTimeoutMs = runnerDeadline ? runnerTimeoutMs : 10000;
       const pendingActivation = caseDeadline || controlledDeadline;
       const requestCase = mode === "request";
       const success = mode === "success";
@@ -770,7 +774,7 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
       }
       const runner = await runRunnerAsync(
         laneArgs(runnerRoot, lane, state, results),
-        { CI_RUNNER_TEST_TIMEOUT_MS: runnerDeadline ? "5000" : "10000" },
+        { CI_RUNNER_TEST_TIMEOUT_MS: String(fileTimeoutMs) },
         {
           timeout: 30_000,
           execArgv,
@@ -814,16 +818,20 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
           {
             trigger: controlledDeadline ? "readiness" : "wall",
             elapsedMs,
-            delay: 5000,
+            delay: fileTimeoutMs,
             code: "ETIMEDOUT",
             status: 1,
             signal: null,
             ...(controlledDeadline ? { orderedBeforeBarrier: true } : {}),
           },
-          "the actual file timer must fire from the expected trigger",
+          "the original file timeout callback must run from the expected trigger",
         );
-        // Node/libuv timers use millisecond ticks. Allow one tick of quantization.
-        assert.ok(controlledDeadline ? elapsedMs < 5000 : elapsedMs >= 4999);
+        if (controlledDeadline) {
+          assert.ok(elapsedMs >= fileTimeoutMs, "readiness must survive the nominal deadline");
+        } else {
+          // Node/libuv timers use millisecond ticks. Allow one tick of quantization.
+          assert.ok(elapsedMs >= fileTimeoutMs - 1);
+        }
         assert.deepEqual([result.nodeExitCode, result.signal], [1, null]);
       }
       if (controlledDeadline) {
@@ -976,7 +984,7 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
         const [failure] = diagnostics.failures;
         assert.ok(failure);
         assert.equal(failure.reason, runnerDeadline ? "timeout" : "failed");
-        assert.equal(failure.timeoutMs, runnerDeadline ? 5000 : undefined);
+        assert.equal(failure.timeoutMs, runnerDeadline ? fileTimeoutMs : undefined);
         if (wallDeadline) {
           assert.ok((failure.elapsedMs ?? -1) >= 4999);
         }

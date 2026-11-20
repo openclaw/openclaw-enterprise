@@ -127,6 +127,9 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preNativeRestartRecovery";
   }
   if (count === 83 && completedCount > 83) {
+    return "preRevisionEgressInstallations";
+  }
+  if (count === 84 && completedCount > 84) {
     return "preSandboxPolicyCapacity";
   }
   if (count === completedCount) {

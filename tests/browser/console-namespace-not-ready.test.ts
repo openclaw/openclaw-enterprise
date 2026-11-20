@@ -13,7 +13,7 @@ import type { Preset } from "../../packages/contracts/src/presets.ts";
 
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { CONSOLE_NAMESPACE_NOT_READY, NAMESPACE_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 import { runPollTick, startedFetches, trackSettledFetches } from "./console-fetch-accounting.ts";

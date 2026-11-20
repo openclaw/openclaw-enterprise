@@ -1,3 +1,4 @@
+import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import assert from "node:assert/strict";
 import { chmod, mkdtemp, rm, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -158,6 +159,8 @@ export function registerSandboxDriverStartupWiringCases(
     assert.equal(createdDriver.installation.drivers.sandbox.id, "openshell-sandbox");
     assert.equal(createdDriver.installation.drivers.sandbox.implementation, "openshell");
     assert.ok(createdDriver.sandboxDriver instanceof OpenShellSandboxDriver);
+    assert.equal(createdDriver.installation.drivers.compute.implementation, "occ/kubernetes");
+    assert.equal(createdDriver.computeDriver.constructor, KubernetesComputeDriver);
     assert.equal(createdDriver.sandboxDriver.id, "openshell-sandbox");
     assert.deepEqual(createdDriver.sandboxDriver.facets, ["networking", "filesystem", "process"]);
 

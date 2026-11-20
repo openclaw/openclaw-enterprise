@@ -1694,7 +1694,8 @@ test(
       [80, "preRestartContinuation"],
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
-      [83, "preSandboxPolicyCapacity"],
+      [83, "preRevisionEgressInstallations"],
+      [84, "preSandboxPolicyCapacity"],
     ]) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -2001,7 +2002,8 @@ test(
       [80, "preRestartContinuation"],
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
-      [83, "preSandboxPolicyCapacity"],
+      [83, "preRevisionEgressInstallations"],
+      [84, "preSandboxPolicyCapacity"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2306,7 +2308,8 @@ test(
       [80, "preRestartContinuation"],
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
-      [83, "preSandboxPolicyCapacity"],
+      [83, "preRevisionEgressInstallations"],
+      [84, "preSandboxPolicyCapacity"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2509,7 +2512,8 @@ test(
       [80, "preRestartContinuation"],
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
-      [83, "preSandboxPolicyCapacity"],
+      [83, "preRevisionEgressInstallations"],
+      [84, "preSandboxPolicyCapacity"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -2596,7 +2600,8 @@ test(
       [80, "preRestartContinuation"],
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
-      [83, "preSandboxPolicyCapacity"],
+      [83, "preRevisionEgressInstallations"],
+      [84, "preSandboxPolicyCapacity"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2621,7 +2626,8 @@ test(
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         // 0078 replaces the custody guard in place; abort its CREATE FUNCTION statement.
         const rollbackTag = [
-          [83, "ALTER TABLE"],
+          [84, "ALTER TABLE"],
+          [83, "GRANT"],
           [82, "CREATE TRIGGER"],
           [81, "GRANT"],
           [80, "ALTER TABLE"],
@@ -3466,7 +3472,7 @@ test(
   requiresHistoryPostgres,
   async (t) => {
     const fixture = await migrationHistoryFixture();
-    const db = await historyDatabase(t, fixture, "policycapacity", { prefix: 83 });
+    const db = await historyDatabase(t, fixture, "policycapacity", { prefix: 84 });
     const namespaceId = await seedCanonicalData(db, {
       preset: true,
       computeAdmission: true,
