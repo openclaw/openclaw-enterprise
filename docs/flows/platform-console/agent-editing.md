@@ -78,14 +78,13 @@ Activity and label cannot anchor scrolling (`console.css`).
 After `FIRST_ACTIVITY_WAIT_MS`, completion folds unless cleanup, warnings,
 repository access, or overview errors need attention; outcomes remain.
 
-`createDeploymentStatusPanel` polls until completion or refusal; transient errors retain
-progress. `invalidate` and `fail` clear caches and reads. `onFreshRecord` shares matching
-GETs; `show` never republishes. Refusals override success; `401` expires sessions.
-`terminalOverview` reconciles outcomes once through shared Agent/history reads, excluding
-denied records. Retry failures explicitly. `readingOverview` protects explicit reads;
-`recordGeneration` rejects stale payloads.
-**Refresh deployment** queues a full reread; **Refresh record** preserves focus, ignoring
-repeats. Refusals open details; matching errors share alerts.
+`createDeploymentStatusPanel` polls until completion or refusal. Transient errors retain progress.
+`invalidate`/`fail` clear caches/reads. Matching GETs share records without republishing.
+Refusals override success, opening details. Matching errors share alerts. `401` expires sessions.
+`terminalOverview` shares Agent/history reads, reconciling once and excluding denials.
+`readingOverview` protects explicit reads. `recordGeneration` rejects stale records.
+**Refresh deployment** queues rereads. **Refresh record** keeps focus, ignoring repeats.
+Text updates keep **View deployment** focused. It opens the latest readable version.
 
 Each surface shows revision-specific `repositoryAccess.message` beside unchanged outcomes.
 Conditions reveal details without deploying. Missing guidance leaves repository health unknown.
