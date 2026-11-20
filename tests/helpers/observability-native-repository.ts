@@ -11,9 +11,7 @@ type RepositoryNetwork = Omit<ComputeNetwork, "repositoryCredentials"> & {
 };
 
 type NativeRepositoryConfiguration = {
-  backend?: (Omit<GitHubRepositoryCredentialBackendDefinition, "drivers"> & {
-    drivers?: { repo: string };
-  })[];
+  backend?: GitHubRepositoryCredentialBackendDefinition[];
   repository?: {
     id: string;
     configuration: { sessionDurationSeconds: number };
