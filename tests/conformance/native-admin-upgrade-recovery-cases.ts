@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import type { IncomingHttpHeaders } from "node:http";
-import net, { type Socket } from "node:net";
+import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
+import net from "node:net";
+import type { Duplex } from "node:stream";
 import test, { type TestContext } from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 
 import Fastify from "../../apps/controller/node_modules/fastify/fastify.js";
 import type { AdmittedCaller } from "../../apps/controller/src/admission/admission-verifier.ts";
@@ -414,25 +414,37 @@ function options(controllerAuth: ControllerAuth, scenario: ScenarioOptions): Acc
   };
 }
 
+function within<T>(promise: Promise<T>, description: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(description)), 1_000);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 async function withUpgradeServer(
   access: AccessOptions,
-  scenario: (port: number) => Promise<void>,
+  scenario: (port: number, upgraded: Promise<Duplex>) => Promise<void>,
 ): Promise<void> {
   const crashes: Error[] = [];
   const onUncaught = (error: Error) => crashes.push(error);
+  const upgraded = Promise.withResolvers<Duplex>();
+  const onUpgrade = (_request: IncomingMessage, socket: Duplex) => upgraded.resolve(socket);
   const app = Fastify({ logger: false });
   process.on("uncaughtException", onUncaught);
   try {
     createNativeAdminAccess({ app, ...access });
+    app.server.once("upgrade", onUpgrade);
     await app.listen({ host: "127.0.0.1", port: 0 });
     const address = app.server.address();
     assert.ok(address && typeof address === "object");
-    await scenario(address.port);
+    await scenario(address.port, upgraded.promise);
   } finally {
     try {
       await app.close();
       await settleCallbacks();
     } finally {
+      app.server.off("upgrade", onUpgrade);
       process.off("uncaughtException", onUncaught);
     }
   }
@@ -442,21 +454,44 @@ async function withUpgradeServer(
 async function resetUpgrade(
   port: number,
   host: string,
-  reset: (socket: Socket) => Promise<void>,
+  entered: Promise<void>,
+  upgraded: Promise<Duplex>,
 ): Promise<void> {
   const socket = net.connect(port, "127.0.0.1");
   const failed = Promise.withResolvers<never>();
   const onError = (error: Error) => failed.reject(error);
   socket.on("error", onError);
   try {
-    await Promise.race([
-      new Promise<void>((resolve) => socket.once("connect", resolve)),
-      failed.promise,
-    ]);
+    await within(
+      Promise.race([
+        new Promise<void>((resolve) => socket.once("connect", resolve)),
+        failed.promise,
+      ]),
+      "the upgrade client must connect",
+    );
     socket.write(
       `GET / HTTP/1.1\r\nHost: ${host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n`,
     );
-    await Promise.race([reset(socket), failed.promise]);
+    await within(Promise.race([entered, failed.promise]), "the upgrade must enter admission");
+    const serverSocket = await within(upgraded, "the server must upgrade the client socket");
+    assert.equal(
+      serverSocket.destroyed,
+      false,
+      "the server socket must still be open before reset",
+    );
+    const closed = Promise.withResolvers<void>();
+    const onClose = () => closed.resolve();
+    // Observe only close: an error listener here would hide a missing production listener.
+    serverSocket.once("close", onClose);
+    try {
+      socket.resetAndDestroy();
+      await within(
+        Promise.race([closed.promise, failed.promise]),
+        "the upgraded server socket must observe the client reset",
+      );
+    } finally {
+      serverSocket.off("close", onClose);
+    }
   } finally {
     socket.off("error", onError);
     socket.destroy();
@@ -470,12 +505,18 @@ export async function settleCallbacks(): Promise<void> {
 }
 
 export async function clientResetDuringUpgradeAdmission(t: TestContext): Promise<void> {
-  // The verifier rejects only after the TCP reset, while the uncaught-exception listener is active.
+  // Reject admission only after the upgraded server socket has observed the TCP reset.
   const verification = Promise.withResolvers<AdmittedCaller>();
+  const entered = Promise.withResolvers<void>();
   let verifying = false;
+  let cleaningUp = false;
   const controllerAuth = auth();
   t.mock.method(controllerAuth.admissionVerifier, "verify", () => {
+    if (cleaningUp) {
+      return Promise.reject(new Error("admission fixture cleanup"));
+    }
     verifying = true;
+    entered.resolve();
     return verification.promise;
   });
   await withUpgradeServer(
@@ -489,17 +530,13 @@ export async function clientResetDuringUpgradeAdmission(t: TestContext): Promise
       nativeAdminGatewayApiKey: undefined,
       auditSink: { async append() {} },
     }),
-    async (port) => {
+    async (port, upgraded) => {
       try {
-        await resetUpgrade(port, "agent-a.agents.example.test", async (socket) => {
-          await delay(80);
-          socket.resetAndDestroy();
-          await delay(300);
-        });
-        assert.equal(verifying, true, "the upgrade must reach admission");
+        await resetUpgrade(port, "agent-a.agents.example.test", entered.promise, upgraded);
         verification.reject(new Error("admission settled after the client reset"));
         await settleCallbacks();
       } finally {
+        cleaningUp = true;
         if (verifying) {
           verification.reject(new Error("admission fixture cleanup"));
         }
@@ -566,12 +603,12 @@ export async function clientResetDuringPendingDenial(t: TestContext): Promise<vo
   // Delay the real selected IAM decision until after the TCP reset.
   const admission = Promise.withResolvers<void>();
   const browserAccess = controller.getBrowserAccessibleActiveAgentRevision.bind(controller);
-  let admissionEntered = false;
+  const admissionEntered = Promise.withResolvers<void>();
   t.mock.method(
     controller,
     "getBrowserAccessibleActiveAgentRevision",
     async (...args: Parameters<OpenClawController["getBrowserAccessibleActiveAgentRevision"]>) => {
-      admissionEntered = true;
+      admissionEntered.resolve();
       await admission.promise;
       return browserAccess(...args);
     },
@@ -607,20 +644,11 @@ export async function clientResetDuringPendingDenial(t: TestContext): Promise<vo
         },
       },
     }),
-    async (port) => {
+    async (port, upgraded) => {
       try {
-        await resetUpgrade(port, host, async (socket) => {
-          const deadline = Date.now() + 1_000;
-          await delay(20);
-          while (!admissionEntered && Date.now() <= deadline) {
-            await delay(10);
-          }
-          socket.resetAndDestroy();
-          await delay(50);
-        });
+        await resetUpgrade(port, host, admissionEntered.promise, upgraded);
         admission.resolve();
         await waitUntil("the denial audit", () => audits.length > 0, { timeoutMs: 1_000 });
-        assert.equal(admissionEntered, true);
         await settleCallbacks();
       } finally {
         admission.resolve();
