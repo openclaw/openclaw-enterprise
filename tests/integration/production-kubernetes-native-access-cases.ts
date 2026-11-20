@@ -466,7 +466,7 @@ const themeDeploymentSpec = Type.Object({
   template: Type.Object({
     metadata: Type.Object({ annotations: Type.Optional(Type.Unknown()) }),
     spec: Type.Object({
-      initContainers: Type.Optional(Type.Union([Type.Null(), yamlItems])),
+      initContainers: Type.Optional(Type.Union([Type.Null(), Type.String(), yamlItems])),
       containers: yamlItems,
       volumes: yamlItems,
     }),
@@ -476,20 +476,28 @@ const workloadSelectorSpec = Type.Object({
   template: Type.Object({ spec: Type.Object({ nodeSelector: Type.Optional(Type.Unknown()) }) }),
 });
 
-type ComponentResource = { kind: string; metadata: { labels?: Record<string, string> } };
-
-export function findResourceByComponent<T extends ComponentResource>(
+export function findResourceByComponent<T>(
   objects: readonly T[],
   kind: string,
   component: string,
 ): T | undefined {
-  return objects.find(
-    (object) =>
-      object.kind === kind && object.metadata.labels?.["app.kubernetes.io/component"] === component,
-  );
+  return objects.find((object) => {
+    assert.ok(object !== null && object !== undefined, "Expected a non-null Helm document");
+    const resource = asRecord(object);
+    if (resource?.kind !== kind) {
+      return false;
+    }
+    assert.ok(
+      resource.metadata !== null && resource.metadata !== undefined,
+      "Expected resource metadata",
+    );
+    return (
+      asRecord(asRecord(resource.metadata)?.labels)?.["app.kubernetes.io/component"] === component
+    );
+  });
 }
 
-export function controlPlaneWorkloads<T extends ComponentResource>(objects: readonly T[]) {
+export function controlPlaneWorkloads<T>(objects: readonly T[]) {
   return {
     initialization: findResourceByComponent(objects, "Job", "initialization"),
     api: findResourceByComponent(objects, "Deployment", "api"),
@@ -504,7 +512,7 @@ function findNamed(items: readonly unknown[], name: string): unknown {
   });
 }
 
-function themePod(objects: readonly unknown[], component: string) {
+function findThemeDeployment(objects: readonly unknown[], component: string) {
   const deployment = objects.find((object) => {
     assert.ok(object !== null && object !== undefined, "Expected a non-null Helm document");
     const resource = asRecord(object);
@@ -517,9 +525,26 @@ function themePod(objects: readonly unknown[], component: string) {
     );
     return asRecord(resource.metadata)?.name === `openclaw-enterprise-${component}`;
   });
-  const spec = asRecord(deployment)?.spec;
+  return asRecord(deployment);
+}
+
+function themePod(objects: readonly unknown[], component: string) {
+  const spec = findThemeDeployment(objects, component)?.spec;
   assert.ok(Check(themeDeploymentSpec, spec), `Expected the ${component} Deployment pod template`);
   return spec.template;
+}
+
+function themeValuesPod(objects: readonly unknown[]) {
+  const template = asRecord(asRecord(findThemeDeployment(objects, "api")?.spec)?.template);
+  const volumes = asRecord(template?.spec)?.volumes;
+  assert.ok(Check(yamlItems, volumes), "Expected API Deployment volumes");
+  return { template, volumes };
+}
+
+function workloadNodeSelector(workload: unknown): unknown {
+  const spec = asRecord(workload)?.spec;
+  assert.ok(Check(workloadSelectorSpec, spec), "Expected workload pod template");
+  return spec.template.spec.nodeSelector;
 }
 
 export function assertConsoleThemeMounts(
@@ -593,17 +618,18 @@ export function registerConsoleThemeValuesCase(): void {
         "quoted.yaml",
         'api:\n  consoleTheme:\n    configMapName: "no"\n    checksum: "rev"\n',
       );
-      const objects = await renderObjects({}, { valuesFiles: [quoted] });
-      const api = resourceSpec(
-        findResource(objects, "Deployment", "openclaw-enterprise-api"),
-        themeDeploymentSpec,
-      ).template;
+      const objects = await parseProductionChart(
+        (await render({}, { valuesFiles: [quoted] })).stdout,
+      );
+      const api = themeValuesPod(objects);
       assert.equal(
-        asRecord(asRecord(findNamed(api.spec.volumes, "console-theme"))?.configMap)?.name,
+        asRecord(asRecord(findNamed(api.volumes, "console-theme"))?.configMap)?.name,
         "no",
       );
       assert.equal(
-        asRecord(api.metadata.annotations)?.["openclaw.dev/console-theme-checksum"],
+        asRecord(asRecord(api.template?.metadata)?.annotations)?.[
+          "openclaw.dev/console-theme-checksum"
+        ],
         "rev",
       );
       await assert.rejects(
@@ -614,16 +640,17 @@ export function registerConsoleThemeValuesCase(): void {
         render({ "api.consoleTheme.configMapName": "Not_Valid" }),
         /api\.consoleTheme\.configMapName must be a Kubernetes resource name/,
       );
-      const named = await renderObjects(
-        { "api.consoleTheme.checksum": "revision-two" },
-        { strings: { "api.consoleTheme.configMapName": "false" } },
+      const named = await parseProductionChart(
+        (
+          await render(
+            { "api.consoleTheme.checksum": "revision-two" },
+            { strings: { "api.consoleTheme.configMapName": "false" } },
+          )
+        ).stdout,
       );
-      const deployment = resourceSpec(
-        findResource(named, "Deployment", "openclaw-enterprise-api"),
-        themeDeploymentSpec,
-      ).template;
+      const deployment = themeValuesPod(named);
       assert.equal(
-        asRecord(asRecord(findNamed(deployment.spec.volumes, "console-theme"))?.configMap)?.name,
+        asRecord(asRecord(findNamed(deployment.volumes, "console-theme"))?.configMap)?.name,
         "false",
       );
     },
@@ -632,12 +659,11 @@ export function registerConsoleThemeValuesCase(): void {
 
 export function registerOptionalControlPlaneSelectorsCase(): void {
   test("control-plane node selectors are optional unless configured", tooling, async () => {
-    const { initialization, api, worker } = controlPlaneWorkloads(await renderObjects());
+    const { initialization, api, worker } = controlPlaneWorkloads(
+      await parseProductionChart((await render()).stdout),
+    );
     for (const workload of [initialization, api, worker]) {
-      assert.equal(
-        resourceSpec(workload, workloadSelectorSpec).template.spec.nodeSelector,
-        undefined,
-      );
+      assert.equal(workloadNodeSelector(workload), undefined);
     }
   });
 }
@@ -699,8 +725,8 @@ export function registerControlPlaneSelectorValuesCase(): void {
       // Kubernetes allows empty label values; charts before #1848 rendered them.
       assert.match(stdout, /node-role\.kubernetes\.io\/infra: ""/);
       assert.match(stdout, /edge: a_b\.c-d/);
-      const api = findResourceByComponent(await resources(stdout), "Deployment", "api");
-      const selector = resourceSpec(api, workloadSelectorSpec).template.spec.nodeSelector;
+      const api = findResourceByComponent(await parseProductionChart(stdout), "Deployment", "api");
+      const selector = workloadNodeSelector(api);
       assert.equal(asRecord(selector)?.[`${"a".repeat(253)}/pool`], "control");
     },
   );
