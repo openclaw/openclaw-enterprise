@@ -33,7 +33,10 @@ type K3dCleanupIdentity = {
   networkID: string;
   volumes: { name: string; createdAt: string }[];
 };
+export type RequireJournal = (present: boolean) => void;
+
 type CleanupAuthority = {
+  requireJournal?: RequireJournal | undefined;
   expectedCleanupOwner?: string;
   expectedCleanupLane?: string;
   expectedStateSha256?: string;
@@ -993,11 +996,16 @@ async function cleanupResourceIds(
   if (!isAbsolute(path)) {
     throw new Error("Cleanup state path must resolve to an absolute path.");
   }
+  authority.requireJournal?.(true);
   if (!(await stateExists(path, authority.expectedCleanupOwner !== undefined))) {
+    authority.requireJournal?.(false);
     assert.equal(authority.expectedStateSha256, undefined, "bound cleanup state is missing");
     return false;
   }
-  const dropped = resourceIds === undefined ? undefined : await dropDatabases(path, resourceIds);
+  const dropped =
+    resourceIds === undefined
+      ? undefined
+      : await dropDatabases(path, resourceIds, authority.requireJournal);
   // A test may prepare and clean databases from its own process beside the runner.
   return withStateLock(
     path,
@@ -1016,17 +1024,15 @@ async function cleanupResourceIds(
 // file whole), and only their entries are removed under the lock. An entry stays until
 // its drop succeeds, so a crash in between leaves it for lane cleanup, as before. A lane
 // template stays on the locked path: prepareFile finds it through the state and copies it.
-async function dropDatabases(path: string, resourceIds: readonly unknown[]) {
+async function dropDatabases(
+  path: string,
+  resourceIds: readonly unknown[],
+  requireJournal?: RequireJournal,
+) {
   const results = new Map<unknown, DropResult>();
-  let state: CleanupState;
-  try {
-    state = await readState(path);
-  } catch (error) {
-    // Another cleanup removed the emptied state; the locked pass returns as before.
-    if (errorCode(error) === "ENOENT") {
-      return results;
-    }
-    throw error;
+  const state = await readStateIfPresent(path, { requireJournal });
+  if (!state) {
+    return results;
   }
   for (const entry of [...state.resources].reverse()) {
     const resource = resourceFields(entry);
@@ -1045,6 +1051,22 @@ async function dropDatabases(path: string, resourceIds: readonly unknown[]) {
     }
   }
   return results;
+}
+
+async function readStateIfPresent(
+  path: string,
+  { requireJournal, expectedStateSha256, expectedCleanupOwner }: CleanupAuthority,
+) {
+  requireJournal?.(true);
+  try {
+    return await readState(path, expectedStateSha256, expectedCleanupOwner !== undefined);
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") {
+      requireJournal?.(false);
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 async function stateExists(path: string, regularFile = false) {
@@ -1070,15 +1092,11 @@ async function cleanupLockedResourceIds(
   dropped: Map<unknown, DropResult> = new Map(),
   authority: CleanupAuthority = {},
 ) {
-  if (!(await stateExists(path, authority.expectedCleanupOwner !== undefined))) {
+  const state = await readStateIfPresent(path, authority);
+  if (!state) {
     assert.equal(authority.expectedStateSha256, undefined, "bound cleanup state is missing");
     return false;
   }
-  const state = await readState(
-    path,
-    authority.expectedStateSha256,
-    authority.expectedCleanupOwner !== undefined,
-  );
   if (authority.expectedCleanupOwner !== undefined) {
     assert.equal(state.cleanupOwner, authority.expectedCleanupOwner, "CI cleanup owner mismatch");
     assert.equal(state.statePath, path, "CI cleanup state path mismatch");
@@ -1126,7 +1144,8 @@ async function cleanupLockedResourceIds(
     await writeState(path, state);
     throw new Error(`Cleanup failed for ${failures.join(", ")}`);
   }
-  if (state.resources.length === 0) {
+  // The complete lifecycle owns the lane journal until final cleanup.
+  if (state.resources.length === 0 && (resourceIds === undefined || !authority.requireJournal)) {
     await rm(path, { force: true });
   }
   return true;
