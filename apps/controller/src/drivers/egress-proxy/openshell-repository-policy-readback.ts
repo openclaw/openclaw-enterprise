@@ -32,7 +32,8 @@ export function openShellExpectedProviderRule(
 export type OpenShellExpectedProviderRule = ReturnType<typeof openShellExpectedProviderRule>;
 type GitRule = OpenShellExpectedProviderRule["rule"];
 
-const inspectedProtocols = new Set(["rest", "websocket", "graphql", "sql", "json-rpc", "mcp"]);
+// Stock OpenShell can relay SQL in audit mode without inspecting the stream.
+const inspectedProtocols = new Set(["rest", "websocket", "graphql", "json-rpc", "mcp"]);
 
 /** An ambiguous destination or opaque relay could route around the exact Git rule. */
 function hasOnlyInspectedNonGitEndpoints(rule: unknown, gitRule: GitRule): boolean {

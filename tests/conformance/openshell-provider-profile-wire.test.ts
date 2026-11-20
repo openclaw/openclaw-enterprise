@@ -615,6 +615,20 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
     endpoints: [{ host: "alias.example.test", port: 443 }],
   };
   const opaqueSource = { ...stockSource, network_policies: { model: opaqueModel } };
+  const sql = {
+    name: "sql",
+    binaries: [{ path: "/usr/bin/curl" }],
+    endpoints: [
+      {
+        host: "sql.example.test",
+        port: 443,
+        protocol: "sql",
+        enforcement: "NETWORK_ENFORCEMENT_MODE_AUDIT",
+        rules: [{ allow: { command: "SELECT" } }],
+      },
+    ],
+  };
+  const sqlSource = { ...stockSource, network_policies: { ...stockSource.network_policies, sql } };
   await t.test("missing policy readback", async () => {
     overrides = { effective: expected, missingConfig: true };
     assert.equal(await observe(), undefined);
@@ -655,6 +669,11 @@ test("prepared repository ACL requires a matching loaded effective policy", asyn
           ],
         },
       },
+    },
+    "SQL audit passthrough": {
+      source: sqlSource,
+      sandboxPolicy: sqlSource,
+      effective: { ...expected, sql },
     },
     "opaque source endpoint": {
       source: opaqueSource,
