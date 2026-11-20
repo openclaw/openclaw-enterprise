@@ -28,7 +28,7 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import type { PlatformStateStore } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { consoleFixtureClient } from "../helpers/console-fixture-client.ts";
 import { grantRole } from "../helpers/iam-grants.ts";

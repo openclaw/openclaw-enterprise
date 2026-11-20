@@ -11,7 +11,7 @@ import {
   readString,
   record,
 } from "./egress-observation-values.ts";
-import { createManagedWorkloadExec } from "./egress-managed-workload-exec.mjs";
+import { createManagedWorkloadExec } from "./egress-managed-workload-exec.ts";
 import { enforcementCapabilities } from "./egress-installed-agent.mjs";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { createRealKubernetesFixture } from "./kubernetes-real.ts";

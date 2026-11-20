@@ -84,9 +84,9 @@
     "tests/integration/ci-image-pull.test.ts",
     "tests/integration/ci-download-pinned.test.ts",
     "tests/integration/ci-registry-transport.test.ts",
-    "tests/conformance/slack-proxy-tunnel.test.mjs",
-    "tests/conformance/slack-proxy-backpressure.test.ts",
     "tests/conformance/native-admin-websocket-relay.test.ts",
+    "tests/integration/qa-fixture-credentials-diagnostics.test.ts",
+    "tests/integration/qa-fixture-results.test.ts",
     "tests/integration/qa-fixture-inputs.test.mjs",
     "tests/integration/compose-network.test.ts",
     "tests/integration/qa-repository-installation.test.ts",
@@ -134,13 +134,11 @@
     "tests/conformance/plugin-runtime-templates.test.ts",
     "tests/integration/ci-logging.test.ts",
     "tests/integration/ci-go-test.test.ts",
-    "tests/conformance/slack-proxy-reset.test.mjs",
     "tests/conformance/native-admin-upgrade-reset.test.mjs",
     "tests/conformance/repository-credentials-custody.test.ts",
     "tests/conformance/repository-credentials-receive-pack.test.ts",
     "tests/integration/runtime-assets.test.ts",
     "tests/integration/runtime-ai-package-relocation.test.ts",
-    "tests/integration/runtime-node-build-jobs.test.ts",
     "tests/integration/openclaw-source.test.ts",
     "tests/conformance/repository-credentials-tool-evidence.test.ts",
     "tests/integration/client-address.test.ts",
@@ -227,6 +225,12 @@
     },
     {
       "path": "tests/helpers/socket-relay.test.ts"
+    },
+    {
+      "path": "tests/integration/qa-fixture-credentials-diagnostics.test.ts"
+    },
+    {
+      "path": "tests/integration/qa-fixture-results.test.ts"
     },
     {
       "path": "tests/integration/qa-fixture-inputs.test.mjs"
@@ -542,16 +546,7 @@
       "path": "tests/conformance/bounded-response-reads.test.ts"
     },
     {
-      "path": "tests/conformance/slack-proxy-reset.test.mjs"
-    },
-    {
       "path": "tests/conformance/native-admin-upgrade-reset.test.mjs"
-    },
-    {
-      "path": "tests/conformance/slack-proxy-tunnel.test.mjs"
-    },
-    {
-      "path": "tests/conformance/slack-proxy-backpressure.test.ts"
     },
     {
       "path": "tests/conformance/native-admin-websocket-relay.test.ts"
@@ -793,14 +788,6 @@
       "path": "tests/integration/runtime-ai-package-relocation.test.ts",
       "expectedTests": [
         "the runtime Dockerfile preserves AI dependency resolution when copying the workspace package"
-      ]
-    },
-    {
-      "path": "tests/integration/runtime-node-build-jobs.test.ts",
-      "expectedTests": [
-        "auto Node compile jobs follow the builder's CPUs and memory within fixed bounds",
-        "explicit Node compile jobs are used as given and invalid values fail",
-        "the runtime Dockerfile defaults the Node compile to auto jobs"
       ]
     },
     {

@@ -57,7 +57,7 @@ export function registerKubernetesDeployment(): void {
         name: kubernetesNamespaceName(tenant.id),
         plane: "control",
       }),
-      [],
+      undefined,
       [],
       { name: "plugin-runtime-agent-plugin-compute", runtime },
     );
@@ -150,7 +150,7 @@ export function registerKubernetesDeployment(): void {
         false,
         undefined,
         undefined,
-        [],
+        undefined,
         [],
         { name: "plugin-runtime-gateway-plugin-compute", runtime },
       );
@@ -423,7 +423,7 @@ export function registerKubernetesDeployment(): void {
       false,
       undefined,
       undefined,
-      [],
+      undefined,
       [],
       { name: "plugin-runtime-gateway-plugin-compute", runtime },
       [{ pluginId: "codex-plugin:linear@openai-curated-remote", code: "PLUGIN_AUTH_REQUIRED" }],
@@ -508,7 +508,7 @@ export function registerKubernetesDeployment(): void {
         false,
         undefined,
         undefined,
-        [],
+        undefined,
         [],
         { name: "plugin-runtime-gateway-plugin-free", runtime },
       );

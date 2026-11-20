@@ -9,7 +9,7 @@ import type { Page } from "playwright";
 
 import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
 
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
