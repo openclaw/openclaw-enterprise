@@ -22,7 +22,8 @@ they do not expose or consume these registrations.
 - Source: `packages/occ/src/index.ts:deleteManagedCredentialSource`
 - Assumptions: the Installation selects `token_service` with ID `occ`; its selected
   Secret Driver provides an Installation-private store; the Namespace is ready;
-  the caller has the exact source create, update, or delete grant.
+  registration requires create on the Namespace source collection; update or
+  deletion requires the corresponding permission on the exact source.
 
 ## Flow
 
