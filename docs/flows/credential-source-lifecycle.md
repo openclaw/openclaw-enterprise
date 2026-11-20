@@ -200,18 +200,14 @@ a matching Proxy type cannot replace a withdrawn Gateway type.
 The revision records `sourceId`, `sourceType` and the owner's `credentialGatewayId`,
 `credentialProxyId` or `tokenServiceInstanceId`. Older sources keep their Gateway owner.
 
-Both State adapters call
-`packages/occ/src/state/platform-state.ts:assertRevisionAuthAvailable` from
-`createRevision`. Each listed or Harness snapshot must match a ready same-Namespace source by ID,
-type, owner capability and Driver ID; otherwise, `ScopeViolationError`.
-`packages/occ/src/state/postgres-state.ts:createRevision` locks all unique source
-IDs in one ordered `SELECT FOR SHARE` and holds them through commit. Source-bearing
-insertions first take a shared Namespace lock and an Agent key-share lock, following
-OCC admission's Namespace, Agent, then source order. Both adapters copy input
-before awaiting, then validate, persist and return that copy without reordering
-snapshots. Memory checks its transaction snapshot. These checks reject stale or
-forged owners on insertion; historical snapshots remain readable after legitimate
-source deletion.
+Both State adapters call `packages/occ/src/state/platform-state.ts:assertRevisionAuthAvailable`
+from `createRevision`; a snapshot that does not match a ready same-Namespace source's
+ID, type and owner raises `ScopeViolationError`. A standalone revision permits one model
+binding, no repository delivery, and injection requests covered by its network policy.
+`packages/occ/src/state/postgres-state.ts:createRevision` takes a shared Namespace lock,
+an Agent key-share lock, then ordered source `SELECT FOR SHARE` locks through commit.
+Both adapters copy input before awaiting and preserve snapshot order; memory checks its
+transaction snapshot. Historical snapshots remain readable after source deletion.
 
 ### 6. Resolve the source at dispatch
 

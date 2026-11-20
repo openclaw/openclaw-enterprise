@@ -1159,12 +1159,13 @@ export function validStandaloneCredentialDeployment(
   ) {
     return false;
   }
-  const models = policy.bindings.filter(({ consumer }) => consumer.kind === "model");
+  const binding = policy.bindings[0];
   return (
-    models.length === 1 &&
-    models[0]?.sourceRef.kind === "credential_source" &&
-    models[0].sourceRef.namespaceId === revision.namespaceId &&
-    models[0].sourceRef.id === auth.sourceId
+    policy.bindings.length === 1 &&
+    binding?.consumer.kind === "model" &&
+    binding.sourceRef.kind === "credential_source" &&
+    binding.sourceRef.namespaceId === revision.namespaceId &&
+    binding.sourceRef.id === auth.sourceId
   );
 }
 
@@ -1215,6 +1216,8 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     !validHarnessAuthSnapshot(revision.harnessAuth, revision.namespaceId) ||
     !validCredentialSourceSnapshots(revision.credentialSources) ||
     !validStandaloneCredentialDeployment(revision) ||
+    (revision.executionAdmission.mode === "standalone" &&
+      revision.repositoryCredentials !== undefined) ||
     !validPluginRevisionState(revision.plugins) ||
     !validPluginApprovers(revision.pluginApprovers) ||
     (revision.repositoryCredentials !== undefined &&

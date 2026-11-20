@@ -189,8 +189,12 @@ DECLARE
   snapshot jsonb;
   binding jsonb;
   injection jsonb;
+  requested jsonb;
+  requested_port jsonb;
+  covered boolean;
 BEGIN
-  IF jsonb_typeof(policy) IS DISTINCT FROM 'object'
+  IF spec ? 'repository_credentials'
+    OR jsonb_typeof(policy) IS DISTINCT FROM 'object'
     OR NOT (policy ?& ARRAY['proxyDriverId', 'networkAccessPolicy', 'bindings', 'injectionPolicies'])
     OR policy - 'proxyDriverId' - 'networkAccessPolicy' - 'bindings' - 'injectionPolicies' <> '{}'::jsonb
     OR jsonb_typeof(policy->'proxyDriverId') IS DISTINCT FROM 'string'
@@ -243,6 +247,49 @@ BEGIN
     OR jsonb_typeof(injection->'bindingRef') IS DISTINCT FROM 'string'
     OR injection->>'bindingRef' IS DISTINCT FROM binding->>'bindingRef'
     OR NOT occ.deployment_request_matches_have_valid_shape(injection->'allowedRequests') THEN RETURN false; END IF;
+  FOR requested IN SELECT value FROM jsonb_array_elements(injection->'allowedRequests') LOOP
+    FOR requested_port IN SELECT value FROM jsonb_array_elements(requested->'ports') LOOP
+      SELECT COALESCE(
+        range_agg(int4range((allowed_port.value->>'from')::integer,
+                            (allowed_port.value->>'to')::integer + 1, '[)'))
+          @> int4range((requested_port->>'from')::integer,
+                       (requested_port->>'to')::integer + 1, '[)'), false)
+      INTO covered
+      FROM jsonb_array_elements(policy #> '{networkAccessPolicy,allowed}') AS network(value)
+      CROSS JOIN LATERAL jsonb_array_elements(network.value->'ports') AS allowed_port(value)
+      WHERE network.value->>'binary' = requested->>'binary'
+        AND (
+          network.value->>'host' = requested->>'host'
+          OR (left(network.value->>'host', 2) = '*.'
+            AND left(requested->>'host', 2) <> '*.'
+            AND length(requested->>'host') > length(network.value->>'host') - 1
+            AND right(requested->>'host', length(network.value->>'host') - 1)
+              = substring(network.value->>'host' FROM 2)
+            AND position('.' IN left(requested->>'host',
+              length(requested->>'host') - length(network.value->>'host') + 1)) = 0)
+        )
+        AND (
+          NOT (network.value ? 'requestPolicy')
+          OR (network.value #>> '{requestPolicy,type}' = 'http'
+            AND requested #>> '{requestPolicy,type}' = 'http'
+            AND network.value #>> '{requestPolicy,method}' = requested #>> '{requestPolicy,method}'
+            AND (
+              network.value #>> '{requestPolicy,path}' = requested #>> '{requestPolicy,path}'
+              OR (right(network.value #>> '{requestPolicy,path}', 3) = '/**'
+                AND (requested #>> '{requestPolicy,path}'
+                    = left(network.value #>> '{requestPolicy,path}',
+                           length(network.value #>> '{requestPolicy,path}') - 3)
+                  OR left(requested #>> '{requestPolicy,path}',
+                          length(network.value #>> '{requestPolicy,path}') - 2)
+                    = left(network.value #>> '{requestPolicy,path}',
+                           length(network.value #>> '{requestPolicy,path}') - 3) || '/'))
+            ))
+          OR (network.value #>> '{requestPolicy,type}' = 'mcp'
+            AND network.value->'requestPolicy' = requested->'requestPolicy')
+        );
+      IF NOT covered THEN RETURN false; END IF;
+    END LOOP;
+  END LOOP;
   RETURN true;
 END;
 $$;
