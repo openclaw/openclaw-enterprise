@@ -11,11 +11,9 @@ import { loadInstallationFile } from "../helpers/installation-file.ts";
 type RefusalDetail = ConfigurationValidationError["error"]["details"][number];
 
 export function openShellWorkspaceHarnessConfiguration() {
-  const gateway: { workspaceMode: OpenShellSandboxDriverOptions["gateway"]["workspaceMode"] } = {
-    workspaceMode: "operator",
-  };
   const configuration = {
-    gateway,
+    integrationMode: "legacy" as NonNullable<OpenShellSandboxDriverOptions["integrationMode"]>,
+    gateway: {},
     kubernetes: {
       userNamespaces: false,
       serviceAccount: {

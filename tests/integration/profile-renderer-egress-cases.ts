@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 import { test } from "node:test";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { parseProductionChart, renderProductionChart } from "../helpers/production-chart.ts";
 import { baseInput, managedCodexInput, externalSignInInput } from "./profile-renderer-inputs.ts";
 import {
   helmSkip,
@@ -19,6 +20,32 @@ import {
 } from "./profile-renderer-fixture.ts";
 
 export function registerEgressCases(): void {
+  test(
+    "Helm defaults channels on and preserves an explicit opt-out",
+    { skip: helmSkip },
+    async () => {
+      const enabled = await renderProductionChart(
+        { "channelEgress.excludedCidrs[0]": "10.0.0.0/8" },
+        { omit: ["channelEgress.enabled"] },
+      );
+      const resources = await parseProductionChart(enabled.stdout);
+      assert.ok(
+        resources.some(
+          (item) =>
+            propertyAt(item, "kind") === "Gateway" &&
+            propertyAt(item, "metadata", "name") === "openclaw-channel-egress",
+        ),
+      );
+      const disabled = await renderProductionChart({ "channelEgress.enabled": false });
+      const disabledResources = await parseProductionChart(disabled.stdout);
+      assert.ok(
+        !disabledResources.some(
+          (item) => propertyAt(item, "metadata", "name") === "openclaw-channel-egress",
+        ),
+      );
+    },
+  );
+
   test("preflight rejects CIDR prefixes with a leading zero", async () => {
     const controlPlane = baseInput().controlPlane;
     await assertPreflightFailure(
@@ -82,6 +109,25 @@ export function registerEgressCases(): void {
       baseInput({ controlPlane: { ...controlPlane, gatewayTrustedProxyCidrs: ["10.42.0.0/16"] } }),
     );
     assert.doesNotMatch(widerTrust.preflight.warnings.join("\n"), /covers more than one address/);
+  });
+
+  test("managed profiles default channels on and preserve an explicit false", async (t) => {
+    const input = baseInput();
+    const enabled = await render("openclaw", {
+      ...input,
+      channels: { excludedCidrs: input.channels?.excludedCidrs },
+    });
+    t.after(() => rmSync(enabled.directory, { recursive: true, force: true }));
+    assert.equal(enabled.summary.ok, true, enabled.preflight.errors.join("\n"));
+    assert.ok(objectAt(computeConfiguration(enabled.installation), "runtime").channelEgress);
+    const disabled = await render("openclaw", baseInput({ channels: { managedEgress: false } }));
+    t.after(() => rmSync(disabled.directory, { recursive: true, force: true }));
+    assert.equal(disabled.summary.ok, true, disabled.preflight.errors.join("\n"));
+    assert.equal(
+      objectAt(computeConfiguration(disabled.installation), "runtime").channelEgress,
+      undefined,
+    );
+    assert.match(disabled.values, /channelEgress:\n\s+enabled: false/);
   });
 
   test("managed channel egress preserves listener ownership and rejects unsupported settings", async (t) => {

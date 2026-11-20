@@ -8,6 +8,7 @@
     "tests/integration/dev-up-compose-startup.test.ts",
     "tests/integration/dev-up-compose.test.mjs",
     "tests/integration/occ-api.test.mjs",
+    "tests/integration/occ-api-deployment-work.test.ts",
     "tests/integration/occ-api-mutation-refusals.test.ts",
     "tests/integration/managed-mcp-tool-discovery.test.ts",
     "tests/integration/occ-api-channel-directory.test.ts",
@@ -84,6 +85,7 @@
     "tests/conformance/openshell-gateway-wire.test.ts",
     "tests/conformance/openshell-provider-profile-wire.test.ts",
     "tests/conformance/oauth-connection.test.mjs",
+    "tests/conformance/openshell-managed-bootstrap.test.mjs",
     "tests/conformance/openshell-oauth-wire.test.mjs",
     "tests/conformance/openshell-codex-device.test.mjs",
     "tests/conformance/openshell-harness-status.test.mjs",
@@ -360,6 +362,9 @@
       "path": "tests/conformance/oauth-connection.test.mjs"
     },
     {
+      "path": "tests/conformance/openshell-managed-bootstrap.test.mjs"
+    },
+    {
       "path": "tests/conformance/openshell-oauth-wire.test.mjs"
     },
     {
@@ -503,6 +508,17 @@
     },
     {
       "path": "tests/integration/occ-api.test.mjs"
+    },
+    {
+      "path": "tests/integration/occ-api-deployment-work.test.ts",
+      "expectedTests": [
+        "OCC Fastify rejects unsafe guarded Agent stop requests",
+        "Agent deployment status polls the admitted revision work with exact read authorization",
+        "a refused deployment's status names its cause and remedy without naming principals",
+        "a deletion retry by another delete holder names the initiator condition and audits it",
+        "Installation deployment inventory fails closed on incomplete authorization and reports in-flight work",
+        "Installation deployment inventory refuses a revision owned by a different Namespace tuple"
+      ]
     },
     {
       "path": "tests/integration/occ-api-mutation-refusals.test.ts",
@@ -865,7 +881,7 @@
         "selected v5 blocks overlapping GitHub policies before Gateway work",
         "selected v5 timestamps distinguish re-observation from new material",
         "selected v5 refuses unproven aggregate lag and an independently changed Git version",
-        "selected v5 never reuses the held proof across a changed supervisor session",
+        "selected v5 rechecks a reconnected supervisor session without rotating credentials",
         "selected released v5 transient observation denies and recovers without rotation or tombstone",
         "selected released v5 periodic read crosses admission expiry without grant replacement",
         "finite v5 Git expiry refuses resolver substitution and never replays an uncertain detach",
@@ -880,7 +896,7 @@
         "selected v5 late second update: local withdrawal",
         "selected v5 late second update: durable withdrawal",
         "selected v5 late second update: replacement holder",
-        "selected v5 late second update: same-name Sandbox restart",
+        "selected v5 late second update: Sandbox identity replaced",
         "selected v5 retains a pending closure after a failed store write",
         "selected v5 retains a pending closure after a lost acknowledgement",
         "selected v5 retains a pending closure after an unverified initial install",
@@ -956,6 +972,7 @@
       "expectedTests": [
         "an observed Git route (2) rotates only after its challenge in the original worker",
         "an observed Git route (3) rotates only after its challenge in the original worker",
+        "a worker does not send a pending launcher release after withdrawal",
         "the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access"
       ]
     },
@@ -1068,6 +1085,9 @@
     },
     {
       "path": "tests/integration/agent-http-chat.test.ts"
+    },
+    {
+      "path": "tests/integration/channel-egress-upgrade.test.ts"
     }
   ]
 }

@@ -69,6 +69,15 @@ export type OpenShellPreparedGitGeneration = Pick<
 
 /** Exact current installation identity; timestamps and sequence are not identity fields. */
 export interface OpenShellPreparedGitInstalled extends RepositoryGitRecipient {
+  readonly processInstanceId: string;
+  readonly networkInstanceId: string;
+  /** Current launcher evidence for mandatory online authorization, persisted with its runtime. */
+  readonly enrollment?: {
+    readonly configurationId: string;
+    readonly bootstrapRevision: string;
+    readonly hook?: NonNullable<RepositoryGitRecipient["observedHook"]>;
+    readonly release: "held" | "sending" | "acknowledged";
+  };
   readonly workspace: string;
   readonly sandbox: string;
   readonly sandboxId: string;
@@ -229,7 +238,7 @@ export class OpenShellPreparedGitProvider {
       endpoints: network.endpoints,
       binaries: this.scope.binaries,
       inferenceCapable: false,
-      annotations: { [OWNER]: this.fingerprint },
+      annotations: { [OWNER]: this.fingerprint, [GIT_REVISION]: scope.executionId },
     };
   }
 
@@ -383,6 +392,11 @@ export class OpenShellPreparedGitProvider {
       refuse();
     }
     const expired = !standing && generation.credentialState === "active" && expires <= Date.now();
+    if (this.scope.observedHookPreview && !expired && generation.credentialState === "active") {
+      // The route store confirmed the earlier write. Reconcile creates an OBSERVE receipt
+      // for current readiness; adoption never sends the credential UPDATE again.
+      this.refreshReceipt = { version: generation.resourceVersion };
+    }
     return this.bindingForGeneration({
       providerId: generation.providerId,
       profileVersion: generation.profileVersion,
@@ -426,7 +440,7 @@ export class OpenShellPreparedGitProvider {
           workspace: this.scope.workspace,
           name: this.provider,
           type: this.profile.id,
-          labels: { [OWNER]: this.fingerprint },
+          labels: { [OWNER]: this.fingerprint, [GIT_REVISION]: this.scope.executionId },
           credentials: { [KEY]: token.value },
           ...(credentialState === "active"
             ? { credentialExpirationTimes: { [KEY]: token.expiresAt } }
@@ -901,6 +915,37 @@ function preparedGitName(name: string, owner: string | undefined): boolean {
 
 function preparedGitProvider(provider: OpenShellProviderResponse): boolean {
   return provider.type === provider.name && preparedGitName(provider.name, provider.labels[OWNER]);
+}
+
+export const GIT_REVISION = "openclaw.dev/git-revision-id";
+
+export function preparedGitProviderForRevision(
+  provider: OpenShellProviderResponse,
+  revisionId: string,
+): boolean {
+  return preparedGitProvider(provider) && provider.labels[GIT_REVISION] === revisionId;
+}
+
+/** Also finds artifacts left after a lost create/delete reply, without resolving live policy. */
+export async function deleteRetiredGitProviders(
+  client: OpenShellGatewayClient,
+  workspace: string,
+  revisionId: string,
+  signal: AbortSignal,
+): Promise<void> {
+  for (const provider of await client.listProviders(workspace, signal)) {
+    if (preparedGitProviderForRevision(provider, revisionId)) {
+      await deleteOpenShellPreparedGitProvider(client, workspace, provider, signal);
+    }
+  }
+  for (const profile of await client.listProviderProfiles(workspace, signal)) {
+    if (
+      profile.annotations?.[GIT_REVISION] === revisionId &&
+      preparedGitName(profile.id, profile.annotations[OWNER])
+    ) {
+      await client.deleteProviderProfile(workspace, profile.id, signal);
+    }
+  }
 }
 
 /**
