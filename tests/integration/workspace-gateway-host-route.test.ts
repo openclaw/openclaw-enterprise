@@ -6,7 +6,7 @@ import test, { type TestContext } from "node:test";
 import { getCACertificates, setDefaultCACertificates, TLSSocket } from "node:tls";
 import { selfSigned } from "../helpers/certificates.ts";
 import { startWorkspaceGatewayHostRelay } from "../helpers/workspace-gateway-host-relay.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const options = { skip: process.platform !== "linux", timeout: 15_000 };
 

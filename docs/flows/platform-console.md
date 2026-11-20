@@ -295,14 +295,16 @@ opened from the list focuses its heading when the title renders. Tabs (one Tab
 stop; arrows move) and focused controls keep focus. Navigation, Namespace changes, and logout invalidate
 reads; generations reject late responses. Refocus coalesces events.
 `revalidateMountedAgent` rechecks session, Namespace, Agent, version, and
-[permission answer](platform-console/agent-stop-and-deletion.md#stop-agent);
-unchanged access preserves controls, input, and saves.
-Refocus sends a fresh GET. A repeated 403 on a never-readable draft Configuration
-keeps the partial Agent; a version proved unreadable is not read again.
-Lost access scrubs; Agent, session, and scope failures clear their protected views.
-Other pages revalidate before reuse, including a shown 403 or 404; forms defer the check.
-Returning to the tab restores focus after the unchanged view is admitted, if the control
-remains and the reader hasn’t moved on. Draft save baselines and Namespace scopes stay separate.
+[permissions](platform-console/agent-stop-and-deletion.md#stop-agent) with fresh reads.
+Unchanged access keeps controls, input, and saves. Repeated draft 403s preserve
+partial Agents with never-readable drafts. Checks skip versions already proved
+unreadable. Access loss clears protected views. Other pages, including 403s and
+404s, revalidate before reuse. Forms defer checks.
+Unchanged views can restore focus to retained controls. If the reader leaves
+again during **Still checking…** and the check succeeds in the hidden tab, the
+Console remembers the Configuration editor with selected text. The next
+successful foreground check can refocus that editor in the same view. Newer
+focus or selections take precedence. Draft save baselines stay Namespace-scoped.
 
 Other admission failures clear affected content;
 a current protected `401` clears all private state. `pagehide` clears

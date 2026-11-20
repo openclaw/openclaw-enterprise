@@ -985,8 +985,11 @@ esac
       ...environment,
       COMMAND_LOG: commandLog,
       OBSERVED_CONTROLLER_IMAGE: controllerImage,
+      TZ: "UTC+11",
     },
   };
+  // The output uses whole seconds and UTC even when the caller uses a different time zone.
+  const startedAt = Math.floor(Date.now() / 1_000) * 1_000;
   const controllerOnly = await execute(
     upgradeScript,
     upgradeArguments(controllerEvidence, ["controller"]),
@@ -994,18 +997,27 @@ esac
   );
   assert.match(controllerOnly.stdout, /no Agent deployments were requested/u);
   assert.doesNotMatch(controllerOnly.stdout, /native (patch|rollout|Helm) output/u);
-  assert.deepEqual(
-    controllerOnly.stderr.split("\n").filter((line) => line.startsWith("Upgrade: ")),
-    [
-      "Upgrade: Preparing the upgrade.",
-      "Upgrade: Checking the candidate release and startup.",
-      "Upgrade: Reconciling prepared upgrade state.",
-      "Upgrade: Checking and stopping OCC writers.",
-      "Upgrade: Applying reviewed settings and the Helm release.",
-      "Upgrade: Waiting for OCC recovery.",
-      "Upgrade: Verifying upgrade completion.",
-    ],
-  );
+  const finishedAt = Date.now();
+  const timestampSuffix = / \[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]$/u;
+  const phases = controllerOnly.stderr
+    .split("\n")
+    .filter((line) => line.startsWith("Upgrade: "))
+    .map((line) => {
+      const timestamp = line.match(timestampSuffix)?.[1];
+      assert.ok(timestamp, `expected a UTC timestamp on ${line}`);
+      const emittedAt = Date.parse(timestamp);
+      assert.ok(emittedAt >= startedAt && emittedAt <= finishedAt, line);
+      return line.replace(timestampSuffix, "");
+    });
+  assert.deepEqual(phases, [
+    "Upgrade: Preparing the upgrade.",
+    "Upgrade: Checking the candidate release and startup.",
+    "Upgrade: Reconciling prepared upgrade state.",
+    "Upgrade: Checking and stopping OCC writers.",
+    "Upgrade: Applying reviewed settings and the Helm release.",
+    "Upgrade: Waiting for OCC recovery.",
+    "Upgrade: Verifying upgrade completion.",
+  ]);
   assert.equal(
     await readFile(join(controllerEvidence, "quiescence-api.txt"), "utf8"),
     "native patch output\n",

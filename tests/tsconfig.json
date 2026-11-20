@@ -66,6 +66,7 @@
     "integration/postgres-agent-sandbox-policy-worker-recovery-cases.ts",
     "conformance/configuration-occ-persistence-cases.ts",
     "conformance/kubernetes-account-secret-cases.ts",
+    "conformance/kubernetes-channel-policy-diagnostic-case.ts",
     "conformance/kubernetes-codex-endpoint-preparation-cases.ts",
     "conformance/kubernetes-credential-delivery-cases.ts",
     "conformance/kubernetes-cutover-policy-cases.ts",

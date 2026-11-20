@@ -19,6 +19,7 @@ export interface UpgradeAuditTransportOptions {
   authorize(input: Selection & { readonly denied: Error }): Selection | Promise<Selection>;
   append?(event: AuditEventCreationInput): Promise<void>;
   appendSocket?(event: AuditEventCreationInput): Promise<void>;
+  supportsBrowser?(): boolean;
 }
 
 export interface UpgradeAuditTransport {
