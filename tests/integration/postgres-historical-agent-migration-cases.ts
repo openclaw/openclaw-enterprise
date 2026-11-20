@@ -623,22 +623,20 @@ async function seedHistoricalRoles(
   boundRoles: HistoricalRole[],
 ) {
   for (const entry of roles) {
-    await pool.query("INSERT INTO occ.iam_roles VALUES ($1, $2, $3, $4::jsonb)", [
-      entry.id,
-      entry.namespace_id,
-      entry.name,
-      JSON.stringify(entry.permissions),
-    ]);
+    await pool.query<never, [string, string | null, string, string]>(
+      "INSERT INTO occ.iam_roles VALUES ($1, $2, $3, $4::jsonb)",
+      [entry.id, entry.namespace_id, entry.name, JSON.stringify(entry.permissions)],
+    );
   }
   const principals: string[] = [];
   for (const entry of boundRoles) {
     const principalId = `prn_${randomUUID()}`;
     principals.push(principalId);
-    await pool.query(
+    await pool.query<never, [string]>(
       "INSERT INTO occ.iam_identities (id, kind, issuer, subject) VALUES ($1, 'principal', 'upgrade', $1)",
       [principalId],
     );
-    await pool.query(
+    await pool.query<never, [string, string, string]>(
       "INSERT INTO occ.iam_access_bindings (id, identity_subject_id, role_id) VALUES ($1, $2, $3)",
       [`binding_admin_${randomUUID()}`, principalId, entry.id],
     );
