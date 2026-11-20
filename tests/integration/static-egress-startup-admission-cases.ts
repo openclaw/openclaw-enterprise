@@ -310,9 +310,10 @@ export function registerStartupAdmissionCases(): void {
     const metadata = asRecord(provider.metadata);
     assert.ok(metadata, "Gateway provider metadata");
     const providers: Map<unknown, unknown> = f.providers;
+    const profiles: ReadonlyMap<unknown, unknown> = f.profiles;
     assert.equal(providers.size, 1);
     assert.equal(asRecord(metadata.labels)?.["openclaw.dev/credential-source-id"], legacy.id);
-    assert.ok(f.profiles.has(name));
+    assert.ok(profiles.has(name));
     // An unrelated fake provider is a sentinel, never a substitute for the real target.
     const unrelated = structuredClone(provider);
     unrelated.metadata = {
@@ -325,7 +326,7 @@ export function registerStartupAdmissionCases(): void {
     assert.ok(typeof unrelatedMetadata?.name === "string", "unrelated provider name");
     providers.set(unrelatedMetadata.name, unrelated);
     const deleteBefore = await admissionSnapshot(f);
-    const profilesBefore = structuredClone(entries(f.profiles));
+    const profilesBefore = structuredClone(entries(profiles));
     const gatewayRequests: readonly unknown[] = f.gatewayRequests;
     const wireStart = gatewayRequests.length;
     // Two 30-second Gateway operation windows plus the 10-second registration grace.
@@ -372,9 +373,9 @@ export function registerStartupAdmissionCases(): void {
       deleteBefore.providers.filter(([id]) => id !== name),
     );
     assert.equal(providers.has(name), false);
-    assert.equal(f.profiles.has(name), false);
+    assert.equal(profiles.has(name), false);
     assert.deepEqual(
-      entries(f.profiles),
+      entries(profiles),
       profilesBefore.filter(([id]) => id !== name),
     );
     const deleteAfter = await admissionSnapshot(f);
