@@ -19,6 +19,9 @@
     "github-anchors.ts",
     "preview-client.mts",
     "public-markdown.ts",
-    "site.mts"
+    "site.mts",
+    "../check-specs.ts",
+    "word-count.ts",
+    "../../tests/docs/docs-site.test.ts"
   ]
 }

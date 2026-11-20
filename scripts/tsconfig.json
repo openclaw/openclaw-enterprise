@@ -62,13 +62,20 @@
     "../deploy/runtime/with-pinned-matrix-sdk-crypto.mts",
     "../docs/snippets/openshell-quickstart/**/*.mts",
     "docs-site/compute-matrix.ts",
-    "docs-site/word-count.ts",
     "docs-site/serve.ts",
     "docs-site/preview-build.ts",
     "module-boundaries/*.ts",
     "console-storybook/prepare-assets.ts",
     "console-storybook/plugin-fields.storybook-wrapper.mts",
     "console-storybook/public/**/*.mts"
+  ],
+  "exclude": [
+    "../legacy",
+    "../legacy/**",
+    "../node_modules",
+    "../**/node_modules",
+    "../**/dist",
+    "check-specs.ts"
   ],
   "references": [
     {
