@@ -4,7 +4,7 @@ rfc: index.md
 
 # Configure a staged target through the worker
 
-This amendment proposes worker-owned configuration and release-authorization callbacks and exposes the existing staged Sandbox and Credential Proxy contracts through the selected Drivers. It implements the ownership boundaries in the [Installation credential ownership amendment](installation-credential-ownership.md#prepare-an-agent-revision) and the [TokenService instance amendment](token-service-instance-and-updates.md#contract-and-verification-scope). It does not change their readiness or startup sequence.
+This amendment proposes worker-owned configuration and release-authorization callbacks, a staged Sandbox capability, and staged operations directly on the selected Credential Proxy Driver. It implements the ownership boundaries in the [Installation credential ownership amendment](installation-credential-ownership.md#prepare-an-agent-revision) and the [TokenService instance amendment](token-service-instance-and-updates.md#contract-and-verification-scope). It does not change their readiness or startup sequence.
 
 ## Caller and contract
 
@@ -12,7 +12,7 @@ OCC provisions the Namespace before Agent deployment. Compute prepares the backi
 
 Installation validation rejects incompatible selectors before Agent admission. OCC TokenService with the native OpenShell proxy and OpenShell Sandbox is a valid selection. The native proxy requires an OpenShell Sandbox, and OpenShell TokenService with an external proxy is unsupported. Deployment separately validates the exact native Provider identity and Workspace before attaching a binding.
 
-The worker calls `ComputeDriver.prepareRevision`. Compute creates or reconciles the Sandbox target during that call, so the worker cannot configure the proxy for the verified target beforehand. The [proxy deployment contract](../../../packages/contracts/src/drivers/credential-proxy/deployment.ts) needs a source-bound resolver to initialize delivery. Compute cannot call that operation directly without receiving the resolver. A callback lets the worker call the existing staged proxy API for the actual target while Compute continues to orchestrate preparation. Splitting `prepareRevision` would require another lifecycle operation and a way to retain the intermediate target.
+The worker calls `ComputeDriver.prepareRevision`. Compute creates or reconciles the Sandbox target during that call, so the worker cannot configure the proxy for the verified target beforehand. Configuring delivery through [CredentialProxyDriver](../../../packages/contracts/src/drivers/credential-proxy/index.ts) needs a source-bound resolver. Compute cannot call that operation directly without receiving the resolver. A callback lets the worker configure delivery for the actual target while Compute continues to orchestrate preparation. Splitting `prepareRevision` would require another lifecycle operation and a way to retain the intermediate target.
 
 Add these optional members to [ComputeRevisionContext](../../../packages/contracts/src/drivers/compute/index.ts):
 
@@ -20,7 +20,7 @@ Add these optional members to [ComputeRevisionContext](../../../packages/contrac
 readonly configureCredentialDeployment?: (
   expected: CredentialDeploymentConfiguration,
   signal: AbortSignal,
-) => ReturnType<CredentialProxyDeploymentContract["configureDeployment"]>;
+) => Promise<{ readonly credentialProjections: readonly CredentialProjection[] }>;
 readonly verifyCredentialDeploymentRelease?: (
   startup: HarnessStartupRef,
   signal: AbortSignal,
@@ -31,12 +31,54 @@ The existing [HarnessStartupRef](../../../packages/contracts/src/drivers/sandbox
 
 The worker captures the admitted revision, current claim, selected TokenService instance, proxy, bindings, and injection policies. When Compute supplies the staged target and configuration ID, the worker verifies its claim, current source authority, the target's Namespace and Agent ownership, and its live association with the admitted revision and configuration before source resolution. It calls `configureDeployment` with a resolver authorized for each binding's source. Before calling a resolver or attaching material, the scoped proxy verifies the actual Sandbox incarnation against that bound context. The proxy alone calls the resolver and retains credential material and any private delivery version. The callback returns only the contract's nonsecret projections.
 
-Expose the staged operations as revision-scoped capabilities of the selected Drivers:
+Expose staged Sandbox operations through the selected `SandboxDriver`:
 
 - `SandboxDriver.credentialDeployment(context)` returns `SandboxDeploymentContract`. The context binds the actual Namespace, immutable Agent revision, trusted Kubernetes client, and Harness transport token. Each operation verifies its deployment and target against that context.
-- `CredentialProxyDriver.credentialDeployment(context)` returns the deployment operations from `CredentialProxyDeploymentContract`: `deployProxy`, `configureDeployment`, `getDeploymentStatus`, and `removeDeployment`. The context binds the actual Namespace and Agent revision. The Driver exposes `notifyCredentialUpdated` once at source scope, using the existing contract signature; source updates do not require an Agent revision.
 
-Admission requires these Driver capabilities when an Agent revision selects staged TokenService credential delivery. Compute requires both worker callbacks on that staged path. Existing protected and unprotected revisions retain their current Driver paths. Vendor-specific policy contributions stay private to the paired Drivers.
+Put the staged proxy operations directly on `CredentialProxyDriver` and remove `CredentialProxyDeploymentContract` and its export. Each deployment operation receives the trusted Namespace, Agent revision, and cancellation signal separately from its requested deployment or target. It rejects a request that does not match that context. The existing `ProxyRevisionContext` projection avoids requiring the protected path's `ProxyPlan`.
+
+```ts
+deployProxy?(
+  context: Pick<ProxyRevisionContext, "namespace" | "revision" | "signal">,
+  input: {
+    readonly deployment: CredentialDeploymentRef;
+    readonly networkAccessPolicy: NetworkAccessPolicy;
+    readonly injectionPolicies: readonly CredentialInjectionPolicy[];
+  },
+): Promise<{ readonly proxyRouting?: CredentialProxyRouting }>;
+configureDeployment?(
+  context: Pick<ProxyRevisionContext, "namespace" | "revision" | "signal">,
+  input: CredentialDeploymentConfiguration & {
+    readonly bindings: readonly {
+      readonly binding: DeploymentCredentialBinding;
+      readonly resolveCredential: () => Promise<ResolvedCredential>;
+      readonly sharedProviderRef?: Readonly<Record<string, string>>;
+    }[];
+    readonly injectionPolicies: readonly CredentialInjectionPolicy[];
+  },
+): Promise<{ readonly credentialProjections: readonly CredentialProjection[] }>;
+getDeploymentStatus?(
+  context: Pick<ProxyRevisionContext, "namespace" | "revision" | "signal">,
+  expected: CredentialDeploymentConfiguration,
+): Promise<CredentialDeploymentReadiness>;
+removeDeployment?(
+  context: Pick<ProxyRevisionContext, "namespace" | "revision" | "signal">,
+  input:
+    | { readonly targetRef: CredentialDeploymentTarget; readonly bindingRefs?: readonly string[] }
+    | { readonly unboundDeployment: CredentialDeploymentRef },
+): Promise<void>;
+notifyCredentialUpdated?(
+  notification: CredentialUpdateNotification,
+  resolveCredential: () => Promise<ResolvedCredential>,
+  signal: AbortSignal,
+): Promise<void>;
+```
+
+`configureDeployment` calls a binding's resolver only for first-use material transfer, never to attach a shared Provider. `getDeploymentStatus` observes without repair, reload, or upstream operations. For the expected configuration, pushed bindings require every serving copy to have the expected version; shared Provider bindings require the current effective policy.
+
+`notifyCredentialUpdated` belongs to source scope and receives no Agent revision. Its resolver is authorized only for the notification's exact source. A source update does not create a delivery resource or resolve material when no transfer is needed. A material push requires a version on the resolved material and acknowledges only after every serving copy can use that version. Concurrent updates cannot restore an older version. Move `CredentialUpdateNotification` to the Driver's public types.
+
+Admission rejects staged TokenService credential delivery if a required Driver operation is absent. Compute requires both worker callbacks on that staged path. Existing protected and unprotected revisions retain their current Driver paths. Vendor-specific policy contributions stay private to the paired Drivers.
 
 Compute stages a credential-unaware Sandbox target with credential-using execution held. If the selected proxy requires routes or a public trust bundle to stage the target, Compute prepares those nonsecret inputs first. Once the target is reconciled, Compute invokes the worker callback to configure the proxy for that exact target. Compute then applies the complete network access policy through the Sandbox and independently observes Sandbox network status and proxy injection status for the same configuration. OCC rejects unsupported or weakening overlaps at admission. The Sandbox owns network enforcement; the proxy owns per-binding injection. Paired OpenShell implementations can combine their supplier configuration privately without adding credential types to the Sandbox contract.
 
