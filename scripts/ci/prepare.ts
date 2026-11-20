@@ -53,6 +53,7 @@ import {
 import { commandAvailable, execFile } from "./prepare-command.ts";
 import { prepareGatewayRouting } from "./routing.ts";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.ts";
+import { startObservabilityPhase } from "./observability-phase-notice.ts";
 import { recordLoggingSetupTiming } from "./logging-setup-timing.ts";
 import { ownedName, randomSuffix, slug } from "./resource-names.ts";
 import { registryImage } from "./fixture-support-images.ts";
@@ -190,6 +191,7 @@ async function timedPreparation<Result>(
   phase: string,
   operation: () => Result | Promise<Result>,
 ) {
+  const finishTiming = startObservabilityPhase(lane, phase);
   const started = performance.now();
   let succeeded = false;
   try {
@@ -198,6 +200,7 @@ async function timedPreparation<Result>(
     return result;
   } finally {
     const elapsedMs = Math.round(performance.now() - started);
+    finishTiming?.(succeeded ? "success" : "failure", elapsedMs);
     // Labels are fixed by the runner; never include commands, paths, or credentials.
     process.stderr.write(`[ci-timing] lane=${lane} phase=${phase} duration_ms=${elapsedMs}\n`);
     if (lane === "k3d-model" && process.env.GITHUB_ACTIONS === "true") {
@@ -1542,6 +1545,15 @@ async function prepareLane({
     case "postgres-application":
     case "postgres-auth":
     case "postgres-platform":
+      // Verify the same workspace that the file's migrator will use.
+      await execFile(process.env.OPENCLAW_CI_COREPACK_BIN ?? "corepack", [
+        "pnpm",
+        "exec",
+        "node",
+        "--version",
+      ]);
+      await ensurePostgresServer(resolvedStatePath, state);
+      break;
     case "keycloak-oidc": // Browser sign-in composes the production API on PostgreSQL.
       await ensurePostgresServer(resolvedStatePath, state);
       break;
@@ -2273,6 +2285,9 @@ async function prepareFileWithState({
     }
     if (relativeFile === "tests/integration/postgres-service-api-keys.test.ts") {
       env.OCC_TEST_SERVICE_API_KEYS_MIGRATION_DATABASE_URL = database.migrationUrl;
+    }
+    if (relativeFile === "tests/integration/postgres-static-token-service-lifecycle.test.ts") {
+      env.OCC_TEST_STATIC_TOKEN_SERVICE_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
     if (relativeFile === "tests/integration/postgres-agent-audit-read.test.ts") {
       env.OCC_TEST_AGENT_AUDIT_READ_MIGRATION_DATABASE_URL = database.migrationUrl;

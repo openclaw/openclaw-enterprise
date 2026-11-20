@@ -42,7 +42,7 @@ type FixtureDependencies = {
   };
   sandboxInstallation: () => {
     drivers: {
-      sandbox: { configuration: SandboxConfiguration & { gateway: { workspaceMode: string } } };
+      sandbox: { configuration: SandboxConfiguration & { integrationMode: "legacy" | "service" } };
     };
   };
 };
@@ -277,11 +277,11 @@ export async function verifySandboxDriverHarnessObservation({
     /another Sandbox Driver/,
   );
   const managedConfiguration = sandboxInstallation().drivers.sandbox.configuration;
-  managedConfiguration.gateway.workspaceMode = "managed";
+  managedConfiguration.integrationMode = "service";
   const managed = openShellDriver(gatewayClient, managedConfiguration);
   await assert.rejects(
     managed.harnessStatus(statusContext),
-    /managed workspace mode is not implemented; cannot observe a Harness/,
+    /service integration requires the service Sandbox implementation; cannot observe a Harness/,
   );
   assert.deepEqual(observed, []);
 

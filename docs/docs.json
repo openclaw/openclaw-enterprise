@@ -455,6 +455,10 @@
                         ]
                       },
                       {
+                        "page": "reference/drivers/kubernetes-openshell-compute",
+                        "label": "Kubernetes + OpenShell"
+                      },
+                      {
                         "page": "reference/drivers/ssh-compute",
                         "label": "SSH"
                       },
@@ -1030,6 +1034,8 @@
               "testing/slack",
               "testing/plugins",
               "testing/openshell",
+              "testing/openshell-git-replacement",
+              "testing/openshell-managed",
               "testing/openshell-oauth",
               "testing/openshell-coverage",
               "testing/openshell-permission-diagnostics",
@@ -1101,7 +1107,7 @@
                   },
                   {
                     "page": "contributing/credential-proxy-driver",
-                    "label": "Implement a Credential Proxy Driver"
+                    "label": "Legacy Egress Driver"
                   },
                   {
                     "group": "Driver Contracts",
@@ -1336,7 +1342,9 @@
               "flows/compute-driver-lifecycle-hooks",
               "flows/openshell-sandbox-provisioning",
               "flows/connection-templates",
+              "flows/openshell-managed-workload",
               "flows/credential-source-lifecycle",
+              "flows/token-service-static-custody",
               "flows/credential-source-refresh",
               "flows/driver-plugin-loading",
               "flows/agent-plugins",

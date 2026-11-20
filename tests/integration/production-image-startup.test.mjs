@@ -111,9 +111,8 @@ function productionInstallation(adminKeyPath) {
       sandbox: {
         id: "sandbox-openshell",
         configuration: {
-          gateway: {
-            workspaceMode: "operator",
-          },
+          integrationMode: "legacy",
+          gateway: {},
           kubernetes: {
             serviceAccount: { mode: "gatewayConfigured" },
             sandboxDataMount: {

@@ -2267,23 +2267,23 @@ exec "$0.fixture" "$@"
     }
   });
 
+  const unscheduledPod = {
+    phase: "Pending",
+    conditions: [
+      {
+        type: "PodScheduled",
+        status: "False",
+        reason: "Unschedulable",
+        message: "0/3 nodes are available: Insufficient cpu",
+      },
+    ],
+  };
+
   test("a preflight Pod that outlives the timeout does not hide another component's failure", async (t) => {
     const f = await fixture(t, {
       controllerOnly: true,
       preflightResults: {
-        api: {
-          status: {
-            phase: "Pending",
-            conditions: [
-              {
-                type: "PodScheduled",
-                status: "False",
-                reason: "Unschedulable",
-                message: "0/3 nodes are available",
-              },
-            ],
-          },
-        },
+        api: { status: unscheduledPod },
         worker: { phase: "Failed", log: "worker cannot load the Installation\n" },
       },
     });
@@ -2291,7 +2291,7 @@ exec "$0.fixture" "$@"
       const stderr = commandStderr(error);
       assert.match(
         stderr,
-        /the api startup preflight did not finish before the timeout \(Unschedulable: 0\/3 nodes are available\)/,
+        /the api startup preflight did not finish before the timeout \(Unschedulable: 0\/3 nodes are available: Insufficient cpu\)/,
       );
       assert.match(stderr, /cannot start the worker with the candidate Installation/);
       return true;
@@ -2768,13 +2768,10 @@ exec "$0.fixture" "$@"
       const f = await fixture(t, {
         controllerOnly: true,
         preflightFault: { target: "api", mode },
-        ...(mode === "replace-after-observation"
-          ? {
-              preflightResults: { api: { phase: "Running", log: "unbound-log-sentinel\n" } },
-            }
-          : {}),
+        preflightResults: { api: { status: unscheduledPod, log: "unbound-log-sentinel\n" } },
       });
-      const failure = await runForFailure(f.run, "--preflight-only");
+      const flags = mode === "replace-during-logs" ? ["--timeout-seconds", "1"] : [];
+      const failure = await runForFailure(f.run, "--preflight-only", ...flags);
       assert.equal(failure.code, 1);
       assert.match(
         failure.stderr,
@@ -2782,6 +2779,7 @@ exec "$0.fixture" "$@"
           ? /cannot bind the api startup preflight logs to the original child Pod; discarded unconfirmed output/
           : /cannot establish the api startup preflight child Pod identity/,
       );
+      assert.match(failure.stderr, /original Pod.*Unschedulable: .*Insufficient cpu/);
       assert.match(failure.stderr, /no OCC writer was stopped/i);
       const state = await f.state();
       assert.equal(

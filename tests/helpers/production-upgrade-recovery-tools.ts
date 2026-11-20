@@ -43,7 +43,7 @@ export function execute(
   });
 }
 
-async function commandPath(name: "helm" | "sleep" | "setsid", fallback: string) {
+async function commandPath(name: "helm" | "sleep" | "setsid" | "python3", fallback: string) {
   const { stdout } = await execute("bash", [
     "--noprofile",
     "--norc",
@@ -74,7 +74,14 @@ export async function createRecoveryTools(repository: string) {
     sleep: await commandPath("sleep", "/bin/sleep"),
     setsid: await commandPath("setsid", "/usr/bin/setsid"),
   };
-  return { repository, sourceRevision, script, realHelm, shimTools };
+  return {
+    repository,
+    sourceRevision,
+    script,
+    realHelm,
+    realPython: await commandPath("python3", "/usr/bin/python3"),
+    shimTools,
+  };
 }
 
 export type RecoveryTools = Awaited<ReturnType<typeof createRecoveryTools>>;
