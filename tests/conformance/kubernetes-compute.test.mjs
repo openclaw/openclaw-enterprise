@@ -253,13 +253,9 @@ import {
   checkKubernetesRetryOwnerCancellation,
   checkMalformedProviderPodObservations,
   checkProviderActivationBeforeRouting,
-  checkProviderProjectedLabels,
-  checkOpenShellHarnessLabelAdmission,
-  checkExactProviderHarnessReadiness,
-  checkProviderAssignedNetworkProfile,
-  checkNamespaceProviderGrants,
   checkProviderReadinessErrorsAndCancellation,
 } from "./kubernetes-provider-observation-cases.ts";
+import * as providerObservation from "./kubernetes-provider-observation-cases.ts";
 import {
   checkCountedQuotaPrecision,
   checkGatewayAndHarnessStorage,
@@ -6526,7 +6522,11 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
   const observedWorkload = workload;
   /** @type {unknown} */
   const observedRequirements = requirements;
-  checkProviderProjectedLabels(ownership, observedWorkload, observedRequirements);
+  providerObservation.checkProviderProjectedLabels(
+    ownership,
+    observedWorkload,
+    observedRequirements,
+  );
   assert.deepEqual(requirements.workloadIdentity, {
     serviceAccountName: workload.spec.template.spec.serviceAccountName,
     token: {
@@ -6573,11 +6573,14 @@ test("the OpenShell gateway allowlist admits every label Compute puts on a Harne
   });
   /** @type {unknown} */
   const requirements = driver.sandboxRequirements(launch, agentId);
-  checkOpenShellHarnessLabelAdmission(requirements, OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST);
+  providerObservation.checkOpenShellHarnessLabelAdmission(
+    requirements,
+    OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST,
+  );
 });
 
 test("provider Harness readiness requires exactly one live matching Pod", async (t) => {
-  await checkExactProviderHarnessReadiness(t, providerReadinessFixture());
+  await providerObservation.checkExactProviderHarnessReadiness(t, providerReadinessFixture());
 });
 
 test(
@@ -6592,7 +6595,7 @@ test(
 
 test("provider Harness requires its assigned network profile before readiness and activation", async () => {
   const fixture = providerReadinessFixture();
-  await checkProviderAssignedNetworkProfile(fixture, () =>
+  await providerObservation.checkProviderAssignedNetworkProfile(fixture, () =>
     fixture.driver.activateRevision(fixture.revision, authContext(fixture.revision)),
   );
 });
@@ -8276,7 +8279,7 @@ test("Namespace provider routing grants exact revision ingress peers and retires
     ).resource.spec.egress;
   /** @type {unknown} */
   const grants = await render({ predecessorRevisionId: "old-revision" });
-  checkNamespaceProviderGrants(grants, namespace.name, revision.agentId);
+  providerObservation.checkNamespaceProviderGrants(grants, namespace.name, revision.agentId);
   assert.equal((await render()).length, 1, "activation removes the predecessor grant");
   missing = revision.id;
   // The predecessor alone cannot authorize switching the Gateway to the candidate.
