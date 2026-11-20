@@ -73,6 +73,16 @@ a closed connection without `[DONE]` if its stream had already started. After
 you deploy the Agent again, the same `user` label can keep answering `500`; use
 a new label.
 
+An HTTP chat request that ends, at its deadline or by a disconnect, while the
+turn runs a command can leave its conversation unable to answer. Each later
+request with the same `user` label then gets no bytes until its own deadline; a
+stream gets `200`, then a closed connection without `[DONE]`. A new label
+answers normally, and the Agent stays active with ready Pods. The Gateway log
+repeats, about once a minute,
+`Worker disk-space check failed (<session>): node worker environment stop failed (UNAVAILABLE)`.
+This does not clear by itself, and a Gateway replacement does not help: deploy
+the Agent again, and the same label answers.
+
 ## HTTP chat callers
 
 An [HTTP chat](../agent-http-chat.md) request that waits behind the turn is not
