@@ -113,7 +113,10 @@ message ObjectMeta {
   map<string, string> annotations = 6;
   string workspace = 7;
 }
-message SandboxSpec { repeated string providers = 8; }
+message SandboxSpec {
+  repeated string providers = 8;
+  string provider_attachment_epoch = 14;
+}
 message Sandbox {
   ObjectMeta metadata = 1;
   SandboxSpec spec = 2;

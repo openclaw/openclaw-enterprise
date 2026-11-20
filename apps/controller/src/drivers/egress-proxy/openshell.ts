@@ -744,7 +744,11 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         context.signal,
         { expectedResourceVersion: target.sandbox.resourceVersion, requestId: randomUUID() },
       );
-      if (!attached) {
+      if (
+        !attached ||
+        attached.providerId !== prepared.id ||
+        attached.providerResourceVersion !== prepared.resourceVersion
+      ) {
         throw new DependencyUnavailableError(
           "The native Provider attachment receipt is unavailable.",
         );

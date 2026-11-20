@@ -332,6 +332,8 @@ export interface OpenShellProviderAttachResult {
   readonly sandbox: OpenShellSandboxResponse;
   readonly attached: boolean;
   readonly receiptId: string;
+  readonly providerId: string;
+  readonly providerResourceVersion: string;
 }
 
 export interface OpenShellSandboxLogsRequest {
@@ -1085,6 +1087,21 @@ function timestampText(value: unknown): string | null {
     return null;
   }
   return `${date.toISOString().slice(0, 19)}.${String(nanos).padStart(9, "0")}Z`;
+}
+
+function validProviderReceiptTimestamp(value: unknown): boolean {
+  const timestamp = asRecord(value);
+  const seconds = Number(timestamp?.seconds ?? 0);
+  const nanos = Number(timestamp?.nanos ?? 0);
+  return (
+    timestamp !== undefined &&
+    Number.isSafeInteger(seconds) &&
+    seconds >= -62_135_596_800 &&
+    seconds <= 253_402_300_799 &&
+    Number.isInteger(nanos) &&
+    nanos >= 0 &&
+    nanos <= 999_999_999
+  );
 }
 
 function refreshStatus(value: unknown, operation: string): OpenShellRefreshStatus {
@@ -2551,11 +2568,17 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       signal,
     );
     const receipt = asRecord(response.receipt);
+    const desired = asRecord(receipt?.desired);
     if (
       !isNonEmptyString(receipt?.receipt_id) ||
+      !isNonEmptyString(receipt.mutation_id) ||
       receipt.provider !== provider ||
       receipt.workspace !== workspace ||
-      receipt.kind !== "PROVIDER_MUTATION_KIND_ATTACH"
+      receipt.kind !== "PROVIDER_MUTATION_KIND_ATTACH" ||
+      desired?.sandbox !== sandbox ||
+      !isNonEmptyString(desired.sandbox_id) ||
+      !isNonEmptyString(desired.provider_id) ||
+      !validProviderReceiptTimestamp(receipt.persisted_time)
     ) {
       return undefined;
     }
@@ -2574,6 +2597,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       attachedSandbox.name !== sandbox ||
       attachedSandbox.workspace !== workspace ||
       !attachedSandbox.id ||
+      desired.sandbox_id !== attachedSandbox.id ||
       !/^[1-9]\d*$/.test(attachedSandbox.resourceVersion ?? "")
     ) {
       return undefined;
@@ -2582,6 +2606,8 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       sandbox: attachedSandbox,
       attached: response.attached === true,
       receiptId: receipt.receipt_id,
+      providerId: desired.provider_id,
+      providerResourceVersion: String(desired.provider_resource_version ?? "0"),
     });
   }
 

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
@@ -65,7 +66,7 @@ const configuration = {
     namespaceId: namespace.id,
     agentId: "agent-1",
     revisionId: "revision-1",
-    sandboxId: "sandbox-id",
+    sandboxId: "f1d7e6c5-1b2a-4c3d-8e9f-102938475601",
   },
   configurationId: "configuration-1",
 } as const;
@@ -90,14 +91,14 @@ function record(value: unknown): Wire {
 async function fixture(t: TestContext) {
   const sandbox = {
     metadata: {
-      id: "sandbox-id",
+      id: configuration.targetRef.sandboxId as string,
       name: "held-sandbox",
       workspace: namespace.name,
       resource_version: "5",
       labels,
       annotations,
     },
-    spec: { providers: [] as string[] },
+    spec: { providers: [] as string[], provider_attachment_epoch: "" },
   };
   const state = {
     profile: undefined as Wire | undefined,
@@ -108,7 +109,12 @@ async function fixture(t: TestContext) {
     sandboxReads: 0,
     createMode: "normal" as "normal" | "stale-winner",
     attachMode: "normal" as
-      "normal" | "cas-race" | "provider-race" | "incarnation-race" | "detach-race",
+      | "normal"
+      | "cas-race"
+      | "provider-race"
+      | "receipt-provider-id-mismatch"
+      | "incarnation-race"
+      | "detach-race",
     detachOnNextSandboxRead: false,
   };
   const methods: Record<string, Handler> = {
@@ -155,7 +161,7 @@ async function fixture(t: TestContext) {
       state.provider = {
         metadata: {
           ...metadata,
-          id: "provider-id",
+          id: "f1d7e6c5-1b2a-4c3d-8e9f-102938475602",
           name: String(metadata.name),
           workspace: namespace.name,
           resource_version: "7",
@@ -182,7 +188,7 @@ async function fixture(t: TestContext) {
       }
       if (state.attachMode === "incarnation-race") {
         // Native attach resolves the name again, so a new ID can have the same version.
-        sandbox.metadata.id = "replacement-id";
+        sandbox.metadata.id = "f1d7e6c5-1b2a-4c3d-8e9f-102938475603";
       }
       if (input.expected_resource_version !== sandbox.metadata.resource_version) {
         throw Object.assign(new Error("resource version changed"), {
@@ -190,20 +196,36 @@ async function fixture(t: TestContext) {
         });
       }
       const provider = String(input.provider);
+      assert.ok(state.provider);
+      const providerId = state.provider.metadata.id;
+      const providerResourceVersion = state.provider.metadata.resource_version;
+      const mutationId = randomUUID();
       sandbox.spec.providers.push(provider);
+      sandbox.spec.provider_attachment_epoch = mutationId;
       sandbox.metadata.resource_version = "6";
       if (state.attachMode === "provider-race") {
-        assert.ok(state.provider);
         state.provider.metadata.resource_version = "8";
       }
       return {
         sandbox,
         attached: true,
         receipt: {
-          receipt_id: "attach-receipt",
+          receipt_id: randomUUID(),
+          mutation_id: mutationId,
           provider,
           workspace: namespace.name,
           kind: "PROVIDER_MUTATION_KIND_ATTACH",
+          desired: {
+            sandbox_id: sandbox.metadata.id,
+            sandbox: sandbox.metadata.name,
+            attachment_epoch: mutationId,
+            provider_id:
+              state.attachMode === "receipt-provider-id-mismatch"
+                ? "f1d7e6c5-1b2a-4c3d-8e9f-102938475604"
+                : providerId,
+            provider_resource_version: providerResourceVersion,
+          },
+          persisted_time: { seconds: "1790000000", nanos: 123 },
         },
       };
     },
@@ -441,14 +463,49 @@ test("staged OpenShell Proxy validates direct deployment policy and binding inpu
   assert.equal(f.state.creates.length, 0);
 });
 
+test("staged OpenShell Proxy refuses unusable first-use resolver material before Provider creation", async (t) => {
+  for (const scenario of [
+    { name: "empty credential", resolved: { credential: "", version: "source-v1" } },
+    { name: "missing source version", resolved: { credential: "synthetic-material" } },
+  ] as const) {
+    await t.test(scenario.name, async (child) => {
+      const f = await fixture(child);
+      let resolverCalls = 0;
+      await assert.rejects(
+        f.configure({
+          bindings: [
+            {
+              binding,
+              resolveCredential: async () => {
+                resolverCalls++;
+                return scenario.resolved;
+              },
+            },
+          ],
+        }),
+        DependencyUnavailableError,
+      );
+      assert.equal(resolverCalls, 1);
+      assert.equal(f.state.provider, undefined);
+      assert.equal(f.state.creates.length, 0);
+      assert.equal(f.state.attaches.length, 0);
+      assert.equal(f.state.updates.length, 0);
+    });
+  }
+});
+
 test("staged OpenShell Proxy refuses attachment and Provider races", async (t) => {
-  for (const mode of ["cas-race", "provider-race"] as const) {
+  for (const mode of ["cas-race", "provider-race", "receipt-provider-id-mismatch"] as const) {
     await t.test(mode, async (child) => {
       const f = await fixture(child);
       f.state.attachMode = mode;
       await assert.rejects(f.configure(), DependencyUnavailableError);
       assert.equal(f.state.attaches[0]?.expected_resource_version, "5");
       assert.equal(f.resolutions(), 1);
+      if (mode === "receipt-provider-id-mismatch") {
+        assert.equal(f.state.provider?.metadata.id, "f1d7e6c5-1b2a-4c3d-8e9f-102938475602");
+        assert.equal(f.state.provider?.metadata.resource_version, "7");
+      }
     });
   }
 });
@@ -466,7 +523,7 @@ test("staged OpenShell Proxy refuses the returned wrong ID after an accepted sam
   f.state.attachMode = "incarnation-race";
   await assert.rejects(f.configure(), DependencyUnavailableError);
   assert.equal(f.state.attaches[0]?.expected_resource_version, "5");
-  assert.equal(f.sandbox.metadata.id, "replacement-id");
+  assert.equal(f.sandbox.metadata.id, "f1d7e6c5-1b2a-4c3d-8e9f-102938475603");
   assert.ok(f.state.provider);
   assert.deepEqual(f.sandbox.spec.providers, [f.state.provider.metadata.name]);
 });

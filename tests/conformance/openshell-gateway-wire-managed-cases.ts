@@ -42,9 +42,24 @@ type SandboxReply = {
 type AttachReply = {
   sandbox?: {
     metadata: { name: string; id: string; workspace: string; resource_version: string };
+    spec: { providers: string[]; provider_attachment_epoch: string };
   };
   attached: boolean;
-  receipt?: { receipt_id: string; provider: string; workspace: string; kind: number };
+  receipt?: {
+    receipt_id: string;
+    mutation_id: string;
+    provider: string;
+    workspace: string;
+    kind: number;
+    desired: {
+      sandbox_id: string;
+      sandbox: string;
+      provider_id: string;
+      provider_resource_version: string;
+      attachment_epoch: string;
+    };
+    persisted_time: { seconds: string; nanos: number };
+  };
 };
 type ReceivedCall =
   | { operation: "stop" | "update" | "start"; request: WorkloadRequest }
@@ -132,6 +147,7 @@ export function registerManagedWorkloadCases(): void {
         assert.ok(
           call.request.sandbox && call.request.provider && call.request.workspace_scope?.workspace,
         );
+        const mutationId = "59469600-99cf-45f1-b744-25126f33338a";
         callback(null, {
           sandbox: {
             metadata: {
@@ -140,16 +156,26 @@ export function registerManagedWorkloadCases(): void {
               workspace: call.request.workspace_scope.workspace,
               resource_version: "9007199254740995",
             },
+            spec: { providers: [call.request.provider], provider_attachment_epoch: mutationId },
           },
           attached: true,
           receipt: {
-            receipt_id: "receipt-attach",
-            provider:
-              call.request.provider === "invalid-receipt"
-                ? "another-provider"
-                : call.request.provider,
+            receipt_id: "5cfec582-0e57-4536-acef-9dd5672ef9ae",
+            mutation_id: mutationId,
+            provider: call.request.provider,
             workspace: call.request.workspace_scope.workspace,
             kind: 1,
+            desired: {
+              sandbox_id: call.request.provider === "invalid-receipt" ? "another-id" : "sandbox-id",
+              sandbox: call.request.sandbox,
+              provider_id: "provider-id",
+              provider_resource_version: "3",
+              attachment_epoch: mutationId,
+            },
+            persisted_time: {
+              seconds: "1795152000",
+              nanos: call.request.provider === "invalid-time" ? -1 : 0,
+            },
           },
         });
       },
@@ -253,11 +279,13 @@ export function registerManagedWorkloadCases(): void {
     assert.ok(attached);
     assert.equal(attached.sandbox.id, "sandbox-id");
     assert.equal(attached.sandbox.resourceVersion, "9007199254740995");
-    assert.equal(attached.receiptId, "receipt-attach");
+    assert.equal(attached.receiptId, "5cfec582-0e57-4536-acef-9dd5672ef9ae");
+    assert.equal(attached.providerId, "provider-id");
+    assert.equal(attached.providerResourceVersion, "3");
     assert.equal(attached.attached, true);
     // Existing reconciliation can still read back membership after a successful legacy reply;
     // staged callers receive no validated attachment evidence from absent or mismatched receipts.
-    for (const provider of ["legacy-provider", "invalid-receipt"]) {
+    for (const provider of ["legacy-provider", "invalid-receipt", "invalid-time"]) {
       assert.equal(
         await client.attachSandboxProvider(selector.workspace, selector.name, provider, signal, {
           ...conditional,
