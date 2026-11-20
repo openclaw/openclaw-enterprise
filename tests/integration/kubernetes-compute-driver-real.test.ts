@@ -34,6 +34,7 @@ import {
   createScopedController as provisionScopedController,
 } from "../helpers/kubernetes-compute-real.mjs";
 import {
+  namedPodIp,
   workloadPod,
   type WorkloadPod,
   probe,
@@ -51,12 +52,8 @@ import {
 type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
 type Metadata = InstanceType<KubernetesSdk["V1ObjectMeta"]> & { name: string; uid: string };
 type KubernetesResource = { metadata: Metadata };
-type Pod = KubernetesResource & {
-  spec: InstanceType<KubernetesSdk["V1PodSpec"]>;
-  status: InstanceType<KubernetesSdk["V1PodStatus"]> & { podIP: string };
-};
 type Deployment = KubernetesResource & {
-  spec: { template: { metadata?: Metadata; spec: Pod["spec"] } };
+  spec: { template: { metadata?: Metadata; spec: InstanceType<KubernetesSdk["V1PodSpec"]> } };
   status: InstanceType<KubernetesSdk["V1DeploymentStatus"]>;
 };
 type ResourceByKind = {
@@ -67,7 +64,6 @@ type ResourceByKind = {
   deployment: Deployment;
   secret: KubernetesResource & { data: Record<string, string> };
   serviceaccount: KubernetesResource & InstanceType<KubernetesSdk["V1ServiceAccount"]>;
-  pod: Pod;
 };
 type FixtureRevision = AgentRevision & {
   configuration: { agents: { defaults: { model: string } } };
@@ -594,7 +590,7 @@ test(
       gatewayTargets[0],
       `app.kubernetes.io/name=${gatewayName(primaryAgent)}`,
     );
-    const platformProbe = await resource("pod", "platform-probe", platformNamespace);
+    const platformProbeIp = await namedPodIp(platformNamespace, "platform-probe");
     assert.ok(firstPod && siblingPod && foreignPod && gatewayPod);
     await assertExplicitNetworkProfile(context, owned[0], firstPod);
 
@@ -646,7 +642,7 @@ test(
       owned[0],
       firstPod.metadata.name,
       "tcp",
-      platformProbe.status.podIP,
+      platformProbeIp,
       8080,
     );
     await assertDeniedTraffic(

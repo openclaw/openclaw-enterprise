@@ -70,6 +70,11 @@ function networkPod(
   return { metadata: { name: podName, namespace }, status: { podIP: status.podIP } };
 }
 
+export async function namedPodIp(namespace: string, name: string): Promise<string> {
+  const value: unknown = await resource("pod", name, namespace);
+  return networkPod(record(value, "Pod"), name, namespace).status.podIP;
+}
+
 export async function workloadPod(
   namespaceName: string,
   selector: `app.kubernetes.io/name=${string}`,
