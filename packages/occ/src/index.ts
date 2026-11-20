@@ -8993,10 +8993,17 @@ export class OpenClawController {
         );
       }
       const owner = this.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+      const presetChanges =
+        input.providerPreset !== undefined &&
+        (input.providerPreset ?? undefined) !== source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY];
+      if (presetChanges && ownerUpdate !== undefined) {
+        throw new ResourceStateConflictError(
+          "Change the provider preset separately from credential material or lifecycle settings.",
+        );
+      }
       if (
         lockSource &&
-        input.providerPreset !== undefined &&
-        (input.providerPreset ?? undefined) !== source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] &&
+        presetChanges &&
         (await state.credentialSources.hasReferences(ref.namespaceId, source.id))
       ) {
         // TODO(source preset replacement): permit bound changes after withdrawal and redeployment can replace the admitted authority.

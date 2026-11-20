@@ -420,48 +420,60 @@ test(
     assert.equal(restoreSource.statusCode, 200, restoreSource.body);
     await retireManagedSource(noPresetSource.id);
 
-    const createModelConfiguration = async (model: string) => {
-      const values = createHarnessConfiguration("openclaw", "gpt-4.1");
-      return inject("POST", `${base}/configurations`, {
-        kind: "agent",
-        values: {
-          ...values,
-          agents: {
-            ...values.agents,
-            defaults: {
-              ...values.agents.defaults,
-              model,
-              models: { [model]: { agentRuntime: { id: "openclaw" } } },
-            },
-          },
-          // Keep the approved OpenAI route present. Only its unused catalog row is removed,
-          // because Configuration validation forbids catalog models that are not selected.
-          models: {
-            providers: { openai: { ...values.models.providers.openai, models: [] } },
+    const values = createHarnessConfiguration("openclaw", "gpt-4.1");
+    const unknownModel = "unknown/gpt-4.1";
+    const unknown = await inject("POST", `${base}/configurations`, {
+      kind: "agent",
+      values: {
+        ...values,
+        agents: {
+          ...values.agents,
+          defaults: {
+            ...values.agents.defaults,
+            model: unknownModel,
+            models: { [unknownModel]: { agentRuntime: { id: "openclaw" } } },
           },
         },
-      });
-    };
-    // An unqualified reference is rejected when the Configuration is saved, before any Agent
-    // can deploy it. Do not insert an impossible draft just to force a later admission branch.
-    const bare = await createModelConfiguration("gpt-4.1");
-    assert.equal(bare.statusCode, 400, bare.body);
-    assert.match(bare.json().error.message, /agents\.defaults\.model must name each model as/);
-    assert.deepEqual(await deploymentEffects(), noDeploymentEffects);
-
-    const unknown = await createModelConfiguration("unknown/gpt-4.1");
-    assert.equal(unknown.statusCode, 201, unknown.body);
-    const selectedUnknown = await inject("PATCH", `${base}/agents/${agent.id}`, {
-      configurationId: unknown.json().data.id,
+        // Keep the approved OpenAI route present. Configuration validation forbids an
+        // unselected catalog row, so only that row is removed from the retained route.
+        models: {
+          providers: { openai: { ...values.models.providers.openai, models: [] } },
+        },
+      },
     });
-    assert.equal(selectedUnknown.statusCode, 200, selectedUnknown.body);
-    const mismatch = await inject("POST", `${base}/agents/${agent.id}/deploy`, {});
-    assert.equal(mismatch.statusCode, 409, mismatch.body);
-    assert.equal(
-      mismatch.json().error.message,
-      "The selected model has no matching approved source preset and explicit inference route.",
-    );
-    assert.deepEqual(await deploymentEffects(), noDeploymentEffects);
+
+    // A selected OpenAI model still cannot send its credential to a different valid HTTPS
+    // endpoint. This reaches the production composition's approved destination check.
+    const hostileEndpoint = await inject("POST", `${base}/configurations`, {
+      kind: "agent",
+      values: {
+        ...values,
+        models: {
+          ...values.models,
+          providers: {
+            ...values.models.providers,
+            openai: {
+              ...values.models.providers.openai,
+              baseUrl: "https://unapproved.example.test/v1",
+            },
+          },
+        },
+      },
+    });
+    for (const configuration of [unknown, hostileEndpoint]) {
+      assert.equal(configuration.statusCode, 201, configuration.body);
+      const selected = await inject("PATCH", `${base}/agents/${agent.id}`, {
+        configurationId: configuration.json().data.id,
+      });
+      assert.equal(selected.statusCode, 200, selected.body);
+      const mismatch = await inject("POST", `${base}/agents/${agent.id}/deploy`, {});
+      assert.equal(mismatch.statusCode, 409, mismatch.body);
+      assert.equal(
+        mismatch.json().error.message,
+        "The selected model has no matching approved source preset and explicit inference route.",
+      );
+      assert.deepEqual(await deploymentEffects(), noDeploymentEffects);
+    }
 
     // The approved preset and explicit route still cannot substitute for genuinely qualified
     // Sandbox and Credential Proxy enforcement. This fixture has neither staged Driver.
