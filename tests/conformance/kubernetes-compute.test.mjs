@@ -253,11 +253,11 @@ import {
   checkKubernetesRetryOwnerCancellation,
   checkMalformedProviderPodObservations,
   checkProviderActivationBeforeRouting,
-  checkProviderProjectedIdentity,
+  checkProviderProjectedLabels,
   checkOpenShellHarnessLabelAdmission,
   checkExactProviderHarnessReadiness,
   checkProviderAssignedNetworkProfile,
-  checkNamespaceProviderRouting,
+  checkNamespaceProviderGrants,
   checkProviderReadinessErrorsAndCancellation,
 } from "./kubernetes-provider-observation-cases.ts";
 import {
@@ -6495,7 +6495,6 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
     serviceAccountId: "sa_00000000-0000-4000-8000-000000000001",
     servicePrincipalId: "service-agent-agt_00000000-0000-4000-8000-000000000001",
   };
-  /** @type {unknown} */
   const workload = driver.deployment(
     "agent-projected-identity",
     ownership,
@@ -6511,7 +6510,6 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
     preparedAuth(driver, kubernetesNamespaceName(tenant.id), false),
   );
 
-  /** @param {KubernetesComputeDriver} selected @returns {unknown} */
   const launch = (selected) =>
     selected.harnessLaunch({
       name: "agent-projected-identity",
@@ -6523,7 +6521,25 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
       auth: preparedAuth(selected, kubernetesNamespaceName(tenant.id), false),
       provider: true,
     });
-  checkProviderProjectedIdentity(driver, runtime, ownership, workload, launch);
+  const requirements = launch(driver);
+  /** @type {unknown} */
+  const observedWorkload = workload;
+  /** @type {unknown} */
+  const observedRequirements = requirements;
+  checkProviderProjectedLabels(ownership, observedWorkload, observedRequirements);
+  assert.deepEqual(requirements.workloadIdentity, {
+    serviceAccountName: workload.spec.template.spec.serviceAccountName,
+    token: {
+      audience: "openclaw-controller",
+      expirationSeconds: 900,
+      mountPath: "/var/run/secrets/openclaw/service-principal",
+      path: "token",
+      readOnly: true,
+    },
+  });
+
+  const withoutProjection = createKubernetesComputeDriver(options({ runtime }));
+  assert.equal(launch(withoutProjection).workloadIdentity, undefined);
 });
 
 test("the OpenShell gateway allowlist admits every label Compute puts on a Harness Pod", () => {
@@ -8217,31 +8233,64 @@ test(
   checkStoredGatewayToolPolicyMaintenance,
 );
 test("Namespace provider routing grants exact revision ingress peers and retires predecessor grants", async () => {
-  await checkNamespaceProviderRouting((harnessPeerLabels) => {
-    const driver = new KubernetesComputeDriver(
-      options({
-        runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
-        network: { ...options().network, providerHarness: { mode: "namespace", port: 8080 } },
-      }),
-      {
-        sandboxDriver: {
-          id: "namespace-provider",
-          implementation: "example-provider",
-          async harnessEndpoint() {
-            throw new Error("Policy rendering must not discover an endpoint");
-          },
-          harnessPeerLabels,
-          async cleanup() {},
+  let missing;
+  let wrongOwner = false;
+  const driver = new KubernetesComputeDriver(
+    options({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      network: { ...options().network, providerHarness: { mode: "namespace", port: 8080 } },
+    }),
+    {
+      sandboxDriver: {
+        id: "namespace-provider",
+        implementation: "example-provider",
+        async harnessEndpoint() {
+          throw new Error("Policy rendering must not discover an endpoint");
         },
+        async harnessPeerLabels({ revision }) {
+          if (missing === "all" || missing === revision.id) {
+            return undefined;
+          }
+          return {
+            "openclaw.dev/namespace": revision.namespaceId,
+            "openclaw.dev/agent": wrongOwner ? "another-agent" : revision.agentId,
+            "openclaw.dev/revision": revision.id,
+            "openclaw.dev/workload-role": "agent",
+          };
+        },
+        async cleanup() {},
       },
-    );
-    driver.apiClients = Promise.resolve({ objects: {} });
-    return {
-      driver,
-      /** @returns {Promise<unknown>} */
-      async render(revision, namespace, preparation) {
-        return driver.agentNetworkPoliciesWithPeers(revision, namespace, preparation);
-      },
-    };
+    },
+  );
+  driver.apiClients = Promise.resolve({ objects: {} });
+  const revision = routedRevision(driver, {
+    id: "new-revision",
+    agentId: "namespace-agent",
+    sandboxDriverId: "namespace-provider",
   });
+  const namespace = { name: kubernetesNamespaceName(revision.namespaceId), plane: "control" };
+  const render = async (preparation) =>
+    (await driver.agentNetworkPoliciesWithPeers(revision, namespace, preparation)).find(
+      ({ resource }) =>
+        resource.metadata.name === `allow-gateway-agent-${digest(revision.agentId)}`,
+    ).resource.spec.egress;
+  /** @type {unknown} */
+  const grants = await render({ predecessorRevisionId: "old-revision" });
+  checkNamespaceProviderGrants(grants, namespace.name, revision.agentId);
+  assert.equal((await render()).length, 1, "activation removes the predecessor grant");
+  missing = revision.id;
+  // The predecessor alone cannot authorize switching the Gateway to the candidate.
+  await assert.rejects(
+    render({ predecessorRevisionId: "old-revision", requireHarnessPeer: true }),
+    /candidate Harness network peer/,
+  );
+  missing = "all";
+  assert.deepEqual(
+    await render(),
+    [],
+    "missing workloads must never emit an unrestricted empty peer",
+  );
+  missing = undefined;
+  wrongOwner = true;
+  await assert.rejects(render(), /exact revision/);
 });
