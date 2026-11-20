@@ -67,7 +67,22 @@ test("dedicated Harness shares one claim while preserving private subpaths", (t)
 // The shared launch description supplies operator-mode mounts directly, without
 // reconstructing them from a Kubernetes Deployment. Keep scratch on a separate PVC.
 test("scratch requirements keep the durable workspace and exact admitted writable claim", () =>
-  checkScratchRequirements(render, owner));
+  checkScratchRequirements(render, owner, (driver, ownership) => {
+    const launch = driver.harnessLaunch({
+      name: "test-agent",
+      ownership,
+      image: "agent:local",
+      serviceAccountName: "agent",
+      environment: {},
+      loggingLevel: "info",
+      auth: { loginMode: "api_key", environment: [] },
+      provider: true,
+    });
+    return (scratch) =>
+      scratch === undefined
+        ? driver.sandboxRequirements(launch, ownership.agentId)
+        : driver.sandboxRequirements(launch, ownership.agentId, [], scratch);
+  }));
 
 function scratchCompute(bindings) {
   const sandbox = new OpenShellSandboxDriver(
@@ -123,7 +138,12 @@ function scratchRevision(driver) {
 }
 
 test("scratch admission pins exact scope and never inherits a later operator selection", () =>
-  checkPinnedScratchAdmission(scratchCompute, scratchRevision, operatorBinding));
+  checkPinnedScratchAdmission(scratchCompute, scratchRevision, operatorBinding, {
+    scratchAdmission: (driver, revision) => driver.scratchAdmission(revision),
+    sandboxDriver: (driver) => driver.sandboxDriver,
+    codexLaunch: (driver, revision, sandbox) => driver.codexLaunch(revision, sandbox),
+    runtimeAdmission: (driver, revision) => driver.runtimeAdmission(revision),
+  }));
 
 test("saved scratch admissions preserve legacy launch selection and reject misordered launch markers", () => {
   const driver = scratchCompute([operatorBinding]);

@@ -224,6 +224,10 @@ test("provider Harness endpoint writes transport and runtime requirements", () =
     admitLoggingConfiguration,
     providerUrl,
     providerWorkspaceRoot,
+    (fixture, configuration, harnessHome) => {
+      fixture.revision.configuration = configuration;
+      fixture.sandbox.harnessHome = harnessHome;
+    },
   ));
 
 test("provider Harness endpoint admits only exact node and provider peers", async () =>
@@ -233,7 +237,12 @@ test("provider Harness malformed Pod stops preparation and cannot write activati
   checkProviderMalformedActivation(await preparedEndpoint()));
 
 test("provider Harness activation replaces broad legacy peers and deletes obsolete policies with UID preconditions", async () =>
-  checkProviderLegacyPolicyActivation(await preparedEndpoint()));
+  checkProviderLegacyPolicyActivation(await preparedEndpoint(), {
+    agentNetworkPolicies: (driver, revision, namespace) =>
+      driver.agentNetworkPolicies(revision, namespace),
+    manifest: (driver, apiVersion, kind, name, ownership, namespace) =>
+      driver.manifest(apiVersion, kind, name, ownership, namespace),
+  }));
 
 for (const scenario of statusScenarios) {
   test(`provider Harness preparation observes ${scenario.name}`, async () => {

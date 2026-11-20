@@ -7,7 +7,9 @@ import {
   withComputeAbortSignal,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import type {
+  AgentRevision,
   ComputeRevisionContext,
+  ResolvedHarnessAuth,
   RuntimeFailureEvidence,
   SandboxHarnessStatus,
   SandboxHarnessStatusContext,
@@ -375,11 +377,69 @@ export async function checkKubernetesRetryOwnerCancellation() {
   }
 }
 
-type EndpointFixture = ReturnType<typeof providerEndpointFixture>;
-type PreparedEndpoint = (
-  fixture?: EndpointFixture,
-  context?: Parameters<EndpointFixture["prepare"]>[1],
-) => Promise<EndpointFixture>;
+type EndpointFixture = Pick<
+  ReturnType<typeof providerEndpointFixture>,
+  | "driver"
+  | "revision"
+  | "sandbox"
+  | "namespace"
+  | "writes"
+  | "gatewayName"
+  | "gatewayNamespace"
+  | "prepare"
+  | "activate"
+> & {
+  readonly labels: unknown;
+  pod(name: string, ready?: string): unknown;
+  observePods(pods: (EndpointPod | null)[]): void;
+  readonly provisions: readonly unknown[];
+  readonly endpoints: readonly unknown[];
+  readonly peerLookups: readonly unknown[];
+  readonly hooks: readonly unknown[];
+  readonly provisioningPolicies: readonly unknown[];
+  readonly policiesAtHarnessObservation: readonly unknown[];
+  readonly objects: Map<string, unknown>;
+  readonly clients: {
+    networking: { deleteNamespacedNetworkPolicy(request: DeletePolicy): Promise<void> };
+  };
+  key(kind: string, name: string, namespace?: string): string;
+  read(kind: string, name: string, namespace?: string): unknown;
+  save(resource: EndpointResource): unknown;
+};
+type EndpointPod = {
+  apiVersion: string;
+  kind: string;
+  metadata: { name: string; namespace: string; labels: Record<string, string> };
+  status: { conditions: { type: string; status: string }[] };
+};
+type EndpointResource = Record<string, unknown> & {
+  kind: string;
+  metadata: Record<string, unknown> & { name: string };
+};
+type EndpointFactory = (options: Parameters<typeof providerEndpointFixture>[0]) => EndpointFixture;
+type EndpointContext = NonNullable<Parameters<EndpointFixture["prepare"]>[1]>;
+type PreparedEndpoint = (fixture: EndpointFixture, context: EndpointContext) => Promise<unknown>;
+type ConfigureEndpoint = (
+  fixture: EndpointFixture,
+  configuration: AgentRevision["configuration"],
+  harnessHome: string,
+) => void;
+type ExecutionNamespace = { name: string; plane: "execution" };
+type ProviderLegacyOperations = {
+  agentNetworkPolicies(
+    driver: EndpointFixture["driver"],
+    revision: Omit<AgentRevision, "sandboxDriverId"> & { sandboxDriverId: undefined },
+    namespace: ExecutionNamespace,
+  ): unknown;
+  manifest(
+    driver: EndpointFixture["driver"],
+    apiVersion: string,
+    kind: "NetworkPolicy",
+    name: string,
+    ownership: { namespaceId: string; agentId: string },
+    namespace: ExecutionNamespace,
+  ): unknown;
+};
 type ExpectedRevision = { namespaceId: string; agentId: string; revisionId: string };
 type ProviderStatusScenario = {
   name: string;
@@ -396,14 +456,30 @@ function storedEndpointResource(
   kind: string,
   name: string,
   namespace?: string,
-) {
+): EndpointResource & { spec: unknown } {
   const resource = resourceRecord(fixture.read(kind, name, namespace), kind);
   assert.equal(resource.kind, kind);
-  return {
-    ...resource,
-    metadata: resourceRecord(resource.metadata, `${kind} metadata`),
-    spec: resource.spec,
-  };
+  const metadata = resourceRecord(resource.metadata, `${kind} metadata`);
+  assert.ok(typeof metadata.name === "string");
+  return { ...resource, kind, metadata: { ...metadata, name: metadata.name }, spec: resource.spec };
+}
+
+function assertEndpointPod(value: unknown): asserts value is EndpointPod {
+  const pod = resourceRecord(value, "provider Pod");
+  assert.ok(typeof pod.apiVersion === "string" && typeof pod.kind === "string");
+  const metadata = resourceRecord(pod.metadata, "provider Pod metadata");
+  assert.ok(typeof metadata.name === "string" && typeof metadata.namespace === "string");
+  resourceLabels(metadata.labels, "provider Pod labels");
+  const status = resourceRecord(pod.status, "provider Pod status");
+  for (const condition of resourceRecords(status.conditions, "provider Pod conditions")) {
+    assert.ok(typeof condition.type === "string" && typeof condition.status === "string");
+  }
+}
+
+function endpointPod(fixture: EndpointFixture, name: string) {
+  const value = fixture.pod(name);
+  assertEndpointPod(value);
+  return value;
 }
 
 function specOf(resource: { spec: unknown }, field: string) {
@@ -467,12 +543,20 @@ export const invalidProviderEvidence: readonly { name: string; runtimeFailure: u
   { name: "invalid timestamp", runtimeFailure: { ...heldFailure, checkedAt: "yesterday" } },
 ];
 
+function assertResolvedAuth(
+  value: unknown,
+  expected: ResolvedHarnessAuth,
+): asserts value is ResolvedHarnessAuth {
+  assert.deepEqual(value, expected);
+}
+
 export async function checkProviderEndpointRequirements(
-  factory: typeof providerEndpointFixture,
+  factory: EndpointFactory,
   preparedEndpoint: PreparedEndpoint,
   admitConfiguration: typeof admitLoggingConfiguration,
   providerUrl: string,
   providerWorkspaceRoot: string,
+  configure: ConfigureEndpoint,
 ) {
   let endpointWorkspaceRoot = providerWorkspaceRoot;
   const providerHome = "/private/provider-home";
@@ -494,9 +578,8 @@ export async function checkProviderEndpointRequirements(
     },
     "info",
   );
-  Object.assign(revision, { configuration: admittedConfiguration });
+  configure(fixture, admittedConfiguration, providerHome);
   const admittedAgents = structuredClone(revision.configuration.agents);
-  Object.assign(fixture.sandbox, { harnessHome: providerHome });
   let workspaceValidated = false;
   fixture.sandbox.validateWorkspaceSetup = (harness, configuration) => {
     assert.equal(harness.id, revision.harness.id);
@@ -509,8 +592,22 @@ export async function checkProviderEndpointRequirements(
   driver["validateWorkspaceSetup"](revision.harness, revision.configuration, fixture.sandbox.id);
   assert.equal(workspaceValidated, true);
   workspaceValidated = false;
+  const auth = revision.harnessAuth;
+  assert.ok(auth.method === "api_key" && auth.source.kind === "secret");
+  const expectedAuth: ResolvedHarnessAuth = {
+    ...auth,
+    backendRef: {
+      namespaceName: fixture.gatewayNamespace,
+      name: "occ-model-key",
+      key: "value",
+      uid: "model-secret-uid",
+    },
+  };
+  const authEnvelope: unknown = authContext(revision);
+  const resolvedAuth = resourceRecord(authEnvelope, "resolved auth context").harnessAuth;
+  assertResolvedAuth(resolvedAuth, expectedAuth);
   const context = {
-    ...authContext(revision),
+    harnessAuth: resolvedAuth,
     workspaceSetup: {
       id: "provider-workspace-setup",
       namespaceId: revision.namespaceId,
@@ -523,7 +620,7 @@ export async function checkProviderEndpointRequirements(
   const provision = resourceRecord(provisions[0], "provider provision");
   const requirements = objectField(provision, "requirements");
   const environment = resourceRecords(requirements.environment, "Harness environment");
-  assert.deepEqual(requirements.labels, fixture.labels);
+  assert.deepEqual(requirements.labels, resourceLabels(fixture.labels, "fixture Harness labels"));
   assert.deepEqual(
     environment.find(({ name }) => name === "APP_TOKEN_SHA"),
     {
@@ -542,7 +639,7 @@ export async function checkProviderEndpointRequirements(
       name: "OPENCLAW_NODE_SETUP_CODE",
       valueFrom: {
         secretKeyRef: {
-          name: driver["workspaceNodeName"](revision),
+          name: "workspace-node-56998486dc64-e8118fbc7080",
           key: "setupCode",
         },
       },
@@ -652,7 +749,7 @@ export async function checkProviderEndpointRequirements(
   }
   const privateSetup = {
     id: context.workspaceSetup.id,
-    secretKeyRef: { name: driver["workspaceSetupSecretName"](revision.agentId), key: "setup.json" },
+    secretKeyRef: { name: "workspace-setup-56998486dc64", key: "setup.json" },
   };
   assert.deepEqual(requirements.workspaceSetup, privateSetup);
   assert.deepEqual(
@@ -747,7 +844,7 @@ export async function checkProviderExactPeers(fixture: EndpointFixture) {
       "provider-owned transport does not grant direct ingress to the Harness",
     );
   }
-  assert.ok(peerLookups.every((id: unknown) => id === revision.id));
+  assert.ok(peerLookups.every((id) => id === revision.id));
   const agentServiceName = `agent-${digest(revision.agentId)}`;
   assert.equal(
     serviceSelector(storedEndpointResource(fixture, "Service", agentServiceName))[
@@ -759,7 +856,7 @@ export async function checkProviderExactPeers(fixture: EndpointFixture) {
 
 export async function checkProviderMalformedActivation(fixture: EndpointFixture) {
   const { hooks, writes } = fixture;
-  fixture.observePods([fixture.pod("ready"), null]);
+  fixture.observePods([endpointPod(fixture, "ready"), null]);
   await assert.rejects(fixture.prepare(), /invalid or incomplete/);
   assert.deepEqual(hooks.slice(-2), ["start", "stop"]);
   const writesBeforeActivation = writes.length;
@@ -767,7 +864,10 @@ export async function checkProviderMalformedActivation(fixture: EndpointFixture)
   assert.equal(writes.length, writesBeforeActivation);
 }
 
-export async function checkProviderLegacyPolicyActivation(fixture: EndpointFixture) {
+export async function checkProviderLegacyPolicyActivation(
+  fixture: EndpointFixture,
+  operations: ProviderLegacyOperations,
+) {
   const {
     driver,
     revision,
@@ -784,7 +884,8 @@ export async function checkProviderLegacyPolicyActivation(fixture: EndpointFixtu
   // Finding 861, reverse switch: a plain dedicated predecessor's Harness grant is
   // not one this revision writes, so activation deletes it and keeps the pair.
   const policies = resourceRecords(
-    driver["agentNetworkPolicies"](
+    operations.agentNetworkPolicies(
+      driver,
       { ...revision, id: "plain-predecessor", sandboxDriverId: undefined },
       { name: namespace, plane: "execution" },
     ),
@@ -799,19 +900,23 @@ export async function checkProviderLegacyPolicyActivation(fixture: EndpointFixtu
     );
   assert.ok(plainRuntime);
   const plainMetadata = objectField(plainRuntime, "metadata");
-  save({ ...plainRuntime, metadata: { ...plainMetadata, uid: "plain-runtime-uid" } });
-  const deletedPolicies: string[] = [];
-  Object.assign(clients.networking, {
-    async deleteNamespacedNetworkPolicy({ name, namespace: target, body }: DeletePolicy) {
-      assert.ok(body?.preconditions);
-      assert.equal(
-        body.preconditions.uid,
-        storedEndpointResource(fixture, "NetworkPolicy", name, target).metadata.uid,
-      );
-      deletedPolicies.push(name);
-      objects.delete(key("NetworkPolicy", name, target));
-    },
+  assert.equal(plainRuntime.kind, "NetworkPolicy");
+  assert.ok(typeof plainMetadata.name === "string");
+  save({
+    ...plainRuntime,
+    kind: "NetworkPolicy",
+    metadata: { ...plainMetadata, name: plainMetadata.name, uid: "plain-runtime-uid" },
   });
+  const deletedPolicies: string[] = [];
+  clients.networking.deleteNamespacedNetworkPolicy = async ({ name, namespace: target, body }) => {
+    assert.ok(body?.preconditions);
+    assert.equal(
+      body.preconditions.uid,
+      storedEndpointResource(fixture, "NetworkPolicy", name, target).metadata.uid,
+    );
+    deletedPolicies.push(name);
+    objects.delete(key("NetworkPolicy", name, target));
+  };
   // Upgrade: an earlier controller's pair admitted every supervisor Pod in the
   // namespace. Activation replaces the ingress half and deletes the egress half.
   const legacySupervisor = { "openshell.ai/boundary-role": "supervisor" };
@@ -835,7 +940,8 @@ export async function checkProviderLegacyPolicyActivation(fixture: EndpointFixtu
     },
   });
   const legacyEgress = resourceRecord(
-    driver["manifest"](
+    operations.manifest(
+      driver,
       "networking.k8s.io/v1",
       "NetworkPolicy",
       `allow-workspace-node-gateway-${digest(revision.agentId)}`,
@@ -845,17 +951,23 @@ export async function checkProviderLegacyPolicyActivation(fixture: EndpointFixtu
     "legacy egress policy",
   );
   const legacyEgressMetadata = objectField(legacyEgress, "metadata");
+  assert.equal(legacyEgress.kind, "NetworkPolicy");
   assert.ok(typeof legacyEgressMetadata.name === "string");
   save({
     ...legacyEgress,
-    metadata: { ...legacyEgressMetadata, uid: "legacy-egress-uid" },
+    kind: "NetworkPolicy",
+    metadata: {
+      ...legacyEgressMetadata,
+      name: legacyEgressMetadata.name,
+      uid: "legacy-egress-uid",
+    },
     spec: {
       podSelector: { matchLabels: legacySupervisor },
       policyTypes: ["Egress"],
       egress: [{ ports: [{ protocol: "TCP", port: 8080 }] }],
     },
   });
-  fixture.observePods([fixture.pod("ready")]);
+  fixture.observePods([endpointPod(fixture, "ready")]);
   await fixture.activate();
   assert.equal(endpoints.length, 2);
   assert.deepEqual(deletedPolicies, [legacyEgressMetadata.name, plainMetadata.name]);
@@ -907,7 +1019,7 @@ export async function checkProviderPreparationStatus(
     observations.push(context);
     return scenario.answer;
   };
-  fixture.observePods([fixture.pod("ready")]);
+  fixture.observePods([endpointPod(fixture, "ready")]);
   assert.deepEqual(await fixture.prepare(), {
     ...expected,
     ...scenario.outcome,
@@ -917,14 +1029,17 @@ export async function checkProviderPreparationStatus(
   assert.ok(observation);
   assert.equal(observation.transportToken, "test-transport");
   assert.equal(observation.revision, revision);
-  assert.deepEqual(observation.requirements.labels, fixture.labels);
+  assert.deepEqual(
+    observation.requirements.labels,
+    resourceLabels(fixture.labels, "fixture Harness labels"),
+  );
 }
 
 export async function checkProviderInvalidEvidence(
   fixture: EndpointFixture,
   scenario: (typeof invalidProviderEvidence)[number],
 ) {
-  fixture.observePods([fixture.pod("ready")]);
+  fixture.observePods([endpointPod(fixture, "ready")]);
   fixture.sandbox.harnessStatus = async () => ({
     state: "failed",
     runtimeFailure: scenario.runtimeFailure,
