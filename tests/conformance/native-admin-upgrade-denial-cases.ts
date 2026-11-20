@@ -49,35 +49,35 @@ export class AdmissionSocket extends EventEmitter<{
   }
 }
 
-// The interceptor's public boundary requires real Fastify requests and replies.
-// Injection keeps this probe local and unbound; only the denial fixture's decisions are controlled.
-async function httpProbe(t: TestContext, owner: DenialOwner) {
+async function startHttpProbe(t: TestContext, owner: DenialOwner, raw?: IncomingMessage) {
   const app = Fastify({ logger: false });
   t.after(() => app.close());
-  let next: { entered: PromiseWithResolvers<FastifyRequest>; raw?: IncomingMessage } | undefined;
+  const entered = Promise.withResolvers<{ request: FastifyRequest; handled: Promise<boolean> }>();
   app.get("/", async (request, reply) => {
-    const pending = next;
-    assert.ok(pending, "an HTTP probe request must have an owner");
-    next = undefined;
-    if (pending.raw) {
-      request.raw = pending.raw;
+    if (raw) {
+      request.raw = raw;
     }
-    pending.entered.resolve(request);
-    assert.equal(await owner.access.interceptHttp(request, reply), true);
+    const handled = owner.access.interceptHttp(request, reply);
+    entered.resolve({ request, handled });
+    await handled;
   });
-  await app.ready();
+  const injected = Promise.resolve(
+    app.inject({
+      method: "GET",
+      url: "/",
+      headers: owner.request().headers,
+      remoteAddress: "127.0.0.1",
+    }),
+  );
+  const interception = await Promise.race([entered.promise, injected.then(() => undefined)]);
+  assert.ok(interception, "injection must reach the HTTP interceptor");
   return {
-    async start(raw?: IncomingMessage) {
-      const entered = Promise.withResolvers<FastifyRequest>();
-      next = { entered, ...(raw === undefined ? {} : { raw }) };
-      const response = app.inject({
-        method: "GET",
-        url: "/",
-        headers: owner.request().headers,
-        remoteAddress: "127.0.0.1",
-      });
-      const request = await entered.promise;
-      return { request, response };
+    request: interception.request,
+    async finish() {
+      // Fastify can deliver a reply while the interceptor is still running.
+      const [handled, response] = await Promise.all([interception.handled, injected]);
+      assert.equal(handled, true);
+      return response;
     },
   };
 }
@@ -134,17 +134,16 @@ export function registerHttpAuditFailureCase({
       },
       append: () => Promise.reject(new Error("synthetic sink failure")),
     });
-    const probe = await httpProbe(t, owner);
     try {
-      const timely = await probe.start();
-      const timelyResponse = await timely.response;
+      const timely = await startHttpProbe(t, owner);
+      const timelyResponse = await timely.finish();
       assert.equal(owner.access.httpAdmissionReason(timely.request), "denial_audit_failed");
       assert.equal(timelyResponse.statusCode, 503);
       assert.equal(errorCode(timelyResponse.json<unknown>()), "DEPENDENCY_UNAVAILABLE");
-      const late = await probe.start();
+      const late = await startHttpProbe(t, owner);
       await settleCallbacks();
       t.mock.timers.tick(5_000);
-      const lateResponse = await late.response;
+      const lateResponse = await late.finish();
       assert.equal(lateResponse.statusCode, 503);
       assert.equal(owner.access.httpAdmissionReason(late.request), "admission_unavailable");
       admission.reject(owner.denied);
@@ -184,9 +183,8 @@ export function registerHttpDenialResponseCases({
       await t.test(reason, async (t) => {
         // The verifier's public failure contract drives the real HTTP admission owner.
         const owner = await denialOwner(t, { admissionError: error });
-        const probe = await httpProbe(t, owner);
-        const handling = await probe.start();
-        const response = await handling.response;
+        const handling = await startHttpProbe(t, owner);
+        const response = await handling.finish();
         assert.equal(response.statusCode, status);
         assert.equal(owner.access.httpAdmissionReason(handling.request), reason);
         assert.equal(owner.denials().length, 0, "no attributed IAM operation was attempted");
@@ -198,9 +196,8 @@ export function registerHttpDenialResponseCases({
 
   test("native-admin denial ownership preserves a timely HTTP denial response", async (t) => {
     const owner = await denialOwner(t);
-    const probe = await httpProbe(t, owner);
-    const handling = await probe.start();
-    const response = await handling.response;
+    const handling = await startHttpProbe(t, owner);
+    const response = await handling.finish();
     assert.equal(response.statusCode, 403);
     assert.equal(errorCode(response.json<unknown>()), "FORBIDDEN");
     assert.equal(owner.denials().length, 1);
@@ -218,7 +215,6 @@ export function registerHttpDenialResponseCases({
         return transport.promise;
       },
     });
-    const probe = await httpProbe(t, owner);
     // IncomingMessage may finish and auto-destroy while its connection remains live.
     // Admission must check the connection rather than treating that EOF as disconnect.
     const socket = new net.Socket();
@@ -230,26 +226,21 @@ export function registerHttpDenialResponseCases({
     raw.complete = true;
     raw.push(null);
     raw.resume();
-    let response: ReturnType<typeof probe.start> | undefined;
+    let handling: Awaited<ReturnType<typeof startHttpProbe>> | undefined;
     try {
       await settleCallbacks();
       assert.equal(raw.destroyed, true);
       assert.equal(raw.socket.destroyed, false);
-      response = probe.start(raw);
-      const handling = await response;
+      handling = await startHttpProbe(t, owner, raw);
       await settleCallbacks();
       assert.equal(transportEntered, true);
       // End before proxying; this case proves admission ordering without a real upstream.
       transport.resolve("");
-      assert.equal((await handling.response).statusCode, 503);
+      assert.equal((await handling.finish()).statusCode, 503);
       assert.equal(owner.upstreams.length, 0);
     } finally {
       transport.resolve("");
-      if (response) {
-        await (
-          await response
-        ).response;
-      }
+      await Promise.allSettled([handling?.finish()]);
       raw.destroy();
       socket.destroy();
       await owner.shutdown();
