@@ -276,6 +276,14 @@ pass. The ordinary test result, when available, remains in `run.json` even if la
 cleanup fails. Phase exceptions use closed failure codes; command arguments and
 output are not copied into phase errors.
 
+Before preparation imports, the runner probes its owned detached process group
+with signal 0. If denied, it reports `phase-process-group-unavailable` once and
+exits with failure. Cleanup is omitted only for a confirmed pre-import refusal
+with no state in the fresh attempt. Preparation effects still require cleanup;
+uncertain termination still requires reconciliation. The runner retains group
+signals, with no single-process fallback. Signal 0 does not guarantee permission
+for later signals.
+
 SIGINT, SIGTERM and SIGHUP request deferred cancellation. The command reports the
 request immediately, waits for the current phase, then cleans up without starting
 the next test phase. Cancellation still fails the attempt. Preparation and tests

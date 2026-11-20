@@ -367,8 +367,27 @@ export async function runCompleteLifecycle(
         );
       }
     }
+    const preparationRefused =
+      isRecord(phases.prepare.error) &&
+      phases.prepare.error.code === "phase-process-group-unavailable";
+    if (preparationRefused) {
+      process.stderr.write(
+        "run-tests: cannot signal the owned process group; preparation not started.\n",
+      );
+    }
+    // Only a confirmed pre-import refusal in this fresh, stateless attempt can
+    // omit cleanup. Existing state or uncertain termination keeps the old path.
+    const cleanupUnneeded =
+      preparationRefused &&
+      phases.prepare.status === "failed" &&
+      phases.prepare.terminal &&
+      phases.run.status === "not-run" &&
+      (await lstat(statePath).then(
+        () => false,
+        (error: unknown) => error instanceof Error && "code" in error && error.code === "ENOENT",
+      ));
     const previous = phases.run.status === "not-run" ? phases.prepare : phases.run;
-    if (previous.terminal) {
+    if (previous.terminal && !cleanupUnneeded) {
       await assertAttemptOwned();
       activeDeadline = Date.now() + cleanupAllowanceMs();
       phases.cleanup = await lifecyclePhase(

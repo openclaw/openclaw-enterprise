@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fork } from "node:child_process";
+import { fork, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { mkdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -352,6 +352,111 @@ async function startLifecycleFixture(
 }
 
 export function registerCompleteLifecycleCases() {
+  test("complete lifecycle checks process-group permission before fixture imports", async (t) => {
+    // Observe native policy on an owned detached process without replacing kill().
+    const probe = spawn(
+      process.execPath,
+      ["-e", "try { process.kill(-process.pid, 0); } catch { process.exitCode = 78; }"],
+      { detached: true, stdio: "ignore" },
+    );
+    const { code, signal } = await new Promise<{
+      code: number | null;
+      signal: NodeJS.Signals | null;
+    }>((resolve, reject) => {
+      probe.once("error", reject);
+      probe.once("exit", (code, signal) => resolve({ code, signal }));
+    });
+    assert.equal(signal, null);
+    assert.ok(code === 0 || code === 78);
+    const available = code === 0;
+    const root = await createRunnerFixture(t);
+    const prepareMarker = join(root, "prepare-marker");
+    const cleanupMarker = join(root, "cleanup-marker");
+    const attempt = join(root, "attempt");
+    const state = join(attempt, "state.json");
+    // Import itself is an effect. On a supporting host, preparation then writes
+    // state and fails; cleanup must still read and remove that state.
+    await writeFile(
+      join(root, "scripts/ci/prepare.ts"),
+      [
+        'import { appendFileSync, writeFileSync } from "node:fs";',
+        `appendFileSync(${JSON.stringify(prepareMarker)}, "import\\n");`,
+        "export function prepareLane({ statePath }) {",
+        `  appendFileSync(${JSON.stringify(prepareMarker)}, "prepare\\n");`,
+        '  writeFileSync(statePath, "preparation started");',
+        '  throw new Error("synthetic preparation refusal");',
+        "}",
+      ].join("\n"),
+    );
+    await writeFile(
+      join(root, "scripts/ci/cleanup.ts"),
+      [
+        'import assert from "node:assert/strict";',
+        'import { appendFileSync, readFileSync, unlinkSync } from "node:fs";',
+        `appendFileSync(${JSON.stringify(cleanupMarker)}, "import\\n");`,
+        "export function cleanupState(statePath) {",
+        '  assert.equal(readFileSync(statePath, "utf8"), "preparation started");',
+        `  appendFileSync(${JSON.stringify(cleanupMarker)}, "cleanup\\n");`,
+        "  unlinkSync(statePath);",
+        "}",
+      ].join("\n"),
+    );
+    const file = "tests/integration/phase.test.mjs";
+    await writeFile(join(root, file), 'import test from "node:test"; test("unused", () => {});\n');
+    await writeLifecycleManifest(root, { path: file, expectedTests: ["unused"] });
+    const result = await runRunnerAsync([
+      "run",
+      "lifecycle",
+      "--root",
+      root,
+      "--lifecycle",
+      "complete",
+      "--attempt",
+      attempt,
+    ]);
+    assert.equal(result.error, undefined, result.stderr);
+    assert.equal(result.status, 1, result.stderr);
+    if (process.platform !== "linux") {
+      assert.match(
+        result.stderr,
+        /Complete lifecycle mode requires Linux process-group verification/,
+      );
+      await assert.rejects(readFile(prepareMarker), { code: "ENOENT" });
+      await assert.rejects(readFile(cleanupMarker), { code: "ENOENT" });
+      return;
+    }
+    const summary = completeResult(await readFile(join(attempt, "result.json"), "utf8"));
+    assert.equal(summary.lifecycle.status, "failed");
+    assert.equal(summary.lifecycle.phases.prepare.status, "failed");
+    assert.equal(summary.lifecycle.phases.prepare.terminal, true);
+    assert.equal(summary.lifecycle.phases.run.status, "not-run");
+    assert.deepEqual(summary.files, []);
+    await assert.rejects(readFile(state), { code: "ENOENT" });
+    if (available) {
+      assert.deepEqual(summary.lifecycle.phases.prepare.error, { code: "phase-failed" });
+      assert.equal(await readFile(prepareMarker, "utf8"), "import\nprepare\n");
+      assert.equal(await readFile(cleanupMarker, "utf8"), "import\ncleanup\n");
+      assert.equal(summary.lifecycle.phases.cleanup.status, "passed");
+      assert.equal(summary.lifecycle.phases.cleanup.terminal, true);
+    } else {
+      assert.deepEqual(summary.lifecycle.phases.prepare.error, {
+        code: "phase-process-group-unavailable",
+      });
+      assert.equal(
+        result.stderr,
+        "run-tests: cannot signal the owned process group; preparation not started.\n",
+      );
+      assert.deepEqual(summary.lifecycle.phases.cleanup, {
+        status: "not-run",
+        exitCode: null,
+        signal: null,
+        terminal: false,
+      });
+      await assert.rejects(readFile(prepareMarker), { code: "ENOENT" });
+      await assert.rejects(readFile(cleanupMarker), { code: "ENOENT" });
+    }
+  });
+
   test(
     "complete lifecycle preserves phase failures and performs owned cleanup",
     { skip: process.platform !== "linux" && "lifecycle process ownership reads /proc" },
