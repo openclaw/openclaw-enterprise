@@ -236,17 +236,15 @@ function workspaceHistoryEvents(model, request) {
   if (!Array.isArray(input)) {
     return undefined;
   }
-  const prompt = JSON.stringify(input.findLast((item) => item.role === "user")?.content ?? "");
+  const userIndex = input.findLastIndex((item) => item.role === "user");
+  const prompt = JSON.stringify(input[userIndex]?.content ?? "");
   const continuation = prompt.includes("Report the retained workspace result.");
-  emit({
-    event: "workspace-history-input",
-    input: input.map(({ type, role, call_id }) => ({ type, role, call_id })),
-    toolValuePresent: /workspace-history-[a-f0-9]{32}/u.test(JSON.stringify(input)),
-  });
   const callId = "call_gateway_history_read";
-  const output = input.find(
+  const marker = /workspace-history-[a-f0-9]{32}/u;
+  const outputIndex = input.findIndex(
     (item) => item.type === "function_call_output" && item.call_id === callId,
   );
+  const output = input[outputIndex];
   if (
     !continuation &&
     !output &&
@@ -254,18 +252,29 @@ function workspaceHistoryEvents(model, request) {
   ) {
     return undefined;
   }
-  const value = JSON.stringify(output?.output ?? "").match(/workspace-history-[a-f0-9]{32}/u)?.[0];
+  const value = JSON.stringify(output?.output ?? "").match(marker)?.[0];
   if (continuation) {
-    const priorCall = input.some(
+    const callIndex = input.findIndex(
       (item) => item.type === "function_call" && item.call_id === callId && item.name === "read",
     );
-    const priorReply = input.some(
-      (item) => item.role === "assistant" && JSON.stringify(item.content).includes(`Read ${value}`),
+    const replyIndex = input.findIndex(
+      (item) =>
+        item.role === "assistant" && JSON.stringify(item.content ?? "").includes(`Read ${value}`),
     );
-    return answerEvents(
-      model,
-      value && priorCall && priorReply ? `Retained ${value}` : "History missing",
-    );
+    if (
+      value &&
+      callIndex >= 0 &&
+      callIndex < outputIndex &&
+      outputIndex < replyIndex &&
+      replyIndex < userIndex
+    ) {
+      return answerEvents(model, `Retained ${value}`);
+    }
+    // A fresh session has no function history or leaked workspace value.
+    const hasHistory =
+      input.some((item) => item.type === "function_call" || item.type === "function_call_output") ||
+      marker.test(JSON.stringify(input));
+    return answerEvents(model, hasHistory ? "History incomplete" : "History missing");
   }
   if (output) {
     return answerEvents(model, value ? `Read ${value}` : "Workspace read failed");
