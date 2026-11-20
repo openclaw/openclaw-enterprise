@@ -11,12 +11,10 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { registerStartupAdmissionCases } from "./static-egress-startup-admission-cases.ts";
-import { registerPolicyAdmissionCases } from "./static-egress-policy-admission-cases.ts";
-
-type DeployedFixture = Extract<
-  Awaited<ReturnType<typeof staticEgressFixture>>,
-  { fixtureKind: "deployed" }
->;
+import {
+  deployedContext,
+  registerPolicyAdmissionCases,
+} from "./static-egress-policy-admission-cases.ts";
 
 interface AdmissionDependencies {
   admissionCases: (revision: AgentRevision) => unknown;
@@ -44,22 +42,6 @@ function admissionVectors(value: unknown) {
     return [revision, expected];
   });
   return { unprotected, refused: failures };
-}
-
-async function deployedRevision(f: DeployedFixture): Promise<Readonly<AgentRevision>> {
-  const fixture = asRecord(f);
-  const controller = fixture?.controller;
-  const original = asRecord(fixture?.revision);
-  assert.ok(controller instanceof OpenClawController && original, "deployed fixture revision");
-  const id = original.id;
-  const agentId = original.agentId;
-  assert.ok(typeof id === "string" && typeof agentId === "string", "fixture revision identity");
-  const revision = await controller.transact((unit) =>
-    unit.revisions.findRevision(f.namespace.id, agentId, id),
-  );
-  assert.ok(revision, "stored fixture revision");
-  assert.deepEqual(revision, original, "the typed state read must preserve the fixture input");
-  return revision;
 }
 
 function isCallable(value: unknown): value is (...args: unknown[]) => unknown {
@@ -91,7 +73,7 @@ export function createStaticEgressAdmissionCases({
       test("production Compute refuses protected admission and release, including empty plans", async (t) => {
         const compute = createTestKubernetesComputeDriver("admission-cutoff");
         const f = await staticEgressFixture(t);
-        const revision = await deployedRevision(f);
+        const { revision } = await deployedContext(f);
         const admittingCompute = createTestKubernetesComputeDriver("admission-origin", {
           gatewayRuntime: true,
         });
@@ -221,7 +203,8 @@ export function createStaticEgressAdmissionCases({
         // profile alone. Admission never stores additions on a protected revision; should one carry
         // them anyway, provisioning refuses it rather than silently dropping them.
         const f = await staticEgressFixture(t);
-        const revision = await deployedRevision(f);
+        const context = await deployedContext(f);
+        const { revision } = context;
         const grant = networkPolicyGrant();
         assert.ok(Check(SandboxNetworkGrantSchema, grant), "shared network policy grant");
         const requirements = {
@@ -237,7 +220,7 @@ export function createStaticEgressAdmissionCases({
         };
         await assert.rejects(
           invokeAsync(f.sandboxDriver.provisionHarness, f.sandboxDriver, {
-            ...f.context,
+            ...context,
             kubernetes: {},
             signal: AbortSignal.timeout(5000),
             transportToken: "fixture-transport-token",

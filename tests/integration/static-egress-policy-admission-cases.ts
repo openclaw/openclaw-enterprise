@@ -1,7 +1,40 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { ProxyRevisionContext } from "../../packages/contracts/src/index.ts";
+import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
+
+type DeployedFixture = Extract<
+  Awaited<ReturnType<typeof staticEgressFixture>>,
+  { fixtureKind: "deployed" }
+>;
+
+export async function deployedContext(f: DeployedFixture): Promise<ProxyRevisionContext> {
+  const fixture = asRecord(f);
+  const controller = fixture?.controller;
+  const original = asRecord(fixture?.revision);
+  assert.ok(controller instanceof OpenClawController && original, "deployed fixture revision");
+  const id = original.id;
+  const agentId = original.agentId;
+  assert.ok(typeof id === "string" && typeof agentId === "string", "fixture revision identity");
+  const revision = await controller.transact((unit) =>
+    unit.revisions.findRevision(f.namespace.id, agentId, id),
+  );
+  assert.ok(revision?.egressPlan, "stored fixture revision with a protected plan");
+  assert.deepEqual(revision, original, "the typed state read must preserve the fixture input");
+  // Narrow the original JS context against the stored revision before sending it to a Driver.
+  const context: unknown = f.context;
+  const signal = asRecord(context)?.signal;
+  assert.ok(signal instanceof AbortSignal);
+  assert.deepEqual(context, {
+    namespace: f.runtimeNamespace,
+    revision,
+    plan: revision.egressPlan,
+    signal,
+  });
+  return context;
+}
 
 function record(value: unknown, label: string): Record<string, unknown> {
   const result = asRecord(value);
@@ -63,17 +96,16 @@ function mutateObservation(
 export function registerPolicyAdmissionCases(): void {
   test("retained Sandbox policy versions are independent of plan generation but still fence installation", async (t) => {
     const f = await staticEgressFixture(t, { recordInstallation: false });
+    const context = await deployedContext(f);
     const observed = record(f.observed, "fixture observation");
     const evidence = record(observed.evidence, "fixture enforcement evidence");
-    const plan = asRecord(asRecord(f.context)?.plan);
-    assert.ok(plan, "fixture protected plan");
-    assert.equal(plan.generation, 1);
+    assert.equal(context.plan.generation, 1);
     observed.policyVersion = 4;
     observed.activePolicyVersion = 4;
     evidence.policy_version = 4;
-    const installed = await f.egress.wiringStatus(f.context, f.attachment);
+    const installed = await f.egress.wiringStatus(context, f.attachment);
     assert.ok(installed, "matching loaded policy must enroll after retained-Sandbox updates");
-    assert.equal(await f.egress.verifyInstallation(f.context, installed), true);
+    assert.equal(await f.egress.verifyInstallation(context, installed), true);
 
     // Independent supplier fields must agree; none can borrow the OCE generation
     // or claim readiness for a policy that is still loading or failed.
@@ -85,28 +117,29 @@ export function registerPolicyAdmissionCases(): void {
       { policyVersion: 0, activePolicyVersion: 0 },
     ]) {
       Object.assign(observed, change);
-      assert.equal(await f.egress.wiringStatus(f.context, f.attachment), undefined);
-      assert.equal(await f.egress.verifyInstallation(f.context, installed), false);
+      assert.equal(await f.egress.wiringStatus(context, f.attachment), undefined);
+      assert.equal(await f.egress.verifyInstallation(context, installed), false);
       Object.assign(observed, { policyVersion: 4, activePolicyVersion: 4, policyStatus: 2 });
     }
     evidence.policy_version = 1;
-    assert.equal(await f.egress.wiringStatus(f.context, f.attachment), undefined);
-    assert.equal(await f.egress.verifyInstallation(f.context, installed), false);
+    assert.equal(await f.egress.wiringStatus(context, f.attachment), undefined);
+    assert.equal(await f.egress.verifyInstallation(context, installed), false);
 
     // Even unchanged policy content at a new supplier version invalidates the
     // earlier receipt; changing the comparison must not remove that fence.
     observed.policyVersion = 5;
     observed.activePolicyVersion = 5;
     evidence.policy_version = 5;
-    assert.equal(await f.egress.verifyInstallation(f.context, installed), false);
-    const replacement = await f.egress.wiringStatus(f.context, f.attachment);
+    assert.equal(await f.egress.verifyInstallation(context, installed), false);
+    const replacement = await f.egress.wiringStatus(context, f.attachment);
     assert.ok(replacement);
     assert.notEqual(replacement.enforcement.configurationId, installed.enforcement.configurationId);
-    assert.equal(await f.egress.verifyInstallation(f.context, replacement), true);
+    assert.equal(await f.egress.verifyInstallation(context, replacement), true);
   });
 
   test("V1 permits only the exact inert runtime rule and fences both policies before Secret access and send", async (t) => {
     const f = await staticEgressFixture(t, { inertProviderRule: true });
+    const context = await deployedContext(f);
     const observed = record(f.observed, "fixture observation");
     const observation = structuredClone(record(observed.observation, "loaded policy observation"));
     const originalEvidence = structuredClone(
@@ -124,7 +157,7 @@ export function registerPolicyAdmissionCases(): void {
       )[ruleName],
       { name: ruleName },
     );
-    assert.equal(await f.egress.verifyInstallation(f.context, f.installation), true);
+    assert.equal(await f.egress.verifyInstallation(context, f.installation), true);
     const capture = f.capture();
     const ready = (await f.resolve(capture)).ready;
     assert.ok(ready, "the real consumer accepts the passive source != effective wire fixture");
@@ -163,7 +196,7 @@ export function registerPolicyAdmissionCases(): void {
       const changed = structuredClone(observation);
       mutateObservation(changed, path, value);
       observed.observation = changed;
-      assert.equal(await f.egress.wiringStatus(f.context, f.attachment), undefined);
+      assert.equal(await f.egress.wiringStatus(context, f.attachment), undefined);
       assert.ok((await f.resolve(f.capture())).refused, path);
       assert.equal(f.secretReads, reads, "a widened or stale observation cannot read a Secret");
     }
@@ -199,7 +232,7 @@ export function registerPolicyAdmissionCases(): void {
       observed.policy = structuredClone(source);
       observed.observation = structuredClone(observation);
     }
-    assert.equal(await f.egress.verifyInstallation(f.context, f.installation), true);
+    assert.equal(await f.egress.verifyInstallation(context, f.installation), true);
     const sendCapture = f.capture();
     const sendReady = (await f.resolve(sendCapture)).ready;
     assert.ok(sendReady, "Resolve succeeds while the runtime rule is still inert");

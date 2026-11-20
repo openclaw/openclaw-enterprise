@@ -149,7 +149,8 @@ export function registerStartupAdmissionCases(): void {
         assert.ok(metadata, "Gateway provider metadata");
         const profiles = structuredClone(entries(f.profiles));
         const updateBefore = await admissionSnapshot(f);
-        const wireStart = f.gatewayRequests.length;
+        const gatewayRequests: readonly unknown[] = f.gatewayRequests;
+        const wireStart = gatewayRequests.length;
         const updated: HttpResponse = await f.request("PATCH", `${f.path}/${original.id}`, {
           body: { secrets: { api_key: replacementData.ref } },
         });
@@ -173,21 +174,18 @@ export function registerStartupAdmissionCases(): void {
         assert.ok(updatedRow);
         assert.equal(updatedRow.egress, undefined);
         assert.equal(updatedRow.state, "ready");
-        assert.deepEqual(
-          providerEntries(f),
+        assert.deepEqual(providerEntries(f), [
           [
-            [
-              name,
-              {
-                ...provider,
-                metadata: { ...metadata, resource_version: "2" },
-                credentials: { OPENAI_API_KEY: "synthetic-key-replacement" },
-              },
-            ],
+            name,
+            {
+              ...provider,
+              metadata: { ...metadata, resource_version: "2" },
+              credentials: { OPENAI_API_KEY: "synthetic-key-replacement" },
+            },
           ],
-        );
+        ]);
         assert.deepEqual(entries(f.profiles), profiles);
-        const wire: unknown[] = f.gatewayRequests.slice(wireStart);
+        const wire = gatewayRequests.slice(wireStart);
         assert.equal(wire.length, 2);
         assert.match(wireRequestId(wire, 1), /^[0-9a-f-]{36}$/);
         assert.deepEqual(wire, [
@@ -311,7 +309,8 @@ export function registerStartupAdmissionCases(): void {
     const [name, provider] = entry;
     const metadata = asRecord(provider.metadata);
     assert.ok(metadata, "Gateway provider metadata");
-    assert.equal(f.providers.size, 1);
+    const providers: Map<unknown, unknown> = f.providers;
+    assert.equal(providers.size, 1);
     assert.equal(asRecord(metadata.labels)?.["openclaw.dev/credential-source-id"], legacy.id);
     assert.ok(f.profiles.has(name));
     // An unrelated fake provider is a sentinel, never a substitute for the real target.
@@ -324,15 +323,16 @@ export function registerStartupAdmissionCases(): void {
     };
     const unrelatedMetadata = asRecord(unrelated.metadata);
     assert.ok(typeof unrelatedMetadata?.name === "string", "unrelated provider name");
-    f.providers.set(unrelatedMetadata.name, unrelated);
+    providers.set(unrelatedMetadata.name, unrelated);
     const deleteBefore = await admissionSnapshot(f);
     const profilesBefore = structuredClone(entries(f.profiles));
-    const wireStart = f.gatewayRequests.length;
+    const gatewayRequests: readonly unknown[] = f.gatewayRequests;
+    const wireStart = gatewayRequests.length;
     // Two 30-second Gateway operation windows plus the 10-second registration grace.
     clock = Date.parse(legacy.createdAt) + 70_001;
     const deleted: HttpResponse = await f.request("DELETE", `${f.path}/${legacy.id}`);
     assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
-    const wire: unknown[] = f.gatewayRequests.slice(wireStart);
+    const wire = gatewayRequests.slice(wireStart);
     assert.equal(wire.length, 4);
     for (const index of [1, 3]) {
       assert.match(wireRequestId(wire, index), /^[0-9a-f-]{36}$/);
@@ -371,7 +371,7 @@ export function registerStartupAdmissionCases(): void {
       providerEntries(f),
       deleteBefore.providers.filter(([id]) => id !== name),
     );
-    assert.equal(f.providers.has(name), false);
+    assert.equal(providers.has(name), false);
     assert.equal(f.profiles.has(name), false);
     assert.deepEqual(
       entries(f.profiles),
