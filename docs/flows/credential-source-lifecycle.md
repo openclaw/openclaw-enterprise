@@ -51,7 +51,7 @@ Registration and deletion reject inherited controller transactions before effect
 
 `packages/occ/src/index.ts:updateCredentialSource`
 
-OCC authorizes `credential_source:update`, locks a ready source, and validates replacement Secret references. Device-authorized sources refuse PATCH before Secret reads. For Gateway-managed sources, the external write precedes the commit of references and audit; a failed commit can leave OpenShell newer until the request is repeated. OpenShell updates reach subsequently started processes. Protected static sources instead repeat Proxy admission and commit replacement references without a Gateway update. Refresh rotation follows the [refresh flow](credential-source-refresh.md#4-update-and-rotation).
+OCC authorizes `credential_source:update`, locks a ready source, and validates replacement Secret references. Device-authorized sources refuse PATCH before Secret reads. For Gateway-managed sources, the external write precedes the commit of references and audit; a failed commit can leave OpenShell newer until the request is repeated. OpenShell updates reach subsequently started processes. A protected static source must be unbound before it can be updated; OCC then repeats Proxy admission and commits replacement references without a Gateway update. Refresh rotation follows the [refresh flow](credential-source-refresh.md#4-update-and-rotation).
 
 ### 3. Bind and admit an Agent revision
 
@@ -67,7 +67,7 @@ OCC rechecks the caller's and Agent's source grants, requires a Sandbox and an o
 
 `apps/controller/src/worker.ts:authorizeRevision`, `apps/controller/src/worker.ts:resolveRevisionSecretContext`
 
-The worker rechecks actor and Agent grants, selected Driver identity, live source ownership, and withdrawal state before Compute prepares the Sandbox. Kubernetes checks the supported source type and deployment restrictions before attaching the Provider or releasing the Sandbox. The current serving path uses the bundled attachment handler; [OAuth delivery](credential-source-refresh.md#device-authorization-and-configuration) gives the workload a placeholder and account metadata, never refresh tokens. The [Sandbox flow](openshell-sandbox-provisioning.md) owns provisioning and Harness-specific restrictions.
+The worker rechecks actor and Agent grants, selected Driver identity, live source ownership, and withdrawal state before Compute prepares the Sandbox. Kubernetes checks the supported source type and deployment restrictions before delivery or Sandbox release. Credential Gateway delivery attaches the Provider through the bundled attachment handler; protected Proxy sources use their separate configuration path. [OAuth delivery](credential-source-refresh.md#device-authorization-and-configuration) gives the workload a placeholder and account metadata, never refresh tokens. The [Sandbox flow](openshell-sandbox-provisioning.md) owns provisioning and Harness-specific restrictions.
 
 #### Pending native integration
 
@@ -81,7 +81,7 @@ The regular Agent workflow does not call this path. Status fails closed because 
 
 `packages/occ/src/index.ts:withdrawAgentCredentialSource`, `apps/controller/src/worker.ts:processCredentialWithdrawal`, `packages/occ/src/index.ts:deleteCredentialSource`
 
-Withdrawal requires `agent:operate` and queues version-scoped work without deploying a revision. The worker rechecks each requester's grant; for OpenShell, Compute detaches the Provider and confirms its receipt. Denied requesters require replay. Unconfirmed revocation retries, and replay or maintenance recovers pending work. Deploy and repair never reattach a withdrawn source, including after a late Sandbox create.
+Withdrawal requires `agent:operate` and queues version-scoped work without deploying a revision. The worker rechecks each requester's grant. For Credential Gateway delivery, OpenShell Compute detaches the Provider and confirms its receipt; protected Proxy sources instead reduce the approved policy. Denied requesters require replay. Unconfirmed revocation retries, and replay or maintenance recovers pending work. Deploy and repair never restore withdrawn access, including after a late Sandbox create.
 
 DELETE requires `credential_source:delete` and refuses Agent, revision, or pending-deployment references and unfinished withdrawal. OCC marks `deleting` and removes material through the recorded owner. Prepared sources first withdraw issuer tokens; an unsettled token blocks deletion. Refresh removes refresh state before the Gateway removes its owned Provider and profile. Credential-free sources have no material to remove. OCC then deletes the record and commits audit. Uncertain cleanup retains `deleting`.
 
