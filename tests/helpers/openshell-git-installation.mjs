@@ -201,16 +201,11 @@ async function certificates(command, directory, originHost, authorityHost) {
  * @param {{
  *   command: (executable: "docker" | "k3d", args: string[], options?: import("../../scripts/lib/image-file.ts").ImageFileTextOptions) => Promise<string>,
  *   cleanup: Array<() => Promise<unknown>>,
- *   directory: string, cluster: string, ca: string,
+ *   directory: string, cluster: string, ca: string, parent: string,
  *   checkpoint: (event: string, data: Record<string, string>) => Promise<void>
  * }} options
  */
-async function trustedSupervisor({ command, cleanup, directory, cluster, ca, checkpoint }) {
-  // Read the same stock pin used by Local Setup rather than maintaining another
-  // independent image version. Candidate supplier builds are rejected at entry.
-  const source = await readFile(join(root, "internal/occdev/openshell.go"), "utf8");
-  const parent = source.match(/openShellSupervisorImage\s*=\s*"([^"]+)"/)?.[1] ?? "";
-  assert.match(parent, /^ghcr\.io\/nvidia\/openshell\/supervisor:0\.1\.8@sha256:[a-f0-9]{64}$/);
+async function trustedSupervisor({ command, cleanup, directory, cluster, ca, parent, checkpoint }) {
   const context = join(directory, "supervisor-trust");
   await mkdir(context, { mode: 0o700 });
   /** @type {(image: string, filename: string, destination: string) => Promise<void>} */
@@ -309,6 +304,14 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
       "this fixture qualifies stock OpenShell",
     );
   }
+  // Bind the chart from the installed CLI to the source pin used for the trust image.
+  const source = await readFile(join(root, "internal/occdev/openshell.go"), "utf8");
+  const stockSupervisor = source.match(/openShellSupervisorImage\s*=\s*"([^"]+)"/)?.[1] ?? "";
+  const stockVersion = stockSupervisor.match(
+    /^ghcr\.io\/nvidia\/openshell\/supervisor:(\d+\.\d+\.\d+)@sha256:[a-f0-9]{64}$/,
+  )?.[1];
+  assert.ok(stockVersion, "expected a digest-pinned stock OpenShell supervisor image");
+  const expectedChart = `helm-chart-${stockVersion}.tgz`;
   const cleanup = [];
   const stackCleanup = [];
   const measurement = (event, data) => {
@@ -348,6 +351,16 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
   assert.equal(state.containerEngine, "docker");
   assert.match(state.cluster, /^occ-dev-first-agent-[a-f0-9]{12}$/);
   assert.match(state.dockerHost, /^unix:\/\//);
+  const chartDirectory = join(stack.directory, "openshell/chart");
+  const charts = (await readdir(chartDirectory)).filter((name) =>
+    /^helm-chart-.*\.tgz$/.test(name),
+  );
+  assert.deepEqual(
+    charts,
+    [expectedChart],
+    "expected only the stock Gateway chart packaged by occ dev",
+  );
+  const chart = join(chartDirectory, expectedChart);
   const directory = await mkdtemp(join(tmpdir(), "oce-installed-git-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
   // The CI reporter retains only the closed identity/digest/counter projection
@@ -710,6 +723,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     directory,
     cluster: state.cluster,
     ca: tls.ca,
+    parent: stockSupervisor,
     checkpoint,
   });
   gatewayValues.supervisor.image = supervisor.image;
@@ -735,12 +749,6 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
   ];
   const gatewayFile = join(directory, "gateway-values.json");
   await writeFile(gatewayFile, JSON.stringify(gatewayValues), { mode: 0o600 });
-  const chartDirectory = join(stack.directory, "openshell/chart");
-  const charts = (await readdir(chartDirectory)).filter((name) =>
-    /^helm-chart-.*\.tgz$/.test(name),
-  );
-  assert.equal(charts.length, 1, "expected the Gateway chart packaged by occ dev");
-  const chart = join(chartDirectory, charts[0]);
   await command(
     "helm",
     [

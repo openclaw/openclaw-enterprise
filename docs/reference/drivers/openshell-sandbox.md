@@ -1,6 +1,6 @@
 # OpenShell SandboxDriver
 
-For development, use [OpenShell v0.1.8](https://github.com/NVIDIA/OpenShell/tree/v0.1.8),
+For development, use [OpenShell v0.1.9](https://github.com/NVIDIA/OpenShell/releases/tag/v0.1.9),
 the pinned OCE runtime, [Kubernetes Compute](kubernetes-compute.md) and dedicated
 Codex or native OpenClaw. Embedded OpenClaw is unsupported.
 OCC owns Agents, revisions, Namespaces, routing, credentials and authorization.
@@ -248,14 +248,14 @@ required; omitting runtime selection does not establish runtime compatibility.
 
 ### Gateway Kubernetes authority
 
-Stock OpenShell v0.1.8 operator mode
-[watches Sandboxes cluster-wide](https://github.com/NVIDIA/OpenShell/blob/f3d976590d3eb1379690a2abaf0f0e26c21d487d/crates/openshell-driver-kubernetes/src/driver.rs#L5819-L5831).
+Stock OpenShell v0.1.9 operator mode
+[watches Sandboxes cluster-wide](https://github.com/NVIDIA/OpenShell/blob/ce58cf8e9b953281352d98a637e41616295b1318/crates/openshell-driver-kubernetes/src/driver.rs#L5819-L5831).
 Selectors filter discovery, not RBAC. Sandbox `list`/`watch` exposes Pod templates,
 literal values and Secret references, without granting Secret payload access.
 
-The [operator ClusterRole](https://github.com/NVIDIA/OpenShell/blob/f3d976590d3eb1379690a2abaf0f0e26c21d487d/deploy/helm/openshell/templates/clusterrole.yaml#L67-L126)
+The [operator ClusterRole](https://github.com/NVIDIA/OpenShell/blob/ce58cf8e9b953281352d98a637e41616295b1318/deploy/helm/openshell/templates/clusterrole.yaml#L67-L126)
 permits cluster-wide Sandbox and Pod mutations. The
-[0.1.8 Workspace Role](https://github.com/NVIDIA/OpenShell/blob/f3d976590d3eb1379690a2abaf0f0e26c21d487d/deploy/helm/openshell-workspace/templates/role.yaml#L39-L57)
+[0.1.9 Workspace Role](https://github.com/NVIDIA/OpenShell/blob/ce58cf8e9b953281352d98a637e41616295b1318/deploy/helm/openshell-workspace/templates/role.yaml#L39-L57)
 adds Pod create/delete/list/patch/watch and Service/NetworkPolicy create/get.
 The 0.1.6 operator ClusterRole already granted these verbs cluster-wide.
 Disabling sandbox updates, namespace labels and NetworkPolicies
@@ -324,7 +324,7 @@ and `/tmp` `emptyDir` volumes limited to `1Gi` and `64Mi`.
 
 ### Remaining qualification work
 
-OpenShell's optional [supervisor application listener](https://github.com/NVIDIA/OpenShell/blob/f3d976590d3eb1379690a2abaf0f0e26c21d487d/docs/how-it-works/gateways/configuration.mdx#supervisor-application-listener)
+OpenShell's optional [supervisor application listener](https://github.com/NVIDIA/OpenShell/blob/ce58cf8e9b953281352d98a637e41616295b1318/docs/how-it-works/gateways/configuration.mdx#supervisor-application-listener)
 serves HTTP and WebSocket traffic on a separate port. OCE still needs routing to
 the owning supervisor and application authentication. Verify a real model turn
 there, deny management RPCs from Agent Gateways, and reserve control-plane
