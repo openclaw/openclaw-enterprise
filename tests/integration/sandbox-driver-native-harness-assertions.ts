@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
-import { inflateRawSync } from "node:zlib";
+import { brotliDecompressSync, inflateRawSync } from "node:zlib";
 import {
   MANAGED_BY,
   MANAGED_BY_LABEL,
@@ -13,6 +13,7 @@ import {
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
+  compactNodeChildArguments,
   nodeProgramArguments,
   withoutLineComments,
 } from "../../apps/controller/src/drivers/compute/node-program.ts";
@@ -386,13 +387,16 @@ export async function verifyDedicatedCodexStartup({
   const commandBytes = Buffer.byteLength(JSON.stringify(command));
   assert.ok(commandBytes <= 65_536, `final OpenShell command is ${commandBytes} bytes`);
   t.diagnostic(`Final OpenShell account command: ${commandBytes} bytes`);
-  const loader = nodeProgramArguments("")[0];
-  assert.ok(loader);
   const wrapper = command[RUNTIME_WRAPPER_COMMAND.length];
   assert.ok(wrapper);
+  const packedLoader = compactNodeChildArguments("")[0]!;
+  const packed = wrapper.endsWith(packedLoader);
+  const loader = packed ? packedLoader : nodeProgramArguments("")[0]!;
+  assert.ok(wrapper.endsWith(loader), "the command uses a supported Node loader");
+  const decompress = packed ? brotliDecompressSync : inflateRawSync;
   const script =
     wrapper.slice(0, -loader.length) +
-    inflateRawSync(
+    decompress(
       Buffer.from(command.slice(RUNTIME_WRAPPER_COMMAND.length + 1).join(""), "base64"),
     ).toString("utf8");
   assert.ok(script.endsWith(withoutLineComments(PROTECTED_CODEX_WITH_NODE_ENTRYPOINT)));

@@ -382,7 +382,7 @@ interface WireState {
   writeDelayMs: number;
 }
 
-export async function wire(t: TestContext) {
+export async function wire(t: TestContext, bearerTokenPath?: string) {
   const service = await loadWireService(t);
   const state: WireState = {
     requests: [],
@@ -523,7 +523,12 @@ export async function wire(t: TestContext) {
     server.forceShutdown();
     throw error;
   });
-  const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+  const client = new GrpcOpenShellGatewayClient({
+    endpoint: `127.0.0.1:${port}`,
+    ...(bearerTokenPath === undefined
+      ? {}
+      : { auth: { mode: "bearerTokenFile", path: bearerTokenPath } }),
+  });
   t.after(() => {
     client.close();
     server.forceShutdown();

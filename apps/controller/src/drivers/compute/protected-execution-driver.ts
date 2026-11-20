@@ -114,6 +114,7 @@ export class ProtectedExecutionDriver {
     ready: () => Promise<boolean>,
     harness: () => Promise<SandboxHarnessStatusContext>,
     sign: (startupId: string, installed: EgressInstallation) => Readonly<Record<string, unknown>>,
+    signProbe?: (startupId: string, probeNonce: string) => string,
   ): Promise<boolean | "held"> {
     const preview = context.plan.repositoryGitAuthorization === "request-hook-observed";
     const observeHeld =
@@ -121,7 +122,8 @@ export class ProtectedExecutionDriver {
       (context.plan.repositoryGitAuthorization === "online-request" &&
         !!this.sandbox.observeHeldRepositoryGitPreview);
     const launch = observeHeld ? await harness() : undefined;
-    const stage = launch && (await this.sandbox.observeHeldRepositoryGitPreview?.(launch));
+    const stage =
+      launch && (await this.sandbox.observeHeldRepositoryGitPreview?.(launch, signProbe));
     if (preview && !stage) {
       return false;
     }

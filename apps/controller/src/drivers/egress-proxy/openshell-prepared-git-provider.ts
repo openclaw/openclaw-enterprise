@@ -1,3 +1,8 @@
+import {
+  compileOpenShellGitNetworkPolicy,
+  type OpenShellGitNetworkInput,
+  type OpenShellGitNetworkTarget,
+} from "../sandbox/openshell-git-network-policy.ts";
 import type { RepositoryGitRecipient } from "@openclaw-enterprise/contracts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -7,8 +12,15 @@ import {
   SandboxGatewayUnavailableError,
 } from "@openclaw-enterprise/occ";
 import { openShellInstallationGitProviderPrefix } from "./openshell-repository-git-evidence.ts";
+import {
+  openShellExpectedProviderRule,
+  verifyOpenShellRepositoryPolicy,
+  type OpenShellExpectedProviderRule,
+  type OpenShellGitSandboxVerifier,
+} from "./openshell-repository-policy-readback.ts";
 import { isGitHubWireCredential } from "../repo/github/access/wire-credential.ts";
 import {
+  OpenShellGatewayDispatchRefusedError,
   openShellProfileEndpoint,
   type OpenShellGatewayClient,
   type OpenShellProviderProfile,
@@ -16,22 +28,25 @@ import {
   type OpenShellSandboxProviderStatus,
 } from "../sandbox/openshell-gateway-client.ts";
 
-/** Operator-owned scope; never populate this from a workload request. */
-export type OpenShellPreparedGitDelivery =
-  | { readonly repository: string; readonly installationId?: never }
-  | { readonly repository?: never; readonly installationId: string };
+export {
+  openShellExpectedProviderRule,
+  type OpenShellExpectedProviderRule,
+} from "./openshell-repository-policy-readback.ts";
 
-export type OpenShellPreparedGitScope = OpenShellPreparedGitDelivery & {
+/** Operator-owned scope; never populate this from a workload request. */
+export type OpenShellPreparedGitDelivery = OpenShellGitNetworkTarget;
+
+export type OpenShellPreparedGitScope = OpenShellGitNetworkInput & {
   readonly workspace: string;
   readonly workspaceId: string;
   /** Only the v6 operator-isolated preview requires a known, completed stock receipt. */
   readonly observedHookPreview?: true;
   readonly sandbox: string;
   readonly executionId: string;
-  /** Exact HTTPS origins, including controlled origins used for qualification. */
-  readonly gitOrigin: string;
-  readonly apiOrigin: string;
-  readonly binaries: readonly string[];
+  /** Sibling Provider rules derived from the same locally selected revision profiles. */
+  readonly expectedProviders?: readonly OpenShellExpectedProviderRule[];
+  /** Verify the current revision's policy on a managed Sandbox. */
+  readonly managedSandbox?: true;
 };
 
 /** Only the credential worker supplies this value; no App signing key or OAuth material. */
@@ -155,22 +170,6 @@ function readFailure(
   return undefined;
 }
 
-function origin(value: string): URL {
-  const url = new URL(value);
-  if (
-    url.protocol !== "https:" ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash ||
-    url.pathname !== "/" ||
-    !/^[a-z0-9]+(?:[.-][a-z0-9]+)+$/.test(url.hostname)
-  ) {
-    refuse();
-  }
-  return url;
-}
-
 /**
  * Private operator-plane provisioning, prior to Sandbox attachment/admission. The supplied
  * client must use the installation's authenticated gateway connection; never expose it to
@@ -181,9 +180,15 @@ function origin(value: string): URL {
  * explicit restricted-dogfood risks. Provider endpoints do not enforce refs or PR bodies.
  */
 export class OpenShellPreparedGitProvider {
+  readonly hasRepositoryNetworkPolicy: boolean;
   private readonly client: OpenShellGatewayClient;
   private readonly scope: OpenShellPreparedGitScope;
   private readonly fingerprint: string;
+  // Process-local evidence expires independently of the persisted installation identity.
+  private readonly repositoryPolicyLeases = new WeakMap<
+    OpenShellPreparedGitInstalled,
+    () => boolean
+  >();
   private receipt?: { version: string; id?: string; complete?: true };
 
   private refreshReceipt?: { version: string; id?: string; complete?: true };
@@ -192,29 +197,32 @@ export class OpenShellPreparedGitProvider {
   private readonly provider: string;
 
   constructor(client: OpenShellGatewayClient, scope: OpenShellPreparedGitScope) {
+    scope = { ...scope };
     if (
       !/^[a-z0-9](?:[a-z0-9-]{0,17}[a-z0-9])?$/.test(scope.workspace) ||
       !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(scope.sandbox) ||
       !scope.workspaceId ||
-      !scope.executionId ||
-      (scope.installationId !== undefined
-        ? !/^[1-9][0-9]*$/.test(scope.installationId) ||
-          scope.repository !== undefined ||
-          scope.apiOrigin !== "https://api.github.com" ||
-          scope.gitOrigin !== "https://github.com"
-        : !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(scope.repository) ||
-          scope.repository.split("/").some((part) => part === "." || part === "..")) ||
-      scope.binaries.length === 0 ||
-      scope.binaries.some(
-        (path) => !/^\/[A-Za-z0-9_./-]+$/.test(path) || path.split("/").includes(".."),
-      )
+      !scope.executionId
     ) {
       refuse();
     }
-    const git = origin(scope.gitOrigin);
-    const api = origin(scope.apiOrigin);
+    let network: ReturnType<typeof compileOpenShellGitNetworkPolicy>;
+    try {
+      network = compileOpenShellGitNetworkPolicy(scope);
+    } catch {
+      refuse();
+    }
+    const repositoryNetworkPolicy = network.grants;
+    this.hasRepositoryNetworkPolicy = repositoryNetworkPolicy !== undefined;
     this.client = client;
-    this.scope = Object.freeze({ ...scope, binaries: Object.freeze([...scope.binaries]) });
+    this.scope = Object.freeze({
+      ...scope,
+      binaries: network.binaries,
+      ...(repositoryNetworkPolicy === undefined ? {} : { repositoryNetworkPolicy }),
+      ...(scope.expectedProviders === undefined
+        ? {}
+        : { expectedProviders: structuredClone(scope.expectedProviders) }),
+    });
     this.fingerprint = createHash("sha256")
       .update(
         JSON.stringify([
@@ -223,9 +231,12 @@ export class OpenShellPreparedGitProvider {
           scope.sandbox,
           scope.executionId,
           scope.installationId ? ["github-installation", scope.installationId] : scope.repository,
-          git.origin,
-          api.origin,
-          scope.binaries,
+          network.gitOrigin,
+          network.apiOrigin,
+          this.scope.binaries,
+          ...(repositoryNetworkPolicy === undefined
+            ? []
+            : [["repository-network-policy", repositoryNetworkPolicy]]),
         ]),
       )
       .digest("hex")
@@ -250,46 +261,7 @@ export class OpenShellPreparedGitProvider {
       ],
       // This profile bounds transport, not credential placement or GitHub permissions. Release
       // must independently verify the mandatory request phase, verified TLS and sole recipient.
-      endpoints: scope.installationId
-        ? [
-            {
-              host: git.hostname,
-              port: 443,
-              protocol: "rest",
-              rules: [
-                { allow: { method: "GET", path: "/**/info/refs" } },
-                { allow: { method: "POST", path: "/**/git-upload-pack" } },
-                { allow: { method: "POST", path: "/**/git-receive-pack" } },
-              ],
-            },
-            {
-              host: api.hostname,
-              port: 443,
-              protocol: "rest",
-              access: "NETWORK_ACCESS_PRESET_FULL",
-            },
-            {
-              host: api.hostname,
-              port: 443,
-              protocol: "graphql",
-              path: "/graphql",
-              access: "NETWORK_ACCESS_PRESET_FULL",
-            },
-          ]
-        : [
-            {
-              host: git.hostname,
-              port: Number(git.port || 443),
-              protocol: "rest",
-              path: "/" + scope.repository + ".git/**",
-            },
-            {
-              host: api.hostname,
-              port: Number(api.port || 443),
-              protocol: "rest",
-              path: "/repos/" + scope.repository + "/pulls",
-            },
-          ],
+      endpoints: network.endpoints,
       binaries: this.scope.binaries,
       inferenceCapable: false,
       annotations: { [OWNER]: this.fingerprint, [GIT_REVISION]: scope.executionId },
@@ -635,17 +607,49 @@ export class OpenShellPreparedGitProvider {
     return true;
   }
 
-  /** The provider profile's exact credential-bearing rule, as composed by the stock 0.1.5 gateway. */
+  /** A launcher receipt changes no field verified by the policy observation. */
+  withEnrollment(
+    installation: OpenShellPreparedGitInstalled,
+    enrollment: OpenShellPreparedGitInstalled["enrollment"],
+  ): OpenShellPreparedGitInstalled {
+    const { enrollment: _previous, ...identity } = installation;
+    const updated = Object.freeze({ ...identity, ...(enrollment && { enrollment }) });
+    const lease = this.repositoryPolicyLeases.get(installation);
+    if (lease) {
+      this.repositoryPolicyLeases.set(updated, lease);
+    }
+    return updated;
+  }
+
+  /** The Provider profile's credential-bearing rule before the Gateway adds token-grant owners. */
   previewNetworkRule() {
-    const name = "_provider_" + this.provider.replaceAll("-", "_");
-    return {
-      name,
-      binaries: this.scope.binaries.map((path) => ({ path })),
-      endpoints: this.profile.endpoints.map((endpoint) => ({
-        ...openShellProfileEndpoint(endpoint),
-        provider_credentialed: true,
-      })),
-    };
+    return openShellExpectedProviderRule(this.provider, this.profile).rule;
+  }
+
+  private async verifyRepositoryPolicy(
+    installation: OpenShellPreparedGitInstalled,
+    signal: AbortSignal,
+    verify?: OpenShellGitSandboxVerifier,
+  ): Promise<boolean> {
+    const verifyManagedSandbox = this.scope.managedSandbox ? verify : undefined;
+    if (this.scope.managedSandbox && !verifyManagedSandbox) {
+      return false;
+    }
+    return verifyOpenShellRepositoryPolicy(
+      this.client,
+      installation,
+      this.previewNetworkRule(),
+      this.scope.expectedProviders,
+      signal,
+      verifyManagedSandbox,
+    );
+  }
+
+  repositoryPolicyIsFresh(installation: OpenShellPreparedGitInstalled): boolean {
+    return (
+      this.scope.repositoryNetworkPolicy === undefined ||
+      this.repositoryPolicyLeases.get(installation)?.() === true
+    );
   }
 
   /**
@@ -662,6 +666,7 @@ export class OpenShellPreparedGitProvider {
     sandboxId: string,
     signal: AbortSignal,
     installed?: OpenShellPreparedGitInstalled,
+    verify?: OpenShellGitSandboxVerifier,
   ): Promise<OpenShellPreparedGitInstalled | undefined> {
     binding = Object.freeze({ ...binding });
     if (
@@ -685,6 +690,7 @@ export class OpenShellPreparedGitProvider {
       this.binding(current, binding.profileVersion, binding.expiresAt, binding.credentialState);
       const requestedAt = Date.now();
       const preview = this.scope.observedHookPreview;
+      const repositoryAcl = this.scope.repositoryNetworkPolicy !== undefined;
       const receipt = this.refreshReceipt ?? this.receipt;
       if (
         preview &&
@@ -692,6 +698,7 @@ export class OpenShellPreparedGitProvider {
       ) {
         return;
       }
+      const readStartedAt = performance.now();
       const status = await this.client.getSandboxProviderStatus(
         this.scope.workspace,
         this.scope.sandbox,
@@ -734,6 +741,7 @@ export class OpenShellPreparedGitProvider {
         evaluatedAt > Date.now() + 30_000 ||
         !Number.isFinite(observedAt) ||
         observedAt > evaluatedAt ||
+        (repositoryAcl && evaluatedAt - observedAt >= 15_000) ||
         (preview &&
           (evaluatedAt - observedAt >= 15_000 ||
             evaluatedAt < requestedAt - 5_000 ||
@@ -755,7 +763,8 @@ export class OpenShellPreparedGitProvider {
         // those are pinned above (resource version, profile version; its profile has no
         // refresh) or by the unchanged policy hash, so only another attached provider moved.
         // Re-check this list when the pinned OpenShell changes.
-        return installed !== undefined &&
+        return !repositoryAcl &&
+          installed !== undefined &&
           status.state === "PROVIDER_READINESS_STATE_PENDING" &&
           status.reason === "PROVIDER_READINESS_REASON_SNAPSHOT_MISMATCH" &&
           installed.workspace === binding.workspace &&
@@ -782,7 +791,7 @@ export class OpenShellPreparedGitProvider {
       ) {
         return undefined;
       }
-      return Object.freeze({
+      const currentInstallation = Object.freeze({
         workspace: binding.workspace,
         sandbox: binding.sandbox,
         sandboxId,
@@ -800,6 +809,21 @@ export class OpenShellPreparedGitProvider {
         processInstanceId: observed.processInstanceId,
         networkInstanceId: status.networkInstanceId,
       });
+      if (repositoryAcl) {
+        // Conservatively charge the full RPC and readback time to the supervisor lease.
+        // Date.parse loses submillisecond wire precision.
+        const deadline = readStartedAt + 14_999 - (evaluatedAt - observedAt);
+        const isFresh = () => performance.now() < deadline;
+        if (
+          !(await this.verifyRepositoryPolicy(currentInstallation, signal, verify)) ||
+          !isFresh() ||
+          (binding.credentialState === "active" && !(Date.parse(binding.expiresAt) > Date.now()))
+        ) {
+          return undefined;
+        }
+        this.repositoryPolicyLeases.set(currentInstallation, isFresh);
+      }
+      return currentInstallation;
     } catch {
       // Read failures are unavailable evidence; never echo gateway diagnostics or token values.
       return undefined;
@@ -811,7 +835,8 @@ export class OpenShellPreparedGitProvider {
     binding: OpenShellPreparedGitBinding,
     previous: OpenShellPreparedGitInstalled,
     signal: AbortSignal,
-  ): Promise<boolean> {
+    verify?: OpenShellGitSandboxVerifier,
+  ): Promise<OpenShellPreparedGitInstalled | undefined> {
     if (
       !this.owns(binding) ||
       binding.credentialState !== "active" ||
@@ -824,16 +849,32 @@ export class OpenShellPreparedGitProvider {
       previous.providerResourceVersion !== binding.resourceVersion ||
       previous.profileVersion !== binding.profileVersion
     ) {
-      return false;
+      return;
     }
     await this.workspace(signal);
     await this.profileVersion(signal, binding.profileVersion);
     const current = await this.client.getProvider(this.scope.workspace, this.provider, signal);
     if (current?.id !== binding.providerId || current.resourceVersion !== binding.resourceVersion) {
-      return false;
+      return;
     }
     this.binding(current, binding.profileVersion, binding.expiresAt);
-    return observeOpenShellGitPredecessor(this.client, previous, signal);
+    if (
+      this.scope.repositoryNetworkPolicy !== undefined &&
+      !(await this.verifyRepositoryPolicy(previous, signal, verify))
+    ) {
+      return;
+    }
+    // Observe the same generation after readback so the reads cannot consume its lease.
+    const lease = await observeOpenShellGitPredecessor(this.client, previous, signal);
+    if (!lease) {
+      return;
+    }
+    if (this.scope.repositoryNetworkPolicy === undefined) {
+      return previous;
+    }
+    const installation = Object.freeze({ ...previous });
+    this.repositoryPolicyLeases.set(installation, () => process.hrtime.bigint() < lease.validUntil);
+    return this.repositoryPolicyIsFresh(installation) ? installation : undefined;
   }
 
   /**
@@ -865,7 +906,7 @@ export class OpenShellPreparedGitProvider {
 
   async rotate(
     previous: OpenShellPreparedGitBinding,
-    release: () => Promise<OpenShellPreparedGitToken | undefined>,
+    release: () => Promise<(OpenShellPreparedGitToken & { isCurrent?: () => boolean }) | undefined>,
     signal: AbortSignal,
   ): Promise<OpenShellPreparedGitBinding | undefined> {
     previous = Object.freeze({ ...previous });
@@ -885,8 +926,15 @@ export class OpenShellPreparedGitProvider {
         refuse();
       }
       this.binding(current, previous.profileVersion, previous.expiresAt);
-      // This is the last await before the conditional write. Release checks the owner's current
-      // approval, execution, session and material. It cannot recall a write already handed off.
+      // Prepare authentication before releasing material so the final owner checks
+      // run after the bearer file read. The Gateway checks the synchronous guard at send.
+      let update = this.client.updateProviderCredentialsConditionally.bind(this.client);
+      if (this.scope.repositoryNetworkPolicy !== undefined) {
+        if (!this.client.prepareProviderCredentialUpdate) {
+          refuse();
+        }
+        update = await this.client.prepareProviderCredentialUpdate(signal);
+      }
       phase = "release";
       const token = await release();
       phase = "reading";
@@ -894,10 +942,13 @@ export class OpenShellPreparedGitProvider {
         return;
       }
       this.token(token);
+      if (token.isCurrent && !token.isCurrent()) {
+        return;
+      }
       phase = "writing";
       // The write runs to its own deadline, not the caller's remaining read budget (finding 2211).
       const write = AbortSignal.timeout(WRITE_TIMEOUT_MS);
-      const updated = await this.client.updateProviderCredentialsConditionally(
+      const updated = await update(
         {
           workspace: this.scope.workspace,
           name: this.provider,
@@ -908,6 +959,7 @@ export class OpenShellPreparedGitProvider {
         },
         previous.resourceVersion,
         write,
+        token.isCurrent,
       );
       if (
         updated.id !== previous.providerId ||
@@ -945,6 +997,9 @@ export class OpenShellPreparedGitProvider {
     } catch (error) {
       // Refused before the write for a read the gateway did not answer, the rotation is
       // observed again later; an unknown write is never retried (finding 2136).
+      if (error instanceof OpenShellGatewayDispatchRefusedError) {
+        return;
+      }
       if (phase === "release") {
         throw error; // The local authority failed before this writer could send anything.
       }

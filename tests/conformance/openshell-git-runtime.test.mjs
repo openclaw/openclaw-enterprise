@@ -22,6 +22,7 @@ import {
   takeUnloggedRuntimeFields,
 } from "../helpers/openshell-git-runtime.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.ts";
+import { stockGitPolicy } from "../helpers/openshell-stock-git-policy.ts";
 
 // Every field the runtime emits reaches the worker log: the production logger drops what it
 // does not allowlist, so an event asserted only before the logger can be lost (finding 2244).
@@ -152,7 +153,7 @@ async function observedGitRoute(
     policy: async () => sourcePolicy,
     execution: async () => "original-execution",
   };
-  const gitRule = new OpenShellPreparedGitProvider(f.client, {
+  const observedProvider = new OpenShellPreparedGitProvider(f.client, {
     ...f.entry.authorization.delivery,
     workspace: f.sandbox.workspace,
     workspaceId: "workspace-id",
@@ -161,8 +162,10 @@ async function observedGitRoute(
     gitOrigin: "https://github.com",
     apiOrigin: "https://api.github.com",
     binaries: ["/usr/bin/git"],
-  }).previewNetworkRule();
+  });
+  const gitRule = observedProvider.previewNetworkRule();
   f.provider.previewNetworkRule = () => gitRule;
+  f.provider.withEnrollment = observedProvider.withEnrollment.bind(observedProvider);
   f.provider.settlePreviewReceipt = async () => true;
   let environment;
   const observe = f.provider.observe;
@@ -213,7 +216,7 @@ async function observedGitRoute(
   f.client.getSandboxConfig = async () => ({
     policy: {
       network_policies: {
-        [gitRule.name]: gitRule,
+        [gitRule.name]: stockGitPolicy(gitRule, f.entry.binding.providerId),
         _provider_openai: {
           name: "_provider_openai",
           endpoints: [{ host: "api.openai.com", port: 443 }],
@@ -535,9 +538,12 @@ async function observedGitRoute(
     };
     let deliveries = 0;
     await assert.rejects(
-      f.runtime.releasePreview(revision.id, startupId, async () => {
-        deliveries++;
-        return true;
+      f.runtime.releasePreview(revision.id, startupId, {
+        prepare: async () => {},
+        deliver: async () => {
+          deliveries++;
+          return true;
+        },
       }),
       { message: "The preview release was not acknowledged." },
     );
@@ -552,9 +558,12 @@ async function observedGitRoute(
   if (releaseFault === "response-lost") {
     const sent = Promise.withResolvers();
     const response = Promise.withResolvers();
-    const releasing = f.runtime.releasePreview(revision.id, startupId, async () => {
-      sent.resolve();
-      return response.promise;
+    const releasing = f.runtime.releasePreview(revision.id, startupId, {
+      prepare: async () => {},
+      deliver: async () => {
+        sent.resolve();
+        return response.promise;
+      },
     });
     const failed = assert.rejects(releasing, { message: "release response lost" });
     await sent.promise;
@@ -588,7 +597,10 @@ async function observedGitRoute(
     await f.runtime.observeHeldPreview(revision.id, startupId, signal, probe),
     "installed",
   );
-  await f.runtime.releasePreview(revision.id, startupId, async () => true);
+  await f.runtime.releasePreview(revision.id, startupId, {
+    prepare: async () => {},
+    deliver: async () => true,
+  });
   assert.ok(await f.lookup(), "first read after held launch ACK");
   if (afterRelease) {
     await afterRelease(f, revision);
@@ -710,7 +722,10 @@ async function observedGitRoute(
       "a new process preserves the same execution authorization",
     );
     assert.equal(await f.lookup(), undefined, "fresh readiness alone cannot release a launcher");
-    await f.runtime.releasePreview(revision.id, startupId, async () => true);
+    await f.runtime.releasePreview(revision.id, startupId, {
+      prepare: async () => {},
+      deliver: async () => true,
+    });
     assert.ok(await f.lookup());
     assert.equal(f.calls.rotate, 1, "recovery never replays the credential write");
 
@@ -731,7 +746,10 @@ async function observedGitRoute(
     await f.runtime.observeHeldPreview(revision.id, startupId, signal, probe);
     assert.equal(f.runtime.previewReleased(revision.id), false);
     await f.reconcile();
-    await f.runtime.releasePreview(revision.id, startupId, async () => true);
+    await f.runtime.releasePreview(revision.id, startupId, {
+      prepare: async () => {},
+      deliver: async () => true,
+    });
     resume.resolve();
     assert.equal(await staleRequest, undefined, "the previous launcher cannot borrow the new ACK");
     assert.ok(await f.lookup());

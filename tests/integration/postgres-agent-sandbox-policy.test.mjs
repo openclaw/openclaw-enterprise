@@ -389,8 +389,7 @@ test(
   async (t) => {
     const fixture = await createPolicyApp(t);
     const { controller, state, pool, inject, deployAgent, grant, sandboxDriver } = fixture;
-    // A valid ACL is still untrusted when an ordinary Driver supplies it.
-    assert.equal(sandboxDriver.admitRepositoryNetworkPolicy, undefined);
+    // A valid ACL is still untrusted when returned by ordinary network admission.
     const write = { repository: "example/project-a", access: "write" };
     const repositoryNetworkPolicy = admitRepositoryNetworkPolicy([write], [write]);
     assert.ok(repositoryNetworkPolicy);
@@ -557,6 +556,7 @@ test(
             assert.equal(added.length, 1, "the HTTP request must persist a real revision");
             assert.equal(added[0].id, response.json().data.id);
             assert.equal(added[0].executionAdmission.mode, "unprotected");
+            assert.equal(added[0].sandboxPolicy?.repositoryNetworkPolicy, undefined);
             if (scenario.noAdmission) {
               assert.equal(added[0].sandboxDriverId, "deployment-no-policy");
               assert.equal(added[0].sandboxPolicy, undefined);

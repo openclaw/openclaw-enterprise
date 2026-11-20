@@ -315,6 +315,8 @@ export interface SandboxDriver extends Driver {
    * A denial observed here can select material, never release work. */
   observeHeldRepositoryGitPreview?(
     context: SandboxHarnessStatusContext,
+    /** Compute signs the exact one-use discovery probe for a repository network policy. */
+    signProbe?: (startupId: string, probeNonce: string) => string,
   ): Promise<"held" | "installed" | undefined>;
   /**
    * Release the exact protected Harness startup only after Compute has committed
