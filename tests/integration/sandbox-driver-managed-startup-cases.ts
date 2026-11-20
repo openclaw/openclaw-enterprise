@@ -431,7 +431,7 @@ export function registerManagedOpenShellStartupCases(): void {
         const ownedWorkspace = gateway.workspaces.get(workspace);
         assert.ok(ownedWorkspace);
         const { runtimeManifest, codexConfig, nodeSetup } = runtimeSandboxFixture(sandbox);
-        // Seed the profile and nonsecret configuration managed Codex provisioning stores.
+        // Seed the profile and configuration managed Codex provisioning stores.
         gateway.providers.set(providerName, {
           name: providerName,
           type: "oce-codex-runtime",

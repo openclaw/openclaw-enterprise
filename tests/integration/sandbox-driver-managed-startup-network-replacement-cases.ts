@@ -140,7 +140,11 @@ export function registerManagedStartupNetworkReplacementCases(): void {
       id: string,
       overrides: Partial<HarnessWorkloadRequirements> = {},
     ) => {
-      const effectiveRequirements = { ...requirements, ...overrides };
+      const effectiveRequirements = {
+        ...requirements,
+        ...overrides,
+        labels: { ...requirements.labels, ...overrides.labels, "openclaw.dev/revision": id },
+      };
       return driver.provisionHarness({
         ...context,
         revision: { ...completeWorkspaceRevision(fixtureRevision, effectiveRequirements), id },
@@ -180,6 +184,8 @@ export function registerManagedStartupNetworkReplacementCases(): void {
     assert.equal(writes, 2);
     failure = undefined;
     await provision(replacement, next);
+    assert.equal(currentSandbox().phase, "SANDBOX_PHASE_READY");
+    assert.equal(currentSandbox().labels["openclaw.dev/revision"], next);
     assert.equal(writes, 2, "Retry adopts the stored policy without another write");
     assert.deepEqual(
       currentSandbox().spec.policy,
@@ -248,7 +254,10 @@ export function registerManagedStartupNetworkReplacementCases(): void {
     await assert.rejects(replacement.observeHarness(observationContext), /did not activate/);
     policyState = "POLICY_STATUS_LOADED";
     currentSandbox().phase = "SANDBOX_PHASE_STOPPED";
-    await provision(original, "rev_00000000-0000-4000-8000-000000000009");
+    const later = "rev_00000000-0000-4000-8000-000000000009";
+    await provision(original, later);
+    assert.equal(currentSandbox().phase, "SANDBOX_PHASE_READY");
+    assert.equal(currentSandbox().labels["openclaw.dev/revision"], later);
     assert.equal(
       currentPolicy().network_policies.documentation,
       undefined,
@@ -347,6 +356,7 @@ export function registerManagedStartupNetworkReplacementCases(): void {
         interrupt = undefined;
         await replace();
         assert.equal(currentSandbox().phase, "SANDBOX_PHASE_READY");
+        assert.equal(currentSandbox().labels["openclaw.dev/revision"], target);
         assert.equal(currentSandbox().id, "stable-policy-sandbox");
         assert.deepEqual(mutations, ["clear", "detach", "attach", "final", "workload"]);
         await replace();

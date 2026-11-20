@@ -174,6 +174,11 @@ export function registerManagedStartupRenderingCases(): void {
     client.getService = async () =>
       harnessService(currentRequest().name, "", "http://codex.example.test:8080/");
     const { context, revision: fixtureRevision, requirements } = runtimeSandboxFixture(driver);
+    const readSandbox = () =>
+      client.getSandbox(
+        { workspace: currentRequest().workspace, name: currentRequest().name },
+        context.signal,
+      );
     const revision = completeWorkspaceRevision(fixtureRevision, requirements);
     requirements.environment = requirements.environment.filter(
       ({ name }) => name !== "OPENCLAW_NODE_CA_PEM",
@@ -240,7 +245,10 @@ export function registerManagedStartupRenderingCases(): void {
       driver.provisionHarness({
         ...context,
         revision: successor,
-        requirements: { ...requirements, labels: { "openclaw.dev/revision": successor.id } },
+        requirements: {
+          ...requirements,
+          labels: { ...requirements.labels, "openclaw.dev/revision": successor.id },
+        },
       });
     // A refused patch (for example, profile validation or a version conflict)
     // and an acknowledged but uncommitted patch must both prevent workload update.
@@ -297,12 +305,9 @@ export function registerManagedStartupRenderingCases(): void {
       phase = "SANDBOX_PHASE_READY";
       return storedSandbox(currentRequest(), { phase });
     };
-    await driver.provisionHarness({
-      ...context,
-      revision: successor,
-      requirements: { ...requirements, labels: { "openclaw.dev/revision": successor.id } },
-    });
+    await replace();
     assert.equal(phase, "SANDBOX_PHASE_READY");
+    assert.equal((await readSandbox())?.labels["openclaw.dev/revision"], successor.id);
     assert.equal(currentRequest().annotations["openclaw.dev/revision-id"], successor.id);
     assert.equal(
       client.calls.filter(([operation]) => operation === "updateProviderConfig").length,
@@ -388,6 +393,7 @@ export function registerManagedStartupRenderingCases(): void {
         ) => {
           const effectiveRequirements = {
             ...requirements,
+            labels: { ...requirements.labels, "openclaw.dev/revision": id },
             credentialAttachments: [credentialAttachment],
           };
           return driver.provisionHarness({
@@ -397,8 +403,10 @@ export function registerManagedStartupRenderingCases(): void {
           });
         };
         phase = "SANDBOX_PHASE_STOPPED";
-        await provision("rev_00000000-0000-4000-8000-000000000005", attachment);
+        const prior = "rev_00000000-0000-4000-8000-000000000005";
+        await provision(prior, attachment);
         assert.equal(phase, "SANDBOX_PHASE_READY");
+        assert.equal((await readSandbox())?.labels["openclaw.dev/revision"], prior);
         phase = "SANDBOX_PHASE_STOPPED";
         loseResponse = "detach";
         const next = "rev_00000000-0000-4000-8000-000000000006";
@@ -419,6 +427,7 @@ export function registerManagedStartupRenderingCases(): void {
         client.getPolicyStatus = async () => policyStatus(structuredClone(policy));
         await provision(next, nextAttachment);
         assert.equal(phase, "SANDBOX_PHASE_READY");
+        assert.equal((await readSandbox())?.labels["openclaw.dev/revision"], next);
         assert.deepEqual(mutations, [
           ["detach", sourceA],
           ["attach", sourceB],
