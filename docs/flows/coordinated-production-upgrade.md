@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-19"
-last_updated_session: "authoring-run/aed0a2bc-9691-4859-8bd6-1e7b3549c9b4"
+last_updated_session: "authoring-run/62a4c901-7066-4e94-bb84-e010a1f89f1d"
 ---
 
 # Production image upgrade flow
@@ -217,10 +217,13 @@ Pods, and both Deployments before protected writes.
 A failed expected revision follows the usual checked retry.
 
 For [same-candidate recovery](../guides/deploy/production-helm-recovery.md),
-`scripts/upgrade-helm-state.py:recover` checks Helm payload, ownership, completed
-Job/Pod and exact security contexts. `pod_matches` compares requests/limits through
-Compute's `resource-quantities.ts`. Reads use manifest namespaces and release
-ownership. `check-recovery` validates the original attempt before preflight Jobs;
+`scripts/upgrade-helm-state.py:recover` checks Helm payload, ownership and the
+completed Job/Pod through `verify_hook`, which `verify_installation_consumers`
+also uses. Security contexts are exact, except that the retained Pod can carry an
+admission-assigned Pod-level SELinux level and one supplemental group equal to
+the template `runAsGroup` when the template omits them. `pod_matches` compares
+requests/limits through Compute's `resource-quantities.ts`. Reads use manifest
+namespaces and release ownership. `check-recovery` validates the original attempt before preflight Jobs;
 both application identities must pass before a new rollback. `recover` repeats
 admission before exclusive intent and dispatch. Accepted/uncertain recovery stays
 readback-only.
@@ -366,6 +369,8 @@ requires no Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-19 20:33: Accept an admission-assigned SELinux level and Pod group on the retained initializer Pod. (authoring-run/62a4c901-7066-4e94-bb84-e010a1f89f1d - 46b193ba5b9a45386faa747c53886c43f08ccc7b)
+
 - 2026-11-19 19:15: Trace the stopped writers check before Helm retry. (authoring-run/aed0a2bc-9691-4859-8bd6-1e7b3549c9b4 - d976da889bdeca6e9208821a5b4ea79a49033b0f)
 
 - 2026-11-19 17:18: Keep bootstrap handling in the chart. (authoring-run/803c9489-57ed-4e31-a5ea-568f16e22161 - d14128b4a0fc1f499b914107ec6ec14eccc39fdf)
@@ -403,13 +408,5 @@ requires no Agents or Secrets.
 - 2026-11-18 10:33: Reconcile profile/inventory traces. (authoring-run/251425f8-895a-4c1e-ac56-e666545f89ab - 98f60a1b965aa7129256c0802b60969519bc8a86)
 
 - 2026-11-18 10:20: Trace the private profile handoff alongside progress output. (authoring-run/f93ed972-08b6-4310-8194-a6c8c9aeef37 - 2cedf84d05b8c05d812264dffd179eb3ca537fee)
-
-- 2026-11-18 10:13: Preserve progress output and batched inventory reads. (authoring-run/583f9a7a-3375-4446-852d-2dc671c1b88c - 2fd6ef95c30345f242d260cd513c6a36ae3ba805)
-
-- 2026-11-18 08:31: Trace the batched deployment work lookup and its refusal. (authoring-run/049ea467-b4fd-42d2-813a-b0721126ef70 - a1cdbddc6cfb49781cb0a6337aba3aa9a729e798)
-
-- 2026-11-18 05:39: Trace progress output. (authoring-run/19a81e0c-0cb0-48eb-828d-e65e72b6c576 - 8cbb31a6893016f3aa74be9471fce69d3dbc60e7)
-
-- 2026-11-14 07:25: Trace initialization Job selection and migration Pod label validation. (authoring-run/9b1d4770-fd45-4533-9bc4-99395d39837a - ba5b0832956ac3ad93695aab92db952f388ae7da)
 
 [Production image upgrade flow documentation history](coordinated-production-upgrade/history.md) preserves the older dated entries.
