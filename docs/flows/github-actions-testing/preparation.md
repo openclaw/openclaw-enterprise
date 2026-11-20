@@ -234,6 +234,12 @@ The Repository Credentials lane writes the service, client, and qualification ID
 and source commit to a mode-0600 receipt. Production Observability builds the
 service for k3d import and verification on each node.
 
+Production Observability's `scripts/ci/prepare.ts:acquireAndImport` creates the
+cluster while it pulls and builds the workload images. Each image goes into the
+cluster when the cluster and that image are ready. Imports run one at a time.
+After the first failure, queued imports do not start. Preparation waits for
+started work, then reports that first failure.
+
 `scripts/ci/prepare.ts:prepareFileWithState` extracts the delivered `gh`
 only for manifest consumers, using a networkless, read-only container. It checks
 the pinned version before returning the path and cleanup callback. Nonconsumers

@@ -459,6 +459,59 @@ async function prepareTogether<const Operations extends readonly (() => unknown)
   return results as PreparationResults<Operations>;
 }
 
+// Create a cluster while every source acquires its image (a pull or a build). An
+// acquisition resolves to its import, which waits for the cluster. Imports run one at a
+// time, in the order their images become ready: images that share layers may contend
+// for the same containerd content. The acquire phase ends when the cluster and every
+// acquisition have settled; the import phase drains the imports still queued. After the
+// first failure no queued import starts, started work is waited for, and that first
+// failure is the one reported.
+async function acquireAndImport<Cluster>(
+  createCluster: () => Promise<Cluster>,
+  sources: readonly (() => Promise<(cluster: Cluster) => Promise<unknown>>)[],
+  {
+    acquirePhase,
+    importPhase,
+  }: {
+    acquirePhase: (operation: () => Promise<void>) => Promise<void>;
+    importPhase: (operation: () => Promise<void>) => Promise<void>;
+  },
+): Promise<Cluster> {
+  let failure: { error: unknown } | undefined;
+  const fail = (error: unknown) => {
+    failure ??= { error };
+  };
+  let imports: Promise<unknown> = Promise.resolve();
+  const settled = async () => {
+    // Every import chains on the one before it and records its own failure.
+    await imports;
+    if (failure) {
+      throw failure.error;
+    }
+  };
+  const cluster = createCluster();
+  cluster.catch(fail);
+  await acquirePhase(async () => {
+    await Promise.allSettled([
+      cluster,
+      ...sources.map(async (source) => {
+        try {
+          const importInto = await source();
+          const ready = await cluster;
+          imports = imports.then(() => (failure ? undefined : importInto(ready))).catch(fail);
+        } catch (error) {
+          fail(error);
+        }
+      }),
+    ]);
+    if (failure) {
+      await settled();
+    }
+  });
+  await importPhase(settled);
+  return cluster;
+}
+
 function addResource<Kind extends string, Details extends object>(
   state: PreparationState,
   kind: Kind,
@@ -1711,70 +1764,68 @@ async function prepareLane({
         OCC_TEST_PRODUCTION_POSTGRES_IMAGE: inputs.OCC_TEST_PRODUCTION_POSTGRES_IMAGE,
         OCC_TEST_OBSERVABILITY_COLLECTOR_IMAGE: production.logging.collector.image,
       };
-      const [cluster, built, , fixture, serviceTag] = await timedPreparation(
-        name,
-        "cluster-build-pull",
-        () =>
-          prepareTogether([
-            () => ensureK3dCluster(resolvedStatePath, state),
-            async () => {
-              await ensureDockerSourceImage(state, inputs.NODE_BASE_IMAGE!, "NODE_BASE_IMAGE");
-              return buildRuntimeImages(resolvedStatePath, state, {
-                controller: true,
-                nodeBaseImage: inputs.NODE_BASE_IMAGE,
-                localStore: true,
-              });
-            },
-            () =>
-              prepareTogether(
-                Object.entries(externalImages)
-                  .filter(([, image]) => image !== inputs.NODE_BASE_IMAGE)
-                  .map(
-                    ([variable, image]) =>
-                      () =>
-                        ensureDockerSourceImage(state, image!, variable),
-                  ),
-                2,
-              ),
-            () => buildFixtureImage(resolvedStatePath, state),
-            () =>
-              prepareRepositoryCredentials({
+      const importWorkload = (variable: string, image: string) => async (cluster: K3dCluster) => {
+        progress(name, `Importing ${variable}.`);
+        env[variable] = (
+          await registerImageInK3d(resolvedStatePath, state, cluster, image, variable)
+        ).reference;
+      };
+      let nodeBasePull: Promise<unknown> | undefined;
+      const pullNodeBase = () =>
+        (nodeBasePull ??= ensureDockerSourceImage(
+          state,
+          inputs.NODE_BASE_IMAGE!,
+          "NODE_BASE_IMAGE",
+        ));
+      // Each import still verifies the immutable reference through CRI on every node.
+      const cluster = await acquireAndImport(
+        () => ensureK3dCluster(resolvedStatePath, state),
+        [
+          async () => {
+            const fixture = await buildFixtureImage(resolvedStatePath, state);
+            return async (cluster) => {
+              env.OCC_TEST_KUBERNETES_IMAGE = (
+                await importFixtureImage(resolvedStatePath, state, cluster, fixture)
+              ).image;
+              await pinFixtureImageInK3d(cluster, env.OCC_TEST_KUBERNETES_IMAGE);
+            };
+          },
+          async () => {
+            await pullNodeBase();
+            const built = await buildRuntimeImages(resolvedStatePath, state, {
+              controller: true,
+              nodeBaseImage: inputs.NODE_BASE_IMAGE,
+              localStore: true,
+            });
+            return importWorkload(
+              "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
+              built.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE!,
+            );
+          },
+          async () =>
+            importWorkload(
+              "OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE",
+              await prepareRepositoryCredentials({
                 repositoryRoot,
                 ...repositoryCredentialsImageJournal(resolvedStatePath, state),
                 execFile,
                 serviceOnly: true,
               }),
-          ]),
+            ),
+          ...Object.entries(externalImages).map(([variable, image]) => async () => {
+            await (image === inputs.NODE_BASE_IMAGE
+              ? pullNodeBase()
+              : ensureDockerSourceImage(state, image!, variable));
+            return importWorkload(variable, image!);
+          }),
+        ],
+        {
+          acquirePhase: (operation) => timedPreparation(name, "cluster-build-pull", operation),
+          importPhase: (operation) => timedPreparation(name, "workload-image-imports", operation),
+        },
       );
       env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
       env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
-      // Keep imports into this cluster serial: images that share layers may
-      // contend for the same containerd content. The pulls and
-      // builds above overlap. Each import still verifies the immutable
-      // reference through CRI on every node.
-      await timedPreparation(name, "workload-image-imports", () =>
-        prepareTogether(
-          [
-            async () => {
-              env.OCC_TEST_KUBERNETES_IMAGE = (
-                await importFixtureImage(resolvedStatePath, state, cluster, fixture)
-              ).image;
-              await pinFixtureImageInK3d(cluster, env.OCC_TEST_KUBERNETES_IMAGE);
-            },
-            ...Object.entries({
-              OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: built.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE,
-              OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE: serviceTag,
-              ...externalImages,
-            }).map(([variable, image]) => async () => {
-              progress(name, `Importing ${variable}.`);
-              env[variable] = (
-                await registerImageInK3d(resolvedStatePath, state, cluster, image, variable)
-              ).reference;
-            }),
-          ],
-          1,
-        ),
-      );
       break;
     }
     case "k3d-observability-demo": {
@@ -2394,6 +2445,7 @@ export async function prepareImageCacheBuilds(statePath: string | undefined) {
 }
 
 export {
+  acquireAndImport,
   devUpUnrelatedImage,
   prepareDevUpImage,
   defaultK3sImage,

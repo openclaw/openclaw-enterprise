@@ -141,8 +141,9 @@ In the Production Observability job, find `lane=k3d-observability` in the
 **Prepare lane** and **Cleanup lane** step logs. The check annotation title is
 `Production Observability timing`. Match the run ID, attempt, and tested SHA.
 Pair one start with one finish for each phase in order. `cluster-build-pull`
-covers concurrent cluster preparation and image builds and pulls.
-`workload-image-imports` covers serial workload image imports into the cluster.
+covers concurrent cluster preparation and image builds and pulls, and the
+serial imports of images that are ready before the last build or pull ends.
+`workload-image-imports` covers the remaining serial imports into the cluster.
 `lane-cleanup` covers resource cleanup through the lane result update. A finish
 reports success or failure with elapsed milliseconds. Cleanup reports a skip
 without a duration when it processes no resource journal and finalization

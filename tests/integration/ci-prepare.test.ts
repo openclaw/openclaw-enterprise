@@ -22,7 +22,12 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, test } from "node:test";
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.ts";
-import { defaultK3sImage, prepareLane, prepareFile } from "../../scripts/ci/prepare.ts";
+import {
+  acquireAndImport,
+  defaultK3sImage,
+  prepareLane,
+  prepareFile,
+} from "../../scripts/ci/prepare.ts";
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { listen } from "../helpers/listen.ts";
 import {
@@ -493,6 +498,182 @@ startObservabilityPhase("k3d-observability", phase)(outcome, 5);`;
     }
     assert.equal(result.stderr, expected.join(""), `unexpected notices for ${phase} ${outcome}`);
   }
+});
+
+// Drives acquireAndImport with controlled steps. Each phase records its start and its
+// outcome; every import records its start and end and the cluster it received.
+function importHarness() {
+  const log: string[] = [];
+  let active = 0;
+  const phase =
+    (label: string) =>
+    async (operation: () => Promise<void>): Promise<void> => {
+      log.push(`${label}:start`);
+      try {
+        await operation();
+        log.push(`${label}:success`);
+      } catch (error) {
+        log.push(`${label}:failure`);
+        throw error;
+      }
+    };
+  const importStep =
+    (name: string, gate?: Promise<void>, error?: Error) => async (cluster: string) => {
+      active += 1;
+      assert.equal(active, 1, "imports into one cluster run one at a time");
+      log.push(`import ${name} into ${cluster}`);
+      try {
+        await gate;
+        if (error) {
+          throw error;
+        }
+      } finally {
+        active -= 1;
+        log.push(`imported ${name}`);
+      }
+    };
+  return {
+    log,
+    importStep,
+    phases: { acquirePhase: phase("acquire"), importPhase: phase("import") },
+  };
+}
+
+async function settles(promise: Promise<unknown>) {
+  let settled = false;
+  promise.then(
+    () => (settled = true),
+    () => (settled = true),
+  );
+  // Let every ready continuation run before reading the flag.
+  await delay(10);
+  return settled;
+}
+
+test("Production Observability imports each ready image while later builds still run", async () => {
+  const { log, importStep, phases } = importHarness();
+  const cluster = Promise.withResolvers<string>();
+  const slowBuild = Promise.withResolvers<void>();
+  const prepared = acquireAndImport(
+    () => cluster.promise,
+    [
+      async () => {
+        log.push("acquired fixture");
+        return importStep("fixture");
+      },
+      async () => {
+        await slowBuild.promise;
+        log.push("acquired controller");
+        return importStep("controller");
+      },
+      async () => {
+        log.push("acquired collector");
+        return importStep("collector");
+      },
+    ],
+    phases,
+  );
+  await delay(10);
+  assert.ok(!log.some((entry) => entry.startsWith("import ")), "imports wait for the cluster");
+  cluster.resolve("cluster-a");
+  await waitUntil("ready imports", () => log.includes("imported collector"), 2_000);
+  // The ready images are in the cluster before the slow build finishes.
+  assert.ok(!log.includes("acquired controller"));
+  assert.ok(!log.includes("acquire:success"));
+  slowBuild.resolve();
+  assert.equal(await prepared, "cluster-a");
+  assert.deepEqual(
+    log.filter((entry) => entry.startsWith("import ")),
+    [
+      "import fixture into cluster-a",
+      "import collector into cluster-a",
+      "import controller into cluster-a",
+    ],
+  );
+  assert.ok(log.indexOf("acquire:success") < log.indexOf("import:start"));
+  assert.equal(log.at(-1), "import:success");
+});
+
+test("Production Observability preparation waits for started work and reports the first failure", async (t) => {
+  for (const failing of ["cluster", "acquisition", "import"] as const) {
+    await t.test(failing, async () => {
+      const { log, importStep, phases } = importHarness();
+      const first = new Error(`synthetic ${failing} failure`);
+      const inFlightImport = Promise.withResolvers<void>();
+      const slowAcquisition = Promise.withResolvers<void>();
+      const failedAcquisition = Promise.withResolvers<void>();
+      const cluster = failing === "cluster" ? Promise.reject(first) : Promise.resolve("cluster-b");
+      cluster.catch(() => {});
+      const prepared = acquireAndImport(
+        () => cluster,
+        [
+          // An import that is still running when the failure is recorded (unless the
+          // cluster failed, in which case no import may start at all).
+          async () =>
+            importStep("started", inFlightImport.promise, failing === "import" ? first : undefined),
+          // Ready, but queued behind the started import.
+          async () => importStep("queued"),
+          // A pull or build that fails while the other work runs.
+          async () => {
+            if (failing === "acquisition") {
+              await failedAcquisition.promise;
+              throw first;
+            }
+            return importStep("unfailed");
+          },
+          // A slower acquisition that fails later: never reported over the first.
+          async () => {
+            await slowAcquisition.promise;
+            throw new Error("synthetic later failure");
+          },
+        ],
+        phases,
+      );
+      prepared.catch(() => {});
+      if (failing === "acquisition") {
+        await waitUntil(
+          "started import",
+          () => log.includes("import started into cluster-b"),
+          2_000,
+        );
+        failedAcquisition.resolve();
+      }
+      await delay(10);
+      inFlightImport.resolve();
+      assert.equal(await settles(prepared), false, "the slower acquisition is still running");
+      slowAcquisition.resolve();
+      await assert.rejects(prepared, (error) => error === first);
+      assert.deepEqual(
+        log.filter((entry) => entry.startsWith("import ")),
+        failing === "cluster" ? [] : ["import started into cluster-b"],
+      );
+      assert.ok(!log.includes("import:start"), "a failed acquire phase starts no import phase");
+      assert.equal(log.at(-1), "acquire:failure");
+    });
+  }
+});
+
+test("Production Observability import failures after the last acquisition stop queued imports", async () => {
+  const { log, importStep, phases } = importHarness();
+  const gate = Promise.withResolvers<void>();
+  const first = new Error("synthetic late import failure");
+  const prepared = acquireAndImport(
+    async () => "cluster-c",
+    [async () => importStep("failing", gate.promise, first), async () => importStep("queued")],
+    phases,
+  );
+  prepared.catch(() => {});
+  await waitUntil("import phase", () => log.includes("import:start"), 2_000);
+  gate.resolve();
+  await assert.rejects(prepared, (error) => error === first);
+  assert.deepEqual(log, [
+    "acquire:start",
+    "import failing into cluster-c",
+    "acquire:success",
+    "import:start",
+    "imported failing",
+    "import:failure",
+  ]);
 });
 
 // Most cases wait on preparation children: fake engines, deliberate command timeouts
