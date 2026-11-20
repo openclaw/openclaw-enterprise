@@ -9,6 +9,8 @@ import type {
   OpenShellSandboxLogReader,
   OpenShellSandboxLogsResponse,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { projectOpenShellGitAclFailure } from "../../scripts/ci/openshell-git-retention.mjs";
+import type { startSkipperPrivateGitOrigin } from "../fixtures/skipper-private-git-origin.mjs";
 
 /** Keep raw Git errors inside the workload and emit only the observed denial category. */
 export function gitRemovalDenialCommand(
@@ -398,30 +400,234 @@ export function createOpenShellGitDenial({
 }
 
 type GitAclDenial =
-  { kind: "git" } | { kind: "rest"; method: "GET" | "POST"; path: string; host: string };
+  | { kind: "git" }
+  | { kind: "rest" | "request-authority"; method: "GET" | "POST"; path: string; host: string };
+
+type GitAclObservation =
+  | GitAclDenial
+  | { kind: "success" }
+  | { kind: "variant"; method: "GET" | "HEAD" | "POST"; path: string; host: string };
+
+type GitAclCredentialFingerprint = readonly [length: number, sha256: string];
+
+interface GitAclVariant {
+  readonly name: string;
+  readonly repository: "fixture/a" | "fixture/c";
+  readonly method: "GET" | "HEAD" | "POST";
+  readonly target: string;
+  readonly path: string;
+  readonly service: "git-upload-pack" | "git-receive-pack";
+  readonly body?: string;
+  readonly expected: "rest-denial" | "head-denial" | "safe-read";
+}
+
+export function gitAclVariants(initialSha: string): readonly GitAclVariant[] {
+  const upload = "git-upload-pack";
+  const receive = "git-receive-pack";
+  const discovery = (
+    name: string,
+    expected: GitAclVariant["expected"],
+    {
+      service = upload,
+      method = "GET",
+      repository = "fixture/a",
+      wireRepository = repository + ".git",
+      query = `service=${service}`,
+    }: {
+      service?: GitAclVariant["service"];
+      method?: "GET" | "HEAD";
+      repository?: GitAclVariant["repository"];
+      wireRepository?: string;
+      query?: string;
+    } = {},
+  ): GitAclVariant => ({
+    name,
+    expected,
+    repository,
+    method,
+    service,
+    path: `/${repository}.git/info/refs`,
+    target: `/${wireRepository}/info/refs?${query}`,
+  });
+  const rpc = (
+    name: string,
+    repository: GitAclVariant["repository"],
+    service: GitAclVariant["service"],
+    target: string,
+  ): GitAclVariant => ({
+    name,
+    repository,
+    service,
+    target,
+    path: `/${repository}.git/${service}`,
+    method: "POST",
+    body: service === upload ? `0032want ${initialSha}\n00000009done\n` : "0000",
+    expected: "rest-denial",
+  });
+  return [
+    discovery("upload then receive", "rest-denial", {
+      service: receive,
+      query: `service=${upload}&service=${receive}`,
+    }),
+    discovery("receive then upload", "rest-denial", {
+      query: `service=${receive}&service=${upload}`,
+    }),
+    discovery("encoded mixed service key", "rest-denial", {
+      service: receive,
+      query: `service=${upload}&%73ervice=${receive}`,
+    }),
+    discovery("identical upload values", "safe-read", {
+      query: `service=${upload}&service=${upload}`,
+    }),
+    discovery("extra query parameter", "safe-read", { query: `service=${upload}&extra=1` }),
+    discovery("case-sensitive extra key", "safe-read", {
+      query: `service=${upload}&Service=${receive}`,
+    }),
+    discovery("encoded A upload discovery", "safe-read", {
+      wireRepository: "fixture/%61.git",
+      query: "%73ervice=git-%75pload-pack",
+    }),
+    discovery("HEAD A upload", "safe-read", { method: "HEAD" }),
+    discovery("HEAD A receive", "head-denial", { method: "HEAD", service: receive }),
+    discovery("HEAD encoded C upload", "head-denial", {
+      method: "HEAD",
+      repository: "fixture/c",
+      wireRepository: "fixture/%63.git",
+    }),
+    discovery("normalized C upload discovery", "rest-denial", {
+      repository: "fixture/c",
+      wireRepository: "fixture/a.git/%2e%2e/%63.git",
+    }),
+    discovery("encoded C receive discovery", "rest-denial", {
+      service: receive,
+      repository: "fixture/c",
+      wireRepository: "fixture/%63.git",
+    }),
+    rpc("A receive RPC with query", "fixture/a", receive, `/fixture/a.git/${receive}?anything=1`),
+    rpc("encoded C upload RPC", "fixture/c", upload, `/fixture/%63.git/${upload}`),
+    rpc("normalized C receive RPC", "fixture/c", receive, `/fixture/a.git/../%63.git/${receive}`),
+  ];
+}
+
+type GitAclOrigin = Awaited<ReturnType<typeof startSkipperPrivateGitOrigin>>;
+
+export async function calibrateGitAclVariant(
+  origin: GitAclOrigin,
+  index: number,
+  probe: GitAclVariant,
+) {
+  const network = origin.network;
+  assert.ok(network);
+  const before = origin.snapshot().requests;
+  const start = network.requests().length;
+  const witness = await network.probeIssued(index, probe.repository, probe);
+  assert.deepEqual(
+    witness,
+    {
+      status: 200,
+      type: `application/x-${probe.service}-${probe.method === "POST" ? "result" : "advertisement"}`,
+    },
+    probe.name,
+  );
+  assert.equal(origin.snapshot().requests - before, 1, probe.name);
+  assertGitAclVariantOrigin(network.requests().slice(start), index, probe);
+}
+
+export function assertGitAclVariantOrigin(
+  requests: ReturnType<NonNullable<GitAclOrigin["network"]>["requests"]>,
+  index: number,
+  probe: Pick<GitAclVariant, "name" | "repository" | "service" | "method">,
+) {
+  assert.deepEqual(
+    requests,
+    [
+      {
+        repository: probe.repository,
+        operation: `${probe.service === "git-receive-pack" ? "receive" : "upload"}-${probe.method === "POST" ? "pack" : "advertise"}`,
+        method: probe.method,
+        authenticated: true,
+        credentialIndex: index,
+      },
+    ],
+    probe.name,
+  );
+}
+
+export function assertGitAclVariantOutcome(
+  probe: GitAclVariant,
+  output: string,
+  httpDelta: number,
+  requests: Parameters<typeof assertGitAclVariantOrigin>[0],
+  index: number,
+) {
+  if (output === "200 upload-advertisement\n" && probe.expected === "safe-read") {
+    assert.equal(httpDelta, 1, probe.name);
+    assertGitAclVariantOrigin(requests, index, probe);
+    return "upload-advertisement";
+  }
+  assert.equal(httpDelta, 0, `${probe.name}: forbidden origin HTTP`);
+  const decision = /^403 (native-rest-policy|git-request-authority|head-http)\n$/.exec(output)?.[1];
+  if (probe.expected === "rest-denial") {
+    assert.equal(decision, "native-rest-policy", probe.name);
+  } else if (probe.expected === "head-denial" || probe.method === "HEAD") {
+    assert.equal(decision, "head-http", probe.name);
+  } else {
+    assert.ok(
+      decision === "native-rest-policy" || decision === "git-request-authority",
+      probe.name,
+    );
+  }
+  return decision;
+}
+
+export function gitAclVariantCurlArgs(probe: GitAclVariant) {
+  return [
+    "--path-as-is",
+    ...(probe.method === "HEAD" ? ["--head"] : ["-X", probe.method]),
+    ...(probe.body === undefined
+      ? []
+      : [
+          "-H",
+          `Content-Type: application/x-${probe.service}-request`,
+          "--data-binary",
+          probe.body,
+        ]),
+  ];
+}
+
+/** Expose only a complete, credential-free diagnostic from the contained client. */
+export function describeGitAclFailure(stderr: Buffer): string | undefined {
+  const output = stderr.toString("utf8");
+  return output.endsWith("\n") ? projectOpenShellGitAclFailure(output.slice(0, -1)) : undefined;
+}
 
 /** Run the same bounded denial check in the installed guest and the local test. */
-export function createGitAclDenialCommand(token: string) {
-  const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
-  const fingerprints = [token, basic].flatMap((value) => [
-    String(Buffer.byteLength(value)),
-    createHash("sha256").update(value).digest("hex"),
-  ]);
+export function createGitAclDenialCommand(
+  credential: string | readonly GitAclCredentialFingerprint[],
+) {
+  const verifyEnvironment = typeof credential !== "string";
+  const fingerprints = verifyEnvironment
+    ? credential
+    : [credential, Buffer.from(`x-access-token:${credential}`).toString("base64")].map((value) => [
+        Buffer.byteLength(value),
+        createHash("sha256").update(value).digest("hex"),
+      ]);
   // Node's TypeScript loader erases types. The guest needs only Node builtins.
   const script = `(${checkGitAclDenial.toString()})().catch(() => {
     process.stderr.write("ACL_DENIAL_CAPTURE\\n");
     process.exitCode = 1;
   });`;
-  return (denial: GitAclDenial, [executable, ...args]: [string, ...string[]]) => [
+  return (observation: GitAclObservation, [executable, ...args]: [string, ...string[]]) => [
     "node",
     "--eval",
     script,
     "--",
-    ...fingerprints,
-    denial.kind,
-    denial.kind === "rest" ? denial.method : "",
-    denial.kind === "rest" ? denial.path : "",
-    denial.kind === "rest" ? denial.host : "",
+    JSON.stringify(fingerprints),
+    String(verifyEnvironment),
+    observation.kind,
+    "method" in observation ? observation.method : "",
+    "path" in observation ? observation.path : "",
+    "host" in observation ? observation.host : "",
     executable,
     ...args,
   ];
@@ -430,27 +636,55 @@ export function createGitAclDenialCommand(token: string) {
 async function checkGitAclDenial() {
   const { spawnSync } = await import("node:child_process");
   const { createHash } = await import("node:crypto");
-  const [
-    rawLength,
-    rawHash,
-    basicLength,
-    basicHash,
-    kind,
-    method,
-    path,
-    host,
-    executable,
-    ...args
-  ] = process.argv.slice(1);
+  const [encoded, verifyEnvironment, kind, method, path, host, executable, ...args] =
+    process.argv.slice(1);
   const limit = 8192;
   const fail = (diagnostic: string) => {
     process.stderr.write(diagnostic + "\n");
     process.exitCode = 1;
   };
-  if (!executable || (kind !== "git" && kind !== "rest")) {
+  const fingerprints: GitAclCredentialFingerprint[] = JSON.parse(encoded ?? "null");
+  const rest = kind === "rest" || kind === "request-authority" || kind === "variant";
+  if (
+    !executable ||
+    (!rest && kind !== "git" && kind !== "success") ||
+    !Array.isArray(fingerprints) ||
+    fingerprints.length < 2 ||
+    fingerprints.some(
+      ([length, hash]) =>
+        !Number.isSafeInteger(length) || length <= 0 || !/^[a-f0-9]{64}$/.test(hash),
+    )
+  ) {
     return fail("ACL_DENIAL_CAPTURE");
   }
-  if (kind === "rest") {
+  const containsCredential = (stream: Buffer) => {
+    for (const [size, hash] of fingerprints) {
+      for (let offset = 0; offset + size <= stream.length; offset++) {
+        if (
+          createHash("sha256")
+            .update(stream.subarray(offset, offset + size))
+            .digest("hex") === hash
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  if (verifyEnvironment === "true") {
+    if (
+      !/^openshell:resolve:env:s[a-f0-9]{64}_GITHUB_TOKEN$/.test(process.env.GITHUB_TOKEN ?? "")
+    ) {
+      return fail("ACL_PLACEHOLDER_ENVIRONMENT");
+    }
+    for (const value of Object.values(process.env)) {
+      if (value !== undefined && containsCredential(Buffer.from(value))) {
+        return fail("ACL_CREDENTIAL_IN_ENVIRONMENT");
+      }
+    }
+  }
+  if (rest) {
     args.push(
       "-u",
       `x-access-token:${process.env.GITHUB_TOKEN}`,
@@ -465,32 +699,33 @@ async function checkGitAclDenial() {
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: limit + 1,
   });
-  if (error || status === null || !stdout || !stderr || stdout.length + stderr.length > limit) {
-    return fail("ACL_DENIAL_CAPTURE");
+  if (error || status === null || !stdout || !stderr) {
+    const exceededLimit = error !== undefined && "code" in error && error.code === "ENOBUFS";
+    return fail(
+      kind === "variant"
+        ? exceededLimit
+          ? "ACL_VARIANT_OUTPUT_LIMIT"
+          : "ACL_VARIANT_PROCESS"
+        : "ACL_DENIAL_CAPTURE",
+    );
+  }
+  if (stdout.length + stderr.length > limit) {
+    return fail(kind === "variant" ? "ACL_VARIANT_OUTPUT_LIMIT" : "ACL_DENIAL_CAPTURE");
   }
 
   // Scan complete bytes in both streams before interpreting a status or body.
   // Any contiguous match counts, including prefixes and extra JSON fields.
-  for (const [size, hash] of [
-    [Number(rawLength), rawHash],
-    [Number(basicLength), basicHash],
-  ] as const) {
-    if (!Number.isSafeInteger(size) || size <= 0 || !hash || !/^[a-f0-9]{64}$/.test(hash)) {
-      return fail("ACL_DENIAL_CAPTURE");
-    }
-    for (const stream of [stdout, stderr]) {
-      for (let offset = 0; offset + size <= stream.length; offset++) {
-        if (
-          createHash("sha256")
-            .update(stream.subarray(offset, offset + size))
-            .digest("hex") === hash
-        ) {
-          return fail("ACL_CREDENTIAL_IN_OUTPUT");
-        }
-      }
-    }
+  if (containsCredential(stdout) || containsCredential(stderr)) {
+    return fail("ACL_CREDENTIAL_IN_OUTPUT");
   }
 
+  if (kind === "success") {
+    if (status !== 0 || stderr.length !== 0) {
+      return fail("ACL_ALLOWED_CAPTURE");
+    }
+    process.stdout.write(stdout);
+    return;
+  }
   if (kind === "git") {
     if (status === 0) {
       return fail("ACL_NATIVE_UNEXPECTED_SUCCESS");
@@ -504,28 +739,66 @@ async function checkGitAclDenial() {
 
   // A transport failure can leave a convincing status and body in stdout.
   if (status !== 0) {
-    return fail("ACL_DENIAL_CAPTURE");
+    return fail(kind === "variant" ? "ACL_VARIANT_CURL_EXIT_" + status : "ACL_DENIAL_CAPTURE");
   }
   const response = stdout.toString("utf8");
+  if (kind === "variant") {
+    if (stderr.length !== 0) {
+      return fail("ACL_VARIANT_STDERR");
+    }
+    if (
+      (method === "GET" || method === "HEAD") &&
+      response.endsWith("\n200 application/x-git-upload-pack-advertisement\n")
+    ) {
+      process.stdout.write("200 upload-advertisement\n");
+      return;
+    }
+    if (method === "HEAD") {
+      // A real HEAD response has no HTTP body to attribute to REST or middleware.
+      if (!response.endsWith("\n403 application/json\n")) {
+        return fail("ACL_HEAD_STATUS");
+      }
+      process.stdout.write("403 head-http\n");
+      return;
+    }
+  }
+  const diagnostic = kind === "rest" ? "ACL_NATIVE_REST_DENIAL" : "ACL_GIT_AUTHORITY_DENIAL";
   const footer = /\n403 application\/json\n$/.exec(response);
   if (!footer) {
-    return fail("ACL_NATIVE_REST_DENIAL");
+    const status =
+      kind === "variant" ? /\n([1-5][0-9]{2}) [^\r\n]*\n$/.exec(response)?.[1] : undefined;
+    return fail(status === undefined ? diagnostic : "ACL_VARIANT_HTTP_" + status);
   }
   const body = JSON.parse(response.slice(0, footer.index));
   if (
-    body?.error !== "policy_denied" ||
-    body.layer !== "l7" ||
-    body.protocol !== "rest" ||
+    body?.layer !== "l7" ||
     body.method !== method ||
     body.path !== path ||
     body.host !== host ||
-    body.port !== 443 ||
+    body.port !== 443
+  ) {
+    return fail(diagnostic);
+  }
+  if (kind === "request-authority" || (kind === "variant" && body.error === "middleware_denied")) {
+    if (
+      body.error !== "middleware_denied" ||
+      body.middleware !== "oce-prepared-git" ||
+      body.reason_code !== "request_not_allowed"
+    ) {
+      return fail(diagnostic);
+    }
+    process.stdout.write("403 git-request-authority\n");
+    return;
+  }
+  if (
+    body.error !== "policy_denied" ||
+    body.protocol !== "rest" ||
     body.rule_missing?.type !== "rest_allow" ||
     body.rule_missing.layer !== "l7" ||
     body.rule_missing.method !== method ||
     body.rule_missing.path !== path
   ) {
-    return fail("ACL_NATIVE_REST_DENIAL");
+    return fail(diagnostic);
   }
   process.stdout.write("403 native-rest-policy\n");
 }
