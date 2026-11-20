@@ -991,11 +991,14 @@ fi
 [[ "${HELM_DRIVER:-secret}" == secret ]] ||
   die "unset HELM_DRIVER or set it to secret; the upgrade requires Helm release Secrets in the selected cluster."
 
-# Helm reads these independently of --kubeconfig/--kube-context. Keep its
-# endpoint and TLS settings bound to the same selected file as kubectl.
-for variable in HELM_KUBEAPISERVER HELM_KUBECAFILE HELM_KUBETLS_SERVER_NAME HELM_KUBEINSECURE_SKIP_TLS_VERIFY; do
-  [[ -z "${!variable:-}" ]] ||
-    die "unset $variable; configure the endpoint and TLS settings in the selected kubeconfig before starting or resuming an upgrade."
+# Helm reads these independently of --kubeconfig/--kube-context. Bind both
+# clients' connection settings and credentials to the selected kubeconfig.
+# Expand only a fixed marker so Bash tracing cannot expose an override's value.
+for variable in \
+  HELM_KUBEAPISERVER HELM_KUBECAFILE HELM_KUBETLS_SERVER_NAME HELM_KUBEINSECURE_SKIP_TLS_VERIFY \
+  HELM_KUBETOKEN HELM_KUBEASUSER HELM_KUBEASGROUPS; do
+  [[ -z "${!variable:+present}" ]] ||
+    die "unset $variable before starting or resuming an upgrade. Use the selected kubeconfig for Kubernetes connection settings and credentials."
 done
 
 [[ -z "$verify_agent" && -z "$verify_agent_namespace" || -n "$verify_agent" && -n "$verify_agent_namespace" ]] ||
