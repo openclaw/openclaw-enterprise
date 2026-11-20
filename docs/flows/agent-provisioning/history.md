@@ -8,6 +8,8 @@ This record preserves the dated changes to the Agent provisioning flow. See the 
 
 ## Changelog
 
+- 2026-11-10 19:32: Explain when Create opens the first deployment and how it follows the job if the deployment read fails. (authoring-run/a1d8ded8-9b07-4489-a86a-3cf43cf3891b - fb0fb0f46331)
+- 2026-10-21 13:21: Validate native identity grants before rollout and clarify external human ingress; accompanying local changes. (authoring-run/aba975bf-8e97-4c9d-9e34-dc2c9c79d591 - 4accde87c)
 - 2026-10-20 14:57: Preserve human Gateway identities and reject malformed or automatic administrator grants; consolidate PR #2596 history. (PR #3049 - fd73e091f)
 - 2026-10-17: Bound optional deployment details to the provisioning poll interval. (PR #2685)
 - 2026-10-25: Refuse a taken Agent name at admission. (finding 2420)
