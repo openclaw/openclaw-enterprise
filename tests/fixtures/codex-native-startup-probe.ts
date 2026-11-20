@@ -219,7 +219,22 @@ async function verifyStartupReads(
     ),
     { successfulPluginIds: [], failures: [] },
   );
-  const effective = await readCodexPluginConfiguration();
+  return completeNativeStartupReceipt(assert, details, await readCodexPluginConfiguration(), {
+    version,
+    nativeReadCount: params.length,
+    maxOutstanding: maximum,
+    drainedNativeError: true,
+    recovered: true,
+    disabledStartupSelections: Object.keys(selections).length,
+  });
+}
+
+export function completeNativeStartupReceipt(
+  assert: typeof import("node:assert/strict"),
+  details: readonly { appIds: readonly string[] }[],
+  effective: unknown,
+  reads: Omit<NativeStartupReceipt, "disabledAppPolicy">,
+): NativeStartupReceipt {
   assert.ok(
     isRecord(effective) && isRecord(effective.apps) && isRecord(effective.plugins),
     "malformed effective plugin configuration",
@@ -230,26 +245,20 @@ async function verifyStartupReads(
       "default app and plugin policy must be off",
     );
   }
-  for (const { appIds } of details.slice(0, 4)) {
-    for (const id of appIds) {
-      if (Object.hasOwn(effective.apps, id)) {
-        const policy: unknown = effective.apps[id];
-        assert.ok(
-          isRecord(policy) && policy.enabled === false,
-          "disabled selections must not enable native app bindings",
-        );
-      }
+  const appIds = details
+    .slice(0, reads.disabledStartupSelections)
+    .flatMap((detail) => detail.appIds);
+  assert.ok(appIds.length > 0, "native proof requires at least one app among disabled selections");
+  for (const id of appIds) {
+    if (Object.hasOwn(effective.apps, id)) {
+      const policy: unknown = effective.apps[id];
+      assert.ok(
+        isRecord(policy) && policy.enabled === false,
+        "disabled selections must not enable native app bindings",
+      );
     }
   }
-  return {
-    version,
-    nativeReadCount: params.length,
-    maxOutstanding: maximum,
-    drainedNativeError: true,
-    recovered: true,
-    disabledAppPolicy: true,
-    disabledStartupSelections: Object.keys(selections).length,
-  };
+  return { ...reads, disabledAppPolicy: true };
 }
 
 // This function and its helpers are serialized after Node strips their types.
@@ -351,6 +360,7 @@ export function nativeStartupScript(token: string): string {
   return `
 const isRecord = ${isRecord.toString()};
 const observeProcessClose = ${observeProcessClose.toString()};
+const completeNativeStartupReceipt = ${completeNativeStartupReceipt.toString()};
 const verifyStartupReads = ${verifyStartupReads.toString()};
 (${runNativeStartup.toString()})(${JSON.stringify(token)}, () => {
 ${PLUGIN_RUNTIME_HELPERS}
