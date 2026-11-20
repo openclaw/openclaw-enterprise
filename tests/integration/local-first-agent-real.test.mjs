@@ -24,6 +24,12 @@ import {
   assertNativeWorkerProofInController,
   nativeFirstAgentProofTimeout,
 } from "../helpers/local-first-agent-native.mjs";
+import {
+  nativeWorkerJournalSource,
+  readNativeWorkerGatewayNamespace,
+  readNativeWorkerJournal,
+  requireNativeWorkerJournalSource,
+} from "../helpers/native-worker-journal.mjs";
 import { localOpenShellGatewayIdentity } from "../helpers/local-openshell-gateway.mjs";
 import {
   localFirstAgentStack,
@@ -241,14 +247,21 @@ async function readPrivateJson(path, label) {
   }
 }
 
-async function readKubernetes({ stateDirectory, cluster, env }, args, label, output, signal) {
+async function readKubernetes(
+  { stateDirectory, cluster, env },
+  args,
+  label,
+  output,
+  signal,
+  input,
+) {
   const environment = { ...env };
   delete environment.OPENAI_API_KEY;
   delete environment.OPENAI_API_KEY_FILE;
   delete environment.CODEX_ACCESS_TOKEN;
   delete environment.CODEX_ACCESS_TOKEN_FILE;
   try {
-    const { stdout } = await execFileAsync(
+    const operation = execFileAsync(
       "kubectl",
       [
         "--kubeconfig",
@@ -260,6 +273,11 @@ async function readKubernetes({ stateDirectory, cluster, env }, args, label, out
       ],
       { env: environment, timeout: 20_000, signal, maxBuffer: 1024 * 1024 },
     );
+    if (input !== undefined) {
+      operation.child.stdin.on("error", () => {});
+      operation.child.stdin.end(input);
+    }
+    const { stdout } = await operation;
     return output === "json" ? JSON.parse(stdout) : stdout;
   } catch {
     throw new Error(`Could not read ${label} in the local Kubernetes context.`);
@@ -268,6 +286,64 @@ async function readKubernetes({ stateDirectory, cluster, env }, args, label, out
 
 function readKubernetesJson(kube, args, label) {
   return readKubernetes(kube, args, label, "json");
+}
+
+async function observeNativeWorkerJournal(kube, provider, binding, parentSignal) {
+  if (!provider.journalPath) {
+    return { nodeJournal: "unavailable" };
+  }
+  const signal = AbortSignal.any([parentSignal, AbortSignal.timeout(12_000)]);
+  const { gatewayBootId, ...coordinates } = binding;
+  const boundContainer = (pod, name) =>
+    pod.status.containerStatuses?.find((container) => container.name === name);
+  const target = (pod) => [pod.metadata.name, "--namespace", pod.metadata.namespace];
+  const verifyPod = async (pod, container) => {
+    const fresh = await readKubernetes(
+      kube,
+      ["get", "pod", ...target(pod)],
+      "the journal fixture Pod identity",
+      "json",
+      signal,
+    );
+    const before = boundContainer(pod, container);
+    const after = boundContainer(fresh, container);
+    if (
+      !pod.metadata.uid ||
+      fresh.metadata.uid !== pod.metadata.uid ||
+      fresh.metadata.deletionTimestamp ||
+      !before?.containerID ||
+      after?.containerID !== before.containerID ||
+      after.restartCount !== before.restartCount
+    ) {
+      throw new Error("Native worker journal fixture identity changed");
+    }
+  };
+  const read = async (pod, container, expression) => {
+    await verifyPod(pod, container);
+    const program = `await (${requireNativeWorkerJournalSource.toString()})(${JSON.stringify(nativeWorkerJournalSource)});\nprocess.stdout.write(JSON.stringify(await (${expression})));\n`;
+    const stdout = await readKubernetes(
+      kube,
+      ["exec", "-i", ...target(pod), "-c", container, "--", "node", "--input-type=module", "-"],
+      "the native worker journal classification",
+      undefined,
+      signal,
+      program,
+    );
+    await verifyPod(pod, container);
+    return JSON.parse(stdout);
+  };
+  const gatewayNamespace = await read(
+    provider.gatewayPod,
+    "gateway",
+    `(${readNativeWorkerGatewayNamespace.toString()})(${JSON.stringify(gatewayBootId)})`,
+  );
+  const result = await read(
+    provider.pod,
+    "agent",
+    `(${readNativeWorkerJournal.toString()})(${JSON.stringify(provider.journalPath)}, ${JSON.stringify({ ...coordinates, gatewayNamespace })})`,
+  );
+  await verifyPod(provider.gatewayPod, "gateway");
+  return result;
 }
 
 function nativeAgentPodSelector(agentId, revisionId) {
@@ -918,7 +994,7 @@ test(
         path: join(workspaceRoot, "USER.md"),
         content: retainedFiles["USER.md"],
       };
-      const proofOptions = (revisionId) => ({
+      const proofOptions = (revisionId, provider) => ({
         stateDirectory,
         state: recorded,
         environment: env,
@@ -927,6 +1003,9 @@ test(
         workspaceFile,
         credentialProxyScope: stack.ownsInstallation
           ? { actorId: nativeAgent.servicePrincipalId, sourceId: nativeSource.id, revisionId }
+          : undefined,
+        observeJournal: stack.ownsInstallation
+          ? (binding) => observeNativeWorkerJournal(kube, provider, binding, nativeContext.signal)
           : undefined,
       });
       const readProviderRevision = async (revisionId, stage, requestedAt) => {
@@ -937,7 +1016,7 @@ test(
             "pods",
             "--all-namespaces",
             "--selector",
-            nativeAgentPodSelector(nativeAgent.id, revisionId),
+            `${nativeAgentPodSelector(nativeAgent.id, revisionId)},openclaw.dev/namespace=${nativeNamespace.id}`,
           ],
           "the native OpenShell Harness",
         );
@@ -967,6 +1046,25 @@ test(
           claimName: volume.persistentVolumeClaim.claimName,
           subPath: mount.subPath,
         };
+        const [nodeState, ...otherState] = (container.env ?? []).filter(
+          ({ name }) => name === "OPENCLAW_NODE_STATE_DIR",
+        );
+        const statePath = nodeState?.value;
+        const stateMount = container.volumeMounts.find(
+          ({ mountPath }) => `${mountPath}/state` === statePath,
+        );
+        const stateVolume = pod.spec.volumes.find(({ name }) => name === stateMount?.name);
+        // Legacy OpenShell relocates this mount. The retained node state must
+        // still be on the original Agent's private subpath of the same claim.
+        const journalPath =
+          otherState.length === 0 &&
+          typeof statePath === "string" &&
+          /^\/sandbox\/\.openclaw-mounts\/[a-f0-9]{16}\/state$/.test(statePath) &&
+          stateVolume?.persistentVolumeClaim?.claimName === workspaceStorage.claimName &&
+          stateMount?.subPath ===
+            `workspace-node-${sha256Hex(nativeAgent.id, 12)}-${sha256Hex("harness:openclaw", 12)}`
+            ? join(statePath, "state", "openclaw.sqlite")
+            : undefined;
         // Match RPC node observations to this revision's configured workspace node.
         // Kubernetes supplies the public identity independently of the setup Secret.
         const gatewayPods = await readKubernetesJson(
@@ -998,6 +1096,7 @@ test(
           pod,
           sandbox,
           workspaceStorage,
+          journalPath,
           expectedNodeId: nodeIds[0],
           gatewayPod: gateways[0],
         };
@@ -1086,7 +1185,7 @@ test(
       const completionRetainedUntil = completion.completion.ts + 20 * 60_000;
       const firstNativeProof = await measureFirstAgentStage(nativeContext, "native-model", () =>
         assertNativeWorkerProofInController(nativeContext, {
-          ...proofOptions(initialRevisionId),
+          ...proofOptions(initialRevisionId, initialProvider),
           expectedNodeId: initialProvider.expectedNodeId,
         }),
       );
@@ -1162,7 +1261,7 @@ test(
         "native-resumed-model",
         () =>
           assertNativeWorkerProofInController(nativeContext, {
-            ...proofOptions(replacement.id),
+            ...proofOptions(replacement.id, replacementProvider),
             expectedNodeId: replacementProvider.expectedNodeId,
             session: firstNativeProof.session,
             sessionFile: firstNativeProof.sessionFile,

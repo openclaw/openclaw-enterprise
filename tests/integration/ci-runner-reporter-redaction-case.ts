@@ -656,6 +656,36 @@ export async function checkReporterRedaction(t: TestContext) {
         ...nativeLeafDiagnostics,
         ...turnDiagnostics,
         {
+          name: "retains only the closed native journal result",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "model-outcome",
+            worker: {
+              nodeJournal: "observed",
+              nodeJournalRecord: "turn",
+              nodeJournalState: "completed",
+              nodeJournalResult: "failed",
+              nodeJournalReason: "turn-failed",
+              journalBinding: { sessionId: nativePrivate, runId: nativePrivate },
+              resultJson: nativePrivate,
+            },
+          },
+        },
+        {
+          name: "does not attribute an unobserved native journal result",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "model-outcome",
+            worker: {
+              nodeJournal: "ambiguous",
+              nodeJournalRecord: "turn",
+              nodeJournalState: "completed",
+              nodeJournalResult: "failed",
+              nodeJournalReason: nativePrivate,
+            },
+          },
+        },
+        {
           name: "collects native turn failure within the shared read budget",
           diagnostic: {
             kind: "native-first-agent-proof",
@@ -904,6 +934,16 @@ export async function checkReporterRedaction(t: TestContext) {
     assert.equal(turn.execFailureCount, 1);
   }
   const collected = workerFor("collects native turn failure within the shared read budget");
+  assert.deepEqual(workerFor("retains only the closed native journal result"), {
+    nodeJournal: "observed",
+    nodeJournalRecord: "turn",
+    nodeJournalState: "completed",
+    nodeJournalResult: "failed",
+    nodeJournalReason: "turn-failed",
+  });
+  assert.deepEqual(workerFor("does not attribute an unobserved native journal result"), {
+    nodeJournal: "ambiguous",
+  });
   assert.deepEqual(
     {
       turnError: collected.turnError,

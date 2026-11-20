@@ -119,6 +119,63 @@ test("native placement capture preserves owned failure and later fresh diagnosti
   }
 });
 
+test("native journal lookup requires a fresh unchanged placement for the acknowledged session", async () => {
+  const placement = { ...ownedPlacement, activeOwnerEpoch: 6, generation: 8 };
+  const acknowledged = { runId: "acknowledged-run", status: "started" };
+  for (const [observedSessionId, observedPlacement, acknowledgement] of [
+    [session.sessionId, placement, acknowledged],
+    ["foreign-session", placement, acknowledged],
+    [session.sessionId, { ...placement, generation: 9 }, acknowledged],
+    [session.sessionId, { ...placement, activeOwnerEpoch: 7 }, acknowledged],
+    [session.sessionId, placement, { ...acknowledged, runId: "foreign-run" }],
+    [session.sessionId, placement, { ...acknowledged, status: "in_flight" }],
+  ] as const) {
+    const worker = await collectNativeWorkerFailure({
+      session,
+      lastPlacement: placement,
+      expectedNodeId: undefined,
+      elapsedMs: 1,
+      runId: "acknowledged-run",
+      outcome: { status: "error" },
+      error: undefined,
+      journalTurn: {
+        acknowledgement,
+        expectedRunId: acknowledged.runId,
+        gatewayBootId: "acknowledging-gateway-boot",
+      },
+      request: async (method: string) => {
+        switch (method) {
+          case "sessions.describe":
+            return { session: { sessionId: observedSessionId, placement: observedPlacement } };
+          case "environments.status":
+            return { id: placement.environmentId };
+          case "node.list":
+            return { nodes: [] };
+          case "chat.history":
+            return { messages: [] };
+          default:
+            throw new Error("Unexpected fixture read");
+        }
+      },
+    });
+    assert.deepEqual(
+      worker.journalBinding,
+      observedSessionId === session.sessionId &&
+        observedPlacement === placement &&
+        acknowledgement === acknowledged
+        ? {
+            gatewayBootId: "acknowledging-gateway-boot",
+            sessionId: session.sessionId,
+            environmentId: placement.environmentId,
+            ownerEpoch: 6,
+            generation: 8,
+            runId: "acknowledged-run",
+          }
+        : undefined,
+    );
+  }
+});
+
 test("the native placement failure receipt distinguishes Gateway queue and catalog errors", async () => {
   const stage = "required-placement-describe-rejected";
   const catalog = "Error: Session model catalog is unavailable; refresh and try again.";

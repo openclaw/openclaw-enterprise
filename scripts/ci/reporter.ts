@@ -266,6 +266,45 @@ export function nativeFirstAgentProofDiagnostic(failureStage: unknown, worker: u
     ) {
       safe.credentialProxyRule = rule;
     }
+    const journal = worker.nodeJournal;
+    if (
+      journal === "observed" ||
+      journal === "not-observed" ||
+      journal === "ambiguous" ||
+      journal === "unavailable"
+    ) {
+      safe.nodeJournal = journal;
+    }
+    const state = worker.nodeJournalState;
+    const record = worker.nodeJournalRecord;
+    if (
+      journal === "observed" &&
+      (record === "turn" || record === "launch") &&
+      typeof state === "string" &&
+      ["pending", "running", "completed", "failed", "interrupted", "cancelled"].includes(state)
+    ) {
+      safe.nodeJournalRecord = record;
+      safe.nodeJournalState = state;
+    }
+    const result = worker.nodeJournalResult;
+    if (
+      safe.nodeJournalState === "completed" &&
+      (result === "not-started" ||
+        result === "fenced" ||
+        result === "failed" ||
+        result === "completed")
+    ) {
+      safe.nodeJournalResult = result;
+      const reason = worker.nodeJournalReason;
+      if (
+        (result === "not-started" && reason === "admission-deadline") ||
+        (result === "fenced" &&
+          (reason === "credential-replaced" || reason === "owner-epoch-mismatch")) ||
+        (result === "failed" && (reason === "turn-failed" || reason === "node-lost"))
+      ) {
+        safe.nodeJournalReason = reason;
+      }
+    }
   }
   for (const [field, values] of Object.entries(vocabularies)) {
     const value = worker[field];
