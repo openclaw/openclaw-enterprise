@@ -26,6 +26,12 @@ are preserved and reported as a cleanup failure. If directory or SQL creation wa
 not durably confirmed, cleanup preserves any unconfirmed contents and state.
 Inspect their ownership before manual removal; a competing process may own the directory.
 
+Install dependencies in the same checkout and with the same pnpm settings used
+to run preparation. This includes the `CI` environment setting. Before creating
+a disposable PostgreSQL server, preparation runs pnpm's dependency check in that
+checkout. If pnpm reports an incompatible install, run `pnpm install` with the
+settings for the intended test run.
+
 Use Docker Compose, or set `OCC_DOCKER_BIN` to the `podman` executable and
 configure its Compose provider. If you use standalone `podman-compose`, use a
 release that accepts `up --wait`, such as 1.6.0. Then run:

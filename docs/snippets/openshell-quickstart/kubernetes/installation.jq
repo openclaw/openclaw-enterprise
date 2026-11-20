@@ -146,8 +146,8 @@
     "sandbox": {
       "id": "openshell-sandbox",
       "configuration": {
+        "integrationMode": "legacy",
         "gateway": {
-          "workspaceMode": "operator",
           "operatorNamespaceLabels": {
             "openshell.ai/openclaw-workspace": "true"
           },

@@ -9,7 +9,7 @@ import {
   AgentRevisionResponse,
   ErrorResponse,
 } from "../../packages/contracts/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import {
   bindHarnessKey,
   bootstrapInstallation,
