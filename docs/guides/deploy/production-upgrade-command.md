@@ -41,10 +41,14 @@ field selects the matching CLI file. Omit it to use `occ` on `PATH`.
 ## Run the image upgrade
 
 `plan` checks `HELM_DRIVER` offline and requires it to be unset or `secret`.
-Apply, preflight, migration check, migration apply, and resume read Helm history from
-Kubernetes Secrets in the selected cluster. If your release uses SQL or
-ConfigMaps, stop here and keep the existing store. `status` reads local evidence.
-Preflight cleanup uses Kubernetes directly.
+Apply, preflight, migration check, migration apply, and resume read Helm history
+from Kubernetes Secrets in the selected cluster. If your release uses SQL or
+ConfigMaps, stop here and keep the existing store. For these commands, unset
+`HELM_KUBETOKEN`, `HELM_KUBEASUSER`, and `HELM_KUBEASGROUPS`. Configure
+credentials and any required impersonation in the selected kubeconfig so Helm
+and kubectl use the same settings.
+
+`status` reads local evidence. Preflight cleanup uses Kubernetes directly.
 
 Review the selected kubeconfig, context, release, and image digests:
 

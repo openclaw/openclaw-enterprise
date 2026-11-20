@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-19"
-last_updated_session: "authoring-run/aed0a2bc-9691-4859-8bd6-1e7b3549c9b4"
+updated: "2026-11-20"
+last_updated_session: "authoring-run/e16304ce-2b94-4022-a90d-9ab2e235d1d4"
 ---
 
 # Production image upgrade flow
@@ -82,15 +82,15 @@ Plan validates profile inputs, images and checkout commit. The adapter uses
 `kubectl` to decode the selected HTTPS target, binds explicit CA bytes and previews
 trust. Apply and resume require approval and recheck bound inputs before dispatch.
 
-Both entrypoints refuse active kubectl preferences. If preferences are enabled
-and no file is active, the native helper snapshots the kubeconfig and refuses
-selected exec credentials before disabling command defaults for live clients.
-Approved snapshots also refuse selected `auth-provider` entries. Profiled
-recovery rechecks the recorded target and explicit CA binding.
+Both entrypoints refuse active kubectl preferences. With preferences enabled
+and no file, the helper rejects selected exec credentials, snapshots the
+kubeconfig and disables preferences for live clients. Snapshots reject selected
+`auth-provider` entries. Profiled recovery rechecks the target and explicit CA.
 
-Before `scripts/upgrade-production-images:prepare_upgrade`, refuse other Helm
-release stores, [Helm overrides](../guides/deploy/production-upgrade.md), source
-mismatch, chart edits or symlinks, and evidence or baseline aliases.
+Before `scripts/upgrade-production-images:prepare_upgrade`, the helper refuses
+other Helm stores, [endpoint and TLS overrides](../guides/deploy/production-upgrade.md),
+[token and impersonation overrides](../guides/deploy/production-upgrade-command.md#run-the-image-upgrade),
+source mismatch, chart edits or symlinks, and evidence or baseline aliases.
 `preprovisionedNamespace` must yield one `false` (`preprovisioned-namespace.err`).
 
 `check_migration` matches the rendered and deployed migrator inputs and
@@ -371,6 +371,8 @@ requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 17:42: Refuse Helm credential overrides. (authoring-run/e16304ce-2b94-4022-a90d-9ab2e235d1d4 - aff441a5df9e3258752b034fb694e06333c0b231)
 
 - 2026-11-19 19:15: Trace the stopped writers check before Helm retry. (authoring-run/aed0a2bc-9691-4859-8bd6-1e7b3549c9b4 - d976da889bdeca6e9208821a5b4ea79a49033b0f)
 
