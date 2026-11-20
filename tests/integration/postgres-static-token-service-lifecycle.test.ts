@@ -5,12 +5,18 @@ import type { Pool } from "pg";
 
 import { createPostgresAuthAccountProvisioner } from "../../apps/controller/src/auth/index.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
-import type { AuditEvent, CredentialSourceReference } from "../../packages/contracts/src/index.ts";
+import type {
+  AuditEvent,
+  CredentialSourceReference,
+  SourceProviderPresetId,
+} from "../../packages/contracts/src/index.ts";
 import {
   AuditAppendUnavailableError,
   AuthorizationDeniedError,
   DependencyUnavailableError,
   RetryLaterError,
+  ScopeViolationError,
+  type UpdateManagedCredentialSourceInput,
 } from "../../packages/occ/src/index.ts";
 import { PostgresCommitOutcomeUnknownError } from "../../packages/occ/src/state/postgres-state.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
@@ -124,11 +130,20 @@ test(
     });
     const createAudit = (ref: CredentialSourceReference, phase?: "registration_started") =>
       event(principal.id, "openclaw.credential_sources.create", ref, phase);
-    const createSource = (name: string, credential: string) =>
+    const createSource = (
+      name: string,
+      credential: string,
+      providerPreset?: SourceProviderPresetId,
+    ) =>
       controller.createManagedCredentialSource(
         principal.id,
         namespaceId,
-        { name, lifecycleConfig: { type: "static", settings: {} }, secret: { opaque: credential } },
+        {
+          name,
+          lifecycleConfig: { type: "static", settings: {} },
+          secret: { opaque: credential },
+          ...(providerPreset === undefined ? {} : { providerPreset }),
+        },
         createAudit,
       );
     const retire = (id: string) =>
@@ -174,6 +189,26 @@ test(
     await assert.rejects(
       createSource("Oversized", "a".repeat(65_471)),
       /encoded credential exceeds/,
+    );
+    // Provider approval belongs to OCC. Neither an unknown ID nor a lifecycle setting can create it.
+    for (const invalid of ["", "unknown"]) {
+      await assert.rejects(
+        createSource("Invalid preset", randomUUID(), invalid as SourceProviderPresetId),
+        ScopeViolationError,
+      );
+    }
+    await assert.rejects(
+      controller.createManagedCredentialSource(
+        principal.id,
+        namespaceId,
+        {
+          name: "Lifecycle cannot approve a provider",
+          lifecycleConfig: { type: "static", settings: { provider_preset: "openai" } },
+          secret: { opaque: randomUUID() },
+        },
+        createAudit,
+      ),
+      ScopeViolationError,
     );
     assert.equal(core.calls.createNamespacedSecret, createsBefore);
     assert.deepEqual(await custodyRows(), [{ sources: 0, bindings: 0 }]);
@@ -271,8 +306,28 @@ test(
     assert.equal(core.secrets.size, 0);
     assert.deepEqual(await custodyRows(), [{ sources: 0, bindings: 0 }]);
 
+    // Static custody accepts no settings. Successful registration proves OCC did not forward the approval.
+    const approved = await createSource("Approved provider", randomUUID(), "openai");
+    assert.deepEqual(approved.config, { provider_preset: "openai" });
+    assert.deepEqual(
+      (await pool.query("SELECT config FROM occ.credential_sources WHERE id=$1", [approved.id]))
+        .rows[0].config,
+      { provider_preset: "openai" },
+    );
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT actor_id, details->'providerPreset' AS preset FROM occ.audit_events WHERE action='openclaw.credential_sources.create' AND resource_id=$1",
+          [approved.id],
+        )
+      ).rows,
+      [{ actor_id: principal.id, preset: "openai" }],
+    );
+    await retire(approved.id);
+
     const key = randomUUID();
     const source = await createSource("Private credential", key);
+    assert.deepEqual(source.config, {});
     const sourceId = source.id;
     const ref = source.ref;
     const persisted = await state.read((view) =>
@@ -337,11 +392,11 @@ test(
     }
     assert.equal((await inject("POST", `${base}/${sourceId}/rotate`)).statusCode, 404);
 
-    const update = (actorId: string, credential: string) =>
+    const updateSource = (actorId: string, input: UpdateManagedCredentialSourceInput) =>
       controller.updateManagedCredentialSource(
         actorId,
         { namespaceId, credentialSourceId: sourceId },
-        { secret: { replacement: credential } },
+        input,
         (resource, phase) => event(actorId, "openclaw.credential_sources.update", resource, phase),
         (reasonCode) => ({
           ...event(actorId, "openclaw.credential_sources.update", ref),
@@ -349,9 +404,45 @@ test(
           reasonCode,
         }),
       );
+    const update = (actorId: string, credential: string) =>
+      updateSource(actorId, { secret: { replacement: credential } });
+    const sourceConfig = async () =>
+      (await pool.query("SELECT config FROM occ.credential_sources WHERE id=$1", [sourceId]))
+        .rows[0].config;
+    await assert.rejects(
+      updateSource(principal.id, { providerPreset: "unknown" as SourceProviderPresetId }),
+      ScopeViolationError,
+    );
+    const replacementsBeforePreset = core.calls.replaceNamespacedSecret;
+    const readsBeforePreset = core.reads;
+    // Metadata and its attributable audit must commit together; custody is untouched.
+    await withRejectedAuditRows(migrator, "openclaw.credential_sources.update", async () => {
+      await assert.rejects(
+        updateSource(principal.id, { providerPreset: "openai" }),
+        AuditAppendUnavailableError,
+      );
+    });
+    assert.deepEqual(await sourceConfig(), {});
+    const presetUpdate = await updateSource(principal.id, { providerPreset: "openai" });
+    assert.deepEqual(presetUpdate.config, { provider_preset: "openai" });
+    assert.deepEqual(await sourceConfig(), { provider_preset: "openai" });
+    assert.equal(core.calls.replaceNamespacedSecret, replacementsBeforePreset);
+    assert.equal(core.reads, readsBeforePreset);
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT details->'providerPreset' AS preset FROM occ.audit_events WHERE action='openclaw.credential_sources.update' AND resource_id=$1 AND actor_id=$2",
+          [sourceId, principal.id],
+        )
+      ).rows,
+      [{ preset: "openai" }],
+    );
+    await updateSource(principal.id, { lifecycleConfig: { type: "static", settings: {} } });
+    assert.deepEqual(await sourceConfig(), { provider_preset: "openai" });
     const replacementKey = randomUUID();
     await update(principal.id, replacementKey);
     assert.equal(await resolve(), replacementKey);
+    assert.deepEqual(await sourceConfig(), { provider_preset: "openai" });
 
     // Refusing the separately committed intent must stop the owner before private custody changes.
     await withRejectedAuditRows(
@@ -387,6 +478,20 @@ test(
     });
     assert.equal(account.statusCode, 201, account.body);
     const memberId: string = account.json().data.principalId;
+    await assert.rejects(
+      updateSource(memberId, { providerPreset: null }),
+      AuthorizationDeniedError,
+    );
+    assert.deepEqual(await sourceConfig(), { provider_preset: "openai" });
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS count FROM occ.audit_events WHERE action='openclaw.credential_sources.update' AND resource_id=$1 AND actor_id=$2",
+          [sourceId, memberId],
+        )
+      ).rows[0].count,
+      0,
+    );
     const role = await inject("POST", `/namespaces/${namespaceId}/iam/roles`, {
       name: "Exact updater",
       permissions: [{ action: "update", resourceKind: "credential_source" }],
@@ -400,6 +505,18 @@ test(
       resourceId: sourceId,
     });
     assert.equal(grant.statusCode, 201, grant.body);
+
+    await updateSource(memberId, { providerPreset: null });
+    assert.deepEqual(await sourceConfig(), {});
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT details ? 'providerPreset' AS recorded, details->'providerPreset' AS preset FROM occ.audit_events WHERE action='openclaw.credential_sources.update' AND resource_id=$1 AND actor_id=$2 AND details->'providerPreset' = 'null'::jsonb",
+          [sourceId, memberId],
+        )
+      ).rows,
+      [{ recorded: true, preset: null }],
+    );
 
     // Revocation cannot pass a source update that already acquired the policy fence while waiting on its row.
     const lock = await pool.connect();
