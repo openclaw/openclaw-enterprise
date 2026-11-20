@@ -9,7 +9,7 @@ import {
 import { createOpenShellCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-registration.ts";
 import type { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import {
   OpenShellSandboxDriver,
@@ -29,7 +29,7 @@ import { join } from "node:path";
 import test, { afterEach, type TestContext } from "node:test";
 import type {
   AgentRevision,
-  CredentialDeploymentProxyDriver,
+  CredentialProxyDriver,
   EgressInstallation,
   Namespace,
   ProtectedRepositoryGitAuthority,
@@ -71,7 +71,7 @@ test("incomplete credential delivery Driver registration is refused before selec
       return { credentialProjections: [] };
     },
     async removeDeployment() {},
-  } as unknown as CredentialDeploymentProxyDriver;
+  } as unknown as CredentialProxyDriver;
   assert.throws(
     () =>
       new InstalledDriver(
@@ -893,7 +893,7 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
             },
           });
           t.after(() => bundled.close());
-          assert.ok(bundled.proxy instanceof OpenShellCredentialProxyDriver);
+          assert.ok(bundled.proxy instanceof OpenShellLegacyEgressProxyDriver);
           const owner = new InstalledDriver(input.sandbox, {
             capabilities: { sandbox: bundled.sandbox, credential_proxy: bundled.proxy },
           });

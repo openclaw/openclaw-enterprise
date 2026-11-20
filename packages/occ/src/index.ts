@@ -86,7 +86,7 @@ import type {
   DeploymentRequestMatch,
   NetworkPolicyCapabilities,
   CredentialInjectionCapabilities,
-  CredentialDeploymentProxyDriver,
+  CredentialProxyDriver,
 } from "@openclaw-enterprise/contracts";
 import {
   CredentialProxy,
@@ -862,7 +862,7 @@ interface PreparedModelCredentialDeployment {
   readonly preset: ModelCredentialPreset;
   readonly capabilities: CredentialDeploymentCapabilities;
   readonly owner: InstalledDriver;
-  readonly proxy: CredentialDeploymentProxyDriver;
+  readonly proxy: CredentialProxyDriver;
 }
 
 export interface ControllerOptions {
@@ -883,7 +883,7 @@ export interface ControllerOptions {
   /** Code-only composition of the actual selected Sandbox and Proxy; absent means unsupported. */
   readonly credentialDeploymentCapabilities?: (input: {
     readonly sandbox: SandboxDriver;
-    readonly proxy: CredentialDeploymentProxyDriver;
+    readonly proxy: CredentialProxyDriver;
   }) => CredentialDeploymentCapabilities | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
@@ -16353,7 +16353,7 @@ export class OpenClawController {
       );
     }
     let owner: InstalledDriver | undefined;
-    let proxy: CredentialDeploymentProxyDriver | undefined;
+    let proxy: CredentialProxyDriver | undefined;
     let capabilities: CredentialDeploymentCapabilities | undefined;
     try {
       owner = this.selectedCredentialDeliveryOwner();

@@ -17,8 +17,8 @@ import type { RepositoryTransportBinding } from "./repository-credentials/contra
 import type { OpenShellSandboxDriverSelection } from "../drivers/sandbox/openshell.ts";
 import type { OpenShellSandboxDriverOptions } from "../drivers/sandbox/openshell.ts";
 import type {
-  CredentialDeploymentProxyDriver,
   CredentialProxyDriver,
+  LegacyEgressProxyDriver,
 } from "@openclaw-enterprise/contracts";
 import type { OpenShellProxyOptions } from "../drivers/egress-proxy/openshell.ts";
 import type { EgressAuthorityConfiguration } from "./egress-authority.ts";
@@ -265,7 +265,7 @@ export interface InstallationRuntimeDrivers {
   /** Same selected Sandbox owner, with the native delivery capability when available. */
   readonly credentialDeliveryRegistration?: InstalledDriver;
   readonly namespaceLifecycleBindings?: readonly NamespaceLifecycleBinding[];
-  readonly proxyDriver?: CredentialProxyDriver;
+  readonly proxyDriver?: LegacyEgressProxyDriver;
   readonly resolveCredentialDeploymentContext?: (
     namespace: Readonly<Namespace>,
     revision: Readonly<AgentRevision>,
@@ -1067,13 +1067,13 @@ async function composeInstallationConfiguration(
           await readPublicCaBundle(configuredProxy.prepared.issuerCaPath),
         );
       }
-      const { OpenShellCredentialProxyDriver } =
+      const { OpenShellLegacyEgressProxyDriver } =
         await import("../drivers/egress-proxy/openshell.ts");
       proxySelection = selected(
         { ...selection, configuration: configuredProxy.policy },
         "credential_proxy",
         "openshell",
-        OpenShellCredentialProxyDriver,
+        OpenShellLegacyEgressProxyDriver,
       );
     }
   }
@@ -1547,7 +1547,7 @@ async function composeInstallationConfiguration(
   }
   const createCredentialDeliveryProxy = async (
     pairedSandbox: SandboxDriver,
-  ): Promise<CredentialDeploymentProxyDriver> => {
+  ): Promise<CredentialProxyDriver> => {
     const { OpenShellCredentialProxyDriver } =
       await import("../drivers/credential-proxy/openshell.ts");
     return new OpenShellCredentialProxyDriver({

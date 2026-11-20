@@ -25,7 +25,7 @@ import { createOpenShellBackend } from "../../apps/controller/src/backends/opens
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
-import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellEgressIdentity } from "../../apps/controller/src/drivers/egress-proxy/openshell-identity.ts";
 import {
   createOpenShellEgressAuthority,
@@ -500,7 +500,7 @@ async function buildStaticEgressFixture(
     });
     assert.ok(loaded?.protectedDriver);
     assert.ok(loaded.sandboxDriver instanceof OpenShellSandboxDriver);
-    assert.ok(loaded.proxyDriver instanceof OpenShellCredentialProxyDriver);
+    assert.ok(loaded.proxyDriver instanceof OpenShellLegacyEgressProxyDriver);
     assert.ok(loaded.credentialGatewayDriver instanceof OpenShellCredentialGatewayDriver);
     admissionDrivers = {
       owner: loaded.protectedDriver,
@@ -566,7 +566,7 @@ async function buildStaticEgressFixture(
   };
   const egress =
     admissionDrivers?.proxy ??
-    new OpenShellCredentialProxyDriver(egressOptions, {
+    new OpenShellLegacyEgressProxyDriver(egressOptions, {
       id: proxyDriverId,
       preparedProviders: preparedProvider
         ? [preparedProvider]

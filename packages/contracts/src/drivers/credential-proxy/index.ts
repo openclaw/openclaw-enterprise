@@ -478,7 +478,8 @@ export interface CredentialUpdateNotification {
   readonly version?: string;
 }
 
-export interface CredentialProxyDriver extends Driver {
+// TODO(credential proxy cutover): remove this contract after legacy protected serving is retired.
+export interface LegacyEgressProxyDriver extends Driver {
   readonly capability: "credential_proxy";
   readonly sourceControl: CredentialSourceControl;
   readonly policyReduction?: CredentialPolicyReducer;
@@ -509,7 +510,7 @@ export interface CredentialDeploymentContext {
 }
 
 /** Credential delivery for staged Agent deployments, independent of legacy protected egress. */
-export interface CredentialDeploymentProxyDriver extends Driver {
+export interface CredentialProxyDriver extends Driver {
   readonly capability: "credential_proxy_delivery";
   /** Prepare staged proxy resources for this exact Namespace and Agent revision. */
   deployProxy(

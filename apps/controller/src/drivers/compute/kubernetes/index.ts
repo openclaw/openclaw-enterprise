@@ -157,7 +157,7 @@ import type {
   CredentialAttachmentStatus,
   CredentialGatewayDriver,
   CredentialDeploymentContext,
-  CredentialDeploymentProxyDriver,
+  CredentialProxyDriver,
   CredentialSource,
   CredentialSourceAttachment,
   CredentialSourceType,
@@ -3641,7 +3641,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private readonly protectedExecution: ProtectedExecutionDriver | undefined;
   private readonly credentialDeliveryRegistration: SelectedDriverRegistration | undefined;
 
-  private get credentialDeploymentProxyDriver(): CredentialDeploymentProxyDriver | undefined {
+  private get credentialDeploymentProxyDriver(): CredentialProxyDriver | undefined {
     return this.credentialDeliveryRegistration?.require("credential_proxy_delivery");
   }
 

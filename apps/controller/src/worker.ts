@@ -10,8 +10,8 @@ import {
 } from "@openclaw-enterprise/contracts";
 import type {
   CredentialDeploymentContext,
-  CredentialDeploymentProxyDriver,
   CredentialProxyDriver,
+  LegacyEgressProxyDriver,
 } from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { closeResources } from "./composition/close-resources.ts";
@@ -197,7 +197,7 @@ export interface ControllerWorkerOptions {
   readonly computeDriver?: ComputeDriver;
   readonly sandboxDriver?: SandboxDriver;
   readonly credentialGatewayDriver?: CredentialGatewayDriver;
-  readonly proxyDriver?: CredentialProxyDriver;
+  readonly proxyDriver?: LegacyEgressProxyDriver;
   readonly pollIntervalMs?: number;
   readonly leaseDurationMs?: number;
   readonly maxAttempts?: number;
@@ -1265,10 +1265,10 @@ export class ControllerWorker {
   private connectionRevocationScanAfter = 0;
   private connectionMaintenance: Promise<void> | undefined;
   private nextClientCleanup = 0;
-  private readonly proxyDriver: CredentialProxyDriver | undefined;
+  private readonly proxyDriver: LegacyEgressProxyDriver | undefined;
   private readonly protectedDriver: InstalledDriver | undefined;
   private readonly credentialDeliveryRegistration: InstalledDriver | undefined;
-  private get credentialDeploymentProxy(): CredentialDeploymentProxyDriver | undefined {
+  private get credentialDeploymentProxy(): CredentialProxyDriver | undefined {
     return this.credentialDeliveryRegistration?.require("credential_proxy_delivery");
   }
   private readonly preparedTokens: InstallationRuntimeDrivers["tokenService"];
