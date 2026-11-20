@@ -1252,15 +1252,15 @@ export async function runQaModelFailureEvidenceCase(
   assert.equal(evidence.length, 1);
   const [record] = evidence;
   assert.ok(record);
-  const [controller, gateway] = record.sources;
-  assert.ok(controller && "lines" in controller);
-  const [firstLine] = controller.lines;
+  const [gatewayLogs, agentLogs] = record.sources;
+  assert.ok(gatewayLogs && "lines" in gatewayLogs);
+  const [firstLine] = gatewayLogs.lines;
   assert.ok(firstLine);
   assert.equal(record.revisionId, "original");
   assert.match(firstLine, /failure/);
   assert.equal(JSON.stringify(evidence).includes(secret), false);
   assert.equal(JSON.stringify(evidence).includes("private"), false);
-  assert.deepEqual(gateway, { source: "agent", unavailable: true });
+  assert.deepEqual(agentLogs, { source: "agent", unavailable: true });
 
   // Failure to save diagnostics must not replace the original model assertion.
   const unavailable = createNativePluginAssertions({
