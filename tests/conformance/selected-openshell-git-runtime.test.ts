@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { generateKeyPairSync, randomBytes, randomUUID, verify } from "node:crypto";
 import { constants } from "node:fs";
-import { link, open, rename } from "node:fs/promises";
+import { link, open, readFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import {
@@ -40,6 +40,7 @@ import {
 import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts";
 import {
   admitRepositoryNetworkPolicy,
+  type AdmittedRepositoryBinding,
   type AgentRevision,
   type EgressInstallation,
   type ProxyPlan,
@@ -51,6 +52,7 @@ import {
   SandboxGatewayUnavailableError,
 } from "../../packages/occ/src/errors.ts";
 import { InstalledDriver } from "../../packages/occ/src/index.ts";
+import { validAdmittedRepositoryBindings } from "../../packages/occ/src/state/repository-credential-state.ts";
 import { buildSandboxInstallation } from "../integration/sandbox-driver-startup-installation-fixture.ts";
 import { backendFor } from "../integration/sandbox-driver-openshell-fixture.ts";
 import {
@@ -108,8 +110,16 @@ const managedModelEndpoint = {
 };
 
 type Acl = boolean | { permissions: Record<string, string>; firstOnly?: boolean };
+type SelectedV5Options = {
+  modelSourceId?: string;
+  storedBindings?: readonly AdmittedRepositoryBinding[];
+};
 
-async function selectedV5(t: TestContext, acl: Acl = false, modelSourceId?: string) {
+async function selectedV5(
+  t: TestContext,
+  acl: Acl = false,
+  { modelSourceId, storedBindings }: SelectedV5Options = {},
+) {
   const modelProvider = modelSourceId ? openShellProviderName(modelSourceId) : "openai";
   const repository = registry.repositories[0]!;
   const repositories = [
@@ -280,15 +290,17 @@ async function selectedV5(t: TestContext, acl: Acl = false, modelSourceId?: stri
   });
   assert.ok(admitted);
   const executionId = randomBytes(24).toString("base64url");
-  const bindings = selectedRegistry
-    ? repositories.map(({ repositoryRef }) =>
-        resolveGitHubRepositoryBinding(selectedRegistry, {
-          namespaceId: f.revision.namespaceId,
-          repositoryRef,
-          profile: "github-repository",
-        }),
-      )
-    : f.revision.repositoryCredentials!.bindings;
+  const bindings =
+    storedBindings ??
+    (selectedRegistry
+      ? repositories.map(({ repositoryRef }) =>
+          resolveGitHubRepositoryBinding(selectedRegistry, {
+            namespaceId: f.revision.namespaceId,
+            repositoryRef,
+            profile: "github-repository",
+          }),
+        )
+      : f.revision.repositoryCredentials!.bindings);
   const repositoryCredentials = { ...f.revision.repositoryCredentials!, bindings };
   const grants = [
     { repository: repositories[0]!.repository, access: "read" },
@@ -386,8 +398,8 @@ async function selectedV5(t: TestContext, acl: Acl = false, modelSourceId?: stri
 const updateReceipt = (version: string) => `git-update-${version}`;
 const updateMutation = (version: string) => `git-mutation-${version}`;
 
-async function heldGit(t: TestContext, acl: Acl = false, modelSourceId?: string) {
-  const selected = await selectedV5(t, acl, modelSourceId);
+async function heldGit(t: TestContext, acl: Acl = false, options?: SelectedV5Options) {
+  const selected = await selectedV5(t, acl, options);
   const { f, store, revision, executionId, modelProvider, modelProviderId, prepare } = selected;
   const activity = { updates: 0, releases: 0, probes: 0 };
   const createProvider = f.client.createProvider;
@@ -433,7 +445,7 @@ async function heldGit(t: TestContext, acl: Acl = false, modelSourceId?: string)
       : { ...managedModelEndpoint, provider_credentialed: true };
   const modelRule = {
     name: "_provider_" + modelProvider.replaceAll("-", "_"),
-    binaries: modelSourceId ? [{ path: managedModelBinary }] : [],
+    binaries: options?.modelSourceId ? [{ path: managedModelBinary }] : [],
     endpoints: [acl ? aclModelEndpoint : { host: "api.openai.com", port: 443 }],
   };
   // The Gateway fixture stamps token-grant owners. The independent wire test
@@ -1326,8 +1338,17 @@ test("Git runtime binds the admitted repository policy to bootstrap and removal"
   assert.deepEqual(deletes, [prepared.provider, prepared.provider]);
 });
 
-test("ACL Git reads the loaded policy again before releasing its selected-repository launch", async (t) => {
-  const held = await heldGit(t, true);
+test("ACL Git releases a stored Git-only revision only after rereading the loaded policy", async (t) => {
+  // These admitted bindings were captured before scoped REST existed. Keep their
+  // grant IDs on upgrade instead of re-admitting the credential on the new code.
+  const storedBindings: unknown = JSON.parse(
+    await readFile(
+      new URL("../fixtures/openshell-git-bindings-before-scoped-rest.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  assert.ok(validAdmittedRepositoryBindings(storedBindings));
+  const held = await heldGit(t, true, { storedBindings });
   const {
     f,
     revision,
@@ -1779,7 +1800,7 @@ async function checkComputeReleaseAfterRecipientRead(
     entry,
     setObservationAge,
     onWorkloadRead,
-  } = await heldGit(t, true, auth.sourceId);
+  } = await heldGit(t, true, { modelSourceId: auth.sourceId });
   await reconcile();
   assert.equal(f.runtime.route(selected.id).state, "installed");
 
