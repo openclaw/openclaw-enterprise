@@ -193,7 +193,7 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
     const projected = projectOpenShellGitExpiryObservation({
       ...expiryObservation,
       outcome: "retire-runtime",
-      check: "original-launch-and-pods",
+      check: "original-launch-and-execution",
       failure,
     });
     assert.ok(projected && "failure" in projected, "Expected a failure projection");

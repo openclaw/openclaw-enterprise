@@ -14,11 +14,11 @@ import {
 } from "../../packages/contracts/src/api/resources.ts";
 import type { Identity } from "../../packages/contracts/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { grantRole } from "../helpers/iam-grants.ts";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 import {
   registerHarnessPlacementAdmissionCases,

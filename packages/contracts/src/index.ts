@@ -1,4 +1,5 @@
 import type { Static } from "typebox";
+
 import type { HarnessAuthBindingSchema } from "./api/common.ts";
 import type {
   ComputeAgentProvisioningCapabilities,
@@ -10,6 +11,12 @@ import type {
   ProtectedEgressSource,
   ProxyPlan,
 } from "./drivers/credential-proxy/index.ts";
+
+export type { NetworkDestinationRule } from "./network-destination.ts";
+export {
+  NetworkDestinationRuleSchema,
+  normalizeNetworkDestinationRules,
+} from "./network-destination.ts";
 
 export type {
   CredentialPolicyReduction,
@@ -1556,6 +1563,8 @@ export type {
   SandboxEnvironmentVariable,
   SandboxWorkloadFile,
   SandboxWorkloadIdentity,
+  HarnessRetainedDirectory,
+  HarnessLaunchDescription,
   HarnessWorkloadRequirements,
   SandboxResourceRef,
   SandboxHarnessEndpoint,
@@ -1634,6 +1643,10 @@ export {
   UpdateTokenServiceSourceBody,
   TokenServiceSourceMetadata,
 } from "./api/token-service-sources.ts";
+export {
+  PushAgentCredentialsBody,
+  PushAgentCredentialsResponse,
+} from "./api/agent-credential-push.ts";
 export * from "./api/resources.ts";
 export * from "./api/routes.ts";
 

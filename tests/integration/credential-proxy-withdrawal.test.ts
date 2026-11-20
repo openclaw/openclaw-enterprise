@@ -28,7 +28,7 @@ import {
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { requestId, staticEgressFixture } from "../helpers/static-egress.mjs";
@@ -803,8 +803,22 @@ test(
         }),
       );
     try {
-      for (const scenario of ["unchanged", "replaced", "sender", "resolver", "restored"] as const) {
+      for (const scenario of [
+        "unchanged",
+        "replaced",
+        "sender",
+        "resolver",
+        "lifecycle",
+        "restored",
+      ] as const) {
         const control = { ...originalControl };
+        const provider = control.providers.find((entry) => entry.sourceType.type === "openai")!;
+        const sourceType = structuredClone(provider.sourceType);
+        if (scenario === "lifecycle") {
+          control.providers = control.providers.map((entry) =>
+            entry === provider ? { ...entry, sourceType } : entry,
+          );
+        }
         const healthy = scenario === "unchanged" || scenario === "restored";
         assert.equal(
           Reflect.set(proxy, "sourceControl", scenario === "restored" ? originalControl : control),
@@ -815,6 +829,10 @@ test(
         afterMetadata = () => {
           if (scenario === "replaced") {
             assert.equal(Reflect.set(proxy, "sourceControl", { ...control }), true);
+          } else if (scenario === "lifecycle") {
+            // Only the nested declaration changes after the real metadata read.
+            assert.ok(sourceType.harnessAuth);
+            assert.ok(Reflect.set(sourceType.harnessAuth, "loginMode", "chatgptAuthTokens"));
           } else if (scenario === "sender" || scenario === "resolver") {
             const ref = control[scenario];
             control[scenario] = { ...ref, generation: ref.generation + 1 };
@@ -826,7 +844,10 @@ test(
         assert.equal(f.secretReads - reads, healthy ? 1 : 0, scenario + ": material reads");
         assert.equal(Boolean(result.ready), healthy, scenario);
         if (!healthy) {
-          assert.equal(result.refused?.code, f.refusalCode("UNAVAILABLE"), scenario);
+          // A changed provider is a stale authorization; lost delivery controls
+          // leave the authority unavailable. Neither may read material.
+          const reason = scenario === "lifecycle" ? "DENIED" : "UNAVAILABLE";
+          assert.equal(result.refused?.code, f.refusalCode(reason), scenario);
         }
       }
     } finally {

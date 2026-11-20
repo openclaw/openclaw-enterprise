@@ -1,3 +1,4 @@
+import { slackChannelDrivers } from "../helpers/channel-egress.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -538,15 +539,13 @@ test(
           transportSecretPrefix: "transport",
           gatewayStorageClassName: "local-path",
           gatewayStorageSizeGiB: 1024,
-          // The provisioned Agent enables Slack, which needs the Installation's channel runtime.
-          channels: { proxyUrl: "http://10.42.0.15:3128" },
           gatewayNodeSelector: {
             "kubernetes.io/hostname": JSON.parse(await kubectl("get", "nodes", "-o", "json"))
               .items[0].metadata.name,
           },
         },
       },
-      { nodeEnrollment },
+      { nodeEnrollment, channelDrivers: slackChannelDrivers },
     );
     await runProvisioningApiCase(context, {
       driver,

@@ -14,7 +14,7 @@ import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.
 import {
   createProviderSandboxDriver,
   createRuntimeLogComputeDriver,
-} from "../helpers/runtime-logs.mjs";
+} from "../helpers/runtime-logs.ts";
 import {
   deploymentStatusResponse,
   persistedDeploymentError,

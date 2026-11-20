@@ -20,6 +20,9 @@ const demoValues = [
   "--set",
   "grafana.adminSecretName=grafana-admin",
 ];
+const demoComponents = ["prometheus", "loki", "grafana"] as const;
+type DemoComponent = (typeof demoComponents)[number];
+const componentLabel = "app.kubernetes.io/component";
 
 async function helmAvailable() {
   try {
@@ -65,6 +68,21 @@ function sequence(value: unknown, field: string): unknown[] {
 
 function chartObjects(stdout: string) {
   return loadAllYaml(stdout).filter(isRecord);
+}
+
+function assertServiceInventory(services: readonly Record<string, unknown>[], release: string) {
+  const inventory = new Map<DemoComponent, Record<string, unknown>>();
+  for (const service of services) {
+    const selector = record(record(service.spec, "Service spec").selector, "Service selector");
+    const component = demoComponents.find((expected) => selector[componentLabel] === expected);
+    assert.ok(component, `${release}: unexpected Service component selector`);
+    assert.ok(!inventory.has(component), `${release}: duplicate ${component} Service`);
+    inventory.set(component, service);
+  }
+  for (const component of demoComponents) {
+    assert.ok(inventory.has(component), `${release}: missing ${component} Service`);
+  }
+  return inventory;
 }
 
 function resourceName(object: Record<string, unknown>) {
@@ -116,8 +134,7 @@ test(
   "demo Service names admit valid release shapes and keep Grafana URLs aligned",
   await helmAvailable(),
   async () => {
-    const names = new Map<string, Record<string, string>>();
-    const componentLabel = "app.kubernetes.io/component";
+    const names = new Map<string, Map<DemoComponent, string>>();
     const podLabels = (deployment: Record<string, unknown>) =>
       record(record(podTemplate(deployment).metadata, "Pod metadata").labels, "Pod labels");
     const longPrefix = "release-" + "a".repeat(44);
@@ -138,16 +155,15 @@ test(
       const { stdout } = await renderChart(release, demoValues);
       const objects = chartObjects(stdout);
       const services = objects.filter((object) => object.kind === "Service");
-      const serviceNames: Record<string, string> = {};
-      for (const service of services) {
+      const serviceNames = new Map<DemoComponent, string>();
+      // Every release must render one Service for each independently specified demo component.
+      for (const [component, service] of assertServiceInventory(services, release)) {
         const name = resourceName(service);
         // This is Kubernetes' independent Service naming contract, not the chart's helper output.
         assert.ok(name.length <= 63, `${release}: ${name}`);
         assert.match(name, /^[a-z][a-z0-9-]*[a-z0-9]$/);
         const selector = record(record(service.spec, "Service spec").selector, "Service selector");
-        const component = selector[componentLabel];
-        assert.ok(typeof component === "string", `Missing component selector for ${name}`);
-        serviceNames[component] = name;
+        serviceNames.set(component, name);
         const deployment = objects.find(
           (object) =>
             object.kind === "Deployment" && podLabels(object)[componentLabel] === component,
@@ -171,16 +187,16 @@ test(
       ).filter(isRecord);
       assert.equal(
         dataSources.find((source) => source.type === "prometheus")?.url,
-        `http://${serviceNames.prometheus}:9090`,
+        `http://${serviceNames.get("prometheus")}:9090`,
       );
       assert.equal(
         dataSources.find((source) => source.type === "loki")?.url,
-        `http://${serviceNames.loki}:3100`,
+        `http://${serviceNames.get("loki")}:3100`,
       );
       names.set(release, serviceNames);
       if (["demo", "demo-2026-demo", "team-qa"].includes(release)) {
-        for (const component of ["prometheus", "loki", "grafana"]) {
-          assert.equal(serviceNames[component], `${release}-${component}`);
+        for (const component of demoComponents) {
+          assert.equal(serviceNames.get(component), `${release}-${component}`);
         }
       }
     }
@@ -194,7 +210,7 @@ test(
       const leftNames = names.get(left);
       const rightNames = names.get(right);
       assert.ok(leftNames && rightNames, `Missing Service names for ${left} or ${right}`);
-      assert.notEqual(leftNames.prometheus, rightNames.prometheus);
+      assert.notEqual(leftNames.get("prometheus"), rightNames.get("prometheus"));
     }
   },
 );

@@ -16,7 +16,7 @@ import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/g
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { withNativeAdminGateway } from "../helpers/harness-configuration.mjs";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { isRecord, nativeValues, pathRequests } from "./console-agents-browser-helpers.ts";
 
 import type { GitHubRepositoryRegistration } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";

@@ -1,18 +1,18 @@
 ---
 created: "2026-09-21"
 updated: "2026-11-19"
-last_updated_session: "authoring-run/8bccbe00-7528-4259-ac29-fa076bc32b2a"
+last_updated_session: "authoring-run/3c318cd8-e481-47d2-9b58-d22f1fd3b01e"
 ---
 
 # OpenShell Sandbox provisioning flow
 
 ## Overview
 
-Kubernetes Compute provisions OpenShell Harnesses.
+For service integration, see [managed provisioning](openshell-managed-workload.md).
 
 ## Entry Points
 
-- Trigger: worker reconciles an OpenShell/Kubernetes Agent revision.
+- Trigger: worker reconciliation with OpenShell Sandbox and Kubernetes Compute.
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:ensureNamespace`
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 - Source: `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
@@ -25,9 +25,9 @@ Kubernetes Compute provisions OpenShell Harnesses.
 graph TD
   %%{init: {"flowchart": {"htmlLabels": true}}}%%
   A["<b>Reconcile Namespace</b><br/>Worker selects Drivers"] --> B["<b>Prepare Namespace</b><br/>Kubernetes isolation"]
-  B --> C{"<b>Workspace mode</b><br/>Installation setting"}
-  C -- "managed" --> X["<b>Reject configuration</b><br/>Before mutation"]
-  C -- "operator" --> D["<b>Reconcile resources</b><br/>Labels and workspace chart"]
+  B --> C{"<b>Integration mode</b><br/>Installation setting"}
+  C -- "service" --> X["<b>Reject configuration</b><br/>Before mutation"]
+  C -- "legacy" --> D["<b>Reconcile resources</b><br/>Labels and workspace chart"]
   D --> G0["<b>Ensure configured gateway</b><br/>Owned resources and health"]
   G0 --> E["<b>Own Workspace</b><br/>Create or adopt"]
   E --> A0["<b>Namespace ready</b><br/>Deployment permitted"]
@@ -118,7 +118,7 @@ share controller readiness diagnostics.
 UID-linked ReplicaSets/Pods and Warning reasons once, preserving rollback errors. It excludes
 messages, environment, full labels and logs, marking unavailable/malformed/oversized results.
 Limits: 15 seconds total, three seconds/256 KiB per command, 32 KiB per record, no retries.
-The 200 ms pipe drain cannot terminate descendants.
+The 200 ms drain cannot terminate descendants.
 
 `network.providerHarness` identifies the Gateway ClusterIP and Pod selector.
 Agent Gateways retain the HTTP Host and connect only to those Pods on TCP/8080.
@@ -130,7 +130,7 @@ Failed discovery aborts. Uninstall removes recorded policies.
 
 `internal/occdev/sandbox_network_policy.go:loadSandboxNetworkPolicies` validates
 persisted policies (maximum 1 MiB) before adding them to generated rules.
-Cleanup checks ownership before deleting the cluster, project and volumes.
+Cleanup verifies cluster, project and volume ownership.
 See [startup network policy](../guides/deploy/local-sandbox-network-policy.md).
 
 ### 0.1. Check Harness mode support
@@ -159,28 +159,28 @@ matching name, OCC Namespace ID, managed-by labels and active phase. Conflicts f
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
 
-`provisionHarness` derives the Harness from Compute's Deployment. The Agent Service stays inactive
-and Gateway transport fails closed. Attachments and provider/Sandbox creation await Gateway
-readiness and its Agent-owned setup Secret reference. `validateHarnessAuth` rejects dedicated
-OpenShell projected identity at `servicePrincipalCredentials.mode` because OpenShell cannot preserve
-the Agent ServiceAccount/token.
+`harnessLaunch` prepares inputs; `sandboxRequirements` adds operator-mode PVC
+mounts. The Agent Service remains inactive; Gateway transport fails closed.
+Attachments and provider/Sandbox creation await Gateway readiness and the Agent-owned
+setup Secret. `validateHarnessAuth` rejects projected identity at
+`servicePrincipalCredentials.mode`: OpenShell cannot preserve the Agent ServiceAccount/token.
 
-For `credential_source`, Compute renders catalog login without a model Secret and puts version
-and `attachForRevision` provider names in `requirements.credentialAttachments`.
-`chatgptAuthTokens` retains account metadata and omits static `CODEX_ACCESS_TOKEN`.
-Codex receives only `APP_TOKEN_SHA` from its exact transport Secret. Compute converts the admitted
-plugin snapshot to `runtime.json`/`config.toml` workload files, removing ConfigMap environment paths.
+For `credential_source`, Compute uses the catalog login mode without a model
+Secret; `requirements.credentialAttachments` carries version and
+`attachForRevision` provider names. `chatgptAuthTokens` omits static
+`CODEX_ACCESS_TOKEN` but retains account metadata. Codex gets only `APP_TOKEN_SHA`
+from its Agent transport Secret. Compute renders the admitted plugin snapshot as
+`runtime.json` and `config.toml`, removing their ConfigMap environment paths.
 
-`OpenShellSandboxDriver.configureAgent` sets full access/user review for every login
-mode and removes `appServer.networkProxy`.
-`deploy/runtime/openclaw-codex-full-access-profile.patch` sends `:danger-full-access`
-for threads/turns; constrained threads fail before a turn. First Agent warns that
-prior PAT `workspace-write` versions break shell tools; `--replace-key` deploys
-current policy. OpenShell blocks nested bubblewrap; model readiness does not prove shell execution.
+`configureAgent` sets full access/user review across login modes and removes `appServer.networkProxy`.
+`deploy/runtime/openclaw-codex-full-access-profile.patch` sends the endpoint's
+`:danger-full-access` profile for threads/turns; constrained threads fail
+before a turn. First Agent warns that PAT `workspace-write` breaks shell tools; `--replace-key` deploys current policy.
+OpenShell blocks nested bubblewrap; model readiness does not prove shell execution.
 
 `KubernetesComputeDriver.admitRevision` persists the launch selection.
 `codexLaunchEntrypoint` selects by revision, authentication, protection and workspace node.
-Existing revisions retain encoding. New PAT/workspace setup children are packed once on first use.
+Existing revisions retain encoding; new PAT/workspace setup children are packed on first use.
 
 For a [PAT source](../reference/drivers/openshell-credential-gateway.md#source-type-catalog),
 `prepareHarnessAuth` selects native login. Startup verifies login using a placeholder in private `auth.json`.
@@ -275,7 +275,8 @@ Send Workspace-scoped identity/spec, a unique name and `request_id` (revision UU
 After `REQUEST_OUTCOME_UNCERTAIN`, `REQUEST_ID_PAYLOAD_MISMATCH` or `REQUEST_REPLAY_UNAVAILABLE`,
 advance only if `getSandbox` confirms absence. At 1,000 live/unresolved records, `RESOURCE_EXHAUSTED`
 ([`SANDBOX_ADMISSION_LIMIT_REACHED`](../reference/drivers/openshell-sandbox.md#troubleshooting)) defers preparation until its deadline without spending attempts. Namespace work retries.
-After replay, [Worker diagnostics](../reference/drivers/openshell-sandbox.md#createsandbox-admission-failures) only explain refusals.
+For [Sandbox startup refusals](../reference/drivers/openshell-sandbox/harness-providers.md#sandbox-startup-refusals),
+`describePrepareRevisionFailure` passes the code and stage to `worker.compute-prepare-failed`.
 
 Provisioning reads [sizing](../reference/drivers/openshell-sandbox.md#configuration);
 Sandbox and preparation omit RuntimeClass and PSA exemptions. Adoption, including `ALREADY_EXISTS`, requires matching Workspace, labels,
@@ -401,7 +402,7 @@ ClusterIP, advertised `ws://*.openshell.localhost:8080/` route, and inactive
 direct Service. Native model proof requires Landlock.
 
 `tests/integration/runtime-image-node-state-permissions.test.ts` checks packaged
-setup, retry and restart under setgid parents.
+setup, retry and restart under setgid parents. It excludes Kubernetes and model execution.
 
 ## Related docs
 
@@ -418,6 +419,8 @@ setup, retry and restart under setgid parents.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 10:42: Trace Sandbox startup refusal diagnostics. (authoring-run/3c318cd8-e481-47d2-9b58-d22f1fd3b01e - 6ff25175b2158ca12e49137cb980295af001a98c)
 
 - 2026-11-19 09:27: Trace the packaged tool grant and exact Sandbox adoption. (authoring-run/8bccbe00-7528-4259-ac29-fa076bc32b2a - ec602263727fa848a921a86d755cb38293bfab76)
 

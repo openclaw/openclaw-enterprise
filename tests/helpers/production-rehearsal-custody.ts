@@ -127,7 +127,7 @@ export function runFixtureCommand(
     allowFailure = false,
     protectedInput = false,
   }: CommandOptions = {},
-  redact = String,
+  redact: (value: unknown) => string = String,
   bounded = false,
 ): Promise<string> {
   assert.ok(!protectedInput || !allowFailure);
