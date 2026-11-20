@@ -59,7 +59,7 @@
     "tests/integration/device-authorization-denial-audit.test.ts",
     "tests/integration/openshell-device-authorization-api.test.mjs",
     "tests/integration/dependency-unavailable-log.test.ts",
-    "tests/integration/git-hooks.test.mjs",
+    "tests/integration/git-hooks.test.ts",
     "tests/integration/profile-renderer.test.ts",
     "tests/integration/production-keycloak-profile.test.ts",
     "tests/integration/database-snapshot-ordering.test.ts",
@@ -510,7 +510,7 @@
       "path": "tests/integration/driver-plugin-installation.test.ts"
     },
     {
-      "path": "tests/integration/git-hooks.test.mjs"
+      "path": "tests/integration/git-hooks.test.ts"
     },
     {
       "path": "tests/integration/occ-api.test.mjs"
