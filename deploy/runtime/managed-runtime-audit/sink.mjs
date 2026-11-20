@@ -4,6 +4,7 @@ import { request } from "node:https";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+const auditPath = "/internal/runtime-audit";
 const destinationFile = "/etc/openclaw-runtime-audit/destination.json";
 const queueDirectory = "/home/node/.openclaw/pending-runtime-audit";
 const capacity = 256;
@@ -60,11 +61,12 @@ export function createAuditSink() {
     url.password ||
     url.search ||
     url.hash ||
-    url.pathname !== "/internal/runtime-audit" ||
+    url.pathname !== auditPath ||
     (source !== "openclaw" && source !== "codex")
   ) {
     throw new Error("Invalid runtime audit destination.");
   }
+  const endpoint = new URL(auditPath, url.origin);
   const ca = readFileSync("/etc/openclaw-runtime-audit/ca.pem");
   const token = readFileSync("/var/run/openclaw-runtime-audit/token", "utf8").trim();
   if (!/^[A-Za-z0-9_-]{43}$/.test(token)) {
@@ -100,7 +102,7 @@ export function createAuditSink() {
     try {
       for (let row = next.get(scope); row; row = next.get(scope)) {
         const status = await post(
-          url,
+          endpoint,
           headers,
           ca,
           row.body,
