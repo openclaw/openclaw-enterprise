@@ -42,6 +42,30 @@
         "OCC_TEST_STRANDS_BOX_SHELL_VERIFIER_SHA256"
       ],
       "expectedTests": ["stock Box Shell Calls admit only the fixed read-only workspace verifier"]
+    },
+    {
+      "path": "tests/conformance/strands-box-enrollment.test.ts",
+      "expectedTests": [
+        "the Driver's enrollment binding is Compute's own projection of the plan",
+        "Compute's protected Harness program, behind box-agent's bridge, is released only by the challenge the Strands Driver relays",
+        "a program whose challenge is not this execution's is never released",
+        "the Driver checks the program's untrusted challenge before Compute is asked",
+        "a program still starting, restarted, or expired stays pending; only its own acknowledgement completes",
+        "the host relays a release only for the challenge it relayed, signed by Compute for this execution",
+        "the bridge reads a request head no more loosely than the program's parser"
+      ]
+    },
+    {
+      "path": "tests/conformance/strands-box-model-native.test.ts",
+      "requiredEnv": [
+        "STRANDS_BOX_SOURCE_BOX",
+        "STRANDS_BOX_MODEL_HOST",
+        "STRANDS_BOX_MODEL_ADDRESS"
+      ],
+      "optionalEnv": ["STRANDS_BOX_MODEL_PORT", "STRANDS_BOX_MODEL_CODEX"],
+      "expectedTests": [
+        "a real Box injects the package's model key per request: placeholder only in the workload, Box refuses other routes, withdrawal and rotation without a restart, SSE and a near-cap body unchanged"
+      ]
     }
   ]
 }

@@ -267,14 +267,14 @@ by its source: route_not_ready`. The chat keeps running.
 
 ## Codex Code Mode cannot run in Box
 
-- **Symptom:** a model's Code Mode `exec` call fails with `failed to spawn
-code-mode host ... Permission denied (os error 13)`; the model then uses its
-  shell tool, which runs under the hook as usual.
+- **Symptom:** Code Mode `exec` fails with `failed to spawn
+code-mode host ... Permission denied (os error 13)`. A Code Mode-only catalog
+  advertises no direct tool; shell fallback requires an advertised shell tool,
+  which runs under the hook.
 - **Cause:** Codex starts its Code Mode host, a separate binary beside `codex`,
   as its own child, and the agent's exec list names only `tini`, Node and `codex`.
-- **Workaround:** none needed: the call fails before any code runs. Do not add
-  it to the exec list: it would run model-written JavaScript in the
-  agent's boundary unadmitted.
+- **Workaround:** none for a Code Mode-only catalog. Do not add the host to the
+  exec list: it would run unadmitted model-written JavaScript.
 - **Upstream status:** turning Code Mode off needs an OCE change to the Codex
   configuration it renders.
 
@@ -303,9 +303,9 @@ code-mode host ... Permission denied (os error 13)`; the model then uses its
 - **Cause:** releases have only Linux and macOS ARM64 builds; upstream
   builds Linux x86-64 as experimental, behind `EXPERIMENTAL_X86_SUPPORT=TRUE`.
 - **Workaround:** on Linux x86-64, use the [Box build](README.md#which-box-build);
-  the host sets the switch. On ARM64, use a Linux
-  host or a full-system ARM64 virtual machine with API, Worker and the
-  workspace volume on that node; no installed OCE run has been made there.
+  the host sets the switch. On Linux ARM64 (host or VM), colocate API, Worker
+  and workspace volume. The installed fork returned a controlled reply; the
+  installed GitHub workflow remains unverified.
 - **Upstream status:** upstream added x86-64 release downloads
   ([strands-agents/box#475](https://github.com/strands-agents/box/pull/475)).
 

@@ -20,62 +20,55 @@ sandbox behavior with the image's seccomp rules. Codex and Slack come from the s
 restricted workspace-node commands and persistent device identity support
 split storage. That contract requires a newer source than `2026.9.5`.
 
-OCE builds an unreleased OpenClaw commit that supports Gateway managed mode
-and the separate tool policy for dedicated Harnesses. Managed mode restricts
-native config writes, Gateway-local terminals and Gateway-hosted command jobs.
-The tool policy limits model turns in both modes. When a child spawns, OpenClaw
-waits for placement started by session creation and rechecks the parent's
-authority before dispatch. The source also preserves shared host-module links
-during plugin capture and handles bundled WebAssembly and directory assets.
-Until upstream ships [OpenClaw #158724](https://github.com/openclaw/openclaw/pull/158724)
-or an equivalent, the build applies its
-`readOnlyPaths` compatibility change as
-`openclaw-codex-read-only-paths.patch`. This preserves the restricted Codex
-filesystem profile required by the repository broker and selected plugins.
-The selected source preserves `on-request` when plugins use MCP elicitation,
-reconnects `connect --ephemeral` with saved device credentials after its setup
-code expires, and retains the original caller's authority while required-worker
-placement continues after session creation is acknowledged. Scope, role, and
-profile revocation still stop dispatch. The build applies
-`openclaw-required-worker-authority-regression.patch` and runs its Gateway
-public-RPC cases offline: placement before and after acknowledgement,
-disconnect, and committed role, scope, and profile revocation.
-[OpenClaw #196972](https://github.com/openclaw/openclaw/pull/196972) adds an opt-in wait for admitted work and final writes.
-The build also applies `openclaw-codex-full-access-profile.patch`, which selects
-the native full-access Codex profile, and
-`openclaw-control-ui-browser-reconnect.patch`, which offers a browser navigation
-after the Control UI's access is refused. Remove each once upstream matches.
-`openclaw-terminated-gateway-namespace.patch` lets a supervisor that verified a
-private Linux PID namespace stopped recover its Gateway records, or, inside it,
-any record whose PID is dead. OC compares its lock fingerprint first.
-Unattributed owners need operator confirmation.
-The [restart recovery bridge](../../docs/flows/harness-restart-recovery.md) waits for workspace reconnection and surviving Codex work before continuing.
-The pin includes [upstream #185180](https://github.com/openclaw/openclaw/pull/185180):
-final delivery retains its progress window after a long Codex turn.
+OCE builds an unreleased OpenClaw commit with Gateway managed mode and a separate
+tool policy for dedicated Harnesses. Managed mode restricts native config writes,
+Gateway-local terminals and Gateway-hosted command jobs; tool policy limits
+model turns in both modes. Child dispatch waits for placement started by session creation
+and rechecks parent authority. The source preserves plugin host-module links,
+bundled WebAssembly/directory assets, `on-request` for MCP elicitation, reconnect
+with saved device credentials using `connect --ephemeral` after setup expiry,
+and original caller authority
+through required-worker placement after session acknowledgment. Scope, role and
+profile revocation still stop dispatch.
+
+Until [OpenClaw #158724](https://github.com/openclaw/openclaw/pull/158724) or an
+equivalent ships, `openclaw-codex-read-only-paths.patch` supplies `readOnlyPaths`
+compatibility, preserving the restricted Codex filesystem profile required by the repository broker and selected plugins.
+`openclaw-required-worker-authority-regression.patch` runs offline Gateway
+public-RPC cases for placement before/after acknowledgment, disconnect, and
+committed role, scope and profile revocation.
+[OpenClaw #196972](https://github.com/openclaw/openclaw/pull/196972) adds opt-in waiting
+for admitted work and final writes. `openclaw-codex-full-access-profile.patch`
+selects the native full-access Codex profile;
+`openclaw-control-ui-browser-reconnect.patch` offers browser navigation after
+Control UI access refusal. Remove each when upstream matches.
+`openclaw-terminated-gateway-namespace.patch` lets a supervisor recover Gateway
+records after verifying a private Linux PID namespace stopped, or recover dead-PID
+records inside it. OC checks the lock fingerprint first; unattributed owners
+require operator confirmation. The [restart recovery bridge](../../docs/flows/harness-restart-recovery.md)
+waits for workspace reconnection and surviving Codex work. The pin includes
+[upstream #185180](https://github.com/openclaw/openclaw/pull/185180), preserving the final-delivery
+progress window after a long Codex turn.
 
 `openclaw-node-setup-renewal.patch` adds `--pair-or-reconnect` for first enrollment
 or renewal under the same binding. Fresh setup comes first; a typed bootstrap rejection
 allows one validated saved-token retry. See [node enrollment](../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
 for Gateway/TLS-pin checks, local credential retirement when switching targets,
 and pairing recovery. Remove this bridge once the source provides that contract.
-`openclaw-codex-box-owner.patch` binds an external Codex turn to the Compute-owned
-provider-Box generation and its WSS peer, and fences the app-server RPCs a provider
-Box may make: the chat control set is allowed, the native hook relay credential file
-(`fs/writeFile`/`fs/remove` of one `<relayId>.<generation>.json` under the fixed
-`$HOME/.oce-native-hooks`, whose URL is pinned to the Gateway's own configured
-`appServer.nativeHookRelay` value, never the request) is admitted, the session policy
-handoff (`thread/inject_items` of one developer-role text message opened by one of the
-pinned revision's two policy notices, at most 1 MiB, into a thread this client started,
-resumed or forked; a pin bump that changes the notices needs a fence follow-up) is
-admitted, and every other `thread/inject_items`, `fs/*` call and unbound RPC stays
-refused. The client takes one JSON snapshot of the request params before the fence so
-the value decided on is exactly the value sent.
+`openclaw-codex-box-owner.patch` binds external Codex turns to the Compute-owned
+provider-Box generation and WSS peer. The app-server fence admits chat controls,
+`fs/writeFile`/`fs/remove` for one `<relayId>.<generation>.json` under fixed
+`$HOME/.oce-native-hooks` (URL from Gateway `appServer.nativeHookRelay`, never
+the request), and `thread/inject_items` for one developer-role text message
+starting with either pinned policy notice, at most 1 MiB, in a thread this client
+started, resumed or forked. Changed notices require a fence update. Other
+`thread/inject_items`, `fs/*` and unbound RPCs stay refused. One JSON snapshot
+ensures the fence decides on the params sent.
 
-This patch's unit test (`provider-box-owner.test.ts`) runs only in the Dockerfile's
-`openclaw-bridge-tests` image stage, which is not a dependency of the runtime target
-and which hosted PR CI does not run (it runs only under `container-check`
-`workflow_dispatch` or `container-publish`). Validating a change to it means
-building that stage (or dispatching `container-check`), not the normal PR checks.
+Validate this patch by building `openclaw-bridge-tests` or dispatching
+`container-check`. Its `provider-box-owner.test.ts` runs only in that image stage,
+which the runtime target and hosted PR CI skip; `container-check`
+`workflow_dispatch` and `container-publish` run it.
 
 OpenClaw resumes turns only under the same `OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE` (#201186).
 Provenance `patches` records each patch's SHA-256 in order; tests compare
@@ -85,36 +78,31 @@ Provenance `patches` records each patch's SHA-256 in order; tests compare
 
 [Strands Box pilot setup](../examples/strands-box/ordinary-chat/README.md#bind-a-standalone-gateway-to-one-box-execution)
 
-Dedicated Gateways require this recipe's source and validate effective native
-configuration before startup. Required tool policy covers core dispatch,
-automation authority, and dynamic Codex tools. Older or unknown images stay
-unready; runtime qualification remains separate.
+Dedicated Gateways require this source and validate native configuration before
+startup. Required tool policy covers core dispatch, automation authority and dynamic Codex tools. Older or unknown images stay unready; runtime qualification
+remains separate.
 
-The Codex adapter preserves namespaced IDs with an explicit native
-provider. For a custom endpoint, OCE compiles its private Gateway model references
-to include that provider while keeping the admitted Configuration unchanged.
-See
+The Codex adapter preserves namespaced IDs with an explicit native provider. For
+custom endpoints, OCE adds that provider to private Gateway model references
+without changing the admitted Configuration. See
 [native runtime selection](../../docs/reference/harness-execution.md#native-runtime-selection).
 
-Dedicated native OpenClaw requires both required worker placement
-(`cloudWorkers.requiredProfile`) and node-local inference from canonical
-`models.providers` configuration. The node snapshots its model credentials and
-projects each worker's managed workspace from its authorized launch descriptor;
-OCE does not write the retired `nodeHost.workerRuns.nativeInferenceConfig` field.
+Dedicated native OpenClaw requires `cloudWorkers.requiredProfile` placement and
+node-local inference from canonical `models.providers`. The node snapshots model
+credentials and projects each worker's managed workspace from its authorized
+launch descriptor. OCE does not write retired
+`nodeHost.workerRuns.nativeInferenceConfig`.
 
-The selected source includes required placement activation, node-local
-model/workspace projection, and the Codex native-child relay. OCE advertises
-`pinned-runtime` native-worker support, so the Console offers Dedicated OpenClaw
-without a custom-image declaration. When the same node hosts an admitted MCP
-tool, the worker can call its MCP client locally. Tools that require Gateway
-policy hooks continue through the Gateway. Deployment still requires a provisioning
-SandboxDriver with networking, filesystem, and process containment.
+The source activates placement and includes Codex's native-child relay.
+`pinned-runtime` support lets the Console offer Dedicated OpenClaw without a
+custom-image declaration. Workers call admitted MCP clients on the same node;
+tools needing Gateway policy hooks still use the Gateway. Deployment requires a provisioning SandboxDriver with network,
+filesystem and process containment.
 
-The images-runtime-startup lane runs the production Gateway and Harness
-entrypoints and validates their generated configurations with the image's CLI.
-Native AMD64 and ARM64 image checks and real deployment verification remain
-separate requirements. Schema acceptance alone does not prove placement,
-enrollment, containment, workspace access, or model execution.
+The images-runtime-startup lane runs production Gateway/Harness entrypoints
+and validates configuration with the image CLI. Native AMD64/ARM64
+checks and real deployment verification remain separate. Schema acceptance proves
+neither placement, enrollment, containment, workspace access nor model execution.
 
 | Input                                                 | Selection                                                                                                         |
 | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
