@@ -115,7 +115,9 @@ type PrepareOptions = HelmTarget &
     bootstrapCredentials?: "generate" | "existing";
     apiClients: readonly PodPeer[];
     channelEgress?: ChannelEgressOptions | undefined;
+    slackProxy?: { enabled: boolean } | undefined;
     databaseName?: string | undefined;
+    databaseUpgradeMigration?: "hook" | "separate" | undefined;
     databaseTLS?:
       | {
           caSecretName: string;
@@ -159,12 +161,14 @@ export async function prepareProductionHelmControlPlane({
   installationName,
   apiClients,
   channelEgress,
+  slackProxy,
   repositoryCredentials,
   gatewayRouting,
   controlPlane,
   executionCluster,
   metrics,
   databaseName = "openclaw_enterprise",
+  databaseUpgradeMigration,
   databaseTLS,
   run,
   kubernetes,
@@ -414,22 +418,23 @@ export async function prepareProductionHelmControlPlane({
   assert.ok(typeof endpointIP === "string" && endpointIP, "Expected the Kubernetes endpoint IP");
   assert.ok(typeof endpointPort === "number", "Expected the Kubernetes endpoint port");
   const adminEmail = `admin-${suffix}@example.invalid`;
+  const channelSettings =
+    channelEgress === undefined
+      ? { enabled: false }
+      : {
+          ...channelEgress,
+          enabled: true,
+          gatewayClassName: gatewayRouting?.gatewayClassName ?? "eg",
+        };
   const values = {
     images: { controller: images.controller },
-    ...(channelEgress
-      ? {
-          channelEgress: {
-            ...channelEgress,
-            enabled: true,
-            gatewayClassName: gatewayRouting?.gatewayClassName ?? "eg",
-          },
-        }
-      : {}),
+    ...(slackProxy ? { slackProxy } : { channelEgress: channelSettings }),
     installation: { name: installationName },
     auth: { baseUrl: authBaseURL },
     agentNativeAdmin: { domain: agentNativeAdminDomain },
     bootstrap: { adminEmail, credentials: { secretName: "occ-bootstrap-credentials" } },
     database: {
+      ...(databaseUpgradeMigration ? { upgradeMigration: databaseUpgradeMigration } : {}),
       cidrs: [`${postgresIP}/32`],
       ...(databaseTLS && {
         caSecretName: databaseTLS.caSecretName,
