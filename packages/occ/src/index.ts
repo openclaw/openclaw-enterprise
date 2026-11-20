@@ -10,6 +10,14 @@ export type {
   NamespaceLifecycleEvidence,
 } from "./namespace-lifecycle.ts";
 export { recognizedRuntimeFailureValues } from "./runtime-failure-cause.ts";
+import {
+  GATEWAY_MANAGED_MODE_UNSUPPORTED,
+  admitComputeRevision,
+  admitDeploymentRepositoryPolicy,
+  checkedSandboxPolicySnapshot,
+  defaultDeploymentSandboxPolicy,
+  unsupportedComputeRepositoryPolicy,
+} from "./deployment-policy.ts";
 import { deploymentRepositoryAccessStatus } from "./deployment-repository-access.ts";
 import { exchangeAuthorizationCode, startBrowserAuthorization } from "./browser-authorization.ts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
@@ -132,7 +140,6 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   admitRepositoryNetworkPolicy,
-  admitSandboxRepositoryNetworkPolicy,
   parseRepositoryNetworkPolicyCeiling,
   RepositoryNetworkPolicyAdmissionError,
   validateSandboxNetworkGrants,
@@ -1784,9 +1791,6 @@ const HARNESS_DISPLAY_NAMES: Readonly<Record<string, string>> = Object.freeze({
 function validExecutionMode(value: unknown): value is HarnessExecutionMode {
   return value === "embedded" || value === "dedicated";
 }
-
-const GATEWAY_MANAGED_MODE_UNSUPPORTED =
-  "Agent setting gatewayManagedMode is not supported by the selected Compute Driver.";
 
 function normalizeGatewayManagedMode(value: unknown, defaultValue?: boolean): boolean {
   const mode = value === undefined ? defaultValue : value;
@@ -11772,7 +11776,7 @@ export class OpenClawController {
           : "The selected Sandbox Driver does not support the requested wildcard or port range.";
         throw new ConfigurationValidationError(details as [ErrorDetail, ...ErrorDetail[]]);
       }
-      return this.checkedSandboxPolicySnapshot(driver, additions, version, defaults, scope);
+      return checkedSandboxPolicySnapshot(driver, additions, version, defaults, scope);
     } catch (error) {
       if (error instanceof SandboxNetworkPolicyConflictError) {
         throw error;
@@ -11791,103 +11795,6 @@ export class OpenClawController {
         ],
       );
     }
-  }
-
-  private checkedSandboxPolicySnapshot(
-    driver: SandboxDriver,
-    additions: readonly SandboxNetworkGrant[],
-    version: number,
-    defaults?: SandboxPolicySnapshot["defaults"],
-    scope?: { readonly repositoryCredentials: boolean },
-    producer?: () => SandboxPolicySnapshot,
-  ): SandboxPolicySnapshot {
-    const refused = () =>
-      new ResourceStateConflictError(
-        "The Sandbox Driver cannot enforce the complete requested policy.",
-        [
-          {
-            path: "",
-            code: "INVALID_VALUE",
-            message: "The selected Driver could not validate the configuration.",
-          },
-        ],
-      );
-    let returned: SandboxPolicySnapshot;
-    try {
-      returned =
-        producer === undefined
-          ? driver.admitNetworkPolicy!(immutableCopy(additions), version, defaults, scope)
-          : producer();
-    } catch (error) {
-      // Preserve structured producer diagnostics; unknown exceptions (including null)
-      // fail immediately, without retrying or inspecting their contents.
-      throw error instanceof ConfigurationValidationError ||
-        error instanceof SandboxNetworkPolicyConflictError
-        ? error
-        : refused();
-    }
-    try {
-      // Detach once before inspecting: a Driver may return mutable data or accessors.
-      // OCC owns the exact ordered grants; the Driver still owns opaque defaults.
-      // Repository ACLs require separate admission against the Installation ceiling.
-      const snapshot = immutableCopy(returned);
-      validateSandboxNetworkGrants(snapshot?.additions);
-      if (
-        snapshot.driverId !== driver.id ||
-        snapshot.implementation !== driver.implementation ||
-        snapshot.version !== version ||
-        snapshot.defaults === null ||
-        typeof snapshot.defaults !== "object" ||
-        Array.isArray(snapshot.defaults) ||
-        !isDeepStrictEqual(snapshot.additions, additions) ||
-        Object.hasOwn(snapshot, "repositoryNetworkPolicy")
-      ) {
-        throw refused();
-      }
-      return snapshot;
-    } catch {
-      // Never include unknown Driver-returned values or exceptions in diagnostics.
-      throw refused();
-    }
-  }
-
-  private checkedProtectedCodexArtifactPolicy(
-    driver: SandboxDriver | undefined,
-    version: number,
-  ): SandboxPolicySnapshot {
-    if (driver?.admitProtectedCodexArtifactPolicy === undefined) {
-      throw new ResourceStateConflictError(
-        "Deploy requires a Sandbox Driver that supports protected Codex artifact admission. Ask your Installation administrator to check drivers.sandbox and the selected Driver version.",
-      );
-    }
-    return this.checkedSandboxPolicySnapshot(driver, [], version, undefined, undefined, () => {
-      const result = immutableCopy(driver.admitProtectedCodexArtifactPolicy!(version));
-      const names = result?.declaredRuleNames;
-      if (
-        result?.purpose !== "protected-codex-artifacts" ||
-        !isDeepStrictEqual(Object.keys(result).sort(), [
-          "declaredRuleNames",
-          "purpose",
-          "snapshot",
-        ]) ||
-        !Array.isArray(names) ||
-        names.some((name) => typeof name !== "string" || name.length === 0) ||
-        new Set(names).size !== names.length ||
-        !isDeepStrictEqual(Object.keys(result.snapshot).sort(), [
-          "additions",
-          "defaults",
-          "driverId",
-          "implementation",
-          "version",
-        ]) ||
-        !isDeepStrictEqual([...names].sort(), Object.keys(result.snapshot.defaults).sort())
-      ) {
-        throw new ResourceStateConflictError(
-          "The Sandbox Driver did not acknowledge the exact artifact declaration.",
-        );
-      }
-      return result.snapshot;
-    });
   }
 
   /**
@@ -13430,6 +13337,14 @@ export class OpenClawController {
     return this.admitAgentDeployment(principalId, captured, resolveHarness, auditEvent);
   }
 
+  private deploymentComputeDriver(): ComputeDriver {
+    try {
+      return this.selectedDriver("compute");
+    } catch {
+      throw new DependencyUnavailableError("The selected compute Driver is unavailable.");
+    }
+  }
+
   private async admitAgentDeployment(
     principalId: string,
     input: DeployAgentInput & { harnessOverrides: Readonly<Record<string, unknown>> },
@@ -13547,12 +13462,7 @@ export class OpenClawController {
 
       const computeSelection = this.selections.get("compute");
       const sandboxSelection = this.selections.get("sandbox");
-      let compute: ComputeDriver;
-      try {
-        compute = this.selectedDriver("compute");
-      } catch {
-        throw new DependencyUnavailableError("The selected compute Driver is unavailable.");
-      }
+      const compute = this.deploymentComputeDriver();
       const sandbox = this.sandboxDriver();
 
       if (!isNonEmptyString(lockedAgent.servicePrincipalId)) {
@@ -13905,88 +13815,32 @@ export class OpenClawController {
           throw new ProtectedExecutionNetworkPolicyError("deploy");
         }
       }
-      let sandboxPolicy: SandboxPolicySnapshot | undefined;
-      if (protectedExecution) {
-        if (
-          revisionHarness.id === "codex" &&
-          revisionHarness.mode === "dedicated" &&
-          repositoryCredentials !== undefined
-        ) {
-          sandboxPolicy = this.checkedProtectedCodexArtifactPolicy(sandbox, policy?.version ?? 1);
-        }
-      } else if ((policy?.additions.length ?? 0) > 0) {
-        sandboxPolicy = this.admitAgentNetworkPolicy(
-          policy!.additions,
-          policy!.version,
-          undefined,
-          policyScope,
-        );
-      } else if (sandbox?.admitNetworkPolicy !== undefined) {
-        sandboxPolicy = this.checkedSandboxPolicySnapshot(
-          sandbox,
-          [],
-          policy?.version ?? 1,
-          undefined,
-          policyScope,
-        );
-      }
-      if ((policy?.additions.length ?? 0) > 0 && sandboxPolicy === undefined) {
+      const sandboxSnapshot =
+        !protectedExecution && policy !== undefined && policy.additions.length > 0
+          ? this.admitAgentNetworkPolicy(policy.additions, policy.version, undefined, policyScope)
+          : defaultDeploymentSandboxPolicy(
+              sandbox,
+              policy?.version ?? 1,
+              protectedExecution,
+              revisionHarness,
+              policyScope,
+            );
+      if ((policy?.additions.length ?? 0) > 0 && sandboxSnapshot === undefined) {
         throw new ResourceStateConflictError(
           "The selected Sandbox Driver cannot enforce this Agent's network policy.",
         );
       }
-      let repositoryPolicyOwnerUnchanged: (() => boolean) | undefined;
-      if (policy?.repositoryNetworkPolicy !== undefined) {
-        try {
-          const requested = admitRepositoryNetworkPolicy(
-            policy.repositoryNetworkPolicy,
-            this.repositoryNetworkPolicyCeiling,
-          );
-          if (requested !== undefined && requested.grants.length > 0) {
-            const owner = this.repositoryPermissionOwner(this.installationRepositoryAdmission);
-            const namespacePolicy = owner?.admission?.policy;
-            if (
-              !requested.grants.every(
-                (grant) =>
-                  namespacePolicy?.repositoryNetworkPolicyAllows?.({
-                    namespaceId: namespace.id,
-                    grant,
-                  }) === true,
-              ) ||
-              !owner?.unchanged()
-            ) {
-              throw new ResourceStateConflictError(
-                "Cannot verify Namespace repository network grants. Review the Installation repository policy before deploying.",
-              );
-            }
-            repositoryPolicyOwnerUnchanged = owner.unchanged;
-          }
-          if (sandboxPolicy === undefined) {
-            throw new RepositoryNetworkPolicyAdmissionError(
-              "UNSUPPORTED_POLICY",
-              "/repositoryNetworkPolicy",
-              "Select a Sandbox Driver that supports repository network policy.",
-            );
-          }
-          sandboxPolicy = admitSandboxRepositoryNetworkPolicy(
-            sandboxPolicy,
-            policy.repositoryNetworkPolicy,
-            this.repositoryNetworkPolicyCeiling,
-            sandbox,
-          );
-        } catch (error) {
-          if (!(error instanceof RepositoryNetworkPolicyAdmissionError)) {
-            throw error;
-          }
-          throw new ResourceStateConflictError(error.message, [
-            {
-              path: error.path,
-              code: error.code === "UNSUPPORTED_POLICY" ? "INVALID_VALUE" : error.code,
-              message: error.message,
-            },
-          ]);
-        }
-      }
+      const { sandboxPolicy, repositoryOwner } = admitDeploymentRepositoryPolicy(
+        sandboxSnapshot,
+        policy?.repositoryNetworkPolicy,
+        {
+          ceiling: this.repositoryNetworkPolicyCeiling,
+          sandbox,
+          namespaceId: namespace.id,
+          repositoryOwner: () =>
+            this.repositoryPermissionOwner(this.installationRepositoryAdmission),
+        },
+      );
       const revisionDraft: AgentRevision = {
         id: revisionId,
         ...execution,
@@ -14016,68 +13870,42 @@ export class OpenClawController {
         servicePrincipalId: lockedAgent.servicePrincipalId,
         createdAt,
       };
-      const admitComputeRevision = () => {
-        if (
-          revisionDraft.gatewayManagedMode === true &&
-          compute.supportsGatewayManagedMode !== true
-        ) {
-          throw new ConfigurationHarnessError(GATEWAY_MANAGED_MODE_UNSUPPORTED);
+      const explicitRepositoryPolicy = sandboxPolicy?.repositoryNetworkPolicy !== undefined;
+      const assertRepositoryNetworkPolicyDrivers = () => {
+        if (!explicitRepositoryPolicy) {
+          return;
         }
-        const draft = freezeAgentRevision(revisionDraft);
-        const computeAdmission = compute.admitRevision?.(draft);
-        const admittedDraft = freezeAgentRevision({
-          ...draft,
-          compute: {
-            ...draft.compute,
-            ...(computeAdmission === undefined ? {} : { admission: computeAdmission }),
-          },
-        });
-        const runtimeInputs = compute.snapshotRuntimeInputs?.(admittedDraft);
-        return freezeAgentRevision({
-          ...admittedDraft,
-          compute: {
-            ...admittedDraft.compute,
-            ...(runtimeInputs === undefined ? {} : { runtimeInputs }),
-          },
-        });
-      };
-      let admittedRevision: Readonly<AgentRevision> | undefined;
-      let assertRepositoryNetworkPolicyDrivers: (() => void) | undefined;
-      if (sandboxPolicy?.repositoryNetworkPolicy !== undefined) {
         // State locks do not freeze the process-local Driver registrations.
-        assertRepositoryNetworkPolicyDrivers = () => {
-          if (
-            computeSelection === undefined ||
-            this.selections.get("compute") !== computeSelection ||
-            !this.unchangedDriver(computeSelection) ||
-            sandboxSelection === undefined ||
-            this.selections.get("sandbox") !== sandboxSelection ||
-            !this.unchangedDriver(sandboxSelection) ||
-            repositoryPolicyOwnerUnchanged?.() === false
-          ) {
-            throw new ResourceStateConflictError(
-              "The selected Drivers changed during repository network policy admission. Review the Installation's Driver selections before deploying.",
-            );
-          }
-        };
-        const unsupportedCompute = () =>
-          new ResourceStateConflictError(
-            "The selected Compute Driver cannot enforce this Agent's repository network policy with the selected Sandbox Driver and Harness.",
-            [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
+        if (
+          computeSelection === undefined ||
+          this.selections.get("compute") !== computeSelection ||
+          !this.unchangedDriver(computeSelection) ||
+          sandboxSelection === undefined ||
+          this.selections.get("sandbox") !== sandboxSelection ||
+          !this.unchangedDriver(sandboxSelection) ||
+          repositoryOwner?.unchanged() === false
+        ) {
+          throw new ResourceStateConflictError(
+            "The selected Drivers changed during repository network policy admission. Review the Installation's Driver selections before deploying.",
           );
+        }
+      };
+      if (explicitRepositoryPolicy) {
         if (compute.validateProtectedRepositoryNetworkPolicy === undefined) {
-          throw unsupportedCompute();
+          throw unsupportedComputeRepositoryPolicy();
         }
         try {
           await compute.validateProtectedRepositoryNetworkPolicy(
             freezeAgentRevision(revisionDraft),
           );
         } catch {
-          throw unsupportedCompute();
+          throw unsupportedComputeRepositoryPolicy();
         }
         assertRepositoryNetworkPolicyDrivers();
-        admittedRevision = admitComputeRevision();
       }
+      const policyAdmittedRevision = explicitRepositoryPolicy
+        ? admitComputeRevision(compute, revisionDraft)
+        : undefined;
       if (compute.requiresAgentRuntimeCredentials === true) {
         if (
           compute.getAgentRuntimeCredentialStatus === undefined ||
@@ -14106,7 +13934,7 @@ export class OpenClawController {
               namespaceId: namespace.id,
             });
           }
-          assertRepositoryNetworkPolicyDrivers?.();
+          assertRepositoryNetworkPolicyDrivers();
           // The Driver creates only missing owned Secrets; a failed admission can reuse them.
           const provisioned = this.runtimeCredentialStatus(
             await this.runtimeCredentialOperation(() =>
@@ -14120,12 +13948,13 @@ export class OpenClawController {
           }
         }
       }
-      admittedRevision ??= admitComputeRevision();
+      const admittedRevision =
+        policyAdmittedRevision ?? admitComputeRevision(compute, revisionDraft);
       // Database locks do not freeze process-local selections across awaited Driver calls.
       if (prepared !== undefined) {
         this.assertPreparedDeploymentDrivers(prepared);
       }
-      assertRepositoryNetworkPolicyDrivers?.();
+      assertRepositoryNetworkPolicyDrivers();
       const revision = await state.revisions.createRevision(admittedRevision, first?.digest);
       if (
         lockedAgent.activeRevisionId &&
