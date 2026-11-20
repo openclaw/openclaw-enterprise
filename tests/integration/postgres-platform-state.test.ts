@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import test from "node:test";
 import { requiresPostgres } from "../helpers/postgres-platform-state.ts";
 import {
@@ -60,11 +61,11 @@ test(
   persistPluginState,
 );
 test(
-  "memory State saves repository network policy and refuses scoped revisions and live application",
+  "memory State admits both execution modes with repository network policy",
   verifyMemoryRepositoryPolicyPersistence,
 );
 test(
-  "PostgreSQL saves repository network policy and refuses scoped revision reads and writes",
+  "PostgreSQL saves repository network policy and binds reader markers for both execution modes",
   requiresPostgres,
   persistRepositoryNetworkPolicy,
 );
@@ -97,4 +98,149 @@ test(
   "PostgreSQL guarded first deployment persists one private receipt and one reconcile work",
   requiresPostgres,
   persistGuardedDeployment,
+);
+
+test(
+  "PostgreSQL pins managed sources to a durable TokenService instance and keeps OAuth sources unpinned",
+  requiresPostgres,
+  async (context) => {
+    const [{ randomUUID }, { Pool }, { PostgresPlatformState }, { databaseUrl }] =
+      await Promise.all([
+        import("node:crypto"),
+        import("pg"),
+        import("../../packages/occ/src/state/postgres-state.ts"),
+        import("../helpers/postgres-platform-state.ts"),
+      ]);
+    const pool = new Pool({ connectionString: databaseUrl });
+    context.after(() => pool.end());
+    const state = new PostgresPlatformState(pool);
+    const createdAt = new Date().toISOString();
+    if (!(await state.loadInstallation())) {
+      await state.transact((unit) =>
+        unit.installations.createInstallation({
+          id: `ins_${randomUUID()}`,
+          name: "Static source persistence",
+          createdAt,
+        }),
+      );
+    }
+    const namespaceId = `ns_${randomUUID()}`;
+    await state.transact((unit) =>
+      unit.namespaces.createNamespace({
+        id: namespaceId,
+        name: `Static source ${randomUUID()}`,
+        status: "provisioning",
+        createdAt,
+      }),
+    );
+    await state.transact((unit) =>
+      unit.namespaces.transitionNamespaceStatus(namespaceId, "provisioning", "ready"),
+    );
+    const candidate = {
+      id: randomUUID(),
+      driverId: "selected-token-service",
+      storeIdentity: `store-${randomUUID()}`,
+    };
+    const selected = await state.transact((unit) =>
+      unit.installations.selectTokenServiceInstance(candidate),
+    );
+    assert.deepEqual(
+      await state.transact((unit) =>
+        unit.installations.selectTokenServiceInstance({ ...candidate, id: randomUUID() }),
+      ),
+      selected,
+    );
+    const sourceId = `cs_${randomUUID()}`;
+    await state.transact((unit) =>
+      unit.credentialSources.createCredentialSource({
+        id: sourceId,
+        namespaceId,
+        name: "Managed source",
+        type: "static",
+        config: {},
+        secrets: {},
+        ownerCapability: "token_service",
+        tokenServiceInstanceId: selected.id,
+        state: "registering",
+        createdAt,
+      }),
+    );
+    const dispatchedAt = new Date().toISOString();
+    assert.equal(
+      await state.transact((unit) =>
+        unit.credentialSources.setCredentialSourceRegistrationDispatch(
+          namespaceId,
+          sourceId,
+          dispatchedAt,
+        ),
+      ),
+      true,
+    );
+    assert.equal(
+      await state.transact((unit) =>
+        unit.credentialSources.setCredentialSourceRegistrationDispatch(
+          namespaceId,
+          sourceId,
+          dispatchedAt,
+        ),
+      ),
+      false,
+    );
+    const ready = await state.transact((unit) =>
+      unit.credentialSources.markCredentialSourceReady(namespaceId, sourceId, {}),
+    );
+    assert.equal(ready?.ownerCapability, "token_service");
+    assert.deepEqual(ready?.config, {});
+    assert.deepEqual(
+      ready?.ownerCapability === "token_service" ? ready.registration : undefined,
+      {},
+    );
+    await assert.rejects(
+      state.transact((unit) =>
+        unit.installations.selectTokenServiceInstance({
+          id: randomUUID(),
+          driverId: "replacement",
+          storeIdentity: "different-store",
+        }),
+      ),
+      /still has registrations/,
+    );
+    const oauthId = `cs_${randomUUID()}`;
+    // Existing consent first reserves an unpinned OAuth source; adding managed storage must not alter it.
+    const oauth = await state.transact((unit) =>
+      unit.credentialSources.createCredentialSource({
+        id: oauthId,
+        namespaceId,
+        name: "OAuth reservation",
+        type: "oauth2-refresh-token",
+        config: {},
+        secrets: {},
+        ownerCapability: "token_service",
+        state: "registering",
+        createdAt,
+      }),
+    );
+    assert.equal(
+      oauth.ownerCapability === "token_service" ? oauth.tokenServiceInstanceId : undefined,
+      undefined,
+    );
+    await state.transact(async (unit) => {
+      await unit.credentialSources.markCredentialSourceDeleting(namespaceId, sourceId);
+      assert.equal(
+        await unit.credentialSources.deleteCredentialSource(namespaceId, sourceId),
+        true,
+      );
+      await unit.credentialSources.markCredentialSourceDeleting(namespaceId, oauthId);
+      await unit.credentialSources.deleteCredentialSource(namespaceId, oauthId);
+    });
+    const replacement = {
+      id: randomUUID(),
+      driverId: "replacement",
+      storeIdentity: "different-store",
+    };
+    assert.deepEqual(
+      await state.transact((unit) => unit.installations.selectTokenServiceInstance(replacement)),
+      replacement,
+    );
+  },
 );

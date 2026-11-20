@@ -85,11 +85,16 @@ Replace only `1e400` with `2`. Save or create, then inspect the Configuration fo
 `[1,2,3]`. Capture the rejection and successful correction. These stories use
 simulated saves; they do not prove Controller persistence or runtime behavior.
 
-## Inspect and withdraw saved repository grants
+## Inspect, save, and withdraw repository grants
 
 Open **Inspect Namespace repository limits** in **Pages / Agent detail**. Open
 **View network limits** and check both repository entries. Open **Manage rules**
-to see that this Agent has legacy repository access.
+to verify that the Agent has no saved repository policy.
+
+Open **Save Agent repository access and narrow a grant**. In **Manage rules**,
+set `example/application` to **Read** and `example/tooling` to **Write**. Save
+the repository policy. Reopen **Manage rules**, change tooling to **Read**,
+and save again. Check both saved selections and the deployment notice.
 
 In the protected execution story, remove and save the ordinary network rules
 first. Reopen **Manage rules** and select **Withdraw saved repository grants**.

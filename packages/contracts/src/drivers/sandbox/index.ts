@@ -23,6 +23,8 @@ import type {
   SandboxPolicySnapshot,
 } from "../../sandbox-policy.ts";
 
+export type ProtectedRepositoryNetworkPolicyContext = Readonly<AgentRevision>;
+
 export type KubernetesNamespacedResource = Readonly<Record<string, unknown>>;
 
 export interface SandboxWorkspaceMount {
@@ -251,6 +253,10 @@ export interface SandboxDriver extends Driver {
     policy: RepositoryNetworkPolicy,
     network: SandboxPolicySnapshot,
   ): SandboxPolicySnapshot["defaults"];
+  /** Revalidate effective policy and the current credential scope on the frozen revision. */
+  validateProtectedRepositoryNetworkPolicy?(
+    revision: ProtectedRepositoryNetworkPolicyContext,
+  ): void;
   /**
    * Side-effect-free admission for protected, dedicated Codex repository execution.
    * A normal network-policy result cannot acknowledge this purpose. The result names

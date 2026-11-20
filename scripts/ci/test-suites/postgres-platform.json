@@ -30,6 +30,7 @@
     "tests/integration/postgres-namespace-iam-policy.test.ts",
     "tests/integration/postgres-agent-update-authority.test.ts",
     "tests/integration/postgres-connection-templates.test.ts",
+    "tests/integration/postgres-static-token-service-lifecycle.test.ts",
     "tests/integration/workspace-setup-worker.test.ts",
     "tests/integration/postgres-repository-sessions.test.ts",
     "tests/integration/postgres-secret-state.test.ts",
@@ -141,8 +142,8 @@
         "PostgreSQL rejects platform writes until the singleton Installation is bootstrapped",
         "real OCC Namespace lifecycle persists provisioning, readiness, deletion, and its tombstone",
         "PostgreSQL platform state satisfies memory adapter ownership, immutability, and atomicity",
-        "memory State saves repository network policy and refuses scoped revisions and live application",
-        "PostgreSQL saves repository network policy and refuses scoped revision reads and writes",
+        "memory State admits both execution modes with repository network policy",
+        "PostgreSQL saves repository network policy and binds reader markers for both execution modes",
         "the PostgreSQL worker reloads exact Namespace restrictions and never dispatches revoked provisioning",
         "API SIGTERM finishes an in-flight keep-alive request and exits within the Pod grace",
         "PostgreSQL guarded first deployment persists one private receipt and one reconcile work"
@@ -191,6 +192,12 @@
     {
       "path": "tests/integration/postgres-controller-work-targets.test.ts",
       "expectedTests": ["PostgreSQL controller work requires exactly one complete target shape"]
+    },
+    {
+      "path": "tests/integration/postgres-static-token-service-lifecycle.test.ts",
+      "expectedTests": [
+        "staged TokenService lifecycle keeps private custody, audit, and exact update authority"
+      ]
     },
     {
       "path": "tests/integration/postgres-connection-templates.test.ts",

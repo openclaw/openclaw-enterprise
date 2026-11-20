@@ -37,6 +37,7 @@ type PolicyState =
   | "loading"
   | "noCredential"
   | "repositoryLimits"
+  | "repositoryEditor"
   | "protected"
   | "withheldOne"
   | "withheldMany";
@@ -78,6 +79,11 @@ export function createAgentDetailPolicyScenarios({
     ["policyDenials", "ready", "Policy denials and reviewed network additions"],
     ["policyUnicodeExecutable", "unicode", "Unicode executable path remains complete"],
     ["policyRepositoryLimits", "repositoryLimits", "Inspect Namespace repository limits"],
+    [
+      "policyRepositoryEditor",
+      "repositoryEditor",
+      "Save Agent repository access and narrow a grant",
+    ],
     ["policyDenialsMany", "many", "Two hundred denials with batch approval"],
     ["policyRulesPopulated", "populated", "Manage ten applied network rules"],
     [
@@ -242,10 +248,20 @@ export function createAgentDetailPolicyScenarios({
             ? {
                 policyCeiling: [],
                 description:
-                  "The Namespace delegates repository access and the Agent has legacy repository access.",
+                  "The Namespace delegates repository access and the Agent has no saved repository policy.",
                 steps: [
                   "Open View network limits. Check that example/application is read and example/tooling is write.",
-                  "Open Manage rules. Check that the saved policy is legacy repository access and no withdrawal action is shown.",
+                  "Open Manage rules. Check that the Agent has no saved repository policy or withdrawal action.",
+                ],
+              }
+            : {}),
+          ...(state === "repositoryEditor"
+            ? {
+                policyCeiling: [],
+                description: "An Agent has exact repository choices and no saved policy.",
+                steps: [
+                  "Open Manage rules, select Read for example/application and Write for example/tooling, and save.",
+                  "Reopen Manage rules, change example/tooling to Read, and save again.",
                 ],
               }
             : {}),

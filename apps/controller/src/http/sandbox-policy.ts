@@ -76,12 +76,14 @@ export const sandboxPolicyHandlers = {
     reply,
     request,
     setAuditReadTarget,
+    resolveHarness,
   }) {
     const view = await controller.getAgentSandboxPolicy(
       context.actorId,
       namespaceId,
       params.agentId!,
       params.facet as SandboxFacet,
+      resolveHarness,
     );
     setAuditReadTarget({
       kind: "sandbox_policy",
@@ -131,6 +133,7 @@ export const sandboxPolicyHandlers = {
     reply,
     request,
     mutationEvent,
+    resolveHarness,
   }) {
     const repositoryNetworkPolicy = body!.repositoryNetworkPolicy as
       readonly RepositoryNetworkGrant[] | undefined;
@@ -143,6 +146,7 @@ export const sandboxPolicyHandlers = {
         body!.expectedVersion as number,
         body!.additions as readonly SandboxNetworkGrant[],
         repositoryNetworkPolicy,
+        resolveHarness,
       );
       await unit.audit.append(
         mutationEvent(

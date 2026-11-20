@@ -20,6 +20,7 @@ import type {
   SecretBindings,
   OpenClawConfigurationDocument,
   Permission,
+  RepositoryNetworkGrant,
 } from "../../packages/contracts/src/index.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
@@ -1074,6 +1075,153 @@ test("Agent policy under protected execution offers only removal of saved networ
   );
 });
 
+test("repository policy choices save and narrow a scoped repository list", async (t) => {
+  const { fixture, namespace, agent, base } = await createPolicyConsole(t);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const app = { repository: "example/application", access: "read" } as const;
+  const tooling = { repository: "example/tooling", access: "write" } as const;
+  const choices = [app, { ...tooling, access: "read" }, tooling] as const;
+  const desired = [[app, tooling], choices.slice(0, 2), []];
+  let version = 1;
+  let saved: readonly RepositoryNetworkGrant[] | undefined;
+  let editSupported = true;
+
+  // The selected Drivers are a fixture at the API boundary. The real Console reads the
+  // advertised choices and must send the versioned list without using the Namespace ceiling.
+  await page.route(fixture.origin + base, async (route) => {
+    if (route.request().method() === "GET") {
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      const body = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...body,
+          data: {
+            ...body.data,
+            policy: { ...body.data.policy, version, repositoryNetworkPolicy: saved },
+            protectedExecution: true,
+            repositoryNetworkPolicyCeiling: [
+              { ...app, access: "write" },
+              tooling,
+              { repository: "example/private", access: "read" },
+            ],
+            repositoryNetworkPolicySaveSupported: editSupported || saved !== undefined,
+            ...(editSupported && { repositoryNetworkPolicyEditableGrants: choices }),
+          },
+        },
+      });
+      return;
+    }
+    if (route.request().method() !== "PUT") {
+      await route.fallback();
+      return;
+    }
+    const input = record(route.request().postDataJSON());
+    assert.equal(input.expectedVersion, version);
+    assert.deepEqual(input.additions, []);
+    const next = desired[version - 1];
+    assert.ok(next);
+    assert.deepEqual(input.repositoryNetworkPolicy, next);
+    const existing = await fixture.request("GET", base);
+    assert.equal(existing.status, 200);
+    version += 1;
+    saved = next;
+    if (next.length === 0) {
+      editSupported = false;
+    }
+    await route.fulfill({
+      status: 200,
+      json: {
+        data: { ...record(record(existing.data).policy), version, repositoryNetworkPolicy: saved },
+      },
+    });
+  });
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "policy"));
+  const manage = page.getByRole("button", { name: "Manage rules", exact: true });
+  const panel = page.getByRole("region", { name: "Repository network policy" });
+  const a = panel.getByRole("combobox", { name: app.repository });
+  const b = panel.getByRole("combobox", { name: tooling.repository });
+  const save = panel.getByRole("button", { name: "Save repository policy", exact: true });
+  const responseToSave = () =>
+    page.waitForResponse(
+      (response) => response.request().method() === "PUT" && response.url().endsWith(base),
+    );
+  await manage.click();
+  await save.waitFor();
+  assert.equal(await save.isEnabled(), false);
+  assert.deepEqual(await a.locator("option").allTextContents(), ["No access", "Read"]);
+  assert.equal(await panel.getByRole("combobox", { name: "example/private" }).count(), 0);
+  await a.selectOption("read");
+  await b.selectOption("write");
+  await page.getByText("No changes to ordinary network rules", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  assert.equal(pathRequests(requests, "PUT", base).length, 0, "closing discards the choice draft");
+
+  await manage.click();
+  await waitForInputValue(a, "");
+  await waitForInputValue(b, "");
+  await a.selectOption("read");
+  await b.selectOption("write");
+  const firstSave = responseToSave();
+  await save.click();
+  assert.equal((await firstSave).status(), 200);
+  await page
+    .getByText("Repository policy v2 saved for the next deployment.", { exact: true })
+    .waitFor();
+  await manage.click();
+  await waitForInputValue(a, "read");
+  await waitForInputValue(b, "write");
+
+  await b.selectOption("read");
+  const downgrade = responseToSave();
+  await save.click();
+  assert.equal((await downgrade).status(), 200);
+  await page
+    .getByText("Repository policy v3 saved for the next deployment.", { exact: true })
+    .waitFor();
+  editSupported = false;
+  await page.reload();
+  await manage.click();
+  await panel
+    .getByRole("button", { name: "Withdraw saved repository grants", exact: true })
+    .waitFor();
+  assert.equal(await panel.getByRole("combobox").count(), 0);
+  assert.equal(await save.count(), 0);
+  assert.deepEqual(saved, choices.slice(0, 2));
+
+  // The cached choices were available before withdrawal. Only a new GET can reveal their loss.
+  editSupported = true;
+  await page.reload();
+  await manage.click();
+  await waitForInputValue(b, "read");
+  await panel
+    .getByRole("button", { name: "Withdraw saved repository grants", exact: true })
+    .click();
+  const withdrawal = responseToSave();
+  const readback = page.waitForResponse(
+    (response) =>
+      version === 4 && response.request().method() === "GET" && response.url().endsWith(base),
+  );
+  await page.getByRole("button", { name: "Save deny-all policy", exact: true }).click();
+  assert.equal((await withdrawal).status(), 200);
+  const refreshed = await readback;
+  assert.equal(refreshed.status(), 200);
+  const refreshedView = record(record(await refreshed.json()).data);
+  assert.deepEqual(record(refreshedView.policy).repositoryNetworkPolicy, []);
+  assert.equal(Object.hasOwn(refreshedView, "repositoryNetworkPolicyEditableGrants"), false);
+  await manage.click();
+  await panel
+    .getByText("Saved repository policy: Deny all repositories", { exact: true })
+    .waitFor();
+  assert.equal(await panel.getByRole("combobox").count(), 0);
+  assert.equal(await save.count(), 0);
+  assert.equal(pathRequests(requests, "PUT", base).length, 3);
+  assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 0);
+});
+
 test("protected execution can withdraw saved repository grants using the current policy version", async (t) => {
   let state: PlatformStateStore | undefined;
   const namespaceLifecycleBindings: NamespaceLifecycleBinding[] = [];
@@ -1179,6 +1327,7 @@ test("protected execution can withdraw saved repository grants using the current
   await page
     .getByRole("heading", { name: "Withdraw saved repository grants?", exact: true })
     .waitFor();
+  assert.match(await page.getByRole("dialog").innerText(), /stop the Agent and confirm/);
   const cancelled = await confirm.elementHandle();
   await page.getByRole("button", { name: "Back to editing", exact: true }).click();
   // A confirm from the detached review cannot save after returning to the editor.
@@ -1233,7 +1382,10 @@ test("protected execution can withdraw saved repository grants using the current
   await page.getByText(/could not confirm the deny-all repository policy/).waitFor();
   assert.equal(await withdraw.count(), 0);
   await refresh.click();
-  await page.getByText("Saved policy: Deny all repositories", { exact: true }).waitFor();
+  await page
+    .getByRole("region", { name: "Repository network policy" })
+    .getByText("Saved repository policy: Deny all repositories", { exact: true })
+    .waitFor();
   assert.equal(await withdraw.count(), 0);
   assert.deepEqual(
     pathRequests(requests, "PUT", base).map(({ body }) => body),

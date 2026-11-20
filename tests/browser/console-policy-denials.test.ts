@@ -4,11 +4,8 @@ import test from "node:test";
 import type { Page } from "playwright";
 import type { RuntimeLogRecord, SandboxNetworkGrant } from "../../packages/contracts/src/index.ts";
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
-import {
-  callerDenied,
-  DEPLOY_SANDBOX_POLICY_READ_DENIED,
-  PLACEHOLDER_DESTINATION,
-} from "../helpers/refusal-text.mjs";
+import { callerDenied, PLACEHOLDER_DESTINATION } from "../helpers/refusal-text.mjs";
+import { DEPLOY_SANDBOX_POLICY_READ_DENIED } from "../helpers/refusal-access.ts";
 import { openShellSandboxRecords } from "../helpers/runtime-logs.ts";
 
 import {
@@ -159,7 +156,8 @@ test("a policy reader can inspect repository limits without opening a proposal",
   assert.match(await limits.innerText(), /No ordinary network rules are delegated/);
   await limits.getByRole("button", { name: "Done", exact: true }).click();
   await page.getByRole("button", { name: /^(Manage|View) rules$/ }).click();
-  await page.getByText("Saved policy: Legacy repository access", { exact: true }).waitFor();
+  const repositoryPanel = page.getByRole("region", { name: "Repository network policy" });
+  assert.match(await repositoryPanel.innerText(), /No repository policy saved/);
   assert.equal(
     await page.getByRole("button", { name: "Withdraw saved repository grants" }).count(),
     0,
@@ -171,6 +169,9 @@ test("a policy reader can inspect repository limits without opening a proposal",
   await page.reload();
   await openLimits.click();
   assert.match(await limits.innerText(), /No repository access is delegated to this Namespace/);
+  await limits.getByRole("button", { name: "Done", exact: true }).click();
+  await page.getByRole("button", { name: /^(Manage|View) rules$/ }).click();
+  assert.equal(await repositoryPanel.count(), 0, "no saved policy or delegated repositories");
 });
 
 test("the Policy denials page controls policy editing and disabling preserves saved rules", async (t) => {

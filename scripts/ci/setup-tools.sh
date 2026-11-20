@@ -252,7 +252,7 @@ PYTHON
   # The downloader verifies a private copy of the PATH candidate before reuse.
   download_file \
     "https://dl.k8s.io/release/v${version}/bin/${operating_system}/${arch}/kubectl" \
-    "${binary}" "${checksum}" "" "${existing}" 0755
+    "${binary}" "${checksum}" "${CI_PINNED_TOOL_CACHE:-}" "${existing}" 0755
   run_system_tool "${binary}" version --client=true
 }
 

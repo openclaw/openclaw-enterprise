@@ -24,6 +24,17 @@ type NetworkPolicyScenario = {
   policyAdminDenied?: boolean;
 };
 
+function isFixtureRepositoryGrant(value: unknown, choice: RepositoryNetworkGrant) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    "repository" in value &&
+    value.repository === choice.repository &&
+    "access" in value &&
+    value.access === choice.access
+  );
+}
+
 type FixturePolicy = {
   id: string;
   namespaceId: string;
@@ -156,13 +167,17 @@ export function createNetworkPolicyFixture(
   let policyEditing = scenario.policyState !== "disabled";
   let policyPolls = 0;
   let policyReads = 0;
-  const protectedExecution = scenario.policyState === "protected";
-  const repositoryLimits = scenario.policyState === "repositoryLimits";
+  const repositoryEditor = scenario.policyState === "repositoryEditor";
+  const protectedExecution = scenario.policyState === "protected" || repositoryEditor;
+  const repositoryLimits = scenario.policyState === "repositoryLimits" || repositoryEditor;
   const repositoryCeiling: readonly RepositoryNetworkGrant[] = repositoryLimits
     ? [
         { repository: "example/application", access: "read" },
         { repository: "example/tooling", access: "write" },
       ]
+    : [];
+  const repositoryChoices = repositoryEditor
+    ? [...repositoryCeiling, { repository: "example/tooling", access: "read" } as const]
     : [];
   const initialAdditions =
     scenario.policyState === "protected"
@@ -178,7 +193,7 @@ export function createNetworkPolicyFixture(
     agentId: seedAgent().id,
     version: 1,
     additions: initialAdditions,
-    ...(protectedExecution
+    ...(scenario.policyState === "protected"
       ? { repositoryNetworkPolicy: [{ repository: "example/application", access: "read" }] }
       : {}),
   };
@@ -365,7 +380,8 @@ export function createNetworkPolicyFixture(
           ? {
               repositoryNetworkPolicyCeiling: repositoryCeiling,
               repositoryNetworkPolicySaveSupported:
-                sandboxPolicy.repositoryNetworkPolicy !== undefined,
+                repositoryEditor || sandboxPolicy.repositoryNetworkPolicy !== undefined,
+              ...(repositoryEditor && { repositoryNetworkPolicyEditableGrants: repositoryChoices }),
             }
           : {}),
         ceiling: policyCeiling,
@@ -453,27 +469,35 @@ export function createNetworkPolicyFixture(
       if (!("expectedVersion" in body) || body.expectedVersion !== sandboxPolicy.version) {
         return error(409, "RESOURCE_STATE_CONFLICT");
       }
-      const withdraw = "repositoryNetworkPolicy" in body;
-      if (
-        withdraw &&
-        (!Array.isArray(body.repositoryNetworkPolicy) ||
-          body.repositoryNetworkPolicy.length !== 0 ||
-          sandboxPolicy.repositoryNetworkPolicy === undefined)
-      ) {
-        return error(409, "RESOURCE_CONFLICT", "Only an existing repository list can be cleared.");
+      const explicit = "repositoryNetworkPolicy" in body;
+      const requested = explicit ? body.repositoryNetworkPolicy : undefined;
+      if (explicit && (!Array.isArray(requested) || body.additions.length > 0)) {
+        return error(409, "RESOURCE_CONFLICT");
       }
+      const choices = Array.isArray(requested)
+        ? requested.map((grant: unknown) =>
+            repositoryChoices.find((choice) => isFixtureRepositoryGrant(grant, choice)),
+          )
+        : undefined;
+      if (
+        (choices?.length === 0 && sandboxPolicy.repositoryNetworkPolicy === undefined) ||
+        choices?.some((choice) => choice === undefined)
+      ) {
+        return error(409, "RESOURCE_CONFLICT", "Repository access is unavailable for this Agent.");
+      }
+      const grants = choices?.filter((choice) => choice !== undefined);
       sandboxPolicy = {
         ...sandboxPolicy,
         version: sandboxPolicy.version + 1,
         additions: body.additions,
-        ...(withdraw ? { repositoryNetworkPolicy: [] } : {}),
+        ...(grants === undefined ? {} : { repositoryNetworkPolicy: grants }),
       };
       delete sandboxPolicy.application;
       const { repositoryNetworkPolicy: _preservedGrants, ...ordinaryPolicy } = sandboxPolicy;
       return response(
         scenario.policyState === "unconfirmedSave"
           ? { ...ordinaryPolicy, additions: [] }
-          : withdraw
+          : explicit
             ? sandboxPolicy
             : ordinaryPolicy,
       );
