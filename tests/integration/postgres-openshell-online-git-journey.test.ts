@@ -25,10 +25,17 @@ import type {
   SandboxHarnessContext,
 } from "../../packages/contracts/src/index.ts";
 
-test(
-  "PostgreSQL replays the admitted protected artifact policy in native OpenShell",
-  { ...requiresPostgres, timeout: 30_000 },
-  async (t) => {
+for (const { name, previouslyOptedIn } of [
+  {
+    name: "PostgreSQL replays the admitted protected artifact policy in native OpenShell",
+    previouslyOptedIn: true,
+  },
+  {
+    name: "PostgreSQL reloads a retained strict artifact revision after Installation opt-in",
+    previouslyOptedIn: false,
+  },
+]) {
+  test(name, { ...requiresPostgres, timeout: 30_000 }, async (t) => {
     const strict = {
       ports: [443],
       protocol: "rest",
@@ -46,10 +53,14 @@ test(
       ],
       endpoints: [
         { ...strict, host: strictHost },
-        { ...strict, host: optedInHost, protectedArtifactAllowEncodedSlash: true },
+        {
+          ...strict,
+          host: optedInHost,
+          ...(previouslyOptedIn && { protectedArtifactAllowEncodedSlash: true as const }),
+        },
       ],
     } satisfies OpenShellNetworkPolicyRule;
-    const { fixture, revision, registration, replayContext, sandboxWithDefaults, peer, world } =
+    const { fixture, revision, registration, replayContext, peer, world } =
       await createNarrowOnlineGitStartup(t, import.meta.url, { artifactRules: [rule] });
     // Read the committed row through a fresh OCC state and independently as PostgreSQL JSON.
     const { observerPool } = fixture;
@@ -68,8 +79,9 @@ test(
       [stored.sandboxPolicy],
     );
 
-    // Change current Installation scope to opt in the strict endpoint and remove the old opt-in.
-    const sandbox = sandboxWithDefaults([
+    // Replace the selected runtime owner with the new Installation defaults. The
+    // revision admitted under the previous defaults must retain its own parsing policy.
+    const { sandbox, proxyWiring, namespace, signal } = await replayContext(stored, [
       {
         ...rule,
         endpoints: [
@@ -82,7 +94,6 @@ test(
       stored.sandboxPolicy.version,
     ).snapshot;
     assert.notDeepEqual(current.defaults, stored.sandboxPolicy.defaults);
-    const { proxyWiring, namespace, signal } = await replayContext(stored);
     const auth = stored.harnessAuth;
     assert.equal(auth.method, "credential_source");
     const context: SandboxHarnessContext = {
@@ -128,7 +139,7 @@ test(
       protocol: "rest",
       enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
       access: "NETWORK_ACCESS_PRESET_READ_ONLY",
-      ...(host === optedInHost && { allow_encoded_slash: true }),
+      ...(previouslyOptedIn && host === optedInHost && { allow_encoded_slash: true }),
     }));
     assert.deepEqual(compiled, {
       [rule.name]: { name: rule.name, binaries: rule.binaries, endpoints: expectedEndpoints },
@@ -140,12 +151,14 @@ test(
     assert.deepEqual(replayed, first);
     assert.equal(registration.creates(), 1, "same revision adopts its registered Sandbox");
 
-    // An unchanged revision identity cannot authorize a registered Sandbox that lost the bit.
-    registration.clearEncodedSlash();
-    await assert.rejects(sandbox.provisionHarness(context), {
-      diagnosticCode: "OPENSHELL_SANDBOX_OWNERSHIP_MISMATCH",
-    });
-    assert.equal(registration.creates(), 1, "policy drift cannot register a replacement");
+    if (previouslyOptedIn) {
+      // An unchanged revision identity cannot authorize a registered Sandbox that lost the bit.
+      registration.clearEncodedSlash();
+      await assert.rejects(sandbox.provisionHarness(context), {
+        diagnosticCode: "OPENSHELL_SANDBOX_OWNERSHIP_MISMATCH",
+      });
+      assert.equal(registration.creates(), 1, "policy drift cannot register a replacement");
+    }
     assert.equal(world.writes, 0);
     assert.equal(peer.gh.issuesOfTokens.length, 0);
     assert.equal(peer.originCalls(), 0);
@@ -159,11 +172,11 @@ test(
         gitCredentialUpdates: world.writes,
         tokenIssuances: peer.gh.issuesOfTokens.length,
         originCalls: peer.originCalls(),
-        driftDiagnostic: "OPENSHELL_SANDBOX_OWNERSHIP_MISMATCH",
+        ...(previouslyOptedIn && { driftDiagnostic: "OPENSHELL_SANDBOX_OWNERSHIP_MISMATCH" }),
       }),
     );
-  },
-);
+  });
+}
 
 type GitUseReceipt = {
   exchange_id: string;

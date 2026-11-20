@@ -1,13 +1,13 @@
 import { readFile } from "node:fs/promises";
 import type { Server } from "@grpc/grpc-js";
-import type { CredentialProxyDriver, EgressRef } from "@openclaw-enterprise/contracts";
+import type { LegacyEgressProxyDriver, EgressRef } from "@openclaw-enterprise/contracts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import { OpenShellEgressIdentity } from "./openshell-identity.ts";
 
 export async function bindOpenShellExchange(
   configuration: EgressAuthorityConfiguration,
   sender: EgressRef,
-  createCredentialProxy: Parameters<NonNullable<CredentialProxyDriver["bindExchange"]>>[0],
+  createCredentialProxy: Parameters<NonNullable<LegacyEgressProxyDriver["bindExchange"]>>[0],
 ) {
   const { createOpenShellEgressAuthority } = await import("./openshell-authority.ts");
   return bindOpenShellMiddleware(configuration, (publicKey) => {

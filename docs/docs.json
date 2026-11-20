@@ -1107,7 +1107,7 @@
                   },
                   {
                     "page": "contributing/credential-proxy-driver",
-                    "label": "Implement a Credential Proxy Driver"
+                    "label": "Legacy Egress Driver"
                   },
                   {
                     "group": "Driver Contracts",
@@ -1344,6 +1344,7 @@
               "flows/connection-templates",
               "flows/openshell-managed-workload",
               "flows/credential-source-lifecycle",
+              "flows/token-service-static-custody",
               "flows/credential-source-refresh",
               "flows/driver-plugin-loading",
               "flows/agent-plugins",

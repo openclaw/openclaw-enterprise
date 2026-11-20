@@ -56,7 +56,7 @@ export default {
     },
     {
       id: "proxy-driver",
-      title: "CredentialProxyDriver",
+      title: "LegacyEgressProxyDriver",
       detail: "Supplies the repository Git binding",
       group: "worker",
       pin: [28, 312, 245, 75],

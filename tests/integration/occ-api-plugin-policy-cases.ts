@@ -25,7 +25,8 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { managedPluginSettingRefusal, pluginPolicyListRefusal } from "../helpers/refusal-text.mjs";
+import { pluginPolicyListRefusal } from "../helpers/refusal-text.mjs";
+import { managedPluginSettingRefusal } from "../helpers/refusal-configuration-runtime.ts";
 import {
   bindHarnessKey,
   bootstrapInstallation,

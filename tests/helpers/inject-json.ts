@@ -1,5 +1,5 @@
 import type { createFastifyApp } from "../../apps/controller/src/index.ts";
-import { authenticatedHeaders } from "./auth-session.mjs";
+import { authenticatedHeaders } from "./auth-session.ts";
 
 type FastifyApp = ReturnType<typeof createFastifyApp>;
 type App = Pick<FastifyApp, "inject">;

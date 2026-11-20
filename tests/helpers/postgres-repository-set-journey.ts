@@ -31,7 +31,7 @@ import {
   OpenShellSandboxDriver,
   type OpenShellNetworkPolicyRule,
 } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
@@ -268,8 +268,8 @@ async function repositoryGitJourney(
     implementation: "openshell",
     configuration: opts,
     definition: {
-      configurationSchema: OpenShellCredentialProxyDriver.configurationSchema,
-      validateConfiguration: OpenShellCredentialProxyDriver.validateConfiguration,
+      configurationSchema: OpenShellLegacyEgressProxyDriver.configurationSchema,
+      validateConfiguration: OpenShellLegacyEgressProxyDriver.validateConfiguration,
       configurationContributions: OpenShellSandboxDriver.configurationContributions,
     },
   };
@@ -327,7 +327,7 @@ async function repositoryGitJourney(
       },
       { id, implementation: "openshell", backend: backend as never, openShellGit: runtime },
     );
-  const createRuntimeOwner = (listenPort = port) => {
+  const createRuntimeOwner = (listenPort = port, artifactRules = startupOptions?.artifactRules) => {
     const runtime = new OpenShellGitRuntime(
       {
         registrationName: "oce-prepared-git",
@@ -344,8 +344,8 @@ async function repositoryGitJourney(
       },
       (revision) => createGitHubRepositoryDeliveryResolver(peer.registry)(revision),
     );
-    const sandbox = createSandbox(runtime);
-    const proxy = new OpenShellCredentialProxyDriver(opts, {
+    const sandbox = createSandbox(runtime, artifactRules);
+    const proxy = new OpenShellLegacyEgressProxyDriver(opts, {
       id,
       sandbox,
       backend: backend as never,
@@ -441,12 +441,15 @@ async function repositoryGitJourney(
   const stopped: string[] = [];
   runtime.connectRouteStore(f.observerPool, recordTransport);
   let bound = await owner.requireRepositoryGitTransport()!(peer.prepared.protectedGit!);
-  const replaceRuntime = async (retained?: { replacementPort: number }) => {
+  const replaceRuntime = async (
+    retained?: { replacementPort: number },
+    artifactRules = startupOptions?.artifactRules,
+  ) => {
     if (!retained) {
       await bound.close();
     }
     const listenPort = retained?.replacementPort ?? port;
-    ({ runtime, sandbox, proxy, owner } = createRuntimeOwner(listenPort));
+    ({ runtime, sandbox, proxy, owner } = createRuntimeOwner(listenPort, artifactRules));
     runtime.connectRouteStore(f.observerPool, recordTransport);
     bound = await owner.requireRepositoryGitTransport()!(peer.prepared.protectedGit!);
     await runtime["running"];
@@ -1066,12 +1069,18 @@ async function repositoryGitJourney(
       getRuntime: () => runtime,
       replaceRuntime,
       registration: wire.registration,
-      replayContext: async (stored: AgentRevision) => {
+      replayContext: async (
+        stored: AgentRevision,
+        rules: readonly OpenShellNetworkPolicyRule[],
+      ) => {
+        await replaceRuntime(undefined, rules);
         const storedContext = { ...context, revision: stored, plan: stored.egressPlan! };
-        return { ...storedContext, proxyWiring: await release.configure(storedContext) };
+        return {
+          ...storedContext,
+          sandbox,
+          proxyWiring: await new ProtectedExecutionDriver(owner).configure(storedContext),
+        };
       },
-      sandboxWithDefaults: (rules: readonly OpenShellNetworkPolicyRule[]) =>
-        createSandbox(runtime, rules),
       evaluate,
       reconcile,
       start,
