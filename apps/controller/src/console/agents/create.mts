@@ -810,6 +810,14 @@ function createAgentTabs(entries: readonly (readonly [string, string, HTMLElemen
       panel.hidden = panel !== shown;
       tab?.setAttribute("aria-selected", String(panel === shown));
       tab?.setAttribute("tabindex", panel === shown ? "0" : "-1");
+      if (tab && panel === shown) {
+        // At a phone width the strip scrolls sideways. The selected tab comes fully inside it,
+        // so the strip's edge does not cut the tab's focus ring. Only the strip scrolls.
+        const strip = tablist.getBoundingClientRect();
+        const { left, right } = tab.getBoundingClientRect();
+        tablist.scrollLeft +=
+          Math.floor(Math.min(0, left - strip.left)) + Math.ceil(Math.max(0, right - strip.right));
+      }
     }
   }
   const tablist = element(
