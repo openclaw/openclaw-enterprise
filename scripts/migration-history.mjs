@@ -129,7 +129,7 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 83 && completedCount > 83) {
     return "preRevisionEgressInstallations";
   }
-  if (count === 84 && completedCount > 84) {
+  if (count === 85 && completedCount > 85) {
     return "preStaticConnectionTemplates";
   }
   if (count === completedCount) {

@@ -214,9 +214,15 @@ Tracks the Token Service secret reference, the published access token version an
 - `scheduled_version`
 - `next_refresh_at`
 
+### `token_service_instances`
+
+Binds an Installation to its selected TokenService Driver and private-store identity.
+
+- `installation_id`, `id`, `driver_id`, `store_identity`
+
 ### `credential_sources`
 
-Records the owner of each source. A Credential Gateway or Credential Proxy source identifies its admitting Driver. The Token Service owns saved account sources.
+Records each source owner. Gateway and Proxy sources identify their Driver. Internal static registrations identify their TokenService instance and its private receipt; saved accounts retain their existing Token Service owner.
 
 - `id`
 - `namespace_id`
@@ -224,8 +230,9 @@ Records the owner of each source. A Credential Gateway or Credential Proxy sourc
 - `type`
 - `config`
 - `egress` (optional admitted source and versioned resolver references)
-- `owner_capability` (`credential_gateway`, `credential_proxy`, or `token_service` for a saved account)
+- `owner_capability` (`credential_gateway`, `credential_proxy`, or `token_service`)
 - `driver_id` (Gateway and Proxy sources)
+- `token_service_instance_id`, `registration`, `registration_dispatched_at` (internal static registrations)
 - `state`
 - `created_at`
 
