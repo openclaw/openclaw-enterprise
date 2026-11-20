@@ -1,7 +1,7 @@
 ---
 created: 2026-11-19
 updated: 2026-11-20
-last_updated_session: authoring-run/7734097f-2ed2-4eb1-afc9-b87345676072
+last_updated_session: authoring-run/bf16e7c9-029c-4a8c-8fba-00d9249599e2
 ---
 
 # Channel egress flow
@@ -42,7 +42,9 @@ graph TD
   J --> K{"Legacy channels enabled?"}
   K -->|no| O["Checked OCC and Helm upgrade"]
   K -->|yes| L["Verify Envoy dependencies and patch delivery"]
-  L --> M["Journal original running set; Stop on old controller"]
+  L --> Z["Worker startup Job forecasts the direct-egress guard"]
+  Z -->|refused or result missing| W["Refuse upgrade before Stop"]
+  Z -->|no refusal, unavailable, or no input| M["Journal original running set; Stop on old controller"]
   M --> N{"Stops settled; expected inventory?"}
   N -->|no| X
   N -->|yes| O
@@ -83,6 +85,31 @@ unchanged normalized remainder. It permits the existing validated immutable
 Secret reference switch. The shared `scripts/upgrade-production-images` binds
 this operation mode and helper hashes to recovery evidence and retains its
 live-input, identity, Secret, startup, migration, quiescence and Helm checks.
+
+The candidate Worker startup Job receives a compact list of dedicated channel
+targets and resolves each Agent's tenant namespace. In a single cluster it uses
+the tenant namespace for the Gateway. In a two-cluster installation it checks
+the control-plane Gateway namespace after resolving the execution namespace.
+If tenant labels yield no execution namespace, the Worker reads the expected
+name before switching clusters. A foreign or inactive namespace stops the upgrade
+before Agent Stop. Provisioning handles absent namespaces.
+
+`KubernetesComputeDriver.verifyUpgradeChannelDirectEgressGuard` uses saved drafts
+to identify affected Gateways. It applies the same source-label selector and
+direct-egress predicate as activation. Selectors that depend on generated
+revision or binding values are deferred to activation. The forecast reports
+when the Worker would refuse a rule with unspecified destinations or an IP
+block outside the allowed ranges. The diagnostic includes the Kubernetes
+namespace and a validated policy UID when available. After Agent Stop,
+activation still checks Envoy inspection, ingress, and the actual assigned
+listener, including conflicts.
+
+The preflight Secret reserves space for the API Job's complete drafts when they
+fit beside the candidate Installation. The Worker receives channel targets if
+they fit in the remaining space, even when the drafts exceed the limit. The upgrade
+warns when targets do not fit or the candidate image reports that the check is
+unavailable. With targets mounted, a successful Job must report a direct-egress
+guard result or explicit unavailability before Stop.
 
 For enabled channels, `lifecycle` flushes the complete original running set to
 its private journal before Stop. It records request intent and returned IDs.
@@ -180,6 +207,8 @@ If preparation detects an additive NetworkPolicy that lets the Gateway reach
 unrestricted or public destinations directly, check the worker's
 `worker.compute-prepare-failed` event. If the event includes a NetworkPolicy UID,
 find the policy in the Gateway's Kubernetes namespace before correcting it.
+When the forecast identifies a direct-egress guard refusal, `preflight-worker.log`
+reports the unsupported peer type and the validated policy UID when available.
 Run `kubectl get networkpolicy -n <gateway-namespace> -o custom-columns=NAME:.metadata.name,UID:.metadata.uid`.
 
 [The Kubernetes and Slack procedures](../testing/slack.md) select the real
@@ -196,6 +225,8 @@ and remaining acceptance evidence.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 18:02: Forecast the Worker's direct-egress guard before Stop and verify execution and Gateway namespace ownership (authoring-run/bf16e7c9-029c-4a8c-8fba-00d9249599e2 - 499592f85223d2a36369d6e230915c549ff09864)
 
 - 2026-11-20 09:53: Documented the worker diagnostic for additive public egress policies (authoring-run/7734097f-2ed2-4eb1-afc9-b87345676072 - 9092839d0c3b9598e85300451f425ac6d3084fe5)
 

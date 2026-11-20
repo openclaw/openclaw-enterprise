@@ -2,10 +2,24 @@ import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-mi
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { chmod, readdir, readFile, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  chmod,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  rmdir,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { gunzipSync, gzipSync } from "node:zlib";
+import {
+  kubernetesGatewayNamespaceName,
+  kubernetesNamespaceName,
+} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { asRecord } from "../../packages/utils/src/objects.ts";
 import { continuityNamespace } from "../helpers/production-upgrade-continuity-fixture.ts";
 import {
@@ -2521,7 +2535,7 @@ exec "$0.fixture" "$@"
       const state = await assertStoppedBeforeWriters(f);
       assert.equal(state.dispatches, 0);
       assert.equal(existsSync(join(f.evidence, "prepared")), false);
-      // Only the API Pod carries the drafts; the worker's check is unchanged.
+      // Only the API Job receives the full Configuration values.
       const api = await readPreflightPod(f, "api");
       const worker = await readPreflightPod(f, "worker");
       assert.ok(
@@ -2531,6 +2545,587 @@ exec "$0.fixture" "$@"
         !podVolumes(worker.spec).some((volume) => volume.name === "upgrade-preflight-agent-drafts"),
       );
     });
+  }
+
+  for (const [scenario, name] of [
+    [
+      "worker-only",
+      "an oversized draft still lets a conflicting policy refuse the channel one-off before Stop",
+    ],
+    [
+      "conservative",
+      "a policy the Worker conservatively refuses blocks the channel one-off before Stop",
+    ],
+    [
+      "both",
+      "the channel one-off reaches guarded Stop with the legacy proxy and unrelated policies",
+    ],
+    [
+      "generated-binding",
+      "a policy depending on a generated binding value is deferred until channel activation",
+    ],
+    [
+      "listener-conflict",
+      "the direct-egress guard result leaves conflicting Envoy listener grants to activation",
+    ],
+    [
+      "unspecified-destinations",
+      "the channel one-off reports unspecified egress destinations before Stop",
+    ],
+    ["api-only", "the channel one-off accepts the API draft when only the draft fits"],
+    [
+      "foreign",
+      "an unowned control-plane channel Gateway namespace refuses before policy reads or Stop",
+    ],
+    [
+      "foreign-single",
+      "an unowned single-cluster channel Gateway namespace refuses before policy reads or Stop",
+    ],
+    [
+      "foreign-execution",
+      "an unowned execution namespace at the expected name refuses before Stop",
+    ],
+    [
+      "missing-execution",
+      "an absent execution namespace still allows checking the healthy Gateway namespace",
+    ],
+    ["missing", "an absent channel Gateway namespace skips policy reads and reaches guarded Stop"],
+    ["inactive", "a terminating channel Gateway namespace refuses before policy reads or Stop"],
+    [
+      "inactive-adopted",
+      "a terminating adopted channel Gateway namespace refuses before policy reads or Stop",
+    ],
+    [
+      "inactive-execution",
+      "a terminating adopted execution namespace refuses before Stop despite a healthy Gateway namespace",
+    ],
+    [
+      "inactive-managed-execution",
+      "a terminating managed execution namespace refuses before Stop despite a healthy Gateway namespace",
+    ],
+    ["older", "a worker reporting the channel policy check unavailable warns and reaches Stop"],
+    ["no-result", "a successful worker with no channel policy check result refuses before Stop"],
+    [
+      "collision",
+      "the channel one-off preserves an Installation key matching the channel input filename",
+    ],
+  ] as const) {
+    const conservative = scenario === "conservative";
+    const unspecified = scenario === "unspecified-destinations";
+    const conflict = scenario === "worker-only" || conservative || unspecified;
+    const apiOnly = scenario === "api-only";
+    test(
+      // Use the production upgrade one-off to verify the direct-egress guard forecast before Stop.
+      name,
+      async (t) => {
+        if (skipWithoutHelm(t, realHelm)) {
+          return;
+        }
+        const namespace = "adopted-agents";
+        const collision = scenario === "collision";
+        const foreignExecution = scenario === "foreign-execution";
+        const missingExecution = scenario === "missing-execution";
+        const inactiveManagedExecution = scenario === "inactive-managed-execution";
+        const managedExecution = inactiveManagedExecution || foreignExecution || missingExecution;
+        const inactiveExecution = scenario === "inactive-execution" || inactiveManagedExecution;
+        const executionName = managedExecution ? kubernetesNamespaceName("ns_test") : namespace;
+        const twoCluster =
+          scenario === "foreign" ||
+          collision ||
+          inactiveExecution ||
+          foreignExecution ||
+          missingExecution;
+        const foreign = scenario === "foreign" || scenario === "foreign-single";
+        const missing = scenario === "missing";
+        const inactive =
+          scenario === "inactive" || scenario === "inactive-adopted" || inactiveExecution;
+        const gatewayNamespace = twoCluster ? kubernetesGatewayNamespaceName("ns_test") : namespace;
+        // Without a tenant discovery label, the worker must check the canonical name itself.
+        const targetNamespace =
+          scenario === "foreign-single" || missing || scenario === "inactive"
+            ? kubernetesNamespaceName("ns_test")
+            : gatewayNamespace;
+        const workerLog =
+          scenario === "older"
+            ? "installation-startup-ready\nchannel-direct-egress-guard-unavailable\n"
+            : scenario === "no-result"
+              ? "installation-startup-ready\n"
+              : undefined;
+        const executionNamespace = {
+          metadata: {
+            name: executionName,
+            labels: {
+              ...(!foreignExecution && { "openclaw.dev/namespace": "ns_test" }),
+              ...(managedExecution
+                ? { "app.kubernetes.io/managed-by": "openclaw-enterprise" }
+                : {
+                    "pod-security.kubernetes.io/audit": "restricted",
+                    "pod-security.kubernetes.io/enforce": "restricted",
+                    "pod-security.kubernetes.io/warn": "restricted",
+                  }),
+            },
+            annotations: {
+              "openclaw.dev/namespace-id": "ns_test",
+              ...(!managedExecution && { "openclaw.dev/namespace-lifecycle": "external" }),
+            },
+            ...(inactiveManagedExecution && { deletionTimestamp: "2026-01-01T00:00:00Z" }),
+          },
+          status: { phase: inactiveExecution ? "Terminating" : "Active" },
+        } as const;
+        const controlGatewayNamespace = {
+          metadata: {
+            name: targetNamespace,
+            labels: {
+              "app.kubernetes.io/managed-by": "openclaw-enterprise",
+              "openclaw.dev/gateway-namespace": "ns_test",
+              "openclaw-enterprise.io/gateway": createHash("sha256")
+                .update("system/oce-agent-gateways")
+                .digest("hex")
+                .slice(0, 12),
+              "pod-security.kubernetes.io/audit": "restricted",
+              "pod-security.kubernetes.io/enforce": "restricted",
+              "pod-security.kubernetes.io/warn": "restricted",
+            },
+            annotations: { "openclaw.dev/namespace-id": "ns_test" },
+          },
+          status: { phase: "Active" },
+        } as const;
+        let kubernetesNamespaces;
+        if (foreign) {
+          kubernetesNamespaces = [
+            { metadata: { name: targetNamespace }, status: { phase: "Active" } },
+          ] as const;
+        } else if (missing) {
+          kubernetesNamespaces = [];
+        } else if (scenario === "inactive-adopted") {
+          kubernetesNamespaces = [
+            { ...executionNamespace, status: { phase: "Terminating" } },
+          ] as const;
+        } else if (scenario === "inactive") {
+          kubernetesNamespaces = [
+            {
+              metadata: {
+                name: targetNamespace,
+                labels: {
+                  "app.kubernetes.io/managed-by": "openclaw-enterprise",
+                  "openclaw.dev/namespace": "ns_test",
+                },
+                annotations: { "openclaw.dev/namespace-id": "ns_test" },
+              },
+              status: { phase: "Terminating" },
+            },
+          ] as const;
+        } else {
+          kubernetesNamespaces = [twoCluster ? controlGatewayNamespace : executionNamespace];
+        }
+        const uid = "bc905e0c-2706-44f9-9273-ed997018d02d";
+        const gateway = { "openclaw.dev/workload-role": "gateway" };
+        const publicRule = { to: [{ ipBlock: { cidr: "0.0.0.0/0" } }] };
+        const policy = (name: string, podSelector: object, egress: readonly object[]) => ({
+          kind: "NetworkPolicy",
+          apiVersion: "networking.k8s.io/v1",
+          metadata: {
+            name,
+            namespace: targetNamespace,
+            ...(name === "extra-gateway-egress" ? { uid } : {}),
+          },
+          spec: { policyTypes: ["Egress"], podSelector, egress },
+        });
+        const inventory = restartInventory();
+        const [tenant] = inventory.namespaces;
+        const proxyHostname = "openclaw-enterprise-slack-proxy.system.svc";
+        const channels = { slack: { enabled: true, botToken: "${SLACK_BOT_TOKEN}" } };
+        const f = await fixture(t, {
+          agent: true,
+          controllerOnly: true,
+          channelTransition: true,
+          ...(workerLog && {
+            preflightResults: { worker: { phase: "Succeeded", log: workerLog } },
+          }),
+          ...(twoCluster && {
+            executionCluster: {
+              namespaces: missingExecution ? [] : [executionNamespace],
+              allows: () => true,
+            },
+          }),
+          inventoryNamespaces: [
+            {
+              ...tenant,
+              agents: tenant!.agents.map((agent) => ({ ...agent, executionMode: "dedicated" })),
+            },
+          ],
+          chart: {
+            installation: (installation) => {
+              const runtime = installation.drivers.compute.configuration.runtime;
+              delete runtime.channelEgress;
+              runtime.channels = {
+                proxyUrl: `http://${proxyHostname}:3128`,
+                managedProxy: {
+                  hostname: proxyHostname,
+                  namespace: "system",
+                  port: 3128,
+                  podLabels: {
+                    "app.kubernetes.io/name": "openclaw-enterprise",
+                    "app.kubernetes.io/instance": "oce",
+                    "app.kubernetes.io/component": "slack-proxy",
+                  },
+                },
+              };
+              return installation;
+            },
+            values: (values) => {
+              const legacy: Record<string, unknown> = { ...values, slackProxy: { enabled: true } };
+              delete legacy.channelEgress;
+              if (collision) {
+                legacy.installation = {
+                  ...asRecord(values.installation),
+                  key: "channel-targets.json.gz",
+                };
+              }
+              return legacy;
+            },
+          },
+          configurationValues: {
+            cfg_agt_test: {
+              channels,
+              // The conflict case exceeds the API draft budget with unrelated settings.
+              ...(conflict && {
+                plugins: {
+                  entries: {
+                    knowledge: { config: { note: randomBytes(1100 * 1024).toString("base64") } },
+                  },
+                },
+              }),
+            },
+          },
+          kubernetesNamespaces,
+          kubernetesNetworkPolicies: {
+            // The Worker guard accepts the legacy proxy peer's namespace and Pod selectors.
+            [targetNamespace]: [
+              policy("allow-legacy-proxy", { matchLabels: gateway }, [
+                {
+                  to: [
+                    {
+                      namespaceSelector: {
+                        matchLabels: { "kubernetes.io/metadata.name": "system" },
+                      },
+                      podSelector: {
+                        matchLabels: { "app.kubernetes.io/component": "slack-proxy" },
+                      },
+                    },
+                  ],
+                  ports: [{ port: 3128, protocol: "TCP" }],
+                },
+              ]),
+              policy(
+                "harness-egress",
+                {
+                  matchExpressions: [
+                    { key: "openclaw.dev/workload-role", operator: "In", values: ["agent"] },
+                  ],
+                },
+                [publicRule],
+              ),
+              policy(
+                "old-revision-egress",
+                {
+                  matchLabels: { ...gateway, "openclaw.dev/revision": "rev_old" },
+                },
+                [publicRule],
+              ),
+              ...(scenario === "generated-binding"
+                ? [
+                    policy(
+                      "generated-binding-egress",
+                      {
+                        matchLabels: gateway,
+                        matchExpressions: [
+                          {
+                            key: "openclaw.dev/channel-egress-binding",
+                            operator: "NotIn",
+                            values: [uid],
+                          },
+                        ],
+                      },
+                      [publicRule],
+                    ),
+                  ]
+                : []),
+              ...(scenario === "listener-conflict"
+                ? [
+                    policy("conflicting-listeners", { matchLabels: gateway }, [
+                      {
+                        to: [
+                          {
+                            namespaceSelector: {
+                              matchLabels: {
+                                "kubernetes.io/metadata.name": "envoy-gateway-system",
+                              },
+                            },
+                            podSelector: {
+                              matchLabels: {
+                                "gateway.envoyproxy.io/owning-gateway-name":
+                                  "openclaw-channel-egress",
+                                "gateway.envoyproxy.io/owning-gateway-namespace": "system",
+                                "app.kubernetes.io/name": "envoy",
+                              },
+                            },
+                          },
+                        ],
+                        ports: [
+                          { port: 10001, protocol: "TCP" },
+                          { port: 10002, protocol: "TCP" },
+                        ],
+                      },
+                    ]),
+                  ]
+                : []),
+              ...(conflict
+                ? [
+                    policy(
+                      "extra-gateway-egress",
+                      {
+                        matchLabels: conservative
+                          ? { "app.kubernetes.io/name": "supervisor" }
+                          : { ...gateway, "openclaw.dev/agent": "agt_test" },
+                        matchExpressions: [
+                          { key: "openclaw.dev/channel-egress-binding", operator: "Exists" },
+                        ],
+                      },
+                      conservative
+                        ? [
+                            {
+                              // Only 172.16.0.0/12 remains. The Worker guard uses the CIDR
+                              // itself and treats the workload name as unknown.
+                              to: [
+                                {
+                                  ipBlock: {
+                                    cidr: "172.0.0.0/8",
+                                    except: [
+                                      "172.0.0.0/12",
+                                      "172.32.0.0/11",
+                                      "172.64.0.0/10",
+                                      "172.128.0.0/9",
+                                    ],
+                                  },
+                                },
+                              ],
+                            },
+                          ]
+                        : unspecified
+                          ? [{}]
+                          : [publicRule],
+                    ),
+                  ]
+                : []),
+            ],
+          },
+        });
+        const candidate = join(f.directory, "channel-candidate");
+        await execute(
+          "python3",
+          [
+            "scripts/upgrade-channel-egress",
+            "prepare",
+            "--values",
+            join(f.directory, "values.json"),
+            "--installation",
+            join(f.directory, "installation.json"),
+            "--namespace",
+            "system",
+            "--release",
+            "oce",
+            "--out-dir",
+            candidate,
+            "--excluded-cidr",
+            "10.42.0.0/16",
+            "--excluded-cidr",
+            "10.43.0.0/16",
+          ],
+          { cwd: repository },
+        );
+        const installation = join(candidate, "installation.yaml");
+        if (apiOnly) {
+          // Pad the candidate file without changing its YAML. The complete API draft
+          // and Installation occupy exactly 1 MiB, leaving no room for the channel input.
+          const apiDraft = {
+            agents: [
+              {
+                namespaceId: "ns_test",
+                agentId: "agt_test",
+                name: "Mail triage",
+                configurationId: "cfg_agt_test",
+              },
+            ],
+            configurations: { cfg_agt_test: { channels } },
+          };
+          const padding =
+            1024 * 1024 -
+            gzipSync(JSON.stringify(apiDraft)).length -
+            (await stat(installation)).size;
+          await appendFile(installation, "#" + " ".repeat(padding - 2) + "\n");
+        }
+        const failure = await runForFailure(
+          f.run,
+          "--candidate-values",
+          join(candidate, "values.yaml"),
+          "--candidate-installation",
+          installation,
+        );
+        if (twoCluster) {
+          assert.ok(f.executionReads.includes("/api/v1/namespaces"));
+          assert.deepEqual(
+            f.executionReads.filter((path) => path === `/api/v1/namespaces/${executionName}`),
+            foreignExecution || missingExecution ? [`/api/v1/namespaces/${executionName}`] : [],
+          );
+          assert.deepEqual(
+            f.executionReads.filter((path) => path.endsWith("/networkpolicies")),
+            [],
+          );
+        }
+        if (foreignExecution) {
+          assert.deepEqual(f.stopRequests, []);
+          assert.match(
+            failure.stderr,
+            /Could not resolve an owned Kubernetes Namespace for the saved Agent drafts/,
+          );
+          await assertStoppedBeforeWriters(f);
+        } else if (foreign || inactive) {
+          assert.deepEqual(f.stopRequests, []);
+          const reason = foreign ? "is not owned by the expected tenant" : "must be active";
+          const placement = inactiveExecution
+            ? `Execution Kubernetes Namespace ${executionName}`
+            : `Channel Gateway Kubernetes Namespace ${targetNamespace}`;
+          assert.ok(
+            failure.stderr.includes(
+              `Channel direct-egress guard preflight refused the candidate: ${placement} ${reason}.`,
+            ),
+            failure.stderr,
+          );
+          await assertStoppedBeforeWriters(f);
+        } else if (scenario === "no-result") {
+          assert.deepEqual(f.stopRequests, []);
+          assert.match(
+            failure.stderr,
+            /the worker startup preflight succeeded without reporting the channel direct-egress guard result/,
+          );
+          await assertStoppedBeforeWriters(f);
+        } else if (conflict) {
+          assert.match(failure.stderr, /recorded Agents' drafts do not fit/);
+          // This assertion distinguishes a real preflight refusal from later failure at Stop.
+          assert.deepEqual(f.stopRequests, []);
+          const reason = unspecified
+            ? "an egress rule has unspecified destinations"
+            : "an egress IP block falls outside the allowed ranges";
+          assert.ok(
+            failure.stderr.includes(
+              `Channel direct-egress guard preflight refused the candidate: Candidate Worker would refuse channel activation at its direct-egress guard in Kubernetes Namespace ${targetNamespace}: ${reason}. Inspect NetworkPolicy UID ${uid}. No Agent or OCC writer was stopped.`,
+            ),
+            failure.stderr,
+          );
+          assert.equal(existsSync(join(f.evidence, "inventory", "agent-drafts.json.gz")), false);
+          const targets = gunzipSync(
+            await readFile(join(f.evidence, "inventory", "channel-targets.json.gz")),
+          );
+          assert.deepEqual(JSON.parse(targets.toString("utf8")), [
+            {
+              namespaceId: "ns_test",
+              agentId: "agt_test",
+              executionMode: "dedicated",
+              values: { channels: { slack: { enabled: true } } },
+            },
+          ]);
+          const state = await assertStoppedBeforeWriters(f);
+          assert.equal(state.dispatches, 0);
+          assert.equal(existsSync(join(f.evidence, "prepared")), false);
+          assert.doesNotMatch(
+            await f.readEvidence("preflight-worker.log"),
+            /extra-gateway-egress|supervisor|0\.0\.0\.0\/0|172\.0\.0\.0\/8/,
+          );
+        } else {
+          assert.match(failure.stderr, /Agent Stop is incomplete/);
+          if (scenario === "listener-conflict") {
+            assert.ok(
+              failure.stderr.includes(
+                "The channel direct-egress forecast covers a single Worker guard. Activation checks Envoy inspection and listener conflicts after Agent Stop.",
+              ),
+              failure.stderr,
+            );
+          }
+          assert.equal(f.stopRequests.length, 1);
+          const [stop] = f.stopRequests;
+          assert.ok(stop);
+          assert.deepEqual(stop.slice(stop.indexOf("--namespace")), [
+            "--namespace",
+            "ns_test",
+            "agent",
+            "stop",
+            "agt_test",
+            "--if-active-revision",
+            "rev_old",
+          ]);
+          assert.match(await f.readEvidence("preflight-api.log"), /^agent-drafts-accepted$/m);
+          if (apiOnly) {
+            assert.match(
+              failure.stderr,
+              /channel direct-egress guard forecast was skipped because its targets do not fit in the startup preflight Secret beside the candidate Installation and the recorded Agents' drafts\./,
+            );
+            assert.doesNotMatch(failure.stderr, /recorded Agents' drafts do not fit/);
+          } else if (scenario === "older") {
+            assert.match(
+              failure.stderr,
+              /the selected controller image cannot forecast the channel direct-egress guard/,
+            );
+          } else {
+            assert.match(
+              await f.readEvidence("preflight-worker.log"),
+              /^channel-direct-egress-guard-no-refusal$/m,
+            );
+          }
+        }
+        const api = await readPreflightPod(f, "api");
+        const worker = await readPreflightPod(f, "worker");
+        assert.equal(
+          podVolumes(api.spec).some((volume) => volume.name === "upgrade-preflight-agent-drafts"),
+          !conflict,
+        );
+        const workerVolumes = podVolumes(worker.spec);
+        assert.ok(
+          !workerVolumes.some((volume) => volume.name === "upgrade-preflight-agent-drafts"),
+        );
+        const projection = workerVolumes.find(
+          (volume) => volume.name === "upgrade-preflight-channel-targets",
+        );
+        assert.deepEqual(
+          asRecord(projection?.secret)?.items,
+          apiOnly
+            ? undefined
+            : [
+                {
+                  key: collision
+                    ? "upgrade-preflight-channel-targets.json.gz"
+                    : "channel-targets.json.gz",
+                  path: "channel-targets.json.gz",
+                },
+              ],
+        );
+        assert.deepEqual(
+          f.kubernetesReads.filter((path) => path.endsWith("/networkpolicies")),
+          apiOnly || foreign || foreignExecution || missing || inactive || workerLog
+            ? []
+            : [`/apis/networking.k8s.io/v1/namespaces/${targetNamespace}/networkpolicies`],
+        );
+        if (scenario === "inactive-adopted") {
+          assert.ok(f.kubernetesReads.includes("/api/v1/namespaces"));
+        } else if (!apiOnly && !workerLog) {
+          // Inactive execution placement fails before the Worker inspects the healthy Gateway.
+          assert.equal(
+            f.kubernetesReads.includes(`/api/v1/namespaces/${targetNamespace}`),
+            !inactiveExecution && !foreignExecution,
+          );
+        }
+      },
+    );
   }
 
   // Deploy admission checks the model provider settings before the other stored-value rules
