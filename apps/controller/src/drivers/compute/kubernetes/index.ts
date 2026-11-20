@@ -7208,9 +7208,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
         environment: Record<string, string>,
         providerEndpoint?: SandboxHarnessEndpoint,
       ) => {
-        await this.prepareRevisionStage("gateway_config_map", () =>
-          this.reconcileHarnessTrust(revision, providerEndpoint, gatewayNamespace, namespace.name),
-        );
         await this.prepareRevisionStage("gateway_channel_network_policy", () =>
           this.reconcileChannelNetworkPolicy(revision, channels, gatewayNamespace),
         );
@@ -7612,6 +7609,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
             : await this.prepareRevisionStage("sandbox_provision", () =>
                 sandboxDriver.harnessEndpoint!(harnessContext),
               );
+        if (providerEndpoint !== undefined) {
+          // A successor owns its trust before it replaces the shared Gateway.
+          await this.prepareRevisionStage("gateway_config_map", () =>
+            this.reconcileHarnessTrust(
+              revision,
+              providerEndpoint,
+              gatewayNamespace,
+              namespace.name,
+            ),
+          );
+        }
         if (
           providerEndpoint !== undefined &&
           (existingGateway === undefined || existingGatewayRevisionId === revision.id)
@@ -8366,6 +8374,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
           revision,
           requirements,
         });
+        await this.verifyPreparedHarnessTrust(
+          revision,
+          providerEndpoint,
+          gatewayNamespace,
+          namespace.name,
+        );
         // Preparation saw the Harness serving; activate only while it still is.
         if (
           sandboxDriver.harnessStatus !== undefined &&
@@ -8406,7 +8420,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       gatewayNamespace,
       gatewayOwnership,
     );
-    await this.reconcileHarnessTrust(revision, providerEndpoint, gatewayNamespace, namespace.name);
     await this.reconcile(
       this.deployment(
         gatewayName,
@@ -16988,14 +17001,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return `harness-trust-${sha256Hex(agentId, 12)}-rev-${sha256Hex(revisionId, 12)}`;
   }
 
-  private async reconcileHarnessTrust(
-    revision: AgentRevision,
+  private harnessTrustBundle(
     endpoint: SandboxHarnessEndpoint | undefined,
-    namespace: KubernetesNamespaceAddress,
     harnessNamespaceName: string,
-  ): Promise<void> {
-    if (endpoint?.tls === undefined) {
-      return;
+  ): string | undefined {
+    if (endpoint === undefined) {
+      return undefined;
     }
     const network = this.options.network.providerHarness;
     if (network === undefined) {
@@ -17009,6 +17020,57 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       this.sandboxDriver?.harnessHome ?? HARNESS_HOME,
       harnessNamespaceName,
     );
+    return endpoint.tls === undefined
+      ? undefined
+      : [publicCaBundle(endpoint.tls.caBundle), this.options.executionCluster?.caBundle]
+          .filter((bundle) => bundle !== undefined)
+          .join("\n");
+  }
+
+  private async verifyPreparedHarnessTrust(
+    revision: AgentRevision,
+    endpoint: SandboxHarnessEndpoint,
+    namespace: KubernetesNamespaceAddress,
+    harnessNamespaceName: string,
+  ): Promise<void> {
+    const bundle = this.harnessTrustBundle(endpoint, harnessNamespaceName);
+    const name = this.harnessTrustName(revision.agentId, revision.id);
+    const existing = await this.getOwned(
+      "ConfigMap",
+      name,
+      namespace,
+      this.pluginRuntimeOwnership(revision),
+    );
+    if (bundle === undefined && existing === undefined) {
+      return;
+    }
+    // Activation only observes prepared trust. It must neither adopt a later
+    // provider CA nor discard saved private trust in favor of system trust.
+    if (
+      bundle === undefined ||
+      existing?.immutable !== true ||
+      Object.keys(existing.data ?? {}).length !== 1 ||
+      existing.data?.[HARNESS_TRUST_FILE] !== bundle ||
+      Object.keys(existing.binaryData ?? {}).length !== 0
+    ) {
+      throw new OwnershipFailure(`Refusing invalid prepared Harness trust ${name}.`);
+    }
+  }
+
+  private async reconcileHarnessTrust(
+    revision: AgentRevision,
+    endpoint: SandboxHarnessEndpoint | undefined,
+    namespace: KubernetesNamespaceAddress,
+    harnessNamespaceName: string,
+  ): Promise<void> {
+    const bundle = this.harnessTrustBundle(endpoint, harnessNamespaceName);
+    if (bundle === undefined) {
+      if (endpoint !== undefined) {
+        // Omission cannot discard private trust saved by an earlier preparation.
+        await this.verifyPreparedHarnessTrust(revision, endpoint, namespace, harnessNamespaceName);
+      }
+      return;
+    }
     // The endpoint arrives after the configuration snapshot. Keep its public
     // trust separately revision-owned and immutable; drift requires a new revision.
     const ownership = this.pluginRuntimeOwnership(revision);
@@ -17023,12 +17085,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         ),
         immutable: true,
         data: {
-          [HARNESS_TRUST_FILE]: [
-            publicCaBundle(endpoint.tls.caBundle),
-            this.options.executionCluster?.caBundle,
-          ]
-            .filter((bundle) => bundle !== undefined)
-            .join("\n"),
+          [HARNESS_TRUST_FILE]: bundle,
         },
       },
       ownership,

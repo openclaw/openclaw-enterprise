@@ -569,7 +569,9 @@ test("provider Harness verified endpoint trust is projected before rollout and i
   });
 
   providerCaBundle = untrusted.caBundle;
-  await assert.rejects(fixture.activate(), /invalid immutable Kubernetes ConfigMap/);
+  await assert.rejects(fixture.activate(), {
+    message: `Refusing invalid prepared Harness trust ${trust.metadata.name}.`,
+  });
   assert.deepEqual(configMap(trust.metadata.name), trust);
 });
 
@@ -1396,6 +1398,14 @@ test("provider-owned storage uses API observation without a Harness claim", asyn
       environment: "OPENCLAW_NODE_STATE_DIR",
     },
   ]);
+  // API-observed Harnesses without a private CA also activate without a trust ConfigMap.
+  await fixture.activate();
+  assert.equal(
+    fixture.writes.some(
+      ({ kind, metadata }) => kind === "ConfigMap" && metadata.name.startsWith("harness-trust-"),
+    ),
+    false,
+  );
   const claims = fixture.writes.filter(({ kind }) => kind === "PersistentVolumeClaim");
   assert.ok(claims.length > 0, "Gateway private storage remains Kubernetes-owned");
   assert.ok(claims.every(({ metadata }) => !metadata.name.startsWith("harness-workspace-")));
