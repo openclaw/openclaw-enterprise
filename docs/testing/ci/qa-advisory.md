@@ -118,9 +118,8 @@ OpenShell needs Landlock, unavailable on QA's Blacksmith runners. Each file
 runs on an Ubuntu 24.04 VM with a Landlock check, Docker daemon, cluster and
 private state. Job names use `QA advisory (OpenShell / <test-file-basename>)`.
 
-Each [OpenShell manifest](../../../scripts/ci/test-suites/openshell.json) file gets a
-`run-ci-lane` job with `lane: openshell` and its selected `test-file`. The
-`qa-openshell-compose` label selects only the first row below.
+`run-ci-lane` selects each [OpenShell](../../../scripts/ci/test-suites/openshell.json)
+`test-file` separately (`lane: openshell`). `qa-openshell-compose` selects the first row only.
 
 | Test (source)                                                                                       | Coverage                                                                                                                                                                         |
 | --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
