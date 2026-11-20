@@ -470,8 +470,12 @@ export function validateFailureData(
         : { runtimeFailure: recognizedRuntimeFailureValues(evidence) }),
     });
   }
-  if (reasonCode === "RUNTIME_MODEL_PROBE_FAILED") {
-    // The held model-probe failure that ended the deployment, with its cause.
+  if (
+    reasonCode === "RUNTIME_MODEL_PROBE_FAILED" ||
+    reasonCode === "RUNTIME_AUTHENTICATION_FAILED"
+  ) {
+    // The runtime evidence must match the held failure that ended the deployment.
+    const modelProbe = reasonCode === "RUNTIME_MODEL_PROBE_FAILED";
     if (
       typeof data !== "object" ||
       data === null ||
@@ -479,13 +483,22 @@ export function validateFailureData(
       Object.keys(data).length !== 1 ||
       !Object.hasOwn(data, "runtimeFailure")
     ) {
-      throw new ScopeViolationError("Model probe failure data has unsupported fields.");
+      throw new ScopeViolationError(
+        modelProbe
+          ? "Model probe failure data has unsupported fields."
+          : "Authentication failure data has unsupported fields.",
+      );
     }
     const evidence = validateRuntimeFailureEvidence(
       (data as { readonly runtimeFailure: unknown }).runtimeFailure,
     );
-    if (evidence.code !== "MODEL_PROBE_FAILED") {
-      throw new ScopeViolationError("Model probe failure data requires its runtime failure.");
+    const expectedCode = modelProbe ? "MODEL_PROBE_FAILED" : "AUTHENTICATION_FAILED";
+    if (evidence.code !== expectedCode) {
+      throw new ScopeViolationError(
+        modelProbe
+          ? "Model probe failure data requires its runtime failure."
+          : "Authentication failure data requires AUTHENTICATION_FAILED evidence.",
+      );
     }
     return Object.freeze({ runtimeFailure: recognizedRuntimeFailureValues(evidence) });
   }

@@ -225,13 +225,13 @@ an optional `detail` token from this closed vocabulary. A Codex `detail` ending
 | `INVALID_OUTPUT` | The check's output was not what the runtime expects        | `json` (unparseable) or `shape` (an unexpected result, such as another provider's)                                                                                                                  |
 | `WRAPPER_ERROR`  | The runtime wrapper could not prepare or read the check    | none                                                                                                                                                                                                |
 
-OpenClaw's `format` covers an unknown model or a request the provider rejected
-as malformed, such as invalid provider settings. A 429 or usage limit is
-`rate_limit`. A rejected credential is
-`RUNTIME_AUTHENTICATION_FAILED` and a timeout `RUNTIME_MODEL_PROBE_TIMEOUT`;
-neither has a cause. Compute drops any other cause but keeps the
-code, so a cause never carries native output, provider text, or credentials. The
-console shows it as **Cause**, and `occ agent deployment-status` prints it.
+OpenClaw reports `format` for unknown models and malformed requests, and
+`rate_limit` for 429 or usage limits. A rejected credential
+(`RUNTIME_AUTHENTICATION_FAILED`) can record the check, component, timestamp,
+and fixed runtime code. These failures and `RUNTIME_MODEL_PROBE_TIMEOUT`
+carry no cause. Compute keeps the code and drops unrecognized causes,
+including native output, provider text, and credentials. The Console shows a
+recognized cause as **Cause**, and `occ agent deployment-status` prints it.
 
 <a id="the-active-revision-after-a-failed-deployment" class="anchor-alias"></a>
 
