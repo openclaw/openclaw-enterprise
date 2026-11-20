@@ -89,6 +89,11 @@ The container release command starts at `scripts/ci/container-release.ts`.
 Its modules under `scripts/ci/container-release/` own release admission,
 receipt validation, OCI verification, native smoke, and registry publication.
 
+`apps/controller/src/drivers/compute/kubernetes/harness/` owns internal Harness
+runtimes and workspace handling for the single Kubernetes Compute Driver.
+`drivers/sandbox/openshell/managed.ts` owns managed OpenShell reconciliation;
+see the [prototype boundary](reference/drivers/kubernetes-openshell-compute.md).
+
 Within controller composition, `installation-presets.ts` owns Preset file loading
 and bundled-version assembly; `installation-config.ts` owns Driver composition.
 

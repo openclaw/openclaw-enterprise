@@ -1724,3 +1724,38 @@ test("provider Harness protected execution is released only on current signed in
     },
   );
 });
+
+test("provider-owned storage uses API observation without a Harness claim", async () => {
+  const fixture = providerEndpointFixture();
+  fixture.sandbox.workspaceStorage = "provider";
+  fixture.sandbox.observeHarness = async () => ({ state: "running" });
+  // API responses are controlled inputs here. Assertions cover Compute's rendered
+  // resources, not real OpenShell lifecycle, Kubernetes RBAC, or network enforcement.
+  await endpointWithGateway(fixture);
+  assert.deepEqual(await fixture.prepare(), { ...expectedRevision(fixture), ready: true });
+  const { requirements } = fixture.provisions[0];
+  assert.deepEqual(requirements.workspaceMounts, []);
+  assert.deepEqual(requirements.retainedDirectories, [
+    {
+      purpose: "workspace",
+      name: "workspace",
+      path: "/home/node/workspace",
+      environment: "OPENCLAW_WORKSPACE_DIR",
+    },
+    {
+      purpose: "generated-images",
+      name: "generated-images",
+      path: "/home/node/.codex/generated_images",
+    },
+    { purpose: "sessions", name: "codex-sessions", path: "/home/node/.codex/sessions" },
+    {
+      purpose: "node-state",
+      name: fixture.driver.workspaceNodeName(fixture.revision),
+      path: "/home/node/.openclaw-node",
+      environment: "OPENCLAW_NODE_STATE_DIR",
+    },
+  ]);
+  const claims = fixture.writes.filter(({ kind }) => kind === "PersistentVolumeClaim");
+  assert.ok(claims.length > 0, "Gateway private storage remains Kubernetes-owned");
+  assert.ok(claims.every(({ metadata }) => !metadata.name.startsWith("harness-workspace-")));
+});

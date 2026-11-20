@@ -220,6 +220,19 @@ test(
         "oidc-agent-chat",
       );
     }
+    for (const gitReplacement of [false, true].filter((git) =>
+      git ? selection.gitReplacement : selection.providerReplacement,
+    )) {
+      const { verifyOpenShellProviderReplacement } =
+        await import("../helpers/openshell-provider-replacement.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        gitReplacement ? "managed Git replacement" : "managed Provider replacement",
+        () => verifyOpenShellProviderReplacement(context, { gitReplacement }),
+        gitReplacement ? "openshell-git-replacement" : "openshell-provider-replacement",
+      );
+    }
     if (selection.sandboxPolicy) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
       await stage(

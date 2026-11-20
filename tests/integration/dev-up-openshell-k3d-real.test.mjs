@@ -37,6 +37,21 @@ const devDown = join(repository, "scripts", "dev-down");
 const selected = process.env.OCC_TEST_DEV_UP_OPENSHELL_REAL === "1";
 const composeSelected = process.env.OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL === "1";
 
+function assertStockOpenShellImages() {
+  for (const selector of [
+    "GATEWAY_IMAGE",
+    "SANDBOX_IMAGE",
+    "SUPERVISOR_IMAGE",
+    "SOURCE_REVISION",
+  ]) {
+    const name = `OCC_DEVELOPMENT_OPENSHELL_${selector}`;
+    assert.ok(
+      process.env[name] === undefined,
+      `The stock OpenShell fixture requires ${name} to be unset.`,
+    );
+  }
+}
+
 async function startDevelopment(environment, args = []) {
   try {
     return await execute(devUp, args, {
@@ -248,6 +263,7 @@ test(
     timeout: 1_200_000,
   },
   async (t) => {
+    assertStockOpenShellImages();
     assertOpenShellOwnerModelSelection(process.env);
     await access(occ);
     // LocalSetup requires a canonical parent; macOS temporary roots may be symlinks.
@@ -947,6 +963,7 @@ test(
     timeout: 1_200_000,
   },
   async (t) => {
+    assertStockOpenShellImages();
     await access(occ);
     const root = await mkdtemp(
       join(await realpath(tmpdir()), "oce-dev-up-openshell-compose-real-"),

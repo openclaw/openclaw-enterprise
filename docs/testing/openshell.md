@@ -8,8 +8,7 @@ last_verified: "2026-11-04"
 
 ## Overview
 
-Use official OpenShell `v0.1.9` from the repository root. See [images and trust](openshell-oauth.md#prepare-images-and-trust)
-for versions and qualification limits.
+From the repository root, use official OpenShell `v0.1.9`. See [qualification limits](openshell-oauth.md#prepare-images-and-trust).
 
 ## Start a reusable development environment
 
@@ -37,8 +36,8 @@ Stop, including after partial startup:
 ```
 
 This deletes only the owned cluster and database. For Compose, set
-`OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup; otherwise the control
-plane follows the Compute Driver, selecting Kubernetes here.
+`OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup; the default follows the
+Compute Driver (Kubernetes here).
 
 ## Finite repository removal
 
@@ -379,6 +378,11 @@ for the merged images, guided Codex, or ChatGPT OAuth.
 For interactive native testing, choose OpenAI, OpenClaw and Dedicated in
 [Create Agent](../reference/console/create-and-deploy.md#create-an-agent) and select
 an API-key Secret; the Codex PAT used by the starter is a separate credential.
+
+<a id="managed-compute-prototype"></a>
+<a id="provider-replacement"></a>
+
+[Managed OpenShell and Provider replacement tests](openshell-managed.md).
 
 ## Troubleshooting
 

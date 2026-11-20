@@ -165,7 +165,7 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 		"endpoint: https://openshell-gateway.oce-system.svc.cluster.local:8080",
 		"requestTimeoutMs: 30000",
 		"mode: inCluster",
-		"workspaceMode: operator",
+		"integrationMode: legacy",
 		"operatorWorkspaceResources:",
 		"userNamespaces: false",
 		`openshell.ai/openclaw-workspace: "true"`,

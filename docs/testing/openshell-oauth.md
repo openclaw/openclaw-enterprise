@@ -108,9 +108,11 @@ records an immutable reference. For real-runtime tests, follow the
 and set `OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and
 `OCC_TEST_KUBERNETES_AGENT_IMAGE` to the imported digest reference.
 
-For an ordinary OIDC issuer signed by a private CA, use
-`server.oidc.caConfigMapName` in the OpenShell 0.1.9 chart. This bundle applies
-to issuer discovery and JWKS requests. OAuth token requests use platform trust.
+For an ordinary OIDC issuer signed by a private CA, create a ConfigMap in the
+OpenShell Gateway's namespace with the PEM bundle under the `ca.crt` key.
+Set `server.oidc.caConfigMapName` to that ConfigMap's name in the OpenShell
+0.1.9 chart. The bundle applies to issuer discovery and JWKS requests. OAuth
+token requests use platform trust.
 If a separate token endpoint uses a private CA, include that CA in its client's
 trust store. The Agent Gateway trust above serves a separate connection.
 
