@@ -13,7 +13,7 @@ import { createFastifyApp, type ControllerApp } from "../../apps/controller/src/
 import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import { createDevelopmentComputeDriver } from "../helpers/development.ts";
 import {
   createTenantReaderFixture,
   tenantRequest as request,

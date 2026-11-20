@@ -28,7 +28,7 @@ import type {
 import { InstalledDriver, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
@@ -264,8 +264,8 @@ async function repositoryGitJourney(
     implementation: "openshell",
     configuration: opts,
     definition: {
-      configurationSchema: OpenShellCredentialProxyDriver.configurationSchema,
-      validateConfiguration: OpenShellCredentialProxyDriver.validateConfiguration,
+      configurationSchema: OpenShellLegacyEgressProxyDriver.configurationSchema,
+      validateConfiguration: OpenShellLegacyEgressProxyDriver.validateConfiguration,
       configurationContributions: OpenShellSandboxDriver.configurationContributions,
     },
   };
@@ -333,7 +333,7 @@ async function repositoryGitJourney(
       },
       { id, implementation: "openshell", backend: backend as never, openShellGit: runtime },
     );
-    const proxy = new OpenShellCredentialProxyDriver(opts, {
+    const proxy = new OpenShellLegacyEgressProxyDriver(opts, {
       id,
       sandbox,
       backend: backend as never,

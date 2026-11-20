@@ -2438,16 +2438,6 @@ if (args[0] === "pull") {
         }
       }
     }
-    // The new finite-Git installer still consumes a PAT; joining the installer
-    // lane must not make its file-level preparation accept an API key alone.
-    for (const credentials of [["OPENAI_API_KEY"], ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"]]) {
-      cases.push({
-        harness: "codex",
-        credentials,
-        file: "tests/integration/openshell-git-finite-removal-real.test.ts",
-        ...(credentials.includes("CODEX_ACCESS_TOKEN") ? {} : { missing: "CODEX_ACCESS_TOKEN" }),
-      });
-    }
     // Generic workflows use API keys even when an unrelated managed PAT is present.
     // PAT-only input must fail before the preparer creates a state file or any resources.
     for (const file of [
@@ -2458,6 +2448,8 @@ if (args[0] === "pull") {
       "tests/integration/openshell-refresh-real.test.ts",
       "tests/integration/openshell-withdrawal-real.test.ts",
       "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+      "tests/integration/openshell-git-retention-real.test.ts",
+      "tests/integration/openshell-git-finite-removal-real.test.ts",
     ]) {
       cases.push(
         { harness: "codex", credentials: ["OPENAI_API_KEY"], file },
@@ -2530,8 +2522,8 @@ if (args[0] === "pull") {
     }
   });
 
-  // Each complete OpenShell cohort includes API-key and PAT workflows. Reject
-  // either missing input before creating shared resources.
+  // The installer cohort uses only API keys; the mixed cohorts also retain PAT
+  // workflows. Reject each missing input before creating shared resources.
   for (const lane of ["openshell", "openshell-policy", "openshell-installers"]) {
     for (const harness of ["codex", "openclaw"]) {
       for (const credentials of [
@@ -2568,9 +2560,11 @@ if (args[0] === "pull") {
             10_000,
           );
           assert.equal(result.status, 1);
-          const missing = ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"].filter(
-            (name) => !credentials.includes(name),
-          );
+          const required =
+            lane === "openshell-installers"
+              ? ["OPENAI_API_KEY"]
+              : ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"];
+          const missing = required.filter((name) => !credentials.includes(name));
           if (missing.length) {
             assert.match(result.stderr, /Missing required CI input/u);
             for (const name of missing) {

@@ -472,7 +472,8 @@ export interface CredentialUpdateNotification {
   readonly version?: string;
 }
 
-export interface CredentialProxyDriver extends Driver {
+// TODO(credential proxy cutover): remove this contract after legacy protected serving is retired.
+export interface LegacyEgressProxyDriver extends Driver {
   readonly capability: "credential_proxy";
   readonly sourceControl: CredentialSourceControl;
   readonly policyReduction?: CredentialPolicyReducer;
@@ -493,9 +494,21 @@ export interface CredentialProxyDriver extends Driver {
     installation: EgressInstallation,
   ): Promise<boolean>;
   removeRevision(context: ProxyRevisionContext): Promise<boolean>;
+}
+
+/** Trusted, material-free context for a staged credential deployment. */
+export interface CredentialDeploymentContext {
+  readonly namespace: Readonly<Namespace>;
+  readonly revision: Readonly<AgentRevision>;
+  readonly signal: AbortSignal;
+}
+
+/** Credential delivery for staged Agent deployments, independent of legacy protected egress. */
+export interface CredentialProxyDriver extends Driver {
+  readonly capability: "credential_proxy_delivery";
   /** Prepare staged proxy resources for this exact Namespace and Agent revision. */
-  deployProxy?(
-    context: Pick<ProxyRevisionContext, "namespace" | "revision" | "signal">,
+  deployProxy(
+    context: CredentialDeploymentContext,
     input: {
       readonly deployment: CredentialDeploymentRef;
       readonly networkAccessPolicy: NetworkAccessPolicy;
@@ -503,8 +516,8 @@ export interface CredentialProxyDriver extends Driver {
     },
   ): Promise<{ readonly proxyRouting?: CredentialProxyRouting }>;
   /** Configure this revision's actual target; reject a mismatched target before resolving. */
-  configureDeployment?(
-    context: Pick<ProxyRevisionContext, "namespace" | "revision" | "signal">,
+  configureDeployment(
+    context: CredentialDeploymentContext,
     input: CredentialDeploymentConfiguration & {
       readonly bindings: readonly {
         readonly binding: DeploymentCredentialBinding;
@@ -519,13 +532,13 @@ export interface CredentialProxyDriver extends Driver {
   /** Observe without reload, repair or upstream user operations. Each binding using pushed material
    * needs a serving copy on this target, and every serving copy must have the expected version.
    * A shared provider instead needs the current effective policy. Both require the expected configuration. */
-  getDeploymentStatus?(
-    context: Pick<ProxyRevisionContext, "namespace" | "revision" | "signal">,
+  getDeploymentStatus(
+    context: CredentialDeploymentContext,
     expected: CredentialDeploymentConfiguration,
   ): Promise<CredentialDeploymentReadiness>;
   /** Remove only resources bound to this target, or unbound resources if staging failed. */
-  removeDeployment?(
-    context: Pick<ProxyRevisionContext, "namespace" | "revision" | "signal">,
+  removeDeployment(
+    context: CredentialDeploymentContext,
     input:
       | { readonly targetRef: CredentialDeploymentTarget; readonly bindingRefs?: readonly string[] }
       | { readonly unboundDeployment: CredentialDeploymentRef },

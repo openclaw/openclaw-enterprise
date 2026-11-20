@@ -16,7 +16,7 @@ import type {
   ProxyWiring,
   EgressInstallation,
   ProxyPlan,
-  CredentialProxyDriver,
+  LegacyEgressProxyDriver,
   ProxyRevisionContext,
   SandboxDriver,
   AgentRevision,
@@ -211,7 +211,7 @@ export function openShellEgressConfiguration(
   if (new Set(plan.routes.map((route) => route.binding.binding.id)).size > 1) {
     throw new Error("The protected execution permits at most one binding.");
   }
-  requireConfiguration(OpenShellCredentialProxyDriver, options);
+  requireConfiguration(OpenShellLegacyEgressProxyDriver, options);
   const hosts = [...new Set(plan.routes.map((route) => new URL(route.origin).hostname))];
   // Keep the authority installed for a zero-route plan. The selector names no
   // reachable rule: network_policies below remains empty, never a wildcard.
@@ -274,13 +274,13 @@ export function openShellEgressConfiguration(
   });
 }
 
-export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
+export class OpenShellLegacyEgressProxyDriver implements LegacyEgressProxyDriver {
   readonly capability = "credential_proxy" as const;
   readonly implementation = "openshell";
   readonly id: string;
   readonly sourceControl: CredentialSourceControl;
-  readonly bindExchange?: NonNullable<CredentialProxyDriver["bindExchange"]>;
-  readonly bindRepositoryGit?: NonNullable<CredentialProxyDriver["bindRepositoryGit"]>;
+  readonly bindExchange?: NonNullable<LegacyEgressProxyDriver["bindExchange"]>;
+  readonly bindRepositoryGit?: NonNullable<LegacyEgressProxyDriver["bindRepositoryGit"]>;
   private readonly mandatoryEnforcement?: OpenShellGitRuntime["mandatoryEnforcement"];
   private readonly previewEnforcement?: OpenShellGitRuntime["previewEnforcement"];
   private readonly backend: Backend<OpenShellGateway>;
@@ -337,13 +337,13 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       readonly backend: Backend<OpenShellGateway>;
       readonly sandbox: SandboxDriver;
       readonly exchangeAuthority?: EgressAuthorityConfiguration;
-      readonly bindRepositoryGit?: NonNullable<CredentialProxyDriver["bindRepositoryGit"]>;
+      readonly bindRepositoryGit?: NonNullable<LegacyEgressProxyDriver["bindRepositoryGit"]>;
       readonly mandatoryEnforcement?: OpenShellGitRuntime["mandatoryEnforcement"];
       readonly previewEnforcement?: OpenShellGitRuntime["previewEnforcement"];
       readonly preparedProviders?: readonly CredentialProviderDefinition[];
     },
   ) {
-    requireConfiguration(OpenShellCredentialProxyDriver, options);
+    requireConfiguration(OpenShellLegacyEgressProxyDriver, options);
     if (selection.sandbox.harnessResource === undefined) {
       throw new Error("Invalid protected OpenShell egress configuration.");
     }

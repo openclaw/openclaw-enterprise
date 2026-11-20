@@ -16,10 +16,24 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   registerQaCommandFailureCases,
   registerQaImageBuildEvidenceCases,
+  runQaCredentialMaterializationCase,
+  runQaMultilineRedactionCase,
+  runQaEncodedRedactionCase,
+  runQaPrivateFileCase,
 } from "./qa-command-evidence-cases.ts";
 import { registerQaCodexPolicyThreadCase } from "./qa-codex-policy-thread-case.ts";
-import { registerQaNativeToolEvidenceCase } from "./qa-native-tool-evidence-case.ts";
-import { registerQaAgentLifecycleDiagnosticsCases } from "./qa-agent-lifecycle-diagnostics-cases.ts";
+import {
+  registerQaNativeToolEvidenceCase,
+  failedClosed,
+  judgedDeny,
+  runQaApprovalReviewEvidenceCase,
+  runQaFailedReviewedReadCase,
+  runQaModelFailureEvidenceCase,
+} from "./qa-native-tool-evidence-case.ts";
+import {
+  registerQaAgentLifecycleDiagnosticsCases,
+  runQaWaitDiagnosticCase,
+} from "./qa-agent-lifecycle-diagnostics-cases.ts";
 import { registerQaHttpChatCleanupCases } from "./qa-http-chat-cleanup-cases.ts";
 import { registerQaHttpChatRoutingCases } from "./qa-http-chat-routing-cases.ts";
 import { registerQaHttpChatStreamCases } from "./qa-http-chat-stream-cases.ts";
@@ -82,17 +96,7 @@ test("QA credentials require a private regular file and reject symlink substitut
   await writeFile(credential, " test-only-credential\n", { mode: 0o600 });
   assert.equal(await protectedText(credential, "test credential"), "test-only-credential");
 
-  // A path replaced with a symlink must not redirect the credential read,
-  // even when its target would pass the regular-file and permission checks.
-  const link = join(directory, "substituted");
-  await symlink(credential, link);
-  await assert.rejects(protectedText(link, "test credential"), { code: "ELOOP" });
-  await assert.rejects(protectedText(directory, "test credential"), /private regular file/);
-  await chmod(credential, 0o644);
-  await assert.rejects(protectedText(credential, "test credential"), /private regular file/);
-  await chmod(credential, 0o600);
-  await writeFile(credential, " \n");
-  await assert.rejects(protectedText(credential, "test credential"), /must not be empty/);
+  await runQaPrivateFileCase(directory, credential, { chmod, symlink });
 });
 
 test("API-key QA injection stays in the consumer and its errors are redacted", async () => {
@@ -489,52 +493,7 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
 });
 
 test("hosted QA materializes only selected credentials and rejects missing selected inputs", async (t) => {
-  const { spawnSync } = await import("node:child_process");
-  const script = new URL("../../scripts/ci/qa-matrix-credentials.mjs", import.meta.url);
-  const directory = await temporaryDirectory(t, "qa-hosted-inputs-");
-  const githubEnv = join(directory, "github-env");
-  const result = spawnSync(process.execPath, [script.pathname], {
-    encoding: "utf8",
-    env: {
-      RUNNER_TEMP: directory,
-      GITHUB_ENV: githubEnv,
-      OCC_TEST_QA_SCENARIOS: "model-ui,console-secrets",
-      OPENAI_API_KEY: "synthetic-model-key",
-      CODEX_ACCESS_TOKEN: "synthetic-codex-token",
-      // Even if a caller supplies unrelated credentials, do not write them.
-      SLACK_APP_TOKEN: "unselected-secret",
-      REPOSITORY_APP_KEY: "unselected-secret",
-    },
-  });
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout + result.stderr, "");
-  const privateDirectory = join(directory, "qa-matrix-credentials");
-  assert.deepEqual((await readdir(privateDirectory)).sort(), ["codex", "openai"]);
-  assert.equal(
-    await protectedText(join(privateDirectory, "codex"), "Codex credential"),
-    "synthetic-codex-token",
-  );
-  const exported = await readFile(githubEnv, "utf8");
-  assert.match(exported, /OCC_TEST_QA_CODEX_TOKEN_FILE=/);
-  assert.doesNotMatch(
-    exported,
-    /synthetic-|unselected-secret|SLACK|REPOSITORY_(?:APP|OBSERVER|REGISTRY)/,
-  );
-  assert.doesNotMatch(exported, /QA_REPOSITORY_FIXTURE/);
-  await rm(privateDirectory, { recursive: true });
-  await rm(githubEnv);
-  const missing = spawnSync(process.execPath, [script.pathname], {
-    encoding: "utf8",
-    env: {
-      RUNNER_TEMP: directory,
-      GITHUB_ENV: githubEnv,
-      OCC_TEST_QA_SCENARIOS: "console-secrets",
-      OCC_TEST_QA_PRESET: "Codex",
-    },
-  });
-  assert.notEqual(missing.status, 0);
-  assert.match(missing.stderr, /CODEX_ACCESS_TOKEN is required/);
-  await assert.rejects(readFile(githubEnv), { code: "ENOENT" });
+  await runQaCredentialMaterializationCase(t, rm);
 });
 
 registerQaImageBuildEvidenceCases();
@@ -542,68 +501,7 @@ registerQaImageBuildEvidenceCases();
 registerQaCommandFailureCases();
 
 test("QA waits report the last observation when they time out", async () => {
-  const { waitFor } = await import("../helpers/qa-wait.ts");
-  let observations = 0;
-  let last;
-  // Advance through the deadline on the second observation.
-  let clock = 0;
-  await assert.rejects(
-    waitFor(
-      "fake condition",
-      async () => {
-        observations += 1;
-        assert.ok(observations < 100, "the wait follows the fake clock");
-        clock += 100;
-        last = { observation: observations, pods: ["runtime-0"] };
-        return false;
-      },
-      200,
-      { describe: () => JSON.stringify(last), interval: 0, now: () => clock },
-    ),
-    (error) => {
-      assert.equal(
-        error.message,
-        'Timed out: fake condition; last observation: {"observation":2,"pods":["runtime-0"]}',
-      );
-      return true;
-    },
-  );
-  assert.equal(observations, 2, "the timeout ends the wait after the deadline observation");
-
-  // The next observation can succeed even when its timer wakes at the deadline.
-  let clockReads = 0;
-  let readinessReads = 0;
-  const ready = { pod: "runtime-0" };
-  assert.equal(
-    await waitFor(
-      "ready at the deadline",
-      () => (++readinessReads === 2 ? ready : undefined),
-      100,
-      { interval: 0, now: () => (clockReads++ < 2 ? 0 : 100) },
-    ),
-    ready,
-  );
-  assert.equal(readinessReads, 2);
-
-  // Without `describe` the message is unchanged; a failing `describe` keeps the timeout.
-  await assert.rejects(
-    waitFor("plain condition", async () => false, 10, { interval: 5 }),
-    (error) => error.message === "Timed out: plain condition",
-  );
-  await assert.rejects(
-    waitFor("broken describe", async () => false, 10, {
-      interval: 5,
-      describe: () => {
-        throw new Error("no state");
-      },
-    }),
-    (error) =>
-      error.message === "Timed out: broken describe; last observation unavailable (no state)",
-  );
-  assert.equal(
-    await waitFor("ready", async () => "value", 10, { describe: () => "unused" }),
-    "value",
-  );
+  await runQaWaitDiagnosticCase();
 });
 
 registerQaAgentLifecycleDiagnosticsCases();
@@ -613,186 +511,20 @@ registerQaHttpChatRoutingCases();
 registerQaHttpChatStreamCases();
 
 test("QA log redaction hides each line of a registered multi-line secret", async () => {
-  const { redactedQaTail, registerQaSecret } = await import("../helpers/qa-secrets.ts");
-  const body = ["MIIEfixtureLineOneAAAAAAAA", "fixtureLineTwoBBBBBBBBBBBB"];
-  registerQaSecret(
-    ["-----BEGIN PRIVATE KEY-----", ...body, "-----END PRIVATE KEY-----"].join("\n"),
-  );
-  const lines = redactedQaTail(
-    `reading key\n${body[0]}\n${body[1]}\ndone\n`,
-    {},
-    {
-      lines: 10,
-      lineChars: 200,
-    },
-  );
-  assert.deepEqual(lines[0], "reading key");
-  assert.equal(lines.at(-1), "done");
-  assert.doesNotMatch(lines.join("\n"), /fixtureLine/);
+  await runQaMultilineRedactionCase();
 });
 
 test("QA log redaction hides JSON-escaped, base64 and percent-encoded copies of a registered secret", async () => {
-  const { redactQaError, redactedQaTail, registerQaSecret } =
-    await import("../helpers/qa-secrets.ts");
-  // Synthetic, with every character an encoding changes.
-  const value = 'synthetic"qa\\value/<&>+= 2026';
-  registerQaSecret(value);
-  const json = JSON.stringify(value).slice(1, -1);
-  const encoded = [
-    json,
-    // Go's encoding/json (kube API errors) also escapes <, > and &.
-    json.replaceAll("<", "\\u003c").replaceAll(">", "\\u003e").replaceAll("&", "\\u0026"),
-    Buffer.from(value).toString("base64"),
-    Buffer.from(value).toString("base64url"),
-    encodeURIComponent(value),
-  ];
-  assert.equal(new Set([value, ...encoded]).size, 6);
-  const text = [
-    `plain ${value}`,
-    JSON.stringify({ level: 30, msg: `loaded ${value}` }),
-    `go ${encoded[1]}`,
-    `secret data ${encoded[2]}`,
-    `url-safe ${encoded[3]}`,
-    `query ?v=${encoded[4]}`,
-  ].join("\n");
-  const lines = redactedQaTail(text, {}, { lines: 10, lineChars: 400 });
-  assert.equal(lines.length, 6);
-  for (const variant of [value, ...encoded]) {
-    assert.ok(!lines.join("\n").includes(variant), `variant survived: ${lines.join("\n")}`);
-  }
-  assert.ok(
-    lines.every((line) => line.includes("[env:qa-secret]")),
-    lines.join("\n"),
-  );
-  const error = redactQaError(new Error(`failed: ${encoded[2]}`));
-  assert.equal(error.message, "failed: [REDACTED]");
+  await runQaEncodedRedactionCase();
 });
 
 registerQaNativeToolEvidenceCase();
 
 registerQaCodexPolicyThreadCase();
 
-// The shapes the pinned Codex reviewer records on a tool result (finding 1980): a
-// judgement carries risk and authorization; a failed-closed review carries neither.
-const judgedDeny = {
-  id: "review-judged",
-  status: "denied",
-  riskLevel: "high",
-  userAuthorization: "low",
-  rationale: "The read targets a calendar the user did not mention.",
-};
-const failedClosed = {
-  id: "review-failed",
-  status: "denied",
-  rationale:
-    "Automatic approval review failed: guardian review completed without an assessment payload",
-};
-const timedOut = {
-  id: "review-timeout",
-  status: "timed_out",
-  rationale: "Automatic approval review timed out while evaluating the requested approval.",
-};
-
 test("approval review evidence tells a reviewer error from a deny judgement", async () => {
-  const { approvalReviewKind, automaticReviewerErrored, describeApprovalReviews } =
-    await import("../helpers/plugin-transcript-assertions.ts");
-  assert.equal(approvalReviewKind(judgedDeny), "judged-deny");
-  assert.equal(approvalReviewKind(failedClosed), "reviewer-error");
-  assert.equal(approvalReviewKind(timedOut), "reviewer-error");
-  assert.equal(approvalReviewKind({ id: "a", status: "approved", riskLevel: "low" }), "approved");
-  assert.equal(approvalReviewKind({ id: "c", status: "aborted" }), "aborted");
-  // Without the reviewer's own failure text, or with a judgement's risk level, a denial
-  // stays a judgement or unclassified: a rationale alone cannot claim a reviewer error.
-  assert.equal(approvalReviewKind({ id: "d", status: "denied" }), "denied-unclassified");
-  assert.equal(
-    approvalReviewKind({ ...failedClosed, riskLevel: "high" }),
-    "judged-deny",
-    "a judged rationale that quotes the failure text is still a judgement",
-  );
-  assert.equal(
-    approvalReviewKind({ ...failedClosed, userAuthorization: "unknown" }),
-    "judged-deny",
-  );
-  // A changed authorization may be the policy's own change, not reviewer trouble.
-  const staleAuthorization = {
-    id: "review-stale",
-    status: "denied",
-    rationale:
-      "Automatic approval review failed: authorization changed before approval could be applied",
-  };
-  assert.equal(approvalReviewKind(staleAuthorization), "stale-authorization");
-
-  const failedResult = (reviews) => [
-    { toolCallId: "call-1", isError: true, approvalReviews: reviews },
-  ];
-  assert.equal(automaticReviewerErrored(failedResult([failedClosed])), true);
-  assert.equal(automaticReviewerErrored(failedResult([timedOut])), true);
-  assert.equal(automaticReviewerErrored(failedResult([judgedDeny])), false);
-  assert.equal(automaticReviewerErrored(failedResult([failedClosed, judgedDeny])), false);
-  assert.equal(automaticReviewerErrored(failedResult([{ id: "d", status: "denied" }])), false);
-  assert.equal(automaticReviewerErrored(failedResult([])), false, "no review, no reviewer error");
-  assert.equal(automaticReviewerErrored([]), false, "no call, no reviewer error");
-  assert.equal(automaticReviewerErrored(failedResult([staleAuthorization])), false);
-  assert.equal(
-    automaticReviewerErrored([
-      ...failedResult([failedClosed]),
-      { toolCallId: "call-2", isError: true, approvalReviews: [] },
-    ]),
-    false,
-    "every failed call needs its own reviewer error",
-  );
-  assert.equal(
-    automaticReviewerErrored([
-      { toolCallId: "call-1", isError: false, approvalReviews: [failedClosed] },
-    ]),
-    false,
-    "a call that did not fail was not blocked by its reviewer",
-  );
-
-  assert.equal(
-    describeApprovalReviews(failedResult([judgedDeny])),
-    "judged-deny (risk: high, authorization: low): The read targets a calendar the user did not mention.",
-  );
-  assert.equal(
-    describeApprovalReviews(failedResult([failedClosed])),
-    `reviewer-error: ${failedClosed.rationale}`,
-  );
-  assert.equal(describeApprovalReviews(failedResult([])), "no approval review recorded");
-  assert.equal(
-    describeApprovalReviews(
-      failedResult([
-        { ...failedClosed, rationale: `${failedClosed.rationale}\n  caused by: eof\n` },
-      ]),
-    ),
-    `reviewer-error: ${failedClosed.rationale} caused by: eof`,
-    "a multi-line rationale stays on the failure's first line",
-  );
+  await runQaApprovalReviewEvidenceCase();
 });
-
-function calendarEvidence(reviews) {
-  return {
-    exists: true,
-    sessionId: "session-1",
-    userMarkerSeen: true,
-    assistantMarkerSeen: true,
-    assistantError: false,
-    calls: [{ seq: 5, id: "call-1", name: "calendar_read", mirrorIdentity: "t:tool:call-1:call" }],
-    results: [
-      {
-        seq: 8,
-        toolCallId: "call-1",
-        toolName: "calendar_read",
-        isError: true,
-        deniedByUser: false,
-        matchesResult: false,
-        mirrorIdentity: "t:tool:call-1:result",
-        approvalReviews: reviews,
-      },
-    ],
-    codexTurns: [],
-    diagnostics: {},
-  };
-}
 
 test("a failed reviewed read names the review outcome before the evidence", async () => {
   const { createNativePluginAssertions } = await import("../helpers/native-plugin-assertions.ts");
@@ -800,94 +532,10 @@ test("a failed reviewed read names the review outcome before the evidence", asyn
     [[failedClosed], true, `reviewer-error: ${failedClosed.rationale}`],
     [[judgedDeny], false, "judged-deny (risk: high, authorization: low)"],
   ]) {
-    const fixture = createNativePluginAssertions({
-      gatewayUrl: async () => assert.fail("no Gateway turn"),
-      proofMode: "codex",
-      execGateway: async () => ({
-        label: "fixture",
-        stdout: JSON.stringify(calendarEvidence(reviews)),
-      }),
-    });
-    await assert.rejects(
-      fixture.assertSessionToolCallEvidence(
-        {},
-        {
-          sessionKey: "agent:main:fixture",
-          turnMarker: "M",
-          toolName: "calendar_read",
-          resultPattern: "x",
-        },
-      ),
-      (error) => {
-        assert.equal(error.name, "AssertionError");
-        assert.equal(error.automaticReviewerErrored, errored);
-        assert.ok(error.approvalReviewSummary.startsWith(reason), error.approvalReviewSummary);
-        const [head] = error.message.split(": {");
-        assert.ok(head.includes(`(approval reviews: ${reason}`), head);
-        assert.match(error.message, /"approvalReviews":\[\{"id":"review-/);
-        return true;
-      },
-    );
+    await runQaFailedReviewedReadCase(createNativePluginAssertions, reviews, errored, reason);
   }
 });
 
 test("QA model failure evidence preserves the failure and its admitted revision", async () => {
-  const { createNativePluginAssertions } = await import("../helpers/native-plugin-assertions.ts");
-  const secret = `qa-log-secret-${randomUUID()}`;
-  registerQaSecret(secret);
-  const agent = { namespaceId: "namespace", id: "agent", revision: { id: "original" } };
-  const reads = [];
-  const evidence = [];
-  const failure = new Error("original model assertion");
-  const native = createNativePluginAssertions({
-    // These pages stand in for OCC's already-redacted response. This verifies
-    // the QA collector's additional redaction, not the runtime log API.
-    async readRuntimeLogs(target) {
-      reads.push(target);
-      if (target.source === "agent") {
-        throw new Error("log source unavailable");
-      }
-      return {
-        records: [{ type: "line", level: "error", message: `failure ${secret}`, private: secret }],
-      };
-    },
-    async recordRuntimeLogs(record) {
-      evidence.push(record);
-    },
-  });
-  assert.equal(await native.withRuntimeFailureLogs(agent, async () => "passed"), "passed");
-  assert.deepEqual(reads, [], "successful assertions do not collect failure evidence");
-  await assert.rejects(
-    native.withRuntimeFailureLogs(agent, async () => {
-      agent.revision = { id: "replacement" };
-      throw failure;
-    }),
-    (error) => error === failure,
-  );
-  assert.deepEqual(reads, [
-    { namespaceId: "namespace", agentId: "agent", revisionId: "original", source: "gateway" },
-    { namespaceId: "namespace", agentId: "agent", revisionId: "original", source: "agent" },
-  ]);
-  assert.equal(evidence.length, 1);
-  assert.equal(evidence[0].revisionId, "original");
-  assert.match(evidence[0].sources[0].lines[0], /failure/);
-  assert.equal(JSON.stringify(evidence).includes(secret), false);
-  assert.equal(JSON.stringify(evidence).includes("private"), false);
-  assert.deepEqual(evidence[0].sources[1], { source: "agent", unavailable: true });
-
-  // Failure to save diagnostics must not replace the original model assertion.
-  const unavailable = createNativePluginAssertions({
-    async readRuntimeLogs() {
-      throw new Error("logs unavailable");
-    },
-    async recordRuntimeLogs() {
-      throw new Error("artifact write failed");
-    },
-  });
-  await assert.rejects(
-    unavailable.withRuntimeFailureLogs(agent, async () => {
-      throw failure;
-    }),
-    (error) => error === failure,
-  );
+  await runQaModelFailureEvidenceCase(randomUUID, registerQaSecret);
 });
