@@ -13064,16 +13064,20 @@ export class OpenClawController {
       if (requestedSources === undefined && requestedAuth !== undefined) {
         const retained = agent.credentialSources ?? [];
         this.assertHarnessSourceListed(retained, requestedAuth);
-        for (const { sourceId } of retained) {
-          if (
-            requestedAuth?.method === "credential_source" &&
-            requestedAuth.sourceId === sourceId
-          ) {
-            continue;
-          }
+        // Admission permits a managed TokenService source only as the Harness source, so
+        // changing authentication can leave only the previous selection attached incorrectly.
+        if (
+          previousAuth?.method === "credential_source" &&
+          (requestedAuth?.method !== "credential_source" ||
+            requestedAuth.sourceId !== previousAuth.sourceId) &&
+          retained.some(({ sourceId }) => sourceId === previousAuth.sourceId)
+        ) {
           // Owner metadata is immutable and the Namespace fence excludes deletion. A
           // nonlocking read avoids taking a source lock after a newly selected Secret.
-          const source = await state.credentialSources.findCredentialSource(namespace.id, sourceId);
+          const source = await state.credentialSources.findCredentialSource(
+            namespace.id,
+            previousAuth.sourceId,
+          );
           if (isManagedTokenServiceSource(source)) {
             throw new ResourceStateConflictError(
               "This TokenService source must remain the selected Harness authentication source.",

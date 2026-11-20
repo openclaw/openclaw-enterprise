@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
 updated: 2026-11-20
-last_updated_session: authoring-run/bee5b125-46e3-42d4-b88e-01e64e7960c1
+last_updated_session: authoring-run/a5334b64-f17c-4030-bf48-74ef016aa7cd
 ---
 
 # Harness Authentication Binding Flow
@@ -104,6 +104,11 @@ source must be selected by `harnessAuth` and listed in `credentialSources`; a
 TokenService source cannot be attached for another use. Public enrollment and
 picker discovery remain unavailable.
 
+When PATCH changes Harness authentication but keeps the source list, OCC checks
+the previous Harness source without taking a source row lock. If that source
+belongs to a TokenService, the caller must remove it from the list in the same
+update.
+
 The [Secret storage flow](secret-storage-and-delivery.md) owns value storage;
 [account issuance](service-account-driver-credential-delivery.md) owns upstream
 credentials and their private Backend binding.
@@ -128,8 +133,10 @@ stopping predecessors.
 
 For an internal TokenService source, deployment rechecks the caller's and Agent
 principal's exact source `operate`, then returns `409` before saving an Agent
-revision because this owner has no revision delivery path. Agent save stores the
-source references only; it does not save a `DeploymentPolicy` or delivery
+revision because this owner has no revision delivery path. When Native IAM gives
+the Agent principal a missing source grant during deployment, the refusal rolls
+back that grant, its Role if newly created, and its success audit. Agent save
+stores the source references only; it does not save a `DeploymentPolicy` or delivery
 snapshot. Gateway-backed sources keep their serving deployment path.
 
 Host credential changes can affect a runtime version after restart without
@@ -323,6 +330,8 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 06:28: Trace retained Harness source checks and failed deploy grant rollback. (authoring-run/a5334b64-f17c-4030-bf48-74ef016aa7cd - 0d220dfad528032b978eaa8e9cb55885686add44)
 
 - 2026-11-20 04:36: Document internal TokenService draft admission and deployment refusal. (authoring-run/bee5b125-46e3-42d4-b88e-01e64e7960c1 - 16c120736)
 

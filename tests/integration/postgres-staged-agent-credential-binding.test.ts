@@ -238,6 +238,14 @@ test(
     const agent = createdAgent.json().data;
     assert.deepEqual(agent.credentialSources, [{ sourceId }]);
 
+    // Keeping the selected source and the existing list remains a valid update.
+    const retained = await inject("PATCH", `${base}/agents/${agent.id}`, {
+      configurationId,
+      harnessAuth: { method: "credential_source", sourceId },
+    });
+    assert.equal(retained.statusCode, 200, retained.body);
+    assert.deepEqual(retained.json().data.credentialSources, [{ sourceId }]);
+
     // The retained-owner check must finish while a separate transaction holds the source row;
     // otherwise selecting a Secret first can create a source/Secret lock inversion.
     const sourceLock = await pool.connect();
@@ -271,6 +279,7 @@ test(
       assert.equal(observed, "completed", "retained-source metadata must not take a row lock");
       const partial = await pending;
       assert.equal(partial.statusCode, 409, partial.body);
+      assert.match(partial.json().error.message, /must remain the selected Harness/i);
     } finally {
       await sourceLock.query("ROLLBACK");
       sourceLock.release();
@@ -279,9 +288,28 @@ test(
       }
     }
 
+    const deploymentEffects = async () =>
+      (
+        await pool.query(
+          `SELECT
+          (SELECT count(*)::int FROM occ.iam_roles WHERE namespace_id=$1 AND id=$5) AS roles,
+          (SELECT count(*)::int FROM occ.iam_access_bindings WHERE namespace_id=$1 AND identity_subject_id=$4 AND resource_kind='credential_source' AND resource_id=$3) AS bindings,
+          (SELECT count(*)::int FROM occ.audit_events WHERE namespace_id=$1 AND resource_kind='credential_source' AND resource_id=$3 AND action='openclaw.iam.access_bindings.create' AND details->>'reason'='agent_deploy' AND details->>'agentId'=$2) AS grant_audits,
+          (SELECT count(*)::int FROM occ.agent_revisions WHERE namespace_id=$1 AND agent_id=$2) AS revisions,
+          (SELECT count(*)::int FROM occ.controller_work WHERE namespace_id=$1 AND agent_id=$2 AND revision_id IS NOT NULL) AS work`,
+          [
+            namespaceId,
+            agent.id,
+            sourceId,
+            agent.servicePrincipalId,
+            `role_${namespaceId}_agent_credential_source_operate`,
+          ],
+        )
+      ).rows[0];
+    const noDeploymentEffects = { roles: 0, bindings: 0, grant_audits: 0, revisions: 0, work: 0 };
+    assert.deepEqual(await deploymentEffects(), noDeploymentEffects);
+
     // A deployer who loses exact source authority is denied before the staged-delivery refusal.
-    const agentGrant = await grantSource(agent.servicePrincipalId);
-    assert.equal(agentGrant.statusCode, 201, agentGrant.body);
     assert.equal(
       (await inject("DELETE", `${base}/iam/access-bindings/${authorGrant.json().data.id}`))
         .statusCode,
@@ -289,16 +317,12 @@ test(
     );
     const deniedDeploy = await memberRequest("POST", `${base}/agents/${agent.id}/deploy`, {});
     assert.equal(deniedDeploy.statusCode, 403, deniedDeploy.body);
+    // The administrator's deploy must grant the previously ungranted Agent principal to reach
+    // the delivery refusal. That same transaction must roll back its Role, binding, and audit.
     const authorizedDeploy = await inject("POST", `${base}/agents/${agent.id}/deploy`, {});
     assert.equal(authorizedDeploy.statusCode, 409, authorizedDeploy.body);
     assert.match(authorizedDeploy.json().error.message, /revision delivery.*not available/i);
-    const effects = await pool.query(
-      `SELECT
-      (SELECT count(*)::int FROM occ.agent_revisions WHERE namespace_id=$1 AND agent_id=$2) AS revisions,
-      (SELECT count(*)::int FROM occ.controller_work WHERE namespace_id=$1 AND agent_id=$2 AND revision_id IS NOT NULL) AS work`,
-      [namespaceId, agent.id],
-    );
-    assert.deepEqual(effects.rows, [{ revisions: 0, work: 0 }]);
+    assert.deepEqual(await deploymentEffects(), noDeploymentEffects);
 
     // Explicitly dropping both bindings remains possible when the previously selected owner is unavailable.
     const replacement = new OCCTokenServiceDriver(
