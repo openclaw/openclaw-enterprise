@@ -109,10 +109,8 @@ cluster-admin access. Use the same cluster for each command. Select it with
 
 ## Export and re-create
 
-Before you export, decide whether you can delete and re-create every Namespace
-visible to the old API credentials. `discard` deletes the tenants in the entire
-bundle. `--skip` applies only to import. If any of those tenants must stay in
-place, stop and agree on a recovery plan with your operations team.
+`discard` deletes every tenant in the bundle; `--skip` applies only to import.
+Stop if any Namespace visible to the old API credentials must stay in place.
 
 If you have a completed adoption, follow the revert instructions above for
 all affected tenants before you export. If `apply` or `revert` failed, was
@@ -148,14 +146,11 @@ a custom CA. Point `kubectl` at the same Installation's cluster. Keep all
 output private. The files hold Configurations, workspace files, transcripts
 and Secret values.
 
-Before export or capture, pause user, automation and Agent writes to tenant
-resources (including Configurations), workspaces and Gateway state in every
-affected Namespace. Drain queued and in-flight writes. Proceed only with idle
-writers and keep them idle through discard. Keep replacement-tenant user and
-automation writes paused through restore verification. Keep the old API and worker
-ready and retain Kubernetes, Pod and storage access. Use supported storage
-backup if you cannot read an idle workspace through its Pod. Record each Agent's run
-state before stopping it.
+Pause user, automation and Agent writes to affected tenant resources, including
+Configurations, workspaces and Gateway state. Drain queued and in-flight writes;
+keep writers idle through discard. Pause replacement-tenant user and automation
+writes through restore verification. Keep the old API and worker ready and retain
+Kubernetes, Pod and storage access. Record each Agent's run state before stopping it.
 
 1. Export every Namespace visible to the old API credentials. Use a new
    output file:
@@ -174,58 +169,59 @@ state before stopping it.
    [workspace routing](workspace-routing.md) is configured and the Agent runs.
    These four files are only a partial copy of a workspace.
 
-2. Copy the workspace from each running, quiesced dedicated Harness Pod and
-   the listed Gateway state from each running Gateway. An embedded Agent runs
-   its Harness in the Gateway Pod. The Gateway archive omits that workspace.
-   Capture in a new, empty private archive directory and verify in step 4:
+2. For each bundled OCC Namespace and Agent ID, verify the Installation,
+   Kubernetes context and namespace, workspace directory and volume through
+   deployment and storage records. Labels alone do not prove ownership. Stop on
+   missing, duplicate or mismatched identities. With writers idle, take a
+   supported storage backup of **each Agent's workspace volume**, including
+   stopped dedicated and embedded Agents. Record source-to-backup mappings. Use
+   new operator-only locations (`0700` directories, `0600` files) outside
+   resources `discard` deletes; do not overwrite existing copies.
 
-   ```bash
-   ARCHIVE=/secure/occ/tenant-archive
-   mkdir -m 700 -p "$ARCHIVE"
-   kubectl get pods -A -l openclaw.dev/agent --field-selector status.phase=Running -o jsonpath='{range .items[*]}{.metadata.namespace} {.metadata.name} {.metadata.labels.openclaw\.dev/workload-role} {.metadata.labels.openclaw\.dev/agent}{"\n"}{end}' |
-   while read -r ns pod role agent; do
-     case $role in
-       gateway) paths='.openclaw/state .openclaw/agents/main/agent .openclaw/media .openclaw/agents/main/sessions' ;;
-       agent) paths='workspace .codex/generated_images' ;;
-       *) continue ;;
-     esac
-     kubectl -n "$ns" exec "$pod" -c "$role" -- tar -C /home/node --ignore-failed-read \
-       --exclude=codex-home --exclude='.oce-workspace-setup.*' -cf - $paths \
-       >"$ARCHIVE/$agent-$role.tar" </dev/null || echo "failed: $agent $role"
-   done
-   ```
+   Separately capture listed data outside the workspace volume that you need.
+   For Pod copies, verify ownership, UID, role, container and mount; bind capture
+   to that resource or use scoped storage backup. Paths are relative to `/home/node`:
+
+   | Role                        | Data paths                                                                                            |
+   | --------------------------- | ----------------------------------------------------------------------------------------------------- |
+   | Dedicated Harness (`agent`) | `workspace`, `.codex/generated_images`                                                                |
+   | Gateway (`gateway`)         | `.openclaw/state`, `.openclaw/agents/main/agent`, `.openclaw/media`, `.openclaw/agents/main/sessions` |
+
+   Exclude `codex-home` and `.oce-workspace-setup.*` from Pod copies. A Gateway
+   copy omits the embedded workspace. Require listing, backup and capture
+   failures to reach the operator. Stop on failure or uncertainty; keep partial
+   output private and exclude it from restore.
 
 3. Write the Secret values to a `0600` file such as
    `/secure/occ/tenant-secrets.json`, keyed by the old Namespace name, then
    Secret name: `{"team-a": {"model-key": "..."}}`. List the names with
    `jq '.namespaces[] | {name, secrets: [.secrets[].name]}' /secure/occ/tenants.json`.
-4. Before `discard`, confirm the maintenance window remains in effect and the
-   bundle's Namespace names and IDs match the intended tenants. If any writer
-   resumed, quiesce it and repeat export, capture and verification. The command
-   refuses ambiguous source IDs the import map cannot represent and Namespaces
-   that gained an Agent or Secret missing from the bundle.
+4. Before `discard`, confirm writers remain idle and the bundle's Namespace
+   names and IDs still match the intended tenants. If a writer resumed, quiesce
+   it and repeat export, backup, capture and verification. The command refuses ambiguous source IDs and
+   Namespaces that gained an Agent or Secret absent from the bundle.
 
-   Review every bundled Agent by its old Namespace and Agent IDs. For each
-   workspace you need to keep, record its actual directory, volume, backup
-   location and verified isolated restore location. Keep each complete copy
-   outside resources that `discard` deletes. Plan to import its Namespace and
-   Agent.
-
-   Use the step 2 archive for a running dedicated Harness if it contains the
-   entire workspace. Use a supported storage backup for a stopped dedicated
-   Harness with a workspace claim and no running Pod, for an embedded Agent,
-   or if the archive omits any part of the workspace.
-   Restore each workspace backup to an isolated destination. Compare the
-   restored file list and contents, including nested files, with the quiesced
-   source. Tar can exit successfully while omitting unreadable files. Compare
-   the captured Gateway files you need with their source as well.
+   For **each bundled Agent**, restore the workspace storage backup to an
+   isolated destination and record its identity. Inventory the entire idle source
+   and isolated restore, including hidden and nested entries. Require both
+   inventories to be complete and their relative paths and entry types to match
+   in both directions: stop on any missing or extra entry. For every matching
+   entry, compare file contents, symbolic-link targets, ownership, permission
+   modes, executable bits and other required metadata. Stop on any mismatch or
+   uncertainty before discard. Apply the same complete, bidirectional comparison
+   to each separately captured path selected in step 2, including required
+   dedicated Harness `.codex/generated_images` and Gateway data. Compare each
+   idle source with its copy; stop on any discrepancy or uncertainty. Keep
+   deliberate exclusions and unneeded optional data outside scope. Plan to import the Namespace and Agent for every workspace you will
+   restore. Successful commands and the four exported files do not prove
+   completeness.
 
    If export could not read workspace files, recover them and export again.
-   Use `--allow-unread-workspace-files` only if you have verified a separate copy
-   of those files for each affected Agent. The four exported files and the
-   override do not satisfy the complete-workspace backup check. If any
-   required archive, workspace backup or restore check is incomplete, stop
-   before `discard` and keep the source tenants and their volumes.
+   Use `--allow-unread-workspace-files` only after verifying a separate copy of
+   those files for each affected Agent; it does not replace the complete backup.
+   If any identity, backup or isolated restore is incomplete, failed or
+   uncertain, **stop before discard**. Keep the tenants and volumes; Operations
+   must decide recovery before deletion can proceed.
 
    ```bash
    node scripts/split-layout-tenants.ts discard --bundle /secure/occ/tenants.json --yes &&
@@ -279,44 +275,33 @@ state before stopping it.
    left unchanged; inspect their account references before resuming an older
    import. See the [tenant restore flow](../../flows/tenant-restore.md).
 
-7. Map both old IDs to the new Namespace and Agent. Verify the Agent belongs
-   to that Namespace and identify its workspace directory and volume. Provision
-   any missing volume through your supported procedure and verify its identity.
-   Quiesce destination writers, including Agents started by import. Keep them
-   idle through file verification and retain Pod access for extraction. Stop if
-   you cannot verify the target or quiesce its writers.
+7. Map both old IDs to the new OCC Namespace and Agent; verify their relationship.
+   Use deployment and storage records to verify the Installation, Kubernetes
+   context and namespace, workspace directory and destination volume. Provision
+   and verify missing volumes. For Pod restores, verify ownership, UID, role,
+   container and mount; bind the operation to that resource. Stop on a missing,
+   duplicate or mismatched target. Record each backup-to-destination mapping.
 
-   Before archive extraction or storage restore, compare existing destination
-   file paths and contents with the verified backup. Copy any data the restore
-   would overwrite or remove, including writes during import, outside the
-   restore target. Reconcile differences and stop before restoring if any
-   conflict remains.
+   Quiesce destination writers, including Agents started by import. Inventory
+   the existing destination and compare it with the verified backup. Preserve
+   outside the target anything restore could overwrite or remove, including
+   import writes and conflicting versions of the four exported files. Record
+   each conflict's disposition and preserve documented ownership; do not blindly
+   delete or overwrite destination paths. The four-file export override does not
+   authorize resolving these conflicts. If writers cannot be quiesced or
+   conflicts remain, stop; Operations decides the recovery action before restore.
 
-   Restore verified step 2 workspace archives once their mapped dedicated
-   Harness Pods are running. Keep only verified `*-agent.tar` files with confirmed
-   restore targets in `$ARCHIVE` when you run the loop:
-
-   ```bash
-   for tarball in "$ARCHIVE"/*-agent.tar; do
-     old=$(basename "$tarball" -agent.tar)
-     new=$(jq -r --arg old "$old" '.ids[$old] // empty' /secure/occ/tenant-ids.json)
-     [ -n "$new" ] || { echo "skipped: $old was not imported"; continue; }
-     read -r ns pod < <(kubectl get pods -A --field-selector status.phase=Running \
-       -l "openclaw.dev/agent=$new,openclaw.dev/workload-role=agent" \
-       -o jsonpath='{.items[0].metadata.namespace} {.items[0].metadata.name}')
-     [ -n "${pod:-}" ] || { echo "skipped: $new has no running Harness"; continue; }
-     kubectl -n "$ns" exec -i "$pod" -c agent -- tar -C /home/node --no-overwrite-dir -xf - <"$tarball" \
-       && echo "restored $old -> $new" || echo "failed: $old -> $new"
-   done
-   ```
-
-   Extraction overlays the destination, so compare each mapped Agent's files
-   with its verified archive and investigate any extra or missing files or
-   differences in contents.
-
-   For each workspace saved through a separate storage backup, use the
-   recovery procedure you verified in step 4. Restore to the mapped Agent's
-   workspace and compare its file list and contents with the verified backup.
+   Restore each mapped workspace with the scoped procedure proven in step 4.
+   On failure or uncertain effect, stop, preserve the backup, and have Operations
+   reconcile the indeterminate destination before retry. Before resuming writers,
+   inventory the entire mapped destination, including hidden and nested entries.
+   Require complete inventories and compare every verified backup path in both
+   directions against the destination, accounting separately for any explicitly
+   retained destination-owned paths. Stop on missing or unexpected extra entries,
+   type differences, content or link-target mismatches, or differences in required
+   ownership, permission modes, executable bits or other metadata. Confirm that
+   the normal runtime user can read and use the restored workspace. Resume only
+   after all discrepancies are resolved.
 
 8. After restore verification, return Agents to their prior run state using
    the new IDs. Check the Agents (`occ agent list`), re-issue any service-account
