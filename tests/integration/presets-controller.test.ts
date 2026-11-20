@@ -62,10 +62,10 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { retryWriteBudget } from "../helpers/write-budget-retry.ts";
 import {
   callerDenied,
-  createDenied,
   PRESET_NAME_CONFLICT,
   unsupportedChannelRefusal,
 } from "../helpers/refusal-text.mjs";
+import { createDenied } from "../helpers/refusal-access.ts";
 
 type CleanupRegistrar = Parameters<typeof temporaryDirectory>[0];
 type PresetDocument = Omit<Preset, "template"> & { template: PresetDraftTemplate };

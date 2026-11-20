@@ -90,7 +90,7 @@ MCP paths. Discovery can be credentialless; providers enforce OAuth scopes.
 Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
 and checks editing, expected version, pending work, complete ceiling coverage,
 and registry-resolved Driver admission. The saved additions come from the
-admitted snapshot. PostgreSQL's [grant validator](../../migrations/0085_sandbox_policy_capacity.sql) enforces the
+admitted snapshot. PostgreSQL's [grant validator](../../migrations/0086_sandbox_policy_capacity.sql) enforces the
 same finite 16,384-entry bound and individual grant checks before commit.
 While the active or next revision runs under protected
 execution (the Installation selects the Credential Proxy), additions are refused

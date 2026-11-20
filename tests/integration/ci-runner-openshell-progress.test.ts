@@ -404,6 +404,7 @@ async function runnerDeadlineDiagnostics(state: string, title: string) {
 
 const requestReceipts = {
   attempted: "state/request-attempted",
+  sameRevisionRefusal: "state/same-revision-refusal",
   order: "state/request-reporter-order",
 };
 const requestStart = ["file:dequeue", "case:dequeue"];
@@ -597,7 +598,8 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
       const runnerTimeoutMs = controlledDeadline ? 1 : 5000;
       const fileTimeoutMs = runnerDeadline ? runnerTimeoutMs : 10000;
       const pendingActivation = caseDeadline || controlledDeadline;
-      const requestCase = mode === "request";
+      const sameRevision = mode === "same-revision";
+      const observedRequest = mode === "request" || sameRevision;
       const success = mode === "success";
       const name = mode === "wrong-case" ? "another case" : title;
       const upstreamLane = mode === "reconciliation" ? "openshell" : "openshell-installers";
@@ -657,20 +659,24 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
          import { redeployOpenShellReplacement } from ${JSON.stringify(workflowModule)};
 
          const mode = ${JSON.stringify(mode)};
-         const failure = new Error("controlled failure " + process.env.CI_RUNNER_FIXTURE_CREDENTIAL);
+         const credential = process.env.CI_RUNNER_FIXTURE_CREDENTIAL;
+         const failure = new Error("controlled failure " + credential);
          const response = { status: 202, data: { id: "private-replacement-id" } };
          const agentPath = "/namespaces/fixture/agents/fixture";
          function waitForReceipt(expected, signal) {
            const path = ${JSON.stringify(requestReceipts.order)};
-           const observed = () => existsSync(path) && readFileSync(path, "utf8") === expected;
+           const observed = () => existsSync(path) ? readFileSync(path, "utf8") : "";
            return new Promise((resolve, reject) => {
              const watcher = watch("state", { signal }, check);
              watcher.once("error", reject);
              watcher.once("close", () => {
-               if (observed()) resolve();
+               if (observed() === expected) resolve();
                else reject(new Error("request reporter did not acknowledge the case"));
              });
-             function check() { if (observed()) watcher.close(); }
+             function check() {
+               const order = observed();
+               if (order === expected || !expected.startsWith(order)) watcher.close();
+             }
              check();
            });
          }
@@ -681,10 +687,13 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
              t.diagnostic('openclaw-ci-measurement {"kind":"openshell-stage","stage":"replacement","outcome":"failed","elapsedMs":1}');
              throw failure;
            }
-           if (mode === "request") await waitForReceipt(${JSON.stringify(requestStart.join("\n") + "\n")}, t.signal);
+           if (${observedRequest}) {
+             await waitForReceipt(${JSON.stringify(requestStart.join("\n") + "\n")}, t.signal);
+           }
            for (const step of ["installation", "exposure-auth", "initial-model"]) {
              await runOpenShellStage(t, step, async () => {});
            }
+           let sameRevisionError;
            const replacement = runOpenShellStage(t, "replacement", async () => {
              if (mode === "setup") throw failure;
              if (mode === "out-of-order") {
@@ -698,24 +707,25 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
                }) + "\\n");
                throw failure;
              }
+             // The equal-revision assertion must quote the fixture credential for the redaction check.
+             const previousRevisionId = ${sameRevision} ? credential : "private-previous-id";
+             assert.ok(previousRevisionId);
              const topology = {
                namespaceId: "fixture",
                agent: { id: "fixture" },
-               revision: { id: "private-previous-id" },
+               revision: { id: previousRevisionId },
                async request(method, path) {
                  if (method === "POST") {
                    assert.equal(path, agentPath + "/deploy");
-                   if (mode === "request") {
+                   if (${observedRequest}) {
                      writeFileSync(${JSON.stringify(requestReceipts.attempted)}, "invoked", { flag: "wx" });
-                     throw failure;
                    }
-                   if (mode === "same-revision") {
-                     topology.revision = { id: "same-test-revision" };
-                     return { status: 202, data: topology.revision };
-                   }
+                   if (mode === "request") throw failure;
+                   if (${sameRevision}) return { status: 202, data: { id: previousRevisionId } };
                    return response;
                  }
                  assert.equal(method, "GET");
+                 if (${sameRevision}) writeFileSync(${JSON.stringify(activationPoll)}, "polling");
                  if (path === agentPath) {
                  if (${pendingActivation}) {
                    writeFileSync(${JSON.stringify(activationPoll)}, "polling");
@@ -743,16 +753,31 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
                assert.equal(deployed, response);
              } catch (error) {
                if (mode === "activation" || mode === "request") assert.equal(error, failure);
+               if (
+                 ${sameRevision} &&
+                 error instanceof assert.AssertionError &&
+                 error.operator === "notStrictEqual" &&
+                 error.actual === previousRevisionId &&
+                 error.expected === previousRevisionId
+               ) {
+                 sameRevisionError = error;
+               }
                throw error;
              }
              if (mode === "reconciliation" || mode.startsWith("wrong-")) throw failure;
            }, "pod-replacement");
-           if (mode === "request") {
+           if (${observedRequest}) {
              try {
                await replacement;
              } catch (error) {
-               // The last failed-stage row also needs to arrive before the native failure.
-               await waitForReceipt(${JSON.stringify(requestBeforeFailure.join("\n") + "\n")}, t.signal);
+               const expectedFailure = ${sameRevision} ? sameRevisionError : failure;
+               if (expectedFailure !== undefined && error === expectedFailure) {
+                 // Wait for the last progress row while the native case is still active.
+                 await waitForReceipt(${JSON.stringify(requestBeforeFailure.join("\n") + "\n")}, t.signal);
+                 if (${sameRevision}) {
+                   writeFileSync(${JSON.stringify(requestReceipts.sameRevisionRefusal)}, "refused", { flag: "wx" });
+                 }
+               }
                throw error;
              }
            } else {
@@ -769,7 +794,7 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
         },
       });
       let execArgv = runnerDeadline ? observeDeadline(controlledDeadline) : [];
-      if (requestCase) {
+      if (observedRequest) {
         execArgv = await observeRequest(root);
       }
       const runner = await runRunnerAsync(
@@ -781,6 +806,13 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
         },
       );
       assert.equal(runner.error, undefined);
+      if (sameRevision) {
+        assert.equal(
+          await readFile(join(root, requestReceipts.sameRevisionRefusal), "utf8"),
+          "refused",
+        );
+        await assert.rejects(readFile(activationPoll), { code: "ENOENT" });
+      }
       assert.equal(runner.status, success ? 0 : 1, runner.stderr);
       const artifact = await readFile(results, "utf8");
       const summary: {
@@ -795,7 +827,7 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
           tests: {
             name: string;
             status: string;
-            error?: { message: string; failureType?: string };
+            error?: { message: string; failureType?: string; cause?: unknown };
           }[];
           measurements: { kind: string; stage: string; outcome: string }[];
         }[];
@@ -874,14 +906,14 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
           "the native reporter must consume the exact lifecycle and nine ordered rows before timeout",
         );
       }
-      if (requestCase) {
+      if (observedRequest) {
         const order = await readFile(join(root, requestReceipts.order), "utf8").catch((error) => {
           if (isRecord(error) && error.code === "ENOENT") {
             return "";
           }
           throw error;
         });
-        const context = `request child: ${JSON.stringify({
+        const context = `${mode} child: ${JSON.stringify({
           exit: result.nodeExitCode,
           signal: result.signal,
           issues: result.issues.map(({ code }) => code),
@@ -897,7 +929,18 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
           [[title, "failed"]],
           context,
         );
-        assert.match(result.tests[0]?.error?.message ?? "", /^controlled failure \[env:/u, context);
+        const error = result.tests[0]?.error;
+        const message = error?.message ?? "";
+        if (sameRevision) {
+          assert.deepEqual(
+            error?.cause,
+            { code: "ERR_ASSERTION", name: "AssertionError" },
+            context,
+          );
+          assert.ok(message.includes("[env:CI_RUNNER_FIXTURE_CREDENTIAL]"), context);
+        } else {
+          assert.match(message, /^controlled failure \[env:/u, context);
+        }
         assert.equal(await readFile(join(root, requestReceipts.attempted), "utf8"), "invoked");
         assert.deepEqual(
           result.measurements

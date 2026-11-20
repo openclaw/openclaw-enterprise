@@ -77,7 +77,6 @@ import {
   AGENT_NAME_CONFLICT,
   agentPrincipalDenied,
   callerDenied,
-  CONSOLE_ACCESS_DENIED,
   CREDENTIAL_GATEWAY_NOT_CONFIGURED,
   CREDENTIAL_PROXY_INSTALLATION_PREVIEW,
   DEPENDENCY_UNAVAILABLE,
@@ -93,6 +92,7 @@ import {
   storedCredentialSourceConfig,
   dedicatedOpenClawSandboxRefusal,
 } from "../helpers/refusal-text.mjs";
+import { CONSOLE_ACCESS_DENIED } from "../helpers/refusal-access.ts";
 import {
   AUTHORIZATION_HEADER_REFUSED,
   CREDENTIAL_REQUIRED,

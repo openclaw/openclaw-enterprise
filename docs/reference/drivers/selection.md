@@ -37,15 +37,13 @@ The OpenShell development path remains experimental and unqualified; see its
 
 ## Supported selections
 
-Trusted Installation YAML uses bundled Kubernetes Configuration and native IAM
-when their `package` fields are omitted. Packageless Compute selects
-[SSH Compute](ssh-compute.md) for the exact reserved id `compute-ssh`;
-`compute-kubernetes` is the default bundled Kubernetes id, and every other
-packageless Compute id continues to select Kubernetes.
-Default Compose development instead selects filesystem Configuration, native
-IAM, and Docker Compute without Installation YAML and does not select a
-SecretDriver. An operator can select installed IAM, Compute, Configuration, or
-Sandbox packages in trusted YAML in either mode.
+Without `package`, trusted Installation YAML selects bundled Kubernetes Configuration
+and native IAM. Packageless Compute selects [SSH Compute](ssh-compute.md) for
+`compute-ssh` and Kubernetes for all other IDs, including the default
+`compute-kubernetes`. Compose development without YAML selects filesystem
+Configuration, native IAM, Docker Compute, and no SecretDriver. Operators can
+select installed IAM, Compute, Configuration, or Sandbox packages in trusted YAML
+in either mode.
 
 | Capability           | Shared contract                                                             | Selection boundary                                                                                                                                       |
 | -------------------- | --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -58,9 +56,13 @@ Sandbox packages in trusted YAML in either mode.
 | `credential_proxy`   | [CredentialProxyDriver](credential-proxy.md)                                | Optional; the selected Sandbox and Credential Proxy must come from one Driver registration, supplied by bundled OpenShell or a selected Sandbox package. |
 | `credential_gateway` | [CredentialGatewayDriver](credential-gateway.md)                            | Required with the bundled OpenShell Sandbox, otherwise omitted; bundled OpenShell Backend member only.                                                   |
 | `credential_refresh` | [CredentialRefreshDriver](credential-refresh.md)                            | Optional; bundled OpenShell only, on the selected Credential Gateway's Backend.                                                                          |
+| `token_service`      | [TokenServiceDriver][token-service-contract]                                | Optional `occ`, `{}` configuration; [static custody][token-service-flow]; independent of Sandbox/Gateway/Proxy; Installation-private Secret storage.     |
 | `service_account`    | [ServiceAccountDriver](service-account.md)                                  | Optional bundled ChatGPT Backend member; no installed-package selector.                                                                                  |
 | `plugin`             | [PluginDriver](plugin.md)                                                   | Optional: `occ-plugin`, `codex-plugin`, or both, by Harness.                                                                                             |
 | `repo`               | [RepositoryPolicyDriver](../repository-credentials.md#repo-driver-contract) | Optional bundled GitHub Backend member; Kubernetes supports native Git or the protected sender described below.                                          |
+
+[token-service-contract]: ../../../packages/contracts/src/drivers/token-service/index.ts
+[token-service-flow]: ../../flows/token-service-static-custody.md
 
 Installed packages run unsandboxed with control-plane authority and
 access to controller credentials, database state, and Kubernetes identity.

@@ -77,18 +77,14 @@ import {
   configurationPatchRequests,
 } from "./console-agents-test-support.ts";
 import {
-  AGENT_CREATE_DENIED,
   AGENT_DEPLOY_NOT_INCLUDED,
   AGENT_SOURCES_DENIED,
   AGENT_UPDATE_DENIED,
   CONFIGURATION_EDITS_PENDING,
-  CONFIGURATION_UPDATE_DENIED,
   CONSOLE_NAMESPACE_NOT_READY,
   CONFIGURATION_SAVE_DENIED,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY,
-  NEW_SECRET_OPERATE_DENIED,
-  NEW_SECRET_OPERATE_REMEDY,
   RESOURCE_CONFLICT,
   SECRET_CREATE_DENIED,
   SECRET_NAME_CONFLICT,
@@ -103,12 +99,18 @@ import {
   credentialCheckedAtDeploy,
   namespaceListDenied,
   notIncluded,
-  secretOperateRefused,
   stopRefused,
   stopStatusRefreshFailed,
-  PLUGINS_READ_ONLY,
   READ_ONLY_DRAFT_NOTICE,
 } from "../helpers/refusal-text.mjs";
+import {
+  AGENT_CREATE_DENIED,
+  CONFIGURATION_UPDATE_DENIED,
+  NEW_SECRET_OPERATE_DENIED,
+  NEW_SECRET_OPERATE_REMEDY,
+  secretOperateRefused,
+  PLUGINS_READ_ONLY,
+} from "../helpers/refusal-access.ts";
 import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
