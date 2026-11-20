@@ -1,11 +1,9 @@
+import { types } from "node:util";
+
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
-import {
-  ConfigurationValidationError,
-  requireConfiguration,
-  validateConfiguration,
-} from "./configuration-definition.ts";
+import { ConfigurationValidationError, requireConfiguration } from "./configuration-definition.ts";
 import type { SandboxDriver } from "./drivers/sandbox/index.ts";
 import {
   admitRepositoryNetworkPolicy,
@@ -64,7 +62,65 @@ export interface SandboxPolicySnapshot {
   readonly repositoryNetworkPolicy?: RepositoryNetworkPolicy;
 }
 
-const EffectiveRepositoryPolicySchema = { type: "object" };
+function isIntrinsicPrototype(
+  prototype: object,
+  intrinsic: ObjectConstructor | ArrayConstructor,
+): boolean {
+  if (prototype === intrinsic.prototype) {
+    return true;
+  }
+  if (types.isProxy(prototype)) {
+    return false;
+  }
+
+  // A different realm has its own built-ins. Check the constructor without invoking accessors.
+  const constructor: unknown = Object.getOwnPropertyDescriptor(prototype, "constructor")?.value;
+  return (
+    typeof constructor === "function" &&
+    Function.prototype.toString.call(constructor) === Function.prototype.toString.call(intrinsic) &&
+    Object.getOwnPropertyDescriptor(constructor, "prototype")?.value === prototype
+  );
+}
+
+function isPolicyJsonValue(value: unknown, ancestors = new Set<object>()): boolean {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return true;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value);
+  }
+  if (typeof value !== "object" || types.isProxy(value) || ancestors.has(value)) {
+    return false;
+  }
+
+  const isArray = Array.isArray(value);
+  const prototype = Reflect.getPrototypeOf(value);
+  if (
+    (prototype === null ? isArray : !isIntrinsicPrototype(prototype, isArray ? Array : Object)) ||
+    Object.getOwnPropertySymbols(value).length > 0
+  ) {
+    return false;
+  }
+  const properties = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(
+    ([key]) => !isArray || key !== "length",
+  );
+  if (
+    isArray &&
+    (properties.length !== value.length || properties.some(([key], index) => key !== String(index)))
+  ) {
+    return false;
+  }
+
+  ancestors.add(value);
+  const valid = properties.every(
+    ([, descriptor]) =>
+      descriptor.enumerable &&
+      "value" in descriptor &&
+      isPolicyJsonValue(descriptor.value, ancestors),
+  );
+  ancestors.delete(value);
+  return valid;
+}
 
 /** Enrich a base snapshot during revision admission, before any provisioning effects. */
 export function admitSandboxRepositoryNetworkPolicy(
@@ -85,7 +141,6 @@ export function admitSandboxRepositoryNetworkPolicy(
   if (policy === undefined) {
     return network;
   }
-  let result: SandboxPolicySnapshot["defaults"] | undefined;
   let message = "The Sandbox Driver must return an effective repository network policy document.";
   try {
     const admit = driver?.admitRepositoryNetworkPolicy;
@@ -97,20 +152,28 @@ export function admitSandboxRepositoryNetworkPolicy(
     ) {
       message = "Select a Sandbox Driver that supports repository network policy.";
     } else {
-      result = Reflect.apply(admit, driver, [policy, network]);
-      const defaults = immutableCopy(result);
-      if (
-        defaults !== undefined &&
-        validateConfiguration(EffectiveRepositoryPolicySchema, defaults).success
+      const result: SandboxPolicySnapshot["defaults"] = Reflect.apply(admit, driver, [
+        policy,
+        network,
+      ]);
+      if (types.isPromise(result)) {
+        // Observe rejected native Promises across realms without reading the Driver's then method.
+        void Promise.prototype.then.call(result, undefined, () => undefined);
+      } else if (
+        result !== null &&
+        typeof result === "object" &&
+        !Array.isArray(result) &&
+        isPolicyJsonValue(result)
       ) {
-        return Object.freeze({ ...network, defaults, repositoryNetworkPolicy: policy });
+        const defaults = immutableCopy(result);
+        // Cloning can restore a native type whose prototype the Driver replaced.
+        if (isPolicyJsonValue(defaults)) {
+          return Object.freeze({ ...network, defaults, repositoryNetworkPolicy: policy });
+        }
       }
     }
   } catch {
-    // A rejected Promise cannot be cloned. Handle its rejection even across realms.
-    void Promise.resolve()
-      .then(() => result)
-      .catch(() => undefined);
+    // The admission error below omits Driver diagnostics.
   }
   throw new RepositoryNetworkPolicyAdmissionError(
     "UNSUPPORTED_POLICY",

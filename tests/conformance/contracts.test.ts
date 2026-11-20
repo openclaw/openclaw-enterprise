@@ -328,7 +328,15 @@ test("Sandbox repository policy omission rejects a prepopulated ACL even without
 });
 
 test("Sandbox repository policy admission rejects invalid Driver defaults for an empty ACL", () => {
-  const invalidDefaults: readonly unknown[] = [undefined, null, [], { nested: new Map() }];
+  const disguisedMap = new Map();
+  Object.setPrototypeOf(disguisedMap, Object.prototype);
+  const invalidDefaults: readonly unknown[] = [
+    undefined,
+    null,
+    [],
+    { nested: new Map() },
+    { nested: disguisedMap },
+  ];
   for (const defaults of invalidDefaults) {
     assert.throws(
       () =>
@@ -343,6 +351,59 @@ test("Sandbox repository policy admission rejects invalid Driver defaults for an
         path: "/repositoryNetworkPolicy",
       },
     );
+  }
+});
+
+test("Sandbox repository policy admission rejects arrays that change when persisted", async (t) => {
+  const invalidArrays = {
+    "sparse array": new Array<string>(1),
+    "named array property": Object.assign(["rule"], { extra: "not persisted" }),
+    "hole with a named property": Object.assign(new Array<string>(1), { extra: "not persisted" }),
+  };
+  for (const [name, rules] of Object.entries(invalidArrays)) {
+    await t.test(name, () => {
+      assert.throws(
+        () =>
+          admitSandboxRepositoryNetworkPolicy(baseRepositoryPolicySnapshot, [], [], {
+            ...sandboxDriverWithoutRepositoryPolicy,
+            admitRepositoryNetworkPolicy: () => ({ rules }),
+          }),
+        {
+          name: "RepositoryNetworkPolicyAdmissionError",
+          code: "UNSUPPORTED_POLICY",
+          path: "/repositoryNetworkPolicy",
+        },
+      );
+    });
+  }
+});
+
+test("Sandbox repository policy admission refuses lazy Driver results without invoking them", async (t) => {
+  let callbacks = 0;
+  const then = () => {
+    callbacks += 1;
+  };
+  const lazyResults = {
+    "inherited then": Object.create({ then }) as unknown,
+    "own then": { then },
+  };
+  for (const [name, result] of Object.entries(lazyResults)) {
+    await t.test(name, async () => {
+      assert.throws(
+        () =>
+          admitSandboxRepositoryNetworkPolicy(baseRepositoryPolicySnapshot, [], [], {
+            ...sandboxDriverWithoutRepositoryPolicy,
+            admitRepositoryNetworkPolicy: () => result as SandboxPolicySnapshot["defaults"],
+          }),
+        {
+          name: "RepositoryNetworkPolicyAdmissionError",
+          code: "UNSUPPORTED_POLICY",
+          path: "/repositoryNetworkPolicy",
+        },
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(callbacks, 0);
+    });
   }
 });
 
@@ -401,7 +462,9 @@ test("Sandbox repository policy admission requires the selected Driver and prese
       admitSandboxRepositoryNetworkPolicy(snapshot, [], [], sandboxDriverWithoutRepositoryPolicy),
     { name: "RepositoryNetworkPolicyAdmissionError", code: "UNSUPPORTED_POLICY" },
   );
-  const effective = { evaluated: { version: 1 } };
+  const effective = runInNewContext("({ evaluated: [{ version: 1 }, null] })") as {
+    evaluated: ({ version: number } | null)[];
+  };
   let capabilityReads = 0;
   let calls = 0;
   const driver = {
@@ -426,8 +489,14 @@ test("Sandbox repository policy admission requires the selected Driver and prese
   assert.equal(capabilityReads, 1);
   assert.equal(calls, 1);
   assert.deepEqual(admitted.repositoryNetworkPolicy?.grants, []);
-  effective.evaluated.version = 2;
-  assert.deepEqual(admitted.defaults, { evaluated: { version: 1 } });
+  effective.evaluated[0] = { version: 2 };
+  assert.deepEqual(admitted.defaults, { evaluated: [{ version: 1 }, null] });
+  const evaluated = admitted.defaults.evaluated;
+  assert.ok(Array.isArray(evaluated));
+  assert.ok(Object.isFrozen(admitted.defaults));
+  assert.ok(Object.isFrozen(evaluated));
+  assert.ok(Object.isFrozen(evaluated[0]));
+  assert.deepEqual(JSON.parse(JSON.stringify(admitted.defaults)), admitted.defaults);
   assert.deepEqual(snapshot.defaults, { inherited: true });
   assert.throws(
     () => admitSandboxRepositoryNetworkPolicy(admitted, [], [], driver),
