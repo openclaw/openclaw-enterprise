@@ -60,7 +60,8 @@ function sandbox(
   t.after(() => backend.client.close());
   return new OpenShellSandboxDriver(
     {
-      gateway: { workspaceMode: "operator" },
+      integrationMode: "legacy",
+      gateway: {},
       kubernetes: {
         userNamespaces: false,
         serviceAccount: { mode: "gatewayConfigured" },

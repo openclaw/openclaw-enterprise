@@ -94,6 +94,7 @@ test(
         loginMode: auth.loginMode,
         image: "codex-runtime@sha256:synthetic",
         command: harnessRuntimeCommand('console.error("fixture")'),
+        retainedDirectories: [],
         workspaceMounts: [
           {
             claimName: "replay-workspace",
@@ -208,7 +209,11 @@ for (const { name, action, expectedDenial } of [
         admissionId,
         removeBinding,
         withdraw,
+        recover,
       }) => {
+        // The production route and custody joins must preserve an ongoing execution across
+        // fresh supervisor evidence. The stop/removal checks below still withdraw that authority.
+        await recover();
         assert.equal(await heldCredentialStatus(), 200);
         const receipts = async () =>
           (

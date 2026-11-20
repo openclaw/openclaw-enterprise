@@ -152,6 +152,9 @@ importers:
       '@openclaw-enterprise/utils':
         specifier: workspace:*
         version: link:../utils
+      ts-pattern:
+        specifier: 5.9.2
+        version: 5.9.2
       typebox:
         specifier: 1.4.6
         version: 1.4.6

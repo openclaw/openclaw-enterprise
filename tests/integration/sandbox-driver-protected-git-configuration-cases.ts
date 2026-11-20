@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -119,7 +119,9 @@ async function configureProtectedOpenShellGit(t: TestContext) {
     address: "10.43.0.50",
     port: 8080,
   } satisfies NonNullable<KubernetesComputeDriverOptions["network"]["providerHarness"]>;
-  const registry = {
+  const registry: Omit<GitHubRepositoryRegistry, "repositories"> & {
+    repositories: GitHubRepositoryRegistry["repositories"][number][];
+  } = {
     version: 1,
     backendId: "github-primary",
     providerInstanceId: "github-primary",
@@ -142,7 +144,28 @@ async function configureProtectedOpenShellGit(t: TestContext) {
         ],
       },
     ],
-  } satisfies GitHubRepositoryRegistry;
+  };
+  // Separate approved scopes let replacement exercise repository and permission changes
+  // through the real registry resolver, without mutating an admitted revision.
+  for (const [repositoryRef, repositoryId, contents] of [
+    ["read-source", "43", "read"],
+    ["other-read-source", "44", "read"],
+    ["write-source", "45", "write"],
+  ] as const) {
+    registry.repositories.push({
+      repositoryRef,
+      repositoryId,
+      repository: `example/${repositoryRef}`,
+      namespaces: [
+        {
+          namespaceId: namespaceContext().namespace.id,
+          profiles: ["github-repository"],
+          permissions: { contents, metadata: "read" },
+        },
+      ],
+    });
+  }
+
   const registryPath = join(tls.directory, "registry.json");
   await writeFile(registryPath, JSON.stringify(registry), { mode: 0o600 });
   // The Git worker binds its authority on this port in-process, well after the configuration
@@ -243,7 +266,9 @@ async function configureProtectedOpenShellGit(t: TestContext) {
       endpoints: profile.endpoints?.map((endpoint) => ({
         ...endpoint,
         enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-        access: "NETWORK_ACCESS_PRESET_READ_WRITE",
+        ...(endpoint.rules
+          ? {}
+          : { access: endpoint.access ?? "NETWORK_ACCESS_PRESET_READ_WRITE" }),
       })),
     };
     gateway.profiles.set(profile.id, { ...stored, definition });
@@ -282,6 +307,8 @@ async function configureProtectedOpenShellGit(t: TestContext) {
       id: "sandbox-id",
       phase: "SANDBOX_PHASE_READY",
       restartCount: 0,
+      mainProcessInstanceId: randomUUID(),
+      mainProcessStartedAt: new Date().toISOString(),
     });
     gateway.sandboxes.set(request.name, sandbox);
     return sandbox;
@@ -428,6 +455,9 @@ async function configureProtectedOpenShellGit(t: TestContext) {
     inferenceProvider,
     gateway,
     getCreated: () => created,
+    restoreCreated: (request: OpenShellSandboxCreateRequest | undefined) => {
+      created = request;
+    },
     registry,
     workspaceMountPath,
     sandboxConfiguration,

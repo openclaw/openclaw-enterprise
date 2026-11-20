@@ -31,8 +31,13 @@ interface Selection {
   readonly registration: string;
   readonly audience: string;
   readonly modelProvider: string;
+  readonly runtimeProvider: string;
+  readonly sourcePolicy: Readonly<Record<string, unknown>>;
   readonly gitRule: { name: string; endpoints: readonly Record<string, unknown>[] };
-  readonly workload: (sandboxId: string, signal: AbortSignal) => Promise<string | undefined>;
+  readonly execution: (
+    sandbox: OpenShellSandboxResponse,
+    signal: AbortSignal,
+  ) => Promise<string | undefined>;
   readonly signal: AbortSignal;
 }
 
@@ -109,7 +114,9 @@ export async function previewPolicyAndRecipient({
   audience,
   gitRule,
   modelProvider,
-  workload,
+  runtimeProvider,
+  sourcePolicy,
+  execution,
   signal,
   mandatory,
 }: Selection): Promise<string | undefined> {
@@ -135,23 +142,22 @@ export async function previewPolicyAndRecipient({
   }
   const c = await client.getSandboxConfig?.(o.workspace, sandbox.name, signal);
   const policy = asRecord(c?.policy);
-  const source = asRecord(sandbox.spec?.policy);
-  // The paired Sandbox already verified this entire spec. Select only its actual model,
-  // endpointless runtime files, and revision-private Git provider, in their emitted order.
+  // The paired Sandbox verifies the workload and current source policy. Attachment order
+  // can change during replacement; require the exact three independently selected Providers.
   const providers = sandbox.spec?.providers;
-  if (!Array.isArray(providers) || providers.length !== 3) {
+  const expected = [modelProvider, runtimeProvider, o.provider];
+  if (
+    !Array.isArray(providers) ||
+    providers.length !== 3 ||
+    new Set(expected).size !== 3 ||
+    expected.some((name) => !name || !providers.includes(name))
+  ) {
     return;
   }
-  const [modelProviderName, runtimeProvider, gitProvider] = providers;
   if (
-    modelProviderName !== modelProvider ||
-    gitProvider !== o.provider ||
-    typeof runtimeProvider !== "string" ||
-    !/^oce-runtime-[a-f0-9]{16}$/.test(runtimeProvider) ||
     !c ||
     !policy ||
-    !source ||
-    !expectedPolicy(source, policy, gitRule, modelProvider, runtimeProvider) ||
+    !expectedPolicy(sourcePolicy, policy, gitRule, modelProvider, runtimeProvider) ||
     c.version !== admission.policy_version ||
     c.workspace !== o.workspace ||
     c.configuration_instance_id !== admission.instance_id ||
@@ -202,29 +208,31 @@ export async function previewPolicyAndRecipient({
   ) {
     return;
   }
-  const pods = await workload(sandbox.id, signal);
-  if (!pods) {
+  const executionIdentity = await execution(sandbox, signal);
+  if (!executionIdentity) {
     return;
   }
-  // Omit only the three fields necessarily changed by installing the token. Everything else,
-  // including process, network, supervisor session, loaded effective policy, configuration
-  // instance, actual Pod UIDs/container IDs, and admitted extension registration, must stay.
+  // Credential rotation preserves the recipient. Mandatory online authorization also
+  // preserves it across process recovery: current runtime readiness was checked above.
+  // The observed-only preview still pins its original process and configuration instance.
   const {
     providerEnvRevision: _env,
     providerResourceVersion: _version,
     credentialState: _state,
     observedHook: _hook,
+    enrollment: _enrollment,
     ...identity
   } = o;
+  const { processInstanceId, networkInstanceId, supervisorSessionId, ...executionRecipient } =
+    identity;
   return createHash("sha256")
     .update(
       JSON.stringify([
-        identity,
-        started,
-        admission.instance_id,
+        mandatory ? executionRecipient : identity,
+        ...(mandatory ? [] : [started, admission.instance_id]),
         wirePolicy(policy),
         wirePolicy(service),
-        pods,
+        executionIdentity,
       ]),
     )
     .digest("hex");
@@ -249,6 +257,25 @@ export class ObservedHookPreview {
   /** A local deadline to stop and retire, never a lease or an authorization deadline. */
   verifyInstallBy?: number | undefined;
   release?: "sending" | "acknowledged";
+
+  /** A new current runtime needs its own denial and release. Authority and configuration stay. */
+  recover(): void {
+    delete this.armed;
+    delete this.hook;
+    delete this.release;
+    delete this.modelOperation;
+  }
+
+  enrollment(): OpenShellPreparedGitInstalled["enrollment"] {
+    return this.mandatory && this.recipient && this.bootstrapRevision
+      ? {
+          configurationId: this.recipient,
+          bootstrapRevision: this.bootstrapRevision,
+          ...(this.hook && { hook: this.hook }),
+          release: this.release ?? "held",
+        }
+      : undefined;
+  }
 
   private modelOperation?: { revision: string; id?: string; complete?: true };
 

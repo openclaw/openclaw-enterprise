@@ -15,10 +15,11 @@ Namespace-owned gateways use [setup](openshell-sandbox/namespace-gateway.md); Ga
 [Kubernetes Compute](kubernetes-compute.md) retains baseline isolation, storage,
 routing, and the per-Agent Gateway. Sandbox owns:
 
-- `supportsHarnessExecutionMode` declares OpenClaw support at construction.
-  Dedicated needs `kubernetes.userNamespaces: false` and at most
+- `supportsHarnessExecutionMode` declares OpenClaw support.
+  Operator mode requires `kubernetes.userNamespaces: false` and at most
   one ServiceAccount in `gateway.operatorWorkspaceResources`. See the
-  [mode support contract](sandbox.md#harness-mode-support).
+  [mode support contract](sandbox.md#harness-mode-support) and
+  [managed-mode bootstrap](kubernetes-openshell-compute.md#lifecycle-and-retained-files).
 - `configureAgent` pins the main Agent workspace to the configured Sandbox data
   mount for both dedicated Harnesses before OCC saves the Agent revision. Codex retains
   app-server containment policy.
@@ -41,12 +42,12 @@ routing, and the per-Agent Gateway. Sandbox owns:
   removes the Workspace and configured resources before Compute deletes the
   Kubernetes namespace.
 
-Compute requires workload readiness and routes matching the running Agent revision
-before serving traffic. Workers resolve its stored `sandboxDriverId` for provisioning and cleanup.
+Compute requires ready workloads and matching revision routes before serving traffic.
+Workers use the stored `sandboxDriverId` for provisioning and cleanup.
 
 ## OpenShell containment facets
 
-The Driver requests three [containment facets](sandbox.md#containment-facets):
+[Containment facets](sandbox.md#containment-facets):
 
 | Facet        | Current OpenShell behavior                                                                    |
 | ------------ | --------------------------------------------------------------------------------------------- |
@@ -54,12 +55,11 @@ The Driver requests three [containment facets](sandbox.md#containment-facets):
 | `filesystem` | Approved PVC subpath mounts and OpenShell filesystem policy for read-only/read-write paths.   |
 | `process`    | OpenShell runs the workload with the UID and GID selected by its driver.                      |
 
-Landlock enforcement requires `policy.landlockCompatibility` omitted or
-`hard_requirement`; other values, including `best_effort`, fail Installation
-startup. Hosts lacking these Landlock operations fail launch.
+`policy.landlockCompatibility` must be omitted or `hard_requirement`. Other values
+fail startup. Hosts lacking required Landlock operations fail launch.
 
-There is no `exec` facet. Command-level authorization and per-tool sandbox
-creation are deferred; `exec` runs inside the selected Harness sandbox.
+`exec` runs inside the Harness sandbox. An `exec` facet, command authorization
+and per-tool sandboxes are deferred.
 
 ## Configuration
 
@@ -79,8 +79,8 @@ drivers:
   sandbox:
     id: openshell-sandbox
     configuration:
+      integrationMode: legacy
       gateway:
-        workspaceMode: operator
         operatorNamespaceLabels:
           openshell.ai/openclaw-workspace: "true"
         operatorWorkspaceResources: []
@@ -172,7 +172,14 @@ revisions. Live Agent policy apply is unavailable.
 
 Optional readiness observes an OCC-namespace Service/Pods; paired Gateways normally use Backend `endpoint`. Require positive `timeoutMs` and `pollIntervalMs` ≤ `2147483647` (default 1000). Development uses Harness readiness without `startupDelayMs`.
 
-Install the Gateway separately. Set required `gateway.workspaceMode` and its Kubernetes driver's `workspaceMode` to `operator`; `managed` fails before mutations/calls. Match its namespace selector to `operatorNamespaceLabels`. Include `openclaw.dev/*`, `app.kubernetes.io/name`, and `app.kubernetes.io/managed-by` in `allowed_pod_labels` or receive `SANDBOX_POD_LABELS_NOT_PERMITTED`. Workspace names match pre-provisioned namespaces: `oce-` plus a 15-character digest (19 characters maximum).
+Install OpenShell separately. `integrationMode` selects `legacy` (default) or
+[`service`](kubernetes-openshell-compute.md), independently of OpenShell's workspace mode. OCE rejects `gateway.workspaceMode`.
+
+For legacy integration, configure the Gateway's Kubernetes driver with `workspaceMode: operator`, a
+namespace selector matching `operatorNamespaceLabels`, and `allowed_pod_labels`
+listing `openclaw.dev/*`, `app.kubernetes.io/name`, and
+`app.kubernetes.io/managed-by`; otherwise deployment fails with
+`SANDBOX_POD_LABELS_NOT_PERMITTED`. Workspace names match pre-provisioned namespaces: `oce-` plus a 15-character digest.
 
 The [development profile](../../guides/deploy/local-kubernetes-development.md#start-the-openshell-fail-closed-profile) installs a Gateway without workspace resources in `oce-system` (Kubernetes-only) or `openshell-system` (Compose), and Agent Sandbox in `agent-sandbox-system`. The launcher renders `openshell-workspace` into trusted Installation configuration once; the Driver applies it before Workspace creation without per-Namespace Helm releases.
 
@@ -251,7 +258,7 @@ permits cluster-wide Sandbox and Pod mutations. The
 adds Pod create/delete/list/patch/watch and Service/NetworkPolicy create/get.
 The 0.1.6 operator ClusterRole already granted these verbs cluster-wide.
 Disabling sandbox updates, namespace labels and NetworkPolicies
-do not limit Kubernetes permissions. OCE requires operator mode.
+do not limit Kubernetes permissions. OCE's legacy integration requires operator mode.
 
 OCE controller/worker grants remain separate: Compute access, namespace-scoped
 policy apply and Gateway readiness, without Sandbox custom-resource permission.
@@ -303,11 +310,11 @@ their process-owned state root to `0700`, clearing inherited setgid bits. Shared
 workspace directories keep their permissions. OpenClaw prepares its private
 children, including a `control` directory retained after a failed setup.
 
-The supervisor probes the image's `/tmp`. Native OpenClaw uses its runtime-home
-`tmp` child without changing supervisor directory permissions. Native
-provisioning privatizes writable PVC subpaths in a restricted per-revision
-Deployment and preserves retained entries.
-Ownership and mode checks, foreground deletion, and writer termination
+The supervisor probes the image's `/tmp`; native OpenClaw uses its runtime-home
+`tmp` child without changing supervisor directory permissions. Codex's container has
+a `1Gi` ephemeral-storage limit. Operator-mode native provisioning privatizes writable PVC
+subpaths, keeping retained entries, in a restricted per-revision Deployment;
+ownership/mode checks, foreground deletion and writer termination
 precede Sandbox creation. It needs `kubernetes.userNamespaces: false`,
 at most one `gateway.operatorWorkspaceResources` ServiceAccount and the pinned
 Gateway's default identity, without UID/GID overrides; Agent save refuses

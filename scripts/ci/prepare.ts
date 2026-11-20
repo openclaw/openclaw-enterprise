@@ -1988,15 +1988,24 @@ async function prepareLane({
         OCC_TEST_LOGGING_NODE_IMAGE: effectiveLaneEnv(name, env).OCC_TEST_LOGGING_NODE_IMAGE,
         ...metricsMonitoringImages,
       };
+      // A rejected prerequisite rules out this lane. Drain active acquisitions,
+      // but don't spend another pull/retry budget on a still-queued image.
+      let failed = false;
       await timedPreparation(name, "image-pulls", () =>
         prepareTogether(
           Object.entries(images)
             .filter(([, image]) => immutableDigest(image!))
-            .map(
-              ([variable, image]) =>
-                () =>
-                  ensureDockerSourceImage(state, image!, variable),
-            ),
+            .map(([variable, image]) => async () => {
+              if (failed) {
+                return;
+              }
+              try {
+                await ensureDockerSourceImage(state, image!, variable);
+              } catch (error) {
+                failed = true;
+                throw error;
+              }
+            }),
           2,
         ),
       );

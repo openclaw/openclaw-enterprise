@@ -17,6 +17,11 @@ uncleanStopRestartTest(
   "Kubernetes",
   "an embedded Gateway container restarted in the same Kubernetes Pod recovers its first owner",
 );
+uncleanStopRestartTest(
+  "Kubernetes",
+  "runtime image embedded Gateway serves a new turn after its child dies mid-turn",
+  { midTurnCrash: true },
+);
 stoppedStarterReplacementTest(
   "a new Gateway Pod starts on state whose previous Gateway was stopped during startup admission",
   null,
