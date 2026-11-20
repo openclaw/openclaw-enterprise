@@ -78,14 +78,14 @@ graph TD
 
 `internal/occcli/installation_upgrade.go:installationUpgradeCommand` runs
 `scripts/upgrade-production:main`. `report_status` compares two local marker scans.
-Plan validates profile inputs, images and checkout commit. The adapter uses
-`kubectl` to decode the selected HTTPS target, binds explicit CA bytes and previews
-trust. Apply and resume require approval and recheck bound inputs before dispatch.
+Plan validates the profile, images and checkout. The adapter uses `kubectl` to
+decode the HTTPS target and previews trust with the bound CA. Apply and resume
+recheck approval and bound inputs before dispatch.
 
-Both entrypoints refuse active kubectl preferences. With preferences enabled
-and no file, the helper rejects selected exec credentials, snapshots the
-kubeconfig and disables preferences for live clients. Snapshots reject selected
-`auth-provider` entries. Profiled recovery rechecks the target and explicit CA.
+Both entrypoints refuse active kubectl preferences. With preferences enabled,
+the native helper snapshots kubeconfig, refuses selected exec credentials and
+disables command defaults. Approved snapshots also refuse selected
+`auth-provider` entries. Profiled recovery rechecks the target and CA binding.
 
 Before `scripts/upgrade-production-images:prepare_upgrade`, the helper refuses
 other Helm stores, [endpoint and TLS overrides](../guides/deploy/production-upgrade.md),
@@ -133,11 +133,15 @@ blob, 32 MiB total). `scripts/upgrade-repository-image-probe.ts:main` probes
 before preparation and resume. The negative control requires an absent socket
 and a Docker-confirmed broker exit without OOM or daemon error.
 
-For immutable switches, `prepare_upgrade` verifies both Secret identities,
+For immutable switches, `prepare_upgrade` validates both Secret identities,
 unrelated data and candidate YAML. `upgrade-evidence.py` binds both snapshots.
-Changed immutable data requires a successor. The mutable Secret access review
-blocks on denied update permission and warns if inconclusive. Certificates
-require server-side dry run.
+New attempts needing different immutable Secret data require a staged successor
+via `--candidate-values`. Prepared attempts keep their recorded Secret. A denied
+mutable Secret update review blocks preparation. Inconclusive reviews warn.
+
+`preflight_startup` dry-run applies rendered Certificates before Jobs. The
+45-second request allows the webhook's 30-second maximum plus response time.
+Admission failure retains protected diagnostics and prevents further shutdown.
 
 `scripts/upgrade-startup-preflight.ts` builds single-Pod Jobs with candidate
 images, credentials and mounts, a deadline and zero retries. `preflight_startup`
@@ -195,16 +199,14 @@ Freeze writers, autoscalers, Helm changes and drafts per the [production guide](
 
 ### 2. Reconcile a prior attempt
 
-Resume locks evidence and dispatch journals, checks paths and identities, binds
-prepared inputs, source and cluster, and requalifies images and eligible nodes.
-Values must match baseline, candidate or the recorded predecessor and revision.
-Resume can finish local Installation writes, mutable Secret replacement or an
-immutable reference switch. `verify_installation_switch` checks both UIDs and data.
-Check migration history and settle initializer Jobs and Pods before retry.
-`new_attempt` fsyncs attempt-directory ancestors before publishing pointers.
-A failed identity or history check leaves stopped writers stopped. Reconcile
-unknown creates before resume. Resume skips Helm submission when the submitted
-revision is deployed with the candidate values or the recorded recovery successor verifies.
+Resume locks evidence and dispatch journals, checks paths, identities and
+prepared inputs, and requalifies images and nodes. Values must match baseline,
+candidate or the recorded predecessor and revision. It can finish Installation
+writes or a Secret switch. `verify_installation_switch` checks both UIDs and data.
+Check migration history, settle initializer Jobs and Pods, and reconcile unknown
+creates before retry. `new_attempt` fsyncs ancestors before publishing pointers.
+Failed identity or history checks leave writers stopped. Resume skips Helm
+submission if the deployed candidate or recorded recovery successor verifies.
 
 If Helm intent exists and the release is still at the original revision,
 a separate-mode retry calls `require_migration_writers_stopped` before preparing
@@ -373,6 +375,8 @@ requires no Agents or Secrets.
 ## Changelog
 
 - 2026-11-20 17:42: Refuse Helm credential overrides. (authoring-run/e16304ce-2b94-4022-a90d-9ab2e235d1d4 - aff441a5df9e3258752b034fb694e06333c0b231)
+
+- 2026-11-20 09:47: Trace immutable Installation refusals and the Certificate admission timeout. (authoring-run/d0f76046-8ddd-44e6-a67f-29c2288c9e33 - 9092839d0c3b9598e85300451f425ac6d3084fe5)
 
 - 2026-11-19 19:15: Trace the stopped writers check before Helm retry. (authoring-run/aed0a2bc-9691-4859-8bd6-1e7b3549c9b4 - d976da889bdeca6e9208821a5b4ea79a49033b0f)
 

@@ -1,7 +1,7 @@
 ---
 created: 2026-11-19
-updated: 2026-11-19
-last_updated_session: authoring-run/3d885bbf-20eb-48f1-9e9e-975b986c82ab
+updated: 2026-11-20
+last_updated_session: authoring-run/7734097f-2ed2-4eb1-afc9-b87345676072
 ---
 
 # Channel egress flow
@@ -176,6 +176,12 @@ activation fails. Translation status alone is insufficient; the active listener
 generation must match. Retained revoking records indicate incomplete cleanup.
 Do not delete them to reclaim a port.
 
+If preparation detects an additive NetworkPolicy that lets the Gateway reach
+unrestricted or public destinations directly, check the worker's
+`worker.compute-prepare-failed` event. If the event includes a NetworkPolicy UID,
+find the policy in the Gateway's Kubernetes namespace before correcting it.
+Run `kubectl get networkpolicy -n <gateway-namespace> -o custom-columns=NAME:.metadata.name,UID:.metadata.uid`.
+
 [The Kubernetes and Slack procedures](../testing/slack.md) select the real
 runtime tests. Controlled endpoint probes prove transport, not another channel
 provider's integration. The implementation plan records qualification results
@@ -190,6 +196,8 @@ and remaining acceptance evidence.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 09:53: Documented the worker diagnostic for additive public egress policies (authoring-run/7734097f-2ed2-4eb1-afc9-b87345676072 - 9092839d0c3b9598e85300451f425ac6d3084fe5)
 
 - 2026-11-19 20:41: Verify recorded Agent state before one-off completion and on resume (authoring-run/3d885bbf-20eb-48f1-9e9e-975b986c82ab - 87d5c0d63f6765816d0e4a6dee9cb20f8be1d5c1)
 
