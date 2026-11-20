@@ -105,7 +105,8 @@ async function runScenario(
     throw failure;
   }
   const sameRevision = mode === "same-revision";
-  const observedRequest = mode === "request" || sameRevision || mode === "activation";
+  const observedRequest =
+    mode === "request" || sameRevision || mode === "activation" || mode === "reconciliation";
   const controlledDeadline =
     mode === "runner-deadline-after-activation" || mode === "runner-deadline-after-wrapper";
   const pendingActivation = mode === "case-deadline" || controlledDeadline;
