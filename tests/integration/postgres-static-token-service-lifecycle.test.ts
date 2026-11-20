@@ -62,7 +62,6 @@ test(
     );
     const migrator = testPool(t, { connectionString: migratorUrl });
     const proxy = await commitAckProxy(databaseUrl);
-    t.after(() => proxy.close());
     let now = new Date();
     const { controller, inject, pool, principal, state } = await createPostgresAgentApp(t, {
       label: "staged-token-service",
@@ -78,6 +77,9 @@ test(
           ...args: Parameters<ReturnType<typeof createPostgresAuthAccountProvisioner>>
         ) => provision(...args),
       },
+    }).finally(() => {
+      // Register even if setup fails, after the app and its proxied pools register cleanup.
+      t.after(() => proxy.close());
     });
     const provision = createPostgresAuthAccountProvisioner({
       state,
