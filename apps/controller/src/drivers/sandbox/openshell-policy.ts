@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
+import { asRecord, immutableCopy, sha256Hex } from "@openclaw-enterprise/utils";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
 import type { SandboxNetworkGrant, SandboxPolicySnapshot } from "@openclaw-enterprise/contracts";
 
@@ -55,21 +55,43 @@ function canonical(value: unknown): unknown {
     Object.entries(record)
       .filter(
         ([key, field]) =>
-          !key.startsWith("_") &&
+          // Optional scalar markers name an actual field. Policy map keys remain significant.
+          !(key.startsWith("_") && field === key.slice(1) && Object.hasOwn(record, field)) &&
+          // grpc-js adds this discriminator to google.protobuf.Value in middleware config.
+          !(
+            key === "kind" &&
+            typeof field === "string" &&
+            /^(null|number|string|bool|struct|list)Value$/.test(field) &&
+            Object.hasOwn(record, field)
+          ) &&
           field !== undefined &&
           field !== null &&
           field !== "" &&
           field !== 0 &&
-          field !== false &&
+          // Unset strict_tool_names defaults to true, so explicit false changes enforcement.
+          (field !== false || key === "strict_tool_names") &&
           !(Array.isArray(field) && field.length === 0) &&
           !(asRecord(field) !== undefined && Object.keys(field as object).length === 0),
       )
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       .map(([key, field]) => [key, canonical(field)]),
   );
 }
 
 export function sameOpenShellPolicy(left: unknown, right: unknown): boolean {
   return isDeepStrictEqual(canonical(left), canonical(right));
+}
+
+/** Bind the admitted policy while letting live applications replace Agent grants. */
+export function openShellPolicyBaselineDigest(policy: Readonly<Record<string, unknown>>): string {
+  const network = asRecord(policy.network_policies) ?? {};
+  const baseline = canonical({
+    ...policy,
+    network_policies: Object.fromEntries(
+      Object.entries(network).filter(([name]) => !name.startsWith(AGENT_POLICY_PREFIX)),
+    ),
+  });
+  return sha256Hex(JSON.stringify(baseline));
 }
 
 /** Managed plugin admission checks the selected Provider's route shape. The

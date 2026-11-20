@@ -77,3 +77,16 @@ issuance that never committed. The next issuance and account deletion reclaim
 the leftover Secret and credential. Ending a session during reclamation must
 preserve a later issuance. The provider and Secret store are in-memory; conformance
 tests cover their behavior. Use the [PostgreSQL setup](postgresql.md).
+
+## One-off channel upgrade proof
+
+Use the explicit `channel-egress-upgrade` QA scenario with Kubernetes and Codex.
+Its [upgrade case](../../tests/integration/channel-egress-upgrade-helm-real.test.ts)
+shares the real workflow with the fresh-install case. Supply the Slack lane inputs plus `OCC_TEST_CHANNEL_EGRESS_SOURCE_CONTROLLER_IMAGE` and `OCC_TEST_CHANNEL_EGRESS_SOURCE_CHART` for the matching pre-PR-6529 source. Supply
+`OCC_TEST_CHANNEL_EGRESS_NEXT_CONTROLLER_IMAGE` for the subsequent ordinary image
+upgrade; that image must be built from the target source commit with a different
+image digest. This operator-selected scenario runs the actual script and regular Agent workflow; it is outside the default advisory matrix.
+
+Run the one-off scenario once with `OCC_TEST_CHANNEL_EGRESS_DATABASE_MODE=hook`
+and once with `separate`. The separate case executes the chart-selected migrator
+and its require-current check during each handoff.

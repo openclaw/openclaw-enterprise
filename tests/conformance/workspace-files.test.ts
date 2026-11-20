@@ -10,7 +10,7 @@ import {
   type ControllerWorkspaceFilesAccess,
 } from "../../apps/controller/src/gateway/contracts.ts";
 import { createFastifyApp, type ControllerApp } from "../../apps/controller/src/index.ts";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
