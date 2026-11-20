@@ -544,7 +544,7 @@ export function assertHarnessWorkspaceMounts(
   const template = field(field(workload, "spec"), "template");
   const volumes = field(field(template, "spec"), "volumes");
   assert.deepEqual(
-    array(volumes).find((volume) => field(volume, "name") === "openclaw-workspace"),
+    array(volumes ?? []).find((volume) => field(volume, "name") === "openclaw-workspace"),
     { name: "openclaw-workspace", persistentVolumeClaim: { claimName } },
   );
 }

@@ -447,7 +447,12 @@ test(
         sharedWorkspaceIdentities.get(identityKey),
       );
       sharedWorkspaceIdentities.set(identityKey, harnessClaim.metadata.uid);
-      assertHarnessWorkspaceMounts(gateway, deployment, workloadName, harnessClaim.metadata.name);
+      assertHarnessWorkspaceMounts(
+        gateway,
+        deployment,
+        workloadName,
+        harnessWorkspaceClaimName(candidate.agentId),
+      );
       assert.equal(deployment.spec.template.spec.serviceAccountName, agentName(candidate.agentId));
       assert.equal(deployment.spec.template.spec.automountServiceAccountToken, false);
       assert.equal(deployment.spec.template.spec.securityContext?.runAsNonRoot, true);
