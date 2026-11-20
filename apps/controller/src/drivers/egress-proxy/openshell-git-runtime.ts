@@ -672,7 +672,7 @@ export class OpenShellGitRuntime {
         // A read that fails here is read again on the next pass, nothing written (finding
         // 2210); a refused identity or an overlapping provider is final.
         await read(
-          () => checkOpenShellGitProviders(client, workspace, otherProviders, signal),
+          () => checkOpenShellGitProviders(client, workspace, otherProviders, revision, signal),
           signal,
         );
         const current = await read(
@@ -1287,7 +1287,7 @@ export class OpenShellGitRuntime {
       signal,
       async (providers) => {
         try {
-          await checkOpenShellGitProviders(client, workspace, providers, signal);
+          await checkOpenShellGitProviders(client, workspace, providers, revision, signal);
           return true;
         } catch (error) {
           if (error instanceof OpenShellGitRouteError) {

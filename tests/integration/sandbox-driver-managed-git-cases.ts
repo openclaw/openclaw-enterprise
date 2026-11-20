@@ -165,7 +165,7 @@ export async function verifyManagedGitReplacement(
   const sandboxes = gateway.sandboxes;
   const qualifiedWiring: QualifiedWiring = (c) => ({
     plan: c.plan,
-    configuration: openShellEgressConfiguration(c.plan, proxy.options),
+    configuration: openShellEgressConfiguration(c.plan, proxy.options, c.revision),
   });
   for (const [scenario, before, after] of [
     ["unchanged scope", ["source"], ["source"]],

@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-19"
-last_updated_session: "authoring-run/a7f97564-0c7b-4c61-b72f-0b866891ade8"
+last_updated_session: "authoring-run/71f8a011-0c4b-42b6-ada8-cc50ebe72267"
 ---
 
 # Agent sandbox policy flow
@@ -76,8 +76,7 @@ MCP paths. Discovery can be credentialless; providers enforce OAuth scopes.
 `packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
 Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
 and checks editing, expected version, pending work, complete ceiling coverage,
-and registry-resolved Driver admission. The saved additions come from the
-admitted snapshot. While the active or next revision runs under protected
+and registry-resolved Driver admission. Saved additions come from admission. While the active or next revision runs under protected
 execution (the Installation selects the Credential Proxy), additions are refused
 with `409 SANDBOX_POLICY_PROTECTED_EXECUTION`, as are live application to a
 protected revision and a protected deploy carrying them; protected
@@ -86,16 +85,12 @@ repository admission can carry the Sandbox Driver's explicitly acknowledged
 [artifact subset](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
 `checkedProtectedCodexArtifactPolicy` verifies its purpose, declared keys, Driver
 identity, version and empty additions before runtime credential provisioning.
-That immutable snapshot remains ineligible for live apply. The policy view reports
-`protectedExecution`.
+The policy view reports `protectedExecution`. Live apply remains unavailable.
 
-Protected Codex repository preparation compiles the revision's qualified artifact
-snapshot through `openshell-codex-artifacts.ts`; it never merges ambient defaults.
-Both paired compilers validate the complete map. The Sandbox separately compares
-the final workspace enrollment rule with its validated Agent-owned setup binding,
-then returns the full immutable policy in `SandboxResourceRef.proxyWiring`.
-The proxy checks the complete artifact map and bounded auxiliary rule before
-comparing the complete loaded policy.
+`openshell.ts:admitProtectedCodexArtifactPolicy` freezes eligible opt-ins.
+Both compilers replay them. Opted-in artifacts must have separate destinations
+from enrollment and providers. Git checks attached profiles for strict parsing.
+The proxy verifies exact artifact replay and strict effective model endpoints.
 For an Agent with repository bindings (or a Git-bound active revision), Driver
 admission gets `repositoryCredentials`: the OpenShell Driver with its Git route
 refuses a grant or default reaching `github.com` or a name under it, or naming an
@@ -269,6 +264,12 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-19 19:16: Trace strict provider endpoints for artifact opt-in. (authoring-run/71f8a011-0c4b-42b6-ada8-cc50ebe72267 - b6412e90e68687ce9af9b36f3fe9cb6660efaa85)
+
+- 2026-11-19 19:02: Trace the protected endpoint opt-in. (authoring-run/a43734f7-8d75-46da-a753-921293ba235f - b6412e90e68687ce9af9b36f3fe9cb6660efaa85)
+
+- 2026-11-19 18:11: Trace the frozen npm endpoint flag. (authoring-run/39a44c79-5023-4989-8f66-7ba3720310fd - b63dda0b529b4bf73f5591be89886f66133b3dc9)
 
 - 2026-11-19 07:54: Separate credential acquisition. (authoring-run/a7f97564-0c7b-4c61-b72f-0b866891ade8 - 1eb271262)
 

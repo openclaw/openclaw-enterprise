@@ -55,7 +55,11 @@ import {
 } from "../plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../plugin/google-workspace/install.ts";
 import { openShellLogDecisions } from "./openshell-log-decisions.ts";
-import { qualifyOpenShellCodexArtifactRules } from "./openshell-codex-artifacts.ts";
+import {
+  openShellArtifactRouteOverlap,
+  openShellEncodedSlashArtifactHosts,
+  qualifyOpenShellCodexArtifactRules,
+} from "./openshell-codex-artifacts.ts";
 import { workspaceNodeNetworkPolicy } from "./openshell-workspace-node-policy.ts";
 import {
   AGENT_POLICY_PREFIX,
@@ -189,6 +193,7 @@ export interface OpenShellNetworkEndpoint {
   readonly tls?: "skip" | "terminate";
   readonly enforcement?: "enforce" | "audit";
   readonly access?: "read_only" | "read_write" | "full";
+  readonly protectedArtifactAllowEncodedSlash?: true;
 }
 
 export interface OpenShellNetworkPolicyRule {
@@ -2220,7 +2225,10 @@ function filesystemPolicy(
   };
 }
 
-function networkPolicies(options: OpenShellSandboxDriverOptions) {
+function networkPolicies(
+  options: OpenShellSandboxDriverOptions,
+  artifactRuleNames?: ReadonlySet<string>,
+) {
   return Object.fromEntries(
     options.policy.networkPolicies.map((policy) => [
       nonempty(policy.name, "OpenShell network policy name"),
@@ -2249,6 +2257,10 @@ function networkPolicies(options: OpenShellSandboxDriverOptions) {
             ...(tls === undefined ? {} : { tls }),
             ...(enforcement === undefined ? {} : { enforcement }),
             ...(access === undefined ? {} : { access }),
+            ...(artifactRuleNames?.has(policy.name) &&
+              endpoint.protectedArtifactAllowEncodedSlash === true && {
+                allow_encoded_slash: true,
+              }),
           };
         }),
       },
@@ -2560,6 +2572,8 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
     );
   }
   const networkPolicyNames = new Set<string>();
+  const artifactNames = options.policy.codexArtifactRuleNames ?? [];
+  let configuredArtifactOptIn = false;
   for (const [index, policy] of options.policy.networkPolicies.entries()) {
     const name = nonempty(policy.name, "OpenShell network policy name");
     if (name === "workspace-node-enrollment") {
@@ -2581,8 +2595,28 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
       ]);
     }
     networkPolicyNames.add(name);
+    for (const [at, endpoint] of policy.endpoints.entries()) {
+      if (endpoint.protectedArtifactAllowEncodedSlash === true) {
+        if (!artifactNames.includes(name)) {
+          throw new ConfigurationValidationError([
+            {
+              path: `/policy/networkPolicies/${index}/endpoints/${at}/protectedArtifactAllowEncodedSlash`,
+              code: "INVALID_VALUE",
+              message: "Select this rule in policy.codexArtifactRuleNames before opting in.",
+            },
+          ]);
+        }
+        configuredArtifactOptIn = true;
+      }
+    }
   }
-  networkPolicies(options);
+  const defaults = networkPolicies(
+    options,
+    configuredArtifactOptIn ? new Set(artifactNames) : undefined,
+  );
+  if (configuredArtifactOptIn) {
+    qualifyOpenShellCodexArtifactRules(defaults, artifactNames);
+  }
   if (
     options.providers !== undefined &&
     (!Array.isArray(options.providers) ||
@@ -2743,6 +2777,7 @@ export const configurationSchema = Object.freeze({
                     tls: { type: "string", enum: Object.keys(NETWORK_TLS_MODES) },
                     enforcement: { type: "string", enum: Object.keys(NETWORK_ENFORCEMENT_MODES) },
                     access: { type: "string", enum: Object.keys(NETWORK_ACCESS_PRESETS) },
+                    protectedArtifactAllowEncodedSlash: { type: "boolean", const: true },
                   },
                 },
               },
@@ -3497,6 +3532,18 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         gitRouteOverlapMessage(gitOverlap),
       );
     }
+    const artifactHosts = openShellEncodedSlashArtifactHosts(egressPolicy?.network_policies);
+    // Check the actual setup destination before preparing any protected provider.
+    const earlyRuntimeCredentials =
+      artifactHosts.size > 0 ? await harnessRuntimeCredentials(context) : undefined;
+    if (
+      earlyRuntimeCredentials?.binding &&
+      openShellArtifactRouteOverlap(artifactHosts, [earlyRuntimeCredentials.binding])
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "A protected encoded-slash artifact endpoint overlaps workspace enrollment.",
+      );
+    }
     const git =
       context.revision.repositoryCredentials === undefined
         ? undefined
@@ -3539,7 +3586,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       codex ? "codex" : "openclaw",
       context.revision.egressPlan,
     );
-    const runtimeCredentialMaterial = await harnessRuntimeCredentials(context);
+    const runtimeCredentialMaterial =
+      earlyRuntimeCredentials ?? (await harnessRuntimeCredentials(context));
     await this.ensureRuntimeProfile(client, workspace, runtimeFiles.profile, context.signal);
     const { name: runtimeProvider } = await this.ensureRuntimeProvider(
       client,
@@ -4739,7 +4787,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       ]);
     }
     const defaults = qualifyOpenShellCodexArtifactRules(
-      networkPolicies(this.options) as OpenClawConfigurationDocument,
+      networkPolicies(this.options, new Set(names)),
       names,
     );
     return immutableCopy({

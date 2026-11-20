@@ -527,6 +527,8 @@
     {
       "path": "tests/integration/postgres-openshell-online-git-journey.test.ts",
       "expectedTests": [
+        "PostgreSQL replays the admitted protected artifact policy in native OpenShell",
+        "PostgreSQL reloads a retained strict artifact revision after Installation opt-in",
         "OCE signed TLS Git authorization: stopping the Agent denies a fresh signed Git request",
         "another fixture cannot inherit a stopped Agent's custody",
         "OCE signed TLS Git authorization: removing the repository binding denies a fresh signed Git request"

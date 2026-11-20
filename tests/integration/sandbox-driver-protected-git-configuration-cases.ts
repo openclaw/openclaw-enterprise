@@ -20,6 +20,7 @@ import {
 } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import {
   OpenShellSandboxDriver,
+  type OpenShellNetworkEndpoint,
   type OpenShellSandboxDriverOptions,
 } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import type { OpenShellSandboxCreateRequest } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
@@ -79,9 +80,39 @@ async function configureProtectedOpenShellGit(t: TestContext) {
   const base = buildSandboxInstallation();
   const [openShellBackend] = base.backend;
   assert.ok(openShellBackend);
-  const sandboxConfiguration = base.drivers.sandbox.configuration;
   const workspaceMountPath = "/sandbox/repository";
-  sandboxConfiguration.kubernetes.sandboxDataMount.mountPath = workspaceMountPath;
+  const sandboxBase = base.drivers.sandbox.configuration;
+  sandboxBase.kubernetes.sandboxDataMount.mountPath = workspaceMountPath;
+  const sandboxConfiguration: OpenShellSandboxDriverOptions = {
+    ...sandboxBase,
+    policy: {
+      ...sandboxBase.policy,
+      codexArtifactRuleNames: ["codex-artifacts"],
+      networkPolicies: [
+        ...sandboxBase.policy.networkPolicies,
+        {
+          name: "codex-artifacts",
+          binaries: [
+            {
+              path: "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+            },
+          ],
+          endpoints: ["registry.npmjs.org", "artifacts.example.test"].map<OpenShellNetworkEndpoint>(
+            (host) => ({
+              host,
+              ports: [443],
+              protocol: "rest",
+              enforcement: "enforce",
+              access: "read_only",
+              ...(host === "artifacts.example.test" && {
+                protectedArtifactAllowEncodedSlash: true as const,
+              }),
+            }),
+          ),
+        },
+      ],
+    },
+  };
   const providerHarness = {
     namespace: "openshell-system",
     podLabels: { app: "openshell-gateway" },
@@ -179,6 +210,7 @@ async function configureProtectedOpenShellGit(t: TestContext) {
           network,
         },
       },
+      sandbox: { ...base.drivers.sandbox, configuration: sandboxConfiguration },
       credential_proxy: { id: gitId, configuration: {} },
     },
     repository: {

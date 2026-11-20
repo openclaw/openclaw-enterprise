@@ -1,13 +1,182 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { narrowOnlineGitJourney } from "../helpers/postgres-repository-set-journey.ts";
+import {
+  createNarrowOnlineGitStartup,
+  narrowOnlineGitJourney,
+} from "../helpers/postgres-repository-set-journey.ts";
+import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
+import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
+import { harnessEgressEnrollment } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
+import type { OpenShellNetworkPolicyRule } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import {
+  codexAppServerEnvironment,
+  codexManagedRuntimeFiles,
+} from "./sandbox-driver-codex-workload-fixture.ts";
+import { harnessRuntimeCommand } from "./sandbox-driver-startup-orchestration.ts";
 import { fixtureRepository } from "../fixtures/repository-credentials/github.ts";
 import { gitCommandBodies } from "../helpers/openshell-online-git-journey.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { standingExecutionPlatform } from "../helpers/postgres-standing-execution.ts";
 import { preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
-import type { DriverRegistrationRef } from "../../packages/contracts/src/index.ts";
+import type {
+  AgentRevision,
+  DriverRegistrationRef,
+  SandboxHarnessContext,
+} from "../../packages/contracts/src/index.ts";
+
+for (const { name, previouslyOptedIn } of [
+  {
+    name: "PostgreSQL replays the admitted protected artifact policy in native OpenShell",
+    previouslyOptedIn: true,
+  },
+  {
+    name: "PostgreSQL reloads a retained strict artifact revision after Installation opt-in",
+    previouslyOptedIn: false,
+  },
+]) {
+  test(name, { ...requiresPostgres, timeout: 30_000 }, async (t) => {
+    const strict = {
+      ports: [443],
+      protocol: "rest",
+      enforcement: "enforce",
+      access: "read_only",
+    } as const;
+    const strictHost = "registry.npmjs.org";
+    const optedInHost = "artifacts.example.test";
+    const rule = {
+      name: "codex-artifacts",
+      binaries: [
+        {
+          path: "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+        },
+      ],
+      endpoints: [
+        { ...strict, host: strictHost },
+        {
+          ...strict,
+          host: optedInHost,
+          ...(previouslyOptedIn && { protectedArtifactAllowEncodedSlash: true as const }),
+        },
+      ],
+    } satisfies OpenShellNetworkPolicyRule;
+    const { fixture, revision, registration, replayContext, peer, world } =
+      await createNarrowOnlineGitStartup(t, import.meta.url, { artifactRules: [rule] });
+    // Read the committed row through a fresh OCC state and independently as PostgreSQL JSON.
+    const { observerPool } = fixture;
+    const { namespaceId, agentId, id } = revision;
+    const stored = await new PostgresPlatformState(observerPool).read((view) =>
+      view.revisions.findRevision(namespaceId, agentId, id),
+    );
+    const { rows } = await observerPool.query<{ policy: AgentRevision["sandboxPolicy"] }>(
+      "SELECT admitted_spec->'sandbox_policy' AS policy FROM occ.agent_revisions WHERE namespace_id=$1 AND agent_id=$2 AND id=$3",
+      [namespaceId, agentId, id],
+    );
+    assert.ok(stored?.sandboxPolicy && stored.egressPlan);
+    assert.deepEqual(stored.sandboxPolicy, revision.sandboxPolicy);
+    assert.deepEqual(
+      rows.map(({ policy }) => policy),
+      [stored.sandboxPolicy],
+    );
+
+    // Replace the selected runtime owner with the new Installation defaults. The
+    // revision admitted under the previous defaults must retain its own parsing policy.
+    const { sandbox, proxyWiring, namespace, signal } = await replayContext(stored, [
+      {
+        ...rule,
+        endpoints: [
+          { ...strict, host: strictHost, protectedArtifactAllowEncodedSlash: true },
+          { ...strict, host: optedInHost },
+        ],
+      },
+    ]);
+    const current = sandbox.admitProtectedCodexArtifactPolicy(
+      stored.sandboxPolicy.version,
+    ).snapshot;
+    assert.notDeepEqual(current.defaults, stored.sandboxPolicy.defaults);
+    const auth = stored.harnessAuth;
+    assert.equal(auth.method, "credential_source");
+    const context: SandboxHarnessContext = {
+      namespace,
+      signal,
+      kubernetes: {},
+      revision: stored,
+      requirements: {
+        loginMode: auth.loginMode,
+        image: "codex-runtime@sha256:synthetic",
+        command: harnessRuntimeCommand('console.error("fixture")'),
+        retainedDirectories: [],
+        workspaceMounts: [
+          {
+            claimName: "replay-workspace",
+            subPath: "workspace",
+            mountPath: "/home/node/workspace",
+            readOnly: false,
+          },
+        ],
+        credentialAttachments: [
+          { sourceId: auth.sourceId, ref: openShellProviderName(auth.sourceId) },
+        ],
+        environment: codexAppServerEnvironment(),
+        files: codexManagedRuntimeFiles(
+          JSON.stringify({
+            kind: "codex",
+            selections: {},
+            providerTools: "none",
+            egressEnrollment: harnessEgressEnrollment(stored.egressPlan),
+          }),
+        ),
+        labels: { "openclaw.dev/revision": id },
+        proxyWiring,
+      },
+    };
+    assert.equal(registration.creates(), 0);
+    const first = await sandbox.provisionHarness(context);
+    const compiled = first.proxyWiring?.configuration.network_policies;
+    const expectedEndpoints = [strictHost, optedInHost].map((host) => ({
+      host,
+      ports: [443],
+      protocol: "rest",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      access: "NETWORK_ACCESS_PRESET_READ_ONLY",
+      ...(previouslyOptedIn && host === optedInHost && { allow_encoded_slash: true }),
+    }));
+    assert.deepEqual(compiled, {
+      [rule.name]: { name: rule.name, binaries: rule.binaries, endpoints: expectedEndpoints },
+    });
+    assert.deepEqual(compiled, stored.sandboxPolicy.defaults);
+    assert.ok(Object.isFrozen(first.proxyWiring?.configuration));
+    assert.deepEqual(registration.createPolicy()?.network_policies, compiled);
+    const replayed = await sandbox.provisionHarness(context);
+    assert.deepEqual(replayed, first);
+    assert.equal(registration.creates(), 1, "same revision adopts its registered Sandbox");
+
+    if (previouslyOptedIn) {
+      // An unchanged revision identity cannot authorize a registered Sandbox that lost the bit.
+      registration.clearEncodedSlash();
+      await assert.rejects(sandbox.provisionHarness(context), {
+        diagnosticCode: "OPENSHELL_SANDBOX_OWNERSHIP_MISMATCH",
+      });
+      assert.equal(registration.creates(), 1, "policy drift cannot register a replacement");
+    }
+    assert.equal(world.writes, 0);
+    assert.equal(peer.gh.issuesOfTokens.length, 0);
+    assert.equal(peer.originCalls(), 0);
+    t.diagnostic(
+      JSON.stringify({
+        persisted: rows[0]?.policy?.defaults,
+        reconfigured: current.defaults,
+        compiled,
+        registered: registration.createPolicy()?.network_policies,
+        registrations: registration.creates(),
+        gitCredentialUpdates: world.writes,
+        tokenIssuances: peer.gh.issuesOfTokens.length,
+        originCalls: peer.originCalls(),
+        ...(previouslyOptedIn && { driftDiagnostic: "OPENSHELL_SANDBOX_OWNERSHIP_MISMATCH" }),
+      }),
+    );
+  });
+}
 
 type GitUseReceipt = {
   exchange_id: string;

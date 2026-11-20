@@ -19,6 +19,7 @@ import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/comp
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import type {
   AgentRevision,
+  CredentialSource,
   HarnessWorkloadRequirements,
   ProtectedRepositoryGitAuthority,
   ProxyPlan,
@@ -35,7 +36,7 @@ import { image, imageTestOptions } from "../helpers/runtime-image-startup.ts";
 import type { ProtectedOpenShellGitFixture } from "./sandbox-driver-protected-git-configuration-cases.ts";
 import { verifyProtectedGitNetworkPolicy } from "./sandbox-driver-protected-git-network-admission.ts";
 import { verifyPreparedGitCleanupRefusals } from "./sandbox-driver-revision-observation-cases.ts";
-import { ownedWorkspace } from "./sandbox-driver-startup-orchestration.ts";
+import { ownedWorkspace, runtimeSandboxFixture } from "./sandbox-driver-startup-orchestration.ts";
 
 const noMaterial = {
   readMaterial: async () => undefined,
@@ -179,12 +180,14 @@ export async function verifyProtectedOpenShellGitExecution(
     egressDriverId: proxy.id,
   };
   const configuration = createHarnessConfiguration("codex", "gpt-5");
+  const frozenArtifacts = JSON.stringify(sandbox.admitProtectedCodexArtifactPolicy(1).snapshot);
   const rev: AgentRevision = {
     ...revision,
     id: revisionId,
     harnessAuth: auth,
     egressPlan: plan,
     executionAdmission: { version: 5, mode: "protected" },
+    sandboxPolicy: JSON.parse(frozenArtifacts) as NonNullable<AgentRevision["sandboxPolicy"]>,
     configuration,
     harness: {
       ...revision.harness,
@@ -232,7 +235,9 @@ export async function verifyProtectedOpenShellGitExecution(
       code: "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
     });
   }
-  const required = enrolledRequirements(requirements, await proxy.configureRevision(ctx));
+  const wiring = await proxy.configureRevision(ctx);
+  assert.deepEqual(wiring.configuration.network_policies, rev.sandboxPolicy?.defaults);
+  const required = enrolledRequirements(requirements, wiring);
   for (const credentialAttachments of [
     [],
     [{ sourceId: "cs_other", ref: inferenceProvider }],
@@ -249,6 +254,132 @@ export async function verifyProtectedOpenShellGitExecution(
     assert.equal(getCreated(), undefined, "a refused credential attachment cannot start a Sandbox");
   }
   await bindGitWithFixtureRoutes(subtest, protectedGit);
+  await subtest.test(
+    "workspace enrollment refuses a flagged destination before provisioning",
+    async () => {
+      const enrollment = runtimeSandboxFixture(sandbox, {
+        nodeSetupUrl: () => "wss://ARTIFACTS.example.test.:443/node",
+      });
+      await assert.rejects(
+        sandbox.provisionHarness({
+          ...ctx,
+          kubernetes: enrollment.context.kubernetes,
+          requirements: required,
+        }),
+        /encoded-slash artifact endpoint overlaps workspace enrollment/,
+      );
+      assert.equal(getCreated(), undefined);
+      assert.deepEqual([...gateway.providers.keys()], [inferenceProvider]);
+    },
+  );
+  for (const { name, host, allowEncodedSlash, refusal } of [
+    {
+      name: "an attached custom model profile cannot share the flagged destination",
+      host: "artifacts.example.test",
+      allowEncodedSlash: false,
+      refusal: /Choose a separate artifact endpoint or remove protectedArtifactAllowEncodedSlash/,
+    },
+    {
+      name: "an attached custom model profile cannot opt in on a distinct destination",
+      host: "model.example.test",
+      allowEncodedSlash: true,
+      refusal: /credential provider endpoints cannot enable allow_encoded_slash/,
+    },
+  ]) {
+    await subtest.test(name, async () => {
+      const credentialGateway = protectedGit.credentialGatewayDriver;
+      assert.ok(credentialGateway);
+      const modelBaseUrl = `https://${host}/v1`;
+      const source: CredentialSource = {
+        id: "cs_artifact_model",
+        namespaceId: rev.namespaceId,
+        driverId: credentialGateway.id,
+        ownerCapability: "credential_gateway",
+        type: "openai",
+        name: "custom model",
+        state: "ready",
+        config: { authorized_base_url: modelBaseUrl },
+        secrets: {},
+        createdAt: rev.createdAt,
+      };
+      const sourceContext = { namespace: ctx.namespace, source, signal: ctx.signal };
+      const registered = await credentialGateway.registerSource(sourceContext, {
+        type: source.type,
+        config: source.config,
+        secrets: { api_key: "synthetic-model-key" },
+      });
+      assert.equal(registered.state, "ready");
+      try {
+        const modelRevisionId = "rev_" + randomUUID();
+        const modelAuth = { ...auth, sourceId: source.id };
+        const modelPlan = {
+          ...plan,
+          execution: {
+            ...plan.execution,
+            revisionId: modelRevisionId,
+            executionId: randomUUID().replaceAll("-", ""),
+          },
+          harnessCredentialSource: modelAuth,
+        };
+        const modelRevision: AgentRevision = {
+          ...rev,
+          id: modelRevisionId,
+          harnessAuth: modelAuth,
+          egressPlan: modelPlan,
+          harness: {
+            ...rev.harness,
+            configuration: {
+              modelProvider: {
+                protocol: "openai-responses",
+                baseUrl: modelBaseUrl,
+                supportsStandaloneWebSearch: false,
+              },
+            },
+          },
+        };
+        const modelContext = { ...ctx, revision: modelRevision, plan: modelPlan };
+        const credentialAttachments = await credentialGateway.attachForRevision({
+          ...modelContext,
+          sources: [source],
+        });
+        const providerName = openShellProviderName(source.id);
+        if (allowEncodedSlash) {
+          // An operator can change the attached profile before the Sandbox reads it.
+          const provider = gateway.providers.get(providerName);
+          assert.ok(provider);
+          const profile = gateway.profiles.get(provider.type);
+          assert.ok(profile?.definition);
+          const endpoints = profile.definition.endpoints;
+          assert.ok(Array.isArray(endpoints) && endpoints.length === 1);
+          const endpoint = asRecord(endpoints[0]);
+          assert.equal(endpoint?.host, host);
+          gateway.profiles.set(profile.id, {
+            ...profile,
+            definition: {
+              ...profile.definition,
+              endpoints: [{ ...endpoint, allow_encoded_slash: true }],
+            },
+          });
+        }
+        const modelRequirements = enrolledRequirements(
+          { ...requirements, credentialAttachments },
+          await proxy.configureRevision(modelContext),
+        );
+        await assert.rejects(
+          sandbox.provisionHarness({ ...modelContext, requirements: modelRequirements }),
+          refusal,
+        );
+        assert.equal(getCreated(), undefined);
+        assert.deepEqual([...gateway.providers.keys()], [inferenceProvider, providerName]);
+      } finally {
+        const created = getCreated();
+        if (created) {
+          await gateway.deleteSandbox(created, ctx.signal);
+        }
+        await credentialGateway.removeSource(sourceContext);
+      }
+    });
+  }
   // v4 promised a send cutoff. The online sender must refuse that revision before creation.
   const exactRevision: AgentRevision = {
     ...rev,
@@ -292,7 +423,66 @@ export async function verifyProtectedOpenShellGitExecution(
   );
   assert.ok(providerNames.includes(inferenceProvider));
   assert.equal(providerNames.filter((name) => name.startsWith("oce-git-")).length, 1);
-  assert.deepEqual(Object.keys(networkPolicies), ["workspace-node-enrollment"]);
+  assert.deepEqual(Object.keys(networkPolicies).sort(), [
+    "codex-artifacts",
+    "workspace-node-enrollment",
+  ]);
+  const policy = asRecord(gateway.sandboxes.get(created.name)?.spec?.policy);
+  const rules = asRecord(policy?.network_policies);
+  const artifacts = asRecord(rules?.["codex-artifacts"]);
+  assert.ok(policy && rules && Array.isArray(artifacts?.endpoints));
+  assert.deepEqual(rules["codex-artifacts"], networkPolicies["codex-artifacts"]);
+  assert.deepEqual(rules["codex-artifacts"], rev.sandboxPolicy?.defaults["codex-artifacts"]);
+  assert.equal(JSON.stringify(rev.sandboxPolicy), frozenArtifacts);
+  const decodedEndpoints: readonly unknown[] = artifacts.endpoints;
+  const [npm, sibling] = decodedEndpoints.map(asRecord);
+  assert.ok(npm && sibling);
+  assert.deepEqual([npm.host, sibling.host], ["registry.npmjs.org", "artifacts.example.test"]);
+  const { allow_encoded_slash: allowEncodedSlash, ...strictMirror } = sibling;
+  assert.equal(allowEncodedSlash, true);
+  assert.equal(Object.hasOwn(npm, "allow_encoded_slash"), false);
+
+  // A loaded revision can match the policy version while changing the endpoint permission.
+  assert.ok(result.proxyWiring);
+  let endpoints = [npm, sibling];
+  gateway.getSandboxPolicyStatus = async () => ({
+    active_version: plan.generation,
+    revision: {
+      version: plan.generation,
+      status: "POLICY_STATUS_LOADED",
+      policy: {
+        ...policy,
+        network_policies: { ...rules, "codex-artifacts": { ...artifacts, endpoints } },
+      },
+    },
+  });
+  assert.equal(await proxy.wiringStatus(ctx, result.proxyWiring), undefined);
+  for (const drift of [
+    [npm, strictMirror],
+    [{ ...npm, allow_encoded_slash: true }, sibling],
+    [{ ...npm, allow_encoded_slash: true }, strictMirror],
+  ]) {
+    const alteredWiring = {
+      ...wiring,
+      configuration: {
+        ...wiring.configuration,
+        network_policies: { "codex-artifacts": { ...artifacts, endpoints: drift } },
+      },
+    };
+    await assert.rejects(
+      sandbox.provisionHarness({
+        ...ctx,
+        requirements: { ...required, proxyWiring: alteredWiring },
+      }),
+      /Protected egress attachment was altered/,
+    );
+    endpoints = drift;
+    await assert.rejects(
+      proxy.wiringStatus(ctx, result.proxyWiring),
+      /installed egress source policy differs from its admitted policy/,
+    );
+  }
+  delete gateway.getSandboxPolicyStatus;
   assert.equal(environment.OPENAI_API_KEY, undefined);
   assert.equal(environment.GITHUB_TOKEN, undefined);
   const trust = spawnSync("git", ["config", "--get-all", "safe.directory"], {
