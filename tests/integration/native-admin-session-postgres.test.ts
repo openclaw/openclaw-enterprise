@@ -235,7 +235,7 @@ test(
     assert.ok(initialUpgrade, "the upstream must record the initial socket upgrade");
     const nativeSubject = initialUpgrade.headers["x-occ-identity"];
     await assertSocketClosesAfterMutation(scenario.socket, () =>
-      scenario.apiA.pool.query(
+      scenario.apiA.pool.query<Record<string, unknown>, string[]>(
         `INSERT INTO occ.iam_restrictions (id, namespace_id, action, resource_kind, resource_id, effect)
      VALUES ($1, $2, 'administer', 'agent', $3, 'deny')`,
         [`restriction-${randomUUID()}`, scenario.namespace.id, scenario.agent.id],
