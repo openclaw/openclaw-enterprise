@@ -188,13 +188,11 @@ requires dedicated Codex or native OpenClaw, paired Drivers, and
 `openai`/`chatgptAuthTokens` from an external-auth Driver. Compute renders no
 model Secret and passes the resolved source to Sandbox provisioning.
 
-For a managed static source, OCC checks its selected TokenService instance and
-`provider_preset` under the source lock. The controller composition matches that
-permission to the explicit `openai/<model>` selection and configured inference
-route. OCC validates the separately saved network grants and credential injection
-rules with `validateDeploymentPolicy`. A qualified deployment saves the policy,
-Proxy ID and source instance in a v8 standalone Agent revision. Without qualified
-Sandbox and Proxy enforcement, deployment returns `409` and queues no work.
+Under the source lock, OCC verifies the TokenService instance and `provider_preset`;
+composition matches the explicit `openai/<model>` and inference route. OCC maps saved
+Sandbox grants to request matchers and validates network and injection policies with
+`validateDeploymentPolicy`. A qualified v8 revision saves the policy, Proxy ID and
+source instance. Unqualified enforcement returns `409` without queuing work.
 
 `admitCredentialSources` requires a Sandbox (`409`) and rechecks caller and Agent
 `operate` on every source. The recorded owner must still offer its type;
@@ -245,13 +243,13 @@ Refusal never retries through Gateway methods.
 `apps/controller/src/drivers/sandbox/openshell-credential-attachments.ts` implements
 `attachForRevision`, `attachmentStatus` and `withdraw`, shared with public Gateway attachment consumers.
 
-For a v8 revision, `configureCredentialDeployment` rechecks the claim, current
-revision, source instance, live provider permission, withdrawal, IAM grants and
-held Sandbox target before the Proxy receives a source resolver. Compute receives
-credential projections. `verifyCredentialDeploymentRelease` repeats those checks
-and requires the same held startup to acknowledge its projections. Positive
-admission remains disabled until the native implementations qualify enforcement,
-the held launcher, target cleanup and source update notifications. See the [staged worker RFC](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/worker-credential-configuration.md).
+For v8, `configureCredentialDeployment` checks the claim, revision, source instance,
+provider permission, withdrawal, IAM grants and held target before giving the Proxy
+a resolver. After node enrollment, Compute withdraws the provider's startup exposure
+before adopting an authenticated serving process. A held startup must acknowledge the
+current Proxy projections; it rejects a conflicting handoff. `verifyCredentialDeploymentRelease` repeats the checks
+before release. Positive admission remains disabled while native enforcement, the
+launcher, cleanup and source updates are unqualified; see the [staged worker RFC](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/worker-credential-configuration.md).
 
 For `chatgptAuthTokens`, `credentialSourceEnvironment` forwards trusted metadata
 and a placeholder into ephemeral `auth.json`. OpenShell's `sandboxCommand` wraps

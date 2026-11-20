@@ -16341,7 +16341,9 @@ export class OpenClawController {
       projection: preset.projection,
     };
     const deployment: DeploymentPolicy = {
-      networkAccessPolicy: { allowed: networkGrants },
+      networkAccessPolicy: {
+        allowed: networkGrants.map(({ binary, host, ports }) => ({ binary, host, ports })),
+      },
       bindings: [binding],
       injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [request] }],
     };

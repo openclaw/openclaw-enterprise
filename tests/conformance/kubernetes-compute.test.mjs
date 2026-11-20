@@ -795,6 +795,7 @@ test("staged Compute release requires both ready observations, this held acknowl
     environment: binding.projection.environment,
     placeholder: { kind: "runtime" },
   };
+  let currentProjection = projection;
   const events = [];
   let networkReady = true;
   let proxyReady = false;
@@ -802,8 +803,19 @@ test("staged Compute release requires both ready observations, this held acknowl
   let verifyAllowed = false;
   let startup;
   let observation;
+  let workloadLabels;
+  let installedProjections;
+  let startupExposure = false;
+  let withdrawalFailure;
+  let provisionFailure;
   const stagedSandbox = {
-    async provisionHarness({ deployment }) {
+    async provisionHarness({ deployment, workload }) {
+      // The staged contract does not communicate previous enrollment to its provider.
+      startupExposure = true;
+      if (provisionFailure !== undefined) {
+        throw provisionFailure;
+      }
+      workloadLabels = workload.labels;
       const targetRef = { ...deployment, sandboxId: "sandbox-1" };
       startup ??= {
         targetRef,
@@ -824,12 +836,20 @@ test("staged Compute release requires both ready observations, this held acknowl
     },
     async prepareHarnessProcess(held, projections) {
       events.push("prepare");
-      assert.deepEqual(projections, [projection]);
+      assert.deepEqual(projections, [currentProjection]);
+      if (installedProjections !== undefined) {
+        assert.deepEqual(
+          projections,
+          installedProjections,
+          "conflicting projections for held startup",
+        );
+      }
       const acknowledged = acknowledgeExactStartup
         ? held
         : { ...held, processInstanceId: "replacement-process" };
       const result = { state: "held", startup: acknowledged, projections: "installed" };
       if (acknowledgeExactStartup) {
+        installedProjections = structuredClone(projections);
         observation = result;
       }
       return result;
@@ -850,6 +870,14 @@ test("staged Compute release requires both ready observations, this held acknowl
     async provisionHarness() {
       assert.fail("a staged deployment cannot use ordinary Sandbox provisioning");
     },
+    async withdrawHarnessExposure({ workspaceNodeEnrolled }) {
+      assert.equal(workspaceNodeEnrolled, true);
+      events.push("withdraw");
+      if (withdrawalFailure !== undefined) {
+        throw withdrawalFailure;
+      }
+      startupExposure = false;
+    },
     credentialDeployment() {
       return stagedSandbox;
     },
@@ -865,13 +893,17 @@ test("staged Compute release requires both ready observations, this held acknowl
     async getDeploymentStatus() {
       return { state: proxyReady ? "ready" : "pending" };
     },
-    async removeDeployment() {},
+    async removeDeployment(_context, removal) {
+      if (removal.unboundDeployment !== undefined) {
+        events.push("remove-unbound");
+      }
+    },
   };
   const context = {
     harnessAuth: auth,
     async configureCredentialDeployment() {
       events.push("configure");
-      return { credentialProjections: [projection] };
+      return { credentialProjections: [currentProjection] };
     },
     async verifyCredentialDeploymentRelease(held) {
       events.push("verify");
@@ -907,12 +939,13 @@ test("staged Compute release requires both ready observations, this held acknowl
   });
   await assert.rejects(mismatched.prepare(), /staged model binding does not match/);
 
-  const { gatewayName, markReady, prepare } = dedicatedFirstDeployFixture({
-    sandboxDriver,
-    credentialProxyDriver: proxyDriver,
-    context,
-    revision: stagedRevision,
-  });
+  const { driver, gatewayName, markReady, namespace, prepare, read, revision, state } =
+    dedicatedFirstDeployFixture({
+      sandboxDriver,
+      credentialProxyDriver: proxyDriver,
+      context,
+      revision: stagedRevision,
+    });
   assert.equal((await prepare()).ready, false);
   markReady(gatewayName);
 
@@ -935,11 +968,45 @@ test("staged Compute release requires both ready observations, this held acknowl
   assert.equal(events.includes("release"), false);
 
   verifyAllowed = true;
+  currentProjection = {
+    ...projection,
+    placeholder: { kind: "proxy", value: "replacement-placeholder" },
+  };
+  // The provider contract refuses a conflicting projection for the same held startup.
+  // Compute must reconcile the current projection and must not release an old acknowledgement.
+  await assert.rejects(prepare(), /conflicting projections/);
+  assert.equal(events.includes("release"), false);
+  currentProjection = projection;
   assert.equal((await prepare()).ready, false, "release alone does not prove serving");
   assert.deepEqual(events.slice(-3), ["verify", "release", "status:pending"]);
   const configured = events.filter((event) => event === "configure").length;
   observation = { state: "serving", startup };
-  assert.equal((await prepare()).ready, false);
+  state.providerPod = readyNativeHarnessPod(namespace, workloadLabels);
+  state.connected = true;
+  assert.equal((await prepare()).ready, false, "node enrollment leaves Gateway binding pending");
+  const enrolled = read("Secret", driver.workspaceNodeName(revision));
+  assert.equal(
+    Buffer.from(enrolled.data.enrolledRevisionId, "base64").toString("utf8"),
+    revision.id,
+  );
+  assert.equal(startupExposure, false, "first enrollment withdraws the startup exposure");
+  provisionFailure = new Error("provider failed after recreating exposure");
+  await assert.rejects(prepare(), /provider failed after recreating exposure/);
+  assert.equal(startupExposure, false, "failed provisioning still withdraws enrolled exposure");
+  assert.equal(events.includes("remove-unbound"), false, "the enrolled Proxy may already be bound");
+  provisionFailure = undefined;
+  proxyReady = false;
+  withdrawalFailure = new Error("exposure withdrawal did not confirm");
+  await assert.rejects(prepare(), /exposure withdrawal did not confirm/);
+  assert.equal(startupExposure, true, "a failed withdrawal keeps the enrolled retry unready");
+  assert.equal(events.includes("remove-unbound"), false, "withdrawal failure preserves the Proxy");
+  withdrawalFailure = undefined;
+  assert.equal((await prepare()).ready, false, "pending Proxy status keeps the retry unready");
+  assert.equal(startupExposure, false, "an enrolled retry withdraws exposure before returning");
+  proxyReady = true;
+  markReady(gatewayName);
+  state.gatewayWorkspaceNodeId = "node-1";
+  assert.equal((await prepare()).ready, true, "a serving retry adopts the enrolled node");
   assert.equal(events.filter((event) => event === "configure").length, configured);
   assert.equal(events.filter((event) => event === "release").length, 1);
 });

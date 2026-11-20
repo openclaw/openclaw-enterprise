@@ -7648,7 +7648,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         // worker's exposure serves only Compute's status read before its first enrollment,
         // and the provider withdraws it from a Sandbox adopted after that (finding 1657).
         const nodeEnrolled = await this.workspaceNodeEnrolled(revision, namespace);
-        if (staged !== undefined && (context?.existingHarnessOnly || nodeEnrolled)) {
+        if (staged !== undefined && context?.existingHarnessOnly) {
           throw new DependencyUnavailableError(
             "Staged Sandbox provisioning cannot preserve this existing Harness lifecycle state.",
           );
@@ -7659,6 +7659,34 @@ export class KubernetesComputeDriver implements ComputeDriver {
           requirements,
           ...(context?.existingHarnessOnly ? { existingHarnessOnly: true as const } : {}),
           workspaceNodeEnrolled: nodeEnrolled,
+        };
+        const transientProviderFailure = (error: unknown, message: string): unknown =>
+          error instanceof DependencyUnavailableError
+            ? new TransientDependencyError("sandbox_gateway", "unavailable", message, {
+                cause: error,
+              })
+            : error;
+        // The node has enrolled: the worker is past its checks, and from now on agent-run
+        // code may bind the worker's transport port, so the exposure Compute's read used
+        // must go before the revision is ready (finding 1657). A withdrawal that fails
+        // keeps the revision unready; the provider completes it on the next adoption.
+        const withdrawProviderExposure = async (): Promise<void> => {
+          if (nativeRuntime === undefined || sandboxDriver.withdrawHarnessExposure === undefined) {
+            return;
+          }
+          await this.prepareRevisionStage("sandbox_provision", async () => {
+            try {
+              await sandboxDriver.withdrawHarnessExposure!({
+                ...harnessContext,
+                workspaceNodeEnrolled: true,
+              });
+            } catch (error) {
+              throw transientProviderFailure(
+                error,
+                "The Sandbox provider did not answer the Harness exposure withdrawal.",
+              );
+            }
+          });
         };
         const deployment = {
           namespaceId: revision.namespaceId,
@@ -7683,6 +7711,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
               });
         let sandbox: SandboxResourceRef | undefined;
         let expected: CredentialDeploymentConfiguration | undefined;
+        if (
+          staged !== undefined &&
+          nodeEnrolled &&
+          nativeRuntime !== undefined &&
+          sandboxDriver.withdrawHarnessExposure === undefined
+        ) {
+          throw new DependencyUnavailableError(
+            "The staged Sandbox cannot withdraw the enrolled Harness exposure.",
+          );
+        }
         try {
           if (staged === undefined) {
             sandbox = await this.prepareRevisionStage("sandbox_provision", () =>
@@ -7706,25 +7744,33 @@ export class KubernetesComputeDriver implements ComputeDriver {
               proxyWiring: _wiring,
               ...workload
             } = requirements;
-            const targetRef = await this.prepareRevisionStage("sandbox_provision", () =>
-              stagedSandbox!.provisionHarness(
-                {
-                  deployment,
-                  workload,
-                  restrictions: [
-                    {
-                      role: "harness",
-                      image: workload.image,
-                      mounts: workload.workspaceMounts.map(({ mountPath, readOnly }) => ({
-                        path: mountPath,
-                        readOnly,
-                      })),
-                    },
-                  ],
-                },
-                sandboxContext.signal,
-              ),
-            );
+            const targetRef = await this.prepareRevisionStage("sandbox_provision", async () => {
+              try {
+                return await stagedSandbox!.provisionHarness(
+                  {
+                    deployment,
+                    workload,
+                    restrictions: [
+                      {
+                        role: "harness",
+                        image: workload.image,
+                        mounts: workload.workspaceMounts.map(({ mountPath, readOnly }) => ({
+                          path: mountPath,
+                          readOnly,
+                        })),
+                      },
+                    ],
+                  },
+                  sandboxContext.signal,
+                );
+              } finally {
+                // Staged provisioning cannot carry the enrollment flag and may recreate
+                // startup exposure even if its reply is lost or provisioning fails.
+                if (nodeEnrolled) {
+                  await withdrawProviderExposure();
+                }
+              }
+            });
             if (
               targetRef.namespaceId !== deployment.namespaceId ||
               targetRef.agentId !== deployment.agentId ||
@@ -7736,7 +7782,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             expected = { targetRef, configurationId: revision.configurationId };
           }
         } catch (error) {
-          if (staged !== undefined && expected === undefined) {
+          if (staged !== undefined && !nodeEnrolled && expected === undefined) {
             await proxy!.removeDeployment!(proxyContext, { unboundDeployment: deployment });
           }
           if (sandboxDriver.repositoryAccess?.isRouteBlockedError(error)) {
@@ -7822,6 +7868,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
           if (!validStartup(startup.startup)) {
             throw new OwnershipFailure("The staged Harness reported another startup.");
           }
+          if (nodeEnrolled && startup.state !== "serving") {
+            throw new DependencyUnavailableError(
+              "Staged Sandbox provisioning cannot preserve this existing Harness lifecycle state.",
+            );
+          }
           if (startup.state === "serving") {
             if (!(await observeReadiness())) {
               return incomplete();
@@ -7867,13 +7918,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
               return incomplete();
             }
             const held = startup.startup;
-            if (startup.projections !== "installed") {
-              startup = await stagedSandbox!.prepareHarnessProcess(
-                held,
-                credentialProjections,
-                signal,
-              );
-            }
+            startup = await stagedSandbox!.prepareHarnessProcess(
+              held,
+              credentialProjections,
+              signal,
+            );
             if (
               startup.state !== "held" ||
               startup.projections !== "installed" ||
@@ -7933,12 +7982,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
         // rechecked until the deployment deadline (finding 1658). A Driver's own transient
         // class is not a DependencyUnavailableError and passes through; refusals and invalid
         // data keep their classes.
-        const transientProviderFailure = (error: unknown, message: string): unknown =>
-          error instanceof DependencyUnavailableError
-            ? new TransientDependencyError("sandbox_gateway", "unavailable", message, {
-                cause: error,
-              })
-            : error;
         const observeProviderHarness = async (): Promise<SandboxHarnessStatus> =>
           this.prepareRevisionStage("sandbox_provision", async () => {
             const transportToken = await this.prepareRevisionStage("harness_auth", () =>
@@ -7953,28 +7996,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
               );
             }
           });
-        // The node has enrolled: the worker is past its checks, and from now on agent-run
-        // code may bind the worker's transport port, so the exposure Compute's read used
-        // must go before the revision is ready (finding 1657). A withdrawal that fails
-        // keeps the revision unready; the provider completes it on the next adoption.
-        const withdrawProviderExposure = async (): Promise<void> => {
-          if (nativeRuntime === undefined || sandboxDriver.withdrawHarnessExposure === undefined) {
-            return;
-          }
-          await this.prepareRevisionStage("sandbox_provision", async () => {
-            try {
-              await sandboxDriver.withdrawHarnessExposure!({
-                ...harnessContext,
-                workspaceNodeEnrolled: true,
-              });
-            } catch (error) {
-              throw transientProviderFailure(
-                error,
-                "The Sandbox provider did not answer the Harness exposure withdrawal.",
-              );
-            }
-          });
-        };
         const heldProviderHarnessFailure = (
           harness: SandboxHarnessStatus,
         ): ComputeReadiness | undefined => {
