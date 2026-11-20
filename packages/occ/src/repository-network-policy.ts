@@ -5,6 +5,7 @@ import {
   RepositoryNetworkPolicyAdmissionError,
   type Agent,
   type Configuration,
+  type CredentialSource,
   type ComputeDriver,
   type HarnessDescriptor,
   type IAMDriver,
@@ -27,7 +28,6 @@ import {
   soleHarnessSource,
   type ConfigurationOwnership,
 } from "./deployment-policy.ts";
-import type { PlatformReadView, PlatformUnitOfWork } from "./state/platform-state.ts";
 import type { InstalledDriver } from "./installed-driver.ts";
 import { DependencyUnavailableError, ResourceStateConflictError } from "./errors.ts";
 
@@ -136,11 +136,14 @@ export function delegatedRepositoryCeiling(
 }
 
 export async function readRepositoryEditTopology(
-  state: PlatformReadView | PlatformUnitOfWork,
   agent: Readonly<Agent>,
   resolveHarness: (id: string, mode: "dedicated") => HarnessDescriptor | undefined,
   canRead: (target: ResourceRef) => Promise<boolean>,
-  readConfiguration: (metadata: ConfigurationOwnership) => Promise<Readonly<Configuration>>,
+  read: {
+    configurationOwnership(id: string): Promise<ConfigurationOwnership | undefined>;
+    configuration(metadata: ConfigurationOwnership): Promise<Readonly<Configuration>>;
+    credentialSource(id: string): Promise<Readonly<CredentialSource> | undefined>;
+  },
 ) {
   const { namespaceId, configurationId } = agent;
   const sourceId = soleHarnessSource(agent);
@@ -153,12 +156,10 @@ export async function readRepositoryEditTopology(
   if (!(await canRead(configRef)) || !(await canRead(sourceRef))) {
     return undefined;
   }
-  // Saves already hold Namespace and Agent. Lock Configuration before source as at deploy.
-  const metadata = await ("audit" in state
-    ? state.configurations.lockConfiguration(namespaceId, configurationId)
-    : state.configurations.findConfiguration(namespaceId, configurationId));
+  // Save readers lock Configuration before the credential source, as at deploy.
+  const metadata = await read.configurationOwnership(configurationId);
   assertAgentConfiguration(metadata, namespaceId, configurationId);
-  const { values } = await readConfiguration(metadata);
+  const { values } = await read.configuration(metadata);
   refuseStoredConfigurationSettings(values);
   if (!selectsModel(values)) {
     return undefined;
@@ -168,9 +169,7 @@ export async function readRepositoryEditTopology(
   if (harness?.id !== harnessId || !isNonEmptyString(harness.version)) {
     return undefined;
   }
-  const source = await ("audit" in state
-    ? state.credentialSources.lockCredentialSource(namespaceId, sourceId)
-    : state.credentialSources.findCredentialSource(namespaceId, sourceId));
+  const source = await read.credentialSource(sourceId);
   if (
     source?.state !== "ready" ||
     source.namespaceId !== namespaceId ||

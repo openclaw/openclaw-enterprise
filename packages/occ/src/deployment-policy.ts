@@ -6,6 +6,7 @@ import {
   validateSandboxNetworkGrants,
   type Agent,
   type AgentRevision,
+  type Configuration,
   type OpenClawConfigurationDocument,
   type ComputeDriver,
   type ProxyPlan,
@@ -21,8 +22,6 @@ import {
   SandboxNetworkPolicyConflictError,
   ScopeViolationError,
 } from "./errors.ts";
-
-import type { PlatformReadView } from "./state/platform-state.ts";
 
 export const GATEWAY_MANAGED_MODE_UNSUPPORTED =
   "Agent setting gatewayManagedMode is not supported by the selected Compute Driver.";
@@ -75,8 +74,8 @@ export function selectsModel(values: Readonly<OpenClawConfigurationDocument>): b
   );
 }
 
-export type ConfigurationOwnership = NonNullable<
-  Awaited<ReturnType<PlatformReadView["configurations"]["findConfiguration"]>>
+export type ConfigurationOwnership = Readonly<
+  Pick<Configuration, "id" | "namespaceId" | "kind" | "generation" | "secretBindings" | "createdAt">
 >;
 
 export function assertAgentConfiguration(
@@ -92,7 +91,13 @@ export function assertAgentConfiguration(
 }
 
 export function activePolicyRevision(
-  revisions: PlatformReadView["revisions"],
+  revisions: {
+    findRevision(
+      namespaceId: string,
+      agentId: string,
+      revisionId: string,
+    ): Promise<Readonly<AgentRevision> | undefined>;
+  },
   agent: Readonly<Agent>,
 ) {
   return agent.activeRevisionId === undefined
