@@ -12,6 +12,7 @@ This proposal requires human review and merge.
 
 The proposed [Installation credential ownership amendment](installation-credential-ownership.md) revises the v1 custody, delivery and deployment decisions below.
 The later proposed [TokenService instance and update amendment](token-service-instance-and-updates.md) revises source ownership records and proxy delivery notifications.
+The proposed [worker credential configuration amendment](worker-credential-configuration.md) defines the Driver entry points needed to configure a staged target without giving Compute a credential resolver.
 
 ## Decision
 
