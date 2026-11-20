@@ -61,6 +61,8 @@ export function postgresAgentAuditState(
       state.holdAgentAuditResource(unit, installationId, namespaceId, agentId),
     list: (unit, namespaceId, agentId, selection) =>
       state.listAgentAuditInTransaction(unit, namespaceId, agentId, selection),
+    findLinkedTurn: (unit, namespaceId, agentId, auditEventId) =>
+      state.findAgentAuditLinkedTurn(unit, namespaceId, agentId, auditEventId),
   };
 }
 

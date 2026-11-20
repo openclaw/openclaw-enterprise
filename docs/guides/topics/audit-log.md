@@ -113,6 +113,8 @@ starts without runtime reporting.
 Use `sessionId` and `turnId` together to find records for a run. The Gateway
 supplies the run ID. OpenClaw can reuse it during recovery. A missing result
 leaves the outcome unknown. The plugin saves metadata only.
+When a turn includes `details.messageId`, you can
+[open its saved user message](#open-the-message-for-a-turn).
 
 Dedicated OpenClaw reports the turn through its Gateway. Its worker does not
 report individual model calls on that connection. Codex can return a response
@@ -238,6 +240,40 @@ send it as `cursor` on the next request. Use the same session and Agent within
 OCC saves a disclosure record before it sends each page, including an empty
 page. If it cannot confirm the write, it returns `503` and withholds the page.
 Give your platform operator the request ID if the error persists.
+
+### Open the message for a turn
+
+Ask a Namespace administrator to grant your human Principal both `read_audit`
+and `read_audit_content` directly on the Agent. The same Role can contain
+both permissions. The content grant gives you access to linked user messages
+from chats with this Agent, including chats that other users started.
+
+1. List the Agent's audit events. Find a turn with `details.messageId`.
+2. Copy the event's top-level `id` into the following request.
+
+```http
+GET /namespaces/{namespaceId}/agents/{agentId}/audit-events/{auditEventId}/message
+```
+
+The [response](../../reference/api.md#get-namespacesnamespaceidagentsagentidauditeventsauditeventidmessage)
+contains the turn in `data.event` and the text from chat history in
+`data.message.text`. OCC gets the message from the Gateway when you make
+this request. PostgreSQL stores the message ID and a record of who opened
+the event. The text stays in chat history.
+
+The Gateway can link an ordinary browser chat in all three runtimes.
+Codex can also link an HTTP chat when it reports the ID of its saved input.
+If the ID arrives after the turn starts, check the completion event.
+An OpenClaw HTTP chat can have a turn ID and a message ID with no known
+connection. A turn can also combine several inputs, or start without a
+user message. Check for `details.messageId` before you offer **Open message**.
+
+| Status | What to check                                                                                                                                                  |
+| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `403`  | Check both direct grants for this Agent.                                                                                                                       |
+| `404`  | The event must be from the active revision and the last 24 hours. Its linked user message must still be visible in chat history and fit within 64 KiB of text. |
+| `501`  | Check that the Installation uses Native IAM, PostgreSQL, and Control Plane audit with managed Gateway routing.                                                 |
+| `503`  | OCC could not finish the Gateway lookup or confirm the disclosure record. Try again.                                                                           |
 
 ## Access and limitations
 

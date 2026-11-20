@@ -4,6 +4,7 @@ import {
   assertExecutionAdmission,
   CONFIGURED_IAM_ID_PREFIXES,
   CONTROLLER_WORK_AUDIT_ACTIONS,
+  isAgentAuditLinkedTurn,
   isConfiguredRoleId,
 } from "@openclaw-enterprise/contracts";
 import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
@@ -31,7 +32,11 @@ import { postgresSavedConnections } from "./postgres-saved-connections.ts";
 import { postgresAuthenticationStates } from "./postgres-authentication-states.ts";
 import { postgresConnectionTemplates } from "./postgres-connection-templates.ts";
 import { postgresRepositorySessions } from "./postgres-repository-sessions.ts";
-import { projectAgentAuditRow, SELECT_AGENT_AUDIT } from "./postgres-agent-audit.ts";
+import {
+  projectAgentAuditRow,
+  SELECT_AGENT_AUDIT,
+  SELECT_LINKED_TURN,
+} from "./postgres-agent-audit.ts";
 import {
   validRepositoryBindingSelections,
   normalizedRepositoryAccess,
@@ -1987,6 +1992,28 @@ export class PostgresPlatformState implements PlatformStateStore {
       selection.limit + 1,
     ]);
     return rows(result.rows).map(projectAgentAuditRow);
+  }
+
+  async findAgentAuditLinkedTurn(
+    unit: PlatformUnitOfWork,
+    namespaceId: string,
+    agentId: string,
+    auditEventId: string,
+  ) {
+    const result = await this.queryInTransaction(unit, SELECT_LINKED_TURN, [
+      namespaceId,
+      agentId,
+      auditEventId,
+    ]);
+    const [row] = rows(result.rows);
+    if (row === undefined) {
+      return undefined;
+    }
+    const event = projectAgentAuditRow(row);
+    if (!isAgentAuditLinkedTurn(event)) {
+      throw new PersistedStateInvalidError("The saved audit message reference is invalid.");
+    }
+    return event;
   }
 
   /**

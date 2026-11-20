@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 
-import { runtimeAuditPageEntry } from "../runtime-audit.ts";
+import { linkedTurnEntry, runtimeAuditPageEntry } from "../runtime-audit.ts";
 import { AuditId, Meta, RequestId, RevisionId, Timestamp } from "./common.ts";
 
 export const AGENT_AUDIT_PAGE_LIMIT = 100;
@@ -143,3 +143,27 @@ export const AgentAuditResponse = Type.Object(
 export type AgentAuditEntry = Type.Static<typeof AgentAuditEntry>;
 export type AgentAuditPage = Type.Static<typeof AgentAuditPage>;
 export type AgentAuditQuery = Type.Static<typeof AgentAuditQuery>;
+
+const AgentAuditLinkedTurn = linkedTurnEntry(auditEntryFields);
+export type AgentAuditLinkedTurn = Type.Static<typeof AgentAuditLinkedTurn>;
+
+export function isAgentAuditLinkedTurn(entry: AgentAuditEntry): entry is AgentAuditLinkedTurn {
+  return Check(AgentAuditLinkedTurn, entry);
+}
+
+export const AGENT_AUDIT_MESSAGE_BYTES = 64 * 1024;
+const AgentAuditMessage = Type.Object(
+  { role: Type.Literal("user"), text: Type.String({ maxLength: AGENT_AUDIT_MESSAGE_BYTES }) },
+  { additionalProperties: false },
+);
+export type AgentAuditMessage = Type.Static<typeof AgentAuditMessage>;
+export const AgentAuditMessageResponse = Type.Object(
+  {
+    data: Type.Object(
+      { event: AgentAuditLinkedTurn, message: AgentAuditMessage },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);

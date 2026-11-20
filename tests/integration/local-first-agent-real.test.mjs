@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { selectFirstAgentModel, verifyFirstAgentModel } from "../../scripts/first-agent-model.ts";
 import {
   allowAgentAuditRead,
+  assertAgentAuditMessage,
   assertAgentTurnAudit,
 } from "../../scripts/ci/first-agent-smoke/agents.ts";
 import {
@@ -916,7 +917,7 @@ test(
       const revision = await request("GET", `${nativePath}/revisions/${initialRevisionId}`);
       assert.equal(revision.harness.id, "openclaw");
       assert.equal(revision.harness.mode, "dedicated");
-      const readAudit =
+      const reader =
         auditAdministratorPassword === undefined
           ? undefined
           : await allowAgentAuditRead(
@@ -924,6 +925,7 @@ test(
               nativeAgent,
               auditAdministratorPassword,
             );
+      const readAudit = reader?.readAudit;
       const access = await request("GET", `${base}/iam/access-bindings`);
       assert.ok(
         access.some(
@@ -1004,7 +1006,7 @@ test(
         if (readAudit === undefined) {
           return;
         }
-        await assertAgentTurnAudit(readAudit, {
+        const turn = await assertAgentTurnAudit(readAudit, {
           label: "Dedicated OpenClaw",
           revisionId,
           runtimeSource: "openclaw",
@@ -1012,17 +1014,32 @@ test(
           turnId: proof.runId,
         });
         await expectPersistedRuntimeAudit(chartStack, revisionId, await readAudit(), chartOptions);
+        return turn;
       }
-      async function checkNormalChat(stage, revisionId, expectedNodeId) {
+      let linkedEventId;
+      async function checkNormalChat(stage, revisionId, expectedNodeId, previous) {
         if (readAudit === undefined) {
           return;
         }
-        // Each revision gets its own native session and a reply that needs no file or tool.
+        // Read a plain chat in the same session as the tool request on each revision.
         await nativeContext.test(
-          `dedicated OpenClaw audits a normal chat on the ${stage} revision`,
+          `dedicated OpenClaw links the saved message to the turn on the ${stage} revision`,
           async () => {
-            const proof = await proveNativeTurn(revisionId, { plainChat: true, expectedNodeId });
-            await checkAudit(revisionId, proof);
+            const proof = await proveNativeTurn(revisionId, {
+              plainChat: true,
+              expectedNodeId,
+              session: previous?.session,
+              sessionFile: previous?.sessionFile,
+            });
+            const turn = await checkAudit(revisionId, proof);
+            await assertAgentAuditMessage(reader, turn, proof.source, {
+              checkGrant: stage === "first",
+            });
+            if (linkedEventId) {
+              // The transcript survived. Only the active revision may return its messages.
+              await assert.rejects(reader.readMessage(linkedEventId), /HTTP 404$/);
+            }
+            linkedEventId = turn.id;
           },
         );
       }
@@ -1181,7 +1198,6 @@ test(
       // Native setup status retains its delivery receipt for 20 minutes. The
       // durable Agent-owned Secret and device remain authoritative afterward.
       const completionRetainedUntil = completion.completion.ts + 20 * 60_000;
-      await checkNormalChat("first", initialRevisionId, initialProvider.expectedNodeId);
       let firstNativeProof;
       async function checkInitialFilesAndExec() {
         // Reading through the real Console workspace route proves private setup
@@ -1216,6 +1232,12 @@ test(
           checkInitialFilesAndExec,
         );
       }
+      await checkNormalChat(
+        "first",
+        initialRevisionId,
+        initialProvider.expectedNodeId,
+        firstNativeProof,
+      );
 
       // Keep the genuine Gateway expiry. The successor must reuse the saved device
       // credential even though the original one-shot setup can no longer enroll it.
@@ -1251,7 +1273,6 @@ test(
         "native-replacement",
         replacementRequestedAt,
       );
-      await checkNormalChat("replacement", replacement.id, replacementProvider.expectedNodeId);
       if (readAudit !== undefined) {
         assert.deepEqual(
           await apiProcess(chartStack, chartOptions),
@@ -1318,6 +1339,12 @@ test(
         "The resumed exec must read the relative file written before redeployment",
       );
       await checkAudit(replacement.id, replacementNativeProof);
+      await checkNormalChat(
+        "replacement",
+        replacement.id,
+        replacementProvider.expectedNodeId,
+        replacementNativeProof,
+      );
     };
     // Distinct Agents and sources share only the already-ready Namespace. Keep
     // mutation/denial checks below the join and retain each real identity proof.

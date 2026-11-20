@@ -1288,6 +1288,7 @@ export const PERMISSION_ACTIONS = Object.freeze([
   "read_logs",
   "manage_policy",
   "read_audit",
+  "read_audit_content",
 ] as const);
 
 export type PermissionAction = (typeof PERMISSION_ACTIONS)[number];
@@ -1319,6 +1320,7 @@ export const SUPPORTED_PERMISSION_ACTIONS: Readonly<
     "read_logs",
     "manage_policy",
     "read_audit",
+    "read_audit_content",
   ] as const),
   agent_revision: Object.freeze(["read"] as const),
 });
@@ -1624,6 +1626,10 @@ export {
   AGENT_LIFECYCLE_AUDIT_ACTIONS,
   projectAgentLifecycleAuditDetails,
   type AgentAuditEntry,
+  isAgentAuditLinkedTurn,
+  AGENT_AUDIT_MESSAGE_BYTES,
+  type AgentAuditLinkedTurn,
+  type AgentAuditMessage,
   type AgentAuditPage,
   type AgentAuditQuery,
 } from "./api/agent-audit.ts";

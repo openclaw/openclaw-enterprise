@@ -23,6 +23,57 @@ const terminalOutcomes = {
 // The service owns delivery. Short-lived plugin registries can register hooks for a turn.
 let active;
 
+function remember(map, key, value) {
+  map.delete(key);
+  if (map.size >= maxTrackedTurns) {
+    map.delete(map.keys().next().value);
+  }
+  map.set(key, value);
+}
+
+function inputRunId(message) {
+  const metadata = message.__openclaw;
+  // Codex annotates the committed user row when it accepts the native prompt.
+  if (metadata?.runId !== undefined) {
+    if (
+      metadata.mirrorOrigin === "codex-app-server" &&
+      typeof metadata.mirrorIdentity === "string" &&
+      metadata.mirrorIdentity.endsWith(":prompt")
+    ) {
+      return metadata.runId;
+    }
+    return;
+  }
+  // chat.send stamps the model selection on the original visible human input
+  // and uses <client run ID>:user. Other writers also use the :user suffix,
+  // including HTTP chat, where the prefix can be unrelated to the run.
+  // TODO: Use the committed input ID from lifecycle events when OpenClaw exposes it.
+  const key = message.idempotencyKey;
+  if (metadata?.modelSelection && typeof key === "string" && key.endsWith(":user")) {
+    return key.slice(0, -":user".length);
+  }
+}
+
+function recordInput(inputs, { target, messageId, message }) {
+  if (!target?.sessionId || !messageId || message?.role !== "user") {
+    return;
+  }
+  const runId = inputRunId(message);
+  if (!runId) {
+    return;
+  }
+  const key = JSON.stringify([target.sessionId, runId]);
+  const metadata = message.__openclaw;
+  const unavailable =
+    message.display === false ||
+    metadata?.steerTargetRunId ||
+    metadata?.beforeAgentRunBlocked ||
+    message.idempotencyKey?.startsWith("followup-collect:") ||
+    (message.provenance && message.provenance.kind !== "external_user");
+  const ambiguous = inputs.has(key) && inputs.get(key) !== messageId;
+  remember(inputs, key, unavailable || ambiguous ? null : messageId);
+}
+
 function recordLifecycle({ sessionId, runId, ts, data }) {
   if (!active || !sessionId || !runId) {
     return;
@@ -32,21 +83,24 @@ function recordLifecycle({ sessionId, runId, ts, data }) {
   if (!started && (data.executionSettled !== true || isAgentLifecycleYieldedWaiting(data))) {
     return;
   }
-  const { turns, sink } = active;
+  const { turns, inputs, sink } = active;
   const key = JSON.stringify([sessionId, runId]);
   if (turns.get(key) === started) {
     return;
   }
   // Repeated starts share the active run. A start after settlement opens it again.
-  turns.delete(key);
-  if (turns.size >= maxTrackedTurns) {
-    turns.delete(turns.keys().next().value);
-  }
-  turns.set(key, started);
-  const identity = { sessionId, turnId: runId, occurredAt: new Date(ts).toISOString() };
+  remember(turns, key, started);
+  const messageId = inputs.get(key);
+  const identity = {
+    sessionId,
+    turnId: runId,
+    ...(messageId ? { messageId } : {}),
+    occurredAt: new Date(ts).toISOString(),
+  };
   if (started) {
     return sink.emit({ action: "openclaw.runtime.turn.started", ...identity });
   }
+  inputs.delete(key);
   const { reason } = resolveAgentRunLifecycleTerminalFacts({ phase: data.phase, data });
   return sink.emit({
     action: "openclaw.runtime.turn.completed",
@@ -71,9 +125,10 @@ function recordModel({ sessionId, runId, callId, model, provider, outcome, failu
   });
 }
 
-function createService() {
+function createService(runtime) {
   let owner;
   let unsubscribe;
+  let unsubscribeTranscript;
   return {
     id,
     start() {
@@ -81,14 +136,19 @@ function createService() {
       if (!sink) {
         return;
       }
-      owner = { sink, turns: new Map() };
+      const inputs = new Map();
+      owner = { sink, turns: new Map(), inputs };
       active = owner;
+      unsubscribeTranscript = runtime.events.onSessionTranscriptUpdate((update) =>
+        recordInput(inputs, update),
+      );
       if (sink.source === "codex") {
         unsubscribe = subscribeCodexResponses(sink.emit);
       }
     },
     stop() {
       unsubscribe?.();
+      unsubscribeTranscript?.();
       if (active === owner) {
         active = undefined;
       }
@@ -105,7 +165,7 @@ export default {
     if (api.registrationMode !== "full") {
       return;
     }
-    api.registerService(createService());
+    api.registerService(createService(api.runtime));
     api.agent.events.registerAgentEventSubscription({
       id,
       streams: ["lifecycle"],

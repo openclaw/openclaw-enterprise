@@ -61,14 +61,25 @@ function runtimeEvent<const Action extends string, Fields extends TProperties>(
   };
 }
 
+function turnSchemas<Fields extends TProperties>(fields: Fields) {
+  return [
+    runtimeEvent("openclaw.runtime.turn.started", fields),
+    runtimeEvent("openclaw.runtime.turn.completed", {
+      ...fields,
+      outcome: Type.Union([outcome, Type.Literal("blocked")]),
+    }),
+  ] as const;
+}
+
+export function linkedTurnEntry<Common extends TProperties>(common: Common) {
+  const linked = turnSchemas({ ...turn, messageId: reference });
+  return schemaUnion(linked.map((schema) => schema.pageEntry(common)));
+}
+
 const schemas = [
   runtimeEvent("openclaw.runtime.session.started", session),
   runtimeEvent("openclaw.runtime.session.ended", session),
-  runtimeEvent("openclaw.runtime.turn.started", turn),
-  runtimeEvent("openclaw.runtime.turn.completed", {
-    ...turn,
-    outcome: Type.Union([outcome, Type.Literal("blocked")]),
-  }),
+  ...turnSchemas(turn),
   runtimeEvent("openclaw.runtime.model_call.started", model),
   runtimeEvent("openclaw.runtime.model_call.completed", { ...model, outcome }),
   runtimeEvent("openclaw.runtime.model_response.observed", {

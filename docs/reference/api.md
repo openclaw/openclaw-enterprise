@@ -90,7 +90,7 @@ the paths.
 | [Connections](#connections) | 15 operations |
 | [Installation](#installation) | 10 operations |
 | [Namespaces](#namespaces) | 7 operations |
-| [Agents](#agents) | 54 operations |
+| [Agents](#agents) | 55 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
@@ -4443,6 +4443,7 @@ Example response
 | [`GET /namespaces/{namespaceId}/agents/{agentId}`](#get-namespacesnamespaceidagentsagentid) | Get an exact Namespace-owned Agent |
 | [`PATCH /namespaces/{namespaceId}/agents/{agentId}`](#patch-namespacesnamespaceidagentsagentid) | Replace an exact Namespace-owned Agent's editable draft |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/audit-events`](#get-namespacesnamespaceidagentsagentidauditevents) | List audit metadata for one Agent |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/audit-events/{auditEventId}/message`](#get-namespacesnamespaceidagentsagentidauditeventsauditeventidmessage) | Read the saved user message linked to an Agent turn |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdraw`](#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw) | Revoke one credential source from the selected Agent revision |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdrawal`](#get-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdrawal) | Get the withdrawal state of a credential source for an Agent |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/deploy`](#post-namespacesnamespaceidagentsagentiddeploy) | Save an Agent revision from the Agent's saved settings |
@@ -6336,6 +6337,7 @@ Example response
         "action": "openclaw.runtime.turn.completed",
         "details": {
           "agentRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+          "messageId": "7501adc8-16ab-45d7-8ed8-a63bf342629f",
           "outcome": "succeeded",
           "runtimeSource": "openclaw",
           "sessionId": "123e4567-e89b-42d3-a456-426614174000",
@@ -6370,6 +6372,84 @@ Example response
     "window": {
       "end": "2026-10-01T12:00:00.000Z",
       "start": "2026-09-30T12:00:00.000Z"
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/audit-events/{auditEventId}/message`
+
+<span id="get-namespacesnamespaceidagentsagentidauditeventsauditeventidmessage"></span>
+
+Read the saved user message linked to an Agent turn
+
+**Operation ID:** `getAgentAuditEventMessage`
+
+**Permissions:** Requires a human session with direct read_audit and read_audit_content grants on the requested Agent. Returns a linked turn event from the preceding 24 hours and its saved user message from the active revision. OCC records the disclosure before it returns the text.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `read_audit` | `agent` | `requested` |
+| `read_audit_content` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `auditEventId` | path | `string` | Yes | pattern: `^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "aud_019e8451-865d-4daf-a30d-b2be921186ce" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.event` | `object or object` | Yes | — |
+| `data.message` | `object` | Yes | — |
+| `data.message.role` | `"user"` | Yes | — |
+| `data.message.text` | `string` | Yes | max length: 65536 |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "event": {
+      "action": "openclaw.runtime.turn.completed",
+      "details": {
+        "agentRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+        "messageId": "7501adc8-16ab-45d7-8ed8-a63bf342629f",
+        "outcome": "succeeded",
+        "runtimeSource": "openclaw",
+        "sessionId": "123e4567-e89b-42d3-a456-426614174000",
+        "turnId": "0f8a6dad-40e1-4121-8521-676796fdcf83"
+      },
+      "event": "runtime_activity",
+      "id": "aud_019e8451-865d-4daf-a30d-b2be921186ce",
+      "occurredAt": "2026-10-01T11:31:00.000000Z",
+      "outcome": "success"
+    },
+    "message": {
+      "role": "user",
+      "text": "Summarize the release notes."
     }
   },
   "meta": {
@@ -11588,7 +11668,7 @@ List exact Namespace IAM Roles
 | `data[].name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `data[].permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit"` | Yes | — |
+| `data[].permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit" or "read_audit_content"` | Yes | — |
 | `data[].permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -11656,7 +11736,7 @@ Create an immutable Namespace IAM Role
 | --- | --- | --- | --- |
 | `name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit"` | Yes | — |
+| `permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit" or "read_audit_content"` | Yes | — |
 | `permissions[].resourceKind` | `"namespace" or "agent" or "agent_revision" or "configuration" or "credential_source" or "sandbox_policy" or "preset" or "secret" or "service_account"` | Yes | — |
 
 Example request
@@ -11696,7 +11776,7 @@ Example request
 | `data.name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit"` | Yes | — |
+| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit" or "read_audit_content"` | Yes | — |
 | `data.permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -11799,7 +11879,7 @@ Get an exact Namespace IAM Role
 | `data.name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit"` | Yes | — |
+| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit" or "read_audit_content"` | Yes | — |
 | `data.permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |

@@ -265,23 +265,29 @@ export async function allowAgentAuditRead(
   );
   const base = `/namespaces/${stack.namespaceId}`;
   const api = await signInConsole(stack, reader);
-  const readAudit = async () =>
-    (await api("GET", `${base}/agents/${agent.id}/audit-events?limit=100`)) as AgentAuditPage;
+  const path = `${base}/agents/${agent.id}/audit-events`;
+  const readAudit = async () => (await api("GET", `${path}?limit=100`)) as AgentAuditPage;
+  const readMessage = (id: string) => api("GET", `${path}/${id}/message`);
   // The same human session gains access only after the direct Agent grant.
   await assert.rejects(readAudit(), /HTTP 403$/);
-  const role = await administrator("POST", `${base}/iam/roles`, {
-    name: "First Agent audit reader",
-    permissions: [{ action: "read_audit", resourceKind: "agent" }],
-  });
-  await administrator("POST", `${base}/iam/access-bindings`, {
-    subjectKind: "identity",
-    subjectId: principalId,
-    roleId: wireField(role, "id"),
-    resourceKind: "agent",
-    resourceId: agent.id,
-  });
-  return readAudit;
+  async function grant(action: "read_audit" | "read_audit_content") {
+    const role = await administrator("POST", `${base}/iam/roles`, {
+      name: `First Agent ${action}`,
+      permissions: [{ action, resourceKind: "agent" }],
+    });
+    await administrator("POST", `${base}/iam/access-bindings`, {
+      subjectKind: "identity",
+      subjectId: principalId,
+      roleId: wireField(role, "id"),
+      resourceKind: "agent",
+      resourceId: agent.id,
+    });
+  }
+  await grant("read_audit");
+  return { readAudit, readMessage, grantContent: () => grant("read_audit_content") };
 }
+
+type AuditReader = Awaited<ReturnType<typeof allowAgentAuditRead>>;
 
 export async function assertAgentTurnAudit(
   readAudit: () => Promise<AgentAuditPage>,
@@ -305,7 +311,7 @@ export async function assertAgentTurnAudit(
     previousIds?: ReadonlySet<string>;
   },
 ) {
-  await waitFor(
+  const event = await waitFor(
     `${label} turn audit on ${revisionId}`,
     async () => {
       const page = await readAudit();
@@ -329,63 +335,94 @@ export async function assertAgentTurnAudit(
       const modelResults = events.filter(
         (event) => event.action === "openclaw.runtime.model_call.completed",
       );
-      return {
-        done: completes.some(({ details: turn }) => {
-          const started = starts.some(
-            ({ details }) => details.sessionId === turn.sessionId && details.turnId === turn.turnId,
+      const value = completes.find(({ details: turn }) => {
+        const started = starts.some(
+          ({ details }) => details.sessionId === turn.sessionId && details.turnId === turn.turnId,
+        );
+        if (
+          !started ||
+          turn.outcome !== "succeeded" ||
+          (turnId !== undefined && turn.turnId !== turnId)
+        ) {
+          return false;
+        }
+        if (responseIdHash !== undefined) {
+          return events.some(
+            (event) =>
+              event.action === "openclaw.runtime.model_response.observed" &&
+              event.details.sessionId === turn.sessionId &&
+              event.details.turnId === turn.turnId &&
+              event.details.provider === "codex" &&
+              event.details.model === model &&
+              event.details.responseIdHash === responseIdHash,
           );
+        }
+        if (model === undefined) {
+          return true;
+        }
+        return modelResults.some(({ details: result }) => {
           if (
-            !started ||
-            turn.outcome !== "succeeded" ||
-            (turnId !== undefined && turn.turnId !== turnId)
+            result.outcome !== "succeeded" ||
+            result.model !== model ||
+            result.sessionId !== turn.sessionId ||
+            result.turnId !== turn.turnId
           ) {
             return false;
           }
-          if (responseIdHash !== undefined) {
-            return events.some(
-              (event) =>
-                event.action === "openclaw.runtime.model_response.observed" &&
-                event.details.sessionId === turn.sessionId &&
-                event.details.turnId === turn.turnId &&
-                event.details.model === model &&
-                event.details.responseIdHash === responseIdHash,
-            );
-          }
-          if (model === undefined) {
-            return true;
-          }
-          return modelResults.some(({ details: result }) => {
-            if (
-              result.outcome !== "succeeded" ||
-              result.model !== model ||
-              result.sessionId !== turn.sessionId ||
-              result.turnId !== turn.turnId
-            ) {
-              return false;
-            }
-            return modelStarts.some(
-              ({ details: start }) =>
-                start.modelCallId === result.modelCallId &&
-                start.sessionId === result.sessionId &&
-                start.turnId === result.turnId &&
-                start.model === result.model &&
-                start.provider === result.provider,
-            );
-          });
-        }),
+          return modelStarts.some(
+            ({ details: start }) =>
+              start.modelCallId === result.modelCallId &&
+              start.sessionId === result.sessionId &&
+              start.turnId === result.turnId &&
+              start.model === result.model &&
+              start.provider === result.provider,
+          );
+        });
+      });
+      return {
+        done: value !== undefined,
+        value,
         state: { actions: events.map(({ action }) => action) },
       };
     },
     minute,
   );
+  assert.ok(event);
   log(`${label}: stored matching turn start and successful completion on ${revisionId}`);
+  return event;
 }
 
-function fixtureResponseIdHash(nonce: string) {
+export async function assertAgentAuditMessage(
+  { readMessage, grantContent }: AuditReader,
+  event: Awaited<ReturnType<typeof assertAgentTurnAudit>>,
+  source: { messageId: string; text: string },
+  { checkGrant = false } = {},
+) {
+  // The Gateway supplies the expected transcript ID, independently of the audit plugin.
+  assert.ok(source.messageId, "missing original user message in chat history");
+  assert.equal(event.details.messageId, source.messageId, "turn points to the wrong chat message");
+  assert.ok(!JSON.stringify(event).includes(source.text), "the audit list exposed message content");
+  if (checkGrant) {
+    // The same signed-in analyst can list this turn but needs a second grant to open it.
+    await assert.rejects(readMessage(event.id), /HTTP 403$/);
+    await grantContent();
+  }
+  const result = await readMessage(event.id);
+  assert.deepEqual(wireField(result, "event"), event);
+  const message = wireField(result, "message");
+  assert.equal(wireField(message, "role"), "user");
+  // Avoid putting the transcript in test logs if the response differs.
+  assert.ok(wireField(message, "text") === source.text, "the message differs from the original");
+}
+
+function codexResponse(nonce: string) {
   const hash = createHash("sha256")
     .update(`openclaw:codex:response-id:v1\0resp_${nonce}`)
     .digest("hex");
-  return `sha256:${hash.slice(0, 16)}`;
+  return {
+    model: `openai-compatible/${defaultAgentModel}`,
+    responseIdHash: `sha256:${hash.slice(0, 16)}`,
+  };
 }
 
 export async function chatWithAudit(
@@ -397,14 +434,14 @@ export async function chatWithAudit(
 ) {
   const previousIds = new Set((await readAudit()).events.map(({ id }) => id));
   const nonce = await chatTurn(stack, agent, revisionId);
-  await assertAgentTurnAudit(readAudit, {
+  const turn = await assertAgentTurnAudit(readAudit, {
     label: agent.label,
     revisionId,
     runtimeSource,
-    model: defaultAgentModel,
-    ...(runtimeSource === "codex" && { responseIdHash: fixtureResponseIdHash(nonce) }),
+    ...(runtimeSource === "codex" ? codexResponse(nonce) : { model: defaultAgentModel }),
     previousIds,
   });
+  return { turn, nonce };
 }
 
 export function chatCodexWithAudit(
@@ -416,7 +453,7 @@ export function chatCodexWithAudit(
   return chatWithAudit(stack, agent, revisionId, readAudit, "codex");
 }
 
-async function codexGatewayRpc(
+async function gatewayRpc(
   stack: LocalSetup,
   { namespace, pod }: GatewayPod,
   method: string,
@@ -437,6 +474,53 @@ async function codexGatewayRpc(
   return JSON.parse(stdout) as unknown;
 }
 
+export async function checkLinkedChat(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  revisionId: string,
+  reader: AuditReader,
+  runtimeSource: "codex" | "openclaw",
+) {
+  const gateway = await readyGateway(stack, agent.id, revisionId);
+  const sessionKey = `agent:main:message-${randomUUID()}`;
+  async function send() {
+    const text = `Reply with exactly OCE_SMOKE_${randomUUID()} and no other text.`;
+    const sent = await gatewayRpc(stack, gateway, "chat.send", {
+      sessionKey,
+      idempotencyKey: randomUUID(),
+      message: text,
+    });
+    const turnId = wireField(sent, "runId");
+    assert.ok(typeof turnId === "string" && turnId.length > 0);
+    const turn = await assertAgentTurnAudit(reader.readAudit, {
+      revisionId,
+      runtimeSource,
+      label: agent.label,
+      turnId,
+    });
+    return { turn, text };
+  }
+  const first = await send();
+  await send();
+  // Opening the earlier event after a follow-up must return the first user message.
+  const history = await gatewayRpc(stack, gateway, "chat.history", { sessionKey, limit: 10 });
+  assert.equal(wireField(history, "sessionId"), first.turn.details.sessionId);
+  const messages = wireField(history, "messages");
+  assert.ok(Array.isArray(messages));
+  const users = messages.filter((message) => wireField(message, "role") === "user");
+  assert.equal(users.length, 2);
+  const messageId = wireField(wireField(users[0], "__openclaw"), "id");
+  assert.ok(typeof messageId === "string" && messageId.length > 0);
+  await assertAgentAuditMessage(
+    reader,
+    first.turn,
+    { messageId, text: first.text },
+    { checkGrant: true },
+  );
+  log(`${agent.label}: audit message matched the earlier chat after the content grant`);
+  return first;
+}
+
 export async function proveCodexAuditInterruptions(
   stack: SmokeStack,
   agent: SmokeAgent,
@@ -445,7 +529,7 @@ export async function proveCodexAuditInterruptions(
 ) {
   const gateway = await readyGateway(stack, agent.id, revisionId);
   const rpc = (method: string, params: Record<string, unknown>) =>
-    codexGatewayRpc(stack, gateway, method, params);
+    gatewayRpc(stack, gateway, method, params);
 
   async function start(fault: "retry" | "cancel" | "restart") {
     const sessionKey = `agent:main:audit-${randomUUID()}`;
@@ -492,8 +576,7 @@ export async function proveCodexAuditInterruptions(
     runtimeSource: "codex",
     sessionId: retried.sessionId,
     turnId: retried.runId,
-    model: defaultAgentModel,
-    responseIdHash: fixtureResponseIdHash(retried.nonce),
+    ...codexResponse(retried.nonce),
   });
   await assertModelAnswered(retried.nonce, agent.label);
 

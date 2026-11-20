@@ -28,16 +28,19 @@ import {
   expectNoRuntimeAuditGrant,
   expectNoRuntimeAuditRows,
   expectPersistedRuntimeAudit,
+  checkMessageDisclosure,
   clusterName,
   routeModelProvider,
   setLocalSetupAudit,
   startLocalSetup,
+  wireField,
   type LocalSetup,
   type SmokeAgent,
   type SmokeStack,
 } from "./first-agent-smoke/setup.ts";
 import {
   allowAgentAuditRead,
+  checkLinkedChat,
   chatCodexWithAudit,
   assertAgentTurnAudit,
   chatWithAudit,
@@ -190,11 +193,31 @@ async function smoke() {
       control: () =>
         createCodexAgent(stack, reader, "reader-control", modelCredentials["reader-control"]),
     });
-    const readCodexAudit = await allowAgentAuditRead(stack, codex.agent, adminPassword);
-    const readEmbeddedAudit = await allowAgentAuditRead(stack, embedded.agent, adminPassword);
+    const codexReader = await allowAgentAuditRead(stack, codex.agent, adminPassword);
+    const embeddedReader = await allowAgentAuditRead(stack, embedded.agent, adminPassword);
+    const readCodexAudit = codexReader.readAudit;
+    const readEmbeddedAudit = embeddedReader.readAudit;
+    let linkedEventId: string | undefined;
     await Promise.all([
       auditStep("codex-chat", async () => {
-        await chatCodexWithAudit(stack, codex.agent, codex.revisionId, readCodexAudit);
+        const http = await chatCodexWithAudit(stack, codex.agent, codex.revisionId, readCodexAudit);
+        const first = await checkLinkedChat(
+          stack,
+          codex.agent,
+          codex.revisionId,
+          codexReader,
+          "codex",
+        );
+        linkedEventId = first.turn.id;
+        await checkMessageDisclosure(stack, linkedEventId, codexReader.readMessage);
+        // Codex also annotates a saved user prompt for HTTP chat.
+        assert.ok(http.turn.details.messageId);
+        const detail = await codexReader.readMessage(http.turn.id);
+        const message = wireField(detail, "message");
+        assert.equal(
+          wireField(message, "text"),
+          `Reply with exactly this nonce and no other text: ${http.nonce}`,
+        );
         await expectPersistedRuntimeAudit(stack, codex.revisionId, await readCodexAudit());
       }),
       auditStep("embedded-audit", async () => {
@@ -204,6 +227,13 @@ async function smoke() {
           runtimeSource: "openclaw",
           model: defaultAgentModel,
         });
+        await checkLinkedChat(
+          stack,
+          embedded.agent,
+          embedded.revisionId,
+          embeddedReader,
+          "openclaw",
+        );
         await expectPersistedRuntimeAudit(stack, embedded.revisionId, await readEmbeddedAudit());
       }),
     ]);
@@ -230,11 +260,24 @@ async function smoke() {
     await auditStep(
       "chat-after-start",
       async () => {
-        await chatWithAudit(stack, embedded.agent, embeddedRevision, readEmbeddedAudit, "openclaw");
+        const http = await chatWithAudit(
+          stack,
+          embedded.agent,
+          embeddedRevision,
+          readEmbeddedAudit,
+          "openclaw",
+        );
+        // The embedded HTTP route has no confirmed mapping from this run to a user row.
+        assert.equal(http.turn.details.messageId, undefined);
+        await assert.rejects(embeddedReader.readMessage(http.turn.id), /HTTP 404$/);
         await expectPersistedRuntimeAudit(stack, embeddedRevision, await readEmbeddedAudit());
       },
       async () => {
         await chatCodexWithAudit(stack, codex.agent, codexRevision, readCodexAudit);
+        if (linkedEventId) {
+          // A serving replacement must never supply history for its predecessor's audit event.
+          await assert.rejects(codexReader.readMessage(linkedEventId), /HTTP 404$/);
+        }
         await expectPersistedRuntimeAudit(stack, codexRevision, await readCodexAudit());
       },
     );

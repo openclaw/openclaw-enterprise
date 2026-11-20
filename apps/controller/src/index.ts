@@ -1,6 +1,6 @@
 import { AGENT_CHAT_BODY_LIMIT, relayAgentChat } from "./http/agent-chat.ts";
 import { sandboxPolicyHandlers } from "./http/sandbox-policy.ts";
-import { createAgentAuditReader } from "./http/agent-audit.ts";
+import { createAgentAuditReader, getAgentAuditEventMessage } from "./http/agent-audit.ts";
 import {
   registerGatewayRuntimeAudit,
   type GatewayRuntimeAuditWriter,
@@ -320,6 +320,7 @@ const RESOURCE_ID_PREFIX = {
   sessionId: "sec_",
   credentialSourceId: "cs_",
   agentId: "agt_",
+  auditEventId: "aud_",
   revisionId: "rev_",
   deploymentId: "rev_",
 } as const;
@@ -588,6 +589,12 @@ function operationTarget(
 }
 
 function requiredPermissions(operation: OccApiRoute): readonly RequiredPermission[] {
+  if (operation.operationId === "getAgentAuditEventMessage") {
+    return [
+      { action: "read_audit", resourceKind: "agent", scope: "requested" },
+      { action: "read_audit_content", resourceKind: "agent", scope: "requested" },
+    ];
+  }
   if (operation.operationId === "recoverAgentFirstDeployment") {
     return [
       { action: "deploy", resourceKind: "agent", scope: "requested" },
@@ -1080,6 +1087,9 @@ function permissionDescription(
 ): string {
   if (operation?.operationId === "listAgentAuditEvents") {
     return "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API request, worker, session, turn, model call, and model response records from the preceding 24 hours.";
+  }
+  if (operation?.operationId === "getAgentAuditEventMessage") {
+    return "Requires a human session with direct read_audit and read_audit_content grants on the requested Agent. Returns a linked turn event from the preceding 24 hours and its saved user message from the active revision. OCC records the disclosure before it returns the text.";
   }
   if (operation?.operationId === "recoverAgentFirstDeployment") {
     return "Requires deploy permission on the exact Agent and read permission on the reviewed Configuration named in the request path. These current permissions are checked for both receipts and misses. Recovery performs no admission or credential preparation.";
@@ -2111,7 +2121,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       request.headers[OCC_SERVICE_KEY_HEADER] !== undefined &&
       (operation === createAuthAccountOperation ||
         operation.operationId === "bootstrapInstallation" ||
-        operation.operationId === "listAgentAuditEvents")
+        operation.operationId === "listAgentAuditEvents" ||
+        operation.operationId === "getAgentAuditEventMessage")
     ) {
       throw failure(401, "UNAUTHENTICATED", "A human controller session is required.");
     }
@@ -2970,7 +2981,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
     }
 
-    if (operation.operationId === "listAgentAuditEvents") {
+    if (
+      operation.operationId === "listAgentAuditEvents" ||
+      operation.operationId === "getAgentAuditEventMessage"
+    ) {
       const admitted = admissions.get(request);
       if (admitted?.method !== "session") {
         throw failure(401, "UNAUTHENTICATED", "A human controller session is required.");
@@ -2978,7 +2992,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       if (readAgentAudit === undefined) {
         throw failure(501, "NOT_IMPLEMENTED", "Agent audit is disabled.");
       }
-      await readAgentAudit({
+      const auditRead = {
         controller,
         auth: options.auth,
         session: admitted.session,
@@ -2989,8 +3003,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         agentId,
         request,
         reply,
-      });
-      return;
+      };
+      if (operation.operationId === "getAgentAuditEventMessage") {
+        if (!options.gatewayRuntimeAuditWriter) {
+          throw failure(501, "NOT_IMPLEMENTED", "Gateway runtime audit is disabled.");
+        }
+        return getAgentAuditEventMessage(
+          auditRead,
+          params.auditEventId!,
+          options.nativeAdminGatewayApiKey,
+        );
+      }
+      return readAgentAudit(auditRead);
     }
 
     if (operation.operationId === "getAgentCallerPermissions") {
@@ -4822,7 +4846,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         tags: [...operation.tags],
         "x-openclaw-permissions": permissions,
         ...(operation.operationId === "bootstrapInstallation" ||
-        operation.operationId === "listAgentAuditEvents"
+        operation.operationId === "listAgentAuditEvents" ||
+        operation.operationId === "getAgentAuditEventMessage"
           ? { security: [{ sessionCookie: [] }] }
           : {}),
       } as DocumentedFastifySchema;

@@ -965,7 +965,7 @@ function evaluateValidatedAuthorization(
   ];
   for (const binding of subjectBindings) {
     if (
-      request.action === "read_audit" &&
+      (request.action === "read_audit" || request.action === "read_audit_content") &&
       (request.resource.kind !== "agent" || !isDirectAgentAuditBinding(identity, binding))
     ) {
       continue;
@@ -1071,7 +1071,7 @@ function effectiveGrants(identity: Identity, policy: NativeIAMPolicy): Effective
         resourceKind: binding.resourceKind,
         resourceId: binding.resourceId,
         permissions: role.permissions.filter((permission) => {
-          if (permission.action === "read_audit") {
+          if (permission.action === "read_audit" || permission.action === "read_audit_content") {
             return (
               permission.resourceKind === "agent" && isDirectAgentAuditBinding(identity, binding)
             );

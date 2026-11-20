@@ -80,6 +80,7 @@ import { BlockList, isIP } from "node:net";
 import { isAbsolute, posix } from "node:path";
 import { gatewayRoutingHostname } from "./gateway-routing-hostname.ts";
 import { isKubernetesNamespaceName, isKubernetesResourceName } from "./resource-name.ts";
+import { auditMessageRoute, AUDIT_MESSAGE_SCOPE } from "../../../gateway/audit-message-route.ts";
 import {
   MODEL_EGRESS_EXCLUDED_IPV4_CIDRS,
   MODEL_EGRESS_PORT,
@@ -14493,19 +14494,23 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   }
 
   private gatewayRouteHeaderFilter(
-    access: "operator" | "chat" | "node" | "node-transfer",
+    access: "operator" | "chat" | "audit-message" | "node" | "node-transfer",
   ): KubernetesRecord {
     return {
       type: "RequestHeaderModifier",
       requestHeaderModifier: {
         set: [
-          ...(access === "operator" || access === "chat"
+          ...(access === "operator" || access === "chat" || access === "audit-message"
             ? [
                 { name: TRUSTED_PROXY_HEADER, value: TRUSTED_PROXY_IDENTITY },
                 // Replace client authority before either HTTP or WebSocket reaches native auth.
                 {
                   name: TRUSTED_PROXY_SCOPES_HEADER,
-                  value: access === "chat" ? "operator.sessions.write" : "operator.admin",
+                  value: {
+                    chat: "operator.sessions.write",
+                    "audit-message": AUDIT_MESSAGE_SCOPE,
+                    operator: "operator.admin",
+                  }[access],
                 },
               ]
             : []),
@@ -14547,7 +14552,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   private gatewayRootRouteRule(
     service: ManagedKubernetesObject<"Service">,
     path: string,
-    access: "operator" | "chat" | "node",
+    access: "operator" | "chat" | "audit-message" | "node",
     match: "Exact" | "PathPrefix",
   ): KubernetesRecord {
     return {
@@ -14717,6 +14722,16 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                   access,
                   "Exact",
                 ),
+                ...(access === "operator" && this.runtimeAuditTargetInNamespace(namespace)
+                  ? [
+                      this.gatewayRootRouteRule(
+                        service,
+                        auditMessageRoute(revision),
+                        "audit-message",
+                        "Exact",
+                      ),
+                    ]
+                  : []),
                 ...(access === "operator" && this.getGatewayChatEndpoint(revision) !== undefined
                   ? [
                       this.gatewayRootRouteRule(

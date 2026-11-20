@@ -430,9 +430,9 @@ export async function setLocalSetupAudit(
 
 type InstalledAuditStack = Pick<LocalSetup, "kubeconfig" | "context" | "state">;
 
-async function queryRevision(
+async function queryAudit(
   stack: InstalledAuditStack,
-  revisionId: string,
+  parameters: Record<string, string>,
   query: string,
   options?: RunOptions,
 ) {
@@ -454,8 +454,7 @@ async function queryRevision(
       "-A",
       "--set",
       "ON_ERROR_STOP=1",
-      "--set",
-      `revision_id=${revisionId}`,
+      ...Object.entries(parameters).flatMap(([name, value]) => ["--set", `${name}=${value}`]),
       "--username",
       "postgres",
       "--dbname",
@@ -464,6 +463,37 @@ async function queryRevision(
     { ...options, input: query },
   );
   return stdout.trim();
+}
+
+function queryRevision(
+  stack: InstalledAuditStack,
+  revisionId: string,
+  query: string,
+  options?: RunOptions,
+) {
+  return queryAudit(stack, { revision_id: revisionId }, query, options);
+}
+
+export async function checkMessageDisclosure(
+  stack: InstalledAuditStack,
+  eventId: string,
+  readMessage: (id: string) => Promise<unknown>,
+) {
+  const query = (sql: string) => queryAudit(stack, { event_id: eventId }, sql);
+  const match = `action = 'openclaw.audit.agent.message.read' AND details->>'auditEventId' = :'event_id'`;
+  // The previous read delivered text. Its durable receipt must contain only the event ID.
+  const receipt = await query(`SELECT details FROM occ.audit_events WHERE ${match};`);
+  assert.deepEqual(JSON.parse(receipt), { auditEventId: eventId });
+  // Refuse only this message's next receipt. Fail closed despite valid grants and history.
+  const constraint = `smoke_disclosure_${randomUUID().replaceAll("-", "")}`;
+  await query(
+    `ALTER TABLE occ.audit_events ADD CONSTRAINT ${constraint} CHECK (NOT (${match})) NOT VALID;`,
+  );
+  try {
+    await assert.rejects(readMessage(eventId), /HTTP 503$/);
+  } finally {
+    await query(`ALTER TABLE occ.audit_events DROP CONSTRAINT ${constraint};`);
+  }
 }
 
 const runtimeRows = `FROM occ.audit_events

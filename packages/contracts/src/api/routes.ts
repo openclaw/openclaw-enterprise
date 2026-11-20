@@ -21,7 +21,7 @@ import {
   ModelProviderListResponse,
 } from "./model-providers.ts";
 import { Type } from "typebox";
-import { AgentAuditQuery, AgentAuditResponse } from "./agent-audit.ts";
+import { AgentAuditMessageResponse, AgentAuditQuery, AgentAuditResponse } from "./agent-audit.ts";
 import {
   ConnectionStartResponse,
   SavedConnectionListResponse,
@@ -45,6 +45,7 @@ import {
 
 import {
   AgentParams,
+  AuditId,
   FirstDeploymentIntent,
   AgentDeploymentBody,
   AgentStopQuery,
@@ -2065,6 +2066,25 @@ export const occApiRoutes = [
       params: AgentParams,
       querystring: AgentAuditQuery,
       response: { 200: AgentAuditResponse, ...readErrors, 501: ErrorResponseRef },
+    },
+  },
+  {
+    operationId: "getAgentAuditEventMessage",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/audit-events/:auditEventId/message",
+    action: "openclaw.audit.agent.message.read",
+    iamAction: "read_audit_content",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Read the saved user message linked to an Agent turn",
+    tags: ["Agents"],
+    schema: {
+      params: Type.Object(
+        { ...AgentParams.properties, auditEventId: AuditId },
+        { additionalProperties: false },
+      ),
+      querystring: EmptyQuery,
+      response: { 200: AgentAuditMessageResponse, ...readErrors, 501: ErrorResponseRef },
     },
   },
   {

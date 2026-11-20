@@ -587,7 +587,6 @@ async function nativeWorkerProof({
   const { loadYaml } = await import(pathToFileURL(require.resolve("@kubernetes/client-node")));
   let stage = "startup";
   let client;
-  let temporarySession;
   let helloTimer;
   let collectFailure;
   let lastPlacement;
@@ -696,9 +695,6 @@ async function nativeWorkerProof({
       const { sessionId } = created;
       assert.ok(typeof sessionId === "string" && sessionId.trim().length > 0);
       session = { key, sessionId };
-      if (plainChat) {
-        temporarySession = session;
-      }
       stage = "required-placement";
       while (!signal.aborted) {
         let described;
@@ -821,7 +817,11 @@ async function nativeWorkerProof({
           session,
         };
         if (plainChat) {
-          emit(verified);
+          // The plain chat follows the file check in the same retained session.
+          const inputs = history.messages.filter((entry) => entry.role === "user");
+          const messageId = inputs.at(-1)?.__openclaw?.id;
+          assert.ok(typeof messageId === "string" && messageId.length > 0);
+          emit({ ...verified, source: { messageId, text: message } });
           return;
         }
         stage = "exec-proof";
@@ -856,16 +856,6 @@ async function nativeWorkerProof({
     process.exitCode = 1;
   } finally {
     clearTimeout(helloTimer);
-    if (temporarySession) {
-      // Release this turn's worker slot before the retained-session check.
-      await client
-        .request(
-          "sessions.delete",
-          { key: temporarySession.key, expectedSessionId: temporarySession.sessionId },
-          { timeoutMs: 10_000 },
-        )
-        .catch(() => undefined);
-    }
     client?.stop();
     await client?.stopAndWait({ timeoutMs: 1_000 }).catch(() => undefined);
   }

@@ -622,12 +622,13 @@ test(
       ).rows,
       [{ actor_id: principalId, key_id: key.id }],
     );
-    // The audit permission in this mixed Role applies only to human readers. The administrator
+    // The audit permissions in this mixed Role apply only to human readers. The administrator
     // needs the ordinary Agent read grant to issue or revoke the key for this ServicePrincipal.
     const agentReader = await admin("POST", `/namespaces/${teamId}/iam/roles`, {
       permissions: [
         { action: "read", resourceKind: "agent" },
         { action: "read_audit", resourceKind: "agent" },
+        { action: "read_audit_content", resourceKind: "agent" },
       ],
     });
     assert.equal(agentReader.statusCode, 201);
@@ -651,6 +652,11 @@ test(
     assert.equal((await withKey(secondKey.key, "GET", agentPath)).statusCode, 200);
     assert.equal(
       (await withKey(secondKey.key, "GET", `${agentPath}/audit-events`)).statusCode,
+      401,
+    );
+    assert.equal(
+      (await withKey(secondKey.key, "GET", `${agentPath}/audit-events/aud_${randomUUID()}/message`))
+        .statusCode,
       401,
     );
     assert.equal((await admin("DELETE", `/api/auth/service-keys/${secondKey.id}`)).statusCode, 200);

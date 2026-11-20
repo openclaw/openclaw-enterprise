@@ -316,7 +316,24 @@ const savedAccount = {
   createdAt: time,
 };
 
+const linkedTurn = {
+  id: "aud_019e8451-865d-4daf-a30d-b2be921186ce",
+  occurredAt: "2026-10-01T11:31:00.000000Z",
+  event: "runtime_activity",
+  action: "openclaw.runtime.turn.completed",
+  outcome: "success",
+  details: {
+    agentRevisionId: revisionId,
+    runtimeSource: "openclaw",
+    sessionId: uuid,
+    turnId: "0f8a6dad-40e1-4121-8521-676796fdcf83",
+    messageId: "7501adc8-16ab-45d7-8ed8-a63bf342629f",
+    outcome: "succeeded",
+  },
+};
+
 export const parameterExamples = {
+  auditEventId: linkedTurn.id,
   modelProviderId: modelProvider.id,
   "x-occ-session-key": "s".repeat(43),
   origin: "https://console.example.com",
@@ -580,24 +597,15 @@ export const responseExamples = {
   },
   deployAgent: revision,
   getAgentRevision: revision,
+  getAgentAuditEventMessage: {
+    event: linkedTurn,
+    message: { role: "user", text: "Summarize the release notes." },
+  },
   listAgentAuditEvents: {
     projectionVersion: AGENT_AUDIT_PROJECTION_VERSION,
     window: { start: "2026-09-30T12:00:00.000Z", end: time },
     events: [
-      {
-        id: "aud_019e8451-865d-4daf-a30d-b2be921186ce",
-        occurredAt: "2026-10-01T11:31:00.000000Z",
-        event: "runtime_activity",
-        action: "openclaw.runtime.turn.completed",
-        outcome: "success",
-        details: {
-          agentRevisionId: revisionId,
-          runtimeSource: "openclaw",
-          sessionId: uuid,
-          turnId: "0f8a6dad-40e1-4121-8521-676796fdcf83",
-          outcome: "succeeded",
-        },
-      },
+      linkedTurn,
       {
         id: id("aud"),
         occurredAt: "2026-10-01T11:30:00.000000Z",

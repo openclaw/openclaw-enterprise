@@ -129,6 +129,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 83 && completedCount > 83) {
     return "preRuntimeAudit";
   }
+  if (count === 84 && completedCount > 84) {
+    return "preAuditMessageRead";
+  }
   if (count === completedCount) {
     return "completed";
   }

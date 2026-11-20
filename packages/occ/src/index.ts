@@ -3523,13 +3523,17 @@ export class OpenClawController {
     });
   }
 
-  async listAgentAuditEvents(
+  private async withAgentAuditAuthority<T>(
     principalId: string,
     namespaceId: string,
     agentId: string,
-    selection: AgentAuditSelection,
     holdSession: AuthorityFence,
-    disclosure: (count: number, decision: DeployAgentAuthorization) => AuditEvent,
+    access: "metadata" | "message",
+    read: (
+      state: AgentAuditState<PlatformUnitOfWork>,
+      unit: PlatformUnitOfWork,
+      decision: DeployAgentAuthorization,
+    ) => Promise<{ result: T; disclosure?: AuditEvent }>,
   ) {
     const state = this.agentAuditState;
     const driver = this.authorizationAuthority(principalId);
@@ -3544,27 +3548,94 @@ export class OpenClawController {
       );
     }
     const target = { kind: "agent", id: agentId, namespaceId } as const;
+    const check = async () => {
+      const metadata = await this.authorize(principalId, "read_audit", target, driver, authorize);
+      if (access === "message") {
+        return this.authorize(principalId, "read_audit_content", target, driver, authorize);
+      }
+      return metadata;
+    };
     return state.transact(this.installation.id, async (unit) => {
       await holdSession(unit);
       // An unauthorized caller cannot lock Agent or Namespace records. Recheck after
       // taking the locks so no policy change can commit between approval and disclosure.
-      await this.authorize(principalId, "read_audit", target, driver, authorize);
+      await check();
       if (!(await state.holdResource(unit, this.installation.id, namespaceId, agentId))) {
         throw new ScopeViolationError(
           "The active Agent does not belong to the exact ready Namespace.",
         );
       }
-      const decision = await this.authorize(principalId, "read_audit", target, driver, authorize);
-      const entries = await state.list(unit, namespaceId, agentId, selection);
-      const events = entries.slice(0, selection.limit);
-      try {
-        await unit.audit.append(disclosure(events.length, decision));
-      } catch {
-        throw new AgentAuditDisclosureUnavailableError();
+      const { result, disclosure } = await read(state, unit, await check());
+      if (disclosure !== undefined) {
+        try {
+          await unit.audit.append(disclosure);
+        } catch {
+          throw new AgentAuditDisclosureUnavailableError();
+        }
       }
       await holdSession(unit);
-      return { events, hasNextPage: entries.length > selection.limit };
+      return result;
     });
+  }
+
+  async listAgentAuditEvents(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    selection: AgentAuditSelection,
+    holdSession: AuthorityFence,
+    disclosure: (count: number, decision: DeployAgentAuthorization) => AuditEvent,
+  ) {
+    return this.withAgentAuditAuthority(
+      principalId,
+      namespaceId,
+      agentId,
+      holdSession,
+      "metadata",
+      async (state, unit, decision) => {
+        const entries = await state.list(unit, namespaceId, agentId, selection);
+        const events = entries.slice(0, selection.limit);
+        return {
+          result: { events, hasNextPage: entries.length > selection.limit },
+          disclosure: disclosure(events.length, decision),
+        };
+      },
+    );
+  }
+
+  async selectAgentAuditMessage(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    auditEventId: string,
+    holdSession: AuthorityFence,
+    disclosure?: (decision: DeployAgentAuthorization) => AuditEvent,
+  ) {
+    return this.withAgentAuditAuthority(
+      principalId,
+      namespaceId,
+      agentId,
+      holdSession,
+      "message",
+      async (state, unit, decision) => {
+        const event = await state.findLinkedTurn(unit, namespaceId, agentId, auditEventId);
+        if (event === undefined) {
+          throw new ScopeViolationError("The Agent has no current message link for this event.");
+        }
+        const revision = await unit.revisions.findRevision(
+          namespaceId,
+          agentId,
+          event.details.agentRevisionId,
+        );
+        if (revision === undefined) {
+          throw new ScopeViolationError("The linked revision is unavailable.");
+        }
+        return {
+          result: { event, revision },
+          ...(disclosure === undefined ? {} : { disclosure: disclosure(decision) }),
+        };
+      },
+    );
   }
 
   async getAgentRuntimeImages(principalId: string, namespaceId: string, agentId: string) {
