@@ -592,13 +592,13 @@ for (const outcome of ["lost", "versionless"]) {
       await route.fulfill({ response, json: payload });
     });
     await editor.getByRole("button", { name: "Create template", exact: true }).click();
-    await editor.getByText(/Could not confirm the template change/).waitFor();
+    await editor.getByText(/The template may have been saved/).waitFor();
     assert.equal(
       await editor.getByRole("button", { name: "Create template", exact: true }).isDisabled(),
       true,
     );
     const reloaded = responseTo(page, "GET", fixture.origin + "/connection-templates");
-    await editor.getByRole("button", { name: "Cancel" }).click();
+    await editor.getByRole("button", { name: "Close" }).click();
     const saved = (await (await reloaded).json()).data;
     const committed = saved.filter(
       (template: { namespaceId?: string }) => template.namespaceId === namespace.id,
