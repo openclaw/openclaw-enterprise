@@ -182,10 +182,8 @@ Its closed `configuration` accepts:
   OIDC client-credentials takes `tokenUrl` (absolute `https`; `http` only to
   a numeric loopback), `clientId`, `clientSecretPath` (absolute), optional
   `tokenAuth` and `audience`/`scope`. The client exchanges credentials,
-  caches until a refresh margin before expiry, re-reads the secret each
-  refresh, and presents it as the gRPC `authorization` bearer;
-  `rootCertificatePath` verifies the token request too. `audience` names
-  the gateway's audience.
+  caches until a refresh margin, re-reads the secret on refresh, and
+  presents it as the gRPC `authorization` bearer.
 - `requestTimeoutMs`: the per-call deadline, from 1000 to 30000 ms. The bound
   limits how late a timed-out credential registration can land. Sandbox
   deletion has its own 120-second bound: OpenShell answers only after the
