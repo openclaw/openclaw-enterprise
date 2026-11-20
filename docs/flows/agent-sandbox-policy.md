@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-20"
-last_updated_session: "authoring-run/4c8151f6-8b1e-4a9c-9cab-c76091f92ea4"
+last_updated_session: "authoring-run/191b53ca-438b-4987-9206-b77590aa9c21"
 ---
 
 # Agent sandbox policy flow
@@ -64,9 +64,10 @@ enforce OAuth scopes.
 Startup validates the [repository ceiling](../reference/configuration.md).
 GET requires Agent and SandboxPolicy read. It reports saved grants, withdrawal
 availability and the Namespace ceiling. `packages/occ/src/repository-network-policy.ts:delegatedRepositoryCeiling`
-requires synchronous Driver approval. GET returns an empty ceiling if the Driver
-or method changes during filtering. PUT refuses first and nonempty lists. Omission
-preserves the saved list and excludes it from the response.
+requires synchronous Driver approval. GET returns an empty ceiling if checking
+approval throws or if the Driver or method changes during filtering. The saved
+grants and withdrawal availability remain visible. PUT refuses first and nonempty
+lists. Omission preserves the saved list and excludes it from the response.
 
 `packages/occ/src/index.ts:updateAgentSandboxPolicy` requires Agent
 `manage_policy` and SandboxPolicy `update`. It locks the Namespace and Agent
@@ -260,6 +261,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 08:04: Preserve repository grant withdrawal readback when checking Driver approval throws. (authoring-run/191b53ca-438b-4987-9206-b77590aa9c21 - 7933c6f2ebeb909bb949c45bceabe2ef0428fe5e)
 
 - 2026-11-20 04:52: Trace synchronous ceiling approval, policy withdrawal and Worker drain. (authoring-run/4c8151f6-8b1e-4a9c-9cab-c76091f92ea4 - b8e2396539ed2e1f91b302371486ebf5938350a3)
 

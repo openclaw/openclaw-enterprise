@@ -5,6 +5,8 @@ import { createServer as createNetServer, connect, Socket } from "node:net";
 import { IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
 import { channel } from "node:diagnostics_channel";
+import { once } from "node:events";
+import { finished } from "node:stream/promises";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import {
   defaultRegistryRepositories,
@@ -141,41 +143,62 @@ const control = async (
   return { ...response, body: record(response.body) };
 };
 
+async function startControlRelay(
+  owner: ResourceOwner,
+  prefix: string,
+  handle: (caller: Socket, track: (socket: Socket) => Socket) => void,
+) {
+  const resources = createResourceScope();
+  const socketPath = join(await socketDirectory(resources, prefix), "relay.sock");
+  const sockets = new Set<Socket>();
+  const track = (socket: Socket) => {
+    sockets.add(socket.once("close", () => sockets.delete(socket)));
+    return socket.on("error", () => socket.destroy());
+  };
+  const relay = createNetServer((caller) => handle(track(caller), track));
+  resources.after(async () => {
+    const listenerClosed = relay[Symbol.asyncDispose]();
+    const socketsClosed = Array.from(
+      sockets,
+      (socket) => new Promise<void>((resolve) => socket.once("close", () => resolve()).destroy()),
+    );
+    await Promise.all([listenerClosed, ...socketsClosed]);
+  });
+  try {
+    owner.after(() => resources.close());
+    await once(relay.listen(socketPath), "listening");
+    await chmod(socketPath, 0o600);
+    return socketPath;
+  } catch (error) {
+    await resources.close().catch((cleanupError: unknown) => {
+      throw new AggregateError([error, cleanupError], "control relay setup and cleanup failed", {
+        cause: error,
+      });
+    });
+    throw error;
+  }
+}
+
 // The relay consumes the real listener's response but disconnects its caller,
 // reproducing ambiguous loss after admission without replacing control behavior.
-async function dropControlResponse(t: ResourceOwner, target: string) {
-  const directory = await socketDirectory(t, "rcs-loss-");
-  const socketPath = join(directory, "relay.sock");
-  const sockets = new Set<Socket>();
-  const { promise: receipt, resolve: admitted } = Promise.withResolvers<SessionResult>();
-  const relay = createNetServer((caller) => {
-    const upstream = connect(target);
-    for (const socket of [caller, upstream]) {
-      sockets.add(socket);
-      socket.once("close", () => sockets.delete(socket));
-      socket.on("error", () => socket.destroy());
-    }
-    const chunks: Buffer[] = [];
-    upstream.on("data", (chunk: Buffer) => {
-      chunks.push(chunk);
-      caller.destroy();
+async function dropControlResponse(owner: ResourceOwner, target: string) {
+  const { promise: receipt, resolve, reject } = Promise.withResolvers<SessionResult>();
+  // The caller checks the transport failure before it awaits the receipt.
+  void receipt.catch(() => {});
+  const socketPath = await startControlRelay(owner, "rcs-loss-", (caller, track) => {
+    const upstream = track(connect(target));
+    let response = "";
+    upstream.once("data", () => caller.destroy());
+    upstream.setEncoding("utf8").on("data", (chunk: string) => {
+      response += chunk;
     });
-    upstream.once("end", () => {
-      const response = Buffer.concat(chunks).toString();
-      admitted(sessionResult(JSON.parse(response.slice(response.indexOf("\r\n\r\n") + 4))));
-    });
+    void finished(upstream, { writable: false, cleanup: true })
+      .then(() => sessionResult(JSON.parse(response.slice(response.indexOf("\r\n\r\n") + 4))))
+      .then(resolve, () => {
+        caller.destroy();
+        reject(new Error("control relay did not receive a complete session result"));
+      });
     caller.pipe(upstream);
-  });
-  await new Promise<void>((resolve, reject) => {
-    relay.once("error", reject);
-    relay.listen(socketPath, resolve);
-  });
-  await chmod(socketPath, 0o600);
-  t.after(async () => {
-    for (const socket of sockets) {
-      socket.destroy();
-    }
-    await new Promise((resolve) => relay.close(resolve));
   });
   return { socketPath, receipt };
 }
@@ -1163,18 +1186,13 @@ test("control refuses loose requests before acting on them", { timeout: 15000 },
 });
 
 async function holdControlRequest(owner: ResourceOwner, target: string) {
-  const directory = await socketDirectory(owner, "rcs-held-");
-  const socketPath = join(directory, "relay.sock");
-  const sockets = new Set<Socket>();
   const { promise: received, resolve: captured } = Promise.withResolvers<void>();
-  let release: (() => void) | undefined;
-  const relay = createNetServer((caller) => {
-    sockets.add(caller);
-    caller.on("error", () => caller.destroy());
-    const chunks: Buffer[] = [];
+  const noHeldRequest = (): void => assert.fail("no control request to release");
+  let release = noHeldRequest;
+  const socketPath = await startControlRelay(owner, "rcs-held-", (caller, track) => {
+    let data = Buffer.alloc(0);
     const collect = (chunk: Buffer) => {
-      chunks.push(chunk);
-      const data = Buffer.concat(chunks);
+      data = Buffer.concat([data, chunk]);
       const end = data.indexOf("\r\n\r\n");
       const length = /content-length: ([0-9]+)/i.exec(data.toString());
       if (end < 0 || !length || data.length < end + 4 + Number(length[1])) {
@@ -1183,13 +1201,12 @@ async function holdControlRequest(owner: ResourceOwner, target: string) {
       caller.off("data", collect);
       caller.pause();
       release = () => {
-        const upstream = connect(target);
-        sockets.add(upstream);
-        upstream.on("error", () => caller.destroy());
+        release = noHeldRequest;
+        const upstream = track(connect(target));
+        upstream.once("error", () => caller.destroy());
         upstream.once("connect", () => {
           upstream.write(data);
           caller.pipe(upstream);
-          caller.resume();
         });
         upstream.pipe(caller);
       };
@@ -1197,25 +1214,7 @@ async function holdControlRequest(owner: ResourceOwner, target: string) {
     };
     caller.on("data", collect);
   });
-  await new Promise<void>((resolve, reject) => {
-    relay.once("error", reject);
-    relay.listen(socketPath, resolve);
-  });
-  await chmod(socketPath, 0o600);
-  owner.after(async () => {
-    for (const socket of sockets) {
-      socket.destroy();
-    }
-    await new Promise((resolve) => relay.close(resolve));
-  });
-  return {
-    socketPath,
-    received,
-    release: () => {
-      assert.ok(release);
-      release();
-    },
-  };
+  return { socketPath, received, release: () => release() };
 }
 
 test(

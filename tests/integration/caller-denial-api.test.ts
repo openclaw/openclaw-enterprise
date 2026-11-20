@@ -10,12 +10,14 @@ import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import {
   agentPrincipalDenied,
   callerDenied,
+  currentHarnessAuthDenied,
+} from "../helpers/refusal-text.mjs";
+import {
   createDenied,
   createRestricted,
-  currentHarnessAuthDenied,
   INSTALLATION_ADMINISTER_DENIED,
   NAMESPACE_CREATE_DENIED,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-access.ts";
 import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 
 type Body = Record<string, unknown> | undefined;

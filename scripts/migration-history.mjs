@@ -130,6 +130,9 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preRevisionEgressInstallations";
   }
   if (count === 84 && completedCount > 84) {
+    return "preStaticTokenServiceSources";
+  }
+  if (count === 85 && completedCount > 85) {
     return "preRepositoryNetworkPolicy";
   }
   if (count === completedCount) {
