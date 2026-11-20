@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { createServer } from "node:http";
 import { request } from "node:https";
+import { promisify } from "node:util";
 import { selfSigned } from "../helpers/certificates.ts";
 import { createUpgradeResponseProxy } from "../helpers/channel-upgrade-response-proxy.ts";
+
+const execute = promisify(execFile);
 
 async function fixture(t: TestContext, enabled = true) {
   const directory = await mkdtemp(join(tmpdir(), "oce-channel-upgrade-"));
@@ -193,6 +196,112 @@ test("one-off preparation refuses wrong release, external proxy, and unprotected
   const publicInput = f.run("prepare", ["--out-dir", output]);
   assert.equal(publicInput.status, 1);
   assert.match(publicInput.stderr, /private regular files/);
+});
+
+test("one-off deploy submits the original revision's requested Harness override", async (t) => {
+  const { directory } = await fixture(t);
+  const inventory = join(directory, "inventory");
+  const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
+  const agentId = "agt_00000000-0000-4000-8000-000000000002";
+  const originalRevisionId = "rev_00000000-0000-4000-8000-000000000003";
+  const deploymentId = "rev_00000000-0000-4000-8000-000000000004";
+  const installationId = "ins_00000000-0000-4000-8000-000000000005";
+  const identity = { id: agentId, namespaceId, status: "active" };
+  let agent = { ...identity, desiredRuntimeState: "running", activeRevisionId: originalRevisionId };
+  await mkdir(inventory);
+  await writeFile(
+    join(inventory, "restart-preflight.json"),
+    JSON.stringify({
+      installationId,
+      namespaces: [
+        {
+          id: namespaceId,
+          status: "ready",
+          agents: [{ ...agent, executionMode: "dedicated", deploymentInProgress: false }],
+        },
+      ],
+    }),
+    { mode: 0o600 },
+  );
+
+  const occ = join(directory, "occ");
+  await execute("go", ["build", "-trimpath", "-o", occ, "./cmd/occ"]);
+  const keyFile = join(directory, "service-key.json");
+  await writeFile(keyFile, JSON.stringify({ data: { key: "fixture-key" } }), { mode: 0o600 });
+  const overrides = {
+    modelProvider: { protocol: "openai-responses", baseUrl: "https://models.example.com/v1" },
+  };
+  const base = `/namespaces/${namespaceId}/agents/${agentId}`;
+  const requests: string[] = [];
+  // Observe the real CLI's deploy request. The fixture supplies revision reads and
+  // lifecycle receipts, while the CLI selects and serializes the requested overrides.
+  const server = createServer((incoming, outgoing) => {
+    const send = (data: unknown, status = 200) =>
+      outgoing
+        .writeHead(status, { "content-type": "application/json" })
+        .end(JSON.stringify({ data, meta: { requestId: "fixture" } }));
+    switch (`${incoming.method} ${incoming.url}`) {
+      case `GET ${base}`:
+        return send(agent);
+      case `POST ${base}/stop?expectedActiveRevisionId=${originalRevisionId}`:
+        agent = { ...identity, desiredRuntimeState: "stopped", activeRevisionId: "" };
+        return send({ ...agent, activeRevisionId: originalRevisionId }, 202);
+      case `GET ${base}/revisions/${originalRevisionId}`:
+        return send({
+          id: originalRevisionId,
+          namespaceId,
+          agentId,
+          revision: 1,
+          harness: { id: "codex", version: "fixture", mode: "dedicated", overrides },
+        });
+      case `POST ${base}/deploy`: {
+        let body = "";
+        incoming.setEncoding("utf8");
+        incoming.on("data", (chunk: string) => (body += chunk));
+        incoming.on("end", () => {
+          requests.push(body);
+          agent = { ...identity, desiredRuntimeState: "running", activeRevisionId: deploymentId };
+          send({ id: deploymentId, namespaceId, agentId, revision: 2 }, 202);
+        });
+        return;
+      }
+      case `GET ${base}/deployments/${deploymentId}`:
+        return send({ deploymentId, namespaceId, agentId, status: "succeeded" });
+      default:
+        return outgoing.writeHead(404).end();
+    }
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  for (const action of ["stop", "deploy"]) {
+    await execute(
+      "python3",
+      [
+        "scripts/upgrade-channel-egress",
+        action,
+        "--evidence-dir",
+        directory,
+        "--occ",
+        occ,
+        "--timeout-seconds",
+        "5",
+      ],
+      {
+        env: {
+          PATH: process.env.PATH,
+          OCC_URL: `http://127.0.0.1:${address.port}`,
+          OCC_SERVICE_KEY_FILE: keyFile,
+        },
+        timeout: 15_000,
+      },
+    );
+  }
+  assert.deepEqual(
+    requests.map((body) => (body === "" ? undefined : JSON.parse(body))),
+    [{ harnessOverrides: overrides }],
+  );
 });
 
 test("one-off refuses an uncertain deployment before invoking any OCC command", async (t) => {

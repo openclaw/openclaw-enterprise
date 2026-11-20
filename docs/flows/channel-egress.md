@@ -1,7 +1,7 @@
 ---
 created: 2026-11-19
-updated: 2026-11-19
-last_updated_session: authoring-run/3d885bbf-20eb-48f1-9e9e-975b986c82ab
+updated: 2026-11-20
+last_updated_session: authoring-run/450eca24-b9e6-4940-9ee5-9ec1200643b0
 ---
 
 # Channel egress flow
@@ -94,9 +94,12 @@ validates the recorded stopped inventory without calling the offline API. Shared
 Deployment identity, generation and Pod-absence checks still apply.
 
 After authenticated access to the same Installation and channel fleet readiness
-recover, plain Deploy
-creates revisions from current saved drafts. Requests are sequential. Accepted
-requests are observed to completion; an uncertain `sending` state refuses
+recover, `lifecycle` deploys current saved drafts. It passes the journaled original
+revision ID to `occ agent deploy --retain-harness-overrides`. The CLI reads the
+requested Harness overrides from that revision and submits them with the deploy
+request. When the revision requested none, admission uses current Installation
+defaults. The script submits one request at a time and waits for each accepted
+deployment to finish. An uncertain `sending` state refuses
 resubmission until manual inspection resolves it. Completion and resume also check
 that each Agent still selects the recorded new revision. Disabled channels skip both
 Envoy preparation and Agent transitions. Ordinary upgrades do not select this
@@ -190,6 +193,8 @@ and remaining acceptance evidence.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 11:37: Retain requested Harness overrides during the one-off deployment (authoring-run/450eca24-b9e6-4940-9ee5-9ec1200643b0 - d215c0d95c2336244519eca4968df04ec4376ae2)
 
 - 2026-11-19 20:41: Verify recorded Agent state before one-off completion and on resume (authoring-run/3d885bbf-20eb-48f1-9e9e-975b986c82ab - 87d5c0d63f6765816d0e4a6dee9cb20f8be1d5c1)
 

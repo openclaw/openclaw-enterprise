@@ -267,8 +267,8 @@ def lifecycle(action, args):
                 require(agent["desiredRuntimeState"] == "stopped" and not agent.get("activeRevisionId"), "recorded Agent is not fully stopped; Deploy was not submitted")
             target[action] = "sending"
             save(journal, state)
-            response = occ("--namespace", ns, "agent", action, agent_id,
-                           *(["--if-active-revision", target["originalRevisionId"]] if action == "stop" else []))
+            revision_flag = "--if-active-revision" if action == "stop" else "--retain-harness-overrides"
+            response = occ("--namespace", ns, "agent", action, agent_id, revision_flag, target["originalRevisionId"])
             if action == "stop":
                 require(response.get("id") == agent_id and response.get("namespaceId") == ns and response.get("desiredRuntimeState") == "stopped", "Stop response is uncertain; inspect Agent state before manual recovery")
                 target["stopResponse"] = response

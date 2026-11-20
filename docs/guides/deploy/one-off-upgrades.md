@@ -35,8 +35,10 @@ installed Helm values and external Installation YAML; do not regenerate them
 from an example profile. The helper checks both against the live release.
 
 Review **current saved Agent drafts**. Stop followed by Deploy creates a new
-Agent revision from that draft, including unpublished edits. Agent identities,
-credentials, and supported workspace state follow ordinary
+Agent revision from that draft, including unpublished edits. Review the draft
+together with the Harness overrides requested by the revision running before
+Stop. Deploy reuses those overrides, and the candidate controller validates them
+at admission. Agent identities, credentials, and workspace state follow ordinary
 [Stop and resume](../../reference/agents/deployment.md#stop-and-resume) semantics.
 Settle deployments, pending Stops, and Agent deletions under the old controller.
 Previously stopped Agents stay stopped. Do not delete Agents for this procedure.
@@ -79,8 +81,9 @@ Existing dependencies retain their owner; disabled channels skip provisioning.
 
 ### Run the transition
 
-Use a controller image built from `SOURCE_REVISION`. Keep runtime images unchanged;
-this transition deploys current drafts without retaining historical Harness overrides.
+Use a controller image built from `SOURCE_REVISION`. For an enabled transition,
+use an `occ` binary that supports `agent deploy --retain-harness-overrides`. Keep
+runtime images unchanged.
 Use the [image-upgrade options](production-upgrade-command.md) for broker selection
 when repository credentials require a qualified controller/broker pair.
 
