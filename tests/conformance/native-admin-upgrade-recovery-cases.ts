@@ -21,6 +21,12 @@ import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/sr
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { waitUntil } from "../helpers/wait-for.ts";
 import {
+  gatewayEndpoint,
+  nativeAdminScenario,
+  type PendingResetPhase,
+  type PendingResetRegistration,
+} from "./native-admin-upgrade-transport-fixture.ts";
+import {
   registerDelayedDenialAppendCase,
   registerHttpAuditFailureCase,
   registerHttpDenialResponseCases,
@@ -693,4 +699,93 @@ export async function clientResetDuringPendingDenial(t: TestContext): Promise<vo
   assert.ok(details);
   assert.equal(details.reason, "authorization_denied");
   assert.equal(details.host, host);
+}
+
+export async function clientResetWhilePending(
+  phase: PendingResetPhase,
+  register: (input: PendingResetRegistration) => void,
+): Promise<void> {
+  const scenario = nativeAdminScenario("inst_native_admin_upgrade");
+  const { host, origin, selection } = scenario;
+  // An Agent gateway that only counts connection attempts.
+  const gatewayConnections: net.Socket[] = [];
+  const gateway = net.createServer((connection) => {
+    gatewayConnections.push(connection);
+    connection.destroy();
+  });
+  await new Promise<void>((resolve) => gateway.listen(0, "127.0.0.1", resolve));
+  const gates: Partial<Record<PendingResetPhase, () => void>> = {};
+  const entered: Partial<Record<PendingResetPhase, true>> = {};
+  const gated = <T>(name: PendingResetPhase, value: T): Promise<T> => {
+    entered[name] = true;
+    return new Promise<T>((resolve) => {
+      gates[name] = () => resolve(value);
+    });
+  };
+  const crashes: Error[] = [];
+  const onUncaught = (error: Error) => {
+    crashes.push(error);
+  };
+  process.on("uncaughtException", onUncaught);
+  const app = Fastify({ logger: false });
+  register({
+    ...scenario,
+    app,
+    admit: () => (phase === "admission" ? gated("admission", selection) : selection),
+    gatewayEndpoint: () => gatewayEndpoint(gateway),
+    gatewayKey: () => gated("gateway key", "gateway-test-key"),
+  });
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  const address = app.server.address();
+  assert.ok(address && typeof address === "object");
+  const serverSockets: net.Socket[] = [];
+  app.server.on("connection", (socket) => serverSockets.push(socket));
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const socket = net.connect(address.port, "127.0.0.1");
+      socket.on("error", reject);
+      socket.on("connect", () => {
+        socket.write(
+          `GET / HTTP/1.1\r\nHost: ${host}\r\nOrigin: ${origin}\r\nConnection: Upgrade\r\n` +
+            "Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n" +
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+        );
+        const phaseDeadline = Date.now() + 1000;
+        const waitForPhase = () => {
+          if (entered[phase] || Date.now() > phaseDeadline) {
+            socket.resetAndDestroy();
+            resolve();
+            return;
+          }
+          setTimeout(waitForPhase, 10);
+        };
+        setTimeout(waitForPhase, 20);
+      });
+    });
+    assert.equal(entered[phase], true, `the upgrade must reach the pending ${phase}`);
+    // Release the gate only once the server has seen the reset.
+    await waitUntil(
+      "the server to observe the reset",
+      () => serverSockets.every((socket) => socket.destroyed),
+      { timeoutMs: 2000, intervalMs: 10 },
+    );
+    assert.equal(serverSockets.length, 1);
+    const serverSocket = serverSockets[0];
+    assert.ok(serverSocket);
+    assert.equal(serverSocket.destroyed, true, "the server must observe the reset");
+    const release = gates[phase];
+    assert.ok(release, "the selected pending gate must exist");
+    release();
+    // Give a wrongly continued upgrade time to read the key or dial the gateway.
+    await new Promise<void>((resolve) => setTimeout(resolve, 300));
+    if (phase === "admission") {
+      assert.equal(entered["gateway key"], undefined, "a reset upgrade must not read the key");
+    }
+    assert.equal(gatewayConnections.length, 0);
+    assert.deepEqual(crashes, []);
+  } finally {
+    process.off("uncaughtException", onUncaught);
+    await app.close();
+    await new Promise<void>((resolve) => gateway.close(() => resolve()));
+  }
 }
