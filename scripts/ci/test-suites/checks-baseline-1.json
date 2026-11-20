@@ -31,6 +31,7 @@
     "tests/conformance/occ-runtime-logs-security.test.ts",
     "tests/integration/configuration-startup.test.mjs",
     "tests/integration/installation-change-preflight.test.mjs",
+    "tests/integration/installation-preflight-render.test.ts",
     "tests/conformance/kubernetes-secret-driver.test.ts",
     "tests/docs/docs-site.test.ts",
     "tests/conformance/kubernetes-compute.test.mjs",
@@ -493,6 +494,10 @@
     },
     {
       "path": "tests/integration/installation-change-preflight.test.mjs"
+    },
+    {
+      "path": "tests/integration/installation-preflight-render.test.ts",
+      "expectedTests": ["a separate database deployment requires current history only on upgrade"]
     },
     {
       "path": "tests/integration/console-api.test.ts"

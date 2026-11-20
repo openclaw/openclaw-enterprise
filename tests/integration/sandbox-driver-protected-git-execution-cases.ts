@@ -1,7 +1,7 @@
 import {
   assertGitExecutionContinuity,
   verifyManagedGitReplacement,
-} from "./sandbox-driver-managed-git-cases.mjs";
+} from "./sandbox-driver-managed-git-cases.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
