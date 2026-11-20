@@ -14,12 +14,14 @@ import (
 func executeUpgrade(args ...string) (string, string, error) {
 	var out, diagnostic bytes.Buffer
 	cmd := New(&out, &diagnostic)
+	cmd.SetIn(strings.NewReader(""))
 	cmd.SetArgs(append([]string{"installation", "upgrade"}, args...))
 	err := cmd.Execute()
 	return out.String(), diagnostic.String(), err
 }
 
 func TestInstallationUpgradeCLIIntegratesProfileAndCanonicalOwner(t *testing.T) {
+	t.Setenv("OCC_URL", "http://127.0.0.1:9")
 	repository, err := checkoutRepository("occ installation upgrade", filepath.Join("scripts", "upgrade-production"))
 	if err != nil {
 		t.Fatal(err)
@@ -37,6 +39,19 @@ func TestInstallationUpgradeCLIIntegratesProfileAndCanonicalOwner(t *testing.T) 
 		"kubeconfig": "kubeconfig", "context": "reviewed-context", "namespace": "openclaw-system",
 		"release": "oce", "installationDirectory": "rendered", "sourceRevision": revision, "images": images,
 	}
+	kubeconfig := `{"apiVersion":"v1","kind":"Config","clusters":[{"name":"local","cluster":{"server":"https://127.0.0.1:9"}}],"contexts":[{"name":"reviewed-context","context":{"cluster":"local","user":"operator"}}],"users":[{"name":"operator","user":{}}]}`
+	if err := os.WriteFile(filepath.Join(directory, "kubeconfig"), []byte(kubeconfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rendered := filepath.Join(directory, "rendered")
+	if err := os.Mkdir(rendered, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"values.yaml", "installation.yaml"} {
+		if err := os.WriteFile(filepath.Join(rendered, name), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	writeProfile := func() {
 		t.Helper()
 		document, err := json.Marshal(input)
@@ -49,7 +64,7 @@ func TestInstallationUpgradeCLIIntegratesProfileAndCanonicalOwner(t *testing.T) 
 	}
 	writeProfile()
 	plan, diagnostic, err := executeUpgrade("plan", "--profile", profile)
-	if err != nil || diagnostic != "" || !strings.Contains(plan, "reviewed-context") || !strings.Contains(plan, "No cluster contact or writes occurred") {
+	if err != nil || diagnostic != "" || !strings.Contains(plan, "reviewed-context") || !strings.Contains(plan, images["controller"]) || !strings.Contains(plan, "No cluster contact or writes occurred") {
 		t.Fatalf("plan = %q, diagnostic = %q, error = %v", plan, diagnostic, err)
 	}
 	for _, invalid := range []struct {
@@ -68,20 +83,69 @@ func TestInstallationUpgradeCLIIntegratesProfileAndCanonicalOwner(t *testing.T) 
 			t.Fatalf("%s plan = %q, error = %v", invalid.name, plan, err)
 		}
 	}
-	input["sourceRevision"], input["images"] = strings.Repeat("0", 40), images
+	input["sourceRevision"], input["images"] = revision, images
 	writeProfile()
+	target := filepath.Join(directory, "new-evidence")
 
-	// Planning is offline; an actual upgrade reaches the canonical source guard before cluster access.
-	_, diagnostic, err = executeUpgrade("--profile", profile, "--evidence-dir", filepath.Join(directory, "new-evidence"))
-	var status *ExitStatusError
-	if !errors.As(err, &status) || status.Code != 1 || !strings.Contains(diagnostic, "checkout commit does not match") {
-		t.Fatalf("canonical diagnostic = %q, error = %v", diagnostic, err)
+	// The group is navigation only. A former flag-only invocation cannot deploy.
+	help, _, err := executeUpgrade()
+	if err != nil || !strings.Contains(help, "apply") {
+		t.Fatalf("bare upgrade help = %q, error = %v", help, err)
 	}
-	_, diagnostic, err = executeUpgrade("--profile", profile, "--evidence-dir", filepath.Join(directory, "new-evidence"), "--", "--candidate-values", "private-candidate", "--preflight-only")
+	_, _, err = executeUpgrade("--profile", profile, "--evidence-dir", target)
+	if err == nil || !strings.Contains(err.Error(), "occ installation upgrade apply") {
+		t.Fatalf("old bare command error = %v", err)
+	}
+	_, _, err = executeUpgrade("status", target, "--auto-approve")
+	if err == nil || !strings.Contains(err.Error(), "unknown flag: --auto-approve") {
+		t.Fatalf("status accepted an approval flag: %v", err)
+	}
+
+	// With closed stdin the adapter must refuse before dispatch, even with a valid profile.
+	// The native owner's URL check prevents cluster contact if dispatch regresses.
+	options := []string{"--", "--timeout-seconds", "1"}
+	apply := []string{"apply", "--profile", profile, "--evidence-dir", target}
+	_, diagnostic, err = executeUpgrade(append(apply, options...)...)
+	var status *ExitStatusError
+	if !errors.As(err, &status) || status.Code != 2 || !strings.Contains(diagnostic, "--auto-approve") {
+		t.Fatalf("unapproved apply diagnostic = %q, error = %v", diagnostic, err)
+	}
+	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unapproved apply created evidence: %v", err)
+	}
+	_, diagnostic, err = executeUpgrade(append(append(apply, "--auto-approve"), options...)...)
+	if !errors.As(err, &status) || status.Code != 1 || !strings.Contains(diagnostic, "OCC_URL must use HTTPS") {
+		t.Fatalf("approved apply canonical diagnostic = %q, error = %v", diagnostic, err)
+	}
+
+	absent, _, err := executeUpgrade("status", target)
+	if err != nil || !strings.Contains(absent, "run outcome is unknown") {
+		t.Fatalf("status after early refusal = %q, error = %v", absent, err)
+	}
+	preview, diagnostic, err := executeUpgrade("plan", "--profile", profile, "--", "--timeout-seconds", "5")
+	if err != nil || !strings.Contains(preview, "Wait timeout (seconds): 5") {
+		t.Fatalf("expert plan = %q, diagnostic = %q, error = %v", preview, diagnostic, err)
+	}
+
+	input["sourceRevision"] = strings.Repeat("0", 40)
+	writeProfile()
+	_, diagnostic, err = executeUpgrade("migration", "check", "--profile", profile, "--evidence-dir", target)
+	if !errors.As(err, &status) || status.Code != 1 || !strings.Contains(diagnostic, "checkout commit does not match") {
+		t.Fatalf("migration check diagnostic = %q, error = %v", diagnostic, err)
+	}
+	_, _, err = executeUpgrade("migration", "apply", "--profile", profile, "--evidence-dir", target)
+	if err == nil || !strings.Contains(err.Error(), "unknown flag: --evidence-dir") {
+		t.Fatalf("migration apply accepted a flag for the original RUN: %v", err)
+	}
+	_, diagnostic, err = executeUpgrade("migration", "apply", target, "--profile", profile, "--auto-approve")
+	if !errors.As(err, &status) || status.Code != 2 || !strings.Contains(diagnostic, "checkout commit does not match") {
+		t.Fatalf("migration apply source diagnostic = %q, error = %v", diagnostic, err)
+	}
+	_, diagnostic, err = executeUpgrade("apply", "--profile", profile, "--evidence-dir", target, "--auto-approve", "--", "--candidate-values", "private-candidate", "--preflight-only")
 	if !errors.As(err, &status) || status.Code != 2 || !strings.Contains(diagnostic, "retain every other original expert option") || strings.Contains(diagnostic, "private-candidate") {
 		t.Fatalf("expert option diagnostic = %q, error = %v", diagnostic, err)
 	}
-	_, _, err = executeUpgrade("--namespace", "wrong", "--profile", profile, "--evidence-dir", filepath.Join(directory, "new-evidence"))
+	_, _, err = executeUpgrade("apply", "--namespace", "wrong", "--profile", profile, "--evidence-dir", target)
 	if err == nil || !strings.Contains(err.Error(), "not used by this production upgrade") {
 		t.Fatalf("ignored global flag error = %v", err)
 	}
@@ -90,19 +154,36 @@ func TestInstallationUpgradeCLIIntegratesProfileAndCanonicalOwner(t *testing.T) 
 		t.Fatalf("configuration rollback error = %v", err)
 	}
 
-	evidence := filepath.Join(directory, "evidence")
+	evidence := filepath.Join(directory, "evidence with spaces")
 	if err := os.Mkdir(evidence, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(evidence, "helm-started"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	observed, _, err := executeUpgrade("status", "--evidence-dir", evidence)
+	observed, _, err := executeUpgrade("status", evidence)
 	if err != nil || !strings.Contains(observed, "Helm intent was recorded; its outcome remains uncertain") || !strings.Contains(observed, "not current cluster health or resume authority") {
 		t.Fatalf("status = %q, error = %v", observed, err)
 	}
+	// Only a positional before the delimiter can select which run to recover.
+	_, _, err = executeUpgrade("resume", "--profile", profile, "--", evidence)
+	if err == nil || !strings.Contains(err.Error(), "original evidence directory as RUN") {
+		t.Fatalf("resume accepted a run path after --: %v", err)
+	}
+	input["sourceRevision"] = revision
+	writeProfile()
+	resume := []string{"resume", evidence, "--profile", profile}
+	// Resuming a real run also requires approval. The URL refusal keeps dispatch local.
+	_, diagnostic, err = executeUpgrade(append(resume, options...)...)
+	if !errors.As(err, &status) || status.Code != 2 || !strings.Contains(diagnostic, "--auto-approve") {
+		t.Fatalf("unapproved resume diagnostic = %q, error = %v", diagnostic, err)
+	}
+	_, diagnostic, err = executeUpgrade(append(append(resume, "--auto-approve"), options...)...)
+	if !errors.As(err, &status) || status.Code != 1 || !strings.Contains(diagnostic, "OCC_URL must use HTTPS") {
+		t.Fatalf("approved resume canonical diagnostic = %q, error = %v", diagnostic, err)
+	}
 	t.Chdir(filepath.Join(repository, "internal"))
-	_, _, err = executeUpgrade("status", "--evidence-dir", evidence)
+	_, _, err = executeUpgrade("status", evidence)
 	if err == nil || !strings.Contains(err.Error(), "relative paths keep their meaning") {
 		t.Fatalf("subdirectory invocation error = %v", err)
 	}
@@ -111,7 +192,7 @@ func TestInstallationUpgradeCLIIntegratesProfileAndCanonicalOwner(t *testing.T) 
 	if err := os.Symlink(filepath.Join(evidence, "helm-started"), filepath.Join(evidence, "completed")); err != nil {
 		t.Fatal(err)
 	}
-	observed, diagnostic, err = executeUpgrade("status", "--evidence-dir", evidence)
+	observed, diagnostic, err = executeUpgrade("status", evidence)
 	if !errors.As(err, &status) || status.Code != 2 || observed != "" || !strings.Contains(diagnostic, "invalid or nonprivate status marker") {
 		t.Fatalf("linked status = %q, diagnostic = %q, error = %v", observed, diagnostic, err)
 	}
@@ -127,7 +208,7 @@ func TestInstallationUpgradeCLIIntegratesProfileAndCanonicalOwner(t *testing.T) 
 		t.Fatal(err)
 	}
 	for _, suffix := range []string{"", "/", "/."} {
-		observed, _, err = executeUpgrade("status", "--evidence-dir", link+suffix)
+		observed, _, err = executeUpgrade("status", link+suffix)
 		if !errors.As(err, &status) || status.Code != 2 || observed != "" {
 			t.Fatalf("directory link suffix %q: status = %q, error = %v", suffix, observed, err)
 		}
@@ -147,7 +228,7 @@ func TestInstallationUpgradePreservesNativeMigrationHandoffStatus(t *testing.T) 
 		t.Fatal(err)
 	}
 	t.Chdir(directory)
-	_, diagnostic, err := executeUpgrade("--profile", "profile.json", "--evidence-dir", "evidence")
+	_, diagnostic, err := executeUpgrade("apply", "--profile", "profile.json", "--evidence-dir", "evidence", "--auto-approve")
 	var status *ExitStatusError
 	if !errors.As(err, &status) || status.Code != 3 || diagnostic != "migration paused\n" {
 		t.Fatalf("migration handoff diagnostic = %q, error = %v", diagnostic, err)

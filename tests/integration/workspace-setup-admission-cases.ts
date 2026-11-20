@@ -18,11 +18,11 @@ import {
   type WorkspaceSetup,
 } from "../../packages/contracts/src/index.ts";
 import type { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 import { CODEX_PLACEMENT_REFUSAL, EMBEDDED_API_KEY_REQUIRED } from "../helpers/refusal-text.mjs";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
