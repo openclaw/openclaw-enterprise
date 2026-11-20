@@ -1,7 +1,7 @@
 ---
 created: "2026-10-22"
-updated: "2026-11-19"
-last_updated_session: authoring-run/e1008b80-26f9-4622-91f0-e6a875bba268
+updated: "2026-11-20"
+last_updated_session: authoring-run/9f931987-3f00-44cc-b993-af4c9d4b4762
 ---
 
 # Managed OpenShell workload flow
@@ -68,6 +68,13 @@ requires a runtime and refuses an execution cluster or ServicePrincipal projecti
 settings for preparation, activation, stop and retirement. Restore the saved
 mode if they differ. `harnessForRevision` also checks the saved Sandbox Driver ID.
 
+For a protected Codex revision with repository policy,
+`KubernetesComputeDriver.snapshotRuntimeInputs` records the Gateway and
+Harness image references and the Workspace node route. Preparation and
+activation verify the stored placement against the current Driver settings
+before creating workloads. The Gateway and Sandbox then use the recorded
+image references. The default controller build refuses this placement.
+
 `KubernetesComputeDriver.harnessLaunch` builds the command, environment,
 identity and retained-directory requirements. `harnessLaunchWithNode` adds
 workspace node startup settings and identity. Managed `sandboxRequirements`
@@ -75,7 +82,11 @@ carries the logical directories and an empty `workspaceMounts` list.
 `ManagedOpenShellSandbox.harnessSpec` maps those directories to bootstrap paths
 and changes environment values with explicit directory bindings.
 `OpenShellSandboxDriver.harnessSpecForLayout` adds process, network and
-Provider settings. The image bootstrap prepares retained directories for
+Provider settings. On an admitted scoped revision, the Sandbox checks the
+revision-owned setup binding and permits WebSocket upgrades only on the
+exact WSS route. The node trusts the Sandbox inspection CA. The Gateway
+requires explicit node pairing and applies the File Transfer reply limit to
+the enrolled node. Other egress remains subject to the revision's policy. The image bootstrap prepares retained directories for
 dedicated OpenClaw in place of `prepareNativeWorkspace`.
 
 ### 2. Reconcile a stopped workload
@@ -216,6 +227,8 @@ do not establish cluster isolation or durable replacement after failures.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 10:24: Trace image and Workspace route checks for protected Codex. (authoring-run/9f931987-3f00-44cc-b993-af4c9d4b4762 - 5913bf95871c38b4165d19dfd1034ae8b317c9b3)
 
 - 2026-11-19 22:19: Condense the managed workload trace. (authoring-run/e1008b80-26f9-4622-91f0-e6a875bba268 - 0173500d9e950c1722fb6738af08f9857e44be3d)
 

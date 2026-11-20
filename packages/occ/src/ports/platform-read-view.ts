@@ -8,7 +8,12 @@ export function createPlatformReadView(
   lifetime: RepositoryTransactionLifetime,
 ): PlatformReadView {
   return Object.freeze({
-    sandboxPolicies: bindRepository(repositories.sandboxPolicies, lifetime, ["find"]),
+    sandboxPolicies: Object.freeze({
+      ...bindRepository(repositories.sandboxPolicies, lifetime, ["find"]),
+      ...(repositories.sandboxPolicies.supportsRepositoryNetworkPolicy === true
+        ? { supportsRepositoryNetworkPolicy: true as const }
+        : {}),
+    }),
     operations: bindRepository(repositories.operations, lifetime, [
       "list",
       "findWork",

@@ -14,7 +14,10 @@ import {
 } from "../embedded-gateway-owner.ts";
 import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
 import { compactNodeChildArguments, nodeProgramArguments } from "../node-program.ts";
-import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
+import {
+  HARNESS_EGRESS_ENROLLMENT_HELPER,
+  HARNESS_REPOSITORY_GIT_ENROLLMENT_HELPER,
+} from "../harness-egress-enrollment.ts";
 import {
   DELIBERATE_RESTART_EXIT_STATUS,
   DELIBERATE_RESTART_MESSAGE,
@@ -689,7 +692,18 @@ function mergeOpenClawPluginConfiguration(base, overlay, options = {}) {
 
 `;
 
-function pluginRuntimeHelpers(includeOpenClawInstaller: boolean): string {
+function pluginRuntimeHelpers(
+  includeOpenClawInstaller: boolean,
+  includeWorkspaceProbeTransport = false,
+): string {
+  // Keep the shared OpenShell launcher within its command size limit.
+  const transport = includeWorkspaceProbeTransport
+    ? {
+        parameter: ", transport",
+        options: "...transport?.options, ",
+        client: "...transport?.client,\n        ",
+      }
+    : { parameter: "", options: "", client: "" };
   return String.raw`
 const pluginRuntimeTranslator = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
 const {
@@ -989,7 +1003,7 @@ function gatewayRefusedUnknownChannel(gatewayRuntime, error, channel) {
 // Query the running Gateway through OpenClaw's public SDK. Starting a CLI here
 // also starts its launcher/respawn lifecycle; killing that launcher cannot bound
 // a probe whose descendant still owns stdout.
-function callNativeGateway(method, params, timeoutMs, abortSignal, maxBytes = 65536) {
+function callNativeGateway(method, params, timeoutMs, abortSignal, maxBytes = 65536${transport.parameter}) {
   return new Promise((resolve) => {
     const controller = new AbortController();
     let settled = false;
@@ -1015,8 +1029,8 @@ function callNativeGateway(method, params, timeoutMs, abortSignal, maxBytes = 65
     Promise.resolve().then(async () => {
       if (settled) return;
       gatewayRuntime = require("openclaw/plugin-sdk/gateway-runtime");
-      const value = await gatewayRuntime.callGatewayFromCli(method, { json: true, timeout: String(timeoutMs) }, params, {
-        progress: false,
+      const value = await gatewayRuntime.callGatewayFromCli(method, { ${transport.options}json: true, timeout: String(timeoutMs) }, params, {
+        ${transport.client}progress: false,
         // Status probes must not initialize shared state alongside Gateway startup.
         sharedStateMode: "read-only",
         signal: controller.signal,
@@ -2606,7 +2620,115 @@ function publishAgentPluginSkillPath() {
 
 export const GATEWAY_RUNTIME_ENTRYPOINT = gatewayRuntimeEntrypoint(false);
 
-export function gatewayRuntimeEntrypoint(managedMode: boolean): string {
+type GatewayWorkspaceNodeProfile = {
+  readonly kind: "inspected-dedicated-codex";
+  readonly revisionId: string;
+  readonly bindingPath: string;
+};
+
+function inspectedWorkspaceNodeRuntime(profile: GatewayWorkspaceNodeProfile): string {
+  return String.raw`
+const inspectedWorkspaceNode = ${JSON.stringify({
+    revisionId: profile.revisionId,
+    bindingPath: profile.bindingPath,
+  })};
+
+function requireInspectedWorkspaceNodeLaunch(initialConfigPath) {
+  if (
+    !process.env.APP_SERVER_URL ||
+    process.env.OPENCLAW_NATIVE_WORKER_PROFILE !== undefined ||
+    process.env.OPENCLAW_WORKSPACE_NODE_ID !== undefined ||
+    workspaceNodeBindingPath !== inspectedWorkspaceNode.bindingPath ||
+    process.env.OPENCLAW_AGENT_REVISION_ID !== inspectedWorkspaceNode.revisionId ||
+    initialConfigPath !== "/etc/openclaw/openclaw.json"
+  ) {
+    throw new Error("Inspected workspace replies require a managed dedicated Codex launch with its revision-owned node binding.");
+  }
+}
+
+function configureInspectedWorkspacePairing(config) {
+  const gateway = config.gateway ??= {};
+  const nodes = gateway.nodes ??= {};
+  const pairing = nodes.pairing === undefined ? (nodes.pairing = {}) : nodes.pairing;
+  if (
+    !isPlainObject(pairing) ||
+    (pairing.autoApproveLocal !== undefined && pairing.autoApproveLocal !== false) ||
+    (pairing.sshVerify !== undefined && pairing.sshVerify !== false) ||
+    (pairing.autoApproveCidrs !== undefined &&
+      (!Array.isArray(pairing.autoApproveCidrs) || pairing.autoApproveCidrs.length > 0))
+  ) {
+    throw new Error("Inspected workspace node pairing requires explicit approval or a node-only setup code.");
+  }
+  // Both implicit approval paths default on in OpenClaw. Setup-code pairing
+  // and saved device-token authentication have independent admission paths.
+  pairing.autoApproveLocal = false;
+  pairing.sshVerify = false;
+}
+
+function requireInspectedFileTransferPolicy(fileConfig, workspaceNodeId, remoteRoot) {
+  if (fileConfig === undefined) return;
+  const nodes = fileConfig?.nodes;
+  const workspaces = fileConfig?.workspaces;
+  if (
+    !isPlainObject(fileConfig) ||
+    (nodes !== undefined && (!isPlainObject(nodes) || hasOwn(nodes, "*"))) ||
+    (workspaces !== undefined && !isPlainObject(workspaces))
+  ) {
+    throw new Error("Inspected workspace replies require an exact File Transfer node policy.");
+  }
+  // Before the controller supplies the authenticated binding, only a new
+  // workspace may bootstrap. Existing rights could otherwise dispatch on the
+  // inspected connection before its reply bounds are configured.
+  if (!workspaceNodeId &&
+      (Object.keys(nodes ?? {}).length > 0 || Object.keys(workspaces ?? {}).length > 0)) {
+    throw new Error("Existing File Transfer policies require the enrolled inspected node binding before startup.");
+  }
+  if (workspaces && hasOwn(workspaces, "main")) {
+    const main = workspaces.main;
+    if (!workspaceNodeId || !isPlainObject(main) ||
+        main.nodeId !== workspaceNodeId || main.remoteRoot !== remoteRoot) {
+      throw new Error("The configured workspace conflicts with the enrolled inspected node.");
+    }
+  }
+  for (const [nodeId, policy] of Object.entries(nodes ?? {})) {
+    if (!isPlainObject(policy) ||
+        (policy.boundedReplies !== undefined && typeof policy.boundedReplies !== "boolean") ||
+        (nodeId !== workspaceNodeId && policy.boundedReplies === true) ||
+        (nodeId === workspaceNodeId && policy.boundedReplies === false)) {
+      throw new Error("The File Transfer reply profile conflicts with the enrolled inspected node.");
+    }
+  }
+  if (workspaceNodeId && (!nodes || !hasOwn(nodes, workspaceNodeId))) {
+    // Bootstrap defaults are for a new policy only. A new exact entry could
+    // shadow a display-name rule or override previously configured denials.
+    if (nodes !== undefined || workspaces !== undefined ||
+        fileConfig.literalGrants !== undefined || fileConfig.pendingReapprovals !== undefined) {
+      throw new Error("The enrolled inspected node has no exact File Transfer policy in the configured node map.");
+    }
+  }
+  if (fileConfig.policyVersion !== 2 &&
+      (fileConfig.policyVersion !== undefined || nodes !== undefined ||
+       fileConfig.literalGrants !== undefined || fileConfig.pendingReapprovals !== undefined)) {
+    throw new Error("Review existing File Transfer approvals before selecting inspected workspace replies.");
+  }
+}
+`;
+}
+
+export function gatewayRuntimeEntrypoint(
+  managedMode: boolean,
+  workspaceNodeProfile?: GatewayWorkspaceNodeProfile,
+): string {
+  if (
+    workspaceNodeProfile !== undefined &&
+    (!managedMode ||
+      workspaceNodeProfile.kind !== "inspected-dedicated-codex" ||
+      !workspaceNodeProfile.revisionId ||
+      !workspaceNodeProfile.bindingPath.startsWith("/"))
+  ) {
+    throw new Error("Invalid inspected workspace node launch profile.");
+  }
+  const inspected = workspaceNodeProfile !== undefined;
   return String.raw`
 const { accessSync, constants: fsConstants, mkdirSync, rmSync } = require("node:fs");
 const { dirname, join } = require("node:path");
@@ -2667,7 +2789,7 @@ if (countsUnexplainedExits) {
   countUnexplainedExits(previous + 1);
 }
 
-${PLUGIN_RUNTIME_HELPERS}
+${pluginRuntimeHelpers(true, true)}
 ${MANAGED_INSTALL_HELPERS}
 ${GATEWAY_TOOL_POLICY_RUNTIME}
 ${WORKSPACE_ASSET_HELPERS}
@@ -2929,7 +3051,12 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
     appServer.remoteWorkspaceRoot ??= remoteRoot;
   }
   // The path is known at startup. Pairing supplies only the node identity, so
-  // loading file-transfer should not also replace the Codex plugin.
+  // loading file-transfer should not also replace the Codex plugin.${
+    inspected
+      ? String.raw`
+  requireInspectedFileTransferPolicy(entries["file-transfer"]?.config, workspaceNodeId, remoteRoot);`
+      : ""
+  }
   if (workspaceNodeId === undefined) return;
   const managedMcp = entries[MANAGED_MCP_POLICY_ID];
   if (managedMcp?.enabled === true) managedMcp.config.nodeId = workspaceNodeId;
@@ -2978,6 +3105,11 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
       ],
       followSymlinks: false,
     };
+  }${
+    inspected
+      ? String.raw`
+  nodes[workspaceNodeId].boundedReplies = true;`
+      : ""
   }
   fileConfig.policyVersion ??= 2;
   (fileConfig.workspaces ??= {}).main = { nodeId: workspaceNodeId, remoteRoot };
@@ -3126,7 +3258,7 @@ function pinCodexProviderTransport(config) {
 }
 
 const WORKSPACE_NODE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
-const workspaceNodeBindingPath = process.env.OPENCLAW_WORKSPACE_NODE_PATH;
+const workspaceNodeBindingPath = process.env.OPENCLAW_WORKSPACE_NODE_PATH;${workspaceNodeProfile ? inspectedWorkspaceNodeRuntime(workspaceNodeProfile) : ""}
 
 // The controller writes {revisionId, deviceId} to an optional ConfigMap volume.
 // A missing, partial or foreign file (another revision of this Agent) is absent.
@@ -3142,7 +3274,12 @@ function readWorkspaceNodeBinding() {
     !isPlainObject(binding) ||
     binding.revisionId !== process.env.OPENCLAW_AGENT_REVISION_ID ||
     typeof binding.deviceId !== "string" ||
-    !WORKSPACE_NODE_ID_PATTERN.test(binding.deviceId)
+    !WORKSPACE_NODE_ID_PATTERN.test(binding.deviceId)${
+      inspected
+        ? String.raw` ||
+    !/^[a-f0-9]{64}$/u.test(binding.deviceId)`
+        : ""
+    }
   ) {
     return undefined;
   }
@@ -3192,14 +3329,29 @@ function replaceOpenClawConfig(config) {
 // The running Gateway's own view of file-transfer: its runtime state in the
 // live plugin registry ("active", "service-failed", "disabled", "unloaded")
 // and that registry's generation, which every plugin reload replaces. A Gateway
-// that refused this CLI's credentials answers { refused: true, reason }.
+// that refused its local probe's credentials answers { refused: true, reason }.
 async function openClawFileTransferState() {
+  const port = process.env.OPENCLAW_GATEWAY_PORT;
+  const password = process.env.OPENCLAW_GATEWAY_PASSWORD;
+  // The SDK's port option targets the child Gateway and ignores URL overrides.
+  // Trusted-proxy Gateway auth accepts its provisioned password on loopback.
+  // Without this managed connection, keep the SDK's existing paired-client path.
+  const transport = port?.trim() && password?.trim() ? {
+    options: { port, password },
+    client: {
+      clientName: "gateway-client",
+      mode: "backend",
+      deviceIdentity: null,
+      scopes: ["operator.read"],
+    },
+  } : undefined;
   const result = await callNativeGateway(
     "plugins.list",
     {},
     8000,
     undefined,
     4 * 1024 * 1024,
+    transport,
   );
   if (result.authenticationRefused === true) {
     return { refused: true, reason: result.authenticationRefusalReason };
@@ -3253,7 +3405,12 @@ const followsPeerStatus =
   pluginRuntime?.manifest?.kind === "codex" && hasEnabledPluginSelections(pluginRuntime) &&
   process.env.OPENCLAW_CODEX_PLUGINS_PREPARED !== "true";
 // A respawn configures from the file a container restart would start from.
-const initialConfigPath = process.env.OPENCLAW_CONFIG_PATH;
+const initialConfigPath = process.env.OPENCLAW_CONFIG_PATH;${
+    inspected
+      ? String.raw`
+requireInspectedWorkspaceNodeLaunch(initialConfigPath);`
+      : ""
+  }
 const appliesGatewayToolPolicy = Boolean(process.env.APP_SERVER_URL || process.env.OPENCLAW_NATIVE_WORKER_PROFILE);
 // Native human administration can use a writable config, but it is not the
 // authority for OCE-approved model tools. Keep the admitted revision snapshot.
@@ -3382,7 +3539,12 @@ function configureGateway(peerStatus) {
     process.env.APP_SERVER_URL !== undefined ||
     process.env.OPENCLAW_NATIVE_WORKER_PROFILE !== undefined
   ) {
-    const config = readOpenClawConfig();
+    const config = readOpenClawConfig();${
+      inspected
+        ? String.raw`
+    configureInspectedWorkspacePairing(config);`
+        : ""
+    }
     configureManagedMcpPolicy(config, installs);
     // The first pairing records its command grant before a node ID is available.
     // gateway.* changes restart OpenClaw, so this is written only before a spawn.
@@ -3419,7 +3581,13 @@ let gatewayGeneration = 0;
 // OpenClaw backs up a config file it can write. One OCC mounted read-only is
 // externally managed: say so, so OpenClaw skips that backup instead of logging
 // EROFS on every start.
-function gatewayEnvironment() {
+function gatewayEnvironment() {${
+    inspected
+      ? String.raw`
+  // Only the wrapper composes the revision-owned policy. The native Gateway
+  // still persists paired devices in its normal state directory.
+  return { ...process.env, OPENCLAW_CONFIG_READONLY: "1" };`
+      : String.raw`
   const configPath = process.env.OPENCLAW_CONFIG_PATH;
   if (configPath === undefined) return process.env;
   try {
@@ -3427,6 +3595,7 @@ function gatewayEnvironment() {
     return process.env;
   } catch {
     return { ...process.env, OPENCLAW_CONFIG_READONLY: "1" };
+  }`
   }
 }
 
@@ -3677,7 +3846,7 @@ if (workspaceNodeBindingPath !== undefined) {
     const after = await openClawFileTransferState();
     if (superseded()) return;
     if (after?.refused) {
-      // The Gateway refuses its own CLI: it cannot confirm this node, now or later.
+      // The Gateway refuses its local probe: it cannot confirm this node, now or later.
       reportFailure("GATEWAY_UNAUTHORIZED", after.reason);
       return;
     }
@@ -4253,6 +4422,7 @@ function agentRuntimeEntrypoint({
   patRecovery = false,
   boxHttps = false,
   explicitProxy = false,
+  repositoryGitProbe = false,
 } = {}): string {
   const processFailed = patRecovery ? "!cleanExit" : "result.status !== 0 || result.error";
   return String.raw`
@@ -4266,7 +4436,7 @@ ${AUTH_PROBE_FAILURE_HELPER}
 ${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
 ${CODEX_STDERR_FILTER_HELPER}
 ${CODEX_PLUGIN_STDIO_HELPER}
-${HARNESS_EGRESS_ENROLLMENT_HELPER}
+${repositoryGitProbe ? HARNESS_REPOSITORY_GIT_ENROLLMENT_HELPER : HARNESS_EGRESS_ENROLLMENT_HELPER}
 ${startupPhaseHelper("agent")}
 ${computeOwned ? CODEX_READINESS_HELPER + "\n" : ""}
 // codex is the npm launcher: a timeout's SIGKILL ended only it and left its native child
@@ -5654,6 +5824,8 @@ const explicitProxyLaunches = new Map<string, string>();
 let compactPatLaunch: string | undefined;
 let compactProviderLaunch: string | undefined;
 let compactProtectedLaunch: string | undefined;
+let compactRepositoryGitLaunch: string | undefined;
+let repositoryGitLaunch: string | undefined;
 
 function compactWorkspaceNodeLaunch(child: string): string {
   return agentWithNodeEntrypoint(compactNodeChildArguments(child));
@@ -5665,6 +5837,7 @@ export interface CodexLaunch {
   readonly openShellProgram?: "pat" | "ordinary";
   readonly withNode?: boolean;
   readonly workspaceSetup?: boolean;
+  readonly repositoryGitProbe?: boolean;
   readonly strandsBox?: boolean;
   /**
    * A provider-owned launch whose Sandbox may name an explicit egress proxy in the Harness
@@ -5683,8 +5856,22 @@ export function codexLaunchEntrypoint(
     workspaceSetup,
     strandsBox,
     explicitProxy,
+    repositoryGitProbe,
   }: CodexLaunch = { providerOwned: false, protected: false },
 ): string {
+  if (repositoryGitProbe) {
+    if (!providerOwned || !protectedLaunch || openShellProgram !== "ordinary") {
+      throw new Error("A repository network policy requires a protected OpenShell Codex launch.");
+    }
+    return withNode
+      ? (compactRepositoryGitLaunch ??= compactWorkspaceNodeLaunch(
+          agentRuntimeEntrypoint({ withNode: true, protected: true, repositoryGitProbe: true }),
+        ))
+      : (repositoryGitLaunch ??= agentRuntimeEntrypoint({
+          protected: true,
+          repositoryGitProbe: true,
+        }));
+  }
   if (!providerOwned) {
     if (protectedLaunch) {
       return withNode

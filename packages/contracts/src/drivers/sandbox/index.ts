@@ -14,6 +14,7 @@ import type {
 } from "../../index.ts";
 import type { RepositoryExecutionIdentity } from "../repo/index.ts";
 import type { SandboxLogChunk, SandboxLogContext, SandboxLogRequest } from "../../runtime-logs.ts";
+import type { RepositoryNetworkPolicy } from "../../repository-network-policy.ts";
 import type {
   ProtectedCodexArtifactPolicyAdmission,
   SandboxNetworkGrant,
@@ -21,6 +22,8 @@ import type {
   SandboxPolicyRecommendations,
   SandboxPolicySnapshot,
 } from "../../sandbox-policy.ts";
+
+export type ProtectedRepositoryNetworkPolicyContext = Readonly<AgentRevision>;
 
 export type KubernetesNamespacedResource = Readonly<Record<string, unknown>>;
 
@@ -241,6 +244,20 @@ export interface SandboxDriver extends Driver {
     scope?: { readonly repositoryCredentials?: boolean },
   ): SandboxPolicySnapshot;
   /**
+   * Side-effect-free admission of the exact ACL against the base network snapshot.
+   * Return the opaque effective policy document with inspected HTTPS, additive ENFORCE and
+   * default deny. Refuse conflicts with these requirements or protected execution.
+   * Omission refuses even an empty ACL.
+   */
+  admitRepositoryNetworkPolicy?(
+    policy: RepositoryNetworkPolicy,
+    network: SandboxPolicySnapshot,
+  ): SandboxPolicySnapshot["defaults"];
+  /** Revalidate effective policy and the current credential scope on the frozen revision. */
+  validateProtectedRepositoryNetworkPolicy?(
+    revision: ProtectedRepositoryNetworkPolicyContext,
+  ): void;
+  /**
    * Side-effect-free admission for protected, dedicated Codex repository execution.
    * A normal network-policy result cannot acknowledge this purpose. The result names
    * exactly the qualified defaults map's keys and carries no Agent additions.
@@ -298,6 +315,8 @@ export interface SandboxDriver extends Driver {
    * A denial observed here can select material, never release work. */
   observeHeldRepositoryGitPreview?(
     context: SandboxHarnessStatusContext,
+    /** Compute signs the exact one-use discovery probe for a repository network policy. */
+    signProbe?: (startupId: string, probeNonce: string) => string,
   ): Promise<"held" | "installed" | undefined>;
   /**
    * Release the exact protected Harness startup only after Compute has committed

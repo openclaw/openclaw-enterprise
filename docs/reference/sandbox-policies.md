@@ -11,6 +11,75 @@ argument. The current implementation supports `networking`; `filesystem` and
 The console discovers the owner’s contextual action URLs; the CLI exposes
 `--facet networking`.
 
+## Repository network policy contract
+
+The contracts package can bind an explicit repository access list to a
+SandboxPolicy snapshot. Each entry uses a lowercase `owner/name` and grants
+`read` for clone and fetch or `write` for clone, fetch, and push. Each list and
+its delegation ceiling can contain up to 32 entries, one per repository.
+Repository policy admission checks canonical names, unique entries, the
+Installation delegation ceiling, and the repository policy owner's approval
+for the Namespace. A write limit allows read and write grants.
+An absent ceiling delegates no access. Policy GET shows Namespace delegation.
+It shows whether current Drivers admit a first-save candidate or the state
+adapter supports withdrawal of a saved list. PUT checks each requested grant.
+
+`PUT /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/networking`
+accepts optional `repositoryNetworkPolicy` with `expectedVersion` and `additions`.
+Omitting the field keeps the saved list. A new Agent has no saved list.
+A first list or nonempty replacement requires Agent `manage_policy`,
+SandboxPolicy `update`, and read access to the Agent's Configuration and Harness
+credential source. Leave ordinary additions empty. A first empty list is
+refused. Each grant must fit the Agent's selected Git credential and the Repo
+owner must approve its exact access level. The selected Sandbox checks the
+protected Codex artifact snapshot and repository grants at the next saved
+version. Compute checks the same grants and protected topology before OCC
+saves the list.
+Kubernetes Compute requires a managed Gateway, dedicated Codex, a matching
+OpenAI credential source, an exact Workspace node WSS route, and a controller
+built for the qualified runtime image pair. The default controller build
+refuses first saves and nonempty replacements in this topology. See
+[image selection and build arguments](drivers/kubernetes-compute/configuration.md#images-and-resources).
+
+To withdraw existing grants, enable editing and send empty arrays for `additions` and
+`repositoryNetworkPolicy`. You need Agent `manage_policy` and SandboxPolicy
+`read` and `update`. This saves deny-all even under protected execution or
+without Sandbox Driver support. To end existing access, stop the Agent and
+confirm its workload has stopped. Omit the repository field to clear ordinary
+additions alone.
+
+A stored list, including deny-all, can take effect only through a deployment
+that can enforce it. Deployment checks edit authority before Channel credential validation and new
+deployment effects. It checks each grant against the current Installation ceiling
+and Namespace approval. Both the selected Sandbox and Compute Drivers
+must admit the policy and topology before runtime credential preparation.
+For protected execution, Compute checks the frozen revision, qualified image
+digests, and exact Workspace node route before runtime credential preparation.
+It refuses a mismatch before the Worker stops a serving predecessor.
+Deployment returns `409 RESOURCE_CONFLICT`
+if an admitting Driver or the repository policy owner that approved the list
+changes before runtime credential provisioning or revision creation. A successful
+deployment saves the list, its identity, and the effective policy in the Agent
+revision. Before preparing a queued revision, the Worker rechecks the actor's
+Agent `manage_policy` and SandboxPolicy `read` and `update` permissions. Losing
+one of them blocks deployment with `AUTHORIZATION_DENIED`. The Worker checks
+Compute support again, including after restart. After activation-time policy
+validation, the Worker renews its work claim before calling Compute. These checks
+cover empty lists.
+Losing policy-edit permission or Compute support for a new deployment still
+allows the Worker to remove Git access from a serving revision.
+Live application refuses a saved list or an active revision that has a list.
+If the active revision has a list and the saved policy lacks it, stop the Agent,
+confirm its workload has stopped, and investigate the mismatch.
+
+The Sandbox Driver's side-effect-free `admitRepositoryNetworkPolicy` method
+receives the validated list and an immutable base snapshot. It returns the
+effective policy synchronously as a plain JSON object. Arrays must contain only
+consecutive elements starting at index zero. The Driver must inspect HTTPS,
+enforce the list alongside other rules, and deny ungranted repositories. It
+must refuse bypass paths and weaker protected execution. Ordinary deployment
+refuses a list supplied by the Driver.
+
 ## Discovery and preview
 
 The selected Sandbox implementation contributes the shared definition for
@@ -38,9 +107,12 @@ User editing is disabled by default. Enabling or disabling
 `Agent.sandboxPolicyEditing` requires both Installation and exact-Agent
 `administer`. Changing additions or requesting live application requires exact-Agent
 `manage_policy` and exact-SandboxPolicy `update`. Live application also requires
-SandboxPolicy `read`: it admits and returns the saved additions. When saved
-additions exist, Agent deploy and an Agent update that leaves repository bindings
-also require SandboxPolicy `read` before any refusal that names them. Reads require
+SandboxPolicy `read` because it admits and returns the saved additions. Ordinary
+deployment and fresh first deployment need SandboxPolicy `read` for saved
+network policy additions or an explicit repository network policy list, even an
+empty list. Deploying an explicit list also requires exact-Agent `manage_policy`
+and exact-SandboxPolicy `update`. An Agent update that leaves repository bindings still needs
+SandboxPolicy `read` when saved network policy additions exist. Reads require
 `read` on both resources. Ordinary Agent `update` does not authorize these operations.
 The editing switch is temporary until the platform Guardrails primitive owns
 these restrictions. Its controller and HTTP operation are named
@@ -48,10 +120,13 @@ these restrictions. Its controller and HTTP operation are named
 expect this API to change when Guardrails replaces it.
 Disabling editing preserves approved additions and previously admitted work.
 Revocation requires an explicit policy change or Agent shutdown.
-Without per-Agent network policy support, enabling editing returns HTTP 409;
-disabling it stays allowed. When the Installation selects no Sandbox Driver,
-validate, save and apply return the same 409 right after authorization. Policy GET
-then returns `capability: null` and the cause in `unavailableReason`.
+Without per-Agent network policy support, an administrator also needs
+SandboxPolicy `read` to enable editing. The Installation must support storing
+repository policies and the Agent must have an existing list to withdraw.
+Otherwise enabling editing returns HTTP 409 for an authorized reader.
+Disabling editing remains available. Validate, apply, and ordinary saves return
+HTTP 409 after authorization if the capability is unavailable. Policy GET then
+returns `capability: null` and the cause in `unavailableReason`.
 
 The trusted startup field `sandboxNetworkPolicyCeiling` bounds additions in both
 the API and worker. Each entry has `id`, an exact absolute `binary` path, a DNS

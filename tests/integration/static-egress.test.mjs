@@ -3111,12 +3111,19 @@ function networkPolicyGrant() {
   };
 }
 
-async function networkPolicyFixture(t, { admitRevision = true } = {}) {
+async function networkPolicyFixture(
+  t,
+  { admitRevision = true, repositoryNetworkPolicyCeiling } = {},
+) {
   const grant = networkPolicyGrant();
   const f = await staticEgressFixture(t, {
     admitRevision,
     appFactory: (context, options) =>
-      createConsoleAppFixture(context, { ...options, sandboxNetworkPolicyCeiling: [grant] }),
+      createConsoleAppFixture(context, {
+        ...options,
+        sandboxNetworkPolicyCeiling: [grant],
+        repositoryNetworkPolicyCeiling,
+      }),
   });
   return { f, grant };
 }
@@ -3134,12 +3141,17 @@ test("protected admission refuses an Agent's network policy additions instead of
   // The protected profile is the Sandbox's exact policy, so Agent additions cannot ride on it.
   // Admission says so at deploy time; it must not silently admit a revision without them.
   const { f, grant } = await networkPolicyFixture(t, { admitRevision: false });
-  const savePolicy = (additions) =>
+  const savePolicy = (additions, repositoryNetworkPolicy) =>
     f.controller.transact(async (unit) => {
       const policy = await unit.sandboxPolicies.find(f.namespace.id, f.agent.id);
       assert.ok(policy, "every Agent owns a sandbox policy");
       const saved = await unit.sandboxPolicies.save(
-        { ...policy, additions, version: policy.version + 1 },
+        {
+          ...policy,
+          additions,
+          version: policy.version + 1,
+          ...(repositoryNetworkPolicy === undefined ? {} : { repositoryNetworkPolicy }),
+        },
         policy.version,
       );
       assert.ok(saved);
@@ -3159,8 +3171,7 @@ test("protected admission refuses an Agent's network policy additions instead of
     await f.controller.transact((unit) => unit.revisions.listRevisions(f.namespace.id, f.agent.id)),
     [],
   );
-  // Without additions the same Agent admits a protected revision that keeps only its
-  // protected egress policy: no Agent policy snapshot rides beside the egress plan.
+  // Omission permits the existing protected execution path.
   await savePolicy([]);
   const metadata = await f.deployAgent(f.namespace.id, f.agent.id);
   const revision = await f.controller.transact((unit) =>
@@ -3169,12 +3180,30 @@ test("protected admission refuses an Agent's network policy additions instead of
   assert.equal(revision.executionAdmission.mode, "protected");
   assert.ok(revision.egressPlan);
   assert.equal(revision.sandboxPolicy, undefined);
+  // Saving explicit deny-all must refuse a subsequent protected deployment.
+  await savePolicy([], []);
+  const deniedRepositoryPolicy = await f.request(
+    "POST",
+    `/namespaces/${f.namespace.id}/agents/${f.agent.id}/deploy`,
+  );
+  assert.equal(deniedRepositoryPolicy.status, 409, JSON.stringify(deniedRepositoryPolicy.body));
+  assert.match(
+    deniedRepositoryPolicy.body.error.message,
+    /Protected execution cannot enforce the saved repository network policy/,
+  );
+  assert.deepEqual(
+    await f.controller.transact((unit) => unit.revisions.listRevisions(f.namespace.id, f.agent.id)),
+    [revision],
+  );
 });
 
 test("the policy endpoint refuses additions and live application while the active revision is protected", async (t) => {
   // Fail early: the same rule createRevision and the worker enforce is refused at save and
   // apply time, with the Credential Proxy named, and the policy view says so up front.
-  const { f, grant } = await networkPolicyFixture(t);
+  const repositoryGrant = /** @type {const} */ ({ repository: "example/project", access: "read" });
+  const { f, grant } = await networkPolicyFixture(t, {
+    repositoryNetworkPolicyCeiling: [repositoryGrant],
+  });
   assert.equal(f.revision.executionAdmission.mode, "protected");
   const { base, view } = await enableNetworkPolicyEditing(f);
   assert.equal(view.editingEnabled, true);
@@ -3191,8 +3220,23 @@ test("the policy endpoint refuses additions and live application while the activ
     refused.body.error.message,
     /^Protected execution.*Credential Proxy.*additions are refused/,
   );
-  // Nothing was saved, and an empty policy can still be written.
-  assert.equal((await f.request("GET", base)).body.data.policy.version, version);
+  // Both explicit repository policy shapes would make the next protected deploy fail.
+  for (const repositoryNetworkPolicy of [[repositoryGrant], []]) {
+    const repositorySave = await f.request("PUT", base, {
+      body: { expectedVersion: version, additions: [], repositoryNetworkPolicy },
+    });
+    assert.equal(repositorySave.status, 409, JSON.stringify(repositorySave.body));
+    assert.equal(repositorySave.body.error.code, "SANDBOX_POLICY_PROTECTED_EXECUTION");
+    assert.match(
+      repositorySave.body.error.message,
+      /To withdraw an existing repository list, send empty arrays for additions and repositoryNetworkPolicy\./,
+    );
+    const current = await f.request("GET", base);
+    assert.equal(current.status, 200, JSON.stringify(current.body));
+    assert.deepEqual(current.body.data.policy, view.policy);
+  }
+  assert.deepEqual(view.repositoryNetworkPolicyCeiling, []);
+  // Omitting the repository field keeps the ordinary additions-only clear available.
   const cleared = await f.request("PUT", base, {
     body: { expectedVersion: version, additions: [] },
   });
@@ -3208,6 +3252,23 @@ test("the policy endpoint refuses additions and live application while the activ
     /protected execution.*Credential Proxy.*application is refused/,
   );
   assert.equal((await f.request("GET", base)).body.data.policy.application, undefined);
+  // A policy saved before enforcement support was withdrawn must stay revocable.
+  const saved = await f.controller.transact(async (unit) => {
+    const policy = await unit.sandboxPolicies.find(f.namespace.id, f.agent.id);
+    assert.ok(policy);
+    return unit.sandboxPolicies.save(
+      { ...policy, version: policy.version + 1, repositoryNetworkPolicy: [repositoryGrant] },
+      policy.version,
+    );
+  });
+  assert.ok(saved);
+  const withdrawn = await f.request("PUT", base, {
+    body: { expectedVersion: saved.version, additions: [], repositoryNetworkPolicy: [] },
+  });
+  assert.equal(withdrawn.status, 200, JSON.stringify(withdrawn.body));
+  assert.deepEqual(withdrawn.body.data.repositoryNetworkPolicy, []);
+  assert.equal(withdrawn.body.data.version, saved.version + 1);
+  assert.deepEqual((await f.request("GET", base)).body.data.policy, withdrawn.body.data);
 });
 
 test("the policy endpoint refuses additions before an Agent's first protected deploy", async (t) => {

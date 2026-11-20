@@ -4,6 +4,7 @@ import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/comp
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import { admitRepositoryNetworkPolicy } from "../../packages/contracts/src/index.ts";
 import {
   InstalledDriver,
   OpenClawController,
@@ -388,11 +389,17 @@ test(
   async (t) => {
     const fixture = await createPolicyApp(t);
     const { controller, state, pool, inject, deployAgent, grant, sandboxDriver } = fixture;
+    // A valid ACL is still untrusted when returned by ordinary network admission.
+    const write = { repository: "example/project-a", access: "write" };
+    const repositoryNetworkPolicy = admitRepositoryNetworkPolicy([write], [write]);
+    assert.ok(repositoryNetworkPolicy);
+
     for (const scenario of [
       { name: "saved empty", allowed: true },
       { name: "simulated missing-row read", absent: true, allowed: true },
       { name: "Driver adds to saved empty", injectGrant: true },
       { name: "Driver adds under simulated missing-row read", absent: true, injectGrant: true },
+      { name: "ordinary Driver returns a repository write ACL", injectRepositoryPolicy: true },
       { name: "Driver returns wrong version", wrongVersion: true },
       { name: "Driver throws private error", producerError: "error" },
       { name: "Driver throws null", producerError: "null" },
@@ -469,6 +476,9 @@ test(
           if (scenario.wrongVersion) {
             return { ...snapshot, version: snapshot.version + 1 };
           }
+          if (scenario.injectRepositoryPolicy) {
+            return { ...snapshot, repositoryNetworkPolicy };
+          }
           return scenario.injectGrant ? { ...snapshot, additions: [grant] } : snapshot;
         };
         try {
@@ -530,6 +540,7 @@ test(
             app,
           );
           assert.equal(response.body.includes("PRIVATE_PRODUCER_DETAIL"), false);
+          assert.equal(response.body.includes(write.repository), false);
           const afterRevisions = await revisions();
           const afterJobs = await jobs();
           assert.deepEqual(
@@ -545,6 +556,7 @@ test(
             assert.equal(added.length, 1, "the HTTP request must persist a real revision");
             assert.equal(added[0].id, response.json().data.id);
             assert.equal(added[0].executionAdmission.mode, "unprotected");
+            assert.equal(added[0].sandboxPolicy?.repositoryNetworkPolicy, undefined);
             if (scenario.noAdmission) {
               assert.equal(added[0].sandboxDriverId, "deployment-no-policy");
               assert.equal(added[0].sandboxPolicy, undefined);
