@@ -154,6 +154,7 @@ export function registerHttpAuditFailureCase({
       assert.equal(owner.upstreams.length, 0);
     } finally {
       admission.reject(owner.denied);
+      await Promise.allSettled([admission.promise]);
       await settleCallbacks();
       await owner.shutdown();
     }
