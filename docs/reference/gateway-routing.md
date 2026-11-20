@@ -75,11 +75,11 @@ reconciling a version.
 
 Compute enrolls workspace nodes through Envoy on both control planes.
 
-Runtime-enabled dedicated versions also receive an exact `/node` route and an
-exact `/node/__openclaw__/worker` route under the same Agent URL, hostname and
-`https` listener, plus `/node/__openclaw__/worker-bundle/v1/` and
-`/node/__openclaw__/worker-transfer/v1/` prefix routes. All use the same backend
-Service; the worker routes rewrite to OpenClaw's `/__openclaw__/` ingress paths.
+Runtime-enabled dedicated versions add exact `/node` and
+`/node/__openclaw__/worker` routes and `/node/__openclaw__/worker-bundle/v1/`
+and `/node/__openclaw__/worker-transfer/v1/` prefixes under the Agent URL,
+hostname and `https` listener. They share the backend Service; worker routes
+rewrite to OpenClaw's `/__openclaw__/` ingress paths.
 The route removes `x-occ-identity`, `x-api-key`, `authorization`, `cookie`,
 forwarded identity and scope headers, and Tailscale identity headers while
 setting `x-real-ip` from Envoy's downstream socket. This preserves trusted
@@ -87,14 +87,13 @@ proxy attribution without granting the OCC administrative identity. The bundle
 and transfer routes keep `authorization`, because those worker requests carry
 their own one-time bearer tokens.
 
-Compute attaches a tenant-local SecurityPolicy with no authentication fields
-to this node HTTPRoute. Envoy Gateway v1.6.7 replaces the entire inherited
-Gateway policy at this more specific scope, so the node route does not require
-the OCC service key. Native OpenClaw verifies the signed device identity and
-node-only bootstrap or device token. Invalid credentials and attempts to use
-node credentials as an operator fail at the native Gateway. Worker callbacks
-authenticate their first WebSocket frame with the Gateway-minted, session-bound
-worker admission credential; the Harness never receives the OCC service key.
+Compute attaches a tenant-local SecurityPolicy without authentication fields.
+Envoy Gateway v1.6.7 replaces the inherited Gateway policy at this scope; the
+node route requires no OCC service key. Native OpenClaw verifies signed device
+identity and node-only bootstrap or device tokens, refusing invalid credentials
+and operator use of node credentials. Worker callbacks authenticate their first
+WebSocket frame with a Gateway-minted, session-bound admission credential.
+Harnesses never receive the OCC service key.
 
 Dedicated Codex also receives a POST-only
 `/node/__openclaw__/native-hook/` prefix, rewritten to
@@ -104,28 +103,25 @@ each callback with its per-relay capability and generation; this route does not
 grant node or operator access. Compute derives the callback URL from this Agent's
 private endpoint and refuses a caller-selected override.
 
-The Gateway delivers each hook capability through its authenticated Codex
-app-server connection. The Harness stores it under `.oce-native-hooks` in its
-HOME (a SandboxDriver's `harnessHome`, else `/home/node`), outside the workspace
-and file-transfer roots. This directory is Harness runtime state (on OpenShell, the
-version's runtime PVC subpath). Each Codex start replaces it with an empty private
-directory. It is not an isolation boundary against compromised Harness code running as
-the same user. On a Sandbox whose filesystem grants are per execution rather than
-per process (for example an external Sandbox that grants the credential directory
-to the whole execution), the workload can read the capability and POST callbacks
-to this route for its own relay and generation; because every check binds the
-callback to this Agent's live relay and generation, such a callback can at most
-influence or deny this Agent's own tool admission, never another Agent's, and the
-start-time qualification refuses to report ready when admission cannot run. Gateway checks bind each
-capability to this Agent's live provider/relay and exact generation; it grants
-neither another Agent's callbacks nor node or operator access. Native hooks use the installation's public CA bundle
-(the node's CA) with normal HTTPS certificate verification.
+The Gateway delivers hook capabilities over its authenticated Codex app-server
+connection. The Harness stores them under `.oce-native-hooks` in its HOME
+(a SandboxDriver's `harnessHome`, else `/home/node`), outside workspace and
+file-transfer roots. This is Harness runtime state (the version's runtime PVC
+subpath on OpenShell); each Codex start replaces it with an empty private
+directory. Compromised Harness code running as the same user can read it. With
+per-execution filesystem grants, the workload can also read its capability and
+POST callbacks. Gateway checks bind callbacks to this Agent's live provider,
+relay and exact generation. They grant no other Agent's callbacks or node or
+operator access. Within that Agent, forged callbacks can affect tool admission
+and reach subagent bookkeeping; post-tool and finalization effects remain
+unverified. Startup
+qualification refuses readiness if admission cannot run. Native hooks verify
+HTTPS with the installation's public CA bundle (the node's CA).
 
-Preparation creates or repairs these resources under the serving Gateway's
-version. Preparing a replacement preserves that ownership until activation
-replaces the Deployment.
-Stop and retirement remove that Agent revision's node route before
-its policy, checking ownership and deletion UIDs; newer versions remain.
+Preparation creates or repairs resources under the serving Gateway version;
+a replacement preserves ownership until activation replaces the Deployment.
+Stop and retirement check ownership and deletion UIDs, removing that revision's
+node route before its policy while preserving newer versions.
 The Compute enrollment path also admits Harness egress to this installation's
 Envoy Pods on the configured HTTPS target port. File, Memory and Skills access
 use the enrolled node. Dedicated Gateway does not mount the Harness workspace

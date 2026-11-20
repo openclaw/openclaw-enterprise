@@ -1,13 +1,12 @@
 # Runbook: a real end-to-end Strands Box test against GitHub
 
-From an empty host to the result in [What was proven](README.md#what-was-proven):
-an Agent inside OCE and Box opens a draft pull request on github.com with a
-token the Worker minted from the GitHub App key. Failures and fixes:
-[RUNBOOK-TROUBLESHOOTING.md](RUNBOOK-TROUBLESHOOTING.md).
+From an empty host, have an OCE Agent in Box open a draft GitHub pull request
+with a Worker-minted GitHub App token ([What was proven](README.md#what-was-proven)).
+See [RUNBOOK-TROUBLESHOOTING.md](RUNBOOK-TROUBLESHOOTING.md) for failures.
 
 ## 1. What counts as a valid test
 
-It passes only when all of these hold for one turn:
+One turn passes only if:
 
 - [ ] A new draft pull request in your test repository, author the App's bot
       (`author.is_bot` true).
@@ -29,7 +28,7 @@ It passes only when all of these hold for one turn:
 | Agent   | a dedicated Codex Agent deployed through OCE, with one repository binding                     | the native check, the [ordinary-chat](ordinary-chat/README.md) fixture, the workspace verifier                       |
 | Model   | a real model at an HTTPS `POST <base>/v1/responses`, key stored in OCE and injected by Box    | `ordinary-chat/serve-installed-model.ts` (marker); `git/controlled-git-model.ts` (scripted, stand-in rehearsal only) |
 
-What the existing checks prove: [Troubleshooting](RUNBOOK-TROUBLESHOOTING.md#what-the-existing-checks-prove).
+See [what the existing checks prove](RUNBOOK-TROUBLESHOOTING.md#what-the-existing-checks-prove).
 
 ## 2. Inputs
 
@@ -45,8 +44,8 @@ What the existing checks prove: [Troubleshooting](RUNBOOK-TROUBLESHOOTING.md#wha
   key, answering for the `<model-id>` the Configuration sends (step 8). A
   name (here `model.example.test`) with one private IPv4 the host reaches. A
   privately signed certificate needs its CA in Box's upstream bundle (step 9).
-- **Host**: Ubuntu 24.04 x86-64. The proven runs used one 16 vCPU, 32 GiB,
-  80 GB virtual machine for K3s, PostgreSQL, OCE and the Box host.
+- **Host**: Ubuntu 24.04 x86-64; proven runs shared one 16 vCPU, 32 GiB,
+  80 GB VM across K3s, PostgreSQL, OCE and Box.
 - **OCE**: this branch, and Docker Buildx for `linux/amd64` images.
 
 ## 3. The picture
@@ -67,9 +66,8 @@ flowchart LR
   B -->|model key injected on the wire| M[model endpoint]
 ```
 
-The App key lives only in a Secret mounted into the Worker. The installation
-token exists only in the Worker, one answer through the host, and Box's
-outgoing request.
+Only the Worker mounts the App-key Secret. The installation token exists in
+the Worker, one host answer and Box's outgoing request.
 
 ## 4. Steps
 
@@ -84,11 +82,11 @@ sudo mount -o remount,exec /run        # Box's runtime directory is under /run; 
 sudo install -d -o "$USER" -g "$USER" -m 0700 /home/node
 ```
 
-Install the [prerequisites](RUNBOOK-BUILD.md#prerequisites), Node 24.22.1
-at `/usr/local/bin/node` with corepack, clone this branch and run
-`pnpm install --frozen-lockfile`. For user
-namespaces see the [known gap](KNOWN-GAPS.md#ubuntu-2404-restricts-unprivileged-user-namespaces);
-choose `<box-dir>` (step 2) and load the [two AppArmor profiles](RUNBOOK-TROUBLESHOOTING.md#apparmor-profiles).
+Install the [prerequisites](RUNBOOK-BUILD.md#prerequisites) and Node 24.22.1
+with corepack at `/usr/local/bin/node`; clone this branch and run
+`pnpm install --frozen-lockfile`. See the user namespace
+[known gap](KNOWN-GAPS.md#ubuntu-2404-restricts-unprivileged-user-namespaces);
+choose `<box-dir>` and load the [two AppArmor profiles](RUNBOOK-TROUBLESHOOTING.md#apparmor-profiles).
 
 **Check (not executed):** `bwrap --unshare-all --die-with-parent --ro-bind / / true` exits 0;
 `findmnt -no OPTIONS /run` lacks `noexec`; `realpath /usr/local/bin/node` is
@@ -96,10 +94,10 @@ itself.
 
 ### Step 2. Build Box and the host programs
 
-Build the three Box programs ([Which Box build](README.md#which-box-build))
-into `<box-dir>`, the [workspace verifier](workspace-verifier/README.md)
-(`GOARCH=amd64`; keep its SHA-256) and the host helper, and install `gh`
-2.103.2 ([commands](RUNBOOK-BUILD.md#step-2-box-verifier-and-host-helper-ran)).
+Build the three Box programs into `<box-dir>` ([Which Box build](README.md#which-box-build)),
+the [workspace verifier](workspace-verifier/README.md) (`GOARCH=amd64`; keep its SHA-256),
+and the host helper; install `gh` 2.103.2
+([commands](RUNBOOK-BUILD.md#step-2-box-verifier-and-host-helper-ran)).
 
 **Check:** `<box-dir>/strands-box --version` prints `strands-box 0.1.0`.
 
@@ -117,11 +115,10 @@ From the OCE checkout ([commands](RUNBOOK-BUILD.md#step-3-images)):
 - **Relay**: [relay.Dockerfile](ingress/relay.Dockerfile) for `linux/amd64`
   with a `NODE_IMAGE` digest.
 
-Get each image into K3s and use it by digest. On the host, copy the runtime
-image's `/app`, `/opt/oce/runtime` and `/usr/bin/tini` to the same paths,
-root-owned. Unpack the same image to `/srv/oce-file-node/runtime`
-(operator-owned, `0700`) as the file node's root, with an empty `etc/hosts`.
-Point Codex at the native binary:
+Load each image into K3s by digest. Copy the runtime image's `/app`,
+`/opt/oce/runtime` and `/usr/bin/tini` to the same root-owned host paths.
+Unpack it to `/srv/oce-file-node/runtime` (operator-owned, `0700`) for the
+file node, with empty `etc/hosts`. Point Codex at the native binary:
 
 ```bash
 CODEX=$(realpath -e /app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@*-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex)
@@ -135,9 +132,9 @@ exits 0.
 
 ### Step 4. Install K3s, PostgreSQL and OCE
 
-Not executed as written. Follow the [production installation](../../../docs/guides/deploy/production-installation.md)
-and [Prepare each Namespace](../../../docs/guides/deploy/production-agents.md#prepare-each-namespace), with
-[what the runs used](RUNBOOK-BUILD.md#step-4-install-not-executed):
+Not executed as written. Follow [production installation](../../../docs/guides/deploy/production-installation.md)
+and [Prepare each Namespace](../../../docs/guides/deploy/production-agents.md#prepare-each-namespace), using
+[the run settings](RUNBOOK-BUILD.md#step-4-install-not-executed):
 
 - K3s on this host without its default StorageClass, so the Worker, Gateway
   and Box host share the node: set `controlPlane.nodeSelector` and Compute's
@@ -157,19 +154,18 @@ and [Prepare each Namespace](../../../docs/guides/deploy/production-agents.md#pr
 
 **Check:** `request GET "$base"` shows `"status":"ready"`.
 
-If you installed from an earlier head of this branch, its database records the
-packaged Gateway owner migration as `0081`. It is now `0083`, after main's
-`0081` and `0082`, and the Controller refuses that history. Recreate the
-database: `helm uninstall` the release, run
-`DROP DATABASE <database> WITH (FORCE)` as the PostgreSQL superuser, create it
-again with the same owner, grants and schemas, then do this step again with a
-fresh bootstrap claim. Steps 5 to 9 follow for the new Namespace.
+If ready, continue to step 5. **Destructive recovery for disposable demos only:**
+if the Controller rejects an earlier database because it recorded the packaged
+Gateway owner migration as `0081` (now `0083`, after `0082`), confirm the
+database is disposable. Then `helm uninstall` the release, run
+`DROP DATABASE <database> WITH (FORCE)` as PostgreSQL superuser, restore the
+owner, grants and schemas on a new database, and repeat steps 4–9 with a fresh
+bootstrap claim.
 
 ### Step 5. Cluster objects for Box
 
-Not executed as written. `<agent-ns>` is the Kubernetes namespace the
-Worker created for the Namespace (label `openclaw.dev/namespace=<namespace-id>`);
-the release namespace here is `oce-system`
+Not executed as written. The Worker creates `<agent-ns>` with label
+`openclaw.dev/namespace=<namespace-id>`; the release namespace is `oce-system`
 ([objects and commands](RUNBOOK-BUILD.md#step-5-objects-not-executed-except-the-certificates)):
 
 1. In `<agent-ns>`, the relay [Service](ingress/service.yaml) and the
@@ -239,12 +235,12 @@ projected volume).
 
 ### Step 7. Select the Driver and upgrade
 
-Merge into the Installation, keeping your other Compute settings
-([Driver fields](driver/README.md)). A new Agent's first deployment cannot be
-a protected one ([known gap](KNOWN-GAPS.md#a-new-agents-first-deployment-cannot-be-a-protected-one)),
-so upgrade first in the **pairing form**: without the six entries marked
-`# protected`, each with its children ([not fewer](RUNBOOK-TROUBLESHOOTING.md#when-it-fails),
-step 7). Step 8 adds them.
+Merge into the Installation, preserving other Compute settings
+([Driver fields](driver/README.md)). Because a new Agent's first deployment
+cannot be protected ([known gap](KNOWN-GAPS.md#a-new-agents-first-deployment-cannot-be-a-protected-one)),
+first upgrade in **pairing form**: omit all six `# protected` entries and
+their children ([not fewer](RUNBOOK-TROUBLESHOOTING.md#when-it-fails), step 7).
+Step 8 adds them.
 
 ```yaml
 drivers:
@@ -329,8 +325,8 @@ Follow [Configure the Agent runtime](../../../docs/guides/deploy/production-agen
   The workspace claim names no StorageClass, so the cluster must have no
   default one (the runs' K3s had none).
 
-Pair it: its first deployment is [installed ordinary chat](ordinary-chat/installed.md),
-in that page's order. `request POST "$base/agents/<agent>/deploy"`; once the
+Pair through [installed ordinary chat](ordinary-chat/installed.md), in that page's
+order. `request POST "$base/agents/<agent>/deploy"`; once the
 claims are `Bound`, bind the four volume subpaths; seed the marker and serve
 the marker model at the step 7 model name, address and port (the runs
 freed that port for it); within about 3 minutes write the
@@ -341,11 +337,9 @@ and start the host; approve; start ingress.
 file holding `BOX_WORKSPACE_REPRO_V1 <nonce>: use the operator-approved workspace verifier.`
 (`nonce` from the run's `expected.json`) leaves a `tool_verified` receipt.
 
-Stop the Agent while the host still runs (the stop goes through it), then
-stop ingress, host and marker model, and reset as in step 9. Upgrade with the
-whole step 7 fragment; check the Worker again.
-Then store the model key (from a file, never a command line), register the
-source, and bind:
+Stop the Agent through the running host; stop ingress, host and marker model,
+then reset (step 9). Upgrade with the whole step 7 fragment and check the Worker.
+Store the model key from a file, never a command line; register the source and bind:
 
 ```bash
 jq -Rsc '{name:"test model key", value: rtrimstr("\n")}' < <model-key-file> | request POST "$base/secrets" --data-binary @-
@@ -431,8 +425,7 @@ workspace.
 
 ### Step 12. Optional refusals
 
-In later turns, try [the refusals](RUNBOOK-TROUBLESHOOTING.md#optional-refusals):
-another repository, then a withdrawn binding.
+In later turns, try [another repository, then a withdrawn binding](RUNBOOK-TROUBLESHOOTING.md#optional-refusals).
 
 ### Step 13. Clean up, in this order
 
