@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { isPromise } from "node:util/types";
+import type { OpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
+import type { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import type { OpenShellSandboxResponse } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import type { Agent, AgentRevision } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
@@ -60,6 +63,66 @@ export function gitBinding(policy: Readonly<Record<string, unknown>>): string | 
   const binding = asRecord(fields?.binding_id);
   assert.ok(binding && typeof binding.stringValue === "string", "the middleware has a binding ID");
   return binding.stringValue;
+}
+
+// Controller declarations omit private member types. Inspect only the fields used by
+// these scenarios and reconcile the original entry on the worker that prepared it.
+export function observeGitRuntime(git: OpenShellGitRuntime) {
+  const state = asRecord(git);
+  assert.ok(state?.entries instanceof Map, "the Git runtime tracks its revision entries");
+  const entries: ReadonlyMap<string, unknown> = state.entries;
+  const reconcile = state.reconcile;
+  assert.ok(typeof reconcile === "function", "the Git runtime can reconcile entries");
+  return {
+    replaceWithdrawal(replacement: OpenShellGitRouteStore["withdraw"]) {
+      const routes = asRecord(state.routes);
+      assert.ok(routes && typeof routes.withdraw === "function", "the route store can withdraw");
+      const withdraw = routes.withdraw;
+      routes.withdraw = replacement;
+      return () => {
+        routes.withdraw = withdraw;
+      };
+    },
+    hasEntry: (revisionId: string) => entries.has(revisionId),
+    async boundEntry(revision: Readonly<AgentRevision>) {
+      const pending = entries.get(revision.id);
+      assert.ok(isPromise(pending), "the worker prepared the revision");
+      const entry = asRecord(await pending);
+      const expected = revision.repositoryCredentials?.bindings[0];
+      const authorization = asRecord(entry?.authorization);
+      assert.ok(entry && authorization && expected, "the revision has a Git binding");
+      assert.deepEqual(authorization.binding, expected);
+      const bindingId = entry.bindingId;
+      const provider = asRecord(entry.binding)?.provider;
+      assert.ok(typeof bindingId === "string" && bindingId, "the Git entry has a binding ID");
+      assert.ok(typeof provider === "string" && provider, "the Git entry has a Provider");
+      const delivery = asRecord(authorization.delivery);
+      assert.ok(delivery, "the Git entry has a delivery scope");
+      let contentsPermission: "read" | "write" | undefined;
+      if (delivery.scope === "github-repository" || delivery.permissions !== undefined) {
+        const contents = asRecord(delivery.permissions)?.contents;
+        assert.ok(contents === "read" || contents === "write", "invalid Git contents permission");
+        contentsPermission = contents;
+      }
+      return {
+        bindingId,
+        provider,
+        contentsPermission,
+        async reconcile(attempt?: "retry") {
+          if (attempt === "retry") {
+            assert.ok(
+              Number.isFinite(entry.nextObserveAt),
+              "the failed observation scheduled a retry",
+            );
+            entry.nextObserveAt = 0;
+          }
+          const result: unknown = Reflect.apply(reconcile, git, [entry]);
+          assert.ok(isPromise(result), "the worker returned its reconciliation");
+          await result;
+        },
+      };
+    },
+  };
 }
 
 export function deletingAgent(revision: AgentRevision): Agent {

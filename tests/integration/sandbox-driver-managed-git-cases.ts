@@ -10,6 +10,7 @@ import { openShellWorkspaceName } from "../../apps/controller/src/backends/opens
 import { harnessEgressEnrollment } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import {
   OpenShellCredentialProxyDriver,
+  type OpenShellProxyOptions,
   openShellEgressConfiguration,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
@@ -23,14 +24,15 @@ import type {
   OpenShellSandboxCreateRequest,
   OpenShellSandboxResponse,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import type {
-  AgentRevision,
-  HarnessWorkloadRequirements,
-  ProxyPlan,
-  ProxyRevisionContext,
-  ProxyWiring,
-  SandboxHarnessContext,
-  SandboxNamespaceContext,
+import {
+  requireConfiguration,
+  type AgentRevision,
+  type HarnessWorkloadRequirements,
+  type ProxyPlan,
+  type ProxyRevisionContext,
+  type ProxyWiring,
+  type SandboxHarnessContext,
+  type SandboxNamespaceContext,
 } from "../../packages/contracts/src/index.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
@@ -38,6 +40,7 @@ import {
   deletingAgent,
   gitBinding,
   gitMiddleware,
+  observeGitRuntime,
   observedSandbox,
 } from "./sandbox-driver-managed-git-observation.ts";
 import { backendFor } from "./sandbox-driver-openshell-fixture.ts";
@@ -152,7 +155,13 @@ export async function verifyManagedGitReplacement(
   const git = sandbox["openShellGit"];
   assert.ok(git, "the protected fixture has a Git runtime");
   assert.ok(selectedProxy instanceof OpenShellCredentialProxyDriver);
-  const proxy = { options: selectedProxy["options"] };
+  const runtime = observeGitRuntime(git);
+  const proxy = {
+    options: requireConfiguration<OpenShellProxyOptions>(
+      OpenShellCredentialProxyDriver,
+      asRecord(selectedProxy)?.options,
+    ),
+  };
   const sandboxes = gateway.sandboxes;
   const qualifiedWiring: QualifiedWiring = (c) => ({
     plan: c.plan,
@@ -309,12 +318,12 @@ export async function verifyManagedGitReplacement(
           const nextRevision: AgentRevision = {
             ...revisionBase,
             id,
-            ...(repositoryCredentials && nextPlan
-              ? { repositoryCredentials, egressPlan: nextPlan }
-              : {}),
-            executionAdmission: nextPlan
-              ? rev.executionAdmission
-              : { version: 2, mode: "unprotected" },
+            ...(nextPlan
+              ? { repositoryCredentials: nextPlan.repositoryGit, egressPlan: nextPlan }
+              : {
+                  executionAdmission: { version: 2, mode: "unprotected" },
+                  sandboxPolicy: managed.admitNetworkPolicy([], rev.sandboxPolicy?.version ?? 1),
+                }),
           };
           const nextContext = nextPlan
             ? { ...ctx, revision: nextRevision, plan: nextPlan }
@@ -376,12 +385,9 @@ export async function verifyManagedGitReplacement(
           policy = structuredClone(creationPolicy);
           if (before.length) {
             assert.ok(oldProvider, "the predecessor has its Git Provider");
-            const routes = git["routes"];
-            assert.ok(routes, "the Git runtime has a route store");
-            const withdraw = routes.withdraw;
-            routes.withdraw = async () => {
+            const restoreWithdrawal = runtime.replaceWithdrawal(async () => {
               throw new Error("withdrawal unavailable");
-            };
+            });
             try {
               await assert.rejects(managed.cleanup(first), /withdrawal unavailable/);
               assert.equal(
@@ -390,7 +396,7 @@ export async function verifyManagedGitReplacement(
                 "durable closure must precede stop/reuse",
               );
             } finally {
-              routes.withdraw = withdraw;
+              restoreWithdrawal();
             }
             await assert.rejects(
               managed.provisionHarness(deployment(after)),
@@ -451,17 +457,9 @@ export async function verifyManagedGitReplacement(
             scenario === "unchanged scope",
           );
           if (after.length) {
-            const nextEntry = await git["entries"].get(second.revision.id);
-            assert.ok(nextEntry);
-            assert.ok(second.revision.repositoryCredentials);
-            assert.deepEqual(
-              nextEntry.authorization.binding,
-              second.revision.repositoryCredentials.bindings[0],
-            );
+            const nextEntry = await runtime.boundEntry(second.revision);
             if (scenario === "changed permissions") {
-              const delivery = nextEntry.authorization.delivery;
-              assert.ok("permissions" in delivery);
-              assert.equal(delivery.permissions.contents, "read");
+              assert.equal(nextEntry.contentsPermission, "read");
             }
             await assertGitExecutionContinuity(managed, second, box(), true);
             const predecessor = managed.standingGitExecution(first);
@@ -485,10 +483,9 @@ export async function verifyManagedGitReplacement(
             "GetSandbox keeps creation-time policy",
           );
           assert.notEqual(gitBinding(policy), oldBinding);
-          assert.equal(
-            oldProvider === undefined ? false : box().spec.providers.includes(oldProvider),
-            false,
-          );
+          if (oldProvider !== undefined) {
+            assert.equal(box().spec.providers.includes(oldProvider), false);
+          }
           assert.equal(
             box().spec.providers.filter(
               (p) =>
@@ -516,17 +513,15 @@ export async function verifyManagedGitReplacement(
             // The runtime invokes the Driver's observation callback, which must compare current
             // policy rather than reject the creation-time binding retained by GetSandbox.
             box().spec.providers.reverse(); // Attachment order carries no authorization meaning.
-            const entry = await git["entries"].get(second.revision.id);
-            assert.ok(entry);
+            const entry = await runtime.boundEntry(second.revision);
             const getPolicyStatus = gateway.getPolicyStatus;
             gateway.getPolicyStatus = async () => {
               throw new DependencyUnavailableError("policy read unavailable");
             };
-            await git["reconcile"](entry);
+            await entry.reconcile();
             assert.equal(git.route(second.revision.id).state, "pending");
             gateway.getPolicyStatus = getPolicyStatus;
-            entry.nextObserveAt = 0;
-            await git["reconcile"](entry);
+            await entry.reconcile("retry");
             assert.notEqual(git.route(second.revision.id).state, "blocked");
           } else {
             assert.equal(box().annotations["openclaw.dev/git-scope"], undefined);
@@ -534,15 +529,17 @@ export async function verifyManagedGitReplacement(
             assert.equal(box().spec.environment.GITHUB_TOKEN, undefined);
             assert.equal(box().spec.environment.GIT_CONFIG_COUNT, undefined);
             assert.equal(box().spec.environment.OCE_OPENSHELL_GIT_REPOSITORY, undefined);
-            const runtime = box().spec.providers.find((name) => name.startsWith("oce-runtime-"));
-            assert.ok(runtime);
-            const runtimeJson = gateway.providers.get(runtime)?.config.runtime_json;
+            const runtimeProvider = box().spec.providers.find((name) =>
+              name.startsWith("oce-runtime-"),
+            );
+            assert.ok(runtimeProvider);
+            const runtimeJson = gateway.providers.get(runtimeProvider)?.config.runtime_json;
             assert.ok(typeof runtimeJson === "string");
             const decoded: unknown = JSON.parse(runtimeJson);
             const runtimeConfig = asRecord(decoded);
             assert.ok(runtimeConfig, "the runtime provider has a configuration record");
             assert.equal(runtimeConfig.egressEnrollment, undefined);
-            assert.equal(git["entries"].has(second.revision.id), false);
+            assert.equal(runtime.hasEntry(second.revision.id), false);
           }
           await managed.cleanup(first);
           assert.equal(
@@ -558,13 +555,7 @@ export async function verifyManagedGitReplacement(
             await managed.provisionHarness(third);
             assert.equal(box().id, originalId);
             assert.equal(box().spec.environment.GIT_CONFIG_COUNT, "7");
-            const entry = await git["entries"].get(third.revision.id);
-            assert.ok(entry);
-            assert.ok(third.revision.repositoryCredentials);
-            assert.deepEqual(
-              entry.authorization.binding,
-              third.revision.repositoryCredentials.bindings[0],
-            );
+            const entry = await runtime.boundEntry(third.revision);
             assert.notEqual(entry.bindingId, oldBinding);
             await assertGitExecutionContinuity(managed, third, box(), true);
             await managed.cleanup(first);
@@ -575,7 +566,7 @@ export async function verifyManagedGitReplacement(
               "Stale cleanup preserves re-enabled Git",
             );
             assert.equal(box().annotations["openclaw.dev/revision-id"], third.revision.id);
-            assert.equal(box().spec.providers.includes(entry.binding.provider), true);
+            assert.equal(box().spec.providers.includes(entry.provider), true);
             await managed.cleanup(third);
           }
         } finally {
