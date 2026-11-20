@@ -1895,14 +1895,50 @@ export function createAgentDetailScenarios({
         cleanupStatus: "queued",
         cleanupCompletes: true,
         rules: [
+          // Match the first queued record. Later reads use the failed bootstrap and its cleanup.
+          {
+            suffix: `/agents/${newerDeployment.agentId}/revisions`,
+            once: true,
+            data: (
+              [
+                {
+                  ...newerDeployment,
+                  id: "rev_00000000-0000-4000-8000-000000000007",
+                  revision: 7,
+                  deploymentStatus: "queued",
+                  createdAt: "2026-09-26T22:52:53.000Z",
+                },
+                {
+                  ...newerDeployment,
+                  id: "rev_00000000-0000-4000-8000-000000000006",
+                  revision: 6,
+                  configurationGeneration: 1,
+                  createdAt: "2026-09-25T12:00:00.000Z",
+                  deploymentStatus: "succeeded",
+                },
+              ] satisfies AgentRevisionSummaryWire[]
+            ).map((summary) => ({
+              ...summary,
+              harness: {
+                ...summary.harness,
+                configuration: {
+                  modelProvider: {
+                    baseUrl: "https://api.openai.com/v1",
+                    protocol: "openai-responses",
+                    supportsStandaloneWebSearch: false,
+                  },
+                },
+              },
+            })),
+          },
           {
             method: "GET",
             suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
             once: true,
             data: {
               deploymentId: "rev_00000000-0000-4000-8000-000000000007",
-              namespaceId: "ns_00000000-0000-4000-8000-000000000001",
-              agentId: "agt_00000000-0000-4000-8000-000000000001",
+              namespaceId: newerDeployment.namespaceId,
+              agentId: newerDeployment.agentId,
               status: "queued",
               cleanup: null,
               progress: { lastAttempt: null, nextAttemptAt: "2026-09-26T22:53:01.000Z" },
