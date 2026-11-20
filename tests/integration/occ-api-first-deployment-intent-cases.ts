@@ -195,9 +195,9 @@ export function installScalarCapture(
     }
     const pending = deploy(...args);
     if (change !== "stateful key") {
-      Reflect.set(input, "agentId", missingAgentId);
-      Reflect.set(input, "harnessOverrides", { unsupported: true });
-      Reflect.set(body, "expectedGeneration", 2);
+      assert(Reflect.set(input, "agentId", missingAgentId));
+      assert(Reflect.set(input, "harnessOverrides", { unsupported: true }));
+      assert(Reflect.set(body, "expectedGeneration", 2));
     }
     return pending;
   });
