@@ -662,7 +662,10 @@
       "path": "tests/integration/runtime-credentials-api.test.ts"
     },
     {
-      "path": "tests/integration/secret-driver-startup.test.ts"
+      "path": "tests/integration/secret-driver-startup.test.ts",
+      "expectedTests": [
+        "TokenService startup keeps marker ownership with the selected private Secret Driver"
+      ]
     },
     {
       "path": "tests/integration/service-api-keys.test.ts"

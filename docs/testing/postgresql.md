@@ -186,6 +186,12 @@ loopback database named `openclaw_failures_*` via
 [the test](../../tests/integration/postgres-bootstrap-failures.test.ts) for
 its optional migration URL. Do not share that database with another process.
 
+The [internal static TokenService lifecycle test](../../tests/integration/postgres-static-token-service-lifecycle.test.ts) also needs
+`OCC_TEST_STATIC_TOKEN_SERVICE_MIGRATION_DATABASE_URL` for the migrator role on
+the same disposable database as `OCC_TEST_DATABASE_URL`. It uses that role to
+install temporary audit-rejection constraints; application operations use the
+limited application role.
+
 ## Canonical migration compatibility
 
 Fresh installation, populated canonical upgrades, and logical restore checks
