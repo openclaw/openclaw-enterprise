@@ -115,14 +115,16 @@ export function registerDeploymentPolicyCases(): void {
       },
     } as const;
     assert.doesNotThrow(() => assertExecutionAdmission(staged));
-    assert.throws(() =>
-      assertExecutionAdmission({
-        ...staged,
-        credentialDeployment: {
-          ...staged.credentialDeployment,
-          driver: { ...staged.credentialDeployment.driver, configurationId: "not-a-digest" },
-        },
-      }),
+    assert.throws(
+      () =>
+        assertExecutionAdmission({
+          ...staged,
+          credentialDeployment: {
+            ...staged.credentialDeployment,
+            driver: { ...staged.credentialDeployment.driver, configurationId: "not-a-digest" },
+          },
+        }),
+      { message: "Invalid staged credential deployment admission." },
     );
     const sourceAuth = {
       method: "credential_source" as const,
