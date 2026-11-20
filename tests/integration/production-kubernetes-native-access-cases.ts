@@ -498,7 +498,10 @@ export function controlPlaneWorkloads<T extends ComponentResource>(objects: read
 }
 
 function findNamed(items: readonly unknown[], name: string): unknown {
-  return items.find((item) => asRecord(item)?.name === name);
+  return items.find((item) => {
+    assert.ok(item !== null && item !== undefined, "Expected a non-null YAML list item");
+    return asRecord(item)?.name === name;
+  });
 }
 
 function themePod(objects: readonly unknown[], component: string) {
