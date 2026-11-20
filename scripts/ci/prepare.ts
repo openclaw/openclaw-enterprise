@@ -53,6 +53,7 @@ import {
 import { commandAvailable, execFile } from "./prepare-command.ts";
 import { prepareGatewayRouting } from "./routing.ts";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.ts";
+import { startObservabilityPhase } from "./observability-phase-notice.ts";
 import { recordLoggingSetupTiming } from "./logging-setup-timing.ts";
 import { ownedName, randomSuffix, slug } from "./resource-names.ts";
 import { registryImage } from "./fixture-support-images.ts";
@@ -190,6 +191,7 @@ async function timedPreparation<Result>(
   phase: string,
   operation: () => Result | Promise<Result>,
 ) {
+  const finishTiming = startObservabilityPhase(lane, phase);
   const started = performance.now();
   let succeeded = false;
   try {
@@ -198,6 +200,7 @@ async function timedPreparation<Result>(
     return result;
   } finally {
     const elapsedMs = Math.round(performance.now() - started);
+    finishTiming?.(succeeded ? "success" : "failure", elapsedMs);
     // Labels are fixed by the runner; never include commands, paths, or credentials.
     process.stderr.write(`[ci-timing] lane=${lane} phase=${phase} duration_ms=${elapsedMs}\n`);
     if (lane === "k3d-model" && process.env.GITHUB_ACTIONS === "true") {
@@ -1988,15 +1991,24 @@ async function prepareLane({
         OCC_TEST_LOGGING_NODE_IMAGE: effectiveLaneEnv(name, env).OCC_TEST_LOGGING_NODE_IMAGE,
         ...metricsMonitoringImages,
       };
+      // A rejected prerequisite rules out this lane. Drain active acquisitions,
+      // but don't spend another pull/retry budget on a still-queued image.
+      let failed = false;
       await timedPreparation(name, "image-pulls", () =>
         prepareTogether(
           Object.entries(images)
             .filter(([, image]) => immutableDigest(image!))
-            .map(
-              ([variable, image]) =>
-                () =>
-                  ensureDockerSourceImage(state, image!, variable),
-            ),
+            .map(([variable, image]) => async () => {
+              if (failed) {
+                return;
+              }
+              try {
+                await ensureDockerSourceImage(state, image!, variable);
+              } catch (error) {
+                failed = true;
+                throw error;
+              }
+            }),
           2,
         ),
       );

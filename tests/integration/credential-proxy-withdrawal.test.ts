@@ -28,7 +28,7 @@ import {
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { requestId, staticEgressFixture } from "../helpers/static-egress.mjs";
@@ -760,6 +760,101 @@ test(
         ?.activeRevisionId,
       revision.id,
     );
+  },
+);
+
+test(
+  "static credential exchange rejects a changed control before reading material (PostgreSQL)",
+  { ...requiresPostgres, timeout: 30_000 },
+  async (t) => {
+    let state: PostgresPlatformState | undefined;
+    const f = await staticEgressFixture(t, {
+      appFactory: async (...args: Parameters<typeof postgresApp>) => {
+        const app = await postgresApp(...args);
+        assert.ok(app.state instanceof PostgresPlatformState);
+        state = app.state;
+        return app;
+      },
+    });
+    assert.ok(state);
+    const proxy = f.controller.selectedDriver("credential_proxy");
+    const originalControl = proxy.sourceControl;
+    const originalRead = state.read;
+    const read = originalRead.bind(state);
+    let afterMetadata: (() => void) | undefined;
+    // Change only the selected control after PostgreSQL returns the real metadata.
+    // No server request needs to wait for a separate client-side release.
+    state.read = (work) =>
+      read((unit) =>
+        work({
+          ...unit,
+          secrets: {
+            ...unit.secrets,
+            async findSecret(...args) {
+              const secret = await unit.secrets.findSecret(...args);
+              if (secret && args[0] === f.namespace.id && args[1] === f.secret.id) {
+                const change = afterMetadata;
+                afterMetadata = undefined;
+                change?.();
+              }
+              return secret;
+            },
+          },
+        }),
+      );
+    try {
+      for (const scenario of [
+        "unchanged",
+        "replaced",
+        "sender",
+        "resolver",
+        "lifecycle",
+        "restored",
+      ] as const) {
+        const control = { ...originalControl };
+        const provider = control.providers.find((entry) => entry.sourceType.type === "openai")!;
+        const sourceType = structuredClone(provider.sourceType);
+        if (scenario === "lifecycle") {
+          control.providers = control.providers.map((entry) =>
+            entry === provider ? { ...entry, sourceType } : entry,
+          );
+        }
+        const healthy = scenario === "unchanged" || scenario === "restored";
+        assert.equal(
+          Reflect.set(proxy, "sourceControl", scenario === "restored" ? originalControl : control),
+          true,
+        );
+        const reads = f.secretReads;
+        let observed = false;
+        afterMetadata = () => {
+          if (scenario === "replaced") {
+            assert.equal(Reflect.set(proxy, "sourceControl", { ...control }), true);
+          } else if (scenario === "lifecycle") {
+            // Only the nested declaration changes after the real metadata read.
+            assert.ok(sourceType.harnessAuth);
+            assert.ok(Reflect.set(sourceType.harnessAuth, "loginMode", "chatgptAuthTokens"));
+          } else if (scenario === "sender" || scenario === "resolver") {
+            const ref = control[scenario];
+            control[scenario] = { ...ref, generation: ref.generation + 1 };
+          }
+          observed = true;
+        };
+        const result = await f.resolve(f.capture());
+        assert.ok(observed, scenario + ": expected a metadata lookup");
+        assert.equal(f.secretReads - reads, healthy ? 1 : 0, scenario + ": material reads");
+        assert.equal(Boolean(result.ready), healthy, scenario);
+        if (!healthy) {
+          // A changed provider is a stale authorization; lost delivery controls
+          // leave the authority unavailable. Neither may read material.
+          const reason = scenario === "lifecycle" ? "DENIED" : "UNAVAILABLE";
+          assert.equal(result.refused?.code, f.refusalCode(reason), scenario);
+        }
+      }
+    } finally {
+      afterMetadata = undefined;
+      state.read = originalRead;
+      Reflect.set(proxy, "sourceControl", originalControl);
+    }
   },
 );
 

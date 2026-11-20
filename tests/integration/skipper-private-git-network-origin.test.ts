@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { request } from "node:https";
 import test from "node:test";
 import { startSkipperPrivateGitOrigin } from "../fixtures/skipper-private-git-origin.mjs";
@@ -9,6 +10,9 @@ import {
   run,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.ts";
+import { createGitAclDenialCommand } from "../helpers/openshell-git-denial.ts";
+
+const alias = `openshell:resolve:env:s${"0".repeat(64)}_GITHUB_TOKEN`;
 
 test("private Git network origin accepts only its broad fixture credential across three repositories", async (t) => {
   const origin = await startSkipperPrivateGitOrigin({ repository: "fixture/a", networkAcl: true });
@@ -43,16 +47,17 @@ test("private Git network origin accepts only its broad fixture credential acros
   assert.equal(await network.hasObject("fixture/c", origin.initialSha), true);
   await network.clearRef("fixture/a", "refs/heads/approved");
   assert.equal(await network.ref("fixture/a", "refs/heads/approved"), undefined);
-  const rejected = await git(
-    ["ls-remote", `${origin.origin}/fixture/a.git`],
-    "openshell:resolve:env:GITHUB_TOKEN",
-    true,
-  );
+  const beforeAlias = network.requests().length;
+  const rejected = await git(["ls-remote", `${origin.origin}/fixture/a.git`], alias, true);
   assert.notEqual(rejected.code, 0);
+  const aliasRequests = network.requests().slice(beforeAlias);
+  assert.ok(aliasRequests.length > 0);
   assert.ok(
-    network.requests().some((request: { authenticated: boolean }) => request.authenticated),
+    aliasRequests.every(
+      (entry: { repository: string; authenticated: boolean }) =>
+        entry.repository === "fixture/a" && !entry.authenticated,
+    ),
   );
-  assert.equal(network.requests().at(-1)?.authenticated, false);
 
   // A real fast-forward remains distinguishable from a denied update and from
   // a no-op. The fixture must observe both the ref and the transferred object.
@@ -75,7 +80,7 @@ test("private Git network origin accepts only its broad fixture credential acros
   assert.equal(await network.hasObject("fixture/b", candidate), false);
   const beforeDeniedPush = network.requests().length;
   const push = ["-C", "b", "push", "origin", `HEAD:${approved}`];
-  const deniedPush = await git(push, "openshell:resolve:env:GITHUB_TOKEN", true);
+  const deniedPush = await git(push, alias, true);
   assert.notEqual(deniedPush.code, 0);
   const deniedRequests = network.requests().slice(beforeDeniedPush);
   assert.ok(deniedRequests.length > 0);
@@ -135,4 +140,114 @@ test("private Git network origin accepts only its broad fixture credential acros
   await origin.close();
   await assert.rejects(network.ref("fixture/a", "refs/heads/approved"), /Git ref lookup failed/u);
   await assert.rejects(network.hasObject("fixture/b", candidate), /Git object lookup failed/u);
+});
+
+test("guest Git ACL denials screen both streams before classification", async (t) => {
+  const token = randomBytes(32).toString("hex");
+  const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
+  const denialCommand = createGitAclDenialCommand(token);
+  const directory = await temporaryDirectory(t, "git-acl-denial-output-");
+  const payload = join(directory, "process-output.json");
+  const path = "/fixture/c.git/info/refs";
+  const rest = {
+    error: "policy_denied",
+    layer: "l7",
+    protocol: "rest",
+    method: "GET",
+    path,
+    host: "github.com",
+    port: 443,
+    rule_missing: { type: "rest_allow", layer: "l7", method: "GET", path },
+  };
+  const fatal = "fatal: unable to access fixture: The requested URL returned error: 403\n";
+  const footer = "\n403 application/json\n";
+  const check = async (
+    denial: Parameters<typeof denialCommand>[0],
+    status: number,
+    stdout: string,
+    stderr: string,
+    expected: { code: number; stdout: string; stderr: string },
+  ) => {
+    // Provide invented producer bytes via a private file. The real guest
+    // checker gets only fingerprints, the command vector, and the route.
+    await writeFile(payload, JSON.stringify({ status, stdout, stderr }), { mode: 0o600 });
+    const result = await run(
+      "sh",
+      [
+        "-ceu",
+        'exec "$@"',
+        "--",
+        ...denialCommand(denial, [
+          process.execPath,
+          "--eval",
+          'const fs = require("node:fs"); const { status, stdout, stderr } = JSON.parse(fs.readFileSync(process.argv[1])); fs.writeFileSync(1, stdout); fs.writeFileSync(2, stderr); process.exitCode = status;',
+          "--",
+          payload,
+        ]),
+      ],
+      {
+        cwd: directory,
+        env: cleanEnvironment({
+          GITHUB_TOKEN: alias,
+          PATH: `${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`,
+        }),
+        allowFailure: true,
+        signal: t.signal,
+      },
+    );
+    const { code, stdout: projected, stderr: diagnostic } = result;
+    assert.ok(!projected.includes(token) && !diagnostic.includes(token), "raw credential escaped");
+    assert.ok(
+      !projected.includes(basic) && !diagnostic.includes(basic),
+      "Basic credential escaped",
+    );
+    assert.equal(code, expected.code, "guest command status");
+    assert.ok(projected === expected.stdout, "guest command stdout");
+    assert.ok(diagnostic === expected.stderr, "guest command diagnostic");
+  };
+  const refused = (diagnostic: string) => ({ code: 1, stdout: "", stderr: diagnostic + "\n" });
+  const exposed = refused("ACL_CREDENTIAL_IN_OUTPUT");
+  const incomplete = refused("ACL_DENIAL_CAPTURE");
+  const git = { kind: "git" } as const;
+  await check(git, 128, "", fatal, { code: 0, stdout: "403 native-git\n", stderr: "" });
+  await check(git, 128, "", "", refused("ACL_NATIVE_HTTP"));
+  await check(git, 0, "", fatal, refused("ACL_NATIVE_UNEXPECTED_SUCCESS"));
+  await check(git, 0, `prefix=${token};suffix\n`, fatal, exposed);
+  await check(git, 128, `prefix=${basic};suffix\n`, fatal, exposed);
+  await check(git, 128, "", `${fatal}prefix=${token};suffix\n`, exposed);
+  await check(git, 128, "", `${fatal}prefix=${basic};suffix\n`, exposed);
+  await check(git, 128, "", fatal + "x".repeat(8192), incomplete);
+
+  const curl = { kind: "rest", method: "GET", path, host: "github.com" } as const;
+  const valid = JSON.stringify(rest) + footer;
+  await check(curl, 0, valid, "", { code: 0, stdout: "403 native-rest-policy\n", stderr: "" });
+  await check(
+    curl,
+    0,
+    JSON.stringify({ ...rest, extra: `prefix=${token};suffix` }) + footer,
+    "",
+    exposed,
+  );
+  await check(curl, 0, JSON.stringify({ ...rest, extra: `Basic ${basic}` }) + footer, "", exposed);
+  await check(curl, 0, valid, `prefix=${token};suffix\n`, exposed);
+  await check(curl, 0, valid, `Authorization: Basic ${basic}\n`, exposed);
+  await check(curl, 18, valid, "", incomplete);
+  const otherDenial = refused("ACL_NATIVE_REST_DENIAL");
+  await check(
+    curl,
+    0,
+    JSON.stringify({ ...rest, error: "middleware_denied" }) + footer,
+    "",
+    otherDenial,
+  );
+  await check(
+    curl,
+    0,
+    JSON.stringify({ ...rest, path: "/another/path" }) + footer,
+    "",
+    otherDenial,
+  );
+  await check(curl, 0, JSON.stringify(rest) + "\n403 text/plain\n", "", otherDenial);
+  // Each stream fits on its own. The combined capture still cannot be complete.
+  await check(curl, 0, valid + "x".repeat(4096), "x".repeat(4096), incomplete);
 });

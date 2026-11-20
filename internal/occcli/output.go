@@ -269,6 +269,13 @@ func (app *application) printDeploymentStatus(value any, agent map[string]any) e
 	if row["repositoryAccess"] != nil {
 		columns = append(columns, column{title: "REPOSITORY ACCESS", key: "repositoryAccess", format: deploymentErrorText})
 	}
+	if app.output == "table" && row["cleanup"] != nil {
+		columns = append(columns, column{title: "CLEANUP", key: "cleanup", format: func(value any) any {
+			cleanup, _ := value.(map[string]any)
+			status, _ := cleanup["status"].(string)
+			return cmp.Or(status, "unknown")
+		}})
+	}
 	return app.printItems(row, false, columns)
 }
 

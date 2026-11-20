@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-14
-last_updated_session: authoring-run/790a9874-f0fa-46f8-9cce-c9ca1b76a938
+updated: 2026-11-19
+last_updated_session: authoring-run/74f10e49-0bf9-4d4c-b682-4c4317ad0408
 ---
 
 # Console Agent stop and deletion
@@ -47,8 +47,12 @@ The CLI uses a separate request and output path:
 
 ```mermaid
 graph TD
-  CLI["CLI agent stop"] --> READ["Try advisory Agent GET"]
+  CLI["CLI agent stop"] -->|ordinary| READ["Try advisory Agent GET"]
+  CLI -->|guarded| GUARD["Validate revision ID"]
+  GUARD --> QUERY["POST with expectedActiveRevisionId"]
   READ -->|read succeeds or fails| POST["Submit exact Agent stop POST"]
+  QUERY -->|refused or uncertain| FAIL["Exit without replay"]
+  QUERY -->|admitted| OUT
   POST -->|accepted| OUT["Validate and print Agent and advice"]
   OUT -->|write failure| ERR["Exit nonzero without readback or retry"]
   ERR -->|manual operator action| GET["occ --namespace NAMESPACE agent get ID"]
@@ -156,9 +160,17 @@ the row is gone.
 
 ### CLI stop output
 
-`internal/occcli/cli.go:agentCommand` also submits a stop through
-`internal/occclient/client.go:StopAgent`. It first tries to read the Agent to
-choose advice for an idle Agent, an earlier stop request, or a new stop request.
+`internal/occcli/cli.go:agentCommand` submits a stop through
+`internal/occclient/client.go:StopAgent`. Ordinary stop first tries to read the
+Agent to choose advice for an idle Agent, an earlier stop request, or a new stop request.
+With `--if-active-revision`, it validates the revision ID and sends one bodyless
+POST with `expectedActiveRevisionId`, without the advisory GET. The HTTP route
+`apps/controller/src/http/agents.ts:stopAgent` passes the query to
+`packages/occ/src/index.ts:stopAgent`. OCC rechecks exact-Agent `operate` under
+the lock and rejects a guard mismatch before changing state or queuing work.
+The [stop reference](../../reference/agents.md#identity-and-deployment)
+defines the admission conditions and recovery steps. A refusal or uncertain
+response does not trigger an automatic replay.
 After the POST, it validates the returned Agent identity, Namespace, and stopped
 intent, then prints that Agent to stdout and the advice to stderr.
 
@@ -196,6 +208,8 @@ controller persistence or Compute shutdown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 14:00: Trace optional guarded CLI stop admission in the accompanying uncommitted change. (authoring-run/74f10e49-0bf9-4d4c-b682-4c4317ad0408 - 4bfefb4bf60b43dfb2e6fcc010be60270474e726)
 
 - 2026-11-14 15:17: Distinguish the CLI advisory read and manual recovery from Console readback. (authoring-run/790a9874-f0fa-46f8-9cce-c9ca1b76a938 - 5453be17728e9b813227b73072de700e40a742a6)
 

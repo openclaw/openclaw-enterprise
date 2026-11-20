@@ -20,7 +20,6 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
 
 import {
@@ -129,8 +128,9 @@ const chatgptValues = {
   "backend.chatgpt.enabled": "true",
   "backend.chatgpt.providerCidr": "198.51.100.25/32",
 };
-const slackProxyValues = {
-  "slackProxy.enabled": "true",
+const channelEgressValues = {
+  "channelEgress.enabled": "true",
+  "channelEgress.excludedCidrs[0]": "10.0.0.0/8",
 };
 const externalGatewayRoutingValues = {
   ...gatewayRoutingValues,
@@ -359,14 +359,14 @@ test(
         objects: await renderObjects({
           ...dnsValues,
           ...productionCollectorValues,
-          ...slackProxyValues,
+          ...channelEgressValues,
           ...gatewayRoutingValues,
         }),
         policies: [
           "openclaw-enterprise-dependency-egress",
           "oce-bootstrap-isolation",
           "openclaw-enterprise-collector-egress",
-          "openclaw-enterprise-slack-proxy",
+          "openclaw-channel-egress-fleet",
           `oce-${routeNamespaceLabel("openclaw-system", "oce-agent-gateways")}-envoy-dataplane`,
         ],
       },
@@ -823,7 +823,7 @@ test("production settings coexist in fresh and upgrade chart renders", tooling, 
     "installation.upgradeAttemptId": "df44c039-3515-4d0e-b2eb-759e177f1ff5",
     ...repositoryCredentialValues,
     "repositoryCredentials.serviceName": "git",
-    "api.channelDirectoryProxyUrl": "http://198.51.100.25:3128",
+    ...channelEgressValues,
   };
   // An image upgrade must still render the operator's broker, routing and proxy
   // settings together; testing each feature separately would miss conflicts.
@@ -870,9 +870,9 @@ test("production settings coexist in fresh and upgrade chart renders", tooling, 
     );
     const api = deploymentPodSpec(objects, "api").containers[0];
     assert.equal(api.image, controllerImage);
-    assert.deepEqual(
-      api.env.find(({ name }) => name === "OCC_CHANNEL_DIRECTORY_PROXY_URL"),
-      { name: "OCC_CHANNEL_DIRECTORY_PROXY_URL", value: "http://198.51.100.25:3128" },
+    assert.equal(
+      api.env.some(({ name }) => name === "OCC_CHANNEL_DIRECTORY_PROXY_URL"),
+      false,
     );
     assert.deepEqual(
       api.env.find(({ name }) => name === "OCC_AGENT_NATIVE_ADMIN_ENABLED"),
@@ -889,17 +889,8 @@ test("production settings coexist in fresh and upgrade chart renders", tooling, 
       "--authority",
       "prepared-git",
     ]);
-    const proxyPolicy = findResource(
-      objects,
-      "NetworkPolicy",
-      "openclaw-enterprise-api-channel-directory-egress",
-    );
-    assert.deepEqual(proxyPolicy.spec.egress, [
-      {
-        to: [{ ipBlock: { cidr: "198.51.100.25/32" } }],
-        ports: [{ protocol: "TCP", port: 3128 }],
-      },
-    ]);
+    const channelPolicy = findResource(objects, "NetworkPolicy", "openclaw-channel-egress-api");
+    assert.deepEqual(channelPolicy.spec.egress[0].ports, [{ protocol: "TCP", port: 10000 }]);
     assert.ok(objects.some(({ kind }) => kind === "Gateway"));
     assert.ok(objects.some(({ kind }) => kind === "EnvoyProxy"));
     assert.ok(objects.some(({ kind, metadata }) => kind === "Service" && metadata.name === "git"));
@@ -973,9 +964,9 @@ test("control-plane node selectors are optional unless configured", tooling, asy
 
 test("Installation checksum rolls only its consumers", tooling, async () => {
   const checksum = "c".repeat(64);
-  const before = await renderObjects(slackProxyValues);
+  const before = await renderObjects(channelEgressValues);
   const after = await renderObjects({
-    ...slackProxyValues,
+    ...channelEgressValues,
     "controlPlane.installationChecksum": checksum,
   });
   for (const component of ["api", "worker"]) {
@@ -985,10 +976,10 @@ test("Installation checksum rolls only its consumers", tooling, async () => {
       checksum,
     );
   }
-  const proxyName = "openclaw-enterprise-slack-proxy";
+  const proxyName = "openclaw-channel-egress";
   assert.deepEqual(
-    findResource(after, "Deployment", proxyName).spec.template,
-    findResource(before, "Deployment", proxyName).spec.template,
+    findResource(after, "EnvoyProxy", proxyName).spec,
+    findResource(before, "EnvoyProxy", proxyName).spec,
   );
   for (const invalid of ["not-a-checksum", "c".repeat(63), "c".repeat(65), "C".repeat(64)]) {
     await assert.rejects(
@@ -1357,6 +1348,7 @@ test(
       JSON.stringify({
         images: { controller: values["images.controller"] },
         gatewayRouting: { enabled: false },
+        channelEgress: { enabled: false },
         agentNativeAdmin: { domain: values["agentNativeAdmin.domain"] },
         auth: {
           baseUrl: values["auth.baseUrl"],
@@ -1444,7 +1436,7 @@ test(
       await editLiveValues(`${key.startsWith(".") ? key : `.${key}`} = ${JSON.stringify(value)}`);
     }
     await editLiveValues(
-      ".gatewayRouting.enabled = false | .repositoryCredentials.enabled = true | del(.repositoryCredentials.hostname, .repositoryCredentials.serviceName)",
+      ".gatewayRouting.enabled = false | .channelEgress.enabled = false | .repositoryCredentials.enabled = true | del(.repositoryCredentials.hostname, .repositoryCredentials.serviceName)",
     );
     const installation = join(directory, "installation.json");
     const kubeconfig = join(directory, "kubeconfig");
@@ -1670,6 +1662,8 @@ esac
               TEST_SECRET: secret,
               TEST_WORKER: worker,
               TEST_NODES: nodes,
+              // This raw broker probe uses a get-only kubectl stand-in, not a credential plugin.
+              KUBERC: "off",
               TEST_PROBE_CALLS: probeCalls,
               TEST_REAL_NODE: process.execPath,
               TEST_LIVE_VALUES: liveValues,
@@ -1973,37 +1967,99 @@ test(
       "Job",
       "initialization",
     ).spec.template.spec.initContainers.find(({ name }) => name === "migration");
-    for (const extension of ["mjs", "ts"]) {
+    assert.equal(migration.args.at(-1), "--expect-empty");
+    const invocation = migration.args.slice(0, -1);
+    async function layout(entry, command, source) {
       const directory = await temporaryDirectory(t, "occ-migration-layout-");
       await mkdir(join(directory, "scripts"));
-      const entry = `scripts/migrate-production.${extension}`;
       await writeFile(
         join(directory, "package.json"),
         JSON.stringify({
           type: "module",
-          scripts: { "db:migrate:production": `NODE_ENV=production node ${entry}` },
+          scripts: { "db:migrate:production": command },
         }),
       );
       // Each isolated layout contains only its own generation's executable.
-      await writeFile(
-        join(directory, entry),
-        "process.stdout.write(JSON.stringify({pid: process.pid, args: process.argv.slice(2)}));",
+      await writeFile(join(directory, entry), source);
+      return directory;
+    }
+
+    // The first strict .mjs command supports --check. Newer commands also
+    // support the first-install and separate-migration guards.
+    for (const [extension, supported] of [
+      ["mjs", ["--check"]],
+      ["ts", ["--check", "--expect-empty", "--require-current"]],
+    ]) {
+      const entry = `scripts/migrate-production.${extension}`;
+      const directory = await layout(
+        entry,
+        `NODE_ENV=production node ${entry}`,
+        `const args = process.argv.slice(2);
+         if (args.length > 1 || (args.length === 1 && !${JSON.stringify(supported)}.includes(args[0]))) {
+           throw new Error("Unsupported migration argument.");
+         }
+         process.stdout.write(JSON.stringify({pid: process.pid, args}));`,
       );
-      const applying = execute(process.execPath, migration.args, { cwd: directory });
-      const applied = await applying;
-      assert.deepEqual(JSON.parse(applied.stdout), {
-        pid: applying.child.pid,
-        args: ["--expect-empty"],
-      });
-      const check = [...migration.args.slice(0, -1), "--check"];
-      const checked = await execute(process.execPath, check, { cwd: directory });
-      assert.deepEqual(JSON.parse(checked.stdout).args, ["--check"]);
-      // Omitting Node's separator must fail before an apply can start.
+      for (const args of [[], ...supported.map((option) => [option])]) {
+        const processResult = execute(process.execPath, [...invocation, ...args], {
+          cwd: directory,
+        });
+        assert.deepEqual(JSON.parse((await processResult).stdout), {
+          pid: processResult.child.pid,
+          args,
+        });
+      }
       await assert.rejects(
-        execute(process.execPath, [...check.slice(0, -2), "--check"], { cwd: directory }),
-        { code: 9, stdout: "" },
+        execute(process.execPath, [...invocation, "--unsupported-mode"], { cwd: directory }),
+        { code: 1, stdout: "", stderr: /Unsupported migration argument/ },
       );
     }
+
+    // The oldest package ignores argv. The sentinel proves import itself is
+    // refused for a guarded invocation, even if the executable would exit zero.
+    const legacyEntry = "scripts/migrate-production.mjs";
+    const unguarded =
+      'import { writeFileSync } from "node:fs";\n' +
+      'writeFileSync(new URL("../imported", import.meta.url), "entered");';
+    const legacy = await layout(legacyEntry, `node ${legacyEntry}`, unguarded);
+    const imported = join(legacy, "imported");
+    for (const args of [
+      ["--check"],
+      ["--expect-empty"],
+      ["--require-current"],
+      ["--expect-installation", "ins_fixture"],
+    ]) {
+      await assert.rejects(execute(process.execPath, [...invocation, ...args], { cwd: legacy }), {
+        code: 1,
+        stdout: "",
+        stderr: /does not declare support for production migration mode arguments/,
+      });
+      await assert.rejects(readFile(imported, "utf8"), { code: "ENOENT" });
+    }
+    // Omitting Node's separator must fail before a legacy apply can start.
+    await assert.rejects(
+      execute(process.execPath, [...invocation.slice(0, -1), "--check"], { cwd: legacy }),
+      { code: 9, stdout: "" },
+    );
+    await assert.rejects(readFile(imported, "utf8"), { code: "ENOENT" });
+    await execute(process.execPath, invocation, { cwd: legacy });
+    assert.equal(await readFile(imported, "utf8"), "entered");
+
+    // A JSON array cannot declare guarded support by coercing to a command string.
+    const malformed = await layout(
+      legacyEntry,
+      [`NODE_ENV=production node ${legacyEntry}`],
+      unguarded,
+    );
+    await assert.rejects(
+      execute(process.execPath, [...invocation, "--check"], { cwd: malformed }),
+      {
+        code: 1,
+        stdout: "",
+        stderr: /does not declare a supported production migration command/,
+      },
+    );
+    await assert.rejects(lstat(join(malformed, "imported")), { code: "ENOENT" });
   },
 );
 
@@ -2558,230 +2614,45 @@ test("MCP plugin discovery has independent API HTTPS egress", tooling, async () 
   );
 });
 
-test("Slack directory proxy grants only API egress to its exact endpoint", tooling, async () => {
-  const name = "openclaw-enterprise-api-channel-directory-egress";
-  const defaults = await renderObjects();
-  assert.ok(!defaults.some(({ metadata }) => metadata.name === name));
-  const objects = await renderObjects({
-    "api.channelDirectoryProxyUrl": "http://198.51.100.25:3128",
-  });
-  assertApiEgressPolicy(
-    objects,
-    name,
-    ["198.51.100.25/32"],
-    3128,
-    "configured directory proxy must render API egress",
-  );
-  const proxyEnvironment = (objects, component) =>
-    objects
-      .find(
-        ({ kind, spec }) =>
-          kind === "Deployment" &&
-          spec.template.metadata.labels["app.kubernetes.io/component"] === component,
-      )
-      .spec.template.spec.containers[0].env.find(
-        ({ name }) => name === "OCC_CHANNEL_DIRECTORY_PROXY_URL",
-      );
-  assert.deepEqual(proxyEnvironment(objects, "api"), {
-    name: "OCC_CHANNEL_DIRECTORY_PROXY_URL",
-    value: "http://198.51.100.25:3128",
-  });
-  assert.equal(proxyEnvironment(objects, "worker"), undefined);
-  assert.equal(proxyEnvironment(defaults, "api"), undefined);
-  for (const url of [
-    "http://slack.com:3128",
-    "http://198.51.100.25:65536",
-    syntheticCredentialUrl({
-      protocol: "http",
-      username: "user",
-      password: "pass",
-      host: "198.51.100.25",
-      port: 3128,
-    }),
-    "http://198.51.100.25:3128/path",
-    "http://198.51.100.999:3128",
-  ]) {
-    await assert.rejects(
-      render({ "api.channelDirectoryProxyUrl": url }),
-      /api.channelDirectoryProxyUrl/,
-    );
-  }
-  await assert.rejects(
-    render({ "api.channelDirectoryProxyUrl": "http://0.0.0.0:3128" }),
-    /api\.channelDirectoryProxyUrl must not use host 0\.0\.0\.0, which names no proxy address/,
-  );
-});
-
 test(
-  "managed Slack proxy renders private Service DNS and restricted proxy policies",
+  "managed channel egress packages separate listeners and restricted OCC access",
   tooling,
   async () => {
-    const objects = await renderObjects(slackProxyValues);
-    const named = (kind, name) => findResource(objects, kind, name);
-    const deployment = named("Deployment", "openclaw-enterprise-slack-proxy");
-    const service = named("Service", "openclaw-enterprise-slack-proxy");
-    const proxyPolicy = named("NetworkPolicy", "openclaw-enterprise-slack-proxy");
-    const apiPolicy = named("NetworkPolicy", "openclaw-enterprise-api-managed-slack-proxy-egress");
-    assert.ok(deployment);
-    assert.ok(service);
-    assert.ok(proxyPolicy);
-    assert.ok(apiPolicy);
-    assert.equal(
-      deployment.spec.template.spec.serviceAccountName,
-      "openclaw-enterprise-slack-proxy",
-    );
-    assert.equal(deployment.spec.template.spec.automountServiceAccountToken, false);
-    assert.equal(deployment.spec.template.spec.enableServiceLinks, false);
+    await execute(process.execPath, ["deploy/helm/src/generate-channel-egress.ts", "--check"], {
+      cwd: repository,
+    });
+    const defaults = await renderObjects();
+    assert.ok(!defaults.some(({ metadata }) => metadata.name === "openclaw-channel-egress"));
+    const objects = await renderObjects(channelEgressValues);
+    const gateway = findResource(objects, "Gateway", "openclaw-channel-egress");
+    assert.equal(gateway.spec.listeners.length, 64);
+    assert.equal(new Set(gateway.spec.listeners.map(({ port }) => port)).size, 64);
+    const service = findResource(objects, "Service", "openclaw-channel-egress");
+    assert.ok(service.spec.ports.every(({ port, targetPort }) => port === targetPort));
+    const fleet = findResource(objects, "NetworkPolicy", "openclaw-channel-egress-fleet");
     assert.deepEqual(
-      deployment.spec.template.spec.containers[0].env.find(
-        ({ name }) => name === "OCC_SLACK_PROXY_PORT",
+      fleet.spec.ingress.map(({ ports }) => ports[0].port).sort((a, b) => a - b),
+      [10000, 19004],
+    );
+    assert.ok(
+      fleet.spec.ingress.every(
+        ({ from }) =>
+          from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"] ===
+          "openclaw-system",
       ),
-      { name: "OCC_SLACK_PROXY_PORT", value: "3128" },
     );
-    assert.deepEqual(service.spec.selector, {
-      "app.kubernetes.io/name": "openclaw-enterprise",
-      "app.kubernetes.io/instance": "oce",
-      "app.kubernetes.io/component": "slack-proxy",
-    });
-    const api = named("Deployment", "openclaw-enterprise-api").spec.template.spec.containers[0];
-    assert.deepEqual(
-      api.env.find(({ name }) => name === "OCC_CHANNEL_DIRECTORY_PROXY_URL"),
-      {
-        name: "OCC_CHANNEL_DIRECTORY_PROXY_URL",
-        value: "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:3128",
-      },
-    );
-    assert.deepEqual(
-      api.env.find(({ name }) => name === "OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST"),
-      {
-        name: "OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST",
-        value: "openclaw-enterprise-slack-proxy.openclaw-system.svc",
-      },
-    );
-    assert.deepEqual(apiPolicy.spec.egress, [
-      {
-        to: [
-          {
-            namespaceSelector: {
-              matchLabels: { "kubernetes.io/metadata.name": "openclaw-system" },
-            },
-            podSelector: {
-              matchLabels: {
-                "app.kubernetes.io/name": "openclaw-enterprise",
-                "app.kubernetes.io/instance": "oce",
-                "app.kubernetes.io/component": "slack-proxy",
-              },
-            },
-          },
-        ],
-        ports: [{ protocol: "TCP", port: 3128 }],
-      },
-    ]);
-    const apiProxyPeer = {
-      namespaceSelector: {
-        matchLabels: { "kubernetes.io/metadata.name": "openclaw-system" },
-      },
-      podSelector: {
-        matchLabels: {
-          "app.kubernetes.io/name": "openclaw-enterprise",
-          "app.kubernetes.io/instance": "oce",
-          "app.kubernetes.io/component": "api",
-        },
-      },
-    };
-    assert.deepEqual(proxyPolicy.spec.ingress, [
-      {
-        from: [apiProxyPeer],
-        ports: [{ protocol: "TCP", port: 3128 }],
-      },
-    ]);
-    const gatewayObjects = await renderObjects({ ...slackProxyValues, ...gatewayRoutingValues });
-    const gatewayProxyPolicy = findResource(
-      gatewayObjects,
-      "NetworkPolicy",
-      "openclaw-enterprise-slack-proxy",
-    );
-    assert.deepEqual(gatewayProxyPolicy.spec.ingress, [
-      {
-        from: [
-          apiProxyPeer,
-          {
-            namespaceSelector: {
-              matchLabels: {
-                "openclaw-enterprise.io/gateway": routeNamespaceLabel(
-                  "openclaw-system",
-                  "oce-agent-gateways",
-                ),
-              },
-              matchExpressions: [{ key: "openclaw.dev/gateway-namespace", operator: "Exists" }],
-            },
-            podSelector: {
-              matchLabels: {
-                "app.kubernetes.io/managed-by": "openclaw-enterprise",
-                "openclaw.dev/workload-role": "gateway",
-              },
-              matchExpressions: [{ key: "openclaw.dev/agent", operator: "Exists" }],
-            },
-          },
-        ],
-        ports: [{ protocol: "TCP", port: 3128 }],
-      },
-    ]);
-    assert.deepEqual(proxyPolicy.spec.egress.at(-1), {
-      // Preserve the original proxy's public HTTPS destinations as DNS rotates.
-      to: [
-        {
-          ipBlock: {
-            cidr: "0.0.0.0/0",
-            except: [
-              "0.0.0.0/8",
-              "10.0.0.0/8",
-              "100.64.0.0/10",
-              "127.0.0.0/8",
-              "169.254.0.0/16",
-              "172.16.0.0/12",
-              "192.0.0.0/24",
-              "192.0.2.0/24",
-              "192.168.0.0/16",
-              "198.18.0.0/15",
-              "198.51.100.0/24",
-              "203.0.113.0/24",
-              "224.0.0.0/4",
-              "240.0.0.0/4",
-            ],
-          },
-        },
-      ],
-      ports: [{ protocol: "TCP", port: 443 }],
-    });
-    assert.equal(
-      named("ServiceAccount", "openclaw-enterprise-slack-proxy").automountServiceAccountToken,
-      false,
-    );
+    assert.ok(!objects.some(({ metadata }) => metadata.name.includes("slack-proxy")));
     await assert.rejects(
-      render({ ...slackProxyValues, "api.channelDirectoryProxyUrl": "http://198.51.100.25:3128" }),
-      /api.channelDirectoryProxyUrl/,
+      render({ "api.channelDirectoryProxyUrl": "http://198.51.100.25:3128" }),
+      /Legacy Slack proxy settings/,
     );
     for (const override of [
-      { "slackProxy.serviceName": "1proxy" },
-      { "slackProxy.port": "65536" },
-      // The proxy runs as UID 1000 without capabilities: a port below 1024 cannot bind.
-      { "slackProxy.port": "1023" },
+      { "channelEgress.occListenerPort": "010" },
+      { "channelEgress.occListenerPort": "65536" },
+      { "channelEgress.listenerPortEnd": "10063" },
     ]) {
-      await assert.rejects(render({ ...slackProxyValues, ...override }), /slackProxy/);
+      await assert.rejects(render({ ...channelEgressValues, ...override }), /channelEgress/);
     }
-    await assert.rejects(
-      render(slackProxyValues, { strings: { "slackProxy.port": "010" } }),
-      /slackProxy\.port must be an integer TCP port/,
-    );
-    await assert.rejects(
-      render(slackProxyValues, { strings: { "slackProxy.port": "9223372036854775808" } }),
-      /slackProxy\.port must be an integer TCP port/,
-    );
-    await assert.rejects(
-      render({ ...slackProxyValues, "slackProxy.resources.requests.memory": "10MiB" }),
-      /slackProxy\.resources\.requests\.memory must be a Kubernetes quantity/,
-    );
   },
 );
 
@@ -3527,7 +3398,7 @@ test(
     const label = routeNamespaceLabel(namespace, "oce-agent-gateways");
     assert.match(label, /^[0-9]+e[0-9]+$/);
     const objects = await renderObjects(
-      { ...gatewayRoutingValues, ...slackProxyValues },
+      { ...gatewayRoutingValues, ...channelEgressValues },
       { namespace },
     );
     const values = [];
@@ -3545,7 +3416,7 @@ test(
       }
     };
     collect(objects);
-    assert.ok(values.length >= 5);
+    assert.ok(values.length >= 4);
     assert.deepEqual(new Set(values), new Set([label]));
   },
 );
@@ -3585,7 +3456,7 @@ test(
   async () => {
     const features = {
       ...productionCollectorValues,
-      ...slackProxyValues,
+      ...channelEgressValues,
       ...chatgptValues,
       ...repositoryCredentialValues,
       ...gatewayRoutingValues,
@@ -3630,7 +3501,7 @@ test(
       "repositoryCredentials.publicCaKey": "6",
       "repositoryCredentials.registryConfigMapName": "15",
       "repositoryCredentials.registryKey": "7",
-      "slackProxy.serviceName": "y",
+      "channelEgress.serviceName": "y",
       "executionCluster.apiKubeconfigSecretName": "21",
       "executionCluster.workerKubeconfigSecretName": "22",
       "executionCluster.kubeconfigKey": "true",

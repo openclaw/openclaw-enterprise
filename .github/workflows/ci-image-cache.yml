@@ -94,10 +94,8 @@ jobs:
       source-sha: ${{ steps.export.outputs.source-sha }}
     # The image lanes' runner, so the cache is written where they read it.
     runs-on: blacksmith-8vcpu-ubuntu-2404
-    # Runtime source builds have 180 min, controller builds 20 min; each
-    # exports for at most 20 min more. Builds run side by side, with 10 min
-    # left for setup and cleanup.
-    timeout-minutes: 210
+    # Each image build and cache export can take 20 min. Builds run side by side.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

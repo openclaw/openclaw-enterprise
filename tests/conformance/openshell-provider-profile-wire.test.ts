@@ -67,6 +67,14 @@ test("prepared Git provider binds repository read and write rules to its wire pr
   // Edits to the original grant objects or array cannot change the prepared profile.
   readGrant.access = "write";
   policy.push({ repository: "fixture/c", access: "read" });
+  // A caller inspecting the expected rule must not be able to widen the imported
+  // profile while keeping the identity derived from the original grants.
+  const discovery = scoped.previewNetworkRule().endpoints[0];
+  assert.ok(discovery && "rules" in discovery);
+  const service = discovery.rules?.[0]?.allow.query?.service;
+  assert.ok(service);
+  Reflect.set(service, "glob", "*");
+
   const binding = await scoped.bootstrap(signal);
   const stored = await client.getProviderProfile(scope.workspace, binding.profile, signal);
   assert.deepEqual(stored?.definition?.endpoints, [
@@ -195,8 +203,42 @@ test("prepared Git provider binds repository read and write rules to its wire pr
     },
   ]);
 
+  const single = await new OpenShellPreparedGitProvider(client, {
+    ...commonScope,
+    repository: "Fixture/Legacy_Repo",
+    gitOrigin: "https://git.example.test:8443",
+    apiOrigin: "https://api.example.test:9443",
+  }).bootstrap(signal);
+  const singleStored = await client.getProviderProfile(scope.workspace, single.profile, signal);
+  assert.deepEqual(singleStored?.definition?.endpoints, [
+    {
+      host: "git.example.test",
+      port: 8443,
+      protocol: "rest",
+      path: "/Fixture/Legacy_Repo.git/**",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      access: "NETWORK_ACCESS_PRESET_READ_WRITE",
+    },
+    {
+      host: "api.example.test",
+      port: 9443,
+      protocol: "rest",
+      path: "/repos/Fixture/Legacy_Repo/pulls",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      access: "NETWORK_ACCESS_PRESET_READ_WRITE",
+    },
+  ]);
+
   for (const { name, policy } of [
     { name: "empty policy", policy: [] },
+    { name: "unsupported grant constraint", policy: [Object.assign({}, read, { branch: "main" })] },
+    { name: "inherited grant", policy: [Object.create(read)] },
+    { name: "noncanonical owner", policy: [{ ...read, repository: "a_b/repo" }] },
+    { name: "noncanonical name", policy: [{ ...read, repository: "fixture/.repo" }] },
+    {
+      name: "too many grants",
+      policy: Array.from({ length: 33 }, (_, i) => ({ ...read, repository: "fixture/r" + i })),
+    },
     { name: "duplicate repository", policy: [read, { ...read, access: "write" }] },
     { name: "uppercase repository", policy: [{ ...read, repository: "Fixture/a" }] },
     { name: "Git suffix", policy: [{ ...read, repository: "fixture/a.git" }] },

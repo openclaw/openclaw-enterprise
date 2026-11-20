@@ -537,7 +537,8 @@ test("protected Git resolves repository and installation grants without granting
 test("OpenShell registration pairs its capabilities using only a Repo delivery resolver", async (t) => {
   const { registry, revision: seed, binding } = repositoryDeliveryFixture();
   const configuration: OpenShellSandboxDriverOptions = {
-    gateway: { workspaceMode: "operator" },
+    integrationMode: "legacy",
+    gateway: {},
     kubernetes: {
       userNamespaces: false,
       serviceAccount: { mode: "gatewayConfigured" },

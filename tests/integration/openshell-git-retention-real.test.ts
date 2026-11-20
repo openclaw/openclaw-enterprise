@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -13,7 +13,7 @@ import type {
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { verifyFirstAgentModel } from "../../scripts/first-agent-model.ts";
-import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
+import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.ts";
 import {
   deployFiniteAgent,
   deployStandingAgent,
@@ -36,6 +36,7 @@ import {
   finiteGitConversationFailureStage,
 } from "../helpers/finite-git-conversation.ts";
 import {
+  createGitAclDenialCommand,
   createOpenShellGitDenial,
   gitRemovalDenialCategory,
   gitRemovalDenialCommand,
@@ -972,6 +973,7 @@ test(
     assert.ok(network && network.token);
     assert.deepEqual(network.repositories, ["fixture/a", "fixture/b", "fixture/c"]);
     assert.match(fixture.sandboxImage, /@sha256:[a-f0-9]{64}$/);
+    assert.match(origin.initialSha, /^[a-f0-9]{40}$/u);
     const workspaceResource = await gatewayClient.getWorkspace(workspace, t.signal);
     const workspaceId = workspaceResource?.id;
     assert.ok(workspaceId);
@@ -988,6 +990,8 @@ test(
 
     const token = network.token;
     const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
+    const denialCommand = createGitAclDenialCommand(token);
+    const fingerprint = (value: string) => createHash("sha256").update(value).digest("hex");
     type Target = { sandboxName: string; sandboxId: string };
     const execute = async (target: Target, command: string[]) => {
       const result = await managedExec(target, command);
@@ -998,12 +1002,13 @@ test(
       return result;
     };
 
-    // Calibrate the exact broad material outside OpenShell. The origin rejects both
-    // missing credentials and the guest placeholder; it does not enforce A/B/C grants.
+    // Calibrate the exact broad credential at the origin outside OpenShell.
+    // The repository grants apply at OpenShell, while the origin checks authentication.
     const directory = await temporaryDirectory(t, "installed-git-acl-control-");
     const ca = join(directory, "ca.pem");
     await writeFile(ca, origin.tls.ca, { mode: 0o600 });
     const port = new URL(origin.origin).port;
+    assert.ok(port, "ACL_OWNED_ORIGIN_PORT");
     const controlEnv = cleanEnvironment({
       HOME: directory,
       GIT_CONFIG_GLOBAL: "/dev/null",
@@ -1088,10 +1093,12 @@ test(
     ]);
     const [gitHelper, curl] = paths.stdout.toString("utf8").trim().split("\n");
     assert.ok(
-      /^\/(usr\/lib(?:exec)?\/git-core)\/git-remote-http(?:s)?$/.test(gitHelper!),
+      /^\/(usr\/lib(?:exec)?\/git-core)\/git-remote-http(?:s)?$/.test(gitHelper ?? ""),
       "ACL_GIT_HELPER_IDENTITY",
     );
-    assert.ok(/^\/[A-Za-z0-9_./-]+$/.test(curl!), "ACL_CURL_IDENTITY");
+    assert.ok(/^\/[A-Za-z0-9_./-]+$/.test(curl ?? ""), "ACL_CURL_IDENTITY");
+
+    assert.ok(gitHelper && curl);
 
     const install = async (
       repositoryNetworkPolicy: NonNullable<OpenShellPreparedGitScope["repositoryNetworkPolicy"]>,
@@ -1105,9 +1112,7 @@ test(
         installationId: origin.installationId,
         gitOrigin: "https://github.com",
         apiOrigin: "https://api.github.com",
-        binaries: [gitHelper!, curl!],
-        // The installed policy readback must account for every attached Provider.
-        expectedProviders: [],
+        binaries: [gitHelper, curl],
         repositoryNetworkPolicy,
       };
       const provider = new OpenShellPreparedGitProvider(gatewayClient, scope);
@@ -1149,8 +1154,10 @@ test(
     assert.ok(originalUid && /^[a-f0-9-]{36}$/.test(originalUid), "ACL_SANDBOX_UID");
     assert.equal(originalSandboxId, original.target.sandboxId);
 
-    const guest = (target: Target, script: string) => execute(target, ["sh", "-ceu", script]);
-    // Check the stable alias before either client uses the original credential value.
+    const guest = (target: Target, script: string, command: string[] = []) =>
+      execute(target, ["sh", "-ceu", script, "--", ...command]);
+    // Check the stable alias and absence of the credential in the launch environment.
+    // Only fingerprints of the synthetic credential enter the workload command.
     const requireGitHubPlaceholder = `require_github_placeholder() (
   case \${GITHUB_TOKEN-} in
     openshell:resolve:env:s*_GITHUB_TOKEN)
@@ -1163,107 +1170,230 @@ test(
   esac
 )
 require_github_placeholder`;
-    const gitSetup = `${requireGitHubPlaceholder}; export GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0; export HOME=/tmp; git config --global credential.helper '!f() { printf "%s\\n" username=x-access-token "password=$GITHUB_TOKEN"; }; f'`;
+    const requirePlaceholderOnly = `${requireGitHubPlaceholder}; node -e '
+const { createHash } = require("node:crypto");
+const hashes = new Set(process.argv.slice(1));
+for (const value of Object.values(process.env)) {
+  const candidates = [value, value.replace(/^(?:Authorization: )?Basic /i, "")];
+  if (candidates.some((candidate) => hashes.has(createHash("sha256").update(candidate).digest("hex")))) {
+    process.exit(63);
+  }
+}' -- ${fingerprint(token)} ${fingerprint(basic)}`;
+    const gitSetup = `${requirePlaceholderOnly}; export GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=maintenance.auto GIT_CONFIG_VALUE_0=false; export HOME=/tmp; git config --global credential.helper '!f() { printf "%s\\n" username=x-access-token "password=$GITHUB_TOKEN"; }; f'`;
+    // Start with empty object stores and independently require an authenticated
+    // upload-pack POST for each ref fetched into them.
+    const freshFetch = async (
+      target: Target,
+      repository: "a" | "b",
+      ref: "main" | "approved",
+      directory: string,
+      expected: string,
+    ) => {
+      const before = network.requests().length;
+      const branch = "refs/heads/" + ref;
+      const fetched = await guest(
+        target,
+        `${gitSetup};
+test ! -e '${directory}';
+git init -q --initial-branch=acl-empty '${directory}';
+git -C '${directory}' remote add origin 'https://github.com/fixture/${repository}.git';
+git -C '${directory}' fetch -q origin '${branch}:${branch}';
+git -C '${directory}' rev-parse '${branch}^{commit}';
+git -C '${directory}' checkout -q '${ref}'`,
+      );
+      assert.ok(fetched.stdout.toString("utf8").trim() === expected, "ACL_FRESH_FETCH_OBJECT");
+      assert.ok(
+        network
+          .requests()
+          .slice(before)
+          .some(
+            (request: {
+              repository: string;
+              operation: string;
+              method: string;
+              authenticated: boolean;
+            }) =>
+              request.repository === `fixture/${repository}` &&
+              request.operation === "upload-pack" &&
+              request.method === "POST" &&
+              request.authenticated,
+          ),
+        "ACL_FRESH_FETCH_ORIGIN",
+      );
+    };
+
+    await freshFetch(original.target, "a", "main", "/tmp/a", origin.initialSha);
+    await freshFetch(original.target, "b", "main", "/tmp/b", origin.initialSha);
     const beforeAllowed = network.requests().length;
     const success = await guest(
       original.target,
-      `${gitSetup}; cd /tmp; git clone -q https://github.com/fixture/a.git a; git -C a fetch -q origin; git clone -q https://github.com/fixture/b.git b; git -C b fetch -q origin; git -C b -c user.name=Fixture -c user.email=fixture@example.test commit -q --allow-empty -m change; git -C b push -q origin HEAD:refs/heads/approved; git -C b rev-parse HEAD`,
+      `${gitSetup}; cd /tmp; git -C b -c user.name=Fixture -c user.email=fixture@example.test commit -q --allow-empty -m change; git -C b push -q origin HEAD:refs/heads/approved; git -C b rev-parse HEAD`,
     );
     const pushed = success.stdout.toString("utf8").trim();
     assert.ok(/^[a-f0-9]{40}$/.test(pushed), "ACL_PUSH_IDENTITY");
     assert.equal(await network.ref("fixture/b", "refs/heads/approved"), pushed);
     assert.equal(await network.hasObject("fixture/b", pushed), true);
-    const allowed = network.requests().slice(beforeAllowed);
-    for (const [repository, operation] of [
-      ["fixture/a", "upload-pack"],
-      ["fixture/b", "upload-pack"],
-      ["fixture/b", "receive-pack"],
-    ]) {
-      assert.ok(
-        allowed.some(
-          (request: { repository: string; operation: string; authenticated: boolean }) =>
-            request.repository === repository &&
-            request.operation === operation &&
+    assert.ok(
+      network
+        .requests()
+        .slice(beforeAllowed)
+        .some(
+          (request: {
+            repository: string;
+            operation: string;
+            method: string;
+            authenticated: boolean;
+          }) =>
+            request.repository === "fixture/b" &&
+            request.operation === "receive-pack" &&
+            request.method === "POST" &&
             request.authenticated,
         ),
-        `Missing authenticated ${repository} ${operation}`,
-      );
-    }
+      "ACL_B_PUSH_ORIGIN",
+    );
 
-    // Discovery and RPC requests are calibrated on an allowed repository, then replayed
-    // byte-for-byte against each denied repository. Only the repository name changes.
+    // First send each exact wire shape with broad material directly to the
+    // owned origin. Then require OpenShell to refuse it before parsed HTTP.
     const requests = [
       { service: "upload", method: "GET", allowed: "a", denied: ["c"] },
       { service: "upload", method: "POST", allowed: "a", denied: ["c"] },
       { service: "receive", method: "GET", allowed: "b", denied: ["a", "c"] },
       { service: "receive", method: "POST", allowed: "b", denied: ["a", "c"] },
     ] as const;
-    const replay = (
-      target: Target,
-      repository: string,
-      { service: operation, method }: Pick<(typeof requests)[number], "service" | "method">,
-    ) => {
+    type Probe = Pick<(typeof requests)[number], "service" | "method">;
+    const wireRequest = (repository: string, { service: operation, method }: Probe) => {
       const service = `git-${operation}-pack`;
-      const suffix = method === "GET" ? `info/refs?service=${service}` : service;
+      const discovery = method === "GET";
+      const path = `/fixture/${repository}.git/${discovery ? "info/refs" : service}`;
+      const target = discovery ? `${path}?service=${service}` : path;
       const body =
         operation === "upload" ? `0032want ${origin.initialSha}\n00000009done\n` : "0000";
-      const rpc =
-        method === "POST"
-          ? `-H 'Content-Type: application/x-${service}-request' --data-binary '${body}'`
-          : "";
-      return guest(
+      return {
+        path,
         target,
-        `${requireGitHubPlaceholder}; '${curl}' -sS -o /dev/null -w '%{http_code} %{content_type}' -u "x-access-token:$GITHUB_TOKEN" -X '${method}' ${rpc} 'https://github.com/fixture/${repository}.git/${suffix}'`,
-      );
+        rpc: discovery
+          ? []
+          : ["-H", `Content-Type: application/x-${service}-request`, "--data-binary", body],
+        responseType: `application/x-${service}-${discovery ? "advertisement" : "result"}`,
+      };
     };
-    const denyReplay = async (
-      target: Target,
-      repository: string,
-      request: Pick<(typeof requests)[number], "service" | "method">,
-    ) => {
-      const before = origin.snapshot().requests;
-      const response = await replay(target, repository, request);
-      assert.ok(response.stdout.toString("utf8").split(" ", 1)[0] === "403", "ACL_DENIAL_HTTP");
-      assert.equal(origin.snapshot().requests, before, "ACL_DENIAL_ORIGIN");
-    };
-    for (const request of requests) {
-      const before = network.requests().length;
-      const calibration = await replay(original.target, request.allowed, request);
-      const service = `git-${request.service}-pack`;
-      const responseType = request.method === "GET" ? "advertisement" : "result";
-      assert.ok(
-        calibration.stdout.toString("utf8") === `200 application/x-${service}-${responseType}`,
-        "ACL_CALIBRATION_HTTP",
-      );
+    const checkOrigin = (before: number, repository: string, { method, service }: Probe) => {
       const observed = network.requests().slice(before);
       assert.equal(observed.length, 1, "ACL_CALIBRATION_COUNT");
       assert.ok(
-        observed[0]?.repository === `fixture/${request.allowed}` &&
-          observed[0]?.operation ===
-            `${request.service}-${request.method === "GET" ? "advertise" : "pack"}` &&
-          observed[0]?.method === request.method &&
+        observed[0]?.repository === `fixture/${repository}` &&
+          observed[0]?.operation === `${service}-${method === "GET" ? "advertise" : "pack"}` &&
+          observed[0]?.method === method &&
           observed[0]?.authenticated,
         "ACL_CALIBRATION_ORIGIN",
       );
+    };
+    const probeCurl = ["-q", "--noproxy", "*", "--proto", "=https", "--max-time", "10", "-s"];
+    const statusFormat = "%{http_code} %{content_type}";
+    const replay = (target: Target, repository: string, probe: Probe, deny: boolean) => {
+      const { path, target: requestTarget, rpc } = wireRequest(repository, probe);
+      const args = [...probeCurl, "-X", probe.method, ...rpc, `https://github.com${requestTarget}`];
+      if (deny) {
+        return guest(
+          target,
+          `${requirePlaceholderOnly}; exec "$@"`,
+          denialCommand({ kind: "rest", method: probe.method, path, host: "github.com" }, [
+            curl,
+            ...args,
+          ]),
+        );
+      }
+      // Inputs come from literal routes and options, plus a validated Git OID.
+      const argumentsForShell = args.map((arg) => `'${arg}'`).join(" ");
+      return guest(
+        target,
+        `${requirePlaceholderOnly}; '${curl}' ${argumentsForShell} -u "x-access-token:$GITHUB_TOKEN" -o /dev/null -w '${statusFormat}'`,
+      );
+    };
+    const denyReplay = async (target: Target, repository: string, probe: Probe) => {
+      const request = wireRequest(repository, probe);
+      const priorRequests = network.requests().length;
+      // Strict TLS, fixed private resolution, and no proxies or redirects.
+      // The exact fixture credential travels on stdin only.
+      const witness = await run(
+        "curl",
+        [
+          ...probeCurl,
+          "--resolve",
+          `github.com:${port}:${fixture.originBridge}`,
+          "--cacert",
+          ca,
+          "-H",
+          "Host: github.com",
+          "-H",
+          "@-",
+          "-X",
+          probe.method,
+          ...request.rpc,
+          "-o",
+          "/dev/null",
+          "-w",
+          statusFormat,
+          `https://github.com:${port}${request.target}`,
+        ],
+        {
+          cwd: directory,
+          env: cleanEnvironment({ HOME: directory }),
+          input: `Authorization: Basic ${basic}\n`,
+          signal: t.signal,
+        },
+      );
+      assert.ok(witness.stdout === `200 ${request.responseType}`, "ACL_EXACT_TOKEN_BYPASS");
+      checkOrigin(priorRequests, repository, probe);
+
+      const before = origin.snapshot().requests;
+      const response = await replay(target, repository, probe, true);
+      assert.equal(origin.snapshot().requests, before, "ACL_DENIAL_ORIGIN");
+      assert.ok(
+        response.stdout.toString("utf8") === "403 native-rest-policy\n",
+        "ACL_NATIVE_REST_DENIAL",
+      );
+    };
+    for (const request of requests) {
+      const before = network.requests().length;
+      const calibration = await replay(original.target, request.allowed, request, false);
+      assert.ok(
+        calibration.stdout.toString("utf8") ===
+          `200 ${wireRequest(request.allowed, request).responseType}`,
+        "ACL_CALIBRATION_HTTP",
+      );
+      checkOrigin(before, request.allowed, request);
       for (const repository of request.denied) {
         await denyReplay(original.target, repository, request);
       }
     }
 
-    // Require Git's HTTP response, not just a nonzero shell status: a failed
-    // redirection must never count as a repository-policy denial. Keep raw Git
-    // stderr private to the Sandbox and return only fixed diagnostics.
-    const denied = async (target: Target, command: string) => {
+    // Require Git's HTTP 403 after screening both output streams in the guest.
+    const denied = async (target: Target, args: string[]) => {
       const before = origin.snapshot().requests;
-      await guest(
+      const result = await guest(
         target,
-        `${gitSetup}; export LC_ALL=C; umask 077; err=$(mktemp /tmp/git-acl-denial.XXXXXX); trap 'rm -f "$err"' EXIT; if ${command} >/dev/null 2>"$err"; then printf 'ACL_NATIVE_UNEXPECTED_SUCCESS\\n' >&2; exit 1; fi; if ! grep -Eq '^fatal: .*The requested URL returned error: 403$' "$err"; then printf 'ACL_NATIVE_HTTP\\n' >&2; exit 1; fi`,
+        `${gitSetup}; export LC_ALL=C; exec "$@"`,
+        denialCommand({ kind: "git" }, ["git", ...args]),
       );
       assert.equal(origin.snapshot().requests, before, "ACL_NATIVE_DENIAL_ORIGIN");
+      assert.ok(result.stdout.toString("utf8") === "403 native-git\n", "ACL_NATIVE_HTTP");
     };
-    await denied(original.target, "git -C /tmp/a push -q origin HEAD:refs/heads/approved");
+    await denied(original.target, [
+      "-C",
+      "/tmp/a",
+      "push",
+      "-q",
+      "origin",
+      "HEAD:refs/heads/approved",
+    ]);
     assert.equal(await network.ref("fixture/a", "refs/heads/approved"), undefined);
-    await denied(original.target, "git clone -q https://github.com/fixture/c.git /tmp/denied-c");
+    await denied(original.target, [
+      "clone",
+      "-q",
+      "https://github.com/fixture/c.git",
+      "/tmp/denied-c",
+    ]);
 
     // This fixture installs the Provider directly into a fresh Sandbox. The
     // Agent configuration, revision admission, and rollout are separate paths.
@@ -1357,40 +1487,27 @@ git -C /tmp/b rev-parse HEAD HEAD^`,
     assert.notEqual(attempted, pushed);
     assert.equal(await network.ref("fixture/b", approved), pushed);
     assert.equal(await network.hasObject("fixture/b", attempted), false);
-    await denied(replacement.target, `git -C /tmp/b push -q origin HEAD:${approved}`);
+    await denied(replacement.target, ["-C", "/tmp/b", "push", "-q", "origin", `HEAD:${approved}`]);
     assert.equal(await network.ref("fixture/b", approved), pushed);
     assert.equal(await network.hasObject("fixture/b", attempted), false);
     t.diagnostic("Git ACL downgrade: replacement push returned HTTP 403 with zero origin requests");
 
-    // Fetch into an empty repository so a cached ref or object cannot hide
-    // a blanket Git outage after the downgrade.
-    const beforeFetch = network.requests().length;
-    const fetched = await guest(
-      replacement.target,
-      `${gitSetup}; git init -q /tmp/fresh-b; git -C /tmp/fresh-b fetch -q '${b}' '${approved}:${approved}'; git -C /tmp/fresh-b rev-parse '${approved}^{commit}'`,
-    );
-    assert.equal(fetched.stdout.toString("utf8").trim(), pushed);
-    assert.ok(
-      network
-        .requests()
-        .slice(beforeFetch)
-        .some(
-          (request: { repository: string; operation: string; authenticated: boolean }) =>
-            request.repository === "fixture/b" &&
-            request.operation === "upload-pack" &&
-            request.authenticated,
-        ),
-      "ACL_DOWNGRADE_FRESH_FETCH_ORIGIN",
-    );
+    await freshFetch(replacement.target, "a", "main", "/tmp/fresh-a", origin.initialSha);
+    await freshFetch(replacement.target, "b", "approved", "/tmp/fresh-b", pushed);
     assert.equal(await network.ref("fixture/b", approved), pushed);
-    t.diagnostic("Git ACL downgrade: fresh authenticated fetch returned the unchanged origin ref");
+    t.diagnostic("Git ACL downgrade: fresh A and B fetches returned the unchanged origin refs");
 
-    // The native push stops at discovery. Independently send the same calibrated
-    // receive-pack POST to catch policy that leaves direct RPC writable.
+    // Keep A read-only and C absent after replacing B's grant. The native B
+    // push stops at discovery, so independently check direct receive-pack.
     for (const request of requests) {
-      if (request.service === "receive") {
-        await denyReplay(replacement.target, "b", request);
+      const deniedRepositories =
+        request.service === "receive" ? [...request.denied, "b"] : request.denied;
+      for (const repository of deniedRepositories) {
+        await denyReplay(replacement.target, repository, request);
       }
     }
+    assert.equal(await network.ref("fixture/a", approved), undefined);
+    assert.equal(await network.ref("fixture/b", approved), pushed);
+    assert.equal(await network.hasObject("fixture/b", attempted), false);
   }),
 );
