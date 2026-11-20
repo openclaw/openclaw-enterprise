@@ -222,6 +222,26 @@ export async function installObservabilityControlPlane(
     } catch (error) {
       errors.push(error);
     }
+    // The namespace controller revisits a terminating Namespace about every 5 s
+    // (observed on k3s) and needed three visits while Pods and the PostgreSQL PVC
+    // remained, about 16 s per test; emptying the Namespaces first took about 9 s.
+    const emptied = await Promise.allSettled(
+      namespaces.map((name) =>
+        kubectl(
+          "delete",
+          "pods,persistentvolumeclaims",
+          "--all",
+          "-n",
+          name,
+          "--ignore-not-found",
+          "--wait=true",
+          "--timeout=120s",
+        ),
+      ),
+    );
+    for (const result of emptied) {
+      if (result.status === "rejected") errors.push(result.reason);
+    }
     try {
       await kubectl(
         "delete",
