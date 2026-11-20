@@ -266,16 +266,19 @@ branch list for `github-repository`; it does not promise every administrative
 operation. Access is finite by default. Change selections and deploy a new revision
 to change access; do not rewrite a narrow grant into a broader one in place.
 
-### Read issues with the optional GitHub REST skill
+### Enable the optional GitHub REST skill
 
-Use the [stock `gh api` skill](../../../deploy/runtime/repository-credentials/github-repository-rest/SKILL.md)
-only after confirming that the deployed Codex Agent has a `github-repository`
-binding, REST access and Issues read permission for the selected repository.
-Do not enable it on a Git-only policy. The skill grants no permissions and does
-not restrict what other clients can do.
+The [GitHub REST skill](../../../deploy/runtime/repository-credentials/github-repository-rest/SKILL.md)
+teaches a Codex Agent to read issues with `gh api` and open a non-draft PR with
+`curl`. It grants no access. Verify the deployed `github-repository` binding
+for each target:
 
-The skill does not submit PRs or use GraphQL. A general PR write grant does not
-enforce draft status or branch restrictions. For a ref-constrained draft, use
+- **Read issues:** Require REST access and Issues read permission.
+- **Open a non-draft PR:** Require deployed [scoped REST](https://github.com/openclaw/openclaw-enterprise/blob/1d2f37d8af5c01178e9092ec1e5ac1e7d7849bce/docs/reference/repository-credentials/access-levels.md#scoped-rest),
+  a Sandbox write grant and Pull requests write permission. Without the scoped
+  policy and its same-repository check, do not use the create command.
+
+Do not enable the skill for Git-only access. For a ref-constrained draft, use
 the [existing draft client](../../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository)
 with its own grant. Do not broaden access.
 
