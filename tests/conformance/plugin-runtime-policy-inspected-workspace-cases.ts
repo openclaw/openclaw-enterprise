@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { gatewayRuntimeEntrypoint } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { WORKSPACE_NODE_BINDING_PATH, workspaceNodeBinding } from "../helpers/plugin-runtime.mjs";
@@ -52,6 +57,50 @@ function launchSelected(options: GatewayOptions = {}, useProfile = true) {
 }
 
 export function registerInspectedWorkspaceCases() {
+  test("controller builds pin a complete inspected Workspace image digest pair", async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "inspected-workspace-image-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const pinPath = "apps/controller/src/drivers/sandbox/inspected-workspace-release.ts";
+    const target = join(directory, pinPath);
+    const source = await readFile(new URL(`../../${pinPath}`, import.meta.url), "utf8");
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, source);
+    const render = (gateway: string, agent: string) =>
+      spawnSync(
+        process.execPath,
+        [
+          fileURLToPath(
+            new URL("../../scripts/write-inspected-workspace-image-pin.ts", import.meta.url),
+          ),
+          gateway,
+          agent,
+        ],
+        { cwd: directory, encoding: "utf8" },
+      );
+
+    const gateway = `sha256:${enrolled}`;
+    const agent = `sha256:${replacement}`;
+    assert.equal(render("", "").status, 0);
+    assert.equal(await readFile(target, "utf8"), source);
+    for (const [gatewayInput, agentInput] of [
+      [gateway, ""],
+      ["runtime:tag", agent],
+    ] as const) {
+      const refused = render(gatewayInput, agentInput);
+      assert.equal(refused.status, 1, refused.stderr);
+      assert.match(refused.stderr, /exact Gateway and Agent image manifest digests/u);
+      assert.equal(await readFile(target, "utf8"), source);
+    }
+
+    const pinned = render(gateway, agent);
+    assert.equal(pinned.status, 0, pinned.stderr);
+    const content = await readFile(target, "utf8");
+    assert.ok(content.includes(`gatewayDigest: "${gateway}"`));
+    assert.ok(content.includes(`agentDigest: "${agent}"`));
+    assert.match(content, /const pin: InspectedWorkspaceRelease \| undefined = Object.freeze/u);
+    assert.equal(await readFile(new URL(`../../${pinPath}`, import.meta.url), "utf8"), source);
+  });
+
   test("inspected workspace starts for ordinary setup then selects the exact revision-owned node", async () => {
     const intervals: NonNullable<GatewayOptions["intervals"]> = [];
     const kills: NonNullable<GatewayOptions["kills"]> = [];
