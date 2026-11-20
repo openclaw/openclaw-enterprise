@@ -76,12 +76,14 @@ import {
   KUBERNETES_ALLOW_USERS_REFUSAL,
   KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL,
   codexPluginRefusal,
-  configIncludeRefusal,
   pluginEntryKeyVariantRefusal,
   pluginPolicyListRefusal,
-  providerKeyVariantRefusal,
   NO_TEST_REQUEST,
 } from "../helpers/refusal-text.mjs";
+import {
+  configIncludeRefusal,
+  providerKeyVariantRefusal,
+} from "../helpers/refusal-configuration-runtime.ts";
 import {
   OPENCLAW_SANDBOX_SETTINGS,
   openClawSandboxRefusal,
