@@ -12,6 +12,8 @@ import {
   DependencyUnavailableError,
   RetryLaterError,
 } from "../../packages/occ/src/index.ts";
+import { PostgresCommitOutcomeUnknownError } from "../../packages/occ/src/state/postgres-state.ts";
+import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.mjs";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
@@ -25,12 +27,11 @@ async function withRejectedAuditRows<T>(
   migrator: Pool,
   action: string,
   run: () => Promise<T>,
-  outcome?: "success",
 ) {
   // The disposable migrator role can refuse a new action without invalidating earlier ledger rows.
   await migrator.query(
     `ALTER TABLE occ.audit_events ADD CONSTRAINT reject_static_token_service_audit
-       CHECK (action <> '${action}'${outcome ? ` OR outcome <> '${outcome}'` : ""}) NOT VALID`,
+       CHECK (action <> '${action}') NOT VALID`,
   );
   try {
     return await run();
@@ -64,10 +65,13 @@ test(
       "Audit constraints require a role-separated disposable loopback database.",
     );
     const migrator = testPool(t, { connectionString: migratorUrl });
+    const proxy = await commitAckProxy(databaseUrl);
+    t.after(() => proxy.close());
     let now = new Date();
     const { controller, inject, pool, principal, state } = await createPostgresAgentApp(t, {
       label: "staged-token-service",
       authSecret: "staged-token-service-session-secret",
+      transportDatabaseUrl: proxy.url,
       requestAudit: false,
       controllerOptions: {
         now: () => now,
@@ -159,6 +163,54 @@ test(
     assert.equal(core.calls.createNamespacedSecret, createsBefore);
     assert.deepEqual(await custodyRows(), [{ sources: 0, bindings: 0 }]);
 
+    // PostgreSQL commits the reservation and intent, but the request loses the real COMMIT
+    // acknowledgment. Recovery must remove the undispatched hidden reservation and creator grant.
+    proxy.arm();
+    await assert.rejects(
+      register("Reservation acknowledgment lost", randomUUID()),
+      PostgresCommitOutcomeUnknownError,
+    );
+    assert.equal(proxy.observedCommit, true);
+    assert.equal(core.calls.createNamespacedSecret, createsBefore);
+    assert.deepEqual(await custodyRows(), [{ sources: 0, bindings: 0 }]);
+
+    // This is the durable state after a process stops between reservation and dispatch. No
+    // owner could have received material, so retirement remains possible if that owner is gone.
+    const undispatchedId = `cs_${randomUUID()}`;
+    const undispatchedRef: CredentialSourceReference = {
+      kind: "credential_source",
+      namespaceId,
+      id: undispatchedId,
+    };
+    await controller.transact(async (unit) => {
+      await unit.credentialSources.createCredentialSource({
+        id: undispatchedId,
+        namespaceId,
+        name: "Undispatched reservation",
+        type: "openai",
+        ownerCapability: "token_service",
+        tokenServiceInstanceId: instanceId,
+        state: "registering",
+        config: {},
+        secrets: {},
+        createdAt: now.toISOString(),
+      });
+      await unit.audit.append(createAudit(undispatchedRef, "registration_started"));
+    });
+    const unavailableOwner = new OCCTokenServiceDriver(
+      "replacement-owner",
+      controller.installation.id,
+      driver.installationSecrets,
+      instanceId,
+    );
+    controller.registerDriver(unavailableOwner);
+    controller.selectDriver("token_service", unavailableOwner.id);
+    const removalsBefore = core.calls.deleteNamespacedSecret;
+    await retire(undispatchedId);
+    assert.equal(core.calls.deleteNamespacedSecret, removalsBefore);
+    assert.deepEqual(await custodyRows(), [{ sources: 0, bindings: 0 }]);
+    controller.selectDriver("token_service", owner.id);
+
     // Refusing intent prevents the concrete owner from taking custody or leaving a creator binding.
     await withRejectedAuditRows(
       migrator,
@@ -235,16 +287,30 @@ test(
     // Internal records must not become serving source metadata or mutable public resources, even for an administrator.
     assert.deepEqual((await inject("GET", base)).json().data, []);
     assert.equal((await inject("GET", `${base}/${sourceId}`)).statusCode, 404);
-    assert.equal((await inject("PATCH", `${base}/${sourceId}`, {})).statusCode, 404);
+    const absentId = `cs_${randomUUID()}`;
+    for (const method of ["PATCH", "DELETE"] as const) {
+      const hidden = await inject(
+        method,
+        `${base}/${sourceId}`,
+        method === "PATCH" ? {} : undefined,
+      );
+      const absent = await inject(
+        method,
+        `${base}/${absentId}`,
+        method === "PATCH" ? {} : undefined,
+      );
+      assert.equal(hidden.statusCode, absent.statusCode);
+      assert.equal(hidden.json().error.code, absent.json().error.code);
+      assert.equal(hidden.statusCode, 409);
+    }
     assert.equal((await inject("POST", `${base}/${sourceId}/rotate`)).statusCode, 404);
-    assert.equal((await inject("DELETE", `${base}/${sourceId}`)).statusCode, 404);
 
     const update = (actorId: string, apiKey: string) =>
       controller.updateManagedCredentialSource(
         actorId,
         { namespaceId, credentialSourceId: sourceId },
         { secret: { api_key: apiKey } },
-        (resource) => event(actorId, "openclaw.credential_sources.update", resource),
+        (resource, phase) => event(actorId, "openclaw.credential_sources.update", resource, phase),
         (reasonCode) => ({
           ...event(actorId, "openclaw.credential_sources.update", ref),
           outcome: "failure",
@@ -255,26 +321,32 @@ test(
     await update(principal.id, replacementKey);
     assert.equal(await resolve(), replacementKey);
 
-    // Custody may advance before the success audit fails; retain an attributable failure rather than rolling the value back.
-    const committedKey = randomUUID();
+    // Refusing the separately committed intent must stop the owner before private custody changes.
     await withRejectedAuditRows(
       migrator,
-      "openclaw.credential_sources.update",
+      "openclaw.credential_sources.update.started",
       async () => {
-        await assert.rejects(update(principal.id, committedKey), AuditAppendUnavailableError);
+        await assert.rejects(update(principal.id, randomUUID()), AuditAppendUnavailableError);
       },
-      "success",
     );
-    assert.equal(await resolve(), committedKey);
-    assert.deepEqual(
+    assert.equal(await resolve(), replacementKey);
+
+    // Even if both completion and rollback audit writes fail after custody changes, the
+    // authorized source-targeted intent remains attributable in the ledger.
+    const committedKey = randomUUID();
+    const intentCount = async () =>
       (
         await pool.query(
-          "SELECT outcome,details->'__occAuditMetadata'->>'reasonCode' AS reason_code FROM occ.audit_events WHERE action='openclaw.credential_sources.update' AND resource_id=$1 AND outcome='failure'",
-          [sourceId],
+          "SELECT count(*)::int AS count FROM occ.audit_events WHERE action='openclaw.credential_sources.update.started' AND resource_id=$1 AND actor_id=$2",
+          [sourceId, principal.id],
         )
-      ).rows,
-      [{ outcome: "failure", reason_code: "CREDENTIAL_SOURCE_UPDATE_FAILED" }],
-    );
+      ).rows[0].count as number;
+    const beforeIntent = await intentCount();
+    await withRejectedAuditRows(migrator, "openclaw.credential_sources.update", async () => {
+      await assert.rejects(update(principal.id, committedKey), AuditAppendUnavailableError);
+    });
+    assert.equal(await resolve(), committedKey);
+    assert.equal(await intentCount(), beforeIntent + 1);
 
     const account = await inject("POST", "/api/auth/accounts", {
       name: "Source updater",

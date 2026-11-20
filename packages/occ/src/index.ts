@@ -8591,39 +8591,84 @@ export class OpenClawController {
   ): Promise<Readonly<CredentialSourceMetadata>> {
     this.requireIndependentMutation("Credential source registration");
     this.namespaceIdentity(namespaceId);
-    const { owner, ref, instanceId } = await this.mutate(async (state) => {
-      await this.holdAuthority(state);
-      const target = { kind: "credential_source" as const, id: namespaceId, namespaceId };
-      await this.authorize(principalId, "create", target);
-      const namespace = await this.lockNamespace(state, namespaceId);
-      await this.authorize(principalId, "create", target);
-      if (!isName(input.name)) {
-        throw new ScopeViolationError("The credential source name is invalid.");
-      }
-      if (namespace.status !== "ready") {
-        throw new NamespaceNotReadyError();
-      }
-      const owner = this.ownedTokenServiceDriver();
-      const instanceId = this.currentTokenServiceInstanceId();
-      const source = await state.credentialSources.createCredentialSource({
-        id: this.nextIdentifier("credential_source"),
-        namespaceId,
-        name: input.name,
-        type: input.lifecycleConfig.type,
-        ownerCapability: "token_service",
-        tokenServiceInstanceId: instanceId,
-        state: "registering",
-        config: {},
-        secrets: {},
-        createdAt: this.timestamp(),
+    let reservation:
+      | {
+          readonly owner: TokenServiceDriver;
+          readonly ref: CredentialSourceReference;
+          readonly instanceId: string;
+        }
+      | undefined;
+    try {
+      await this.mutate(async (state) => {
+        await this.holdAuthority(state);
+        const target = { kind: "credential_source" as const, id: namespaceId, namespaceId };
+        await this.authorize(principalId, "create", target);
+        const namespace = await this.lockNamespace(state, namespaceId);
+        await this.authorize(principalId, "create", target);
+        if (!isName(input.name)) {
+          throw new ScopeViolationError("The credential source name is invalid.");
+        }
+        if (namespace.status !== "ready") {
+          throw new NamespaceNotReadyError();
+        }
+        const owner = this.ownedTokenServiceDriver();
+        const instanceId = this.currentTokenServiceInstanceId();
+        const source = await state.credentialSources.createCredentialSource({
+          id: this.nextIdentifier("credential_source"),
+          namespaceId,
+          name: input.name,
+          type: input.lifecycleConfig.type,
+          ownerCapability: "token_service",
+          tokenServiceInstanceId: instanceId,
+          state: "registering",
+          config: {},
+          secrets: {},
+          createdAt: this.timestamp(),
+        });
+        const ref = credentialSourceRef(source);
+        await this.bindCreator(state, principalId, ref);
+        // Custody can outlive an uncertain owner response, so commit attributable intent
+        // with the source identity and creator binding before the owner can receive material.
+        await state.audit.append(audit(ref, "registration_started"));
+        reservation = { owner, ref, instanceId };
       });
-      const ref = credentialSourceRef(source);
-      await this.bindCreator(state, principalId, ref);
-      // Custody can outlive an uncertain owner response, so commit attributable intent
-      // with the source identity and creator binding before the owner can receive material.
-      await state.audit.append(audit(ref, "registration_started"));
-      return { owner, ref, instanceId };
-    });
+    } catch (error) {
+      const pending = reservation;
+      if (!(error instanceof PostgresCommitOutcomeUnknownError) || pending === undefined) {
+        throw error;
+      }
+      try {
+        await this.mutate(async (state) => {
+          await this.lockNamespace(state, namespaceId);
+          const source = await state.credentialSources.lockCredentialSource(
+            namespaceId,
+            pending.ref.id,
+          );
+          if (source === undefined) {
+            return;
+          }
+          if (
+            !isManagedTokenServiceSource(source) ||
+            source.tokenServiceInstanceId !== pending.instanceId ||
+            source.state !== "registering" ||
+            source.registration !== undefined ||
+            source.registrationDispatchedAt !== undefined
+          ) {
+            throw new ResourceStateConflictError("The reservation changed before recovery.");
+          }
+          await state.credentialSources.deleteCredentialSource(namespaceId, source.id);
+        });
+      } catch {
+        throw new DependencyUnavailableError(
+          `The TokenService reservation ${pending.ref.id} could not be reconciled. Inspect that registration before retrying.`,
+        );
+      }
+      throw error;
+    }
+    if (reservation === undefined) {
+      throw new DependencyUnavailableError("The TokenService reservation is unavailable.");
+    }
+    const { owner, ref, instanceId } = reservation;
 
     let registration: TokenServiceRegistration | undefined;
     let registrationStarted = false;
@@ -8783,16 +8828,17 @@ export class OpenClawController {
     principalId: string,
     ref: { readonly namespaceId: string; readonly credentialSourceId: string },
     input: SourceUpdate,
-    audit: (resource: CredentialSourceReference) => AuditEvent,
+    audit: (resource: CredentialSourceReference, phase?: "update_started") => AuditEvent,
     failureAudit: (reasonCode: string) => AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata>> {
+    this.requireIndependentMutation("Credential source update");
     this.namespaceIdentity(ref.namespaceId);
-    return this.mutate(async (state) => {
-      const resource: CredentialSourceReference = {
-        kind: "credential_source",
-        namespaceId: ref.namespaceId,
-        id: ref.credentialSourceId,
-      };
+    const resource: CredentialSourceReference = {
+      kind: "credential_source",
+      namespaceId: ref.namespaceId,
+      id: ref.credentialSourceId,
+    };
+    const authorizeUpdate = async (state: PlatformUnitOfWork, lockSource: boolean) => {
       await this.authorize(principalId, "update", resource);
       await this.holdAuthority(state);
       const namespace = await this.lockNamespace(state, ref.namespaceId);
@@ -8801,10 +8847,15 @@ export class OpenClawController {
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
-      const source = await state.credentialSources.lockCredentialSource(
-        ref.namespaceId,
-        ref.credentialSourceId,
-      );
+      const source = lockSource
+        ? await state.credentialSources.lockCredentialSource(
+            ref.namespaceId,
+            ref.credentialSourceId,
+          )
+        : await state.credentialSources.findCredentialSource(
+            ref.namespaceId,
+            ref.credentialSourceId,
+          );
       if (!source) {
         throw new ScopeViolationError(
           "The credential source does not belong to the exact Namespace.",
@@ -8820,6 +8871,16 @@ export class OpenClawController {
         );
       }
       const owner = this.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+      return { source, owner };
+    };
+    // An authorized intent must be durable before private custody can change. The effect
+    // transaction rechecks authority and the exact source while holding both fences.
+    await this.mutate(async (state) => {
+      await authorizeUpdate(state, false);
+      await state.audit.append(audit(resource, "update_started"));
+    });
+    return this.mutate(async (state) => {
+      const { source, owner } = await authorizeUpdate(state, true);
       this.auditUncommittedCredentialEffect(failureAudit, "CREDENTIAL_SOURCE_UPDATE_FAILED");
       await this.driverOperation(
         () =>
@@ -9179,17 +9240,18 @@ export class OpenClawController {
       // Lock order matches Agent admission: the source, then the Secrets it reads. Admission
       // with a Secret-method harnessAuth locks that Secret first; if the same Secret also backs
       // this source, PostgreSQL ends the cycle by failing one request.
-      const source = await state.credentialSources.lockCredentialSource(
+      const recorded = await state.credentialSources.lockCredentialSource(
         namespace.id,
         input.credentialSourceId,
       );
+      const source = isManagedTokenServiceSource(recorded) ? undefined : recorded;
       if (source?.ownerCapability !== "token_service") {
         this.assertCredentialSourceOwnerSelected();
       }
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
-      if (!source || isManagedTokenServiceSource(source)) {
+      if (!source) {
         throw new ScopeViolationError(
           "The credential source does not belong to the exact Namespace.",
         );
@@ -9665,18 +9727,18 @@ export class OpenClawController {
               id: credentialSourceId,
               namespaceId,
             });
-      const found = await state.credentialSources.lockCredentialSource(
+      const recorded = await state.credentialSources.lockCredentialSource(
         locked.id,
         credentialSourceId,
       );
+      const found =
+        connection !== MANAGED_SOURCE && isManagedTokenServiceSource(recorded)
+          ? undefined
+          : recorded;
       if (found?.ownerCapability !== "token_service") {
         this.assertCredentialSourceOwnerSelected();
       }
-      if (
-        !found ||
-        (isManagedTokenServiceSource(found) && connection !== MANAGED_SOURCE) ||
-        (connection === MANAGED_SOURCE && !isManagedTokenServiceSource(found))
-      ) {
+      if (!found || (connection === MANAGED_SOURCE && !isManagedTokenServiceSource(found))) {
         throw new ScopeViolationError(
           "The credential source does not belong to the exact Namespace.",
         );
@@ -9754,6 +9816,11 @@ export class OpenClawController {
     gateway: CredentialGatewayDriver | undefined,
   ): Promise<void> {
     if (isManagedTokenServiceSource(source)) {
+      // The registration writer must claim dispatch while the source is registering. A
+      // deleting reservation without that claim cannot have sent material to any owner.
+      if (!source.registration && !source.registrationDispatchedAt) {
+        return;
+      }
       const owner = this.ownedTokenServiceDriver(source.tokenServiceInstanceId);
       if (!source.registration && source.registrationDispatchedAt) {
         const remaining =
