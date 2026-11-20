@@ -54,7 +54,8 @@ export function baseInput(overrides: SiteOverrides = {}): SiteInput {
       transportSecretPrefix: "openclaw-agent-transport",
     },
     channels: {
-      managedSlackProxy: true,
+      managedEgress: true,
+      excludedCidrs: ["10.0.0.0/8", "172.16.0.0/12"],
     },
     ...overrides,
   };

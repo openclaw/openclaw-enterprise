@@ -266,11 +266,11 @@ no egress. Operators maintain addresses for
 [MCP tool discovery](../guides/topics/plugins-configure.md#configure-a-hosted-mcp-plugin)
 independently. Console model selection and Harness egress do not depend on these policies.
 
-When `api.channelDirectoryProxyUrl` names an approved HTTP(S) proxy at a
-literal IPv4 address and port, the chart passes it to the API and grants only
-that Pod egress to the proxy's exact `/32` and TCP port. The proxy must permit
-CONNECT to `slack.com:443`. The empty default renders no rule and leaves
-production Slack directory lookup unavailable with manual exact-ID entry.
+Managed channel egress uses one installation configuration for the reserved
+OCC provider listener and per-Agent listener allocation. Helm grants the API
+only its reserved port and the worker only configuration inspection. Startup
+records unavailable egress as a warning; channel operations fail closed while
+OCC stays available. See [channel egress](channel-egress.md).
 
 The Kubernetes Compute Driver queries the API server version and verifies
 authenticated Namespace access. Below the supported 1.35 baseline, the API logs

@@ -1732,7 +1732,7 @@ registerHooks({
   });
 
   test("prepareLane pre-pulls logging and metrics images with retry and preserves its Node override", async (t) => {
-    for (const failure of ["transient", "missing-manifest"]) {
+    for (const failure of ["transient", "missing-manifest", "invalid-node-reference"]) {
       await t.test(failure, async (t) => {
         const root = await fixture(t);
         const statePath = join(root, "logging-state.json");
@@ -1791,21 +1791,35 @@ process.exit(2);
           ["--lane", "logging-collector", "--state", statePath, "--github-env", githubEnv],
           {
             OCC_DOCKER_BIN: dockerPath,
-            OCC_TEST_LOGGING_NODE_IMAGE: customNodeImage,
+            // Fails validation while the first worker is inspecting the Collector,
+            // before either worker can start a queued metrics image. No sleep/race.
+            OCC_TEST_LOGGING_NODE_IMAGE:
+              failure === "invalid-node-reference" ? `invalid ${customNodeImage}` : customNodeImage,
             CI_METRICS_PULL_FAILURE: failure,
             GITHUB_STEP_SUMMARY: summary,
           },
         );
 
-        const outcome = failure === "missing-manifest" ? "failure" : "success";
+        const outcome = failure === "transient" ? "success" : "failure";
         assert.match(
           await readFile(summary, "utf8"),
           new RegExp(`^- logging-collector / image-pulls: ${outcome} \\(\\d+ ms\\)\\n$`),
         );
 
-        const pulls = (await readCommandLines(join(root, "docker.jsonl")))
-          .filter((args) => args[0] === "pull")
-          .map((args) => args[1]);
+        const commands = await readCommandLines(join(root, "docker.jsonl"));
+        const pulls = commands.filter((args) => args[0] === "pull").map((args) => args[1]);
+        if (failure === "invalid-node-reference") {
+          assert.equal(result.status, 1);
+          assert.match(result.stderr, /OCC_TEST_LOGGING_NODE_IMAGE must be an immutable image/);
+          assert.deepEqual(pulls, [loggingCollectorImage]);
+          assert.ok(commands.every((args) => args.at(-1) === loggingCollectorImage));
+          assert.ok(
+            commands.some((args) => args.includes("{{.Id}}")),
+            "active pull finished verification",
+          );
+          await assert.rejects(readFile(githubEnv), { code: "ENOENT" });
+          return;
+        }
         if (failure === "missing-manifest") {
           assert.notEqual(result.status, 0);
           assert.match(result.stderr, /manifest unknown/);
