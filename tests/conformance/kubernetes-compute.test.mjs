@@ -6579,8 +6579,26 @@ test("the OpenShell gateway allowlist admits every label Compute puts on a Harne
   );
 });
 
+function providerObservationFixture() {
+  const fixture = providerReadinessFixture();
+  /**
+   * @type {Parameters<typeof providerObservation.checkExactProviderHarnessReadiness>[1] & {
+   *   activate(): Promise<void>
+   * }}
+   */
+  const observation = {
+    labels: fixture.labels,
+    pod: fixture.pod,
+    setObservation: fixture.setObservation,
+    ready: fixture.ready,
+    activate: () =>
+      fixture.driver.activateRevision(fixture.revision, authContext(fixture.revision)),
+  };
+  return observation;
+}
+
 test("provider Harness readiness requires exactly one live matching Pod", async (t) => {
-  await providerObservation.checkExactProviderHarnessReadiness(t, providerReadinessFixture());
+  await providerObservation.checkExactProviderHarnessReadiness(t, providerObservationFixture());
 });
 
 test(
@@ -6594,10 +6612,8 @@ test(
 );
 
 test("provider Harness requires its assigned network profile before readiness and activation", async () => {
-  const fixture = providerReadinessFixture();
-  await providerObservation.checkProviderAssignedNetworkProfile(fixture, () =>
-    fixture.driver.activateRevision(fixture.revision, authContext(fixture.revision)),
-  );
+  const fixture = providerObservationFixture();
+  await providerObservation.checkProviderAssignedNetworkProfile(fixture, fixture.activate);
 });
 
 test("provider Harness public trust rejects invalid material and composes with execution trust", async (t) => {
