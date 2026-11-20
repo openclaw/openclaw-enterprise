@@ -90,10 +90,7 @@ import { servedAs } from "../helpers/agent-identity.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { admittedConfiguration } from "../helpers/admitted-configuration.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
-import {
-  prepareFirstDeploymentFixture,
-  slackFirstDeploymentFixture,
-} from "./occ-api-first-deployment-fixture.ts";
+import { prepareFixture, slackFirstDeploymentFixture } from "./occ-api-first-deployment-fixture.ts";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const entrypoint = fileURLToPath(new URL("../../apps/controller/src/server.mjs", import.meta.url));
@@ -359,7 +356,7 @@ async function readyNamespaceFixture(namespaceName, controllerOptions, bootstrap
 
 async function firstDeploymentFixture({ ready = true, slackFetch } = {}) {
   const { controller, namespace, agent, path, intent, secretDriver, channelDriver, providerCalls } =
-    await prepareFirstDeploymentFixture({ ready, slackFetch });
+    await prepareFixture({ ready, slackFetch });
   const recover = (body = intent, options = {}) =>
     controller.request(
       "GET",

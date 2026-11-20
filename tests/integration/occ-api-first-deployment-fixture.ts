@@ -27,7 +27,7 @@ export interface FirstDeploymentFixtureOptions {
   readonly slackFetch?: ConstructorParameters<typeof SlackChannelDriver>[0] | undefined;
 }
 
-export async function prepareFirstDeploymentFixture({
+export async function prepareFixture({
   ready = true,
   slackFetch,
 }: FirstDeploymentFixtureOptions = {}) {
@@ -87,7 +87,7 @@ export async function prepareFirstDeploymentFixture({
 }
 
 export async function firstDeploymentFixture(options: FirstDeploymentFixtureOptions = {}) {
-  const prepared = await prepareFirstDeploymentFixture(options);
+  const prepared = await prepareFixture(options);
   const { controller, namespace, agent, path, intent } = prepared;
   const recover = (
     body: FirstDeploymentIntent = intent,
