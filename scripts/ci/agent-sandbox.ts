@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { NativeImageSelection } from "./k3d-image-admission.ts";
 
 // Native children/configs of the verified v0.5.2 index
 // sha256:dbbad861e6c2cc0df1f7ec37dd0e2827b3d2bc051eb45855e01f94e697440403.
@@ -56,7 +57,7 @@ export async function preloadAgentSandboxController(
   registerImage: (
     image: string,
     description: string,
-    nativeSelection: { platform: string; configDigest: string; cacheIndex: string },
+    nativeSelection: NativeImageSelection,
   ) => Promise<string>,
 ): Promise<string> {
   // The caller verified this release's checksum; preserve every other manifest byte.

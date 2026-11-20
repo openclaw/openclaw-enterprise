@@ -4,6 +4,7 @@ import { registerCompleteLifecycleCases } from "./ci-runner-complete-lifecycle-c
 import {
   checkFileEnvironmentPrecedence,
   checkGatewayRoutingEnvironment,
+  checkGatewayRoutingImageMirror,
   checkQaLaneInputsAndArtifacts,
   checkRunnerSelectorIsolation,
 } from "./ci-runner-environment-cases.ts";
@@ -23,6 +24,11 @@ registerProvenanceCases();
 test(
   "gateway routing preparation preserves infrastructure env without overriding Slack selection",
   checkGatewayRoutingEnvironment,
+);
+
+test(
+  "gateway routing preparation admits cert-manager mirror images",
+  checkGatewayRoutingImageMirror,
 );
 
 test(

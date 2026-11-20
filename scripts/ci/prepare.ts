@@ -51,7 +51,7 @@ import {
   type PreparationState,
 } from "./k3d-preparation.ts";
 import { commandAvailable, execFile } from "./prepare-command.ts";
-import { prepareGatewayRouting } from "./routing.ts";
+import { assertCertManagerMirrorPrefix, prepareGatewayRouting } from "./routing.ts";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.ts";
 import { startObservabilityPhase } from "./observability-phase-notice.ts";
 import { recordLoggingSetupTiming } from "./logging-setup-timing.ts";
@@ -1434,6 +1434,61 @@ async function prepareLaneLogging(
   await markResourceReady(statePath, state, logging.resource as PreparationResource);
 }
 
+async function prepareK3dGatewayRouting(
+  statePath: string,
+  state: CiState,
+  cluster: K3dCluster,
+  prefix: string | undefined,
+) {
+  if (!prefix) {
+    return prepareGatewayRouting({ cluster, execFile });
+  }
+  const { stdout } = await execFile(
+    cluster.kubectl ?? process.env.OCC_KUBECTL_BIN ?? "kubectl",
+    [
+      "--kubeconfig",
+      cluster.kubeconfig,
+      "--context",
+      cluster.context,
+      "--request-timeout=15s",
+      "get",
+      "nodes",
+      "--no-headers",
+      "-o",
+      "custom-columns=NAME:.metadata.name,OS:.status.nodeInfo.operatingSystem,ARCH:.status.nodeInfo.architecture",
+    ],
+    { timeoutMs: 20_000 },
+  );
+  const rows = stdout
+    .trim()
+    .split(/\r?\n/u)
+    .map((row) => row.trim().split(/\s+/u));
+  const nodeNames = new Set(rows.map(([name]) => name));
+  const [platform, ...otherPlatforms] = rows.map(([, os, arch]) => `${os}/${arch}`);
+  if (
+    rows.length !== cluster.nodes.length ||
+    rows.some((row) => row.length !== 3) ||
+    nodeNames.size !== cluster.nodes.length ||
+    !cluster.nodes.every((node) => nodeNames.has(node)) ||
+    !platform ||
+    otherPlatforms.some((other) => platform !== other)
+  ) {
+    throw new Error("The cert-manager image mirror requires owned k3d nodes on one platform.");
+  }
+  return prepareGatewayRouting({
+    cluster,
+    execFile,
+    certManagerMirror: {
+      prefix,
+      platform,
+      registerImage: (image, description, selection) =>
+        registerImageInK3d(statePath, state, cluster, image, description, selection).then(
+          ({ reference }) => reference,
+        ),
+    },
+  });
+}
+
 async function prepareLane({
   lane,
   statePath,
@@ -1448,6 +1503,18 @@ async function prepareLane({
   }
   const name = assertLane(lane);
   const relativeFile = selectedLaneFile(name, file);
+  const openShellLane = isOpenShellLane(name);
+  const selfProvisionedOpenShell =
+    openShellLane && lanePrepare(name).selfProvisionedFiles.includes(relativeFile!);
+  const usesSharedRouting =
+    ["k3d-model", "slack", "k3d-otel", "gateway-routing"].includes(name) ||
+    (openShellLane && !selfProvisionedOpenShell);
+  const certManagerMirror = usesSharedRouting
+    ? process.env.OCC_CI_CERT_MANAGER_IMAGE_MIRROR
+    : undefined;
+  if (certManagerMirror) {
+    assertCertManagerMirrorPrefix(certManagerMirror);
+  }
   const runtimeArtifact = runtimeArtifactSelection(process.env);
   if (runtimeArtifact) {
     if (
@@ -1486,7 +1553,7 @@ async function prepareLane({
   validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
   // The lane receives source inputs. File preparation later receives its
   // chart paths and imported image references through the prepared environment.
-  if (isOpenShellLane(name) && !lanePrepare(name).selfProvisionedFiles.includes(relativeFile!)) {
+  if (openShellLane && !selfProvisionedOpenShell) {
     await validateOpenShellSelection(effectiveLaneEnv(name), execFile);
   }
   const resolvedStatePath = normalizeStatePath(statePath);
@@ -1845,7 +1912,7 @@ async function prepareLane({
         runtimeArtifact,
       });
       const routing = await timedK3dModelPreparation(name, "gateway-routing", () =>
-        prepareGatewayRouting({ cluster, execFile }),
+        prepareK3dGatewayRouting(resolvedStatePath, state, cluster, certManagerMirror),
       );
       Object.assign(env, routing.env);
       if (name === "k3d-otel") {
@@ -1899,7 +1966,7 @@ async function prepareLane({
     case "openshell": {
       // These files exercise the installer in their own Local Setup. Preparing a
       // second stack here builds the same images and installs unused services.
-      if (lanePrepare(name).selfProvisionedFiles.includes(relativeFile!)) {
+      if (selfProvisionedOpenShell) {
         if (
           process.env.OCC_CI_IMAGE_CACHE === "1" &&
           !lanePrepare(name).sourceBuildFiles?.includes(relativeFile!)
@@ -1915,7 +1982,12 @@ async function prepareLane({
         buildRuntime: true,
         reuseEngineImages: !fullOpenShellSourceBuild,
       });
-      const routing = await prepareGatewayRouting({ cluster, execFile });
+      const routing = await prepareK3dGatewayRouting(
+        resolvedStatePath,
+        state,
+        cluster,
+        certManagerMirror,
+      );
       Object.assign(env, routing.env);
       Object.assign(
         env,
