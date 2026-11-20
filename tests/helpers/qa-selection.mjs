@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 const scenarioPresets = {
   "native-restart": ["Codex"],
+  "channel-egress-upgrade": ["Codex"],
   "http-chat": ["OpenClaw", "Codex"],
   "namespace-lifecycle": ["OpenClaw"],
   "oidc-agent-chat": ["OpenClaw"],
@@ -36,6 +37,7 @@ export function selectQaMatrix(env = process.env) {
     (name) =>
       ![
         "native-restart",
+        "channel-egress-upgrade",
         "namespace-lifecycle",
         "oidc-agent-chat",
         "sandbox-policy",
@@ -54,6 +56,12 @@ export function selectQaMatrix(env = process.env) {
     "invalid QA scenario selection",
   );
   assert.equal(new Set(scenarios).size, scenarios.length, "duplicate QA scenario selection");
+  const channelUpgrade = scenarios.includes("channel-egress-upgrade");
+  if (channelUpgrade) {
+    assert.equal(scenarios.length, 1, "channel-egress-upgrade requires an exclusive QA selection");
+    assert.equal(installation, "kubernetes", "channel-egress-upgrade requires Kubernetes");
+    assert.equal(preset, "Codex", "channel-egress-upgrade requires Codex");
+  }
   const nativeRestart = scenarios.includes("native-restart");
   if (nativeRestart) {
     assert.equal(scenarios.length, 1, "native-restart requires an exclusive QA selection");
@@ -93,6 +101,7 @@ export function selectQaMatrix(env = process.env) {
         (scenario) =>
           ![
             "native-restart",
+            "channel-egress-upgrade",
             "namespace-lifecycle",
             "sandbox-policy",
             "scratch-volume",
@@ -107,6 +116,7 @@ export function selectQaMatrix(env = process.env) {
         (scenario) =>
           ![
             "native-restart",
+            "channel-egress-upgrade",
             "namespace-lifecycle",
             "sandbox-policy",
             "scratch-volume",
@@ -123,6 +133,7 @@ export function selectQaMatrix(env = process.env) {
         (scenario) =>
           ![
             "native-restart",
+            "channel-egress-upgrade",
             "namespace-lifecycle",
             "sandbox-policy",
             "scratch-volume",
@@ -156,6 +167,25 @@ export function selectQaMatrix(env = process.env) {
   const activeScenarios = [...new Set(cells.flatMap((cell) => cell.scenarios))];
   const repository = activeScenarios.some((name) => name.startsWith("git-"));
   const requiredEnv = [];
+  if (channelUpgrade) {
+    requiredEnv.push(
+      "OCC_TEST_KUBERNETES_KUBECONFIG",
+      "OCC_TEST_KUBERNETES_CONTEXT",
+      "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
+      "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+      "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+      "OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE",
+      "OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS",
+      "OPENAI_API_KEY",
+      "OCC_TEST_CHANNEL_EGRESS_SOURCE_CONTROLLER_IMAGE",
+      "OCC_TEST_CHANNEL_EGRESS_SOURCE_CHART",
+      "OCC_TEST_CHANNEL_EGRESS_NEXT_CONTROLLER_IMAGE",
+      "SLACK_APP_TOKEN",
+      "SLACK_BOT_TOKEN",
+      "OCC_TEST_SLACK_SENDER_BOT_TOKEN",
+      "OCC_TEST_SLACK_CHANNEL_ID",
+    );
+  }
   if (nativeRestart) {
     requiredEnv.push(
       "OCC_TEST_KUBERNETES_KUBECONFIG",
@@ -244,6 +274,7 @@ export function selectQaMatrix(env = process.env) {
     exclusions.length === 0 ||
       activeScenarios.length > 0 ||
       nativeRestart ||
+      channelUpgrade ||
       namespaceLifecycle ||
       sandboxPolicy ||
       scratchVolume ||
@@ -323,6 +354,7 @@ export function selectQaMatrix(env = process.env) {
     linearRead,
     harnessOverrides,
     nativeRestart,
+    channelUpgrade,
     presets,
     cells,
     scenarios,

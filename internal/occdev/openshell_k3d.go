@@ -789,6 +789,13 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	if err := r.applyDevelopmentRestartEgress(ctx, state, string(clusterIP), clusterPort); err != nil {
 		return err
 	}
+	channelEgress := map[string]any{"enabled": false}
+	if routing {
+		channelEgress, err = r.prepareDevelopmentChannelEgress(ctx, state)
+		if err != nil {
+			return err
+		}
+	}
 	installationData, err := os.ReadFile(filepath.Join(state.directory, "installation.yaml"))
 	if err != nil {
 		return err
@@ -812,6 +819,7 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		"api":            map[string]any{"clients": []any{map[string]any{"namespace": namespace, "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
 		"resources":      resources,
 		"gatewayRouting": map[string]any{"enabled": routing},
+		"channelEgress":  channelEgress,
 	}
 	if state.authenticatedOpenShell() {
 		values["backend"] = map[string]any{"openshell": map[string]string{"clientSecretName": "openshell-client-tls"}}
@@ -858,6 +866,11 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	valuesPath := filepath.Join(state.directory, "helm-values.json")
 	if err := exclusiveWrite(valuesPath, valuesData, 0600); err != nil {
 		return err
+	}
+	if routing {
+		if err := r.run(ctx, "python3", "scripts/setup-channel-egress", "check", "--kubeconfig", filepath.Join(state.directory, "kubeconfig"), "--context", "k3d-"+state.Cluster, "--namespace", namespace, "--values", valuesPath, "--timeout-seconds", strconv.Itoa(int(timeout.Seconds()))); err != nil {
+			return err
+		}
 	}
 	if err := r.helmUpgrade(ctx, state, valuesPath, timeout, "--install"); err != nil {
 		return err
