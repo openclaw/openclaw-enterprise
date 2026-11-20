@@ -329,8 +329,8 @@ export function createAgentRoutes(scenario: CreateScenario, dependencies: Create
                 : "running";
         }
         // Production records the Configuration and Agent during the configuration phase and
-        // the revision only at handoff; the fixture follows the same lifecycle so the meter
-        // walks each step instead of jumping to the deployment on an early revision.
+        // the revision only at handoff; the fixture follows the same lifecycle so the status
+        // line names each checkpoint instead of jumping to the deployment on an early revision.
         const phase = scenario.provisioningPhases
           ? (scenario.provisioningPhases[
               Math.min(current.reads - 1, scenario.provisioningPhases.length - 1)

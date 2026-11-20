@@ -47,7 +47,7 @@ export function provisioningJob(
   }
   const result: ProvisioningJob = { url, status };
   // The phase names the last phase the worker completed. A reply without a readable phase still
-  // identifies its job; the step meter simply stays on its indeterminate step.
+  // identifies its job; the status line simply keeps its last confirmed message.
   if (
     job.phase === "admitted" ||
     job.phase === "configuration" ||
