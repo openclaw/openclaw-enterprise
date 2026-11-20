@@ -299,9 +299,7 @@ export function registerManagedOpenShellStartupCases(): void {
       }
       assert.equal(reads, 0);
       // The original Installation can still interpret the revision's launch admission.
-      const snapshot: unknown = Reflect.get(source.computeDriver, "pluginRuntimeSnapshot");
-      assert.ok(typeof snapshot === "function");
-      assert.doesNotThrow(() => Reflect.apply(snapshot, source.computeDriver, [stored]));
+      assert.doesNotThrow(() => source.computeDriver["pluginRuntimeSnapshot"](stored));
     }
     // These Compute restrictions depend on the actual Sandbox collaborator, not
     // an independent flag that could be omitted to bypass them.
