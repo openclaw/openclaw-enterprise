@@ -143,21 +143,12 @@ const heldFailureLine = /Harness model authentication probe failed\./;
 export const heldAuthenticationFailure = (snapshot: StartupProbeSnapshot) =>
   heldFailure("AUTHENTICATION_FAILED")(snapshot) && heldFailureLine.test(snapshot.output);
 
-// Give each unexpected startup outcome its own assertion location in CI.
-export function assertStartupReady(run: {
+export function startupProbeFailureDetails(run: {
   snapshot: Pick<StartupProbeSnapshot, "events" | "output">;
 }) {
   const failure = run.snapshot.events.find(isRuntimeFailure)?.value;
   const detail = `${failureTail(run.snapshot.output)}\n${JSON.stringify(run.snapshot.events)}`;
-  if (failure === "MODEL_PROBE_TIMEOUT") {
-    assert.fail(`the model probe timed out\n${detail}`);
-  }
-  if (failure === "MODEL_PROBE_FAILED") {
-    assert.fail(`the model probe failed\n${detail}`);
-  }
-  if (failure !== undefined) {
-    assert.fail(`startup failed with ${failure}\n${detail}`);
-  }
+  return { failure, detail };
 }
 
 // Endpoint and wrapper timestamps originate in lenient JSON records. Match JavaScript's
@@ -170,10 +161,17 @@ function earlierTimestamp(left: unknown, right: unknown) {
     : Number(first) < Number(second);
 }
 
-function observationsBefore(events: StartupProbeEvent[], key: string, at: unknown) {
-  return events.filter(
-    (event) => event.event === "observe" && event.key === key && earlierTimestamp(event.at, at),
-  );
+export function observedBefore(
+  events: StartupProbeEvent[],
+  key: string,
+  value: unknown,
+  at: unknown,
+) {
+  return events
+    .filter(
+      (event) => event.event === "observe" && event.key === key && earlierTimestamp(event.at, at),
+    )
+    .some((event) => event.value === value);
 }
 
 export function describeStartupProbeRun(label: string, run: StartupProbeRun) {
@@ -191,35 +189,6 @@ export function describeStartupProbeRun(label: string, run: StartupProbeRun) {
       readyMs: at(observedValue("ready", true)),
     })
   );
-}
-
-export function assertNoEarlyStartupObservations(events: StartupProbeEvent[], answeredAt: unknown) {
-  // Phase times count from wrapper start; endpoint times count from container start.
-  assert.equal(
-    observationsBefore(events, "native", answeredAt).some(({ value }) => value === true),
-    false,
-    "the native process listened before the probe passed",
-  );
-  assert.equal(
-    observationsBefore(events, "ready", answeredAt).some(({ value }) => value === true),
-    false,
-    "readiness passed before the probe passed",
-  );
-  assert.equal(
-    observationsBefore(events, "plugin", answeredAt).some(({ value }) => value === "ready"),
-    false,
-    "plugin status was ready before the probe passed",
-  );
-}
-
-export function assertHeldAuthenticationResult(snapshot: StartupProbeSnapshot, marker: RegExp) {
-  const { events, phases, output } = snapshot;
-  assert.equal(events.some(observedValue("ready", true)), false);
-  assert.equal(events.some(observedValue("plugin", "ready")), false);
-  assert.equal(events.some(observedValue("native", true)), false);
-  assert.equal(phaseAt(phases, "model-probe")?.outcome, "failed");
-  assert.equal(phaseAt(phases, "native-spawn"), undefined, "a failed probe starts nothing");
-  assert.doesNotMatch(output, marker);
 }
 
 export function assertHeldFailureDeadline(ms: number) {

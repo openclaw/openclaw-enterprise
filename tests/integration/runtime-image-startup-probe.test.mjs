@@ -13,13 +13,12 @@ import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } f
 import { recordModelProbeMeasurement } from "../helpers/runtime-model-probe-observation.ts";
 import { runDocker } from "../helpers/runtime-image-docker.ts";
 import {
-  assertHeldAuthenticationResult,
   assertHeldFailureDeadline,
-  assertNoEarlyStartupObservations,
-  assertStartupReady,
   describeStartupProbeRun,
   heldAuthenticationFailure,
+  observedBefore,
   readyOrFailed,
+  startupProbeFailureDetails,
 } from "../helpers/runtime-image-startup-probe-observation.ts";
 import {
   imageTestOptions,
@@ -40,6 +39,20 @@ import {
 // separate log followers, so the endpoint can report a state before the wrapper
 // lines written ahead of it arrive. Each wait below also waits for the last
 // wrapper line its assertions read.
+
+// Give each unexpected startup outcome its own assertion location in CI.
+function assertStartupReady(run) {
+  const { failure, detail } = startupProbeFailureDetails(run);
+  if (failure === "MODEL_PROBE_TIMEOUT") {
+    assert.fail(`the model probe timed out\n${detail}`);
+  }
+  if (failure === "MODEL_PROBE_FAILED") {
+    assert.fail(`the model probe failed\n${detail}`);
+  }
+  if (failure !== undefined) {
+    assert.fail(`startup failed with ${failure}\n${detail}`);
+  }
+}
 
 // The probe gates native startup: the provider answered the model turn before
 // the native process listened or the HTTP readiness endpoint passed.
@@ -63,7 +76,23 @@ async function assertProbeGatesStartup(t, kind, delayMs) {
     assert.ok(
       phaseAt(phases, "model-probe").sinceStartMs <= phaseAt(phases, "native-spawn").sinceStartMs,
     );
-    assertNoEarlyStartupObservations(events, answered.at);
+    // Phase times count from wrapper start, endpoint times from container
+    // start; compare each only within its own clock.
+    assert.equal(
+      observedBefore(events, "native", true, answered.at),
+      false,
+      "the native process listened before the probe passed",
+    );
+    assert.equal(
+      observedBefore(events, "ready", true, answered.at),
+      false,
+      "readiness passed before the probe passed",
+    );
+    assert.equal(
+      observedBefore(events, "plugin", "ready", answered.at),
+      false,
+      "plugin status was ready before the probe passed",
+    );
     assert.ok(run.first(events, observedValue("ready", true)).at >= answered.at);
     assert.equal(events.some(isRuntimeFailure), false);
     if (kind === "codex") {
@@ -98,8 +127,13 @@ async function assertRejectedCredentialFailsFast(t, kind) {
     until: heldAuthenticationFailure,
   });
   await withStartupProbeEvidence(run, async () => {
-    const { events } = run.snapshot;
-    assertHeldAuthenticationResult(run.snapshot, new RegExp(startupProbeApiKey));
+    const { events, phases, output } = run.snapshot;
+    assert.equal(events.some(observedValue("ready", true)), false);
+    assert.equal(events.some(observedValue("plugin", "ready")), false);
+    assert.equal(events.some(observedValue("native", true)), false);
+    assert.equal(phaseAt(phases, "model-probe")?.outcome, "failed");
+    assert.equal(phaseAt(phases, "native-spawn"), undefined, "a failed probe starts nothing");
+    assert.doesNotMatch(output, new RegExp(startupProbeApiKey));
     const failure = run.first(events, observedValue("runtimeFailure", "AUTHENTICATION_FAILED"));
     assertHeldFailureDeadline(failure.ms);
     assert.equal((await run.collect()).running, true, "the wrapper holds the failure evidence");
