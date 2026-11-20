@@ -56,13 +56,7 @@ kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get storageclass "$STORA
 | `ADMIN_EMAIL`                            | Owner’s email.                                                                 |
 | `DATABASE_CIDRS`, `API_CIDRS`            | Approved IPv4 JSON arrays, including API Service VIP and endpoint /32s.        |
 
-Match templates: OpenShell 0.1.9, Codex 0.164.0.
-
-<a id="openshell-gateway-upgrade-recovery"></a>
-
-**Before upgrading an OpenShell Gateway from 0.1.8 to 0.1.9, stop Gateway writes and back up its database.** For the default encrypted database credential store, also secure a backup of its key-encryption key. [Credential storage](https://github.com/NVIDIA/OpenShell/blob/v0.1.8/deploy/helm/openshell/README.md#credential-storage)
-
-Version 0.1.9 applies migration 10. The 0.1.8 Gateway refuses to open the migrated database. To return to 0.1.8, stop the 0.1.9 Gateway, restore the pre-upgrade database and its matching key if used, then start 0.1.8. Restoration discards Gateway database writes made after the backup. [SQLite migration](https://github.com/NVIDIA/OpenShell/blob/v0.1.9/crates/openshell-server/migrations/sqlite/010_add_mutation_admission_expiry_index.sql) · [PostgreSQL migration](https://github.com/NVIDIA/OpenShell/blob/v0.1.9/crates/openshell-server/migrations/postgres/010_add_mutation_admission_expiry_index.sql)
+Match templates: OpenShell 0.1.9 ([existing Gateway recovery](eks-openshell-setup.md#openshell-gateway-upgrade-recovery)), Codex 0.164.0.
 
 Create `oce-system`; allow system Pods’ required DNS, control and Service VIP paths before rollout. Register or verify GatewayClass:
 

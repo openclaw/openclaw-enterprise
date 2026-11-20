@@ -166,7 +166,11 @@ Retain these values for image publication. Builder login does not authorize node
 
 [Build the controller and runtime](production-installation.md#build-and-publish-production-images) from one release or [copy verified images](private-registry-images.md) into a registry the nodes can pull from. Set `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` to the resulting immutable references. The templates target AMD64 nodes, OpenShell 0.1.9 and Codex 0.164.0. Mirror the stock Gateway, supervisor and Sandbox runtime AMD64 manifests into the repository selected below, retaining their digests. Set `OPENSHELL_CHART` and `OCE_CHART` to the matching absolute chart archives or directories, `ENVOY_IMAGE` to the qualified proxy image, and `SANDBOX_REGISTRY`/`SANDBOX_REPOSITORY` to the stock-image mirror. Set `ADMIN_EMAIL`, `DATABASE_CIDRS` and `API_CIDRS` from the owner and network inventory. Create the system namespace before its policies and chart jobs. Use the source commit and image digests in the publication receipt.
 
-For an existing Gateway, follow the [OpenShell Gateway upgrade recovery warning](kubernetes-setup.md#openshell-gateway-upgrade-recovery).
+<a id="openshell-gateway-upgrade-recovery"></a>
+
+**Before upgrading an OpenShell Gateway from 0.1.8 to 0.1.9, stop Gateway writes and back up its database.** For the default encrypted database credential store, also secure a backup of its key-encryption key. [Credential storage](https://github.com/NVIDIA/OpenShell/blob/v0.1.8/deploy/helm/openshell/README.md#credential-storage)
+
+Version 0.1.9 applies migration 10. The 0.1.8 Gateway refuses to open the migrated database. To return to 0.1.8, stop the 0.1.9 Gateway, restore the pre-upgrade database and its matching key if used, then start 0.1.8. Restoration discards Gateway database writes made after the backup. [SQLite migration](https://github.com/NVIDIA/OpenShell/blob/v0.1.9/crates/openshell-server/migrations/sqlite/010_add_mutation_admission_expiry_index.sql) · [PostgreSQL migration](https://github.com/NVIDIA/OpenShell/blob/v0.1.9/crates/openshell-server/migrations/postgres/010_add_mutation_admission_expiry_index.sql)
 
 Register the GatewayClass before installing OCC. Installing the Envoy Gateway controller does not create a class named `eg`. On a fresh cluster, create the class only when absent. Stop if an existing class belongs to another controller.
 
