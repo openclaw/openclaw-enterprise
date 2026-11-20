@@ -42,7 +42,8 @@ async function createPolicyApp(
   // The real Driver validates and freezes policy; this case proves HTTP/IAM/PostgreSQL admission,
   // while the OpenShell runtime lane proves enforcement and loaded-version application.
   const sandboxConfiguration = {
-    gateway: { workspaceMode: "operator" },
+    integrationMode: "legacy",
+    gateway: {},
     kubernetes: {
       serviceAccount: { mode: "gatewayConfigured" },
       sandboxDataMount: {

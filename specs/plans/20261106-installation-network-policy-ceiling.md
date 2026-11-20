@@ -12,9 +12,8 @@ rfc: ../rfcs/20261106-installation-network-policy-ceiling.md
 
 ## Outcome and scope
 
-Administrators edit the saved Installation ceiling in Settings. Startup seeds
-absent state; admission and pending applications use the PostgreSQL record.
-Running access is unchanged.
+Administrators edit the persisted Installation ceiling in Settings. Startup seeds
+absent state. Running access stays unchanged.
 
 ## Global Constraints
 
@@ -314,6 +313,8 @@ RFC-0044 and migrations 0084–0085. SQL, published history, Manual Notes and de
 status remain unchanged.
 
 Main `a99a9c852` owns RFC-0044; the ceiling now uses RFC-20261106-installation-network-policy-ceiling under date-and-title naming.
+
+Main `ebcc46a14` owns 0084; ceiling migrations move to 0085–0086 with unchanged SQL.
 
 ## Manual Notes
 

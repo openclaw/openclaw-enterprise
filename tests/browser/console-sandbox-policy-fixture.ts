@@ -15,7 +15,8 @@ export async function createPolicyConsole(
 ) {
   const sandboxDriver = new OpenShellSandboxDriver(
     {
-      gateway: { workspaceMode: "operator" },
+      integrationMode: "legacy",
+      gateway: {},
       kubernetes: {
         serviceAccount: { mode: "gatewayConfigured" },
         sandboxDataMount: {

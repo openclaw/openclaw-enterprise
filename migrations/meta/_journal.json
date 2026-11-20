@@ -587,14 +587,21 @@
       "idx": 84,
       "version": "7",
       "when": 1787000000084,
-      "tag": "0084_installation_network_policy_ceiling",
+      "tag": "0084_revision_egress_installations",
       "breakpoints": true
     },
     {
       "idx": 85,
       "version": "7",
       "when": 1787000000085,
-      "tag": "0085_dynamic_installation_network_policy_ceiling",
+      "tag": "0085_installation_network_policy_ceiling",
+      "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1787000000086,
+      "tag": "0086_dynamic_installation_network_policy_ceiling",
       "breakpoints": true
     }
   ]

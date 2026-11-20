@@ -2956,9 +2956,39 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true
+        },
+        "retired": {
+          "name": "retired",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "egress_installations_current_sandbox": {
+          "name": "egress_installations_current_sandbox",
+          "columns": [
+            {
+              "expression": "sender_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "sandbox_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "NOT \"occ\".\"egress_installations\".\"retired\"",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "egress_installations_namespace_id_agent_id_revision_id_agent_revisions_namespace_id_agent_id_id_fk": {
           "name": "egress_installations_namespace_id_agent_id_revision_id_agent_revisions_namespace_id_agent_id_id_fk",
@@ -2980,11 +3010,12 @@
         }
       },
       "compositePrimaryKeys": {
-        "egress_installations_sender_id_sandbox_id_pk": {
-          "name": "egress_installations_sender_id_sandbox_id_pk",
+        "egress_installations_sender_id_sandbox_id_revision_id_pk": {
+          "name": "egress_installations_sender_id_sandbox_id_revision_id_pk",
           "columns": [
             "sender_id",
-            "sandbox_id"
+            "sandbox_id",
+            "revision_id"
           ]
         }
       },
@@ -4430,6 +4461,18 @@
           "primaryKey": false,
           "notNull": true
         },
+        "startup_configuration": {
+          "name": "startup_configuration",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "management_mode": {
+          "name": "management_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "updated_at": {
           "name": "updated_at",
           "type": "timestamp with time zone",
@@ -4471,6 +4514,10 @@
         "installation_ceiling_rules": {
           "name": "installation_ceiling_rules",
           "value": "occ.sandbox_network_grants_are_valid(\"occ\".\"installation_network_policy_ceiling\".\"rules\")"
+        },
+        "installation_ceiling_mode": {
+          "name": "installation_ceiling_mode",
+          "value": "\"occ\".\"installation_network_policy_ceiling\".\"management_mode\" IN ('console', 'startup')"
         }
       },
       "isRLSEnabled": false
@@ -7539,6 +7586,6 @@
     "tables": {},
     "columns": {}
   },
-  "id": "e54f0d7c-8d0c-4949-bd38-46ec0d60756c",
-  "prevId": "34b1b74d-57d1-4bf1-bdcc-dbbf2488bc5a"
+  "id": "34b1b74d-57d1-4bf1-bdcc-dbbf2488bc5a",
+  "prevId": "57be4ec3-81ed-4c74-8fb3-e41316a73ce7"
 }

@@ -1694,6 +1694,7 @@ test(
       [80, "preRestartContinuation"],
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
+      [83, "preRevisionEgressInstallations"],
     ]) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -2000,8 +2001,9 @@ test(
       [80, "preRestartContinuation"],
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
-      [83, "preInstallationNetworkPolicyCeiling"],
-      [84, "preDynamicInstallationNetworkPolicyCeiling"],
+      [83, "preRevisionEgressInstallations"],
+      [84, "preInstallationNetworkPolicyCeiling"],
+      [85, "preDynamicInstallationNetworkPolicyCeiling"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2306,8 +2308,9 @@ test(
       [80, "preRestartContinuation"],
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
-      [83, "preInstallationNetworkPolicyCeiling"],
-      [84, "preDynamicInstallationNetworkPolicyCeiling"],
+      [83, "preRevisionEgressInstallations"],
+      [84, "preInstallationNetworkPolicyCeiling"],
+      [85, "preDynamicInstallationNetworkPolicyCeiling"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2510,8 +2513,9 @@ test(
       [80, "preRestartContinuation"],
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
-      [83, "preInstallationNetworkPolicyCeiling"],
-      [84, "preDynamicInstallationNetworkPolicyCeiling"],
+      [83, "preRevisionEgressInstallations"],
+      [84, "preInstallationNetworkPolicyCeiling"],
+      [85, "preDynamicInstallationNetworkPolicyCeiling"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -2598,8 +2602,9 @@ test(
       [80, "preRestartContinuation"],
       [81, "preAuthenticationStates"],
       [82, "preNativeRestartRecovery"],
-      [83, "preInstallationNetworkPolicyCeiling"],
-      [84, "preDynamicInstallationNetworkPolicyCeiling"],
+      [83, "preRevisionEgressInstallations"],
+      [84, "preInstallationNetworkPolicyCeiling"],
+      [85, "preDynamicInstallationNetworkPolicyCeiling"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2625,7 +2630,8 @@ test(
         // 0078 replaces the custody guard in place; abort its CREATE FUNCTION statement.
         // Ceiling creation grants access last; dynamic ownership removes columns in one ALTER.
         const rollbackTag = [
-          [84, "ALTER TABLE"],
+          [85, "ALTER TABLE"],
+          [84, "GRANT"],
           [83, "GRANT"],
           [82, "CREATE TRIGGER"],
           [81, "GRANT"],
