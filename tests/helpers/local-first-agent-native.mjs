@@ -489,13 +489,10 @@ async function nativeWorkerProof({
     // A retained placement may recover when the next turn is sent. Check its
     // current directory after that turn, rather than trusting the old owner.
     const sessionFileContent = `FIRST_AGENT_SESSION_${randomUUID()}\n`;
-    const sessionFile =
-      existingSession === undefined
-        ? {
-            path: `.first-agent-native-${randomUUID()}.txt`,
-            sha256: createHash("sha256").update(sessionFileContent).digest("hex"),
-          }
-        : retainedSessionFile;
+    const sessionFile = retainedSessionFile ?? {
+      path: `.first-agent-native-${randomUUID()}.txt`,
+      sha256: createHash("sha256").update(sessionFileContent).digest("hex"),
+    };
     assert.match(sessionFile?.path ?? "", /^\.first-agent-native-[a-z0-9-]+\.txt$/);
     assert.match(sessionFile.sha256, /^[a-f0-9]{64}$/);
     const marker = `FIRST_AGENT_NATIVE_${randomUUID()}`;
@@ -508,15 +505,15 @@ async function nativeWorkerProof({
         sessionFileContent,
         workspaceFile,
         toolPrefix,
-        createSessionFile: existingSession === undefined,
+        createSessionFile: retainedSessionFile === undefined,
       });
       command = `node -e '${program.replaceAll("'", "'\\''")}'`;
       message = `Use exec to run exactly this command: ${command}. After exec succeeds, reply with exactly ${marker}. Do not print environment values or credentials.`;
     }
     stage = "send";
     selectedTurn = { key, runId: randomUUID() };
-    const sent = await call("sessions.send", {
-      key,
+    const sent = await call(plainChat ? "chat.send" : "sessions.send", {
+      ...(plainChat ? { sessionKey: key } : { key }),
       agentId: "main",
       idempotencyKey: selectedTurn.runId,
       message,
@@ -535,7 +532,9 @@ async function nativeWorkerProof({
     }
     signal.throwIfAborted();
     stage = "model-outcome";
-    assert.equal(outcome.status, "ok");
+    if (!plainChat) {
+      assert.equal(outcome.status, "ok");
+    }
     // The model turn is already terminal. Allow history delivery to settle,
     // but do not spend the remaining model-execution budget on a missing proof.
     historySignal = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
@@ -555,7 +554,9 @@ async function nativeWorkerProof({
       });
       historyPredicates = evidence.observation;
       const { tool, final, messages } = evidence;
-      if (final && (plainChat || tool)) {
+      // A failed model can still leave the submitted user message in history.
+      // Return its ID for the audit check. The caller checks the reply separately.
+      if (plainChat ? final || outcome.status !== "ok" : final && tool) {
         stage = "current-placement";
         const current = await call("sessions.describe", { key, agentId: "main" });
         assert.equal(current.session?.sessionId, session.sessionId);
@@ -574,11 +575,16 @@ async function nativeWorkerProof({
           session,
         };
         if (plainChat) {
-          // The plain chat follows the file check in the same retained session.
-          const inputs = history.messages.filter((entry) => entry.role === "user");
-          const messageId = inputs.at(-1)?.__openclaw?.id;
+          const input = history.messages.find(
+            (entry) => entry.role === "user" && entry.idempotencyKey === `${sent.runId}:user`,
+          );
+          const messageId = input?.__openclaw?.id;
           assert.ok(typeof messageId === "string" && messageId.length > 0);
-          emit({ ...verified, source: { messageId, text: message } });
+          emit({
+            ...verified,
+            replied: outcome.status === "ok" && Boolean(final),
+            source: { messageId, text: message },
+          });
           return;
         }
         stage = "exec-proof";

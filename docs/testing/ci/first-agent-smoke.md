@@ -98,10 +98,11 @@ A skipped job does not verify the installed Agent workflow.
 Use the `qa-openshell-k3d` pull request label to select the Kubernetes
 [OpenShell test](../openshell.md#guided-native-openclaw-redeployment).
 It starts a disposable installation with a Sandbox Driver, enables the same
-audit setting, and tests two revisions of a dedicated OpenClaw Agent. Each
-worker uses a tool and answers a chat message in the same session. The test
-checks the worker identity and compares the message ID in the audit event
-with the ID in chat history. It reads the original text through the audit API.
+audit setting, and tests two revisions of a dedicated OpenClaw Agent. The
+test sends a message with `chat.send` and compares the ID in the audit event
+with the ID in chat history. It reads the original text through the audit API
+even if the model reports an error. Separate checks require the expected
+reply and a tool result from the assigned worker.
 After redeployment, the API must refuse to open the previous revision's message.
 
 For embedded OpenClaw and dedicated Codex, the smoke test sends two messages

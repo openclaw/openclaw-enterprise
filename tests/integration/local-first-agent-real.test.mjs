@@ -1002,7 +1002,7 @@ test(
           throw error;
         }
       }
-      async function checkAudit(revisionId, proof) {
+      async function checkAudit(revisionId, proof, requireSuccess = true) {
         if (readAudit === undefined) {
           return;
         }
@@ -1012,6 +1012,7 @@ test(
           runtimeSource: "openclaw",
           sessionId: proof.session.sessionId,
           turnId: proof.runId,
+          requireSuccess,
         });
         await expectPersistedRuntimeAudit(chartStack, revisionId, await readAudit(), chartOptions);
         return turn;
@@ -1021,17 +1022,20 @@ test(
         if (readAudit === undefined) {
           return;
         }
-        // Read a plain chat in the same session as the tool request on each revision.
+        // A failed model must still leave a link to the saved input. Check the
+        // original reply and tool requirements in their own subtests.
+        let proof;
+        let turn;
         await nativeContext.test(
           `dedicated OpenClaw links the saved message to the turn on the ${stage} revision`,
           async () => {
-            const proof = await proveNativeTurn(revisionId, {
+            proof = await proveNativeTurn(revisionId, {
               plainChat: true,
               expectedNodeId,
               session: previous?.session,
               sessionFile: previous?.sessionFile,
             });
-            const turn = await checkAudit(revisionId, proof);
+            turn = await checkAudit(revisionId, proof, false);
             await assertAgentAuditMessage(reader, turn, proof.source, {
               checkGrant: stage === "first",
             });
@@ -1042,6 +1046,20 @@ test(
             linkedEventId = turn.id;
           },
         );
+        if (proof) {
+          await nativeContext.test(
+            `dedicated OpenClaw answers chat on the ${stage} revision`,
+            () => {
+              assert.equal(
+                proof.replied,
+                true,
+                "the dedicated worker did not return the requested reply",
+              );
+              assert.equal(turn?.details.outcome, "succeeded");
+            },
+          );
+        }
+        return proof?.session;
       }
       const readProviderRevision = async (revisionId, stage, requestedAt) => {
         const pods = await readKubernetesJson(
@@ -1198,6 +1216,11 @@ test(
       // Native setup status retains its delivery receipt for 20 minutes. The
       // durable Agent-owned Secret and device remain authoritative afterward.
       const completionRetainedUntil = completion.completion.ts + 20 * 60_000;
+      const firstSession = await checkNormalChat(
+        "first",
+        initialRevisionId,
+        initialProvider.expectedNodeId,
+      );
       let firstNativeProof;
       async function checkInitialFilesAndExec() {
         // Reading through the real Console workspace route proves private setup
@@ -1213,6 +1236,7 @@ test(
         firstNativeProof = await measureFirstAgentStage(nativeContext, "native-model", () =>
           proveNativeTurn(initialRevisionId, {
             expectedNodeId: initialProvider.expectedNodeId,
+            session: firstSession,
           }),
         );
         assert.equal(
@@ -1232,12 +1256,6 @@ test(
           checkInitialFilesAndExec,
         );
       }
-      await checkNormalChat(
-        "first",
-        initialRevisionId,
-        initialProvider.expectedNodeId,
-        firstNativeProof,
-      );
 
       // Keep the genuine Gateway expiry. The successor must reuse the saved device
       // credential even though the original one-shot setup can no longer enroll it.
@@ -1302,6 +1320,12 @@ test(
         initialProvider.sandbox.metadata.uid,
       );
       assert.deepEqual(replacementProvider.workspaceStorage, initialProvider.workspaceStorage);
+      await checkNormalChat(
+        "replacement",
+        replacement.id,
+        replacementProvider.expectedNodeId,
+        firstNativeProof,
+      );
       if (!firstNativeProof) {
         // The failed initial subtest produced no verified session or file to resume.
         return;
@@ -1339,12 +1363,6 @@ test(
         "The resumed exec must read the relative file written before redeployment",
       );
       await checkAudit(replacement.id, replacementNativeProof);
-      await checkNormalChat(
-        "replacement",
-        replacement.id,
-        replacementProvider.expectedNodeId,
-        replacementNativeProof,
-      );
     };
     // Distinct Agents and sources share only the already-ready Namespace. Keep
     // mutation/denial checks below the join and retain each real identity proof.

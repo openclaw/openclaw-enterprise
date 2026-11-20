@@ -300,6 +300,7 @@ export async function assertAgentTurnAudit(
     model,
     responseIdHash,
     previousIds,
+    requireSuccess = true,
   }: {
     label: string;
     revisionId: string;
@@ -309,6 +310,7 @@ export async function assertAgentTurnAudit(
     model?: string;
     responseIdHash?: string;
     previousIds?: ReadonlySet<string>;
+    requireSuccess?: boolean;
   },
 ) {
   const event = await waitFor(
@@ -341,7 +343,7 @@ export async function assertAgentTurnAudit(
         );
         if (
           !started ||
-          turn.outcome !== "succeeded" ||
+          (requireSuccess && turn.outcome !== "succeeded") ||
           (turnId !== undefined && turn.turnId !== turnId)
         ) {
           return false;
@@ -388,7 +390,9 @@ export async function assertAgentTurnAudit(
     minute,
   );
   assert.ok(event);
-  log(`${label}: stored matching turn start and successful completion on ${revisionId}`);
+  log(
+    `${label}: stored matching turn start and result (${event.details.outcome}) on ${revisionId}`,
+  );
   return event;
 }
 
