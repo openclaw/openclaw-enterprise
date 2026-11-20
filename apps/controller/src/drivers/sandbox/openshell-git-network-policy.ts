@@ -15,6 +15,11 @@ export type OpenShellGitNetworkInput = OpenShellGitNetworkTarget & {
   readonly gitOrigin: string;
   readonly apiOrigin: string;
   readonly binaries: readonly string[];
+  readonly scopedRest?: readonly Readonly<{
+    repository: string;
+    readIssues: boolean;
+    createPullRequests?: true;
+  }>[];
   readonly repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[];
 };
 
@@ -160,6 +165,29 @@ function repositoryNetworkRules(
   });
 }
 
+function scopedApiEndpoints(
+  policy: readonly RepositoryNetworkGrant[],
+  permissions: OpenShellGitNetworkInput["scopedRest"],
+): readonly OpenShellProviderProfileEndpoint[] {
+  const rules = [];
+  for (const { repository, access } of policy) {
+    const rest = permissions?.find((grant) => grant.repository === repository);
+    if (access === "write" && rest?.createPullRequests === true) {
+      rules.push({ allow: { method: "POST", path: `/repos/${repository}/pulls` } });
+    }
+    if (rest?.readIssues === true) {
+      const path = `/repos/${repository}/issues`;
+      rules.push({ allow: { method: "GET", path } });
+      // OpenShell matches globs. An unbounded * also admits /issues/comments and /issues/events.
+      // Enumerate decimal widths through 19 digits (positive signed 64-bit issue numbers).
+      for (let width = 1; width <= 19; width++) {
+        rules.push({ allow: { method: "GET", path: `${path}/[1-9]${"[0-9]".repeat(width - 1)}` } });
+      }
+    }
+  }
+  return rules.length ? [{ host: "api.github.com", port: 443, protocol: "rest", rules }] : [];
+}
+
 /** OpenShell unions matching allows. A repository ACL replaces every legacy Git and API endpoint. */
 export function compileOpenShellGitNetworkPolicy(input: OpenShellGitNetworkInput) {
   const { installationId, repository, repositoryNetworkPolicy } = input;
@@ -209,6 +237,7 @@ export function compileOpenShellGitNetworkPolicy(input: OpenShellGitNetworkInput
             protocol: "rest",
             rules: repositoryNetworkRules(grants),
           },
+          ...scopedApiEndpoints(grants, input.scopedRest),
         ];
   return deepFreeze({
     gitOrigin: git.origin,

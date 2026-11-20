@@ -94,6 +94,45 @@ A Git-only session does not admit REST or GraphQL. Draft transport admits only i
 operation. Neither profile supports arbitrary GitHub CLI commands, merges, forks, SSH or LFS.
 A lost response does not authorize repeating a push or draft creation.
 
+## Scoped REST
+
+For protected `github-repository` delivery with a Sandbox repository network policy,
+set `scopedRest: "v1"` on each participating repository's Namespace row in the
+GitHub registry. Rebind and deploy after changing the setting. With the setting
+omitted, the network policy permits Git only. With the network policy omitted,
+the selected credential uses its ordinary API scope. The existing deployment and
+runtime qualification requirements apply.
+
+A repository read or write grant and `permissions.issues` of `read` or `write`
+allow listing issues and reading one by number. Substitute the approved
+lowercase owner, repository and issue number.
+
+```sh
+gh api repos/owner/repo/issues
+gh api repos/owner/repo/issues/42
+```
+
+A repository write grant and `permissions.pull_requests: "write"` allow pull
+request creation. Use the Sandbox's injected `GITHUB_TOKEN` placeholder. This
+command submits one POST, skips local curl settings and stops at redirects.
+
+```sh
+printf 'Authorization: Bearer %s\n' "$GITHUB_TOKEN" |
+  curl -q --fail-with-body --header @- --write-out '\nHTTP %{http_code}\n' \
+    --json '{"title":"Fix","head":"topic/fix","base":"main"}' \
+    https://api.github.com/repos/owner/repo/pulls
+```
+
+Use two unqualified branch names in the approved repository. The hook rejects
+fork selectors, issue conversion, and `%3A` or `%25` in either branch. Optional
+fields are `body`, `draft` and `maintainer_can_modify`. Set `"draft":true` for a
+draft. Expect HTTP 201 and verify the returned PR in GitHub. If the outcome is
+uncertain, inspect the repository before submitting again.
+
+OpenShell also admits HEAD for the issue GET routes. It denies issue writes,
+other API routes and GraphQL. The policy controls request destinations.
+GitHub can return references to other repositories.
+
 ## Supported commands
 
 Use ordinary `git clone`, `git fetch` and `git push` to the approved ref. With a draft grant, use

@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-20"
-last_updated_session: "authoring-run/21cbdaff-fdc7-4acb-9a2d-e37f927e5774"
+last_updated_session: "authoring-run/46ab5ad7-f9a5-460d-8fa3-038253309ddc"
 ---
 
 # Agent sandbox policy flow
@@ -88,26 +88,25 @@ identity, version and empty additions before runtime credential provisioning.
 That immutable snapshot remains ineligible for live apply. The policy view reports
 `protectedExecution`.
 
-Protected Codex repository preparation compiles the revision's qualified artifact
-snapshot through `openshell-codex-artifacts.ts`; it never merges ambient defaults.
-Both paired compilers validate the complete map. The Sandbox separately compares
-the final workspace enrollment rule with its validated Agent-owned setup binding,
-then returns the full immutable policy in `SandboxResourceRef.proxyWiring`.
-The proxy checks the complete artifact map and bounded auxiliary rule before
-comparing the complete loaded policy.
+Protected Codex preparation compiles the artifact snapshot through
+`openshell-codex-artifacts.ts`, excluding ambient defaults. Both compilers
+validate the complete map. The Sandbox checks workspace enrollment against
+its Agent-owned setup binding before returning the immutable policy in
+`SandboxResourceRef.proxyWiring`. The proxy checks the artifact map and bounded
+auxiliary rule before comparing the complete loaded policy.
 
 OpenShell's [Sandbox compiler](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts)
-prepares Git endpoints. The egress proxy binds them to the credential Provider.
+prepares Git endpoints and intersects repository grants with [opted-in REST permissions](../reference/repository-credentials/access-levels.md#scoped-rest)
+for issue reads and pull creation. The proxy verifies loaded Provider rules
+and checks both pull branches before requesting authorization.
 
-For an Agent with repository bindings or a Git-bound active revision, Driver
-admission gets `repositoryCredentials`. The OpenShell Git route rejects grants
-or defaults reaching `github.com`, its subdomains, or an IP address. The `409`
-response names the entry. Binding creation alongside that grant, deployment,
-and provisioning also refuse it. When additions exist, deploy and Agent updates that
-retain repository bindings require SandboxPolicy `read` before naming the grant
-(findings 2151, 2881).
-`apps/controller/src/http/sandbox-policy.ts` records the
-nonsecret approved additions with their version in the same transaction.
+Driver admission receives `repositoryCredentials` for repository bindings or
+a Git-bound active revision. OpenShell rejects grants or defaults reaching
+`github.com`, its subdomains or IP addresses. Binding creation, deployment and
+provisioning also refuse these conflicts. Deploy and updates retaining bindings
+require SandboxPolicy `read` before naming saved grants in the `409` response.
+`apps/controller/src/http/sandbox-policy.ts` records approved nonsecret additions
+and their version in the transaction.
 The facet must be `networking`. Other facets fail before policy access.
 `TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing` requires
 Installation and Agent administration. Guardrails will replace it.
@@ -275,6 +274,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 09:24: Trace scoped REST through Provider preparation. (authoring-run/46ab5ad7-f9a5-460d-8fa3-038253309ddc - d5fea59da1342021b4c07372c506d04c21e88362)
 
 - 2026-11-20 00:12: Reconcile the Git policy flow with main. (authoring-run/21cbdaff-fdc7-4acb-9a2d-e37f927e5774 - e88dc5883143e5fe39cffb0199ae5c0bac147cb7)
 

@@ -2275,7 +2275,13 @@ export class OpenShellGitRuntime {
             ? {
                 installationId: material.installationId,
                 ...(material.scope === "github-repository"
-                  ? { scope: material.scope, repositories: material.repositories }
+                  ? {
+                      scope: material.scope,
+                      repositories: material.repositories,
+                      ...(entry.authorization.repositoryNetworkPolicy && {
+                        sameRepositoryPullRequests: true as const,
+                      }),
+                    }
                   : { scope: material.scope }),
               }
             : {

@@ -38,6 +38,8 @@ export interface GitHubRepositoryRegistration {
     namespaceId: string;
     profiles: readonly (GitHubProfile | "github-repository")[];
     permissions?: Readonly<Record<string, string>>;
+    /** Enable the versioned REST subset when this binding also has a repository network ACL. */
+    scopedRest?: "v1";
     allowStandingApproval?: true;
     pushRefAllowlist?: readonly string[];
     transport?: "git-only" | "git-and-draft-pr";
@@ -199,6 +201,7 @@ export function validateGitHubRepositoryRegistry(
         "namespaceId",
         "profiles",
         "permissions",
+        "scopedRest",
         "allowStandingApproval",
         "pushRefAllowlist",
         "transport",
@@ -217,6 +220,9 @@ export function validateGitHubRepositoryRegistry(
             )
           : Object.hasOwn(policy, "permissions")
       ) {
+        return invalid();
+      }
+      if (Object.hasOwn(policy, "scopedRest") && (!selected || policy.scopedRest !== "v1")) {
         return invalid();
       }
       const permissions = selected
@@ -276,6 +282,7 @@ export function validateGitHubRepositoryRegistry(
         namespaceId: text(policy.namespaceId),
         profiles: Object.freeze(profiles),
         ...(permissions && { permissions }),
+        ...(policy.scopedRest === "v1" && { scopedRest: "v1" as const }),
         ...(policy.allowStandingApproval === true ? { allowStandingApproval: true as const } : {}),
         ...(pushRefAllowlist === undefined ? {} : { pushRefAllowlist }),
         ...(transport === undefined ? {} : { transport }),
@@ -341,6 +348,17 @@ const installationGrantPolicy = Object.freeze({
   apiPermissions: "inherited-from-github-app-installation",
   deliveryPolicy: "github-installation-git-basic-api-bearer-online-authorization-v1",
 } as const);
+
+function scopedRestPermissions(policy: GitHubRepositoryRegistration["namespaces"][number]) {
+  if (policy.scopedRest !== "v1") {
+    return undefined;
+  }
+  return {
+    version: policy.scopedRest,
+    ...(policy.permissions?.pull_requests === "write" && { createPullRequests: true as const }),
+    readIssues: policy.permissions?.issues === "read" || policy.permissions?.issues === "write",
+  };
+}
 
 function registryGrantId(
   registry: GitHubRepositoryRegistry,
@@ -414,6 +432,7 @@ export function resolveGitHubRepositoryBinding(
     ...(policy.pullRequestBase === undefined ? {} : { pullRequestBase: policy.pullRequestBase }),
     ...(policy.draftPullLimit === undefined ? {} : { draftPullLimit: policy.draftPullLimit }),
     permissions: repositoryTransportPermissions(policy, selectedProfile),
+    scopedRest: scopedRestPermissions(policy),
     capabilityPolicy:
       policy.transport === "git-only"
         ? gitOnlyCapabilityPolicy
@@ -509,6 +528,7 @@ function standingApprovalScope(
     allowedProfiles: policy.profiles,
     pushRefAllowlist: policy.pushRefAllowlist ?? null,
     transport: policy.transport ?? null,
+    ...(policy.scopedRest && { scopedRest: scopedRestPermissions(policy)! }),
     pullRequestBase: policy.pullRequestBase ?? null,
     draftPullLimit:
       policy.transport === "git-and-draft-pr" ? (policy.draftPullLimit ?? "one-per-grant") : null,
@@ -549,6 +569,7 @@ export function createGitHubRepositoryDeliveryResolver(
           installationId: registry.githubInstallationId,
           repositories: scope.repositories,
           permissions: scope.permissions,
+          ...(scope.scopedRest.length > 0 && { scopedRest: scope.scopedRest }),
         }),
       });
     }
@@ -612,7 +633,7 @@ export function resolveSelectedRepositoryScope(
   registry: GitHubRepositoryRegistry,
   namespaceId: string,
   bindings: readonly AdmittedRepositoryBinding[],
-): Pick<GitHubRepositoryGrant, "repositories" | "permissions"> {
+) {
   if (
     !bindings.length ||
     bindings.length > 16 ||
@@ -620,6 +641,9 @@ export function resolveSelectedRepositoryScope(
   ) {
     throw new Error("invalid-selected-repository-set");
   }
+  const scopedRest: ({ repository: string } & NonNullable<
+    ReturnType<typeof scopedRestPermissions>
+  >)[] = [];
   let permissions: Readonly<Record<string, string>> | undefined;
   const repositories = bindings
     .map((binding) => {
@@ -637,6 +661,10 @@ export function resolveSelectedRepositoryScope(
       ) {
         throw new Error("selected-repository-permissions-differ");
       }
+      const rest = scopedRestPermissions(policy);
+      if (rest) {
+        scopedRest.push(Object.freeze({ repository: repo.repository, ...rest }));
+      }
       permissions = policy.permissions;
       return Object.freeze({ repositoryId: repo.repositoryId, repository: repo.repository });
     })
@@ -644,5 +672,6 @@ export function resolveSelectedRepositoryScope(
   return Object.freeze({
     repositories: Object.freeze(repositories),
     permissions: permissions!,
+    scopedRest: Object.freeze(scopedRest),
   });
 }

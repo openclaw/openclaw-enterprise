@@ -9,6 +9,11 @@ export interface RepositoryGitDeliveryBinding {
         readonly repository?: never;
         readonly installationId: string;
         readonly repositories: readonly Readonly<{ repositoryId: string; repository: string }>[];
+        readonly scopedRest?: readonly Readonly<{
+          repository: string;
+          readIssues: boolean;
+          createPullRequests?: true;
+        }>[];
         readonly permissions: Readonly<Record<string, string>>;
       }
     | { readonly repository: string; readonly installationId?: never }

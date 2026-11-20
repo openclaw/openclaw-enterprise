@@ -747,6 +747,7 @@ test("repository API credential issuance is refused while ordinary collaboration
     { repositoryId: "43", repository: "openclaw/openclaw-enterprise" },
   ];
   let scope = "github-repository";
+  let sameRepositoryPullRequests;
   const { client, keys } = await openShellOnlineGitWire(t, {
     budgetMs: 3000,
     lookupBinding: async () =>
@@ -755,6 +756,7 @@ test("repository API credential issuance is refused while ordinary collaboration
         : {
             ...binding,
             scope,
+            sameRepositoryPullRequests,
             installationId: "71",
             apiOrigin: "https://api.github.com",
             repositories,
@@ -794,6 +796,37 @@ test("repository API credential issuance is refused while ordinary collaboration
     input.target.host = "api.github.com";
     return send(input);
   };
+  await t.test(
+    "scoped pull creation requires unqualified branches before consulting the owner",
+    async () => {
+      const path = "/repos/" + binding.repository + "/pulls";
+      const pull = { title: "Fix", head: "topic/fix", base: "main" };
+      const fork = { ...pull, head: "other:fix" };
+      const create = (body) => evaluate(path, "POST", body);
+      assert.equal((await create(fork)).decision, 1, "ordinary selected scope");
+      sameRepositoryPullRequests = true;
+      for (const draft of [undefined, false, true]) {
+        assert.equal((await create({ ...pull, draft })).decision, 1);
+      }
+      const before = approvals;
+      for (const body of [
+        undefined,
+        {},
+        fork,
+        { ...pull, base: undefined },
+        { ...pull, base: "other:main" },
+        { ...pull, head: "other%3Afix" },
+        { ...pull, base: "other%3amain" },
+        { ...pull, head: "other%253Afix" },
+        { ...pull, head_repo: "other" },
+        { ...pull, issue: 3 },
+      ]) {
+        assert.equal((await create(body)).reason_code, "request_not_allowed");
+      }
+      assert.equal(approvals, before);
+      sameRepositoryPullRequests = undefined;
+    },
+  );
   await t.test("gh authentication discovery uses the current API grant", async () => {
     // gh auth status reads the API root after its viewer query. Refusing this discovery
     // incorrectly reports a valid installation token as invalid and prevents later commands.

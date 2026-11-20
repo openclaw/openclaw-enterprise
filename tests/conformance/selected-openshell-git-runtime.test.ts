@@ -107,7 +107,9 @@ const managedModelEndpoint = {
   access: "NETWORK_ACCESS_PRESET_READ_WRITE",
 };
 
-async function selectedV5(t: TestContext, acl = false, modelSourceId?: string) {
+type Acl = boolean | { permissions: Record<string, string>; firstOnly?: boolean };
+
+async function selectedV5(t: TestContext, acl: Acl = false, modelSourceId?: string) {
   const modelProvider = modelSourceId ? openShellProviderName(modelSourceId) : "openai";
   const repository = registry.repositories[0]!;
   const repositories = [
@@ -119,6 +121,15 @@ async function selectedV5(t: TestContext, acl = false, modelSourceId?: string) {
       repository: "example/delivery",
     },
   ];
+  if (typeof acl === "object") {
+    // The selected credential also covers a third repository absent from the Sandbox grants.
+    repositories.push({
+      ...repository,
+      repositoryRef: "outside",
+      repositoryId: "34569",
+      repository: "example/outside",
+    });
+  }
   const selectedRegistry =
     acl &&
     validateGitHubRepositoryRegistry(
@@ -130,7 +141,15 @@ async function selectedV5(t: TestContext, acl = false, modelSourceId?: string) {
             {
               namespaceId: "namespace-a",
               profiles: ["github-repository"],
-              permissions: { metadata: "read", contents: "write" },
+              permissions: {
+                metadata: "read",
+                contents: "write",
+                ...(typeof acl === "object"
+                  ? acl.permissions
+                  : { issues: "read", pull_requests: "write" }),
+              },
+              ...(typeof acl === "object" &&
+                (!acl.firstOnly || repo === repository) && { scopedRest: "v1" }),
             },
           ],
         })),
@@ -312,7 +331,7 @@ async function selectedV5(t: TestContext, acl = false, modelSourceId?: string) {
       repositoryGit: repositoryCredentials,
     },
   } as unknown as AgentRevision;
-  assert.equal(revision.repositoryCredentials!.bindings.length, acl ? 2 : 1);
+  assert.equal(revision.repositoryCredentials!.bindings.length, acl ? repositories.length : 1);
   assert.equal(
     revision.repositoryCredentials!.bindings[0]!.profile,
     acl ? "github-repository" : "git-write",
@@ -367,7 +386,7 @@ async function selectedV5(t: TestContext, acl = false, modelSourceId?: string) {
 const updateReceipt = (version: string) => `git-update-${version}`;
 const updateMutation = (version: string) => `git-mutation-${version}`;
 
-async function heldGit(t: TestContext, acl = false, modelSourceId?: string) {
+async function heldGit(t: TestContext, acl: Acl = false, modelSourceId?: string) {
   const selected = await selectedV5(t, acl, modelSourceId);
   const { f, store, revision, executionId, modelProvider, modelProviderId, prepare } = selected;
   const activity = { updates: 0, releases: 0, probes: 0 };
@@ -434,10 +453,11 @@ async function heldGit(t: TestContext, acl = false, modelSourceId?: string) {
     };
   };
   const effectiveModelRule = acl ? stampOwners(modelRule, modelProviderId) : modelRule;
+  const loadedGitRule = acl ? stampOwners(gitRule, originalBinding.providerId) : undefined;
   const effectivePolicy = {
     network_policies: {
       [gitRule.name]: acl
-        ? stampOwners(gitRule, originalBinding.providerId)
+        ? loadedGitRule
         : {
             name: gitRuleName,
             binaries: [
@@ -730,6 +750,7 @@ async function heldGit(t: TestContext, acl = false, modelSourceId?: string) {
     client,
     runtimeFilesProvider,
     gitRule,
+    loadedGitRule,
     receiptReads,
     gitEndpoint,
     environment,
@@ -1378,6 +1399,65 @@ test("ACL Git reads the loaded policy again before releasing its selected-reposi
     { repository: "example/application", repositoryId: "34567" },
     { repository: "example/delivery", repositoryId: "34568" },
   ]);
+});
+
+test("scoped REST intersects the selected permissions, registry opt-in and frozen Git ACL", async (t) => {
+  const apiRules = async (acl: Acl) => {
+    const held = await heldGit(t, acl);
+    await held.reconcile();
+    assert.equal(held.activity.updates, 1, "provider passed complete policy readback");
+    const endpoint = held.gitRule.endpoints.find(({ host }) => host === "api.github.com");
+    return endpoint && "rules" in endpoint ? endpoint.rules.map(({ allow }) => allow) : [];
+  };
+  assert.deepEqual(await apiRules({ permissions: {} }), []);
+  const pulls = [{ method: "POST", path: "/repos/example/delivery/pulls" }];
+  assert.deepEqual(await apiRules({ permissions: { pull_requests: "write" } }), pulls);
+  assert.deepEqual(await apiRules({ permissions: { pull_requests: "read" } }), []);
+  assert.deepEqual(
+    await apiRules({ permissions: { pull_requests: "write" }, firstOnly: true }),
+    [],
+  );
+  const issues = await apiRules({ permissions: { issues: "read" } });
+  for (const repo of ["application", "delivery"]) {
+    const path = `/repos/example/${repo}/issues`;
+    assert.ok(issues.some((r) => r.path === path));
+    assert.ok(issues.some((r) => r.path === path + "/[1-9][0-9]"));
+  }
+  assert.ok(
+    issues.every(
+      (r) =>
+        r.method === "GET" &&
+        /^\/repos\/example\/(application|delivery)\/issues(?:\/\[1-9\](?:\[0-9\])*)?$/.test(
+          r.path ?? "",
+        ),
+    ),
+  );
+  // Simulate an extra allow on the credentialed API endpoint, even though
+  // its Provider ID, policy version and loader status still match.
+  const held = await heldGit(t, { permissions: { issues: "read", pull_requests: "write" } });
+  const endpoint = held.loadedGitRule?.endpoints.find(({ host }) => host === "api.github.com");
+  assert.ok(endpoint && "rules" in endpoint);
+  const { rules } = endpoint;
+  Object.assign(endpoint, { rules: [...rules, { allow: { method: "GET", path: "/**" } }] });
+  await held.reconcile();
+  assert.equal(held.f.calls.material, 0);
+  assert.equal(held.activity.updates, 0);
+  Object.assign(endpoint, { rules });
+  await held.reconcile();
+  await held.f.runtime.releasePreview(
+    held.revision.id,
+    held.startupId,
+    releaseAttempt(async () => true),
+    t.signal,
+  );
+  const binding = await held.lookup();
+  assert.ok(binding?.scope === "github-repository" && binding.sameRepositoryPullRequests);
+
+  const optedIn = await apiRules({ permissions: { issues: "write" }, firstOnly: true });
+  assert.deepEqual(
+    optedIn,
+    issues.filter((r) => r.path?.startsWith("/repos/example/application/")),
+  );
 });
 
 test("ACL Git refuses credentials and launcher release when the supervisor lease expires during recipient reads", async (t) => {

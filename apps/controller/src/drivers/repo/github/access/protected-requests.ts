@@ -74,6 +74,7 @@ export type GitHubRequestBinding =
     })
   | (Identity & {
       readonly scope: "github-repository";
+      readonly sameRepositoryPullRequests?: true;
       readonly installationId: string;
       readonly apiOrigin: string;
       readonly repositories: readonly Readonly<{ repositoryId: string; repository: string }>[];

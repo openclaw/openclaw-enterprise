@@ -236,7 +236,10 @@ export class OpenShellPreparedGitProvider {
           this.scope.binaries,
           ...(repositoryNetworkPolicy === undefined
             ? []
-            : [["repository-network-policy", repositoryNetworkPolicy]]),
+            : [
+                ["repository-network-policy", repositoryNetworkPolicy],
+                ...network.endpoints.slice(1),
+              ]),
         ]),
       )
       .digest("hex")
