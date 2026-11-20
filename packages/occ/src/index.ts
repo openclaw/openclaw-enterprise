@@ -420,11 +420,11 @@ import {
   validateServiceAccountBackendBinding,
 } from "./backends.ts";
 import type { StoredOAuthClient } from "./ports/oauth-client.ts";
+import type { TokenServiceInstance } from "./ports/token-service.ts";
 import type { AgentAuditSelection, AgentAuditState } from "./ports/agent-audit.ts";
 import {
   InMemoryPlatformState,
   type PlatformReadView,
-  type TokenServiceInstance,
   type PlatformOperation,
   type PlatformStateStore,
   type PlatformUnitOfWork,

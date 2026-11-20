@@ -115,7 +115,6 @@ import type {
   ConfigurationRepository,
   CredentialSourceRepository,
   InstallationRepository,
-  TokenServiceInstance,
   IAMPolicyRepository,
   NamespaceRepository,
   PersistedNamespace,
@@ -129,6 +128,7 @@ import type {
   SecretRepository,
   ServiceAccountRepository,
 } from "./platform-state.ts";
+import type { TokenServiceInstance } from "../ports/token-service.ts";
 import {
   copyProvisioningRecord,
   phaseAtLeast,
