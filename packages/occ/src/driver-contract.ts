@@ -167,6 +167,7 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
           "isRouteBlockedError",
         ].every((name) => typeof asRecord(candidate.repositoryAccess)?.[name] === "function")) &&
       (candidate.harnessHome === undefined || absolutePosixPath(candidate.harnessHome)) &&
+      sandboxHarnessContract(candidate) &&
       (candidate.validateWorkspaceSetup === undefined ||
         typeof candidate.validateWorkspaceSetup === "function") &&
       (candidate.configureAgent === undefined || typeof candidate.configureAgent === "function") &&
@@ -230,6 +231,25 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     (candidate.deleteAgentRuntimeCredentials === undefined ||
       typeof candidate.deleteAgentRuntimeCredentials === "function")
   );
+}
+
+const SANDBOX_HARNESS_OPERATIONS = [
+  "harnessEndpoint",
+  "harnessStatus",
+  "enrollHarness",
+  "withdrawHarnessExposure",
+  "harnessResource",
+  "workspaceNodePeerLabels",
+  "observeHeldRepositoryGitPreview",
+] as const;
+
+// Optional provider-owned Harness members. Compute's runtime checks would otherwise turn a
+// malformed declaration into a silent fallback or a failure at the first deployment.
+function sandboxHarnessContract(candidate: Record<string, unknown>): boolean {
+  return SANDBOX_HARNESS_OPERATIONS.every((operation) => {
+    const value = candidate[operation];
+    return value === undefined || typeof value === "function";
+  });
 }
 
 function sandboxPolicyContract(candidate: Record<string, unknown>): boolean {
