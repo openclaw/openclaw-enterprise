@@ -27,13 +27,15 @@ import {
   CONSOLE_NAMESPACE_NOT_READY,
   RESOURCE_NOT_FOUND,
   SECRET_CREATE_DENIED,
+  SECRET_NAME_CONFLICT,
+  tooManyRequestsIn,
+} from "../helpers/refusal-text.mjs";
+import {
   SECRET_DELETE_DENIED,
   SECRET_LINK_UNLISTED,
   secretLinkUnlistedAdministrator,
-  SECRET_NAME_CONFLICT,
   SECRET_UPDATE_DENIED,
-  tooManyRequestsIn,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-access.ts";
 import { restrict } from "../helpers/iam-grants.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
@@ -719,7 +721,7 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
   for (const [linkedId, shown] of [
     [secret.id, `Secret ${secret.id}`],
     ["sec_not-a-secret-id", "such Secret"],
-  ]) {
+  ] satisfies [string, string][]) {
     await page.goto(`${fixture.origin}${secretsUrl(namespace)}&secret=${linkedId}`);
     await page
       .getByRole("status")
