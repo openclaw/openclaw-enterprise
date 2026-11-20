@@ -126,6 +126,7 @@ import {
   type OpenShellCredentialGatewayOptions,
 } from "../drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../drivers/credential-refresh/openshell.ts";
+import { OCCTokenServiceDriver } from "../drivers/token-service/occ.ts";
 
 import { loadInstallationPresets, type ShadowedDefaultPreset } from "./installation-presets.ts";
 
@@ -170,6 +171,7 @@ export interface InstallationStartupConfiguration {
     readonly credential_gateway?: SelectedDriverConfiguration;
     readonly credential_refresh?: SelectedDriverConfiguration;
     readonly credential_proxy?: SelectedDriverConfiguration;
+    readonly token_service?: SelectedDriverConfiguration;
     readonly plugin?: readonly SelectedDriverConfiguration[];
     readonly service_account?: { readonly id: string };
   };
@@ -750,6 +752,7 @@ function selected(
     | "credential_gateway"
     | "credential_refresh"
     | "credential_proxy"
+    | "token_service"
     | "plugin"
     | "repo",
   implementation: string,
@@ -912,6 +915,7 @@ async function composeInstallationConfiguration(
       "credential_gateway",
       "credential_refresh",
       "credential_proxy",
+      "token_service",
       "plugin",
       "service_account",
       "repo",
@@ -1176,6 +1180,20 @@ async function composeInstallationConfiguration(
           sandboxPackage?.implementation ?? (boxPackage ? "strands-box" : "openshell"),
           sandboxPackage?.module ?? boxPackage ?? bundledSandboxPackage!,
         );
+  let tokenServiceSelection: SelectedDriverConfiguration | undefined;
+  if (drivers.token_service !== undefined) {
+    const selection = object(drivers.token_service, "drivers.token_service");
+    closed(selection, ["id", "configuration"], "drivers.token_service");
+    if (selection.id !== "occ") {
+      throw new Error("drivers.token_service.id must select occ.");
+    }
+    tokenServiceSelection = selected(
+      selection,
+      "token_service",
+      "occ/token-service",
+      OCCTokenServiceDriver,
+    );
+  }
   const openShellServiceIntegration =
     kubernetesCompute &&
     sandbox !== undefined &&
@@ -1397,6 +1415,7 @@ async function composeInstallationConfiguration(
       ...(credentialGateway === undefined ? {} : { credential_gateway: credentialGateway }),
       ...(credentialRefresh === undefined ? {} : { credential_refresh: credentialRefresh }),
       ...(proxySelection === undefined ? {} : { credential_proxy: proxySelection }),
+      ...(tokenServiceSelection === undefined ? {} : { token_service: tokenServiceSelection }),
       plugin: plugins.map(({ config }) => config),
       ...(serviceAccount === undefined ? {} : { service_account: serviceAccount }),
     }),

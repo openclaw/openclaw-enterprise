@@ -1,24 +1,24 @@
 ---
 created: "2026-09-26"
-updated: 2026-11-19
-last_updated_session: authoring-run/b0e8e24d-3e5e-40a1-ae3b-10e0dfe3e6a8
+updated: 2026-11-20
+last_updated_session: authoring-run/1a7c3a53-041d-40fe-bdea-664eca7f6d97
 ---
 
 # Credential source lifecycle Flow
 
 ## Overview
 
-OCC authorizes sources and stores metadata/references; OpenShell holds values.
-Admission freezes identity; workers pass live sources to Compute.
-See [refresh](credential-source-refresh.md) and
-[Sandbox provisioning](openshell-sandbox-provisioning.md).
+OCC authorizes serving sources and stores their metadata and owner references;
+OpenShell holds their values. Admission freezes identity; workers pass live
+sources to Compute. [Internal TokenService custody](token-service-static-custody.md)
+has no public enrollment or Agent delivery.
 
-[Protected sources](credential-source-egress.md) admit versioned Secret references,
-skip gateway copies and require explicit migration while unbound. Protected revisions
-refuse legacy attachments. [OpenShell-owned Codex OAuth](credential-source-refresh.md#device-authorization-and-configuration)
-retains its recorded Credential Gateway and Refresh owners, including when a Git
-Proxy is later selected. Fresh OAuth enrollment is not part of the Git-only static
-model exception. Without a selected Proxy, the existing Gateway/Refresh path remains.
+[Protected sources](credential-source-egress.md) admit versioned Secret references
+without Gateway copies and require explicit migration while unbound. Protected
+revisions refuse legacy attachments. [OpenShell-owned Codex OAuth](credential-source-refresh.md#device-authorization-and-configuration)
+retains its Gateway and Refresh owners when a Git Proxy is selected. The Git-only
+static model exception excludes fresh OAuth enrollment. Without a Proxy, the
+Gateway/Refresh path remains.
 
 ## Entry Points
 
@@ -81,14 +81,13 @@ with `ResourceConflictError` before effects. OCC commits intermediate State befo
 `apps/controller/src/http/credential-sources.ts:createCredentialSource`,
 `packages/occ/src/index.ts:createCredentialSource`
 
-The route accepts `name`, `type`, optional `config` and lowercase-keyed `secrets`.
-[TokenService source schemas](../../packages/contracts/src/api/token-service-sources.ts) are standalone OpenAPI components.
+The route accepts `name`, `type`, optional `config`, and lowercase-keyed `secrets`;
+[TokenService schemas](../../packages/contracts/src/api/token-service-sources.ts) remain standalone OpenAPI components.
 One transaction authorizes `credential_source:create`, locks the ready Namespace,
 requires its selected source Driver, then reads the catalog.
 An unoffered type returns `CredentialSourceTypeNotOfferedError` (`409`). Unknown
-or missing catalog fields and Driver-invalid values return `400 INVALID_REQUEST`
-before Secret reads, record creation, or gateway writes. OCC checks normalized
-configuration against the catalog and stores it in the source record.
+or missing fields and Driver-invalid values return `400 INVALID_REQUEST` before
+Secret reads, record creation, or Gateway writes. OCC stores normalized catalog configuration.
 
 `apps/controller/src/drivers/credential-source-endpoint.ts:validateOpenAiSourceBaseUrl` validates
 OpenShell destinations for requests and stored sources: field-specific `400` errors
@@ -372,6 +371,8 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 04:20: Link the separate internal static custody flow. (authoring-run/1a7c3a53-041d-40fe-bdea-664eca7f6d97 - edd728580)
 
 - 2026-11-19 03:15: Keep the flow current while moving catalog enforcement to a separate change. (authoring-run/b0e8e24d-3e5e-40a1-ae3b-10e0dfe3e6a8 - ea34779cc)
 

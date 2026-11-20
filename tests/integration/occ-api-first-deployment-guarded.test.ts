@@ -11,15 +11,13 @@ import {
   AgentRevisionResponse,
   ErrorResponse,
   FirstDeploymentReceiptResponse,
-  RequestId,
   type ChannelDriver,
   type Permission,
 } from "../../packages/contracts/src/index.ts";
 import type { PlatformReadView } from "../../packages/occ/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
-import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
-import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
+import { request } from "./occ-api-first-deployment-cases.ts";
 import {
   firstDeploymentFixture,
   slackFirstDeploymentFixture,
@@ -29,12 +27,8 @@ import {
   createAgent,
   createConfiguration,
   createNamespace,
-  identifier,
   type FixtureRequest,
 } from "./occ-api-injected-fixture.ts";
-
-type FixtureRequestOptions = NonNullable<Parameters<FixtureRequest>[2]>;
-type FixtureResponse = Awaited<ReturnType<FixtureRequest>>;
 
 const PermissionSchema = Type.Object({
   action: Type.String(),
@@ -83,62 +77,6 @@ async function settlePendingRequests(requests: readonly ReturnType<FixtureReques
   } finally {
     clearTimeout(timer);
   }
-}
-
-const LoopbackEnvelope = Type.Object({
-  meta: Type.Object({ requestId: RequestId }),
-  data: Type.Optional(Type.Unknown()),
-});
-
-async function request(
-  url: string,
-  method: string,
-  path: string,
-  options: FixtureRequestOptions = {},
-): Promise<FixtureResponse> {
-  let sessionHeaders: Record<string, string> = {};
-  if (options.identity !== false) {
-    assert(options.session, "an authenticated loopback request needs a session");
-    sessionHeaders = authenticatedHeaders(options.session);
-  }
-  const headers: Record<string, string> = {
-    host: "console.oce.localhost",
-    ...sessionHeaders,
-    ...options.headers,
-  };
-  let body: RequestInit["body"];
-  if (Object.hasOwn(options, "body")) {
-    body = JSON.stringify(options.body);
-    headers["content-type"] ??= "application/json";
-  } else if (Object.hasOwn(options, "rawBody")) {
-    body = options.rawBody;
-  }
-  const response = await fetchLoopback(`${url}${path}`, {
-    method,
-    headers,
-    ...(body === undefined ? {} : { body }),
-    signal: AbortSignal.timeout(5_000),
-  });
-  if (response.status === 204) {
-    return { status: response.status, headers: response.headers };
-  }
-  assert.match(response.headers.get("content-type") ?? "", /application\/json/i);
-  const payload: unknown = await response.json();
-  assert(Check(LoopbackEnvelope, payload), "invalid response envelope");
-  assert.match(payload.meta.requestId, identifier("req"));
-  assert.equal(response.headers.get("x-request-id"), payload.meta.requestId);
-  assert.equal(response.headers.get("cache-control"), "no-store");
-  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
-  const data = payload.data;
-  if (response.ok) {
-    assert.deepEqual(Object.keys(payload).sort(), ["data", "meta"]);
-  } else {
-    assert(Check(ErrorResponse, payload), "invalid error response");
-    assert.deepEqual(Object.keys(payload).sort(), ["error", "meta"]);
-    assert.match(payload.error.code, /^[A-Z][A-Z_]*$/);
-    assert.ok(payload.error.message.length > 0);
-  }
-  return { status: response.status, headers: response.headers, body: payload, data };
 }
 
 test("guarded first deployment with the bundled Slack selection recovers without writes", async () => {
