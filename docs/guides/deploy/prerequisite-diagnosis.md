@@ -14,6 +14,13 @@ exist. You need AWS CLI access to call `sts get-caller-identity`,
 `eks describe-cluster`, and `ec2 describe-network-interfaces`. The Kubernetes
 identity needs to read the `default/kubernetes` Service and list its EndpointSlices.
 
+Address collection pins the verified server and CA and runs with kubectl
+preferences disabled. This also disables any credential plugin rules in
+`kuberc`. Proceed only if the credential owner permits it for this trusted
+kubeconfig and context. In that case, explicitly set `KUBECTL_KUBERC=false` in
+the environment for the collection command. Where the credential owner requires
+kubectl preferences, collect the addresses through the infrastructure workflow.
+
 ```bash
 node scripts/diagnose-kubernetes-prerequisites.ts \
   --inventory-eks "$EKS_CLUSTER_ARN" --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT"

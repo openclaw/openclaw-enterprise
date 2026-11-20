@@ -989,6 +989,13 @@ async function main(): Promise<void> {
   });
   let config: DiagnosticPlan | InventoryPlan;
   if (values["inventory-eks"] !== undefined && values.config === undefined && !values.json) {
+    // Pinning this read requires disabling preferences. Require the caller's
+    // choice before a mutable kubeconfig can select a credential plugin.
+    if (process.env.KUBECTL_KUBERC !== "false") {
+      throw new DiagnosticError(
+        "EKS address collection requires explicit KUBECTL_KUBERC=false. Proceed only if the credential owner permits running without kubectl preferences.",
+      );
+    }
     config = {
       mode: "inventory",
       kubeconfig: requireSelection(values.kubeconfig, "kubeconfig"),

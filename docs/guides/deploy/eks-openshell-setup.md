@@ -121,9 +121,9 @@ Confirm the account and role, then test Kubernetes TLS from the operator host. S
 
 ### Refresh API network policies after the node groups join
 
-After both node groups are ready, set `EKS_CLUSTER_ARN` to the intended cluster
-ARN from your infrastructure outputs. Repeat this collection before installing
-or upgrading OCC, and when webhook admission times out.
+After both node groups are ready, set `EKS_CLUSTER_ARN` from your infrastructure
+outputs. Follow the [credential and permissions requirements](prerequisite-diagnosis.md#collect-eks-addresses)
+before collecting. Repeat before installing or upgrading OCC, or after webhook timeouts.
 
 ```bash
 inventory=$(node scripts/diagnose-kubernetes-prerequisites.ts \
@@ -135,10 +135,7 @@ export API_CIDRS
 printf 'API egress: %s\nWebhook ingress: %s\n' "$API_CIDRS" "$webhook_cidrs"
 ```
 
-Use AWS CLI credentials in the cluster's account and the selected Kubernetes
-operator credentials. If any read fails or the target differs, the command
-exits nonzero without printing CIDRs. See [EKS address collection](prerequisite-diagnosis.md#collect-eks-addresses)
-for inputs and permissions.
+A failed read or target mismatch produces no CIDRs.
 
 Update and apply the affected prerequisite NetworkPolicies through the infrastructure workflow. Use the API CIDRs for clients that need Kubernetes API egress, including controllers, certificate Jobs and storage components. Allow the verified control-plane interface CIDRs to reach every installed prerequisite webhook, including the AWS Load Balancer Controller when used. Match each webhook's actual port and Pod labels. Use the refreshed `API_CIDRS` when rendering OCC values.
 

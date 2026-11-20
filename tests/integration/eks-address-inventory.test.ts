@@ -10,7 +10,10 @@ const clusterArn = "arn:aws:eks:us-west-2:123456789012:cluster/oce-test";
 const endpoint = "https://eks.example.test";
 const ca = Buffer.from("fixture authority").toString("base64");
 
-async function inventory(t: TestContext, fault?: "wrong-ca" | "ec2-page" | "api-page") {
+async function inventory(
+  t: TestContext,
+  fault?: "wrong-ca" | "ec2-page" | "api-page" | "preferences-managed",
+) {
   const directory = await mkdtemp(join(tmpdir(), "oce-address-inventory-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const log = join(directory, "reads");
@@ -96,7 +99,15 @@ process.stdout.write(JSON.stringify(result));`,
       "--context",
       "oce-test",
     ],
-    { encoding: "utf8", timeout: 15_000, env: { PATH: directory, FAULT: fault } },
+    {
+      encoding: "utf8",
+      timeout: 15_000,
+      env: {
+        PATH: directory,
+        FAULT: fault,
+        ...(fault === "preferences-managed" ? {} : { KUBECTL_KUBERC: "false" }),
+      },
+    },
   );
   assert.ifError(result.error);
   return { ...result, log };
@@ -132,4 +143,12 @@ test("EKS inventory refuses mixed-cluster and partial address observations", asy
       }
     });
   }
+});
+
+test("EKS inventory requires the credential owner's opt-in before Kubernetes reads", async (t) => {
+  const { status, stdout, stderr, log } = await inventory(t, "preferences-managed");
+  assert.equal(status, 2, stderr);
+  assert.equal(stdout, "");
+  assert.match(stderr, /requires explicit KUBECTL_KUBERC=false/);
+  await assert.rejects(readFile(log), { code: "ENOENT" });
 });

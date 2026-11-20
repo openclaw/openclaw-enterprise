@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-11-19"
-last_updated_session: "authoring-run/a5a3aec7-bb99-4933-b5a1-51dd301739ed"
+last_updated_session: "authoring-run/e7df3cc8-639a-48dc-818c-a5168de86ef1"
 ---
 
 # Production Startup Flow
@@ -83,13 +83,13 @@ Queries reconnect.
 `scripts/diagnose-kubernetes-prerequisites.ts:diagnose`
 [checks prerequisites](../guides/deploy/prerequisite-diagnosis.md) before Helm.
 [EKS inventory](../guides/deploy/prerequisite-diagnosis.md#collect-eks-addresses)
-verifies account, ARN, endpoint and CA before returning both CIDR sets.
+requires kubectl preferences opt-in and verifies account, ARN, endpoint and CA.
 
 `deploy/helm/openclaw-enterprise/values.yaml:1`
 
-Keep values, Installation YAML and credential files outside the checkout. Helm
-selects images, endpoint, Secrets, selectors and egress, not credential values.
-`openclaw.validate` requires a DNS-1123 release Namespace label (maximum 63 characters).
+Keep values, Installation YAML and credentials outside the checkout. Helm
+selects images, endpoint, Secret names, placement and egress.
+`openclaw.validate` limits DNS-1123 release Namespace labels to 63 characters.
 Installation YAML selects Drivers, Backends, runtime images, projected identity,
 networking and storage.
 
@@ -382,6 +382,8 @@ The shell initializes the missing annotation, patches with UID and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-19 22:27: Require EKS inventory preferences opt-in. (authoring-run/e7df3cc8-639a-48dc-818c-a5168de86ef1 - 00abb268cdd420d9eed8c3096a15d7f0cdc65934)
 
 - 2026-11-19 22:19: Trace the EKS address collection mode. (authoring-run/a5a3aec7-bb99-4933-b5a1-51dd301739ed - 0ac6f863218c79c2c4143d552a0207a24d20f604)
 
