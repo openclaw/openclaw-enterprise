@@ -10,6 +10,8 @@ import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-comman
 import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
 import {
   modelProbeReliabilityCases,
+  probeFailure,
+  probeTimeout,
   transientProbeRetryCases,
 } from "./codex-native-startup-retry-cases.ts";
 import { startSupervisor } from "./workspace-node-supervisor-fixture.ts";
@@ -47,20 +49,6 @@ const ready = {
 function loginFailure(code = "LOGIN_FAILED") {
   return { phases: [["codex-login", "failed"]], check: "login", code };
 }
-function probeFailure(cause, provider) {
-  return {
-    phases: [
-      ["codex-login", "ok"],
-      ["model-probe", "failed"],
-    ],
-    check: "model-probe",
-    code: "MODEL_PROBE_FAILED",
-    cause,
-    provider,
-  };
-}
-
-const probeTimeout = { ...probeFailure(), code: "MODEL_PROBE_TIMEOUT" };
 const probeAuthenticationFailure = { ...probeFailure(), code: "AUTHENTICATION_FAILED" };
 
 const { errorEvent, failedTurn } = codexProbeEvents;

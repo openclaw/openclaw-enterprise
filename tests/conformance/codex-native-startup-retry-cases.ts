@@ -18,7 +18,10 @@ type ProbeFailureExpectation = StartupExpectation & {
   readonly code: "MODEL_PROBE_FAILED";
 };
 type ProbeFailure = (cause?: FailureCause, provider?: Provider) => ProbeFailureExpectation;
-type ModelProbeScenario = Extract<StartupScenario, { native: readonly NativeStep[] }> & {
+type ModelProbeScenario = Extract<
+  StartupScenario,
+  { native: readonly NativeStep[]; expect: StartupExpectation }
+> & {
   readonly name: string;
 };
 type ProbeFailureRow = readonly [
@@ -36,6 +39,24 @@ type NetworkWaitAttempt = readonly [
 ];
 type RecoveredNotice = readonly [order: string, events: readonly JsonValue[]];
 type ProbeRefusal = readonly [description: string, stderr: string, failureClass: FailureClass];
+
+export function probeFailure(cause?: FailureCause, provider?: Provider): ProbeFailureExpectation {
+  return {
+    phases: [
+      ["codex-login", "ok"],
+      ["model-probe", "failed"],
+    ],
+    check: "model-probe",
+    code: "MODEL_PROBE_FAILED",
+    cause,
+    provider,
+  };
+}
+
+export const probeTimeout = {
+  ...probeFailure(),
+  code: "MODEL_PROBE_TIMEOUT",
+} satisfies StartupExpectation & { readonly code: "MODEL_PROBE_TIMEOUT" };
 
 const { errorEvent, failedTurn } = codexProbeEvents;
 
