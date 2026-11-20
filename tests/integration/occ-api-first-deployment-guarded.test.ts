@@ -70,6 +70,21 @@ async function waitForRequestBarrier(barrier: Promise<void>, pending: ReturnType
   }
 }
 
+async function settlePendingRequests(requests: readonly ReturnType<FixtureRequest>[]) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error("Pending request did not settle after barrier release")),
+      2000,
+    );
+  });
+  try {
+    await Promise.race([Promise.allSettled(requests), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const LoopbackEnvelope = Type.Object({
   meta: Type.Object({ requestId: RequestId }),
   data: Type.Optional(Type.Unknown()),
@@ -441,40 +456,49 @@ test(
     for (const matching of [false, true]) {
       let arrivals = 0;
       const both = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
       const { controller, path, intent, work, recover, secretDriver, providerCalls } =
         await slackFirstDeploymentFixture(true, async () => {
           if (++arrivals === 2) {
             both.resolve();
           }
-          await both.promise;
+          await release.promise;
         });
       const before = controller.fixture.auditSink.events.length;
       const intents = [intent, matching ? intent : { ...intent, key: "competing" }];
       // Both contenders finish provider preparation before either can commit admission.
-      const results = await Promise.all(
-        intents.map((body) => controller.request("POST", `${path}/deploy-first`, { body })),
+      const requests = intents.map((body) =>
+        controller.request("POST", `${path}/deploy-first`, { body }),
       );
-      assert.deepEqual(
-        results.map((result) => result.status).sort(),
-        matching ? [202, 202] : [202, 409],
-      );
-      assert.equal(work().length, 1);
-      assert.equal(controller.fixture.auditSink.events.length - before, 1);
-      const winner = results.findIndex((result) => result.status === 202);
-      const winningIntent = intents[winner];
-      const winningResult = results[winner];
-      assert(winningIntent && winningResult);
-      const receipt = await recover(winningIntent);
-      assert.deepEqual(receipt.data, winningResult.data);
-      if (matching) {
-        assert.deepEqual(results[0]?.data, results[1]?.data);
+      try {
+        await waitForRequestBarrier(both.promise, Promise.race(requests));
+        release.resolve();
+        const results = await Promise.all(requests);
+        assert.deepEqual(
+          results.map((result) => result.status).sort(),
+          matching ? [202, 202] : [202, 409],
+        );
+        assert.equal(work().length, 1);
+        assert.equal(controller.fixture.auditSink.events.length - before, 1);
+        const winner = results.findIndex((result) => result.status === 202);
+        const winningIntent = intents[winner];
+        const winningResult = results[winner];
+        assert(winningIntent && winningResult);
+        const receipt = await recover(winningIntent);
+        assert.deepEqual(receipt.data, winningResult.data);
+        if (matching) {
+          assert.deepEqual(results[0]?.data, results[1]?.data);
+        }
+        assert.equal(providerCalls(), 2);
+        assert.equal(secretDriver.calls.filter((call) => call.operation === "withValue").length, 2);
+        assert.equal(secretDriver.calls.filter((call) => call.operation === "resolve").length, 2);
+        t.diagnostic(
+          JSON.stringify({ matching, sender: 2, withValue: 2, resolve: 2, work: 1, audit: 1 }),
+        );
+      } finally {
+        release.resolve();
+        await settlePendingRequests(requests);
       }
-      assert.equal(providerCalls(), 2);
-      assert.equal(secretDriver.calls.filter((call) => call.operation === "withValue").length, 2);
-      assert.equal(secretDriver.calls.filter((call) => call.operation === "resolve").length, 2);
-      t.diagnostic(
-        JSON.stringify({ matching, sender: 2, withValue: 2, resolve: 2, work: 1, audit: 1 }),
-      );
     }
   },
 );
@@ -606,8 +630,11 @@ test("guarded first deployment rechecks configuration after outside-transaction 
       assert.equal(work().length, 0);
     } finally {
       release();
-      await admission.catch(() => {});
-      state.transact = originalTransact;
+      try {
+        await settlePendingRequests([admission]);
+      } finally {
+        state.transact = originalTransact;
+      }
     }
   }
 });
@@ -730,14 +757,14 @@ test("guarded first deployment refuses deleting Agents before validation", async
           assert.equal(changed.status, 200, JSON.stringify(changed.body));
         }
         secretDriver.calls.length = 0;
-        let deletionWork;
+        let deletionWork: ReturnType<typeof fixture.platformState.pendingOperations> | undefined;
         const remove = async () => {
           const deleted = await request(url, "DELETE", path, { session: app.defaultSession });
           assert.equal(deleted.status, 202, JSON.stringify(deleted.body));
           const deletedAgent = checkedInjectedBody(deleted, 202, AgentResponse).data;
           assert.equal(deletedAgent.status, "deleting");
           assert.equal(deletedAgent.desiredRuntimeState, "stopped");
-          deletionWork = fixture.controller.pendingOperations();
+          deletionWork = fixture.platformState.pendingOperations();
         };
         if (stage === "after-validation-error") {
           const withValue = secretDriver.withValue.bind(secretDriver);
@@ -771,7 +798,8 @@ test("guarded first deployment refuses deleting Agents before validation", async
         assertApiError(result, 409, "AGENT_DELETING");
         assert.equal(revisions.length, 0);
         assert.equal(work().length, 0);
-        assert.deepEqual(fixture.controller.pendingOperations(), deletionWork);
+        assert(deletionWork, "deletion work was captured");
+        assert.deepEqual(fixture.platformState.pendingOperations(), deletionWork);
         assert.equal(providerCalls(), 0);
         assert.equal(reads, stage === "after-validation-error" ? 1 : 0);
         assert.equal(secretDriver.calls.filter((call) => call.operation === "resolve").length, 0);
@@ -897,9 +925,12 @@ test("matching first deployments recover between the initial snapshot and lock d
       assert.equal(secretDriver.calls.filter((call) => call.operation === "resolve").length, 1);
     } finally {
       release();
-      await late.catch(() => {});
-      state.read = originalRead;
-      state.transact = originalTransact;
+      try {
+        await settlePendingRequests([late]);
+      } finally {
+        state.read = originalRead;
+        state.transact = originalTransact;
+      }
     }
   }
 });
