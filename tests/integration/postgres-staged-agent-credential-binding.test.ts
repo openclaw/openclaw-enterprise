@@ -118,8 +118,8 @@ test(
       namespaceId,
       {
         name: "Private source",
-        lifecycleConfig: { type: "openai", settings: {} },
-        secret: { api_key: randomUUID() },
+        lifecycleConfig: { type: "static", settings: {} },
+        secret: { opaque: randomUUID() },
       },
       (ref, phase) => ({
         ...auditEvent(
