@@ -188,14 +188,22 @@ test("one-off rejects Helm values copied from display output", async (t) => {
   await writeFile(before, baseline);
   await writeFile(displayBefore, displayHeader + baseline, { mode: 0o600 });
 
-  await t.test("prepare refuses the display header before creating candidates", async () => {
-    const out = join(f.directory, "display-candidate");
-    const result = f.run("prepare", ["--values", displayBefore, "--out-dir", out]);
-    assert.equal(result.status, 1, result.stdout);
-    assert.match(result.stderr, /USER-SUPPLIED VALUES.*helm get values RELEASE --output yaml/);
-    assert.equal(result.stdout, "");
-    await assert.rejects(access(out), { code: "ENOENT" });
-  });
+  for (const [label, input] of [
+    ["before a values mapping", baseline],
+    ["before an empty flow mapping", "{}\n"],
+    ["before a repeated key", `USER-SUPPLIED VALUES: keep\n${baseline}`],
+  ] as const) {
+    await t.test(`prepare refuses the display header ${label}`, async () => {
+      const inputPath = join(f.directory, "prepare-display-values.yaml");
+      await writeFile(inputPath, displayHeader + input, { mode: 0o600 });
+      const out = join(f.directory, "display-candidate");
+      const result = f.run("prepare", ["--values", inputPath, "--out-dir", out]);
+      assert.equal(result.status, 1, result.stdout);
+      assert.match(result.stderr, /USER-SUPPLIED VALUES.*helm get values RELEASE --output yaml/);
+      assert.equal(result.stdout, "");
+      await assert.rejects(access(out), { code: "ENOENT" });
+    });
+  }
 
   const out = join(f.directory, "prepared");
   const prepared = f.run("prepare", ["--out-dir", out]);

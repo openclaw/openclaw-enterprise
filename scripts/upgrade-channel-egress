@@ -41,14 +41,13 @@ def yaml(path):
 
 
 def helm_values(path, option):
-    values = yaml(path)
-    if "USER-SUPPLIED VALUES" in values and values["USER-SUPPLIED VALUES"] is None:
-        with Path(path).open("rb") as capture:
-            require(capture.readline().rstrip(b" \t\r\n") != b"USER-SUPPLIED VALUES:",
-                    f"{option} contains Helm's USER-SUPPLIED VALUES display header. "
-                    "Recapture with 'helm get values RELEASE --output yaml' using the same "
-                    "kubeconfig, context, namespace, and revision, then prepare the candidate again.")
-    return values
+    private(path)
+    with Path(path).open("rb") as capture:
+        require(capture.readline().rstrip(b" \t\r\n") != b"USER-SUPPLIED VALUES:",
+                f"{option} contains Helm's USER-SUPPLIED VALUES display header. "
+                "Recapture with 'helm get values RELEASE --output yaml' using the same "
+                "kubeconfig, context, namespace, and revision, then prepare the candidate again.")
+    return yaml(path)
 
 
 def sync_parent(path):
