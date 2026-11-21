@@ -2216,7 +2216,7 @@ export class OpenClawController {
     });
     this.configurationOperations = createConfigurationOperations({
       read: this.transactions.read,
-      transact: (work) => this.transact(work),
+      transact: this.transactions.transact,
       authorize: this.authority.authorize,
       registerRollback: (compensate) => this.registerRollback(compensate),
       holdAuthority: this.authority.holdAuthority,
