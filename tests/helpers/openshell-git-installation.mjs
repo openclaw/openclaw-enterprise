@@ -24,6 +24,7 @@ import { availablePort } from "./available-port.ts";
 import { listen } from "./listen.ts";
 import { localFirstAgentStack, ownFirstAgentWork } from "./local-first-agent-stack.mjs";
 import { localOpenShellGatewayOptions } from "./local-openshell-gateway.mjs";
+import { waitForStockSupervisor } from "./openshell-stock-supervisor-readiness.ts";
 import { stopProcess } from "./stop-process.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
@@ -289,18 +290,26 @@ async function trustedSupervisor({
 /**
  * Installs the supported model + selected-repository path in its own k3d cluster.
  * @param {import("node:test").TestContext} t
- * @param {{ witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, onSetupStep?: (step: string) => void }} [options]
+ * @param {{ witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, networkAcl?: boolean, onSetupStep?: (step: string) => void }} [options]
  */
 export function createOpenShellGitInstallation(
   t,
-  { witnessIssuedGit = false, allowStandingApprovals = false, onSetupStep } = {},
+  {
+    witnessIssuedGit = false,
+    allowStandingApprovals = false,
+    networkAcl = false,
+    onSetupStep,
+  } = {},
 ) {
   return ownFirstAgentWork(t)(
-    installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals, onSetupStep }),
+    installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals, networkAcl, onSetupStep }),
   );
 }
 
-async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals, onSetupStep }) {
+async function installOpenShellGit(
+  t,
+  { witnessIssuedGit, allowStandingApprovals, networkAcl, onSetupStep },
+) {
   const eventually = (description, operation, timeout = 120_000) =>
     waitUntil(description, operation, timeout, t.signal);
   let tearingDown = false;
@@ -453,6 +462,7 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     host: bridge,
     advertisedHost: originHost,
     witnessIssuedGit,
+    ...(networkAcl && { networkAcl: true, repository: "fixture/a" }),
     tls: { ...tls.origin, ca: tls.ca },
   });
   cleanup.push(() => origin.close());
@@ -883,30 +893,23 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
       "the workload must have exactly one matching supervisor Pod",
     );
     const pod = supervisors[0];
-    assert.equal(pod.metadata.annotations?.["openshell.ai/sandbox-id"], sandboxId);
-    assert.ok(
-      pod.metadata.ownerReferences?.some(
-        (owner) => owner.kind === "Sandbox" && owner.uid === resource.metadata.uid,
-      ),
-      "the supervisor must belong to the selected Sandbox resource",
-    );
     const container = pod.spec.containers.find(({ name }) => name === "supervisor");
-    const status = pod.status.containerStatuses?.find(({ name }) => name === "supervisor");
-    assert.ok(
-      container && status?.ready && status.state.running,
-      "the supervisor must be running and ready",
-    );
-    assert.equal(
-      container.image,
-      supervisor.reference,
-      "the supervisor must select the imported trust-only image",
-    );
-    // CRI implementations report either the manifest or image-config digest.
-    // Both were observed from this build, never inferred from the requested tag.
-    const runningDigest = status.imageID.match(/sha256:[a-f0-9]{64}$/)?.[0];
-    assert.ok(
-      [supervisor.image.digest, supervisor.configDigest].includes(runningDigest),
-      "the running supervisor image must match the imported trust-only build",
+    const status = await waitForStockSupervisor(
+      pod,
+      async (signal) =>
+        JSON.parse(
+          await kube(["get", "pod", pod.metadata.name, "-n", sandboxNamespace, "-o", "json"], {
+            signal,
+          }),
+        ),
+      {
+        sandboxId,
+        sandboxUid: resource.metadata.uid,
+        image: supervisor.reference,
+        // CRI implementations report either the verified manifest or image-config digest.
+        digests: [supervisor.image.digest, supervisor.configDigest],
+      },
+      t.signal,
     );
     return {
       sandboxId,
@@ -1473,6 +1476,8 @@ async function installOpenShellGit(t, { witnessIssuedGit, allowStandingApprovals
     modelSource,
     repositoryRef: origin.repositoryRef,
     origin,
+    sandboxImage: installation.drivers.compute.configuration.images.agent,
+    originBridge: bridge,
     kube,
     gatewayBackend,
     gatewayClient,
