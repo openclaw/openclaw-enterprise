@@ -90,15 +90,34 @@ else
 fi
 ```
 
-Qualify that trusted, same-source `RUNTIME_IMAGE` for Gateway and Agent roles with the
-[runtime-only checks](../../../deploy/runtime/README.md#verify-the-local-image).
+Run a short smoke against the selected image, then prepare the runtime lane's
+[required dependencies](../../testing/docker.md#check-published-images). Lane preparation
+builds a separate runtime; override its selector so the suite checks `RUNTIME_IMAGE`:
+
+```bash
+(
+  set -e
+  docker run --rm --platform "$OCC_IMAGE_PLATFORM" "$RUNTIME_IMAGE" codex --version
+  trap 'node scripts/ci/cleanup.ts --state "$OCC_IMAGE_METADATA/runtime-check.json"' EXIT
+  node scripts/ci/prepare.ts --lane images-runtime-startup \
+    --state "$OCC_IMAGE_METADATA/runtime-check.json" --github-env "$OCC_IMAGE_METADATA/runtime-check.env"
+  set -a
+  . "$OCC_IMAGE_METADATA/runtime-check.env"
+  set +a
+  DOCKER_DEFAULT_PLATFORM="$OCC_IMAGE_PLATFORM" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_IMAGE" \
+    OPENCLAW_ENTERPRISE_CI_STATE="$OCC_IMAGE_METADATA/runtime-check.json" \
+    node --test tests/integration/runtime-image-startup.test.ts \
+      tests/integration/runtime-image-gateway-workspace.test.ts
+)
+```
+
 Then assemble the production controller:
 
 ```bash
 CONTROLLER_PUSH_DIGEST_PATTERN=': digest: (sha256:[a-f0-9]{64}) size: [0-9]+'
 if unset CONTROLLER_IMAGE CONTROLLER_PUSH_OUTPUT &&
   [[ ${RUNTIME_DIGEST:-} =~ ^sha256:[a-f0-9]{64}$ ]] &&
-  node scripts/build-controller.ts docker --target runtime \
+  node scripts/build-controller.ts docker --platform "$OCC_IMAGE_PLATFORM" --target runtime \
     --build-arg NODE_BASE_IMAGE="$NODE_BASE_IMAGE" \
     --build-arg OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST="$RUNTIME_DIGEST" \
     --build-arg OCC_INSPECTED_WORKSPACE_AGENT_DIGEST="$RUNTIME_DIGEST" \
