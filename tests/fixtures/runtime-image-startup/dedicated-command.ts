@@ -121,12 +121,13 @@ export async function probeDedicatedCommand(
       shellEnvironment.NODE_EXTRA_CA_CERTS,
       environment.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS,
     );
+    const ghPath = "/opt/oce/repository-credentials/bin/gh";
     const result = observeCommand(
       await rpc("command/exec", {
         command: [
           "/bin/bash",
           "-c",
-          'test -z "$APP_SERVER_TOKEN" || exit 1; test -z "$APP_TOKEN_SHA" || exit 1; command -v gh; command -v git; git config --system --get-all include.path; echo "$NODE_EXTRA_CA_CERTS"',
+          `test -z "$APP_SERVER_TOKEN" || exit 1; test -z "$APP_TOKEN_SHA" || exit 1; test -x "${ghPath}" || exit 1; command -v gh; command -v git; git config --system --get-all include.path; echo "$NODE_EXTRA_CA_CERTS"`,
         ],
         sandboxPolicy: { type: "externalSandbox", networkAccess: "restricted" },
         timeoutMs: 5000,
@@ -136,14 +137,21 @@ export async function probeDedicatedCommand(
     );
     assert.equal(result.exitCode, 0);
     assert.deepEqual(result.stdout.trim().split("\n"), [
-      "/opt/oce/repository-credentials/bin/gh",
+      ghPath,
       "/usr/bin/git",
       "/run/oce/repository-credentials/gitconfig",
       environment.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS,
     ]);
-    fs.accessSync(
-      "/opt/oce/repository-credentials/dist/drivers/repo/github/access/client/router.js",
+    const clientLayout = historicalCodex ? "credentials" : "access";
+    const routerPath = `/opt/oce/repository-credentials/dist/drivers/repo/github/${clientLayout}/client/router.js`;
+    // Check the complete launcher so a commented or unreachable exec cannot pass.
+    const expectedLauncher = `#!/bin/sh\nexec /usr/local/bin/node ${routerPath} gh "$@"`;
+    assert.ok(
+      fs.readFileSync(ghPath, "utf8").trimEnd() === expectedLauncher,
+      "installed gh launcher must exec the packaged router",
     );
+    assert.ok(fs.statSync(routerPath).isFile(), "gh router must be a regular file");
+    fs.accessSync(routerPath, fs.constants.R_OK);
     process.stdout.write("native-repository-shell-ready\n");
     // The proof is complete. The Codex binary, a grandchild that holds this
     // probe's pipes, takes about 5 s to exit after SIGTERM or EOF. This node is

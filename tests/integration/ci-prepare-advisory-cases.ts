@@ -23,6 +23,7 @@ function evaluate(expression: unknown, context: object): unknown {
       // Actions label comparisons ignore case.
       contains: (list: string[], value: string) =>
         list.some((entry) => entry.toLowerCase() === value.toLowerCase()),
+      always: () => true,
       format: (text: string, value: string) => text.replace("{0}", value),
       fromJSON: JSON.parse,
       ...context,
@@ -79,7 +80,7 @@ async function createPrMerge(repo: string, root: string) {
   git(source, "config", "user.email", "fixture@example.invalid");
 
   await mkdir(join(source, manifestDirectory), { recursive: true });
-  async function copyManifest(lane: "dev-up-k3d" | "openshell") {
+  async function copyManifest(lane: string) {
     const path = join(manifestDirectory, lane + ".json");
     const text = await readFile(join(repo, path), "utf8");
     await writeFile(join(source, path), text);
@@ -91,6 +92,8 @@ async function createPrMerge(repo: string, root: string) {
     qa: fullQa,
     openshell: await copyManifest("openshell"),
   };
+  await copyManifest("gateway-routing");
+  await copyManifest("qa-matrix");
   git(source, "add", ".");
   git(source, "commit", "-m", "base");
   git(source, "checkout", "-b", "feature");
@@ -148,6 +151,20 @@ export function registerAdvisoryCases(repo: string) {
     const selector = getSteps(eligibility).find(({ id }) => id === "selection")?.run;
     assert.ok(typeof selector === "string" && selector);
     const prEnv = "integration-qa-pr";
+    const gateway = getJob(workflow, "oidc-agent-chat");
+    const gatewaySteps = getSteps(gateway);
+    const gatewayAction = gatewaySteps.find(({ id }) => id === "native-browser-lane");
+    const media = gatewaySteps.find(({ name }) => name === "Retain native browser review media");
+    const mediaMissing = asRecord(media?.with)?.["if-no-files-found"];
+    const gatewayFile = asRecord(gatewayAction?.with)?.["test-file"];
+    assert.deepEqual(workflow.permissions, { contents: "read" });
+    assert.equal(eligibility.environment, undefined);
+    assert.equal(gateway.environment, prEnv);
+    assert.equal(gatewayAction?.uses, "./.github/actions/run-ci-lane");
+    assert.partialDeepStrictEqual(gatewayAction?.with, {
+      lane: "gateway-routing",
+      profile: "full",
+    });
     const local = getJob(workflow, "local-installation");
     const shard = "${{ matrix.shard }}";
     const file = "${{ matrix.file }}";
@@ -179,10 +196,16 @@ export function registerAdvisoryCases(repo: string) {
     const { base, head, sha, checkout, full } = await createPrMerge(repo, root);
     const event = (
       labels: readonly string[],
-      { author = "contributor", repo = "example/oce", baseSha = base } = {},
+      {
+        author = "contributor",
+        repo = "example/oce",
+        baseSha = base,
+        testFile = undefined,
+      }: { author?: string; repo?: string; baseSha?: string; testFile?: string | undefined } = {},
     ) => ({
       action: "synchronize",
       number: 7,
+      inputs: testFile === undefined ? undefined : { test_file: testFile },
       pull_request: {
         user: { login: author },
         labels: labels.map((name) => ({ name })),
@@ -238,13 +261,22 @@ export function registerAdvisoryCases(repo: string) {
         summary: await readFile(summary, "utf8"),
       };
     };
-    const keycloakOnly = {
-      "local-installation": ["tests/integration/dev-up-k3d-keycloak-real.test.ts"],
-    };
-    const openshell = ["tests/integration/local-first-agent-openshell-real.test.mjs"];
+    const keycloakFile = "tests/integration/dev-up-k3d-keycloak-real.test.ts";
+    const keycloakOnly = { "local-installation": [keycloakFile] };
+    const openshellFile = "tests/integration/local-first-agent-openshell-real.test.mjs";
+    const openshell = [openshellFile];
     const modelOnly = { qa: [qaRow("kubernetes", "OpenClaw", "model-ui", true)] };
     const keycloakModel = { ...keycloakOnly, ...modelOnly };
-    type Selection = [labels: string[], expected: Partial<typeof full>, name?: EventName];
+    const routingFile = "tests/integration/harness-topology-k3d-routing-real.test.mjs";
+    const browserFile = "tests/integration/oidc-agent-chat-k3d-real.test.ts";
+    const qaFile = "tests/integration/qa-matrix-real.test.mjs";
+    type Selection = [
+      labels: string[],
+      expected: Partial<typeof full>,
+      name?: EventName,
+      input?: string,
+      gatewaySelection?: { file: string; media: boolean },
+    ];
     const cases: Selection[] = [
       [["Full-QA", model], full],
       [["QA-Keycloak-Installation", "qa-OpenClaw-model-ui"], keycloakModel],
@@ -260,11 +292,21 @@ export function registerAdvisoryCases(repo: string) {
       [["full-qa", compose, keycloak, model], full],
       [[], full, "schedule"],
       [[], full, "workflow_dispatch"],
+      [[], full, "workflow_dispatch", ""],
+      [[], full, "workflow_dispatch", "all"],
+      [[], {}, "workflow_dispatch", routingFile, { file: routingFile, media: false }],
+      [[], {}, "workflow_dispatch", browserFile, { file: browserFile, media: true }],
+      [[], { openshell }, "workflow_dispatch", openshellFile],
+      [[], keycloakOnly, "workflow_dispatch", keycloakFile],
+      [[], { qa: fullQa }, "workflow_dispatch", qaFile],
+      [[], full, "schedule", routingFile],
+      [[keycloak], keycloakOnly, "pull_request", routingFile],
       [[], { ...full, "local-installation": [] }, "push"],
+      [[], { ...full, "local-installation": [] }, "push", routingFile],
     ];
-    for (const [labels, expected, name = "pull_request"] of cases) {
+    for (const [labels, expected, name = "pull_request", testFile, gatewaySelection] of cases) {
       const isFull = name !== "pull_request" || labels.some((s) => s.toLowerCase() === "full-qa");
-      const payload = event(labels);
+      const payload = event(labels, { testFile });
       const ctx = context(payload, name);
       assert.equal(evaluate(eligibility.if, ctx), true);
       const result = await run(payload, name);
@@ -279,10 +321,33 @@ export function registerAdvisoryCases(repo: string) {
       const declaredOutputs = asRecord(eligibility.outputs);
       assert.ok(declaredOutputs);
       const outputs = Object.fromEntries(
-        Object.entries(declaredOutputs).map(([key, expr]) => [key, evaluate(expr, selection)]),
+        Object.entries(declaredOutputs).map(([key, expr]) => [
+          key,
+          evaluate(expr, selection) ?? "",
+        ]),
       );
       const jobContext = { ...ctx, needs: { eligibility: { outputs } } };
-      assert.equal(evaluate(getJob(workflow, "oidc-agent-chat").if, jobContext), isFull);
+      const selectedManual = name === "workflow_dispatch" && testFile && testFile !== "all";
+      const gatewayEnabled = selectedManual ? gatewaySelection !== undefined : isFull;
+      assert.equal(evaluate(gateway.if, jobContext), gatewayEnabled);
+      if (gatewayEnabled) {
+        assert.equal(
+          gatewayFile === undefined ? "" : evaluate(gatewayFile, jobContext),
+          gatewaySelection?.file ?? "",
+          "The selected gateway file must reach the existing lane action",
+        );
+        for (const outcome of ["success", "failure"]) {
+          const mediaContext = {
+            ...jobContext,
+            steps: { "native-browser-lane": { outcome } },
+          };
+          assert.equal(evaluate(media?.if, mediaContext), true);
+          assert.equal(
+            evaluate(mediaMissing, mediaContext),
+            outcome === "success" && gatewaySelection?.media !== false ? "error" : "warn",
+          );
+        }
+      }
       for (const group of matrixJobs) {
         const job = getJob(workflow, group);
         const label = [name, ...labels, group].join("/");
@@ -341,19 +406,61 @@ export function registerAdvisoryCases(repo: string) {
       assert.match(group, allowed ? /pr-7/ : /run-123/);
     }
     const bot = "dependabot[bot]";
+    const manual = context(event([], { testFile: routingFile }), "workflow_dispatch");
     for (const ctx of [
       context(event([])),
       context(event([keycloak], { repo: "fork/oce" })),
       context(event([keycloak]), "pull_request", bot),
       context(event([keycloak], { author: bot })),
       { ...context(event([]), "push"), vars: { QA_ADVISORY_ON_PUSH: "false" } },
+      context(event([], { testFile: routingFile }), "workflow_dispatch", bot),
+      { ...manual, github: { ...manual.github, ref: "refs/heads/feature" } },
     ]) {
       assert.equal(evaluate(eligibility.if, ctx), false);
     }
-    async function assertRefused(selection: ReturnType<typeof run>, reason: string) {
+    async function assertRefused(
+      selection: ReturnType<typeof run>,
+      reason: string,
+      diagnostic?: RegExp,
+    ) {
       const result = await selection;
       assert.notEqual(result.status, 0, reason);
       assert.equal(result.output, "", reason);
+      assert.equal(result.summary, "", reason);
+      if (diagnostic) {
+        assert.match(result.stderr, diagnostic, reason);
+      }
+    }
+    for (const path of [
+      "tests/integration/unregistered.test.ts",
+      routingFile + " ",
+      routingFile + "\nqa=true",
+    ]) {
+      await assertRefused(
+        run(event([], { testFile: path }), "workflow_dispatch"),
+        "Invalid test_file",
+        /test_file|selected file|manifest/i,
+      );
+    }
+    await assertRefused(
+      run(event([], { testFile: routingFile }), "workflow_dispatch", {
+        GITHUB_REF: "refs/heads/feature",
+      }),
+      "Selected manual run from a branch",
+    );
+    const openshellManifest = join(checkout, manifestDirectory, "openshell.json");
+    const registeredOpenshell = await readFile(openshellManifest, "utf8");
+    try {
+      const manifest = parseManifest(registeredOpenshell);
+      manifest.files.push({ path: routingFile });
+      await writeFile(openshellManifest, JSON.stringify(manifest));
+      await assertRefused(
+        run(event([], { testFile: routingFile }), "workflow_dispatch"),
+        "Ambiguous file across advisory jobs",
+        /must match exactly one file/,
+      );
+    } finally {
+      await writeFile(openshellManifest, registeredOpenshell);
     }
     await assertRefused(
       run(event([keycloak]), "pull_request", { GITHUB_SHA: head }),
