@@ -71,6 +71,35 @@ Before installation, [check each digest](../../testing/docker.md#check-published
 on native hosts for every target architecture, without skips. Configure pull
 credentials only when the selected registry requires them.
 
+### Build a controller for native Git
+
+The current Enterprise Containers workflow does not embed these pins in the GHCR
+controller. For native Git, initialize the variables above, run the runtime build
+first, and derive its immutable reference from `runtime.json`:
+
+```bash
+RUNTIME_DIGEST="$(yq -p=json -e -r '."containerimage.digest" | select(test("^sha256:[a-f0-9]{64}$"))' "$OCC_IMAGE_METADATA/runtime.json")"
+export RUNTIME_IMAGE="$OCC_IMAGE_REPOSITORY/runtime@$RUNTIME_DIGEST"
+```
+
+Qualify that trusted, same-source `RUNTIME_IMAGE` for Gateway and Agent roles with the
+[runtime-only checks](../../../deploy/runtime/README.md#verify-the-local-image).
+Then assemble the production controller:
+
+```bash
+node scripts/build-controller.ts docker --target runtime \
+  --build-arg NODE_BASE_IMAGE="$NODE_BASE_IMAGE" \
+  --build-arg OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST="$RUNTIME_DIGEST" \
+  --build-arg OCC_INSPECTED_WORKSPACE_AGENT_DIGEST="$RUNTIME_DIGEST" \
+  --tag "$OCC_IMAGE_REPOSITORY/controller:$OCC_IMAGE_TAG"
+docker push "$OCC_IMAGE_REPOSITORY/controller:$OCC_IMAGE_TAG"
+```
+
+For distinct qualified images, pass each role's exact same-source manifest digest.
+Resolve the pushed controller tag to immutable `CONTROLLER_IMAGE`, configure Gateway
+and Agent with their matching immutable image references, then run the normal
+controller/runtime image checks above.
+
 ### Build through a package registry mirror
 
 When building either image from source, Corepack downloads the pinned pnpm
