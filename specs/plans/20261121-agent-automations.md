@@ -3,103 +3,106 @@ status: In progress
 rfc: ../rfcs/20261121-agent-automations.md
 ---
 
-# Implementation plan: Agent automation admission and scheduling
+# Implementation plan: OCC automation broker
 
 - **ID:** RFC-20261121-agent-automations
 - **Delivery status:** In progress
 - **Owner:** Kevin Lin
-- **Authority:** [Submitted RFC](../rfcs/20261121-agent-automations.md), PR #6850
-- **Source baseline:** `d4a3ab0c9603ce9678995160776dd78d94a7a688`
+- **Authority:** [Agent automations RFC](../rfcs/20261121-agent-automations.md), PR #6850
+- **Source baseline:** `c9c925bac8a8865e568e239f814c4356e6ace183`
 
 ## Outcome and scope
 
-Implement the RFC's six HTTP operations through the selected Agent Gateway.
-The current work adds admission and refusal paths. Scheduling, creator-owned
-job access, approved-tool execution, retained history, and indeterminate mutation
-handling remain incomplete. No runtime is qualified for this API.
+Implement six real HTTP operations through OCC and the existing native scheduler.
+OCE is the sole automation manager. Native edits, imports and reconciliation with
+other managers are out of scope. OCC records the human creator and enforces
+management permissions; execution uses the deployed Agent's service authority
+and approved tools. Retained ownership authorizes native history after deletion.
 
-OpenClaw owns scheduling and storage. OCE must not patch or vendor OpenClaw, grant
-machine administration to callers, or reconstruct native execution authority.
-Upstream changes and submissions require separate human approval.
+No upstream writes, dependency patches or new upstream scope are required.
+The current implementation still refuses dispatch; the broker and its runtime
+proof remain incomplete.
 
-## Contract and source touchpoints
+## Owners and touchpoints
 
-- `packages/contracts/src/api/agent-automations.ts` owns closed request schemas.
-- `packages/contracts/src/api/routes.ts` registers the six real HTTP routes.
-- `apps/controller/src/http/agent-automations.ts` checks human sessions, Origin,
-  exact-Agent authority, selected revision, native configuration and Compute owner.
-- `packages/contracts/src/drivers/compute/index.ts` reserves the distinct
-  `automation` delegation mode. Kubernetes refuses it before credential lookup.
-- Native dispatch will use the supported Gateway client after the upstream
-  contract is qualified. It must not use the browser admin connection.
+| Owner | Implementation |
+| --- | --- |
+| HTTP contract | `packages/contracts/src/api/agent-automations.ts`, `api/routes.ts` and generated OpenAPI |
+| Agent ownership and policy | `packages/occ/src/agent-automations.ts`, controller composition and facade |
+| Durable state | New automation ownership repository, in-memory adapter, PostgreSQL adapter, schema and migration |
+| Native protocol | `apps/controller/src/gateway/agent-automations-client.ts`, composed with the existing Compute endpoint and private Gateway credential |
+| HTTP lifecycle | `apps/controller/src/http/agent-automations.ts`, existing session, CSRF, audit and error handling |
+| Integration | Real HTTP admission case, PostgreSQL ownership tests and the regular Agent QA workflow |
 
-## Implementation
+## Ordered implementation
 
-1. **Admission, in progress:** integrate the six routes with session admission,
-   Native IAM, existing request audit and CSRF. Reject unsupported runtimes without
-   dispatch. Creation requires exact-Agent `operate`; the other five operations
-   also accept `administer`. The implemented response contract exposes errors only.
-2. **Native qualification, blocked:** obtain an approved upstream implementation,
-   then qualify an immutable packaged runtime. The current pin is
-   `cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef`.
-3. **Dispatch, blocked on qualification:** preserve native normalized schedules;
-   check creator and effective-Agent authority before eligibility, including
-   DELETE; validate the full PATCH read against the expected revision and forward
-   it to atomic mutation. Filter reads before pagination and totals.
-4. **Effects and recovery, blocked on qualification:** bind each request to its
-   selected revision; audit successful, denied and indeterminate operations with
-   metadata only. A lost mutation reply, post-dispatch revision change, or failed
-   audit append after acknowledgement returns `503 UNKNOWN_OUTCOME`, with no replay.
-5. **Proof and delivery:** extend the real Agent QA workflow, run all five RFC
-   acceptance criteria, fix independent review findings and complete the
-   [PR readiness checklist](../../.agents/skills/local-dev/references/pr-readiness.md).
-   Publish a regular PR only when the requested implementation is ready.
-
-## Upstream qualification blockers
-
-The pinned [method authorization](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/gateway/server-methods/method-authorization.ts)
-and [scoped history admission](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/src/gateway/server-methods/cron-runs.ts)
-do not establish the required contract. Qualification must cover:
-
-- A strict ceiling of `cron.add`, `cron.list`, `cron.get`, `cron.update`,
-  `cron.remove` and `cron.runs`; no run, scratch, transfer or binding authority.
-- Authenticated server-owned creator-only or Agent-wide management scope.
-  Caller parameters cannot establish either scope or the effective Agent.
-- Creation that commits creator identity and admitted execution authority.
-  Missing `toolsAllow` and trusted scheduling defaults cannot establish a bounded
-  approved-tool grant. Public `cron.get` omits required execution evidence.
-- Current restrictions across native and dedicated Harness tools, Gateway dynamic
-  tools and configured apps/MCP, including policy reduction before execution.
-- Per-run creator and effective-Agent evidence after deletion or job-ID reuse,
-  authorization before disclosure, and filtering before totals.
+1. Submit the revised RFC before changing the reserved Compute delegation mode.
+   Keep the current RFC PR's author and branch. Implementation can continue while
+   the proposal is reviewed unless a specific hold is recorded.
+2. Add immutable ownership reservations keyed by native job ID. Bind each row to
+   the exact Namespace, Agent, human Principal and selected native Agent. Use
+   database constraints for identity and parent ownership, and cascade Agent
+   deletion. The in-memory adapter mirrors those invariants.
+3. Integrate ownership operations through controller composition. Creation checks
+   exact-Agent `operate` before lookup; management accepts creator `operate` or
+   Agent `administer`. Unregistered and foreign-creator IDs remain undisclosed.
+4. Compose a private native client for the selected revision. Verify endpoint,
+   operator scope, method support and server-selected native Agent. Keep the RPC
+   surface fixed to the six supported methods; no caller-selected method, identity,
+   target, policy or credential reaches this client.
+5. Reserve ownership before create dispatch. Round-trip native normalization.
+   For PATCH, authorize ownership, read the full job, validate its shape and same-read
+   revision, then send that revision to the atomic native update. DELETE also
+   uses the observed native revision. Filter inventory by OCC ownership before
+   public paging and totals, rejecting a changed native snapshot.
+6. Read history by the retained ownership record and exact Agent Gateway, even
+   after native one-shot or explicit deletion. Preserve native history retention.
+   Never infer creator identity from public native job or run payloads.
+7. Recheck selected revision and authority around dispatch. Record successful,
+   denied and indeterminate outcomes without prompt or native payload content.
+   After a mutation might have reached native execution, a lost reply, changed
+   revision, malformed acknowledgement or failed success audit is
+   `UNKNOWN_OUTCOME`; there is no automatic replay.
+8. Update the existing flow, reference, guide links, OpenAPI, permission and
+   database-entity cheat sheets. The environment-variable inventory is unchanged
+   unless implementation demonstrates a supported configuration need.
+9. Run real PostgreSQL and Agent workflow proof, required local checks and
+   independent review. Publish no implementation PR until the requested outcome
+   is ready and verification limits are explicit.
 
 ## Verification
 
-| Required outcome | Check and prerequisites | Result or remaining proof |
+| Required outcome | Proof | Current result |
 | --- | --- | --- |
-| Refuse all six operations safely | Existing native-admin HTTP integration, real OCC app/session/IAM and in-memory persistence; upstream is a no-dispatch tripwire | Passed; surrounding native-access and serialization suites: 31 tests, zero failures or skips. Expanded admission case also passed. |
-| Native schedule normalization, lifecycle and history | Real packaged Gateway, selected Harness and approved model/tool credentials | Blocked on upstream qualification |
-| Native creator, Agent and execution authority | Real scoped creation, denied tool calls, policy reduction, dedicated Harness and MCP/app checks | Blocked on upstream qualification |
-| Replacement, lost replies and audit failures | Owned Kubernetes fixture and real Gateway; no fake mutation acknowledgement | Blocked on dispatch implementation and runtime qualification |
-| Types, formatting, OpenAPI and docs | Node 24.22.1, pnpm 11.15.1 and Bun 1.4.4 | Passed: typecheck, lint, formatting, OpenAPI generation/check, workspace boundary, CI manifest audit and docs checks |
-| Independent review | Shared autoreview helper, local diff from the source baseline, GPT-6 Astra, P0–P2, fallback disabled | Blocked at isolation preflight: selected launcher had no isolated cached binary and its bootstrap returned HTTP 403. Normal login-shell bootstrap also failed because its cache metadata was read-only. No reviewer started; no report or clean verdict. |
+| Human and exact-Agent admission | Real HTTP app, sessions and Native IAM | Existing refusal case passed; broker success coverage pending |
+| Ownership constraints and cleanup | Disposable migrated PostgreSQL, application role, actual repository operations | Pending |
+| Normalization and lifecycle | OCC HTTP calls to a real packaged Gateway in the regular Agent workflow | Pending |
+| Approved and denied tools | Scheduled real model turn in each selected Harness; include current policy reduction and app/MCP boundaries | Pending |
+| History after deletion | Successful one-shot and explicit deletion, then creator/admin and foreign-creator history requests | Pending |
+| Unknown outcomes | Lost mutation reply, post-dispatch revision change and failed audit append; count native dispatches | Pending |
+| Revision replacement | Owned disposable Gateway workload and persistent state across replacement | Pending |
+| Independent review | Canonical autoreview, without provider or isolation bypass | Previous attempt blocked before reviewer launch; unchanged blocker until repaired |
 
-## Open decisions
-
-Product and security owners still decide whether revoking the creator's OCE
-`operate` grant disables existing schedules. This does not relax current native
-execution restrictions. The upstream delegation and qualification evidence must
-be agreed before OCE can implement successful dispatch.
+Use Node 24.22.1, pnpm 11.15.1 and Bun 1.4.4. Follow the
+[PostgreSQL setup](../../docs/testing/postgresql.md) and
+[real-runtime procedures](../../docs/testing/kubernetes.md).
+Register the Agent scenario in the QA selector, manifest and applicable advisory
+lane. Fixture or source-only checks do not satisfy native runtime acceptance.
 
 ## Delivery record
 
-The current [reference](../../docs/reference/agent-automations.md) and
-[flow](../../docs/flows/agent-automations.md) describe admission and refusal only.
-No database entity, environment variable, runtime source pin or architecture
-primitive changes. Required real-runtime proof remains outstanding. The existing
-native-access guide and reference, Compute reference, and RFC remain coherent
-single topics between 1,500 and 2,500 visible words; short links preserve their
-scope. The documentation check passes without a new length exception.
+- `465a76013e`: six admission/refusal routes, native qualification gate, API/docs
+  and a real HTTP refusal case. Surrounding integration suites passed 31 tests
+  with no failures or skips; type, lint, formatting, generated API and docs passed.
+- `c9c925bac8`: creation requires exact-Agent `operate` before resource lookup.
+  The regression failed before the correction and passed after it; administrator
+  management remained admitted. Required local checks passed.
+- The former upstream qualification dependency is replaced by the broker design.
+  Existing native APIs must still be qualified on the packaged runtime. The
+  previous tests prove refusal paths, not functioning scheduling.
+- Canonical review previously stopped at isolation preflight: launcher bootstrap
+  returned HTTP 403 without an isolated cached executable. Normal login-shell
+  bootstrap also failed on read-only cache metadata. No reviewer or report ran.
 
 ## Manual Notes
 
@@ -107,8 +110,7 @@ scope. The documentation check passes without a new length exception.
 
 ## Changelog
 
+- 2026-11-21: Revise delivery around the selected OCC broker and sole-manager assumption; retain prior verification limits.
 - 2026-11-20 20:31: Correct creation admission to require operate before resource lookup. The real HTTP regression failed on commit `465a76013e` (administer-only POST returned 503 instead of 403) and passed after the correction. Administration still admits the other five operations to the qualification refusal.
-
 - 2026-11-20 20:28: Record passing local admission checks and the blocked independent review; native acceptance remains unrun.
-
 - 2026-11-20 20:23: Record admission work and upstream qualification blockers (source `d4a3ab0c9603ce9678995160776dd78d94a7a688`; authoring run `01a1fc52-9d88-7223-b8a1-3c98595d3fbe`).
