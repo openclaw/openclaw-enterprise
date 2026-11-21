@@ -14,7 +14,11 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
-import { openShellWorkspaceName, type OpenShellGateway } from "../../backends/openshell.ts";
+import {
+  openShellProviderName,
+  openShellWorkspaceName,
+  type OpenShellGateway,
+} from "../../backends/openshell.ts";
 import { OpenShellAdmissionLimitError, statusCode } from "../sandbox/openshell-gateway-errors.ts";
 import {
   assertOpenShellDeploymentConfiguration,
@@ -26,6 +30,7 @@ import {
   OpenShellCredentialDeliveryRefusedError,
   openShellPushedPolicyMatches,
   prepareOpenShellPushedProvider,
+  readOwnedOpenShellPushedProvider,
   readOpenShellPushedProvider,
 } from "./openshell-pushed-provider.ts";
 
@@ -344,18 +349,80 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       assertOpenShellDeploymentRef(context, input.unboundDeployment);
       return;
     }
-    assertOpenShellDeploymentRef(context, input.targetRef);
-    // TODO(CP3): withdraw target-bound native Providers through the coordinated lifecycle.
-    throw new DependencyUnavailableError(
-      "Native target-bound credential withdrawal is unavailable.",
-    );
+    const expected = {
+      targetRef: input.targetRef,
+      configurationId: context.revision.configurationId,
+    };
+    assertOpenShellDeploymentConfiguration(context, expected);
+    try {
+      const scope = this.pushedScope(context);
+      const sandbox = await scope.client.getSandbox(
+        { workspace: scope.workspace, name: scope.name },
+        context.signal,
+      );
+      if (!sandbox) {
+        return;
+      }
+      assertOpenShellPushedTarget(sandbox, scope.workspace, scope.name, expected);
+      const admitted = context.revision.credentialDeployment;
+      const binding = admitted?.bindings[0];
+      if (!admitted || admitted.proxyDriverId !== this.id || !binding) {
+        throw new OpenShellCredentialDeliveryRefusedError();
+      }
+      assertOpenShellPushedBinding(context, binding, admitted.injectionPolicies);
+      if (input.bindingRefs && !input.bindingRefs.includes(binding.bindingRef)) {
+        return;
+      }
+      const providers = sandbox.spec?.providers;
+      if (!sandbox.spec || (providers !== undefined && !Array.isArray(providers))) {
+        throw new OpenShellCredentialDeliveryRefusedError();
+      }
+      if (!providers?.includes(openShellProviderName(binding.sourceRef.id))) {
+        return;
+      }
+      const provider = await readOwnedOpenShellPushedProvider({
+        client: scope.client,
+        workspace: scope.workspace,
+        binding,
+        signal: context.signal,
+      });
+      // TODO(CP2): accepted same-name replacement race until Gateway can enforce the immutable
+      // Sandbox ID before detach: https://github.com/NVIDIA/OpenShell/issues/5794
+      await scope.client.detachSandboxProvider(
+        scope.workspace,
+        scope.name,
+        provider.name,
+        context.signal,
+      );
+      const after = await scope.client.getSandbox(
+        { workspace: scope.workspace, name: scope.name },
+        context.signal,
+      );
+      if (!after) {
+        return;
+      }
+      assertOpenShellPushedTarget(after, scope.workspace, scope.name, expected);
+      const remaining = after.spec?.providers;
+      if (
+        !after.spec ||
+        (remaining !== undefined && !Array.isArray(remaining)) ||
+        remaining?.includes(provider.name)
+      ) {
+        throw new OpenShellCredentialDeliveryRefusedError();
+      }
+    } catch (error) {
+      context.signal.throwIfAborted();
+      if (
+        error instanceof OpenShellCredentialDeliveryRefusedError ||
+        error instanceof OpenShellAdmissionLimitError
+      ) {
+        throw error;
+      }
+      throw new DependencyUnavailableError("The native credential withdrawal is unconfirmed.");
+    }
   }
 
-  private async pushedTarget(
-    context: CredentialDeploymentContext,
-    expected: CredentialDeploymentConfiguration,
-  ) {
-    assertOpenShellDeploymentConfiguration(context, expected);
+  private pushedScope(context: CredentialDeploymentContext) {
     const ref = this.sandbox.harnessResource!({
       namespace: context.namespace,
       revision: context.revision,
@@ -365,9 +432,21 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     }
     const client = this.backend.client.clientForNamespace(ref.namespaceName);
     const workspace = openShellWorkspaceName(context.namespace);
-    const sandbox = await client.getSandbox({ workspace, name: ref.resourceName }, context.signal);
-    assertOpenShellPushedTarget(sandbox, workspace, ref.resourceName, expected);
-    return { client, workspace, name: ref.resourceName, sandbox };
+    return { client, workspace, name: ref.resourceName };
+  }
+
+  private async pushedTarget(
+    context: CredentialDeploymentContext,
+    expected: CredentialDeploymentConfiguration,
+  ) {
+    assertOpenShellDeploymentConfiguration(context, expected);
+    const scope = this.pushedScope(context);
+    const sandbox = await scope.client.getSandbox(
+      { workspace: scope.workspace, name: scope.name },
+      context.signal,
+    );
+    assertOpenShellPushedTarget(sandbox, scope.workspace, scope.name, expected);
+    return { ...scope, sandbox };
   }
 }
 

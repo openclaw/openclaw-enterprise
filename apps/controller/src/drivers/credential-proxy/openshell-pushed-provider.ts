@@ -14,7 +14,6 @@ import {
   MANAGED_BY,
   MANAGED_BY_LABEL,
   SOURCE_ID_LABEL,
-  openShellOwnedBy,
   openShellProviderName,
 } from "../../backends/openshell.ts";
 import {
@@ -125,6 +124,23 @@ function checkProfile(
   return stored.resourceVersion;
 }
 
+function ownsDeliveryProvider(
+  provider: OpenShellProviderResponse | undefined,
+  binding: DeploymentCredentialBinding,
+  workspace: string,
+): provider is OpenShellProviderResponse {
+  return (
+    !!provider &&
+    provider.name === openShellProviderName(binding.sourceRef.id) &&
+    provider.workspace === workspace &&
+    provider.labels[MANAGED_BY_LABEL] === MANAGED_BY &&
+    provider.labels[SOURCE_ID_LABEL] === binding.sourceRef.id &&
+    provider.labels[NAMESPACE_ID] === binding.sourceRef.namespaceId &&
+    provider.labels[DELIVERY_OWNER] === STATIC_DELIVERY &&
+    provider.labels[TOKEN_SERVICE_OWNER] === undefined
+  );
+}
+
 function checkProvider(
   provider: OpenShellProviderResponse | undefined,
   binding: DeploymentCredentialBinding,
@@ -135,14 +151,9 @@ function checkProvider(
   const version = provider?.config[SOURCE_VERSION];
   // Native TokenService sources can use the same source-derived name. Mixed ownership is unsafe.
   if (
-    !provider ||
-    !openShellOwnedBy(provider, binding.sourceRef.id) ||
-    provider.name !== openShellProviderName(binding.sourceRef.id) ||
-    provider.workspace !== workspace ||
+    !ownsDeliveryProvider(provider, binding, workspace) ||
+    provider.type !== openShellProviderName(binding.sourceRef.id) ||
     provider.profileWorkspace !== workspace ||
-    provider.labels[NAMESPACE_ID] !== binding.sourceRef.namespaceId ||
-    provider.labels[DELIVERY_OWNER] !== STATIC_DELIVERY ||
-    provider.labels[TOKEN_SERVICE_OWNER] !== undefined ||
     !provider.id ||
     !/^[1-9]\d*$/.test(provider.resourceVersion) ||
     !version ||
@@ -159,6 +170,24 @@ function checkProvider(
     profileVersion,
     sourceVersion: version,
   });
+}
+
+/** Cleanup depends on ownership, not on whether this Provider passed readiness. */
+export async function readOwnedOpenShellPushedProvider(input: {
+  readonly client: Pick<OpenShellGatewayClient, "getProvider">;
+  readonly workspace: string;
+  readonly binding: DeploymentCredentialBinding;
+  readonly signal: AbortSignal;
+}): Promise<OpenShellProviderResponse> {
+  const provider = await input.client.getProvider(
+    input.workspace,
+    openShellProviderName(input.binding.sourceRef.id),
+    input.signal,
+  );
+  if (!ownsDeliveryProvider(provider, input.binding, input.workspace)) {
+    refuse();
+  }
+  return provider;
 }
 
 /** First-use transfer only. Reusing a delivery Provider never resolves or repairs its value. */
@@ -321,6 +350,8 @@ export function assertOpenShellInjectionPolicy(
   return request;
 }
 
+// TODO(native policy): require leaf-only executable rules (#4943) and Bearer-only
+// placeholder substitution when OpenShell provides those enforcement capabilities.
 /** Check the Gateway's effective policy, including its derived credential marker. */
 export function openShellPushedPolicyMatches(
   source: unknown,

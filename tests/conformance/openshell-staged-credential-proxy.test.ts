@@ -102,6 +102,15 @@ function sourcePolicyFrom(effective: Wire): Wire {
   return source;
 }
 
+function policyUsesProvider(policy: unknown, provider: string): boolean {
+  const networks = record(policy).network_policies;
+  return Object.values(record(networks)).some((rule) =>
+    (record(rule).endpoints as Wire[]).some(
+      (endpoint) => record(endpoint.credential_binding ?? {}).provider === provider,
+    ),
+  );
+}
+
 async function fixture(t: TestContext) {
   const sandbox = {
     metadata: {
@@ -125,7 +134,12 @@ async function fixture(t: TestContext) {
     creates: [] as Wire[],
     updates: [] as Wire[],
     attaches: [] as Wire[],
+    detaches: [] as Wire[],
     sandboxReads: 0,
+    sandboxPresent: true,
+    sandboxReadMode: "normal" as "normal" | "unavailable-after-detach",
+    detachMode: "normal" as "normal" | "permission-denied",
+    forbiddenMutations: [] as string[],
     config: undefined as Wire | undefined,
     policyStatus: undefined as Wire | undefined,
     providerStatus: undefined as Wire | undefined,
@@ -148,6 +162,12 @@ async function fixture(t: TestContext) {
   const methods: Record<string, Handler> = {
     GetSandbox: () => {
       state.sandboxReads++;
+      if (state.sandboxReadMode === "unavailable-after-detach" && state.detaches.length > 0) {
+        throw Object.assign(new Error("Gateway unavailable"), { code: grpc.status.UNAVAILABLE });
+      }
+      if (!state.sandboxPresent) {
+        return undefined;
+      }
       if (state.detachOnNextSandboxRead) {
         sandbox.spec.providers = [];
         sandbox.metadata.resource_version = "7";
@@ -172,6 +192,53 @@ async function fixture(t: TestContext) {
         state.detachOnNextSandboxRead = true;
       }
       return state.provider && { provider: state.provider };
+    },
+    DetachSandboxProvider: (input) => {
+      state.detaches.push(input);
+      if (state.detachMode === "permission-denied") {
+        throw Object.assign(new Error("upstream-private-detail"), {
+          code: grpc.status.PERMISSION_DENIED,
+        });
+      }
+      const provider = String(input.provider);
+      if (
+        (sandbox.spec.policy && policyUsesProvider(sandbox.spec.policy, provider)) ||
+        (state.config?.policy && policyUsesProvider(state.config.policy, provider))
+      ) {
+        throw Object.assign(new Error("Provider is still referenced by policy"), {
+          code: grpc.status.FAILED_PRECONDITION,
+        });
+      }
+      const detached = sandbox.spec.providers.includes(provider);
+      sandbox.spec.providers = sandbox.spec.providers.filter((name) => name !== provider);
+      const mutationId = randomUUID();
+      if (detached) {
+        sandbox.metadata.resource_version = String(BigInt(sandbox.metadata.resource_version) + 1n);
+        sandbox.spec.provider_attachment_epoch = mutationId;
+      }
+      return {
+        detached,
+        receipt: {
+          receipt_id: randomUUID(),
+          mutation_id: mutationId,
+          kind: "PROVIDER_MUTATION_KIND_DETACH",
+          workspace: namespace.name,
+          provider,
+          desired: {
+            sandbox_id: sandbox.metadata.id,
+            sandbox: sandbox.metadata.name,
+            attachment_epoch: sandbox.spec.provider_attachment_epoch,
+            provider_env_revision: String(state.config?.provider_env_revision ?? "1"),
+            config_revision: String(state.config?.config_revision ?? "1"),
+            policy_hash: String(state.config?.policy_hash ?? "b".repeat(64)),
+          },
+          persisted_time: { seconds: String(Math.floor(Date.now() / 1_000)), nanos: 0 },
+        },
+      };
+    },
+    DeleteProvider: () => {
+      state.forbiddenMutations.push("DeleteProvider");
+      assert.fail("target cleanup must not delete a shared Provider");
     },
     GetProviderProfile: () => state.profile && { profile: state.profile },
     GetSandboxConfig: () => state.config,
@@ -517,6 +584,33 @@ async function fixture(t: TestContext) {
     };
     return { endpoint, rule, policy, desired, observed };
   };
+  const removeCredentialRoute = () => {
+    // Simulate the canonical Sandbox owner applying the next source/effective policy revision.
+    const revision = record(state.policyStatus!.revision);
+    for (const policy of [sandbox.spec.policy, state.config!.policy, revision.policy]) {
+      Reflect.deleteProperty(record(record(policy).network_policies), "model");
+    }
+    const version = Number(state.config!.version) + 1;
+    const configRevision = String(BigInt(String(state.config!.config_revision)) + 1n);
+    const envRevision = String(BigInt(String(state.config!.provider_env_revision)) + 1n);
+    const effectiveHash = "c".repeat(64);
+    sandbox.metadata.resource_version = String(BigInt(sandbox.metadata.resource_version) + 1n);
+    Object.assign(state.config!, {
+      version,
+      config_revision: configRevision,
+      provider_env_revision: envRevision,
+      policy_hash: effectiveHash,
+    });
+    Object.assign(revision, { version, policy_hash: "d".repeat(64) });
+    state.policyStatus!.active_version = version;
+    Object.assign(record(sandbox.status.configuration_admission), {
+      policy_version: version,
+      config_revision: configRevision,
+      provider_env_revision: envRevision,
+      policy_hash: effectiveHash,
+    });
+    state.providerStatus = undefined;
+  };
   return {
     client,
     proxy,
@@ -526,6 +620,7 @@ async function fixture(t: TestContext) {
     suppliedBinding,
     configure,
     observeServing,
+    removeCredentialRoute,
     resolutions: () => resolutions,
   };
 }
@@ -919,33 +1014,121 @@ test("staged OpenShell Proxy refuses a loaded policy outside the admitted reques
       state: "pending",
     });
   });
-  await t.test("missing last-delivered Source version", async () => {
-    // The Gateway can serve a Provider without OCC's custom delivery-version marker.
-    f.state.provider!.metadata.resource_version = "8";
-    f.state.provider!.config = {};
-    f.observeServing();
-    assert.notEqual((await f.proxy.getDeploymentStatus(f.context, configuration)).state, "ready");
-  });
+  await t.test(
+    "missing last-delivered Source version still permits exact binding cleanup",
+    async () => {
+      // The Gateway can serve a Provider without OCC's custom delivery-version marker.
+      f.state.provider!.metadata.resource_version = "8";
+      f.state.provider!.config = {};
+      f.observeServing();
+      assert.notEqual((await f.proxy.getDeploymentStatus(f.context, configuration)).state, "ready");
+      const provider = structuredClone(f.state.provider);
+      f.removeCredentialRoute();
+      await f.proxy.removeDeployment(f.context, {
+        targetRef: configuration.targetRef,
+        bindingRefs: [binding.bindingRef],
+      });
+      assert.equal(f.state.detaches.length, 1);
+      assert.equal(f.state.detaches[0]?.provider, provider!.metadata.name);
+      assert.deepEqual(f.sandbox.spec.providers, []);
+      assert.deepEqual(f.state.provider, provider);
+      assert.deepEqual(f.state.forbiddenMutations, []);
+    },
+  );
   assert.equal(f.resolutions(), 1);
   assert.equal(f.state.updates.length, 0);
 });
 
-test("staged OpenShell Proxy refuses target-bound removal and safely cleans up unbound staging", async (t) => {
+test("staged OpenShell Proxy detaches a target binding without deleting its shared Provider", async (t) => {
   const f = await fixture(t);
-  await assert.rejects(
-    f.proxy.removeDeployment(f.context, { targetRef: configuration.targetRef }),
-    { name: "DependencyUnavailableError", message: /target-bound credential withdrawal/ },
-  );
   const unboundDeployment = {
     namespaceId: configuration.targetRef.namespaceId,
     agentId: configuration.targetRef.agentId,
     revisionId: configuration.targetRef.revisionId,
   };
   await f.proxy.removeDeployment(f.context, { unboundDeployment });
-  // Neither branch may resolve credential material or change a target until coordinated cleanup exists.
   assert.equal(f.resolutions(), 0);
   assert.equal(f.state.sandboxReads, 0);
-  assert.equal(f.state.creates.length, 0);
-  assert.equal(f.state.attaches.length, 0);
+
+  await f.configure();
+  f.observeServing();
+  assert.deepEqual(await f.proxy.getDeploymentStatus(f.context, configuration), { state: "ready" });
+  const provider = structuredClone(f.state.provider);
+  const remove = () =>
+    f.proxy.removeDeployment(f.context, {
+      targetRef: configuration.targetRef,
+      bindingRefs: [binding.bindingRef],
+    });
+
+  // Stock Gateway refuses detach while the current policy still binds this Provider.
+  await assert.rejects(remove(), DependencyUnavailableError);
+  assert.equal(f.state.detaches.length, 1);
+  assert.deepEqual(f.sandbox.spec.providers, [provider!.metadata.name]);
+
+  // A different target must be refused before another Workspace/name mutation.
+  f.sandbox.metadata.id = "f1d7e6c5-1b2a-4c3d-8e9f-102938475603";
+  await assert.rejects(remove(), DependencyUnavailableError);
+  assert.equal(f.state.detaches.length, 1);
+  f.sandbox.metadata.id = configuration.targetRef.sandboxId;
+
+  f.removeCredentialRoute();
+  // A same-name Provider outside this Namespace is not this binding's cleanup target.
+  const currentProvider = f.state.provider!;
+  currentProvider.metadata.labels["openclaw.dev/namespace-id"] = "namespace-foreign";
+  currentProvider.metadata.resource_version = String(
+    BigInt(currentProvider.metadata.resource_version) + 1n,
+  );
+  const detachesBeforeOwnershipRefusal = f.state.detaches.length;
+  await assert.rejects(remove(), DependencyUnavailableError);
+  assert.equal(f.state.detaches.length, detachesBeforeOwnershipRefusal);
+  currentProvider.metadata.labels["openclaw.dev/namespace-id"] = namespace.id;
+  currentProvider.metadata.resource_version = String(
+    BigInt(currentProvider.metadata.resource_version) + 1n,
+  );
+  const restoredProvider = structuredClone(currentProvider);
+
+  f.state.detachMode = "permission-denied";
+  await assert.rejects(remove(), (error: unknown) => {
+    assert.ok(error instanceof DependencyUnavailableError);
+    assert.doesNotMatch(String(error), /upstream-private-detail/);
+    return true;
+  });
+  assert.deepEqual(f.sandbox.spec.providers, [provider!.metadata.name]);
+  f.state.detachMode = "normal";
+
+  await remove();
+  assert.equal(f.state.detaches.length, 3);
+  const detached = f.state.detaches[2]!;
+  assert.equal(record(detached.workspace_scope).workspace, namespace.name);
+  assert.equal(detached.sandbox, f.sandbox.metadata.name);
+  assert.equal(detached.provider, provider!.metadata.name);
+  assert.equal(detached.expected_resource_version, undefined);
+  assert.match(String(detached.request_id), /^[0-9a-f-]{36}$/);
+  assert.equal(f.state.statusReads.length, 1);
+  assert.deepEqual(f.sandbox.spec.providers, []);
+
+  // Repeating cleanup for an absent binding or target must not mutate the shared Source copy.
+  await remove();
+  assert.deepEqual(f.state.provider, restoredProvider);
+  f.state.sandboxPresent = false;
+  await remove();
+
+  assert.equal(f.resolutions(), 1);
+  assert.equal(f.state.detaches.length, 3);
+  assert.deepEqual(f.state.forbiddenMutations, []);
   assert.equal(f.state.updates.length, 0);
+});
+
+test("staged OpenShell Proxy reports failure when target membership cannot be confirmed", async (t) => {
+  const f = await fixture(t);
+  await f.configure();
+  f.state.sandboxReadMode = "unavailable-after-detach";
+  await assert.rejects(
+    f.proxy.removeDeployment(f.context, { targetRef: configuration.targetRef }),
+    DependencyUnavailableError,
+  );
+  assert.equal(f.state.detaches.length, 1);
+  assert.deepEqual(f.sandbox.spec.providers, []);
+  assert.equal(f.state.provider?.config.oce_source_version, "source-v1");
+  assert.deepEqual(f.state.forbiddenMutations, []);
 });
