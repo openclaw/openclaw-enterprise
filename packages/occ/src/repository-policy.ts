@@ -14,6 +14,9 @@ import {
   type RepositoryRevisionState,
   type RevisionHarnessDescriptor,
   type SandboxDriver,
+  codexProxiesRepositoryBroker,
+  codexRepositoryBrokerNetworkProxy,
+  type OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import {
   asRecord,
@@ -38,6 +41,7 @@ import {
   SandboxRepositoryRecipientUnverifiedError,
   SavedRepositorySelectionError,
   ScopeViolationError,
+  ConfigurationHarnessError,
 } from "./errors.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import { unchangedDriver, type DriverRegistry, type RegisteredDriver } from "./driver-registry.ts";
@@ -144,6 +148,27 @@ function includesBinding(
         binding.repositoryRef === expected.repositoryRef && binding.profile === expected.profile,
     ) === true
   );
+}
+
+// An Agent with repository bindings reaches the repository credential broker through the
+// Codex network proxy in its Harness. Compute preparation refused a proxy setting that blocks
+// the broker only after a dedicated deployment stopped the running revision; Agent save,
+// provisioning and deployment refuse it first, with the rule preparation applies (finding
+// 2350). Preparation alone knows the broker host, from the prepared material, so it still
+// refuses a deny of that host. A Sandbox with its own repository path receives the material
+// from the worker instead and gets no broker policy.
+export function validateRepositoryBrokerNetworkProxy(
+  harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  sandbox: SandboxDriver | undefined,
+): void {
+  if (sandbox?.repositoryAccess !== undefined || !codexProxiesRepositoryBroker(harness)) {
+    return;
+  }
+  const proxy = codexRepositoryBrokerNetworkProxy(configuration);
+  if ("refusal" in proxy) {
+    throw new ConfigurationHarnessError(proxy.refusal);
+  }
 }
 
 export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyDependencies) {

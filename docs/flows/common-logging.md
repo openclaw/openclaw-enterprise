@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
-updated: 2026-11-18
-last_updated_session: authoring-run/427e95c2-8e34-4624-8497-52493b5980f5
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Common Operational Logging Flow
@@ -17,7 +17,7 @@ retains separate, durable audit evidence.
 - Trigger: API, worker, migration, or bootstrap startup, Agent deployment, or
   optional Docker Compose or Helm Collector enablement.
 - Source: `apps/controller/src/composition/installation-config.ts:loadStartupConfigurationSnapshot`
-- Source: `packages/occ/src/index.ts:OpenClawController.deployAgent`
+- Source: `packages/occ/src/agent-harness-topology.ts:agentRuntimeConfiguration`
 - Source: `deploy/helm/openclaw-enterprise/templates/collector.yaml:logging.collector.enabled`
 - Assumptions: trusted startup YAML, authorized deployment, Compute Driver
   support, and operator-owned Collector configuration for remote export.
@@ -111,7 +111,7 @@ as one line cut at 512 characters, and drops secret-shaped messages before outpu
 
 ### 3. Admission freezes runtime logging
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent`
+`packages/occ/src/agent-harness-topology.ts:agentRuntimeConfiguration`
 
 When the trusted ComputeDriver declares `runtimeLogging: "driver"`, admission
 validates and freezes the native document with its logging fields intact. The
@@ -345,6 +345,7 @@ covers credentials, supervision, queue storage and backend verification.
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-18 04:25: Name the exported authentication refusal and library events with their request ID. (authoring-run/427e95c2-8e34-4624-8497-52493b5980f5 - 0fe12954321242e9c0a0619b9f39f7e6d5431328)
 
 - 2026-11-13 22:56: Apply the existing credential checks to local scalar strings and Collector diagnostic codes. (authoring-run/ab7d7799-30b2-43fe-8453-86ac8cba698b - afab47b8ff040a1ab6e0fa1c5a211690ab990f32)

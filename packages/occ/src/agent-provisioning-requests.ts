@@ -9,32 +9,21 @@ import {
   type Agent,
   type AuditEvent,
   type BackendRef,
-  type ComputeDriver,
-  type ConfigurationDriver,
-  type CredentialSource,
   type CredentialSourceType,
   type HarnessAuthBinding,
   type HarnessAuthSnapshot,
   type HarnessExecutionMode,
   type IAMDriver,
-  type Namespace,
   type OpenClawConfigurationDocument,
   type PluginApprovers,
   type PluginDesiredState,
-  type PluginDriver,
-  type PluginDriverIdentity,
-  type RepositoryAccess,
-  type RepositoryBindingRequest,
-  type RepositoryBindingSelection,
-  type RevisionHarnessDescriptor,
-  type SandboxDriver,
   type SecretBindings,
   type SecretReference,
-  type ServiceAccount,
 } from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import {
+  requireDedicatedNativeSupport,
   requireSandboxExecutionMode,
   requireSandboxOpenClawMode,
   validateComputeAgentProvisioning,
@@ -62,7 +51,7 @@ import {
   type ProvisionAgentResult,
 } from "./agent-provisioning.ts";
 import type { AgentProvisioningRecord } from "./ports/agent-provisioning.ts";
-import { resolveConfiguredHarnessId } from "./configured-harness.ts";
+import { resolveConfiguredHarnessId, type ModelPolicyAgent } from "./configured-harness.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import { workMatchesRevision, type ControllerWork } from "./controller-work.ts";
@@ -72,65 +61,62 @@ import {
   ConfigurationHarnessError,
   DependencyUnavailableError,
   NamespaceNotReadyError,
+  ProvisioningSecretDriverError,
   ResourceStateConflictError,
   ScopeViolationError,
   SecretBindingValidationError,
 } from "./errors.ts";
+import type { AgentRuntimeCredentials } from "./agent-runtime-credentials.ts";
+import {
+  rejectCrossNamespaceSecretSources,
+  type ConfigurationOperations,
+} from "./configuration-operations.ts";
+import type { ControllerResourceValues } from "./controller-resource-values.ts";
+import type { createDeploymentChannelChecks } from "./deployment-channels.ts";
+import type { createSandboxPolicyOperations } from "./sandbox-policy.ts";
+import type { SecretOperations } from "./secret-operations.ts";
+import { exactNamespace, lockNamespace, namespaceIdentity } from "./resource-scope.ts";
+import { exactServiceAccount } from "./service-account-operations.ts";
+import {
+  normalizeAgentPlugins,
+  normalizeAgentPluginApprovers,
+  pluginOwner,
+  validatePluginCredentialSources,
+  type createAgentPluginValidation,
+} from "./agent-plugin-validation.ts";
+import type { NativeWorkerSupportSource } from "./native-worker-support.ts";
+import {
+  validateRepositoryBrokerNetworkProxy,
+  type createRepositoryPolicyOperations,
+} from "./repository-policy.ts";
+import { refuseTakenAgentName } from "./agent-drafts.ts";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 
 interface ProvisioningRequestDependencies {
   readonly installationId: () => string;
-  readonly clock: () => Date;
-  readonly timestamp: () => string;
-  readonly nextIdentifier: (kind: "agent") => string;
+  readonly resourceValues: Pick<ControllerResourceValues, "now" | "timestamp" | "nextIdentifier">;
   readonly requestAuditId: () => string | undefined;
   readonly backendId: (value: BackendRef | undefined) => BackendRef;
-  readonly exactServiceAccount: (
-    state: PlatformReadView,
-    namespaceId: string,
-    serviceAccountId: string,
-  ) => Promise<Readonly<ServiceAccount>>;
-  readonly refuseTakenAgentName: (
-    state: Pick<PlatformReadView, "agents">,
-    namespaceId: string,
-    name: string,
-  ) => Promise<void>;
   readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
   readonly authority: Pick<
     ControllerAuthority,
     "authorize" | "canRead" | "authorizeAgentPrincipal"
   >;
-  readonly namespace: {
-    namespaceIdentity(namespaceId: string): void;
-    exactNamespace(state: PlatformReadView, namespaceId: string): Promise<Readonly<Namespace>>;
-    lockNamespace(state: PlatformUnitOfWork, namespaceId: string): Promise<Readonly<Namespace>>;
-  };
-  readonly drivers: {
-    compute(): ComputeDriver;
-    configuration(): ConfigurationDriver;
-    sandbox(): SandboxDriver | undefined;
-    iam(): IAMDriver;
-    ownedSecretDriver(driverId: string): void;
-  };
-  readonly configuration: {
-    validateChannelCredentials(
-      principalId: string,
-      namespaceId: string,
-      configuration: AgentProvisioningConfigurationInput,
-      authorizeUse: () => Promise<void>,
-    ): Promise<void>;
-    validateContent(
-      values: OpenClawConfigurationDocument,
-      bindings: SecretBindings,
-      mode: HarnessExecutionMode,
-    ): void;
-    resolveHarness(
-      values: Readonly<OpenClawConfigurationDocument>,
-      mode: HarnessExecutionMode,
-    ): string;
-  };
-  readonly harness: () => Pick<
+  readonly runtimeCredentials: Pick<AgentRuntimeCredentials, "runtimeCredentialComputeDriver">;
+  readonly settings: Pick<
+    ConfigurationOperations,
+    "selectedDriver" | "validateConfigurationContent"
+  >;
+  readonly sandboxPolicy: Pick<ReturnType<typeof createSandboxPolicyOperations>, "sandboxDriver">;
+  readonly secrets: Pick<SecretOperations, "ownedSecretDriver">;
+  readonly selectedIAM: () => IAMDriver;
+  readonly channels: Pick<
+    ReturnType<typeof createDeploymentChannelChecks>,
+    "validateChannelCredentials"
+  >;
+  readonly modelPolicyAgent: (mode: HarnessExecutionMode) => ModelPolicyAgent;
+  readonly harness: Pick<
     ReturnType<typeof createHarnessAuthOperations>,
     | "admitHarnessAuth"
     | "assertCredentialGatewayDelivery"
@@ -141,91 +127,29 @@ interface ProvisioningRequestDependencies {
     | "credentialSourceHarnessAuthSnapshot"
     | "serviceAccountHarnessAuthSnapshot"
   >;
-  readonly plugins: {
-    normalizeAgentPlugins(plugins: PluginDesiredState | undefined): PluginDesiredState | undefined;
-    normalizeAgentPluginApprovers(value: unknown): PluginApprovers | undefined;
-    validateAgentPlugins(
-      plugins: PluginDesiredState | undefined,
-      approvers: PluginApprovers | undefined,
-      readValues: () =>
-        Readonly<OpenClawConfigurationDocument> | Promise<Readonly<OpenClawConfigurationDocument>>,
-      previous?: {
-        readonly plugins?: PluginDesiredState;
-        readonly pluginDriver?: PluginDriverIdentity;
-      },
-      source?: "request" | "stored",
-    ): Promise<PluginDriver | undefined>;
-    validatePluginCredentialSources(
-      driver: PluginDriver | undefined,
-      plugins: PluginDesiredState | undefined,
-      sources: readonly CredentialSource[],
-    ): Promise<void>;
-    validatePluginPlacement(
-      driver: PluginDriver,
-      plugins: PluginDesiredState | undefined,
-      harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
-    ): void;
-    pluginOwner(
-      driver: PluginDriver,
-      previous?: {
-        readonly plugins?: PluginDesiredState;
-        readonly pluginDriver?: PluginDriverIdentity;
-      },
-    ): PluginDriverIdentity;
-  };
-  readonly repository: {
-    admitRepositoryCredentials(
-      agent: Readonly<Agent>,
-      compute: ComputeDriver,
-      harness: RevisionHarnessDescriptor,
-      sandboxDriverId: string | undefined,
-      admittedAtWallMs: number,
-    ): unknown;
-    repositorySettings(
-      namespaceId: string,
-      input: {
-        readonly repositoryBindings?: readonly RepositoryBindingRequest[];
-        readonly repositoryAccess?: RepositoryAccess;
-      },
-    ): {
-      repositoryBindings: readonly RepositoryBindingSelection[] | undefined;
-      repositoryAccess?: RepositoryAccess;
-    };
-    validateRepositoryBrokerNetworkProxy(
-      harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
-      configuration: Readonly<OpenClawConfigurationDocument>,
-      sandbox: SandboxDriver | undefined,
-    ): void;
-  };
-  readonly topology: {
-    rejectCrossNamespaceSecretSources(
-      namespaceId: string,
-      secretBindings: SecretBindings | undefined,
-      harnessAuth: HarnessAuthBinding | null | undefined,
-    ): void;
-    requireDedicatedNativeSupport(
-      harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
-      sandbox: SandboxDriver | undefined,
-      options: {
-        runtimeImage: boolean;
-        stored: boolean;
-        configuration: Readonly<OpenClawConfigurationDocument>;
-      },
-    ): void;
-  };
+  readonly plugins: Pick<
+    ReturnType<typeof createAgentPluginValidation>,
+    "validateAgentPlugins" | "validatePluginPlacement"
+  >;
+  readonly repository: Pick<
+    ReturnType<typeof createRepositoryPolicyOperations>,
+    "admitRepositoryCredentials" | "repositorySettings"
+  >;
+  readonly nativeWorkers: NativeWorkerSupportSource | undefined;
 }
 
 export function createProvisioningRequests(dependencies: ProvisioningRequestDependencies) {
   const {
     transactions,
     authority,
-    drivers,
-    configuration,
-    namespace: namespaceScope,
-    harness: harnessAuthAccess,
-    plugins: pluginPolicy,
+    runtimeCredentials,
+    settings,
+    sandboxPolicy,
+    secrets,
+    harness: harnessOperations,
+    plugins: pluginValidation,
     repository,
-    topology,
+    resourceValues,
   } = dependencies;
 
   async function provisionAgent(
@@ -257,14 +181,14 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     }
     const gatewayManagedMode = normalizeGatewayManagedMode(input.gatewayManagedMode, true);
     const backendId = dependencies.backendId(input.backendId);
-    const plugins = pluginPolicy.normalizeAgentPlugins(input.plugins);
-    const pluginApprovers = pluginPolicy.normalizeAgentPluginApprovers(input.pluginApprovers);
+    const plugins = normalizeAgentPlugins(input.plugins);
+    const pluginApprovers = normalizeAgentPluginApprovers(input.pluginApprovers);
     const workspace = normalizeProvisioningWorkspace(
       input.initialWorkspaceFiles,
       input.workspaceDefaultsId,
     );
-    const compute = drivers.compute();
-    const configurationDriver = drivers.configuration();
+    const compute = runtimeCredentials.runtimeCredentialComputeDriver("provision");
+    const configurationDriver = settings.selectedDriver();
     if (
       compute.validateAgentProvisioning === undefined ||
       compute.getAgentRuntimeCredentialStatus === undefined ||
@@ -292,7 +216,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     }
     // A selected gateway owns model delivery for every dedicated Harness. Refuse
     // incompatible bindings before a job or external resource can be created.
-    harnessAuthAccess().assertCredentialGatewayDelivery(harnessAuth);
+    harnessOperations.assertCredentialGatewayDelivery(harnessAuth);
     const acceptedInput = Object.freeze({
       requestId,
       namespaceId: input.namespaceId,
@@ -326,10 +250,11 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     // Agent can run, as its admission's do (finding 3036).
     async function validateContent(configurationInput: AgentProvisioningConfigurationInput) {
       await configurationDriver.validateSize?.(configurationInput.values);
-      configuration.validateContent(
+      settings.validateConfigurationContent(
         configurationInput.values,
+        undefined,
         configurationInput.secretBindings ?? {},
-        executionMode,
+        dependencies.modelPolicyAgent(executionMode),
       );
       await configurationDriver.validate({
         id: "cfg_00000000-0000-4000-8000-000000000000",
@@ -340,7 +265,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
         ...(configurationInput.secretBindings === undefined
           ? {}
           : { secretBindings: configurationInput.secretBindings }),
-        createdAt: dependencies.timestamp(),
+        createdAt: resourceValues.timestamp(),
       });
     }
 
@@ -351,7 +276,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       let configurationInput = originalConfiguration;
       let reservedAgentId: string | undefined;
       if (configurationPreparation !== undefined) {
-        reservedAgentId = dependencies.nextIdentifier("agent");
+        reservedAgentId = resourceValues.nextIdentifier("agent");
         configurationInput = normalizeProvisioningConfiguration({
           ...configurationInput,
           values: configurationPreparation.prepare(
@@ -361,7 +286,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
         });
       }
       // A replay is checked against the current Installation by authorizeProvisioningRecord.
-      harnessAuthAccess().requireSavedHarnessAuth(
+      harnessOperations.requireSavedHarnessAuth(
         input.namespaceId,
         compute,
         executionMode,
@@ -370,7 +295,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       );
       validateComputeAgentProvisioning(compute, executionMode, configurationInput.values);
       // Reject foreign references before channel validation can report them as a scope miss.
-      topology.rejectCrossNamespaceSecretSources(
+      rejectCrossNamespaceSecretSources(
         input.namespaceId,
         configurationInput.secretBindings,
         harnessAuth,
@@ -379,10 +304,12 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       // credential reference form these rules name (an unbound name, `$NAME`, a fallback, other
       // text) with its generic binding refusal (finding 2506). Admission repeats them below.
       await validateContent(configurationInput);
-      await configuration.validateChannelCredentials(
+      await dependencies.channels.validateChannelCredentials(
         principalId,
         input.namespaceId,
         configurationInput,
+        () => new ProvisioningSecretDriverError(),
+        undefined,
         () => authorizeProvisioningRequest(principalId, input.namespaceId),
       );
       return { configurationInput, reservedAgentId };
@@ -400,7 +327,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
         : { configurationInput: originalConfiguration, reservedAgentId: undefined };
     const { configurationInput, reservedAgentId } = prepared;
     return transactions.transact(async (state) => {
-      const namespace = await namespaceScope.lockNamespace(state, input.namespaceId);
+      const namespace = await lockNamespace(state, input.namespaceId);
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -436,14 +363,14 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
         id: namespace.id,
         namespaceId: namespace.id,
       });
-      const driver = await pluginPolicy.validateAgentPlugins(
+      const driver = await pluginValidation.validateAgentPlugins(
         plugins,
         pluginApprovers,
         () => configurationInput.values,
       );
       // Provisioning creates the Agent before it has tool sources. Bind the account
       // on the saved Agent after the initial install.
-      await pluginPolicy.validatePluginCredentialSources(driver, plugins, []);
+      await validatePluginCredentialSources(driver, plugins, []);
       await authorizeProvisioningSources(
         state,
         principalId,
@@ -465,31 +392,40 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
         validateRepositoryTopology(
           compute,
           {
-            id: configuration.resolveHarness(configurationInput.values, executionMode),
+            id: resolveConfiguredHarnessId(
+              configurationInput.values,
+              dependencies.modelPolicyAgent(executionMode),
+            ),
             version: "provisioning",
             mode: executionMode,
           },
-          drivers.sandbox()?.id,
+          sandboxPolicy.sandboxDriver()?.id,
         );
       }
       // Plugins the Plugin Driver cannot run in this Harness, as Agent save refuses them;
       // authorizeProvisioningRecord repeats this check for the stored record.
       if (driver) {
-        pluginPolicy.validatePluginPlacement(driver, plugins, {
-          id: configuration.resolveHarness(configurationInput.values, executionMode),
+        pluginValidation.validatePluginPlacement(driver, plugins, {
+          id: resolveConfiguredHarnessId(
+            configurationInput.values,
+            dependencies.modelPolicyAgent(executionMode),
+          ),
           mode: executionMode,
         });
       }
       // A Codex network proxy that blocks the repository credential broker, as Agent save refuses
       // it; authorizeProvisioningRecord repeats this check for the stored record.
       if (repositoryBindings !== undefined && repositoryBindings.length > 0) {
-        repository.validateRepositoryBrokerNetworkProxy(
+        validateRepositoryBrokerNetworkProxy(
           {
-            id: configuration.resolveHarness(configurationInput.values, executionMode),
+            id: resolveConfiguredHarnessId(
+              configurationInput.values,
+              dependencies.modelPolicyAgent(executionMode),
+            ),
             mode: executionMode,
           },
           configurationInput.values,
-          drivers.sandbox(),
+          sandboxPolicy.sandboxDriver(),
         );
       }
       // The worker's Agent create refuses a taken name; refuse it here instead of accepting work
@@ -497,7 +433,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       // Like the preflight and Agent create, the 409 comes after the plan's other checks, so a
       // rename never uncovers a different refusal. A request admitted alongside with the same
       // name still fails in its job.
-      await dependencies.refuseTakenAgentName(state, namespace.id, input.name);
+      await refuseTakenAgentName(state, namespace.id, input.name);
       const record = await state.provisioning.create(
         {
           workId,
@@ -515,7 +451,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
             ...(backendId === undefined ? {} : { backendId }),
             ...(plugins === undefined ? {} : { plugins }),
             ...(driver && plugins && Object.keys(plugins).length
-              ? { pluginDriver: pluginPolicy.pluginOwner(driver) }
+              ? { pluginDriver: pluginOwner(driver) }
               : {}),
             ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
             ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
@@ -529,7 +465,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
             drivers: {
               compute: compute.id,
               configuration: configurationDriver.id,
-              iam: drivers.iam().id,
+              iam: dependencies.selectedIAM().id,
             },
           },
         },
@@ -542,7 +478,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
         id: `aud_${crypto.randomUUID()}`,
         installationId: dependencies.installationId(),
         namespaceId: namespace.id,
-        occurredAt: dependencies.timestamp(),
+        occurredAt: resourceValues.timestamp(),
         kind: "mutation",
         actorId: principalId,
         source: "occ",
@@ -581,7 +517,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
   ): Promise<Readonly<ProvisionAgentResult>> {
     await authorizeProvisioningRequest(principalId, namespaceId);
     return transactions.transact(async (state) => {
-      const namespace = await namespaceScope.lockNamespace(state, namespaceId);
+      const namespace = await lockNamespace(state, namespaceId);
       const { record, work: observed } = await exactProvisioningWork(
         state,
         principalId,
@@ -621,7 +557,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       await authorizeProvisioningRecord(state, principalId, record);
       if (record.status === "queued" || record.status === "running") {
         return Object.freeze({
-          provisioning: provisioningProgress(record, observed, dependencies.clock()),
+          provisioning: provisioningProgress(record, observed, resourceValues.now()),
         });
       }
       const retried = await state.provisioning.retryByWorkId(namespaceId, workId, principalId);
@@ -631,7 +567,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
           id: `aud_${crypto.randomUUID()}`,
           installationId: dependencies.installationId(),
           namespaceId,
-          occurredAt: dependencies.timestamp(),
+          occurredAt: resourceValues.timestamp(),
           kind: "mutation",
           actorId: principalId,
           source: "occ",
@@ -651,7 +587,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       }
       const work = await state.operations.findWork(record.workId);
       return Object.freeze({
-        provisioning: provisioningProgress(retried, work, dependencies.clock()),
+        provisioning: provisioningProgress(retried, work, resourceValues.now()),
       });
     });
   }
@@ -662,7 +598,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     record: Readonly<AgentProvisioningRecord>,
     work: ControllerWork | undefined,
   ): Promise<Readonly<ProvisionAgentResult>> {
-    const now = dependencies.clock();
+    const now = resourceValues.now();
     const deploymentProgress = await provisioningDeploymentProgress(
       state,
       principalId,
@@ -730,7 +666,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     principalId: string,
     namespaceId: string,
   ): Promise<void> {
-    namespaceScope.namespaceIdentity(namespaceId);
+    namespaceIdentity(namespaceId);
     await authority.authorize(principalId, "create", {
       kind: "agent",
       namespaceId,
@@ -777,18 +713,18 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       }
     }
     const plan = parseProvisioningPlan(record);
-    if (drivers.iam().namespacePolicyTransaction !== "platform-unit-of-work") {
+    if (dependencies.selectedIAM().namespacePolicyTransaction !== "platform-unit-of-work") {
       throw new DependencyUnavailableError(
         "Agent provisioning requires transactional Namespace policy management.",
       );
     }
     const acceptedDrivers = asRecord(record.plan.drivers);
-    const compute = drivers.compute();
-    const configurationDriver = drivers.configuration();
+    const compute = runtimeCredentials.runtimeCredentialComputeDriver("provision");
+    const configurationDriver = settings.selectedDriver();
     if (
       acceptedDrivers?.compute !== compute.id ||
       acceptedDrivers.configuration !== configurationDriver.id ||
-      acceptedDrivers.iam !== drivers.iam().id ||
+      acceptedDrivers.iam !== dependencies.selectedIAM().id ||
       compute.validateAgentProvisioning === undefined ||
       compute.getAgentRuntimeCredentialStatus === undefined ||
       configurationDriver.createExact === undefined ||
@@ -820,7 +756,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       );
     }
     if (!statusRead) {
-      harnessAuthAccess().assertCredentialGatewayDelivery(binding);
+      harnessOperations.assertCredentialGatewayDelivery(binding);
     }
     const backendId = dependencies.backendId(record.plan.backendId as BackendRef | undefined);
     const agent =
@@ -842,26 +778,22 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
           id: binding.sourceId,
         });
       }
-      requireCredentialSourceSandbox(drivers.sandbox());
+      requireCredentialSourceSandbox(sandboxPolicy.sandboxDriver());
     } else if (isSecretHarnessAuth(binding)) {
-      auth = harnessAuthAccess().secretHarnessAuthSnapshot(binding);
+      auth = harnessOperations.secretHarnessAuthSnapshot(binding);
     } else if (agent !== undefined) {
-      [auth, credentialSourceType] = await harnessAuthAccess().admitHarnessAuth(
-        state,
-        principalId,
-        {
-          ...agent,
-          harnessAuth: binding,
-        },
-      );
+      [auth, credentialSourceType] = await harnessOperations.admitHarnessAuth(state, principalId, {
+        ...agent,
+        harnessAuth: binding,
+      });
     } else if (binding.method === "credential_source") {
-      [auth, credentialSourceType] = await harnessAuthAccess().credentialSourceHarnessAuthSnapshot(
+      [auth, credentialSourceType] = await harnessOperations.credentialSourceHarnessAuthSnapshot(
         state,
         namespaceId,
         binding,
       );
     } else {
-      auth = await harnessAuthAccess().serviceAccountHarnessAuthSnapshot(
+      auth = await harnessOperations.serviceAccountHarnessAuthSnapshot(
         state,
         namespaceId,
         backendId,
@@ -869,17 +801,20 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       );
     }
     const harness = {
-      id: configuration.resolveHarness(plan.configuration.values, plan.executionMode),
+      id: resolveConfiguredHarnessId(
+        plan.configuration.values,
+        dependencies.modelPolicyAgent(plan.executionMode),
+      ),
       version: "provisioning",
       mode: plan.executionMode,
     };
-    const sandbox = drivers.sandbox();
+    const sandbox = sandboxPolicy.sandboxDriver();
     if (auth !== undefined) {
-      harnessAuthAccess().requireCredentialSourceDrivers(auth, sandbox);
+      harnessOperations.requireCredentialSourceDrivers(auth, sandbox);
     }
     // Runtime image native worker support is admission for writes (replay, retry, the worker), like
     // the plugin policy below: a status read still reports the stored work after the image loses it.
-    topology.requireDedicatedNativeSupport(harness, sandbox, {
+    requireDedicatedNativeSupport(harness, sandbox, dependencies.nativeWorkers, {
       runtimeImage: !statusRead,
       stored: !admission,
       configuration: plan.configuration.values,
@@ -946,14 +881,10 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     // Plugin policy is admission for writes (replay, retry, the worker). A status read reports
     // the stored work, so an Installation Plugin Driver switch does not turn it into a 400.
     if (!statusRead) {
-      const plugins = pluginPolicy.normalizeAgentPlugins(
-        record.plan.plugins as PluginDesiredState | undefined,
-      );
-      const driver = await pluginPolicy.validateAgentPlugins(
+      const plugins = normalizeAgentPlugins(record.plan.plugins as PluginDesiredState | undefined);
+      const driver = await pluginValidation.validateAgentPlugins(
         plugins,
-        pluginPolicy.normalizeAgentPluginApprovers(
-          record.plan.pluginApprovers as PluginApprovers | undefined,
-        ),
+        normalizeAgentPluginApprovers(record.plan.pluginApprovers as PluginApprovers | undefined),
         () => effectiveConfiguration,
         {
           ...(plugins && { plugins }),
@@ -964,11 +895,11 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
         "stored",
       );
       if (driver) {
-        pluginPolicy.validatePluginPlacement(driver, plugins, harness);
+        pluginValidation.validatePluginPlacement(driver, plugins, harness);
       }
       const repositoryBindings = asRecord(record.plan)?.repositoryBindings;
       if (Array.isArray(repositoryBindings) && repositoryBindings.length > 0) {
-        repository.validateRepositoryBrokerNetworkProxy(harness, effectiveConfiguration, sandbox);
+        validateRepositoryBrokerNetworkProxy(harness, effectiveConfiguration, sandbox);
       }
     }
     // Retry keeps this admission before its lifecycle checks; status only reads saved progress.
@@ -977,8 +908,8 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
         agent,
         compute,
         harness,
-        drivers.sandbox()?.id,
-        dependencies.clock().getTime(),
+        sandboxPolicy.sandboxDriver()?.id,
+        resourceValues.now().getTime(),
       );
     }
   }
@@ -993,7 +924,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     if (!isNonEmptyString(workId)) {
       throw new ScopeViolationError("The exact provisioning work identity is missing.");
     }
-    await namespaceScope.exactNamespace(state, namespaceId);
+    await exactNamespace(state, namespaceId);
     // The job and its queue row come from one statement: status derives from both.
     const found = await state.provisioning.findWithWork(workId);
     if (found === undefined || found.record.namespaceId !== namespaceId) {
@@ -1066,7 +997,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     if (isSecretHarnessAuth(harnessAuth)) {
       await authorizeProvisioningSecretSource(state, principalId, namespaceId, harnessAuth.source);
     } else if (harnessAuth?.method === "credential_source") {
-      await harnessAuthAccess().authorizeHarnessAuthSource(
+      await harnessOperations.authorizeHarnessAuthSource(
         state,
         principalId,
         namespaceId,
@@ -1081,7 +1012,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
         namespaceId,
         id: harnessAuth.source.id,
       });
-      await dependencies.exactServiceAccount(state, namespaceId, harnessAuth.source.id);
+      await exactServiceAccount(state, namespaceId, harnessAuth.source.id);
     }
   }
 
@@ -1099,7 +1030,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     if (secret === undefined) {
       throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
     }
-    drivers.ownedSecretDriver(secret.driverId);
+    secrets.ownedSecretDriver(secret.driverId, () => new ProvisioningSecretDriverError());
   }
 
   return {

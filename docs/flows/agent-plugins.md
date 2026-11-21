@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-11-20
-last_updated_session: authoring-run/88a672f2-519f-40b1-8422-9bdafa6636fa
+updated: 2026-11-21
+last_updated_session: authoring-run/c4d8dbfd-1681-4b5b-a0d6-45a805b2aa68
 ---
 
 # Agent Plugin Deployment Flow
@@ -14,10 +14,10 @@ OCC validates selections and snapshots the Driver and policy at deployment. The 
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-- Trigger: Agent create/update with `plugins`, then deployment.
+- Trigger: Save `plugins`, then deploy.
 - Requires Agent permission, valid selections and a compatible PluginDriver.
 - Source: [HTTP handlers](../../apps/controller/src/index.ts),
-  [OpenClawController](../../packages/occ/src/index.ts), and
+  [OpenClawController](../../packages/occ/src/controller.ts), and
   [bundled PluginDrivers](../../apps/controller/src/drivers/plugin/index.ts).
 
 ## Flow
@@ -69,39 +69,37 @@ graph TD
 
 ### Credential-scoped discovery
 
-[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) requires a
-Harness, Agent `create`, and stored-source `operate`. Wrong Namespace `400`,
-missing Secret `404`, unavailable explicit CredentialSource `409`.
+[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) returns
+`400` (wrong Namespace), `404` (missing Secret), or `409` (unavailable explicit
+CredentialSource). Saved discovery requires a dedicated Agent.
+Missing/unready bound sources return `404`. Hosted catalogs need credentials, curated none.
 
-Saved discovery requires a dedicated Agent and caller `read`/`update`. Bound sources
-require caller and Agent `operate`; explicit sources require caller `operate`.
-Missing or unready bound sources return `404`. Hosted catalogs require credentials;
-curated catalogs do not.
-
-OpenShell uses operator mTLS for metadata and exports. External Gateways may use
-`withSourceToken`. OCC checks source and Gateway ownership, then rechecks authority,
-attachment, and catalog before dispatch. Owners refresh credentials. Cancellation
-discards late credentials.
+OpenShell metadata/exports use operator mTLS. External Gateways may use
+`withSourceToken`. OCC rechecks attachment before dispatch. Owners refresh credentials.
+Cancellation discards late credentials.
 
 `packages/occ/src/plugin-discovery.ts:discoverManagedMcpTools`
 
 Managed MCP uses Secret Driver, rechecking before `tools/list`.
 `driverPolicy.toolNames` pins upstream names across runtimes.
 
-Closing cancels. Account changes clear results. Harness changes clear selections and approvers. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
-bound size and time, reject redirects and credential echoes, and set `Cache-Control: no-store`.
+Closing cancels. Account changes clear results. Harness changes clear selections/approvers.
+[Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs) cap size and time,
+reject redirects and credential echoes, and set `Cache-Control: no-store`.
+The Driver rejects pages repeating canonical selection IDs. The API returns HTTP 503 `PLUGIN_DISCOVERY_INVALID_RESPONSE`.
 `apps/controller/src/drivers/plugin/hosted-catalog.ts:catalogEntry` accepts omitted
-`requires_local_executor`; explicit `true` without skills remains unavailable.
+`requires_local_executor`. With `true` and no skills, the entry is unavailable.
 Details reject unmatched MCP/scheduled tasks. Optional stdio
-`NativeCodexPluginCatalogReader` rejects invalid `plugin/list` results and stops its child.
+`NativeCodexPluginCatalogReader` rejects invalid `plugin/list`, stopping its child.
 
 ### 1. Validate desired state under exact-Agent authority
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-HTTP validates input. [OCC](../../packages/occ/src/index.ts) checks the exact
-Namespace and Agent (`read` for reads). Create/PATCH saves `plugins` and Driver
-identity. Updates atomically save state and audit evidence. Omitted selections
+HTTP validates input. [`getAgentForBrowsing`](../../packages/occ/src/agent-queries.ts)
+requires exact Agent `read` in its Namespace.
+[Create and PATCH](../../packages/occ/src/agent-drafts.ts) save `plugins` and Driver
+identity. Updates commit state and audit together. Omitted selections
 persist, `{}` clears them, and nonempty maps replace them. Clear selections with
 unknown or different owners before changing catalogs.
 
@@ -132,11 +130,11 @@ Read capabilities from `GET /installation` or `GET .../plugins/capabilities`
 
 ### 2. Admit an immutable plugin deployment
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent`
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
-At save and deployment, the OpenClaw Driver's
+At save and deploy, the OpenClaw
 [credential validator](../../apps/controller/src/drivers/plugin/managed-catalog.ts)
-passes the admitted plugin identity and connections to
+passes plugin identity and connections to
 [`describeDeployment`](../../apps/controller/src/drivers/plugin/index.ts), then
 checks the returned connections against OCC-authorized sources. The description
 lists required network access; each connection identifies only requests eligible
@@ -387,6 +385,8 @@ timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 
 
 ## Changelog
 
+- 2026-11-21 12:38: Document rejection of duplicate hosted catalog selections. (authoring-run/c4d8dbfd-1681-4b5b-a0d6-45a805b2aa68 - 7dd321619d7400e144f805ec7b9bde5e98b59ed2)
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:13: Update discovery source. (authoring-run/88a672f2-519f-40b1-8422-9bdafa6636fa - 83c718c15ec9fed6fcc77f8db70c81982bdfd566)
 
 - 2026-11-18 06:02: Describe static Google action and discovery paths at admission. (authoring-run/c5b621b3-7d32-4ae1-a88e-295aab3e7532 - 99e7ca47e0d979596f3834a16a73e6ad17cf66ae)

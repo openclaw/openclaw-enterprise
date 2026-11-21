@@ -13,6 +13,9 @@ import {
   type CredentialSourceReference,
   type HarnessAuthBinding,
   type Namespace,
+  type PluginApprovers,
+  type PluginDesiredSelection,
+  type RepositoryBindingRequest,
   type SecretBindings,
   type SecretReference,
 } from "@openclaw-enterprise/contracts";
@@ -20,6 +23,7 @@ import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import type { AgentCredentialAccess } from "./agent-credential-access.ts";
 import type { HarnessResolver } from "./agent-harness-topology.ts";
+import { normalizeAgentPluginApprovers, normalizeAgentPlugins } from "./agent-plugin-validation.ts";
 import {
   runtimeCredentialOperation,
   runtimeCredentialStatus,
@@ -33,6 +37,8 @@ import {
 } from "./deployment-work-status.ts";
 import { driverOperation } from "./driver-operation.ts";
 import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
+import { normalizedRepositoryAccess } from "./repository-credential-validation.ts";
+import type { createRepositoryPolicyOperations } from "./repository-policy.ts";
 import { lockNamespace } from "./resource-scope.ts";
 import type { createProvisioningRequests } from "./agent-provisioning-requests.ts";
 import {
@@ -193,10 +199,10 @@ interface ProvisioningWorkerDependencies {
   readonly bindCreator: IAMPolicyOperations["bindCreator"];
   readonly ensureAgentOperateGrants: AgentCredentialAccess["ensureAgentOperateGrants"];
   readonly backendId: (ref: BackendRef | undefined) => string | null;
-  readonly savedAgentOptions: (
-    namespaceId: string,
-    plan: Readonly<Record<string, unknown>>,
-  ) => Pick<Agent, "plugins" | "pluginApprovers" | "repositoryBindings" | "repositoryAccess">;
+  readonly repository: Pick<
+    ReturnType<typeof createRepositoryPolicyOperations>,
+    "repositoryBindingSelections"
+  >;
   readonly hasConfigurationDriver: () => boolean;
   readonly configuration: Pick<ConfigurationOperations, "selectedDriver">;
   readonly runtimeCredentials: Pick<
@@ -1045,6 +1051,30 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
     );
   }
 
+  function savedAgentOptions(
+    namespaceId: string,
+    plan: Readonly<Record<string, unknown>>,
+  ): Pick<Agent, "plugins" | "pluginApprovers" | "repositoryBindings" | "repositoryAccess"> {
+    const plugins = normalizeAgentPlugins(
+      plan.plugins as Readonly<Record<string, PluginDesiredSelection>> | undefined,
+    );
+    const pluginApprovers = normalizeAgentPluginApprovers(
+      plan.pluginApprovers as PluginApprovers | undefined,
+    );
+    const repositoryBindings = dependencies.repository.repositoryBindingSelections(
+      namespaceId,
+      plan.repositoryBindings as readonly RepositoryBindingRequest[] | undefined,
+      "saved",
+    );
+    const repositoryAccess = normalizedRepositoryAccess(plan.repositoryAccess, repositoryBindings);
+    return {
+      ...(plugins === undefined ? {} : { plugins }),
+      ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
+      ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
+      ...(repositoryAccess === undefined ? {} : { repositoryAccess }),
+    };
+  }
+
   async function processAgentProvisioningConfiguration(
     claim: ClaimedWork,
     record: Readonly<AgentProvisioningRecord>,
@@ -1124,7 +1154,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
         );
       }
       const backendId = dependencies.backendId(planRecord.backendId as BackendRef | undefined);
-      const options = dependencies.savedAgentOptions(namespace.id, planRecord);
+      const options = savedAgentOptions(namespace.id, planRecord);
       const workspace = normalizeProvisioningWorkspace(
         planRecord.initialWorkspaceFiles,
         planRecord.workspaceDefaultsId,

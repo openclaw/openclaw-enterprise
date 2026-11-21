@@ -9,6 +9,7 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import type { OpenClawController } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
+import { registerRevisionSnapshotCase } from "./postgres-worker-agent-revision-refusal-cases.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import type {
   RevisionFixture,
@@ -298,4 +299,6 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
       });
     },
   );
+
+  registerRevisionSnapshotCase(revisionTest);
 }

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: 2026-11-20
-last_updated_session: authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Production image upgrade flow
@@ -9,8 +9,7 @@ last_updated_session: authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac
 ## Overview
 
 Upgrades OpenClaw Control Plane (OCC) and Agent runtimes.
-See [channel transitions](channel-egress.md#0-install-or-upgrade-channel-routing)
-for the explicit one-off entrypoint.
+See [one-off channel transitions](channel-egress.md#0-install-or-upgrade-channel-routing).
 
 ## Entry Points
 
@@ -20,7 +19,7 @@ for the explicit one-off entrypoint.
   IDs and complete authorized inventory without active deployments.
 - Source: `scripts/upgrade-production-images`,
   `packages/occ/src/deployment-inventory.ts:readDeploymentInventory`,
-  and `packages/occ/src/index.ts:OpenClawController.deployAgent`.
+  and `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`.
 
 ## Flow
 
@@ -374,6 +373,7 @@ requires no Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:29: Update source pointers for runtime observation and fleet inventory. (authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac - c6acc7271f7753f74d3657251f23a036c08e671c)
 
 - 2026-11-20 17:42: Refuse Helm credential overrides. (authoring-run/e16304ce-2b94-4022-a90d-9ab2e235d1d4 - aff441a5df9e3258752b034fb694e06333c0b231)
