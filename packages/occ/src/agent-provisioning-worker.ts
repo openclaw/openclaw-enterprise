@@ -13,7 +13,6 @@ import {
   type ConfigurationDriver,
   type CredentialSourceReference,
   type HarnessAuthBinding,
-  type HarnessExecutionMode,
   type Namespace,
   type ResourceRef,
   type SecretBindings,
@@ -25,7 +24,7 @@ import type { HarnessResolver } from "./agent-harness-topology.ts";
 import {
   normalizeProvisioningWorkspace,
   PROVISIONING_DEPLOYMENT_PENDING,
-  type AgentProvisioningConfigurationInput,
+  parseProvisioningPlan,
 } from "./agent-provisioning.ts";
 import type { ClaimedWork, ControllerWork } from "./controller-work.ts";
 import {
@@ -194,12 +193,6 @@ interface ProvisioningWorkerDependencies {
     agent: Readonly<Agent>,
     sources: readonly (SecretReference | CredentialSourceReference)[],
   ) => Promise<unknown>;
-  readonly parsePlan: (record: Readonly<AgentProvisioningRecord>) => {
-    readonly configuration: AgentProvisioningConfigurationInput;
-    readonly harnessAuth: HarnessAuthBinding | null;
-    readonly executionMode: HarnessExecutionMode;
-    readonly gatewayManagedMode: boolean;
-  };
   readonly backendId: (ref: BackendRef | undefined) => string | null;
   readonly savedAgentOptions: (
     namespaceId: string,
@@ -981,7 +974,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
     record: Readonly<AgentProvisioningRecord>,
     configurationId: string,
   ): Configuration {
-    const plan = dependencies.parsePlan(record);
+    const plan = parseProvisioningPlan(record);
     return {
       id: configurationId,
       namespaceId: record.namespaceId,
@@ -1075,7 +1068,7 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
     record: Readonly<AgentProvisioningRecord>,
     runEffect: RunEffect,
   ): Promise<Readonly<AgentProvisioningRecord>> {
-    const plan = dependencies.parsePlan(record);
+    const plan = parseProvisioningPlan(record);
     const pending = provisioningPendingEffect(record);
     const receipt = readProvisioningEffectReceipt(record);
     const configurationId =

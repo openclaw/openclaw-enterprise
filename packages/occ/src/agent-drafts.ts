@@ -27,8 +27,6 @@ import {
   type AgentCredentialAccess,
 } from "./agent-credential-access.ts";
 import {
-  normalizeGatewayManagedMode,
-  validExecutionMode,
   type HarnessResolver,
   type createSavedAgentTopologyValidator,
 } from "./agent-harness-topology.ts";
@@ -42,6 +40,7 @@ import {
 import { freezeConfigurationValues } from "./configuration-settings.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
+import { normalizeGatewayManagedMode, validExecutionMode } from "./agent-provisioning.ts";
 import {
   AGENT_NAME_CONFLICT,
   AgentDeletingError,
