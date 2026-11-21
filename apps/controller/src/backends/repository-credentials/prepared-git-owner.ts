@@ -189,6 +189,116 @@ async function appSigningKey(path: string, appId: string, clock: Clock) {
   }
 }
 
+async function createPreparedGitDelivery(
+  store: Pick<PreparedRepositoryGitStore, "use" | "finishPull" | "protectedAuthority">,
+  stopped: AbortSignal,
+  controlSocket: string | undefined,
+) {
+  const use = (input: unknown, signal = stopped) =>
+    store.use(useRequest(input), AbortSignal.any([signal, stopped]));
+  const server =
+    controlSocket === undefined
+      ? undefined
+      : await servePrivateRepositoryRequest(controlSocket, "prepared-git-use", (input, signal) =>
+          input.operation === "record-draft-pull"
+            ? store.finishPull(input.receiptId as string, input.outcome as PreparedGitHubPullResult)
+            : use(input, signal),
+        );
+  return { use, server, protectedGit: store.protectedAuthority(stopped, useRequest) };
+}
+
+function createPreparedGitMaintenance({
+  store,
+  privateKeyPath,
+  appId,
+  clock,
+  apiOrigin,
+  ca,
+  tokenService,
+  report,
+}: {
+  store: Pick<
+    PreparedRepositoryGitStore,
+    "discover" | "claimGit" | "store" | "takeRetirement" | "finishRetirement"
+  >;
+  privateKeyPath: string;
+  appId: string;
+  clock: Clock;
+  apiOrigin: string;
+  ca: Uint8Array | undefined;
+  tokenService: TokenService;
+  report: Options["report"];
+}) {
+  let sources: Awaited<ReturnType<typeof store.discover>> = [];
+  return tokenService.ownFamilies({
+    async discover() {
+      sources = await store.discover(({ providerExpiresAt, ...context }) =>
+        report?.("PREPARED_GITHUB_RETIRED_UNREVOKED", {
+          reason: "issuer_authority_changed",
+          ...context,
+          providerExpiresAt,
+        }),
+      );
+    },
+    retire: (signal) => retirePreparedGitHubToken(store, null, signal, apiOrigin, ca, clock),
+    async prepare(_signal, run) {
+      if (!sources.length) {
+        return;
+      }
+      const { keyObject, owner: key } = await appSigningKey(privateKeyPath, appId, clock);
+      try {
+        const version = createHash("sha256")
+          .update(createPublicKey(keyObject).export({ type: "spki", format: "der" }))
+          .digest("hex");
+        for (const source of sources) {
+          const admission = await store.claimGit(source, version);
+          if (!admission) {
+            continue;
+          }
+          const owner = createGitHubPreparationOwner({
+            admission,
+            store: store.store(source, null),
+            clock,
+            apiOrigin,
+            getKey: async () => key,
+            ...(ca ? { ca } : {}),
+            renewBeforeMs: 600_000,
+            minimumValidityMs: 60_000,
+            observe: ({ error, ...diagnostic }) =>
+              report?.(
+                "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC",
+                {
+                  ...diagnostic,
+                  ...(error ? { errorClass: error } : {}),
+                  revisionId: source.session.revisionId,
+                },
+                "info",
+              ),
+          });
+          const outcome = await run(owner);
+          if (outcome === "quarantined" || outcome === "blocked") {
+            // Say which binding needs recovery (finding 2135); the provider's answer stays out.
+            report?.("PREPARED_GITHUB_RECOVERY_REQUIRED", {
+              reason: outcome,
+              namespaceId: source.session.namespaceId,
+              revisionId: source.session.revisionId,
+              repositoryRef: source.session.binding.repositoryRef,
+            });
+          }
+        }
+      } finally {
+        key.close();
+      }
+    },
+    // A key that went bad after startup (a rotated Secret) logs the same code and fixed
+    // reason as the startup refusal, never key bytes or its path.
+    failed: (error) =>
+      error instanceof PreparedGitHubAppKeyError
+        ? report?.(error.code, { reason: error.reason })
+        : report?.("PREPARED_GITHUB_MAINTENANCE_FAILED"),
+  });
+}
+
 /** A single owner of App issuance, renewal, durable uncertainty and retirement.
  * No Git request can call maintain, and neither the broker nor API needs either key mount.
  * The worker passes no clock; `clock` is a separate argument so that parsed configuration,
@@ -324,98 +434,24 @@ export async function startPreparedGitHubGitOwner(
     custodySelection,
   );
   const stop = new AbortController();
-  const use = (input: unknown, signal = stop.signal) =>
-    store.use(useRequest(input), AbortSignal.any([signal, stop.signal]));
-  const server =
-    options.controlSocket === undefined
-      ? undefined
-      : await servePrivateRepositoryRequest(
-          options.controlSocket,
-          "prepared-git-use",
-          (input, signal) =>
-            input.operation === "record-draft-pull"
-              ? store.finishPull(
-                  input.receiptId as string,
-                  input.outcome as PreparedGitHubPullResult,
-                )
-              : use(input, signal),
-        );
-  let sources: Awaited<ReturnType<typeof store.discover>> = [];
-  const maintenance = (options.tokenService ?? new TokenService()).ownFamilies({
-    async discover() {
-      sources = await store.discover(({ providerExpiresAt, ...context }) =>
-        options.report?.("PREPARED_GITHUB_RETIRED_UNREVOKED", {
-          reason: "issuer_authority_changed",
-          ...context,
-          providerExpiresAt,
-        }),
-      );
-    },
-    retire: (signal) => retirePreparedGitHubToken(store, null, signal, apiOrigin, ca, clock),
-    async prepare(_signal, run) {
-      if (!sources.length) {
-        return;
-      }
-      const { keyObject, owner: key } = await appSigningKey(
-        options.privateKeyPath,
-        registry.appId,
-        clock,
-      );
-      try {
-        const version = createHash("sha256")
-          .update(createPublicKey(keyObject).export({ type: "spki", format: "der" }))
-          .digest("hex");
-        for (const source of sources) {
-          const admission = await store.claimGit(source, version);
-          if (!admission) {
-            continue;
-          }
-          const owner = createGitHubPreparationOwner({
-            admission,
-            store: store.store(source, null),
-            clock,
-            apiOrigin,
-            getKey: async () => key,
-            ...(ca ? { ca } : {}),
-            renewBeforeMs: 600_000,
-            minimumValidityMs: 60_000,
-            observe: ({ error, ...diagnostic }) =>
-              options.report?.(
-                "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC",
-                {
-                  ...diagnostic,
-                  ...(error ? { errorClass: error } : {}),
-                  revisionId: source.session.revisionId,
-                },
-                "info",
-              ),
-          });
-          const outcome = await run(owner);
-          if (outcome === "quarantined" || outcome === "blocked") {
-            // Say which binding needs recovery (finding 2135); the provider's answer stays out.
-            options.report?.("PREPARED_GITHUB_RECOVERY_REQUIRED", {
-              reason: outcome,
-              namespaceId: source.session.namespaceId,
-              revisionId: source.session.revisionId,
-              repositoryRef: source.session.binding.repositoryRef,
-            });
-          }
-        }
-      } finally {
-        key.close();
-      }
-    },
-    // A key that went bad after startup (a rotated Secret) logs the same code and fixed
-    // reason as the startup refusal, never key bytes or its path.
-    failed: (error) =>
-      error instanceof PreparedGitHubAppKeyError
-        ? options.report?.(error.code, { reason: error.reason })
-        : options.report?.("PREPARED_GITHUB_MAINTENANCE_FAILED"),
+  const { protectedGit, use, server } = await createPreparedGitDelivery(
+    store,
+    stop.signal,
+    options.controlSocket,
+  );
+  const maintenance = createPreparedGitMaintenance({
+    store,
+    privateKeyPath: options.privateKeyPath,
+    appId: registry.appId,
+    clock,
+    apiOrigin,
+    ca,
+    tokenService: options.tokenService ?? new TokenService(),
+    report: options.report,
   });
   if (options.startWorker !== false) {
     maintenance.start();
   }
-  const protectedGit = store.protectedAuthority(stop.signal, useRequest);
   return {
     protectedGit,
     use,
