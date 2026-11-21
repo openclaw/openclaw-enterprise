@@ -196,15 +196,29 @@ export function renderConnectionTemplates(
       clients = available.data;
       savedTemplates = templates.filter((item) => availableInNamespace(item, currentNamespace));
       redirectUri = available.meta?.redirectUri;
+      let clientNames: Map<string, string> | undefined;
       showRows(
         savedTemplates.map((template) => {
           const scope = availabilityLabel(template, namespaces);
-          const client = clients.find((item) => item.id === template.current.oauthClientId);
+          const registrationId = template.current.oauthClientId;
+          let clientName: string | undefined;
+          if (registrationId !== undefined) {
+            if (clientNames === undefined) {
+              clientNames = new Map();
+              for (const { id, displayName } of clients) {
+                // Keep the first label if the catalog contains a duplicate registration ID.
+                if (!clientNames.has(id)) {
+                  clientNames.set(id, displayName);
+                }
+              }
+            }
+            clientName = clientNames.get(registrationId);
+          }
           return {
             name: template.displayName,
             details: [
               scope,
-              client?.displayName ?? "No OAuth client assigned",
+              clientName ?? "No OAuth client assigned",
               String(template.current.version),
             ],
             actions: [
@@ -579,6 +593,7 @@ export function openConnectionTemplateEditor(
   async function submit(continueRegistration = false) {
     if (
       busy ||
+      uncertain ||
       !validateFields([
         scope,
         name,
@@ -636,6 +651,8 @@ export function openConnectionTemplateEditor(
       }
       if (
         !saved.id ||
+        !Number.isSafeInteger(saved.current.version) ||
+        saved.current.version < 1 ||
         (template &&
           (saved.id !== template.id || saved.current.version < template.current.version)) ||
         saved.displayName !== body.displayName ||
@@ -654,10 +671,19 @@ export function openConnectionTemplateEditor(
       const code = requestFailure(cause).status;
       uncertain = code === undefined || code >= 500 || code === 408;
       if (dialog.open) {
-        status.textContent = failure(cause, "the template change");
+        if (uncertain) {
+          close.textContent = "Close";
+          status.textContent =
+            "The template may have been saved. Close this dialog and check the template list before trying again.";
+        } else {
+          status.textContent = failure(cause, "the template change");
+        }
       }
     } finally {
       setBusy(false);
+      if (uncertain && dialog.open && context.isCurrent()) {
+        close.focus();
+      }
     }
   }
   server.addEventListener("input", () => {

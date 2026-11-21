@@ -52,7 +52,7 @@ import {
   SLACK_RETRY_GRANTED,
   SLACK_SETUP_HINT,
 } from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { restrict } from "../helpers/iam-grants.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type DraftAgent = Pick<Agent, "id" | "namespaceId" | "configurationId">;
@@ -1673,6 +1673,12 @@ describe("Agent channels", { concurrency: 3 }, () => {
       account.credentials,
     );
     await page.getByRole("heading", { name: "Unconfirmed Grant Agent" }).waitFor();
+    // The policy read has finished when the draft names the remaining Slack binding.
+    await page
+      .getByText("Complete these in Credentials before deploying: Slack Secret bindings.", {
+        exact: true,
+      })
+      .waitFor();
     await selectSecret(page, "Slack app token", appSecret);
     await page.getByRole("button", { name: "Save channel Secrets" }).click();
     // While she administers the Installation, the warning keeps offering the Retry she has.

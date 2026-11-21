@@ -105,6 +105,7 @@ interface MountedView {
   administrationReads: Map<string, AdministrationMode>;
   administrationEnded: Set<() => void>;
   rechecked: Set<AgentRecheckHandler>;
+  deferredConfigurationFocus?: { editor: HTMLTextAreaElement; cancel: AbortController };
   metaReads: Set<string>;
   resumeHandlers: Set<() => void>;
   revalidators: Set<() => Promise<unknown>>;
@@ -1055,15 +1056,18 @@ function forgetRetainedView(taken: ReturnType<typeof peekRetainedView>) {
   }
 }
 
-// Names a recheck that outlasts stillCheckingDelayMs beside the page's actions, so a held page
-// is not mistaken for a stuck one (finding 1442). Returns a function that removes the note.
-function showStillChecking() {
-  const actions = app.querySelector(".content .page-actions");
-  if (!actions) {
+// Names a recheck that outlasts stillCheckingDelayMs, so a held page is not mistaken
+// for a stuck one (finding 1442). Mounted Agent checks stay visible beside scrolled drafts.
+function showStillChecking({ mountedAgent = false } = {}) {
+  const container = mountedAgent ? app : app.querySelector(".content .page-actions");
+  if (!container) {
     return () => {};
   }
-  const note = element("p", { className: "checking-status", role: "status" });
-  actions.prepend(note);
+  const note = element("p", {
+    className: mountedAgent ? "checking-status checking-status--mounted" : "checking-status",
+    role: "status",
+  });
+  container.prepend(note);
   note.textContent = "Still checking…";
   return () => note.remove();
 }
@@ -1239,6 +1243,8 @@ function resetReads({
 }: { retainView?: boolean; returnLink?: Element | null; keepShell?: boolean } = {}) {
   const resumeDrafts = drafts.suspend();
   if (mountedViewState) {
+    mountedViewState.deferredConfigurationFocus?.cancel.abort();
+    delete mountedViewState.deferredConfigurationFocus;
     mountedViewState.resumeDrafts = resumeDrafts;
     mountedViewState.active = null;
   }
@@ -3096,6 +3102,36 @@ async function revalidateMountedAgent(current: Route) {
     (view.contains(activeElement) || pageActions?.contains(activeElement))
       ? activeElement
       : null;
+  const previousFocus = state.deferredConfigurationFocus;
+  delete state.deferredConfigurationFocus;
+  const deferredFocus =
+    activeElement === document.body && !previousFocus?.cancel.signal.aborted
+      ? previousFocus
+      : undefined;
+  let editorFocus = deferredFocus;
+  if (
+    focused instanceof HTMLTextAreaElement &&
+    focused.id === "configuration-json" &&
+    view.contains(focused) &&
+    focused.selectionStart !== focused.selectionEnd
+  ) {
+    const cancel = new AbortController();
+    editorFocus = { editor: focused, cancel };
+    // Returning to the tab can focus the same textarea as the check starts. A different
+    // control taking focus cancels restoration even if focus later falls to the body.
+    document.addEventListener(
+      "focusin",
+      (event) => {
+        if (event.target !== focused && event.target !== document.body) {
+          cancel.abort();
+        }
+      },
+      { signal: AbortSignal.any([cancel.signal, lifetime.signal]) },
+    );
+  }
+  if (previousFocus !== editorFocus) {
+    previousFocus?.cancel.abort();
+  }
   const textField =
     focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement ? focused : null;
   const selection =
@@ -3171,7 +3207,7 @@ async function revalidateMountedAgent(current: Route) {
   let clearStillChecking: (() => void) | undefined;
   const stillChecking = setTimeout(() => {
     if (isCurrent()) {
-      clearStillChecking = showStillChecking();
+      clearStillChecking = showStillChecking({ mountedAgent: true });
     }
   }, stillCheckingDelayMs);
   try {
@@ -3469,7 +3505,30 @@ async function revalidateMountedAgent(current: Route) {
       if (diagnostics) {
         diagnostics.hidden = false;
       }
-      restoreFocus();
+      if (
+        editorFocus &&
+        !editorFocus.cancel.signal.aborted &&
+        document.activeElement === document.body &&
+        // Selecting text such as the Agent ID leaves focus on the body.
+        document.getSelection()?.isCollapsed !== false &&
+        mountedViewState === state &&
+        view.querySelector("#configuration-json") === editorFocus.editor &&
+        editorFocus.editor.checkVisibility()
+      ) {
+        if (document.hidden || (editorFocus === deferredFocus && !document.hasFocus())) {
+          // A later return must confirm access again. Keep only the same editor's focus target.
+          state.deferredConfigurationFocus = editorFocus;
+        } else if (editorFocus === deferredFocus) {
+          // The textarea still owns its selection; focusing it need not restore any text or range.
+          editorFocus.editor.focus({ preventScroll: true });
+        }
+      }
+      if (!document.hidden || !editorFocus) {
+        restoreFocus();
+      }
+    }
+    if (state.deferredConfigurationFocus !== editorFocus) {
+      editorFocus?.cancel.abort();
     }
   }
 }

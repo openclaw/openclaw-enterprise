@@ -10,6 +10,7 @@
     "OCC_TEST_GATEWAY_CA_CERT_PATH",
     "OCC_TEST_GATEWAY_CA_KEY_PATH"
   ],
+  "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"],
   "env": {
     "OCC_TEST_GATEWAY_ROUTING_REAL": "1",
     "OCC_TEST_SLACK_LIVE": "0",
@@ -28,6 +29,23 @@
     "keycloak": true
   },
   "files": [
+    {
+      "path": "tests/integration/native-profile-upgrade-k3d-real.test.ts",
+      "expectedTests": [
+        "pre-feature OCE installation upgrades the same retained Agent from shared to delegated native profiles"
+      ],
+      "requiredEnv": [
+        "OCC_TEST_KEYCLOAK_ISSUER",
+        "OCC_TEST_KEYCLOAK_SECRETS_FILE",
+        "OCC_TEST_KEYCLOAK_CA_CERT",
+        "OCC_TEST_KEYCLOAK_CONTAINER",
+        "NODE_EXTRA_CA_CERTS",
+        "OCC_TEST_NATIVE_BASELINE_CONTROLLER_IMAGE",
+        "OCC_TEST_NATIVE_BASELINE_RUNTIME_IMAGE",
+        "OCC_TEST_NATIVE_BASELINE_SOURCE"
+      ],
+      "optionalEnv": ["OCC_TEST_KEYCLOAK_STATE"]
+    },
     {
       "path": "tests/integration/harness-topology-k3d-routing-real.test.mjs",
       "expectedTests": [

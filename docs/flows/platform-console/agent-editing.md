@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-11-06
-last_updated_session: authoring-run/d680b93c-3891-475b-b5f6-0b4f5ccf1ecf
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Console Agent editing and runtime requests
@@ -13,9 +13,9 @@ Related flows: [parent](../platform-console.md),
 
 ## Entry Points
 
-- `apps/controller/src/console/agents/detail.mts:renderAgentDetail` loads the exact Agent and composes the detail actions.
-- `apps/controller/src/console/agents/credentials.mjs:createChannelSecretsPanel` saves channel Secret bindings.
-- `packages/occ/src/index.ts:OpenClawController.deployAgent` admits a version after first-deployment credential setup.
+- `apps/controller/src/console/agents/detail.mts:renderAgentDetail` loads Agent detail and actions.
+- `apps/controller/src/console/agents/credentials.mts:createChannelSecretsPanel` saves channel Secret bindings.
+- `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment` admits first deployment after setup.
 - Actions require exact-resource permission.
 
 ## Flow
@@ -62,7 +62,7 @@ After reading the Agent, `loadDetails` settles history and snapshot independentl
 Rejected history warns beside readable drafts. Deploy stays unavailable.
 `snapshotErrorPanel` explains Configuration refusal and hides drafts. Numeric `401` returns to sign-in.
 
-Browsing: `packages/occ/src/index.ts:listAgents`, `listRevisions`,
+Browsing: `packages/occ/src/agent-queries.ts:listAgents`, `listRevisions`,
 `getAgentForBrowsing`, and `getRevisionForBrowsing`.
 `packages/occ/src/state/postgres-state.ts:browseSavedConfiguration` returns metadata
 plus `configurationReadError` on decode failure. Operational reads and queries stay strict. Unreadable drafts block editing and deployment without defaults.
@@ -178,7 +178,7 @@ clear captures; pending saves retain recovery guards.
 Like Escape, cancellation discards channel drafts, clears Secret inputs, and
 retains plugin selections. Pending channel saves and Secret creation prevent dismissal.
 
-`apps/controller/src/console/channels.mjs:renderChannels` renders Slack settings;
+`apps/controller/src/console/channels.mts:renderChannels` renders Slack settings;
 only **Open draft** permits editing. The
 [console reference](../../reference/console/versions-and-channel-drafts.md)
 owns Slack requirements and rejected native shapes; Teams remains native JSON.
@@ -195,7 +195,7 @@ Absent, loading, and unavailable states stay distinct. Failures retain IDs.
 Stale responses are ignored. Current 401s expire the session. Summaries need neither
 collection permission nor Secret values.
 
-`apps/controller/src/console/channels/slack.mjs:appendFields` separates channel
+`apps/controller/src/console/channels/slack.mts:appendFields` separates channel
 senders from DMs. Wildcard, empty, or omitted channel `users` selects **Allow
 everyone**; explicit IDs fill the mutually exclusive input. Mention
 requirements remain independent. `updatedSlack` replaces selected channels'
@@ -212,7 +212,7 @@ selection; redeployment applies it. See
 `apps/controller/src/console/agents/detail.mts:renderAgentDetail` supplies Namespace,
 bindings and Credentials URL to `channels/slack.mjs:credentialReferenceField`.
 `GET /namespaces/:namespaceId/secrets` requires Namespace read.
-`packages/occ/src/index.ts:listSecrets` filters exact Secret read without the Secret Driver.
+`packages/occ/src/secret-operations.ts:listSecrets` filters exact Secret read without the Secret Driver.
 `agents/secret-picker.mjs:createSecretReferenceField` filters names and IDs. Arrows
 navigate, Enter stages a reference, Escape restores, and Cancel discards.
 Typing stages nothing.
@@ -227,7 +227,7 @@ reasons, never staged. Refused binding saves reread it; inline creation rereads 
 Any listed denial means per-Secret operate: new Secrets have none, disabling picker/Preset
 creation with reasons and existing-only hints. Failed rereads keep prior answers.
 
-`apps/controller/src/console/agents/secret-picker.mjs:openCreateSecretDialog` shows
+`apps/controller/src/console/agents/secret-picker.mts:openCreateSecretDialog` shows
 an editable Agent-prefixed Name, the Secrets page's `secretValueControl` (CRLF becomes LF),
 and optional fixed Slack key. Both meet the API's rules before POST, which stores the Secret
 and stages returned metadata; cancellation never deletes it. Conflicts retain inputs.
@@ -245,7 +245,7 @@ the caller cannot `operate` is refused before the PATCH, so **Disable** is offer
 A save that rebinds such a Secret rereads the permission answer; Plugins, Repositories and the
 authentication source follow it without a reload.
 
-After PATCH, `apps/controller/src/console/agents/credential-access.mjs:ensureCredentialOperateBinding`
+After PATCH, `apps/controller/src/console/agents/credential-access.mts:ensureCredentialOperateBinding`
 grants the Agent service principal access to selected Secrets through Namespace IAM. A failed
 grant leaves Configuration saved; a 403 names the Installation administrator, who selects
 **Retry Secret access**; a timeout or 5xx stays unknown. A member's session sends no grant and
@@ -273,7 +273,7 @@ but does not stop a running Agent.
 Agent and rejects changed bindings before saving authentication. PATCH replaces
 the prior Harness `credentialSources` entry, preserving unrelated entries without
 deleting the old source or revoking grants. After PATCH,
-`apps/controller/src/console/agents/credential-access.mjs:ensureCredentialOperateBinding`
+`apps/controller/src/console/agents/credential-access.mts:ensureCredentialOperateBinding`
 grants the Agent service principal exact Secret (`api_key` or imported `codex_pat`)
 or CredentialSource `operate` through the actor's IAM authority. Managed
 ServiceAccount PATs and runtime authentication skip this grant.
@@ -327,7 +327,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#7-request-a-stop-a
 
 ### 8. Confirm deletion and read back the Agent
 
-`apps/controller/src/console/agents/deletion.mjs:createAgentDeletion`.
+`apps/controller/src/console/agents/deletion.mts:createAgentDeletion`.
 Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion-and-read-back-the-agent).
 
 ## Debugging and Verification
@@ -356,6 +356,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-06 23:58: Render repository guidance. (authoring-run/d680b93c-3891-475b-b5f6-0b4f5ccf1ecf - d55839d701)
 
 - 2026-11-05 19:05: Preserve conflict focus and selection. (authoring-run/17947441-42c1-43df-93a6-339dac4803dc - 0ecbe50bfe0df315fda06a90274b9e218b48d96c)

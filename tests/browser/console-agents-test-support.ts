@@ -16,7 +16,7 @@ import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/g
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { withNativeAdminGateway } from "../helpers/harness-configuration.mjs";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { isRecord, nativeValues, pathRequests } from "./console-agents-browser-helpers.ts";
 
 import type { GitHubRepositoryRegistration } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
@@ -248,10 +248,10 @@ export function nativeAdminComputeDriver(endpoint: string) {
     getGatewayEndpoint() {
       return endpoint;
     },
-    getGatewayChatEndpoint() {
+    async getGatewayBrowserRequest() {
       const url = new URL(endpoint);
-      url.pathname = `/native-chat${url.pathname}`;
-      return url.href;
+      url.pathname = `/native-browser${url.pathname}`;
+      return { endpoint: url.href, subject: "test:native-actor", headers: {} };
     },
   });
 }
@@ -347,6 +347,30 @@ function repositoryPolicyDriver(
 
 export function nativeAdminValues(marker: string, origin: string) {
   return withNativeAdminGateway(nativeValues(marker), origin);
+}
+
+// Serve the real native admin status, read as the fixture's administrator, with `fields`
+// removed from its data, as an older API that predates them answers. Returns the URL to
+// pass to page.unroute.
+export async function omitNativeAdminStatusFields(
+  page: Page,
+  fixture: Pick<Fixture, "origin" | "request">,
+  namespaceId: string,
+  agentId: string,
+  fields: readonly string[],
+) {
+  const path = `/namespaces/${namespaceId}/agents/${agentId}/native-admin`;
+  const url = `${fixture.origin}${path}`;
+  await page.route(url, async (route) => {
+    const response = await fixture.request("GET", path);
+    const body: unknown = response.body;
+    assert.ok(isRecord(body) && isRecord(body.data), "native admin status must carry data");
+    for (const field of fields) {
+      delete body.data[field];
+    }
+    await route.fulfill({ status: response.status, json: body });
+  });
+  return url;
 }
 
 // Without a caller-permission summary the console keeps controls enabled, so the API's own

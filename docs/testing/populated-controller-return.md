@@ -102,10 +102,12 @@ See `proof.json` for completed checks and timings and `return-progress.json` for
 the last phase started. Both are in the private evidence directory reported by
 the test. The forward upgrade records authenticated HTTPS `GET /installation`
 samples before, during, and after the upgrade, including a failed upgrade. Each
-request has a five-second deadline; requests run serially with a one-second
-pause between observations during the upgrade. The evidence includes timestamps,
-request durations, actual gaps, received HTTP status even for invalid response
-bodies, and outcomes. Only
+request has a five-second deadline. Requests run serially on a nominal one-second
+cadence during the upgrade, with at least one second between actual starts.
+Slow requests, evidence writes, and late timer wakes can leave slots unprobed;
+the sampler does not replay those slots. The evidence includes timestamps,
+request durations, received HTTP status even for invalid response bodies,
+and outcomes. Only
 HTTP 200 with the original Installation ID counts as a successful observation.
 A successful sample includes `requestId` when the `x-request-id` header and
 `meta.requestId` match and have the controller’s request ID format. The client omits
@@ -123,6 +125,26 @@ A final boolean records whether the upgrade action succeeded, independently of
 the observed HTTP results. Process interruption does not add an `after` sample.
 This protects completed writes against process termination, not host or disk loss.
 
+In receipt version 2, `nominalIntervalMs` replaces the old sleep interval
+(`intervalAfterResponseMs` is null). Compare `cadence.probedSlots` with
+`cadence.scheduledSlots` to see how many one-second opportunities received a
+completed first attempt. `unprobedSlots` counts the remainder. Slot 0 begins
+when the helper invokes the upgrade. Each `during` sample records the slot
+in which it started and its delay within that slot. Boundary reads have no slot.
+An HTTP error or timeout still counts as a probe.
+
+`gapMs` measures the previous finish to the next start. Use `startGapMs` for
+the interval between starts. `maxStartGapMs` includes the boundary reads.
+`tailGapMs` covers the last start through the last completed response.
+All offsets use the same monotonic clock. Wall-clock timestamps support log
+correlation.
+
+An interrupted receipt covers completed observations through `throughOffsetMs`.
+An open slot can still receive a probe. On settlement, `cadence.endOffsetMs`
+records when the helper observed the upgrade finish, including an exact slot
+boundary. The last in-flight request and the final read can finish later.
+The final file write and time after the last response are outside coverage.
+
 These observations do not add an outage-free pass requirement. They measure the
 fixture's HTTPS route, not exact downtime, public ingress, Slack, or model
 continuity. Availability between requests remains unobserved.
@@ -138,6 +160,56 @@ rehearsal does not prove active Agent, model, or Slack continuity. A historical
 compatible pair does not qualify later schema changes or a deployment of current
 main. Recheck migration, restore and saved-configuration compatibility when
 selecting another pair; retain those limits with the evidence.
+
+## Retain ordinary upgrade observations
+
+The [ordinary TUI upgrade lane](kubernetes.md#run-an-isolated-upgrade-qualification-lane) samples authenticated `GET /installation` through the operator Pod’s
+HTTPS proxy. The runtime window starts before the deliberate interruption and
+includes the checks while both controllers are stopped and the single resume.
+Its success flag covers that sequence. Later fleet checks and model replies have
+their own results. Both receipts use the sample outcomes and cadence described above.
+
+The ordinary controller upgrade also writes `controller-api-endpoints.json`.
+This read-only observer surrounds the unchanged HTTP sampler. It binds the API
+Service UID before the action and records the named Service, its labeled
+EndpointSlices and API Pods. The `during` phase covers the HTTP recorder, including
+its baseline request and final receipt write. Each read has UTC start and finish
+times and monotonic offsets. To compare windows, align the HTTP samples by UTC
+and use the HTTP receipt’s own `cadence.startOffsetMs` and `endOffsetMs` for
+the upgrade action. The two files use different monotonic origins. Polls sleep one second after a sample;
+slow reads leave larger gaps. Reads have a two-second Kubernetes timeout and a
+three-second command timeout, plus the fixture's bounded termination grace.
+
+Match slice Service-owner UIDs to `boundServiceUID` and endpoint target UIDs to
+Pod UIDs. A null binding means the baseline Service was not observed successfully;
+the observer never adopts a replacement. Missing, stale or unmatched owner and
+target UIDs leave attribution unknown even when a labeled slice is present.
+An empty `objects` list means the scoped read returned zero objects. A placeholder
+EndpointSlice with an owner reference to the named core `v1` Service can report
+`endpoints: null`. The receipt records an empty `endpoints` list for that slice.
+Missing readiness conditions stay null.
+A command failure has status `read-error` and leaves the result unknown. After a
+timeout, the observer can continue when the runner confirms that the command
+exited and its process group is gone. An interruption or uncertain command cleanup
+stops the observer. If this occurs during the baseline, the fixture stops before it
+starts the upgrade. The three reads run independently. Polling cannot locate exact
+transition times or prove reachability. Compare their UTC windows with the HTTP
+samples. Pod condition transition timestamps come from Kubernetes.
+`actionSucceeded` covers the upgrade and HTTP recorder, while
+`complete` describes observer completion. Partial receipts remain uncertain.
+
+In the fresh `run_dir` from the lane command, retain each available receipt before removing the runner. A phase
+the test never reached has no receipt. An interrupted phase can leave a partial one.
+
+```sh
+for receipt in forward-api-availability.json runtime-api-availability.json controller-api-endpoints.json; do
+  for source in "$run_dir"/oce-production-tui-*/"$receipt"; do
+    if [ -f "$source" ]; then
+      install -m 600 "$source" "$run_dir/$receipt" || exit 1
+    fi
+  done
+done
+```
 
 ## Check a separate migration while the incumbent serves
 

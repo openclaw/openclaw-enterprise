@@ -22,6 +22,12 @@ const UUID_V4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]
 export const InstallationId = Type.String({ pattern: `^ins_${UUID_V4}$` });
 export const NamespaceId = Type.String({ pattern: `^ns_${UUID_V4}$` });
 export const PresetId = Type.String({ pattern: `^pre_${UUID_V4}$` });
+export const ConnectionTemplateId = Type.String({
+  pattern: `^ctp_${UUID_V4}$`,
+});
+export const ModelProviderId = Type.String({
+  pattern: `^mpr_${UUID_V4}$`,
+});
 export const ConfigurationId = Type.String({ pattern: `^cfg_${UUID_V4}$` });
 export const ServiceAccountId = Type.String({ pattern: `^sa_${UUID_V4}$` });
 export const SecretId = Type.String({ pattern: `^sec_${UUID_V4}$` });
@@ -55,6 +61,7 @@ export const RevisionHarnessSchema = Type.Object(
     id: Type.String({ minLength: 1 }),
     version: Type.String({ minLength: 1 }),
     mode: HarnessExecutionModeSchema,
+    modelProviderId: Type.Optional(ModelProviderId),
     overrides: HarnessSettings,
     configuration: HarnessSettings,
   },
@@ -62,6 +69,10 @@ export const RevisionHarnessSchema = Type.Object(
 );
 export const AgentDeploymentBody = Type.Object(
   { harnessOverrides: Type.Optional(HarnessSettings) },
+  { additionalProperties: false },
+);
+export const AgentStopQuery = Type.Object(
+  { expectedActiveRevisionId: Type.Optional(RevisionId) },
   { additionalProperties: false },
 );
 export const FirstDeploymentIntent = Type.Object(
@@ -387,7 +398,7 @@ export const AgentCredentialSourcesSchema = Type.Array(
     maxItems: MAX_AGENT_CREDENTIAL_SOURCES,
     uniqueItems: true,
     description:
-      "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+      "Credential sources selected by the Agent. A credential-source harnessAuth names one entry. Gateway-owned sources use the selected Credential Gateway. Internally registered TokenService sources can be saved for Harness authentication, but deployment refuses them until delivery is available. The Agent never receives credential values.",
   },
 );
 
@@ -410,11 +421,12 @@ export const CredentialSourceType = Type.String({
   minLength: 1,
   maxLength: 64,
   pattern: "^[a-z][a-z0-9-]{0,63}$",
-  description: "Source type from the selected Credential Gateway catalog, for example `openai`.",
+  description:
+    "Source type accepted by the Driver registering the credential, for example `openai`.",
 });
 
 export const CredentialSourceConfig = Type.Record(
-  CredentialSourceFieldName,
+  Type.String(),
   Type.String({ minLength: 1, maxLength: 2048 }),
   {
     maxProperties: 32,
@@ -615,6 +627,7 @@ export const PermissionActionSchema = Type.Union([
   Type.Literal("administer"),
   Type.Literal("read_logs"),
   Type.Literal("manage_policy"),
+  Type.Literal("read_audit"),
 ]);
 
 export const ResourceKindSchema = Type.Union([
@@ -791,6 +804,7 @@ export const CreateAgentBody = Type.Object(
     ),
     workspaceDefaultsId: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })),
     name: Name,
+    modelProviderId: Type.Optional(ModelProviderId),
     configurationId: ConfigurationId,
     nativeAdmin: Type.Optional(
       Type.Boolean({
@@ -834,6 +848,7 @@ export const ProvisionAgentBody = Type.Object(
     workspaceDefaultsId: Type.Optional(CreateAgentBody.properties.workspaceDefaultsId),
     name: Name,
     configuration: ProvisionAgentConfigurationBody,
+    modelProviderId: Type.Optional(ModelProviderId),
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(
       Type.Union([HarnessAuthBindingSchema, Type.Null()], {
@@ -853,6 +868,7 @@ export const ProvisionAgentBody = Type.Object(
 
 export const ValidateAgentCreateBody = Type.Object(
   {
+    modelProviderId: Type.Optional(ModelProviderId),
     name: Type.Optional(
       Type.String({
         minLength: 1,
@@ -924,6 +940,7 @@ export const UpdateAgentBody = Type.Object(
         ),
       ]),
     ),
+    modelProviderId: Type.Optional(Type.Union([ModelProviderId, Type.Null()])),
     configurationId: Type.Optional(ConfigurationId),
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
@@ -937,7 +954,11 @@ export const UpdateAgentBody = Type.Object(
   },
   {
     additionalProperties: false,
-    anyOf: [{ required: ["configurationId"] }, { required: ["gatewayManagedMode"] }],
+    anyOf: [
+      { required: ["configurationId"] },
+      { required: ["gatewayManagedMode"] },
+      { required: ["modelProviderId"] },
+    ],
   },
 );
 
@@ -1171,6 +1192,12 @@ export const ErrorResponse = Type.Object(
           Type.Literal("RUNTIME_CREDENTIALS_CLUSTER_RBAC"),
         ]),
         message: Type.String({ minLength: 1, maxLength: 256 }),
+        reason: Type.Optional(
+          Type.Literal("credential_registration_pending", {
+            description:
+              "On credential source DELETE with 503 DEPENDENCY_UNAVAILABLE, registration may still be completing. Retry after the whole seconds in the Retry-After header; the source remains until deletion completes.",
+          }),
+        ),
         details: Type.Optional(Type.Array(ErrorDetail, { maxItems: 32 })),
         remainingResources: Type.Optional(
           Type.Array(
@@ -1344,3 +1371,4 @@ export const UpdatePresetBody = Type.Object(
 );
 
 export type FirstDeploymentIntent = Type.Static<typeof FirstDeploymentIntent>;
+export type AgentStopQuery = Type.Static<typeof AgentStopQuery>;

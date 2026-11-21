@@ -16,7 +16,7 @@ import type {
   ProxyWiring,
   EgressInstallation,
   ProxyPlan,
-  CredentialProxyDriver,
+  LegacyEgressProxyDriver,
   ProxyRevisionContext,
   SandboxDriver,
   AgentRevision,
@@ -83,6 +83,21 @@ function revisionNumber(value: unknown): string | undefined {
     : undefined;
 }
 
+function loadedPolicyVersion(status: Readonly<Record<string, unknown>>): number | undefined {
+  const revision = asRecord(status.revision);
+  const version = revision?.version;
+  // OpenShell versions belong to the retained Sandbox, independently of OCE's
+  // per-revision plan generation. Accept only a loaded, matching uint32 version.
+  return typeof version === "number" &&
+    Number.isInteger(version) &&
+    version > 0 &&
+    version <= 0xffffffff &&
+    status.active_version === version &&
+    [2, "POLICY_STATUS_LOADED"].includes(revision?.status as string | number)
+    ? version
+    : undefined;
+}
+
 function enforcementEvidence(
   status: Readonly<Record<string, unknown>>,
   sandboxId: string,
@@ -110,9 +125,6 @@ function enforcementEvidence(
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
       evidence.instance_id,
     ) ||
-    revision.version !== policyVersion ||
-    status.active_version !== policyVersion ||
-    ![2, "POLICY_STATUS_LOADED"].includes(revision.status as string | number) ||
     evidence.policy_version !== policyVersion ||
     typeof evidence.policy_hash !== "string" ||
     !/^[0-9a-f]{64}$/.test(evidence.policy_hash) ||
@@ -199,7 +211,7 @@ export function openShellEgressConfiguration(
   if (new Set(plan.routes.map((route) => route.binding.binding.id)).size > 1) {
     throw new Error("The protected execution permits at most one binding.");
   }
-  requireConfiguration(OpenShellCredentialProxyDriver, options);
+  requireConfiguration(OpenShellLegacyEgressProxyDriver, options);
   const hosts = [...new Set(plan.routes.map((route) => new URL(route.origin).hostname))];
   // Keep the authority installed for a zero-route plan. The selector names no
   // reachable rule: network_policies below remains empty, never a wildcard.
@@ -233,6 +245,8 @@ export function openShellEgressConfiguration(
           `oce-egress-${index}`,
           {
             name: `oce-egress-${index}`,
+            // Managed OpenShell requires a binary match even for whole-execution inference.
+            ...(route.binding.grant.kind === "inference" ? { binaries: [{ path: "/**" }] } : {}),
             endpoints: [
               {
                 host: origin.hostname,
@@ -260,13 +274,13 @@ export function openShellEgressConfiguration(
   });
 }
 
-export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
+export class OpenShellLegacyEgressProxyDriver implements LegacyEgressProxyDriver {
   readonly capability = "credential_proxy" as const;
   readonly implementation = "openshell";
   readonly id: string;
   readonly sourceControl: CredentialSourceControl;
-  readonly bindExchange?: NonNullable<CredentialProxyDriver["bindExchange"]>;
-  readonly bindRepositoryGit?: NonNullable<CredentialProxyDriver["bindRepositoryGit"]>;
+  readonly bindExchange?: NonNullable<LegacyEgressProxyDriver["bindExchange"]>;
+  readonly bindRepositoryGit?: NonNullable<LegacyEgressProxyDriver["bindRepositoryGit"]>;
   private readonly mandatoryEnforcement?: OpenShellGitRuntime["mandatoryEnforcement"];
   private readonly previewEnforcement?: OpenShellGitRuntime["previewEnforcement"];
   private readonly backend: Backend<OpenShellGateway>;
@@ -323,13 +337,13 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       readonly backend: Backend<OpenShellGateway>;
       readonly sandbox: SandboxDriver;
       readonly exchangeAuthority?: EgressAuthorityConfiguration;
-      readonly bindRepositoryGit?: NonNullable<CredentialProxyDriver["bindRepositoryGit"]>;
+      readonly bindRepositoryGit?: NonNullable<LegacyEgressProxyDriver["bindRepositoryGit"]>;
       readonly mandatoryEnforcement?: OpenShellGitRuntime["mandatoryEnforcement"];
       readonly previewEnforcement?: OpenShellGitRuntime["previewEnforcement"];
       readonly preparedProviders?: readonly CredentialProviderDefinition[];
     },
   ) {
-    requireConfiguration(OpenShellCredentialProxyDriver, options);
+    requireConfiguration(OpenShellLegacyEgressProxyDriver, options);
     if (selection.sandbox.harnessResource === undefined) {
       throw new Error("Invalid protected OpenShell egress configuration.");
     }
@@ -516,9 +530,6 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       !policy ||
       // Protobuf omits the map when deny-all has no rules (even auxiliary rules).
       (Object.keys(expectedPolicies).length > 0 && !policies) ||
-      Number(status.active_version) !== context.plan.generation ||
-      Number(revision.version) !== context.plan.generation ||
-      ![2, "POLICY_STATUS_LOADED"].includes(revision.status as string | number) ||
       !isDeepStrictEqual(
         wirePolicy(policy.network_middlewares),
         wirePolicy(expected.network_middlewares),
@@ -587,6 +598,10 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       return undefined;
     }
     const status = await client.getSandboxPolicyStatus(workspace, name, context.signal);
+    const policyVersion = loadedPolicyVersion(status);
+    if (policyVersion === undefined) {
+      return undefined;
+    }
     const sandboxId = existing.id;
     return {
       status,
@@ -603,7 +618,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           : enforcementEvidence(
               status,
               sandboxId,
-              context.plan.generation,
+              policyVersion,
               context.revision.id,
               this.options,
             ),

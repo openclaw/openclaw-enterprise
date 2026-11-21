@@ -100,15 +100,15 @@ export function createSkipperPreparedComputeEvents(commandPath) {
         const completed =
           parsed.every(Boolean) &&
           current?.exitCode !== undefined &&
-          current.sessionId === undefined;
+          current.sessionId === undefined &&
+          (results.length === 1 || sameSession);
         const ok =
           !active.invalid &&
           active.results.has(id) &&
           remaining > 0 &&
           completed &&
           current.exitCode === 0 &&
-          markerSeen &&
-          (results.length === 1 || sameSession);
+          markerSeen;
         const sha = output.match(/(?:^|\n)([0-9a-f]{40})(?:\n|$)/)?.[1];
         let status = "unrecognized";
         if (remaining <= 0 || (current?.sessionId !== undefined && !pollFits)) {
@@ -120,6 +120,7 @@ export function createSkipperPreparedComputeEvents(commandPath) {
           event: "skipper-native-result",
           id,
           markerSeen,
+          ...(ok ? { modelFixtureSelectedTerminalSuccess: true } : {}),
           sha,
           status,
           exitCode: current?.exitCode ?? null,
@@ -144,7 +145,12 @@ export function createSkipperPreparedComputeEvents(commandPath) {
         call_id: id,
         name: "exec_command",
         arguments: JSON.stringify({
-          cmd: cmd + "\nprintf '%s\\n' '" + marker + "'",
+          cmd: [
+            cmd,
+            "oce_skipper_exit=$?",
+            '[ "$oce_skipper_exit" -eq 0 ] || exit "$oce_skipper_exit"',
+            "printf '%s\\n' '" + marker + "'",
+          ].join("\n"),
           login: false,
           yield_time_ms: Math.min(30_000, remaining),
         }),

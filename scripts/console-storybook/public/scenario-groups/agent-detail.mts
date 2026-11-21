@@ -238,6 +238,41 @@ export function createAgentDetailScenarios({
     name: "slack_search_public",
     ownerId: slackPluginId,
   };
+  const slackSendTool = {
+    id: "slack_send_message",
+    name: "slack_send_message",
+    ownerId: slackPluginId,
+  };
+  const slackMcpBase = {
+    group: "Pages/Agent detail",
+    path: `${draft}&tab=plugins`,
+    harnessId: "openclaw",
+    deployed: true,
+    credentialSources: [{ sourceId: slackSourceId }],
+    pluginDiscoveryCredential: "none",
+    pluginCapabilities: {
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      approvers: { agent: false, plugin: false, tools: false },
+      toolDefaults: { enabled: false, approval: [], reviewer: [] },
+      tools: { enabled: false, approval: [], reviewer: [] },
+      driverPolicySchema: { type: "object", properties: {} },
+      policyScopeByPlugin: { [slackPluginId]: "tool_human_approval" },
+      credentialSlots: [
+        {
+          pluginId: slackPluginId,
+          releaseSha256: "a".repeat(64),
+          id: "account",
+          label: "Slack account",
+          toolDiscovery: true,
+          sources: [{ id: slackSourceId, name: "Slack search connection (simulated)" }],
+        },
+      ],
+    },
+    pluginDiscovery: {
+      pages: { initial: { plugins: [slackEntry], nextCursor: null } },
+      details: { [slackPluginId]: { ...slackEntry, tools: [slackTool, slackSendTool] } },
+    },
+  } satisfies Partial<AgentDetailScenario>;
 
   const shareExistingPerson = [
     { selector: "#share-principal-id", value: "prn_person-demo" },
@@ -410,7 +445,7 @@ export function createAgentDetailScenarios({
         description:
           "The Agent header keeps its identity and actions visible while access is rechecked. The delay and Agent data are simulated.",
         steps: [
-          "Choose Copy Agent ID. If clipboard access is available, Copied appears briefly; otherwise, the ID is selected for manual copying.",
+          "Choose Copy Agent ID. When the copy succeeds, “Copied” appears for two seconds. Otherwise, the entire ID is selected and “Copy selection” appears.",
           "Focus Open draft, switch to another window, then return. During the 1.5-second access check, the action stays visible but cannot be used; focus returns to it after the check.",
           "Repeat the window switch and focus Namespaces while the check is pending. Focus stays in the sidebar when the check finishes.",
           "Choose Open draft to open the draft Configuration without deploying. In the next story, try the Agents back link and Namespace selector while a save is in progress.",
@@ -517,7 +552,8 @@ export function createAgentDetailScenarios({
           "Grant an existing person access to this Agent's full native Gateway. Other Agents and OCE administration remain separate.",
         steps: [
           "Enter prn_person-demo as the existing Principal ID.",
-          "Review the native-access disclosure, acknowledge it, and share.",
+          "Review the native-access disclosure and acknowledge it.",
+          "Tab to Share Agent, press Enter once, and confirm focus remains on Share Agent when Agent access is shared.",
           "Remove the direct binding with the red-edged destructive Remove binding button (it acts at once, with no confirmation); Namespace discovery remains available.",
         ],
       },
@@ -1238,36 +1274,9 @@ export function createAgentDetailScenarios({
         gap: "Catalog responses and the saved Agent are simulated. This verifies Console recovery, not plugin installation or a live runtime.",
       },
       slackMcpTools: {
-        group: "Pages/Agent detail",
+        ...slackMcpBase,
         name: "Choose tools for a connected Slack account",
-        path: `${draft}&tab=plugins`,
-        harnessId: "openclaw",
-        deployed: true,
         agentPlugins: { [slackPluginId]: { enabled: true } },
-        credentialSources: [{ sourceId: slackSourceId }],
-        pluginDiscoveryCredential: "none",
-        pluginCapabilities: {
-          driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-          approvers: { agent: false, plugin: false, tools: false },
-          toolDefaults: { enabled: false, approval: [], reviewer: [] },
-          tools: { enabled: false, approval: [], reviewer: [] },
-          driverPolicySchema: { type: "object", properties: {} },
-          policyScopeByPlugin: { [slackPluginId]: "enablement_only" },
-          credentialSlots: [
-            {
-              pluginId: slackPluginId,
-              releaseSha256: "a".repeat(64),
-              id: "account",
-              label: "Slack account",
-              toolDiscovery: true,
-              sources: [{ id: slackSourceId, name: "Slack search connection (simulated)" }],
-            },
-          ],
-        },
-        pluginDiscovery: {
-          pages: { initial: { plugins: [slackEntry], nextCursor: null } },
-          details: { [slackPluginId]: { ...slackEntry, tools: [slackTool] } },
-        },
         rules: [
           {
             suffix: "/plugins/details",
@@ -1280,13 +1289,39 @@ export function createAgentDetailScenarios({
         ],
         actions: [click("Configure plugins")],
         description:
-          "The Tools picker loads available tools from the selected Slack account. Select the tools the next deployment may call.",
+          "The Tools picker loads available tools from the selected Slack account. Enable tools and choose whether native calls require human approval on the next deployment.",
         steps: [
           "Open Slack. Before selecting an account, no tools can be loaded. Select Slack search connection (simulated).",
           "Choose Load tools. The first request shows a loading state, then a permission error. Choose Load tools again to recover.",
-          "Check slack_search_public. Choose Done and Save plugin selections. Open the picker and load tools again to confirm the saved choice.",
+          "Enable slack_search_public and slack_send_message with their tool switches. Open Tool policy for slack_send_message and set Require approval for to Every action. Unsupported approval modes, reviewer selection, and plugin defaults are disabled. Review the note that direct scripts bypass Gateway approval.",
+          "Choose Done and Save plugin selections. Open the picker: saved tools and approval choices remain visible as Unavailable until discovery succeeds. Load tools again to confirm the choices.",
+          "Disable slack_send_message to remove its approval override, or turn off Enable plugin to clear its managed account and tool policies before saving.",
         ],
         gap: "The account and MCP response are simulated. This verifies Console selection and readback.",
+      },
+      slackMcpSavedToolsUnavailable: {
+        ...slackMcpBase,
+        name: "Revoke a saved MCP tool when discovery fails",
+        agentPlugins: {
+          [slackPluginId]: {
+            enabled: true,
+            driverPolicy: {
+              releaseSha256: "a".repeat(64),
+              credentials: { account: slackSourceId },
+              toolNames: [slackSendTool.id],
+            },
+            tools: { [slackSendTool.id]: { approval: "all_actions" } },
+          },
+        },
+        rules: [{ suffix: "/plugins/details", method: "POST", status: 403, code: "FORBIDDEN" }],
+        actions: [click("Configure plugins")],
+        description:
+          "A previously saved tool and its Ask policy remain visible when MCP discovery fails. The operator can revoke that tool without discovering it again or selecting another account.",
+        steps: [
+          "Open Slack and choose Load tools. Inspect slack_send_message, labeled Unavailable, and open Tool policy to see Require approval for set to Every action.",
+          "Disable slack_send_message. Its saved approval policy is removed and the unavailable row disappears. Choose Done and save.",
+        ],
+        gap: "The account and discovery failure are simulated. This verifies Console recovery controls.",
       },
       pluginsDraft: {
         group: "Pages/Agent detail",
@@ -1758,6 +1793,7 @@ export function createAgentDetailScenarios({
           "Fold Deployment details and Tab to Refresh deployment. About five seconds after v7 appears, the quiet poll starts. The button stays enabled and focused.",
           "Press Enter while that poll is pending. The button becomes busy and keeps focus. When the refresh discovers v8 and replaces the panel, its Refresh deployment button keeps focus in the same position.",
           "Wait for the v8 retry notice. Refresh deployment is enabled again and remains focused. Reset the story to repeat.",
+          "Reset and repeat the refresh. While it is pending, press Shift+Tab to focus Deployment details. When the v8 retry notice appears, Enter folds the focused disclosure and Space reopens it.",
         ],
         gap: "Storybook simulates the version list and the failed deployment read. The Controller browser regression covers the real version discovery and read failure.",
       },
@@ -1969,9 +2005,8 @@ export function createAgentDetailScenarios({
         deployed: true,
         clipboard: "unavailable",
         actions: [{ selector: ".page-meta-copy", click: true }],
-        description:
-          "Where the browser offers no clipboard (an http origin, say), Copy Agent ID selects the ID instead, so it can be copied by hand.",
-        steps: ["Check that the Agent ID is selected and no Copied status appears."],
+        description: "When the browser has no clipboard access, you can copy the Agent ID by hand.",
+        steps: ["Check that the entire Agent ID is selected and “Copy selection” appears."],
       },
       draftCredentialRejected: {
         group: "Pages/Agent detail",
@@ -2230,7 +2265,7 @@ export function createAgentDetailScenarios({
         gap: "The failure is simulated; this story does not verify a live deployment.",
       },
       // Finding 2537: these codes read "Deployment reconciliation failed." and got the generic logs
-      // advice. Messages copy deploymentErrorMessage in packages/occ/src/state/controller-work.ts.
+      // advice. Messages copy deploymentErrorMessage in packages/occ/src/deployment-work-status.ts.
       deploymentFailedAdmissionUnavailable: {
         group: "Pages/Agent detail",
         name: "New version failed, protected admission changed",
@@ -3098,11 +3133,19 @@ export function createAgentDetailScenarios({
             skip: 1,
             once: true,
           },
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+            skip: 1,
+            once: true,
+            delayMs: 2500,
+          },
         ],
         description: "The Console retries one temporary Configuration read failure on tab return.",
         steps: [
-          "Open the preview in its own tab and choose Edit Configuration. Make an unsaved edit.",
-          "Switch to another browser tab and return. The draft and focus return without selecting Retry.",
+          "Open the preview in its own tab and choose Edit Configuration. Make an unsaved JSON edit, select text in the editor, and scroll until the page header is out of view.",
+          "Switch to another browser tab and return. When Still checking… appears at the bottom of the viewport and the draft is hidden, switch away again. Let the delayed retry finish while the preview tab is hidden.",
+          "Return to the preview. After the next access check succeeds, confirm the status disappears and the editor regains focus with the unsaved draft, selection, and scroll position intact. Type without clicking the editor to verify that only the selected text changes. Reset the story and repeat at 390 px wide. Confirm the status fits the viewport and navigation remains available.",
         ],
       },
       configurationReadUnavailableOnRefocus: {

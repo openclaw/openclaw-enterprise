@@ -16,8 +16,6 @@ import {
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { createFixtureResponse } from "../helpers/console-fixture-response.ts";
 
-import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
-
 import { fileConsoleApp } from "../helpers/console-app.mjs";
 import { createNativeConsoleFixture, nativeBrowserSupported } from "./console-native-ingress.ts";
 
@@ -25,16 +23,20 @@ import {
   apiRequests,
   detailUrl,
   deploymentStatusResponse,
+  hasFocus,
   holdRequests,
   login,
   nativeValues,
   newPage,
+  nextFrames,
   nonAuthWriteRequests,
   pathRequests,
+  settlePageRequests,
   waitForCondition,
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
 import {
+  deploymentDetailsOpen,
   deploymentRecordUrl,
   expectDeploymentOutcome,
 } from "./console-deployment-activity-helpers.ts";
@@ -45,14 +47,16 @@ import {
   assertRevisionUrl,
   nativeAdminComputeDriver,
   nativeAdminValues,
+  omitNativeAdminStatusFields,
 } from "./console-agents-test-support.ts";
 import { STOP_REQUESTED, VERSION_READ_DENIED_HEADING } from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import {
   registerDeletionAndNavigationCases,
   registerSettingsRefocusAndTabsCases,
   registerSharingCredentialsAndChannelsCases,
 } from "./console-agent-detail-cases.mts";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 function assertRecord(
   value: unknown,
@@ -63,6 +67,15 @@ function assertRecord(
     `${description} must be an object`,
   );
 }
+
+// The native admin panel's text for an Agent whose Configuration never turned on browser chat.
+const BROWSER_CHAT_OFF_EDITOR =
+  "Browser chat is off for this Agent. To turn it on, add the browser chat settings to its draft Configuration, then deploy it.";
+const BROWSER_CHAT_OFF_READER =
+  "Browser chat is off for this Agent. Ask someone who can edit its Configuration to turn on browser chat, then deploy it.";
+// The editor's text when the API gives no cause for `unsupported`.
+const BROWSER_ACCESS_UNSUPPORTED_EDITOR =
+  "Browser access is not supported by this Agent’s current version. Check the browser chat settings in its Configuration and its Compute support, then deploy a supported version.";
 
 // The Console Browser lane runs the two Agent detail test files in parallel.
 
@@ -195,6 +208,8 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   const initialAccess: unknown = initialNativeAccess.data;
   assertRecord(initialAccess, "Initial native admin access");
   assert.equal(initialAccess.status, "unsupported");
+  // The Configuration never turned on the browser UI (Create Agent's browser chat opt-in).
+  assert.equal(initialAccess.reason, "not-enabled");
   assert.ok(typeof initialAccess.origin === "string", "Native admin origin must be a string");
   assert.equal(new URL(initialAccess.origin).protocol, "https:");
   const detail = () =>
@@ -202,15 +217,38 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   await page.goto(detail().href);
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
   await page.locator(".native-admin-access").waitFor();
-  await page
-    .getByText(
-      "Browser access is not supported by this Agent’s current version. Ask someone who can edit its Configuration to check browser access and Compute support, then deploy a supported version.",
-    )
-    .waitFor();
+  // Finding 3168: the administrator who can edit this Agent is told that browser chat is off
+  // and where its settings are, not to ask someone else.
+  await page.getByText(BROWSER_CHAT_OFF_EDITOR).waitFor();
+  const accessCard = page.locator(".native-admin-access");
+  assert.equal(
+    await accessCard.getByRole("link", { name: "Browser chat settings" }).getAttribute("href"),
+    "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/deploy/native-admin.md#configure-each-agent",
+  );
+  await accessCard.getByRole("link", { name: "Open draft" }).waitFor();
   assert.equal(
     await page.getByRole("link", { name: "Open Agent UI", exact: true }).isVisible(),
     false,
   );
+  // An older API sends `unsupported` without `reason`: the editor gets the general check-and-
+  // deploy text and the draft link, never a guess that browser chat is off.
+  const withoutReason = await omitNativeAdminStatusFields(page, fixture, namespace.id, agent.id, [
+    "reason",
+  ]);
+  await page.reload();
+  await page.getByText(BROWSER_ACCESS_UNSUPPORTED_EDITOR).waitFor();
+  await accessCard.getByRole("link", { name: "Open draft" }).waitFor();
+  assert.equal(await accessCard.getByRole("link", { name: "Browser chat settings" }).count(), 0);
+  await page.unroute(withoutReason);
+  // A caller who may not save the Configuration is told to ask someone who can.
+  const configurationLocked = restrict(fixture.policy, "update", "configuration", {
+    namespaceId: namespace.id,
+    resourceId: agent.configurationId,
+  });
+  await page.reload();
+  await page.getByText(BROWSER_CHAT_OFF_READER).waitFor();
+  assert.equal(await accessCard.getByRole("link", { name: "Browser chat settings" }).count(), 0);
+  liftRestriction(fixture.policy, configurationLocked);
 
   restrict(fixture.policy, "administer", "agent", {
     namespaceId: namespace.id,
@@ -335,7 +373,98 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.deepEqual([...deniedTabWrites, ...nonAuthWriteRequests(requests)], []);
 });
 
+test("Agent browser access keeps the Open chat label while refreshing", async (t) => {
+  if (!nativeBrowserSupported(t)) {
+    return;
+  }
+  const { fixture, browserOptions } = await createNativeConsoleFixture(t, {
+    nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
+    agentGatewayManagedMode: false,
+    computeDriver: nativeAdminComputeDriver(
+      "wss://private-gateway.example.invalid/namespaces/native-admin/agents/agent",
+    ),
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Browser access", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Workshop Agent", nativeValues("chat-ui"));
+  const previous = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const statusPath = `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`;
+  const initial = await fixture.request("GET", statusPath);
+  assert.equal(initial.status, 200);
+  const initialAccess: unknown = initial.data;
+  assertRecord(initialAccess, "Initial browser access");
+  assert.equal(initialAccess.status, "unsupported");
+  assert.ok(typeof initialAccess.origin === "string");
+  await fixture.updateConfiguration(
+    namespace.id,
+    agent.configurationId,
+    nativeAdminValues("chat-ui", initialAccess.origin),
+  );
+  const active = await fixture.seedActiveAgentRevision(
+    namespace.id,
+    agent.id,
+    previous.revision.id,
+  );
+
+  // The operator has chat access and the refresh goes to the real Controller route.
+  restrict(fixture.policy, "administer", "agent", {
+    namespaceId: namespace.id,
+    resourceId: agent.id,
+  });
+  const { page } = await newPage(t, fixture, browserOptions);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+  );
+  const chatLink = page.getByRole("link", { name: "Open chat", exact: true });
+  await chatLink.waitFor();
+  const destination = await chatLink.getAttribute("href");
+  assert.ok(destination);
+
+  const statusUrl = `${fixture.origin}${statusPath}`;
+  const held = await holdRequests(t, page, statusUrl, { once: true, method: "GET" });
+  const refreshed = page.waitForResponse(
+    (response) => response.url() === statusUrl && response.request().method() === "GET",
+  );
+  const refresh = page.getByRole("button", { name: "Refresh access", exact: true });
+  const isRefreshFocused = () =>
+    refresh.evaluate((node) => node === node.ownerDocument.activeElement);
+  await refresh.focus();
+  await page.keyboard.press("Enter");
+  await held.requested;
+  const pending = page.locator(".agent-ui-unavailable");
+  assert.equal(await pending.isVisible(), true);
+  assert.equal(await pending.getAttribute("aria-disabled"), "true");
+  assert.equal(await page.getByText("Checking access…", { exact: true }).isVisible(), true);
+  assert.equal(await chatLink.isVisible(), false);
+  assert.equal(await page.locator(".agent-ui-launch").getAttribute("href"), null);
+  assert.equal(await refresh.getAttribute("aria-disabled"), "true");
+  assert.equal(await isRefreshFocused(), true);
+  const chatLabelWasVisible = await page
+    .getByRole("button", { name: "Open chat", exact: true })
+    .isVisible();
+  const pendingLabel = await pending.innerText();
+
+  held.release();
+  assert.equal((await refreshed).status(), 200);
+  await chatLink.waitFor();
+  await waitForEnabled(refresh);
+  assert.equal(await chatLink.getAttribute("href"), destination);
+  assert.equal(await pending.isVisible(), false);
+  assert.equal(await isRefreshFocused(), true);
+
+  // Restoring administration re-enables the administrative launch control on the same Agent.
+  fixture.policy.restrictions.length = 0;
+  await page.reload();
+  const adminLink = page.getByRole("link", { name: "Open Agent UI", exact: true });
+  await adminLink.waitFor();
+  assert.ok(await adminLink.getAttribute("href"));
+  assert.equal(chatLabelWasVisible, true, `Pending chat launch displayed "${pendingLabel}"`);
+});
+
 test("Agent detail rereads native admin access once when a pending deployment activates, and Refresh access keeps keyboard focus", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   if (!nativeBrowserSupported(t)) {
     return;
   }
@@ -397,11 +526,7 @@ test("Agent detail rereads native admin access once when a pending deployment ac
   deploymentStatus = "succeeded";
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
   await expectDeploymentOutcome(page, "Completed", { folded: false });
-  await card
-    .getByText(
-      "Browser access is not supported by this Agent’s current version. Ask someone who can edit its Configuration to check browser access and Compute support, then deploy a supported version.",
-    )
-    .waitFor();
+  await card.getByText(BROWSER_CHAT_OFF_EDITOR).waitFor();
   assert.equal(pathRequests(requests, "GET", nativeAdminPath).length, 2);
 
   // Access is reread only when the serving version changes: Refresh deployment rereads the
@@ -525,10 +650,51 @@ test("Agent sharing grants existing people exact discovery and native access, th
   const detail = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "access");
   await login(page, fixture, detail);
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
-  await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
-  await panel.getByRole("checkbox").check();
-  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
-  await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
+  const principal = panel.getByLabel("Existing person’s Principal ID");
+  const acknowledgment = panel.getByRole("checkbox");
+  const share = panel.getByRole("button", { name: "Share Agent", exact: true });
+  const shared = panel.getByText("Agent access is shared.", { exact: false });
+  const bindingPath = `${policyPath}/access-bindings`;
+  const bindingUrl = `${fixture.origin}${bindingPath}`;
+  const requests = apiRequests(page, fixture.origin);
+  const policyRequestCount = () =>
+    requests.filter((request) => request.path.startsWith(`${policyPath}/`)).length;
+  const nextBindingResponse = () =>
+    page.waitForResponse(
+      (response) => response.url() === bindingUrl && response.request().method() === "POST",
+    );
+  async function submitShare() {
+    await acknowledgment.check();
+    await acknowledgment.focus();
+    await page.keyboard.press("Tab");
+    assert.equal(await hasFocus(share), true, "Tab from the acknowledgment reaches Share Agent");
+    await page.keyboard.press("Enter");
+  }
+
+  await principal.fill(person.principal.id);
+  // Hold the binding before send so Chromium uses its own hostname resolution and CA trust.
+  const heldBinding = await holdRequests(t, page, bindingUrl, { once: true, method: "POST" });
+  await submitShare();
+  await heldBinding.requested;
+  await nextFrames(page);
+  const focusedWhileSharing = await hasFocus(share);
+  assert.equal(await share.isDisabled(), true);
+  const pendingRequests = policyRequestCount();
+  await page.keyboard.press("Enter");
+  await settlePageRequests(page);
+  const focusedAfterRepeat = await hasFocus(share);
+  assert.equal(
+    policyRequestCount(),
+    pendingRequests,
+    "Repeat Enter sends no sharing policy requests",
+  );
+  const created = nextBindingResponse();
+  heldBinding.release();
+  assert.equal((await created).status(), 201);
+  await shared.waitFor();
+  await waitForEnabled(share);
+  const focusedAfterSuccess = await hasFocus(share);
+  assert.equal(pathRequests(requests, "POST", bindingPath).length, 2);
   await panel.screenshot({ path: join(artifacts, "agent-sharing-granted.png") });
   const bindings: unknown = await fixture.addedAccessBindings(namespace.id);
   assert.ok(
@@ -552,6 +718,25 @@ test("Agent sharing grants existing people exact discovery and native access, th
       ["namespace", namespace.id],
     ],
   );
+  assert.equal(focusedAfterSuccess, true, "Share Agent keeps keyboard focus after success");
+  assert.equal(focusedWhileSharing, true, "Share Agent keeps keyboard focus while sharing");
+  assert.equal(focusedAfterRepeat, true, "Share Agent keeps keyboard focus after repeat Enter");
+
+  // Sharing again reuses the grants and leaves focus where the user moved it.
+  const heldRoles = await holdRequests(t, page, `${fixture.origin}${policyPath}/roles`, {
+    once: true,
+    method: "GET",
+  });
+  await submitShare();
+  await heldRoles.requested;
+  const accessTab = page.getByRole("tab", { name: "Access", selected: true });
+  await accessTab.focus();
+  assert.equal(await hasFocus(accessTab), true);
+  heldRoles.release();
+  await shared.waitFor();
+  assert.equal(await hasFocus(accessTab), true, "Sharing does not take back focus the user moved");
+  assert.equal(pathRequests(requests, "POST", bindingPath).length, 2);
+
   assert.deepEqual(
     fixtureResponse(
       await fixture.request("GET", "/namespaces", { session }),
@@ -722,11 +907,24 @@ test("Agent sharing grants existing people exact discovery and native access, th
   );
   assert.equal(retainedChat.status, 200);
   assert.deepEqual(retainedChat.data, { status: "stopped" });
+
+  // A Controller refusal still takes focus and blocks further sharing until policy is refreshed.
+  await principal.fill("prn_00000000-0000-4000-8000-000000000000");
+  const [rejected] = await Promise.all([nextBindingResponse(), submitShare()]);
+  assert.equal(rejected.status(), 400);
+  const refusal = panel.getByRole("alert").filter({
+    hasText: "No existing person with that Principal ID can be granted access here",
+  });
+  await refusal.waitFor();
+  assert.equal(await hasFocus(refusal), true, "The sharing refusal takes focus");
+  assert.equal(await share.isDisabled(), true);
+  assert.deepEqual(await fixture.addedAccessBindings(namespace.id), after);
 });
 
 registerSharingCredentialsAndChannelsCases(detailApp);
 
 test("Deployment activity keeps keyboard focus when refresh discovers a newer version", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Deployment refresh focus", { ready: true });
   const agent = await fixture.createAgent(
@@ -739,8 +937,8 @@ test("Deployment activity keeps keyboard focus when refresh discovers a newer ve
   const { page } = await newPage(t, fixture, {
     context: { viewport: { width: 1440, height: 1000 } },
   });
-  // This controller fixture admits revisions but has no deployment worker. Supply
-  // its supported queued record only for v1; v2's read and all overview calls use the real API.
+  // This fixture admits revisions without recording deployment operations. Supply
+  // the queued record only for v1; later record reads and overview calls use the real API.
   const queued = deploymentStatusResponse(first, { status: "queued" });
   await page.route(firstUrl, (route) => route.fulfill(queued));
   await page.clock.install();
@@ -830,4 +1028,44 @@ test("Deployment activity keeps keyboard focus when refresh discovers a newer ve
     true,
     "Refresh deployment keeps focus after the newer record appears",
   );
+
+  // A keyboard reader can move to the disclosure while a refresh is in flight.
+  const summary = activity.locator(":scope > details > summary");
+  const summaryHasFocus = () => summary.evaluate((node) => node === document.activeElement);
+  await fixture.updateConfiguration(namespace.id, agent.configurationId, nativeValues("v3"));
+  const third = await fixture.deployAgent(namespace.id, agent.id);
+  const thirdUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, third.id);
+  const heldRefresh = await holdRequests(t, page, secondUrl, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  await page.keyboard.press("Enter");
+  const heldRefreshResponse = await heldRefresh.requested;
+  assert.ok(heldRefreshResponse);
+  assert.equal(heldRefreshResponse.status(), 503);
+  await page.keyboard.press("Shift+Tab");
+  assert.equal(await summaryHasFocus(), true);
+  if (await deploymentDetailsOpen(page)) {
+    await page.keyboard.press("Enter");
+  }
+  assert.equal(await deploymentDetailsOpen(page), false);
+  const oldSummary = await summary.elementHandle();
+  assert.ok(oldSummary);
+
+  const thirdRecord = page.waitForResponse(
+    (response) => response.url() === thirdUrl && response.request().method() === "GET",
+  );
+  heldRefresh.release();
+  assert.equal((await thirdRecord).status(), 503);
+  await activity
+    .getByText("Most recent visible deployment · v3", { exact: true })
+    .waitFor({ state: "attached" });
+  assert.equal(await oldSummary.evaluate((node) => node.isConnected), false);
+  assert.equal(await summaryHasFocus(), true, "the newer disclosure keeps keyboard focus");
+  assert.equal(await deploymentDetailsOpen(page), true);
+  await page.keyboard.press("Enter");
+  assert.equal(await deploymentDetailsOpen(page), false);
+  await page.keyboard.press("Space");
+  assert.equal(await deploymentDetailsOpen(page), true);
 });

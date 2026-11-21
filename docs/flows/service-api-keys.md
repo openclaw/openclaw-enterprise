@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-10-17
-last_updated_session: authoring-run/d3c892f5-7e68-41ed-bef2-6b8e0f1e1968
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Service API Keys Flow
@@ -16,8 +16,10 @@ Namespace reader from issuance through `GET /namespaces/:namespaceId` to
 revocation. It stops at the OCC resource response or the credential's deletion
 and audit result; provisioning IAM identities and Agent workload credentials
 remain separate lifecycles. Fresh native-IAM bootstrap provisions the initial
-service administrator and calls the same key helper, delivering its response to
-protected storage rather than an HTTP issuance response. That separate entry and
+service administrator and registers an operator-supplied key through
+`apps/controller/src/auth/index.ts:registerBootstrapServiceKey`. A separate auth
+instance uses the plugin's supported generation extension; normal issuance
+continues to generate keys. Bootstrap emits only non-secret attempt IDs. That separate entry and
 commit boundary is traced in the [bootstrap flow](local-password-authentication.md).
 
 Better Auth owns key material and persistence. The selected IAM Driver owns
@@ -51,7 +53,7 @@ Driver. Native IAM requires an existing ServicePrincipal, Role, and
 AccessBinding; issuance creates none of them. For Namespace automation, an
 administrator creates the ServicePrincipal through `POST
 /namespaces/:namespaceId/iam/service-principals`
-([`createIAMServicePrincipal`](../../packages/occ/src/index.ts)), which writes a
+([`createIAMServicePrincipal`](../../packages/occ/src/iam-policy-operations.ts)), which writes a
 non-Agent `iam_identities` row under the Namespace lock with no grant and audits
 `openclaw.iam.service_principals.create` in the same transaction. Request fields and lifetime
 limits are defined in the [authentication reference](../reference/authentication/service-api-keys.md#issuance)
@@ -73,6 +75,7 @@ graph TD
     F --> H["GET Namespace with x-api-key"]
     H --> I["ControllerAdmissionVerifier verifies stored key"]
     I -->|Invalid, expired, or deleted| J["Return 401 without cookie fallback"]
+    I -->|Key-store operation fails| R["Return 503 dependency unavailable"]
     I -->|Valid| K["resolveIdentity checks current IAM identity and fixed scope"]
     K -->|Scope matches| L["getNamespace asks IAM to authorize exact read"]
     K -->|Missing identity or scope mismatch| M["Audit denial and return 403"]
@@ -131,6 +134,7 @@ effort, not an atomic transaction with the audit sink.
 ### 3. Verify the credential and enforce its fixed identity scope
 
 [apps/controller/src/auth/index.ts:ControllerAdmissionVerifier.verify](../../apps/controller/src/auth/index.ts);
+[apps/controller/src/auth/service-key-verification.ts:createServiceKeyVerification](../../apps/controller/src/auth/service-key-verification.ts);
 [apps/controller/src/index.ts:resolveIdentity](../../apps/controller/src/index.ts).
 
 For the resource request, an explicitly supplied `x-api-key` selects Better
@@ -140,17 +144,32 @@ or malformed stored key also fails authentication. Without the key header,
 the existing session path remains unchanged; bearer authentication remains
 unsupported.
 
-Successful verification supplies the service-principal ID and stored scope to
-`resolveIdentity`. The selected IAM Driver looks up the current identity by ID.
-The controller rejects a missing identity, Agent ownership, changed scope, or
-another requested Namespace with `403`. A Namespace key cannot enter an
-Installation-level resource operation. Better Auth neither creates a human
-session nor authorizes this request.
+The controller records storage exceptions from the composed Better Auth adapter
+for the active key verification. A failed key read, usage update, or expiry
+deletion returns `503 DEPENDENCY_UNAVAILABLE`, even if Better Auth reports an
+invalid key. Each concurrent verification retains its own failure state. Better
+Auth still owns key hashing, validity, expiry, and revocation decisions. Its log
+calls go to the structured log: a refused key is one INFO
+`authentication.request-refused` line with its `reasonCode`, `requestId`, method
+and route, never the key; other library errors log `authentication.library-error`
+at ERROR with the failed `operation` and a code or class name, never the library's
+message. A revoked key is deleted, so it logs `INVALID_API_KEY` like an unknown one.
+
+`resolveIdentity` looks up the verified service-principal ID through the selected
+IAM Driver. The controller returns `403` for a missing identity, Agent ownership,
+changed scope, or a request outside the key's stored scope. A Namespace key
+cannot enter an Installation-level resource operation. Better Auth verifies
+the key without creating a human session or authorizing the resource request.
+
+If a Namespace key calls `GET /namespaces/:namespaceId/agent-capabilities`
+in another Namespace, the controller returns `403` before OCC authorization.
+The audit records `create` on the requested Agent collection with
+`details.actorServiceKeyId`.
 
 ### 4. Authorize the exact read with current IAM policy
 
 [apps/controller/src/index.ts:perform](../../apps/controller/src/index.ts);
-[packages/occ/src/index.ts:OpenClawController.getNamespace](../../packages/occ/src/index.ts);
+[packages/occ/src/namespace-operations.ts:getNamespace](../../packages/occ/src/namespace-operations.ts);
 [packages/iam/src/index.ts:NativeIAMDriver.authorize](../../packages/iam/src/index.ts).
 
 `perform` passes the resolved service-principal ID and requested Namespace to
@@ -202,13 +221,18 @@ schedule rotation.
   invalid, expired, revoked, unauthorized, and cross-Namespace requests;
   IAM-authorized service-key management; session preservation; Agent exclusion;
   and audit attribution without keys.
-- [PostgreSQL integration](../../tests/integration/postgres-service-api-keys.test.mjs):
+- [PostgreSQL integration](../../tests/integration/postgres-service-api-keys.test.ts):
   with `OCC_TEST_DATABASE_URL` selecting a disposable application-role database,
-  run `node --test tests/integration/postgres-service-api-keys.test.mjs`.
+  run `node --test tests/integration/postgres-service-api-keys.test.ts`.
   This separately checks stored hashing, foreign-Installation rejection,
   cross-instance revocation, and deletion during concurrent verification.
   Use the existing [test environment instructions](../testing/postgresql.md#postgresql-test-environment).
-- [IAM conformance](../../tests/conformance/iam.test.mjs) verifies identity lookup.
+- [PostgreSQL dependency regression](../../tests/integration/postgres-service-key-dependency.test.ts):
+  run `node --test tests/integration/postgres-service-key-dependency.test.ts` in
+  the prepared `postgres-auth` lane. It checks a closed authentication pool, a
+  failed key-use update, and isolation from a concurrent successful verification.
+  Invalid, expired, and revoked keys retain `401`; State and IAM remain healthy.
+- [IAM conformance](../../tests/conformance/iam.test.ts) verifies identity lookup.
   Run `pnpm openapi:check` to check that the OpenAPI contract, HTTP API reference,
   and API cheat sheet remain current with the controller routes.
 - Investigate `401` as credential rejection and `403` as identity, scope, or
@@ -234,6 +258,15 @@ These commands describe the proof hooks, not a new runtime execution record.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-18 04:25: Trace the request, method, route pattern and operation on auth library refusal and error lines. (authoring-run/427e95c2-8e34-4624-8497-52493b5980f5 - 0fe12954321242e9c0a0619b9f39f7e6d5431328)
+
+- 2026-11-16 09:39: Distinguish bootstrap key registration from ordinary generated issuance. (pi/01a1e4f4-3138-71b5-b224-7ecf7ed57406 - 81ab0a9fbe38cd2eea88f599a5e0ac9aad9c4f92)
+
+- 2026-11-12 16:13: Trace the audit target for a cross-Namespace Agent capability denial. (authoring-run/2aa6ee22-af84-4f68-8186-9da30e578f98 - a7d3cf24896836c7e1d05c5850749f4bfd042fe3)
+
+- 2026-11-10 15:43: Preserve key-store operation failures through verification and trace concurrent-request isolation. (authoring-run/edc4984b-d876-4ddc-af2b-42f3d3b0a4c4 - a8742611463ea306e85a543b11887ea038d9cfb0)
 
 - 2026-10-17 17:30: Trace explicit owner access on the CLI key output before issuance, including restrictive umask and permission failure. (authoring-run/d3c892f5-7e68-41ed-bef2-6b8e0f1e1968 - 4c15e69650b440b8b4bbd995bb61669f69d1d049)
 

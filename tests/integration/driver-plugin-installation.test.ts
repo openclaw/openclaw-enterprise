@@ -28,10 +28,13 @@ import { cookieHeaderFromSetCookie, createTestAuthPrincipal } from "../helpers/a
 import {
   createCredentialProxyInstallationConfiguration as credentialProxyInstallation,
   createInstallationDriverConfiguration,
-} from "../helpers/installation-driver-configuration.mjs";
-import { injectJson as injectUntypedJson } from "../helpers/inject-json.mjs";
-import { AUTHORIZATION_HEADER_REFUSED, CREDENTIAL_REQUIRED } from "../helpers/refusal-text.mjs";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+} from "../helpers/installation-driver-configuration.ts";
+import { injectJson } from "../helpers/inject-json.ts";
+import {
+  AUTHORIZATION_HEADER_REFUSED,
+  CREDENTIAL_REQUIRED,
+} from "../helpers/request-admission-expectations.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 type DriverSelection = {
   id: string;
@@ -51,12 +54,6 @@ type InstallationFixture = {
   };
 };
 type PackageLayout = { root: string; entry?: string; files: Record<string, string> };
-type InjectedResponse = {
-  statusCode: number;
-  body: string;
-  headers: Record<string, unknown>;
-  json(): unknown;
-};
 
 function installation(): InstallationFixture {
   return createInstallationDriverConfiguration();
@@ -70,27 +67,6 @@ function hasOperationAbortSignal(
   value: unknown,
 ): value is { currentOperationAbortSignal(): unknown } {
   return isRecord(value) && typeof value.currentOperationAbortSignal === "function";
-}
-
-function isInjectedResponse(value: unknown): value is InjectedResponse {
-  return (
-    isRecord(value) &&
-    typeof value.statusCode === "number" &&
-    typeof value.body === "string" &&
-    isRecord(value.headers) &&
-    typeof value.json === "function"
-  );
-}
-
-async function injectJson(
-  app: ReturnType<typeof createFastifyApp>,
-  method: string,
-  url: string,
-  options?: Parameters<typeof injectUntypedJson>[3],
-): Promise<InjectedResponse> {
-  const response: unknown = await injectUntypedJson(app, method, url, options);
-  assert.ok(isInjectedResponse(response));
-  return response;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -395,7 +371,7 @@ async function request(
     host: new URL(authOrigin).host,
     body,
   });
-  return { status: response.statusCode, ...record(response.json()) };
+  return { status: response.statusCode, ...record(response.json<unknown>()) };
 }
 
 test("Installation inspection returns accepted Driver values, redacts opaque resources, and rechecks administration", async (t) => {
@@ -490,7 +466,7 @@ test("Installation inspection returns accepted Driver values, redacts opaque res
   const sandbox = record(record(descriptors.get("sandbox")).startupConfiguration);
   const gateway = record(sandbox.gateway);
   const networkPolicy = record(records(record(sandbox.policy).networkPolicies)[0]);
-  assert.equal(gateway.workspaceMode, "operator");
+  assert.equal(sandbox.integrationMode, "legacy");
   assert.equal(gateway.operatorWorkspaceResources, "[redacted]");
   assert.equal(gateway.networkPolicyResources, "[redacted]");
   assert.deepEqual(networkPolicy.binaries, [{ path: "/usr/bin/model-client" }]);
@@ -653,7 +629,7 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
           body: { name: "Unauthenticated Driver selection" },
         });
         assert.equal(unauthenticated.statusCode, 401);
-        assert.equal(record(record(unauthenticated.json()).error).message, message);
+        assert.equal(record(record(unauthenticated.json<unknown>()).error).message, message);
       }
       const publicSignup = await injectJson(fixture.app, "POST", "/api/auth/sign-up/email", {
         host: new URL(fixture.config.authOrigin).host,
@@ -758,7 +734,8 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
 
       await assert.rejects(load(owner, configuration, "production"), /activat|stage/i);
 
-      // Development can still use a real four-method package without promising production staging.
+      // Development still accepts ensureNamespace, deleteNamespace, prepareRevision,
+      // stopRevision, and retireRevision without promising production staging.
       const development = await load(owner, configuration, "development");
       assert.equal(typeof development.computeDriver.activateRevision, "undefined");
       assert.equal(typeof development.computeDriver.deactivateRevision, "undefined");
@@ -786,6 +763,33 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
     } finally {
       await writeFile(manifestPath, originalManifest, "utf8");
     }
+  });
+
+  await t.test("IAM capability mismatch", async () => {
+    const configuration = installation();
+    configuration.drivers.iam = {
+      ...selectedIAM(),
+      package: configurationPackage,
+      configuration: selectedConfiguration().configuration,
+    };
+
+    // A schema-valid selection must reach the deferred factory used by production consumers.
+    const drivers = await load(owner, configuration, "production");
+    const state = {
+      async loadNativeIAMState(): Promise<NativeIAMState> {
+        return {
+          identities: [],
+          groups: [],
+          memberships: [],
+          roles: [],
+          bindings: [],
+          restrictions: [],
+        };
+      },
+    };
+    assert.throws(() => drivers.createIAMDriver(state), {
+      message: "drivers.iam factory returned an unselected Driver identity.",
+    });
   });
 
   await t.test(
@@ -832,15 +836,6 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
           },
           "development",
           /configuration|endpoint|string/i,
-        ],
-        [
-          "IAM capability mismatch",
-          (value) => {
-            value.drivers.iam = selectedIAM();
-            value.drivers.iam.package = configurationPackage;
-          },
-          "production",
-          /iam|capability|package|version|configuration/i,
         ],
       ];
       for (const [description, mutate, mode, pattern] of cases) {

@@ -42,6 +42,7 @@ type developmentState struct {
 	Cluster                     string `json:"cluster"`
 	DockerHost                  string `json:"dockerHost"`
 	KeyPath                     string `json:"keyPath"`
+	InstallationID              string `json:"installationId,omitempty"`
 	KeyOwned                    bool   `json:"keyOwned"`
 	SignIn                      string `json:"signIn,omitempty"`
 	ProtectedEgress             bool   `json:"protectedEgress,omitempty"`
@@ -53,8 +54,9 @@ type developmentState struct {
 	// image registry attached to the cluster network, from just before the
 	// connect until the disconnect, so occ dev down can detach it after a start
 	// killed before its own detach ran.
-	ImageRegistryContainer string `json:"imageRegistryContainer,omitempty"`
-	ImageRegistryNetwork   string `json:"imageRegistryNetwork,omitempty"`
+	ImageRegistryContainer string             `json:"imageRegistryContainer,omitempty"`
+	ImageRegistryNetwork   string             `json:"imageRegistryNetwork,omitempty"`
+	OpenShellImageTag      *openShellImageTag `json:"openShellImageTag,omitempty"`
 	directory              string
 }
 
@@ -240,6 +242,9 @@ func readState(directory string) (*developmentState, error) {
 	if (state.ImageRegistryContainer != "" || state.ImageRegistryNetwork != "") &&
 		(!registryContainerName.MatchString(state.ImageRegistryContainer) || state.ImageRegistryNetwork != developmentImageRegistryNetwork(&state)) {
 		return nil, fmt.Errorf("unsupported development state")
+	}
+	if !validOpenShellImageTag(state.OpenShellImageTag, state.Cluster) {
+		return nil, fmt.Errorf("unsupported OpenShell image custody")
 	}
 	if state.KeyOwned && state.KeyPath != filepath.Join(directory, "initial-admin-service-key.json") {
 		return nil, fmt.Errorf("helper-owned key must be inside the state directory")

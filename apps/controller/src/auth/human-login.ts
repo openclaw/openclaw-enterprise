@@ -15,6 +15,7 @@ import {
 } from "./session-binding.ts";
 import {
   knownDeviceAccountState,
+  RecoveryPasswordPolicyError,
   ResourceConflictError,
   type PostgresHumanAuthentication,
   type HumanAuthenticationProof,
@@ -344,12 +345,14 @@ export function createHumanLogin(
             userAgent: typeof data.userAgent === "string" ? data.userAgent : null,
           };
           // The original State unit owns this commit, including the login audit.
-          const { resultExpiresAt, ...issued } = await state.issueSession(
-            proof,
-            session,
-            scope.audit,
-            scope.result?.attemptId,
-          );
+          const { resultExpiresAt, ...issued } = await state
+            .issueSession(proof, session, scope.audit, scope.result?.attemptId)
+            .catch((error: unknown) => {
+              if (error instanceof RecoveryPasswordPolicyError) {
+                return refusePassword();
+              }
+              throw error;
+            });
           if (scope.result && resultExpiresAt !== undefined) {
             scope.result.expiresAt = resultExpiresAt;
           }
@@ -454,11 +457,7 @@ export function createHumanLogin(
     }
     return browserCookie === undefined ? [] : [admissionKey("browser", browserCookie())];
   }
-  let recoveryEmail: string | undefined;
   const recoveryOnly = config.passwordSignIn === "recovery-only";
-  function designateRecovery(email: string): void {
-    recoveryEmail = email.trim().toLowerCase();
-  }
   // Start, callback and result for one external provider. Every provider shares the
   // admission budget, the browser-bound attempt and receipt cookies, PKCE and session binding.
   function externalProviderEndpoints(name: ExternalProviderName, provider: ExternalProvider) {
@@ -741,13 +740,8 @@ export function createHumanLogin(
         if (password.length < 12 || password.length > 128) {
           throw rejected();
         }
-        if (recoveryOnly && (recoveryEmail === undefined || email !== recoveryEmail)) {
-          // Ordinary accounts sign in with their external identity. The refusal is the
-          // bad-credential answer and reads no account, so it is the same for every
-          // email other than the recovery one, whether or not an account exists.
-          await ctx.context.password.hash(password);
-          return refusePassword();
-        }
+        // State filters recovery-only lookups by the durable designation before
+        // reading a credential, then rechecks that designation when issuing.
         const snapshot = await state.snapshotPassword(email);
         if (!snapshot?.proof.passwordHash) {
           await ctx.context.password.hash(password);
@@ -833,11 +827,13 @@ export function createHumanLogin(
             authorizationUrl: config.oidc.authorizationUrl,
           },
         }),
-    designateRecovery,
     // The controller also uses this owner for malformed-email refusals before account reads.
     recordPasswordDenial,
     /** Whether `email` (normalized) is the recovery account's; its password stays reserved. */
-    isRecoveryEmail: (email: string) => recoveryEmail !== undefined && email === recoveryEmail,
+    isRecoveryEmail: async (email: string) => {
+      const designation = await state.recoveryDesignation();
+      return designation !== undefined && email === designation.email.trim().toLowerCase();
+    },
     /** Whether the known-device cookie uses its host-only (__Host-) name. */
     knownDeviceSecure: secure,
     /** The account state known-device entries are bound to (see known-device.ts). */

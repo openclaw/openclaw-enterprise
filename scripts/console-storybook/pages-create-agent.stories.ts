@@ -129,6 +129,7 @@ export const CreatePresetMultiline = story("createPresetMultiline");
 export const CreatePresetMultilineApplied = story("createPresetMultilineApplied");
 export const CreateDedicatedOpenclaw = story("createDedicatedOpenclaw");
 export const CreateDedicatedCodexCredentialSource = story("createDedicatedCodexCredentialSource");
+export const CreateCredentialRegistrationRefused = story("createCredentialRegistrationRefused");
 export const CreateCredentialRegistrationUnknown = story("createCredentialRegistrationUnknown");
 export const CreateCredentialRegistrationMismatch = story("createCredentialRegistrationMismatch");
 export const CreateCredentialRegistrationCleanup = story("createCredentialRegistrationCleanup");
@@ -343,6 +344,13 @@ export const RepositoryLargeCatalog = story("createRepositories140");
 export const RepositoryExactSearch = story("createRepositoriesExactSearch");
 export const RepositoryCustom = story("createRepositoriesCustom");
 export const RepositoryPolicyConflict = story("createRepositoriesPolicyConflict");
+
+export const NativePluginsUnrestricted = story("createNativePluginsUnrestricted");
+export const NativePluginsAllowlist = story("createNativePluginsAllowlist");
+export const NativePluginsEmptyAllowlist = story("createNativePluginsEmptyAllowlist");
+export const NativePluginsCodexRoundTrip = story("createNativePluginsCodexRoundTrip");
+export const NativePluginsDenyConflict = story("createNativePluginsDenyConflict");
+export const NativePluginsDisabledEntry = story("createNativePluginsDisabledEntry");
 
 export const CreateStandardOpenclawPreset = {
   ...story("createStandardOpenclawPreset"),

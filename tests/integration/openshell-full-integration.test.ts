@@ -4,7 +4,7 @@ import { closeSync, openSync, writeSync, mkdirSync, readFileSync, writeFileSync 
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
+import { loadTestSuites } from "../../scripts/ci/test-suites.ts";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -14,7 +14,6 @@ const testedSha = "1".repeat(40);
 
 type FileEntry = { path: string; expectedTests: string[] };
 type Lane = { files: FileEntry[] };
-type Suite = { lanes: Record<string, Lane>; groups: Record<string, string[]> };
 type Result = {
   version: number;
   command: string;
@@ -44,16 +43,63 @@ function command(script: string, args: string[], view = "default") {
   return result;
 }
 
-const runner = "scripts/ci/run-tests.mjs";
+const runner = "scripts/ci/run-tests.ts";
 const fullView = "full-integration";
 
-function assertIssue(result: ReturnType<typeof command>, code: string) {
+function assertIssue(
+  result: ReturnType<typeof command>,
+  code: string,
+  expected?: { lane: string; file: string },
+) {
   assert.equal(result.status, 1, result.stderr);
-  const summary: { issues: { code: string }[] } = JSON.parse(result.stdout);
+  const summary: { issues: { code: string; lane?: string; file?: string }[] } = JSON.parse(
+    result.stdout,
+  );
   assert.ok(
-    summary.issues.some((issue) => issue.code === code),
+    summary.issues.some(
+      (issue) =>
+        issue.code === code &&
+        (!expected || (issue.lane === expected.lane && issue.file === expected.file)),
+    ),
     JSON.stringify(summary.issues),
   );
+}
+
+function record(value: unknown): Record<string, unknown> {
+  assert.ok(typeof value === "object" && value !== null && !Array.isArray(value));
+  return Object.fromEntries(Object.entries(value));
+}
+
+function readSuite(view = "default") {
+  const suite = record(loadTestSuites(join(root, manifest), view));
+  const lanes = record(suite.lanes);
+  const groups = record(suite.groups);
+  return {
+    lane(name: string): Lane {
+      const lane = record(lanes[name]);
+      const files = lane.files;
+      assert.ok(Array.isArray(files));
+      return {
+        ...lane,
+        files: files.map((file: unknown) => {
+          const entry = record(file);
+          const { path, expectedTests } = entry;
+          assert.ok(typeof path === "string");
+          assert.ok(
+            Array.isArray(expectedTests) &&
+              expectedTests.every((test: unknown) => typeof test === "string"),
+          );
+          return { ...entry, path, expectedTests };
+        }),
+      };
+    },
+    lanes,
+    group(name: string): string[] {
+      const group = groups[name];
+      assert.ok(Array.isArray(group) && group.every((lane: unknown) => typeof lane === "string"));
+      return group;
+    },
+  };
 }
 
 function present<T>(value: T | undefined): T {
@@ -66,20 +112,36 @@ function writeJson(path: string, data: unknown) {
 }
 
 test("Full Integration partitions OpenShell without changing the default focused caller", (t) => {
-  const legacy: Suite = loadTestSuites(join(root, manifest));
-  const selected: Suite = loadTestSuites(join(root, manifest), fullView);
-  const canonical = present(legacy.lanes.openshell);
-  const shards = present(selected.groups.openshell);
+  const legacy = readSuite();
+  const selected = readSuite(fullView);
+  const canonical = legacy.lane("openshell");
+  const shards = selected.group("openshell");
   assert.deepEqual(shards, ["openshell-policy", "openshell-installers"]);
   assert.equal(selected.lanes.openshell, undefined);
-  const allFiles = shards.flatMap((name) => present(selected.lanes[name]).files);
+  assert.ok(
+    selected
+      .lane("openshell-installers")
+      .files.some(
+        ({ path }) => path === "tests/integration/openshell-git-finite-removal-real.test.ts",
+      ),
+    "tests/integration/openshell-git-finite-removal-real.test.ts must be in openshell-installers",
+  );
+  assert.ok(
+    !selected
+      .lane("openshell-policy")
+      .files.some(
+        ({ path }) => path === "tests/integration/openshell-git-finite-removal-real.test.ts",
+      ),
+    "tests/integration/openshell-git-finite-removal-real.test.ts must be absent from openshell-policy",
+  );
+  const allFiles = shards.flatMap((name) => selected.lane(name).files);
   assert.equal(allFiles.length, canonical.files.length);
   assert.deepEqual(
     [...allFiles].sort((a, b) => a.path.localeCompare(b.path)),
     [...canonical.files].sort((a, b) => a.path.localeCompare(b.path)),
   );
   for (const name of shards) {
-    const lane = present(selected.lanes[name]);
+    const lane = selected.lane(name);
     const paths = new Set(lane.files.map(({ path }) => path));
     assert.deepEqual(lane, {
       ...canonical,
@@ -154,7 +216,7 @@ test("Full Integration partitions OpenShell without changing the default focused
 
   const state = join(temporaryDirectorySync(t, "openshell-view-state-"), "policy.json");
   const refused = command(
-    "scripts/ci/prepare.mjs",
+    "scripts/ci/prepare.ts",
     ["--lane", "openshell-policy", "--selected-file", installerFile, "--state", state],
     fullView,
   );
@@ -164,8 +226,8 @@ test("Full Integration partitions OpenShell without changing the default focused
 
 test("the full view refuses canonical overlap and the audit detects omitted files", (t) => {
   const directory = temporaryDirectorySync(t, "openshell-view-audit-");
-  const source: Suite = loadTestSuites(join(root, manifest));
-  const original = present(source.lanes.openshell);
+  const source = readSuite();
+  const original = source.lane("openshell");
   for (const { path } of original.files) {
     const file = join(directory, path);
     mkdirSync(dirname(file), { recursive: true });
@@ -191,8 +253,8 @@ test("the full view refuses canonical overlap and the audit detects omitted file
 
 test("both complete OpenShell receipts are required by targeted and full aggregation", (t) => {
   const directory = temporaryDirectorySync(t, "openshell-view-aggregate-");
-  const suite: Suite = loadTestSuites(join(root, manifest), fullView);
-  const lanes = present(suite.groups.openshell);
+  const suite = readSuite(fullView);
+  const lanes = suite.group("openshell");
   const makeReceipt = (lane: string): Result => ({
     version: 1,
     command: "run",
@@ -201,7 +263,7 @@ test("both complete OpenShell receipts are required by targeted and full aggrega
     sourceSha: testedSha,
     status: "passed",
     exitCode: 0,
-    files: present(suite.lanes[lane]).files.map(({ path, expectedTests }) => ({
+    files: suite.lane(lane).files.map(({ path, expectedTests }) => ({
       path,
       status: "passed",
       counts: { total: expectedTests.length },
@@ -251,6 +313,16 @@ test("both complete OpenShell receipts are required by targeted and full aggrega
     const cleanup = makeReceipt(installers);
     present(cleanup.files[0]).cleanup.status = "failed";
     reject(cleanup, "cleanup-failed");
+    // A successful lane receipt cannot omit the finite-removal file's complete evidence.
+    const missingFile = makeReceipt(installers);
+    missingFile.files = missingFile.files.filter(
+      ({ path }) => path !== "tests/integration/openshell-git-finite-removal-real.test.ts",
+    );
+    writeJson(receiptPath, missingFile);
+    assertIssue(aggregate(group), "missing-lane-evidence", {
+      lane: "openshell-installers",
+      file: "tests/integration/openshell-git-finite-removal-real.test.ts",
+    });
   }
 });
 
@@ -387,7 +459,7 @@ test("the runner retains an unknown gateway readiness outcome after the test chi
   mkdirSync(join(directory, dirname(file)), { recursive: true });
   mkdirSync(join(directory, "scripts/ci"), { recursive: true });
   writeFileSync(
-    join(directory, "scripts/ci/prepare.mjs"),
+    join(directory, "scripts/ci/prepare.ts"),
     `import { writeFileSync } from "node:fs";
 export function prepareFile({ statePath }) {
   return { cleanup: () => writeFileSync(statePath + ".cleaned", "completed") };

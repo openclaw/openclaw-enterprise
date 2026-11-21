@@ -21,7 +21,7 @@ export interface SecretDriver extends Driver {
   readonly capability: "secret";
   create(identity: SecretIdentity, value: string): Promise<SecretBackendRef>;
   update(secret: Secret, value: string): Promise<void>;
-  /** Replace an exact current value atomically; used to fence device authorization exchanges. */
+  /** Replace an exact current value atomically. */
   compareAndSwap?(secret: Secret, expected: string, value: string): Promise<boolean>;
   delete(secret: Secret): Promise<void>;
   /** Authoritative, versioned read confined to trusted credential resolution. */

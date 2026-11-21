@@ -61,7 +61,9 @@ export type ProviderExchange =
         ResolvedOidcEnrollmentPolicy,
         "groupIds" | "createAccount" | "policyId"
       > & {
-        readonly profile: { readonly email: string; readonly name: string } | undefined;
+        readonly profile:
+          | { readonly email: string; readonly name: string; readonly emailVerified: boolean }
+          | undefined;
       };
     }
   | { readonly denial: "EXTERNAL_IDENTITY_REJECTED" }
@@ -150,7 +152,7 @@ export type ProviderEndpoint =
 declare const pinnedEndpoint: unique symbol;
 /**
  * An operator-configured OIDC endpoint that passed the startup checks in oidc.ts (HTTPS on
- * 443, the issuer's DNS host, no userinfo, query or fragment). Only that parser constructs
+ * 443, a DNS host, no userinfo, query or fragment). Only that parser constructs
  * one; request input never chooses what the controller fetches.
  */
 export type PinnedEndpoint = string & { readonly [pinnedEndpoint]: true };

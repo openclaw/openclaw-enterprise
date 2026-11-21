@@ -2,6 +2,8 @@ package occcli
 
 import (
 	"bytes"
+	"compress/gzip"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,15 +27,22 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 		}
 	}
 	for _, phase := range []struct {
-		name       string
-		failNotice bool
-		failResult bool
-		failHelm   bool
+		name            string
+		failNotice      bool
+		failResult      bool
+		failHelm        bool
+		pendingRelease  bool
+		templateFailure string
 	}{
 		{name: "healthy"},
+		{name: "healthy-inherited-stderr"},
 		{name: "intent", failNotice: true},
 		{name: "result", failResult: true},
 		{name: "helm-failed", failHelm: true},
+		{name: "pending-release", pendingRelease: true},
+		{name: "stock-suffix-refusal", templateFailure: "stock"},
+		{name: "template-canary-refusal", templateFailure: "canary"},
+		{name: "template-overflow", templateFailure: "overflow"},
 		{name: "helm-failed-result", failHelm: true, failResult: true},
 	} {
 		t.Run(phase.name, func(t *testing.T) {
@@ -44,9 +53,31 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 				}
 			}
 			root := t.TempDir()
+			if phase.name == "healthy-inherited-stderr" {
+				for _, tool := range []string{"/bin/sh", "/bin/sleep"} {
+					if _, err := os.Stat(tool); err != nil {
+						t.Skip("requires " + tool)
+					}
+				}
+				helm, err := exec.LookPath("helm")
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("TEST_REAL_HELM", helm)
+				// A child retaining stderr must not turn a successful real Helm
+				// install into an unknown receipt when Go stops draining the pipe.
+				shim := "#!/bin/sh\nif [ \"$1\" = install ]; then /bin/sleep 3 >&2 & fi\nexec \"$TEST_REAL_HELM\" \"$@\"\n"
+				if err := os.WriteFile(filepath.Join(root, "helm"), []byte(shim), 0700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+			}
 			receipt := filepath.Join(root, "receipt")
 			var mu sync.Mutex
 			var releases []json.RawMessage
+			if phase.pendingRelease {
+				releases = []json.RawMessage{installationPendingRelease(t)}
+			}
 			creates, updates := 0, 0
 			releaseContentType := "application/json"
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -146,6 +177,39 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 			if err := os.WriteFile(values, []byte("{}\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
+			const canary = "private-template-canary-7b1d"
+			if phase.templateFailure == "stock" {
+				// Keep the stock chart intact; change only the Console host so the
+				// chart itself rejects the shared browser-session suffix.
+				chart = "../../deploy/helm/openclaw-enterprise"
+				original, err := os.ReadFile("../../deploy/examples/production/values.yaml")
+				if err != nil {
+					t.Fatal(err)
+				}
+				rejected := strings.ReplaceAll(string(original), "https://console.oce.example.internal", "https://"+canary+".unrelated.invalid")
+				if rejected == string(original) {
+					t.Fatal("stock fixture host was not replaced")
+				}
+				if err := os.WriteFile(values, []byte(rejected), 0600); err != nil {
+					t.Fatal(err)
+				}
+			} else if phase.templateFailure != "" {
+				if err := os.Mkdir(filepath.Join(chart, "templates"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				template := `{{ fail .Values.privateDiagnostic }}`
+				if phase.templateFailure == "overflow" {
+					// Excess diagnostics must be drained without changing Helm's failure
+					// or treating a partial message as evidence for guidance.
+					template = `{{ fail (repeat 200000 .Values.privateDiagnostic) }}`
+				}
+				if err := os.WriteFile(filepath.Join(chart, "templates", "refusal.yaml"), []byte(template), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(values, []byte("privateDiagnostic: "+canary+"\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			var outputAttempt, stderr bytes.Buffer
 			var output io.Writer = &outputAttempt
 			failure := errors.New("synthetic output delivery failure")
@@ -159,11 +223,25 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 				output = io.MultiWriter(&outputAttempt, &handoffFailingWriter{remaining: remaining, err: failure})
 			}
 			cmd := New(output, &stderr)
-			cmd.SetArgs([]string{"installation", "install", "--kubeconfig", config, "--context", "read", "--kube-namespace", "operations", "--release", "demo", "--chart", chart, "--values", values, "--receipt", receipt})
+			cmd.SetArgs([]string{"installation", "install", "--bootstrap-credentials", "existing", "--kubeconfig", config, "--context", "read", "--kube-namespace", "operations", "--release", "demo", "--chart", chart, "--values", values, "--receipt", receipt})
 			err := cmd.ExecuteContext(t.Context())
+			if phase.pendingRelease {
+				if err == nil || !strings.Contains(err.Error(), "Helm release is not confirmed unused") {
+					t.Errorf("pending release: got %v, want unused-release refusal", err)
+				}
+				if _, err := os.Stat(receipt); !os.IsNotExist(err) {
+					t.Errorf("pending release left a fresh receipt: %v", err)
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if creates != 0 || updates != 0 {
+					t.Error("pending release check changed Helm storage")
+				}
+				return
+			}
 			wantOutcome := "succeeded"
 			switch {
-			case phase.failHelm:
+			case phase.failHelm || phase.templateFailure != "":
 				wantOutcome = "failed"
 				var status *ExitStatusError
 				if !errors.As(err, &status) || status.Code != 1 {
@@ -192,8 +270,12 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 					t.Errorf("original persisted intent was lost: %v", err)
 				}
 			} else {
-				if createCount != 1 {
-					t.Errorf("Helm release writes: creates=%d updates=%d, want one initial create", createCount, updateCount)
+				wantCreates := 1
+				if phase.templateFailure != "" {
+					wantCreates = 0
+				}
+				if createCount != wantCreates || (phase.templateFailure != "" && updateCount != 0) {
+					t.Errorf("Helm release writes: creates=%d updates=%d, want %d creates", createCount, updateCount, wantCreates)
 				}
 				var dispatch map[string]string
 				if err := readInstallationRecord(receipt, "dispatch.json", &dispatch); err != nil || dispatch["outcome"] != "unknown" {
@@ -206,6 +288,93 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 					t.Errorf("missing reported Helm outcome %q in %q", wantOutcome, outputAttempt.String())
 				}
 			}
+			text := outputAttempt.String() + stderr.String()
+			if strings.Contains(text, canary) {
+				t.Fatal("private template value escaped to output")
+			}
+			if phase.templateFailure == "" || phase.templateFailure == "overflow" {
+				if strings.Contains(text, "helm template") {
+					t.Fatal("unrelated outcome gained template guidance")
+				}
+				if phase.templateFailure == "" {
+					return
+				}
+			}
+			if phase.templateFailure != "overflow" {
+				for _, guidance := range []string{"Helm reported a template validation failure", "helm template", "protected", "does not establish", "unknown"} {
+					if !strings.Contains(text, guidance) {
+						t.Errorf("missing guidance %q", guidance)
+					}
+				}
+			}
+			if phase.templateFailure == "stock" && !strings.Contains(text, "auth.baseUrl and agentNativeAdmin.domain must share a non-public DNS suffix") {
+				t.Error("stock suffix refusal lacks actionable settings")
+			}
+			if phase.templateFailure == "canary" && strings.Contains(text, "auth.baseUrl") {
+				t.Error("unrelated template refusal gained suffix guidance")
+			}
+			// Recovery reads must neither rewrite the receipt nor infer original Job
+			// completion from Helm's diagnostic or the fixture's absent Job.
+			entries, err := os.ReadDir(receipt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 3 {
+				t.Fatalf("unexpected receipt files: %d", len(entries))
+			}
+			before := make(map[string]string)
+			for _, entry := range entries {
+				raw, err := os.ReadFile(filepath.Join(receipt, entry.Name()))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if bytes.Contains(raw, []byte(canary)) || bytes.Contains(raw, []byte("execution error")) {
+					t.Fatal("raw diagnostic persisted")
+				}
+				before[entry.Name()] = string(raw)
+			}
+			for _, action := range []string{"doctor", "plan"} {
+				out, errout, err := runHelp(t, "installation", action, "--receipt", receipt, "--kubeconfig", config, "--context", "read", "--kube-namespace", "operations", "--release", "demo")
+				if err == nil || !strings.Contains(out, "Helm outcome: failed") || !strings.Contains(out, "original") || !strings.Contains(out, "unknown") || strings.Contains(out+errout, canary) {
+					t.Fatalf("%s did not preserve failed Helm and unknown original Job", action)
+				}
+			}
+			for name, original := range before {
+				raw, err := os.ReadFile(filepath.Join(receipt, name))
+				if err != nil || string(raw) != original {
+					t.Fatal("recovery changed receipt")
+				}
+			}
+			// A lost result still means unknown, even after a template refusal.
+			if err := os.Remove(filepath.Join(receipt, "helm-result.json")); err != nil {
+				t.Fatal(err)
+			}
+			out, _, err := runHelp(t, "installation", "plan", "--receipt", receipt, "--kubeconfig", config, "--context", "read", "--kube-namespace", "operations", "--release", "demo")
+			if err == nil || !strings.Contains(out, "Helm outcome: unknown") {
+				t.Fatal("missing result lost unknown outcome")
+			}
+
 		})
 	}
+}
+
+// Seed the fixture with Helm's Secret storage format. The real Helm process
+// must decode the release, include pending installs, and stop the CLI before dispatch.
+func installationPendingRelease(t *testing.T) json.RawMessage {
+	t.Helper()
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := io.WriteString(writer, `{"name":"demo","namespace":"operations","version":1,"info":{"status":"pending-install"},"chart":{"metadata":{"name":"output-proof","version":"0.1.0"}}}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	release := base64.StdEncoding.EncodeToString(compressed.Bytes())
+	return json.RawMessage(fmt.Sprintf(`{
+		"apiVersion":"v1","kind":"Secret","type":"helm.sh/release.v1",
+		"metadata":{"name":"sh.helm.release.v1.demo.v1","namespace":"operations",
+			"labels":{"owner":"helm","name":"demo","version":"1","status":"pending-install"}},
+		"data":{"release":%q}
+	}`, base64.StdEncoding.EncodeToString([]byte(release))))
 }

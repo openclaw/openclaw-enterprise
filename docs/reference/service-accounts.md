@@ -205,9 +205,14 @@ provider, not IAM, Compute, OCC, or the Harness.
 - Invalid credential reply: a reply that names a credential under the requested
   account in this workspace revokes that credential before failing; if that fails,
   it answers `503`, and the API log says the credential could not be removed.
-- Unknown Secret outcome: a failed token Secret create deletes the account-owned
-  Secret holding this request's token, so issuance can be retried. If it cannot
-  read or delete that Secret, it answers `503` and still revokes its token.
+- Unknown Secret outcome: after a failed token Secret create, Compute reads the
+  deterministic name. Exact ownership, token, credential ID, uid, and
+  resourceVersion confirm that the requested Secret exists, so issuance can
+  continue. Otherwise the create fails. Compensation first confirms revocation
+  of the newly issued provider credential, then deletes only its matching Secret.
+  If revocation is unconfirmed, the Secret remains and the request answers `503`.
+  The next authorized issuance or account deletion uses the normal locked
+  recovery path; it cannot issue a replacement until revocation is confirmed.
 - Issuance that never commits: a crash, or an unknown COMMIT that failed, skips
   compensation, so the provider credential and its token Secret stay. The Secret
   records the credential's ID, so the next issuance or the account's deletion
@@ -230,8 +235,10 @@ and its causes' class and code. The logging Collector exports only the event and
 
 ## Evidence and related references
 
-The [controller domain operations](../../packages/occ/src/index.ts) own account
-admission, association, deletion, and version snapshots. The
+The [account operations](../../packages/occ/src/service-account-operations.ts)
+admit and delete accounts. [Harness authentication](../../packages/occ/src/harness-auth.ts)
+checks the Agent's account binding and saves the credential version in its
+revision. The
 [ChatGPT Driver](../../apps/controller/src/drivers/service-account/chatgpt.ts)
 owns private upstream bindings and compensation; the
 [worker](../../apps/controller/src/worker.ts) reauthorizes the deployment actor.

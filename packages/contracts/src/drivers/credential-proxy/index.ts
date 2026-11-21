@@ -3,7 +3,19 @@ import type {
   CredentialProxyExchange,
   EgressExchangeOwner,
 } from "../../credential-proxy-exchange.ts";
+import type {
+  CredentialDeploymentConfiguration,
+  CredentialDeploymentReadiness,
+  CredentialDeploymentRef,
+  CredentialDeploymentTarget,
+  CredentialInjectionPolicy,
+  CredentialProjection,
+  CredentialProxyRouting,
+  DeploymentCredentialBinding,
+  NetworkAccessPolicy,
+} from "../../credential-deployment.ts";
 import { repositoryGitDeliveryProfile } from "../repo/index.ts";
+import type { ResolvedCredential } from "../token-service/index.ts";
 
 export { repositoryGitDeliveryProfile } from "../repo/index.ts";
 import type {
@@ -25,6 +37,7 @@ import type { Driver, DriverRegistrationRef } from "../index.ts";
 import type {
   AgentRevision,
   CredentialSource,
+  CredentialSourceReference,
   CredentialSourceType,
   HarnessAuthSnapshot,
   Namespace,
@@ -150,7 +163,11 @@ export const repositoryGitRecipientFields = Object.freeze([
   "networkInstanceId",
 ] as const);
 export type RepositoryGitRecipient = Readonly<
-  Record<(typeof repositoryGitRecipientFields)[number], string> & {
+  Record<"providerId" | "attachmentEpoch", string> & {
+    /** Exact-dispatch and observed-hook recipients pin a process. Online authorization may
+     * instead bind the ongoing Sandbox execution, with current runtime readiness checked separately. */
+    processInstanceId?: string;
+    networkInstanceId?: string;
     /** Absent on the original repository Git wire. Installation scope needs positive evidence. */
     deliveryProfile?: "github_installation" | "github_repository";
     /** v5 requires online authorization before injection for every new request. In v6 we
@@ -189,7 +206,12 @@ export function validRepositoryGitRecipient(
         ? profile
         : undefined) &&
     repositoryGitRecipientFields.every(
-      (key) => typeof value[key] === "string" && value[key].trim().length > 0,
+      (key) =>
+        (authorization === "online-request" &&
+          (key === "processInstanceId" || key === "networkInstanceId") &&
+          value.processInstanceId === undefined &&
+          value.networkInstanceId === undefined) ||
+        (typeof value[key] === "string" && value[key]!.trim().length > 0),
     )
   );
 }
@@ -304,7 +326,16 @@ export interface CredentialProviderDefinition {
     binding: EgressBinding,
     harnessConfiguration?: Readonly<Record<string, unknown>>,
   ): readonly EgressRoute[];
-  classify(route: EgressRoute, request: EgressRequest): EgressOperation | undefined;
+  /**
+   * On refusal, optionally report one stable provider-owned rule ID (1–255).
+   * IDs must not encode request data. Report synchronously, only for a matched
+   * destination; accepted operations and ambiguous diagnostics discard the ID.
+   */
+  classify(
+    route: EgressRoute,
+    request: EgressRequest,
+    refused?: (rule: number) => void,
+  ): EgressOperation | undefined;
   inject(value: string): readonly (readonly [string, string])[];
   /** Positive provider evidence only; status alone never identifies rejected credentials. */
   credentialRejected(response: EgressResponse): boolean;
@@ -435,7 +466,14 @@ export interface CredentialPolicyWithdrawalOptions {
   ) => Promise<"withdrawn" | "pending" | "retire-runtime">;
 }
 
-export interface CredentialProxyDriver extends Driver {
+/** Material-free change event; a missing version does not prevent delivery. */
+export interface CredentialUpdateNotification {
+  readonly sourceRef: CredentialSourceReference;
+  readonly version?: string;
+}
+
+// TODO(credential proxy cutover): remove this contract after legacy protected serving is retired.
+export interface LegacyEgressProxyDriver extends Driver {
   readonly capability: "credential_proxy";
   readonly sourceControl: CredentialSourceControl;
   readonly policyReduction?: CredentialPolicyReducer;
@@ -456,6 +494,64 @@ export interface CredentialProxyDriver extends Driver {
     installation: EgressInstallation,
   ): Promise<boolean>;
   removeRevision(context: ProxyRevisionContext): Promise<boolean>;
+}
+
+/** Trusted, material-free context for a staged credential deployment. */
+export interface CredentialDeploymentContext {
+  readonly namespace: Readonly<Namespace>;
+  readonly revision: Readonly<AgentRevision>;
+  readonly signal: AbortSignal;
+}
+
+/** Credential delivery for staged Agent deployments, independent of legacy protected egress. */
+export interface CredentialProxyDriver extends Driver {
+  readonly capability: "credential_proxy_delivery";
+  /** Prepare staged proxy resources for this exact Namespace and Agent revision. */
+  deployProxy(
+    context: CredentialDeploymentContext,
+    input: {
+      readonly deployment: CredentialDeploymentRef;
+      readonly networkAccessPolicy: NetworkAccessPolicy;
+      readonly injectionPolicies: readonly CredentialInjectionPolicy[];
+    },
+  ): Promise<{ readonly proxyRouting?: CredentialProxyRouting }>;
+  /** Configure this revision's actual target; reject a mismatched target before resolving. */
+  configureDeployment(
+    context: CredentialDeploymentContext,
+    input: CredentialDeploymentConfiguration & {
+      readonly bindings: readonly {
+        readonly binding: DeploymentCredentialBinding;
+        /** Authorized only for binding.sourceRef; use for first-use transfer, never shared-provider attachment. */
+        readonly resolveCredential: () => Promise<ResolvedCredential>;
+        /** Nonsecret provider locator for an implementation that owns both services. */
+        readonly sharedProviderRef?: Readonly<Record<string, string>>;
+      }[];
+      readonly injectionPolicies: readonly CredentialInjectionPolicy[];
+    },
+  ): Promise<{ readonly credentialProjections: readonly CredentialProjection[] }>;
+  /** Observe without reload, repair or upstream user operations. Each binding using pushed material
+   * needs a serving copy on this target, and every serving copy must have the expected version.
+   * A shared provider instead needs the current effective policy. Both require the expected configuration. */
+  getDeploymentStatus(
+    context: CredentialDeploymentContext,
+    expected: CredentialDeploymentConfiguration,
+  ): Promise<CredentialDeploymentReadiness>;
+  /** Remove only resources bound to this target, or unbound resources if staging failed. */
+  removeDeployment(
+    context: CredentialDeploymentContext,
+    input:
+      | { readonly targetRef: CredentialDeploymentTarget; readonly bindingRefs?: readonly string[] }
+      | { readonly unboundDeployment: CredentialDeploymentRef },
+  ): Promise<void>;
+  /** Handle an update for this exact source, without an Agent revision. With no delivery resource,
+   * succeed without resolving or creating one. Otherwise resolve only when transfer is needed.
+   * A push requires a version on resolved material and acknowledges only after every serving copy
+   * can use it. Concurrent updates must not restore an older delivered version. */
+  notifyCredentialUpdated?(
+    notification: CredentialUpdateNotification,
+    resolveCredential: () => Promise<ResolvedCredential>,
+    signal: AbortSignal,
+  ): Promise<void>;
 }
 
 /** Durable admission semantics. v7 adds verified Git policy reduction to exact dispatch. */

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-11-05
-last_updated_session: authoring-run/1a621287-125a-41d1-baae-06e4b9f829f7
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Agent Presets flow
@@ -22,7 +22,7 @@ and Agent through existing APIs. This flow stops at the draft; deployment follow
 - Source: `packages/contracts/src/api/routes.ts:occApiRoutes`.
 - [Preset routes](../../packages/contracts/src/api/routes.ts): authenticated
   collection and exact-resource operations in a Namespace.
-- [OCC Preset methods](../../packages/occ/src/index.ts): `createPreset`,
+- [OCC Preset methods](../../packages/occ/src/preset-operations.ts): `createPreset`,
   `updatePreset`, `listPresets`, `getPreset`, and `deletePreset` own lifecycle.
 - [CLI](../../internal/occcli/cli.go): `presetCommand` provides `occ preset list`,
   `get`, and `delete` over the same routes; create and update stay HTTP-only.
@@ -91,7 +91,7 @@ enabled, into `ControllerOptions.bundledPresetVersions`. A conformance test in
 `tests/conformance/presets.test.ts` fails when a bundled file changes without
 its previous version archived there.
 
-`packages/occ/src/index.ts:OpenClawController.initializeDefaultPresets`
+`packages/occ/src/preset-operations.ts:initializeDefaultPresets`
 
 Initialization authorizes Installation administration, locks Namespaces in ID
 order in one transaction, and skips failed/deleting Namespaces. Missing names
@@ -121,22 +121,26 @@ transport budget for 1 MiB templates, JSON escapes and the envelope; overflow
 returns 413. Their `onRequest` hook runs `authorizePresetWrite`: callers without
 the grant get 403 before any body is read.
 
-`packages/occ/src/index.ts:OpenClawController.createPreset`
+`packages/occ/src/preset-operations.ts:createPreset`
 
-[`OpenClawController.createPreset` and `admitPresetTemplate`](../../packages/occ/src/index.ts)
-lock the Namespace, check the exact collection grant and ready state, then call
-[`normalizePresetTemplate`](../../packages/contracts/src/presets.ts).
+The [Preset operations module](../../packages/occ/src/preset-operations.ts) checks
+the exact collection grant, locks the Namespace, and checks the grant again and
+the ready state. It then calls [`normalizePresetTemplate`](../../packages/contracts/src/presets.ts).
 The normalizer copies the template and fills omitted `namespaceId` fields in
 Harness authentication and Configuration Secret binding sources from the locked
 Namespace. Explicit scopes remain unchanged for same-Namespace validation.
 Template structure, variable declarations, default types, and credential
 references are checked without requiring unfilled variables. Password definitions
 have no defaults and can appear only as whole tokens at `agent.harnessAuth.secret`;
-literal credentials and substitution into ordinary settings are rejected. Literal Agent
-launch fields get create's rules (`validatePresetLaunchFields`); tokens wait. When native values exist,
-the selected Configuration Driver's
-`validateValues` checks their native credential rules; missing capability fails
-closed. Core owns no native configuration interpretation.
+literal credentials and substitution into ordinary settings are rejected.
+`validatePresetLaunchFields` uses the shared tokenizer to distinguish declared,
+unescaped variable tokens from literal launch fields. Tokens wait for launch,
+including tokens with defaults; other text receives Agent create's rules.
+When native values exist, OCC and the selected Configuration Driver's
+`validateValues` check their credential rules. They defer a Gateway password only
+when the partial renderer identifies an unresolved whole-string variable at that
+exact field. The completed Configuration must contain an accepted credential
+reference. A missing Driver validation capability fails closed.
 
 The [repository](../../packages/occ/src/state/postgres-state.ts) stores the whole
 template in `occ.presets`. PATCH locks the resource and replaces an included
@@ -275,7 +279,7 @@ another creation attempt. See [creation recovery](../reference/console/create-an
 
 ### 5. Hand off to deployment
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent`
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
 The saved Agent has a new identity and no Preset reference. Variable inputs are
 not stored as a separate map. Rendered values are ordinary Agent/Configuration
@@ -292,7 +296,7 @@ or an immutable saved version.
   Configuration IDs when investigating partial or uncertain outcomes.
 - [Controller integration coverage](../../tests/integration/presets-controller.test.ts)
   exercises the HTTP workflow, admission, isolation, and copy independence.
-  [PostgreSQL coverage](../../tests/integration/postgres-presets.test.mjs) exercises
+  [PostgreSQL coverage](../../tests/integration/postgres-presets.test.ts) exercises
   persistence; [browser coverage](../../tests/browser/console-agent-presets.test.ts)
   exercises the real selection form. Coverage names are not proof of a live model response.
 - The standard Preset's [clean-build network trace](../guides/topics/standard-codex-preset.md#build-network-allowlist)
@@ -313,6 +317,9 @@ or an immutable saved version.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-10 23:35: Explain real-token Preset launch validation and deferred Gateway password references. (authoring-run/1321c9af-ae4c-4a8f-bf46-69a02bbb2a8d - 60cf8f904c39918ddd5b23a42fa2d7591c2eb193)
 
 - 2026-11-05 21:30: Explain the non-text primary refusal and retained chooser recovery. (authoring-run/1a621287-125a-41d1-baae-06e4b9f829f7 - 516f7563fffa2e2d3f626cbe21a81367281ba1a1)
 
