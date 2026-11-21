@@ -7847,9 +7847,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
                   this.sandboxTransportTokenText(revision),
                 ),
               }),
-              (startupId, committed) => {
+              (startupId, committed, evidenceExpiresAt) => {
                 this.operationSignal().throwIfAborted();
-                return signComputeExecutionRelease(releaseKey!, startupId, committed);
+                return signComputeExecutionRelease(
+                  releaseKey!,
+                  startupId,
+                  committed,
+                  evidenceExpiresAt,
+                );
               },
             ),
           );
@@ -15482,6 +15487,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           auth.loginMode === "codex_pat"
             ? "pat"
             : "ordinary",
+      }),
+      ...(revision.egressPlan?.repositoryGitAuthorization === "network-policy" && {
+        nativeGit: true,
       }),
     };
   }

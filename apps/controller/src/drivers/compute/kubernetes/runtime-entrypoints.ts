@@ -14,7 +14,10 @@ import {
 } from "../embedded-gateway-owner.ts";
 import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
 import { compactNodeChildArguments, nodeProgramArguments } from "../node-program.ts";
-import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
+import {
+  HARNESS_EGRESS_ENROLLMENT_HELPER,
+  HARNESS_NATIVE_GIT_ENROLLMENT_HELPER,
+} from "../harness-egress-enrollment.ts";
 import {
   DELIBERATE_RESTART_EXIT_STATUS,
   DELIBERATE_RESTART_MESSAGE,
@@ -4279,6 +4282,7 @@ function agentRuntimeEntrypoint({
   patRecovery = false,
   boxHttps = false,
   explicitProxy = false,
+  nativeGit = false,
 } = {}): string {
   const processFailed = patRecovery ? "!cleanExit" : "result.status !== 0 || result.error";
   return String.raw`
@@ -4292,7 +4296,7 @@ ${AUTH_PROBE_FAILURE_HELPER}
 ${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
 ${CODEX_STDERR_FILTER_HELPER}
 ${CODEX_PLUGIN_STDIO_HELPER}
-${HARNESS_EGRESS_ENROLLMENT_HELPER}
+${nativeGit ? HARNESS_NATIVE_GIT_ENROLLMENT_HELPER : HARNESS_EGRESS_ENROLLMENT_HELPER}
 ${startupPhaseHelper("agent")}
 ${computeOwned ? CODEX_READINESS_HELPER + "\n" : ""}
 // codex is the npm launcher: a timeout's SIGKILL ended only it and left its native child
@@ -5691,6 +5695,7 @@ export interface CodexLaunch {
   readonly openShellProgram?: "pat" | "ordinary";
   readonly withNode?: boolean;
   readonly workspaceSetup?: boolean;
+  readonly nativeGit?: boolean;
   readonly strandsBox?: boolean;
   /**
    * A provider-owned launch whose Sandbox may name an explicit egress proxy in the Harness
@@ -5709,8 +5714,16 @@ export function codexLaunchEntrypoint(
     workspaceSetup,
     strandsBox,
     explicitProxy,
+    nativeGit,
   }: CodexLaunch = { providerOwned: false, protected: false },
 ): string {
+  if (nativeGit) {
+    if (!providerOwned || !protectedLaunch || openShellProgram !== "ordinary") {
+      throw new Error("A repository network policy requires a protected OpenShell Codex launch.");
+    }
+    const child = agentRuntimeEntrypoint({ protected: true, withNode: !!withNode, nativeGit });
+    return withNode ? compactWorkspaceNodeLaunch(child) : child;
+  }
   if (!providerOwned) {
     if (protectedLaunch) {
       return withNode

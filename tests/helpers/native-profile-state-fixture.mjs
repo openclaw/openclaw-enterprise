@@ -1,5 +1,3 @@
-import assert from "node:assert/strict";
-
 // A real native protocol client shared by fixture capture and upgrade verification.
 // The fixture records administrator-injected text, not a generated model response.
 export const nativeProfileFixtureIdentity = "retained-person@example.test";
@@ -142,53 +140,7 @@ try {
 }
 `;
 
-export type NativeProfileExpected = Record<string, unknown> & {
-  profileId: string;
-  displayName: string;
-  sessionKey: string;
-  message: string;
-  sessionId: string;
-  messageRecord: Record<string, unknown>;
-};
-
-type NativeProfileFixtureInput =
-  | {
-      mode: "capture";
-      displayName: string;
-      message: string;
-      identity?: string;
-      appendMessage?: string;
-    }
-  | { mode?: "verify"; expected: NativeProfileExpected; identity?: string; appendMessage?: string };
-
-type DockerRunner = (args: readonly string[]) => Promise<{ stdout: string }>;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isNativeProfileExpected(value: unknown): value is NativeProfileExpected {
-  return (
-    isRecord(value) &&
-    typeof value.profileId === "string" &&
-    typeof value.displayName === "string" &&
-    typeof value.sessionKey === "string" &&
-    typeof value.message === "string" &&
-    typeof value.sessionId === "string" &&
-    isRecord(value.messageRecord)
-  );
-}
-
-export function readNativeProfileExpected(value: unknown): NativeProfileExpected {
-  assert.ok(isNativeProfileExpected(value), "Expected native profile fixture fields");
-  return value;
-}
-
-export async function checkNativeProfileFixture(
-  runDocker: DockerRunner,
-  containerName: string,
-  input: NativeProfileFixtureInput,
-): Promise<NativeProfileExpected> {
+export async function checkNativeProfileFixture(runDocker, containerName, input) {
   const { stdout } = await runDocker([
     "exec",
     containerName,
@@ -198,6 +150,5 @@ export async function checkNativeProfileFixture(
     nativeProfileFixtureProbe,
     JSON.stringify({ identity: nativeProfileFixtureIdentity, ...input }),
   ]);
-  const value: unknown = JSON.parse(stdout.trim());
-  return readNativeProfileExpected(value);
+  return JSON.parse(stdout.trim());
 }

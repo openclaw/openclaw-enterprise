@@ -1,4 +1,5 @@
 import { OpenShellSandboxConfigurationFailure } from "./openshell-sandbox-errors.ts";
+import { compileOpenShellBoundGitRule } from "./openshell-git-network-policy.ts";
 import { posix } from "node:path";
 import { OpenShellGatewayUnavailableError } from "./openshell-gateway-errors.ts";
 import {
@@ -25,6 +26,7 @@ import {
   type OpenShellProxyOptions,
 } from "../egress-proxy/openshell.ts";
 import { deleteOpenShellPreparedGitProviders } from "../egress-proxy/openshell-prepared-git-provider.ts";
+import { openShellExpectedProviderRule } from "../egress-proxy/openshell-repository-policy-readback.ts";
 import {
   AgentId,
   ConfigurationValidationError,
@@ -65,6 +67,7 @@ import {
 } from "./openshell-policy.ts";
 import type {
   SandboxNetworkGrant,
+  RepositoryNetworkPolicy,
   ProtectedCodexArtifactPolicyAdmission,
   SandboxPolicySnapshot,
   SandboxPolicyObservation,
@@ -812,6 +815,8 @@ interface HarnessRuntimeFiles {
   readonly profile: OpenShellProviderProfile;
 }
 
+const runtimeFileProviderNetwork = { credentials: [], endpoints: [], binaries: [] } as const;
+
 function harnessRuntimeFiles(
   requirements: HarnessWorkloadRequirements,
   harnessId: keyof typeof RUNTIME_PROFILE_IDS,
@@ -908,7 +913,7 @@ function harnessRuntimeFiles(
     id: RUNTIME_PROFILE_IDS[harnessId],
     displayName: `${codex ? "Codex" : "OpenClaw"} runtime files (OpenClaw Enterprise)`,
     category: "PROVIDER_PROFILE_CATEGORY_OTHER",
-    credentials: [],
+    credentials: runtimeFileProviderNetwork.credentials,
     files: [
       ...files.map((file) => ({
         path: file.name,
@@ -926,8 +931,9 @@ function harnessRuntimeFiles(
         environmentVariable: WORKSPACE_NODE_CA_PATH_ENVIRONMENT,
       },
     ],
-    endpoints: [],
-    binaries: [],
+    // Ownership hashes this object in its historical field order.
+    endpoints: runtimeFileProviderNetwork.endpoints,
+    binaries: runtimeFileProviderNetwork.binaries,
     inferenceCapable: false,
   };
   return {
@@ -3425,6 +3431,36 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     const plan = context.revision.egressPlan;
+    const repositoryPolicy = context.revision.sandboxPolicy?.repositoryNetworkPolicy;
+    const nativeGit = context.revision.executionAdmission.version === 8;
+    if (
+      (nativeGit && !repositoryPolicy?.grants.length) ||
+      (repositoryPolicy !== undefined &&
+        (!this.openShellGit ||
+          !plan?.repositoryGit ||
+          !nativeGit ||
+          plan.repositoryGitAuthorization !== "network-policy" ||
+          context.revision.executionAdmission.mode !== "protected" ||
+          plan.harnessCredentialSource === undefined ||
+          !context.revision.repositoryCredentials?.bindings.length ||
+          !context.revision.repositoryCredentials.bindings.every(
+            ({ profile }) => profile === "github-repository",
+          )))
+    ) {
+      throw new SandboxRevisionUnsupportedError(
+        "SANDBOX_HARNESS_UNSUPPORTED",
+        "Repository network policy requires protected selected-repository Git with an admitted Harness credential source.",
+      );
+    }
+    if (
+      nativeGit &&
+      context.requirements.environment.some(({ name }) => name === WORKSPACE_NODE_SETUP_ENVIRONMENT)
+    ) {
+      throw new SandboxRevisionUnsupportedError(
+        "SANDBOX_HARNESS_UNSUPPORTED",
+        "Repository network policy requires inspected Workspace node enrollment.",
+      );
+    }
     if (
       plan?.harnessCredentialSource &&
       !isDeepStrictEqual(plan.harnessCredentialSource, context.revision.harnessAuth)
@@ -3514,6 +3550,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
               policy.endpoints.map((endpoint) => endpoint.host),
             ),
             this.retainedGitSandbox(context),
+            context.revision.sandboxPolicy?.repositoryNetworkPolicy === undefined
+              ? undefined
+              : openShellExpectedProviderRule(
+                  this.gitRuntimeProviderName(context.revision),
+                  runtimeFileProviderNetwork,
+                ),
           );
     if (git && context.requirements.proxyWiring && !context.revision.egressPlan?.repositoryGit) {
       throw new OpenShellSandboxConfigurationFailure(
@@ -3621,6 +3663,24 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     if (git) {
+      if (nativeGit) {
+        if (!repositoryPolicy || !git.nativeBinaries) {
+          throw new OpenShellSandboxConfigurationFailure(
+            "Native Git requires an admitted repository policy and transport binaries.",
+          );
+        }
+        const rule = compileOpenShellBoundGitRule(
+          repositoryPolicy.grants,
+          git.provider,
+          git.nativeBinaries,
+        );
+        if (Object.hasOwn(composedPolicies, rule.name)) {
+          throw new OpenShellSandboxConfigurationFailure(
+            "Repository network policy rule already exists.",
+          );
+        }
+        create.spec.policy.network_policies = { ...composedPolicies, [rule.name]: rule };
+      }
       create.spec.providers.push(git.provider);
       Object.assign(
         create.spec.environment,
@@ -3638,9 +3698,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
       const readOnly = create.spec.policy.filesystem.read_only;
       readOnly.push(...git.readOnlyPaths.filter((path) => !readOnly.includes(path)));
-      // The observed-only preview cannot requalify mandatory enforcement after recovery.
-      // Ordinary Git uses the same automatic recovery policy as the rest of the Sandbox.
-      if (context.revision.egressPlan?.repositoryGitAuthorization === "request-hook-observed") {
+      // These delivery modes qualify a specific launcher and supervisor during deployment.
+      if (
+        context.revision.egressPlan?.repositoryGitAuthorization === "request-hook-observed" ||
+        (context.revision.executionAdmission.version === 8 &&
+          context.revision.egressPlan?.repositoryGitAuthorization === "network-policy")
+      ) {
         create.spec.restart_policy = "SANDBOX_RESTART_POLICY_NEVER";
       }
       const continuity = this.gitContinuity(context);
@@ -3653,7 +3716,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         );
       await this.openShellGit!.bind(
         context.revision.id,
-        (observed, signal) => this.verifyGitSandbox(client, observed, create, signal),
+        (observed, signal, sourcePolicy) =>
+          this.verifyGitSandbox(client, observed, create, signal, sourcePolicy),
         originalModel ? continuity : undefined,
       );
     }
@@ -3751,6 +3815,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     observed: OpenShellSandboxResponse,
     create: Omit<OpenShellSandboxCreateRequest, "requestId">,
     _signal: AbortSignal,
+    _sourcePolicy?: Readonly<Record<string, unknown>>,
   ): Promise<void> {
     verifyExistingSandbox(observed, { ...create, requestId: "observation" });
   }
@@ -4036,6 +4101,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       !git ||
       !(
         plan?.repositoryGitAuthorization === "online-request" ||
+        (revision.executionAdmission.version === 8 &&
+          plan?.repositoryGitAuthorization === "network-policy") ||
         (revision.executionAdmission.version === 6 &&
           plan?.repositoryGitAuthorization === "request-hook-observed" &&
           workspaceName(context.namespace) === git.configuration.observedHookPreviewWorkspace)
@@ -4088,7 +4155,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   async enrollHarness(
     context: SandboxHarnessStatusContext,
     installation: EgressInstallation,
-    release: (startupId: string) => Promise<Readonly<Record<string, unknown>>>,
+    release: (
+      startupId: string,
+      evidenceExpiresAt?: number,
+    ) => Promise<Readonly<Record<string, unknown>>>,
   ): Promise<void> {
     assertNoRepositoryEnrollment(context, this.openShellGit);
     if (
@@ -4123,7 +4193,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     // Normal Harness observation decides readiness; none of these answers releases startup.
     const preview =
       installation.plan.repositoryGitAuthorization === "request-hook-observed" ||
-      installation.plan.repositoryGitAuthorization === "online-request";
+      installation.plan.repositoryGitAuthorization === "online-request" ||
+      (context.revision.executionAdmission.version === 8 &&
+        installation.plan.repositoryGitAuthorization === "network-policy");
     if (document.status !== 200) {
       if (
         preview &&
@@ -4156,12 +4228,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "Harness enrollment challenge does not match the admitted execution.",
       );
     }
-    const deliver = async (): Promise<boolean> => {
+    const deliver = async (body: Readonly<Record<string, unknown>>): Promise<boolean> => {
       const released = await client.postServiceDocument(
         service.url,
         HARNESS_EGRESS_ENROLLMENT_PATH,
         context.transportToken,
-        await release(startupId),
+        body,
         context.signal,
       );
       // A restarted Harness refuses the old challenge. The next reconcile observes
@@ -4178,9 +4250,14 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       return true;
     };
     if (preview) {
-      await this.openShellGit!.releasePreview(context.revision.id, startupId, deliver);
+      await this.openShellGit!.releasePreview(
+        context.revision.id,
+        startupId,
+        { prepare: (expiresAt) => release(startupId, expiresAt), deliver },
+        context.signal,
+      );
     } else {
-      await deliver();
+      await deliver(await release(startupId));
     }
   }
 
@@ -4757,6 +4834,60 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     });
   }
 
+  admitRepositoryNetworkPolicy(
+    policy: RepositoryNetworkPolicy,
+    network: SandboxPolicySnapshot,
+  ): SandboxPolicySnapshot["defaults"] {
+    if (
+      !this.openShellGit ||
+      !this.options.egress ||
+      !Array.isArray(policy.grants) ||
+      network.driverId !== this.id ||
+      network.implementation !== this.implementation ||
+      network.additions.length !== 0 ||
+      !isDeepStrictEqual(
+        network.defaults,
+        this.admitProtectedCodexArtifactPolicy(network.version).snapshot.defaults,
+      )
+    ) {
+      throw new SandboxNetworkPolicyConflictError(
+        "OpenShell requires a selected-repository policy and qualified protected defaults without Agent additions.",
+      );
+    }
+    return network.defaults;
+  }
+
+  validateProtectedRepositoryNetworkPolicy(revision: Readonly<AgentRevision>): void {
+    const snapshot = revision.sandboxPolicy;
+    const policy = snapshot?.repositoryNetworkPolicy;
+    const plan = revision.egressPlan;
+    const auth = revision.harnessAuth;
+    if (
+      this.openShellGit === undefined ||
+      snapshot === undefined ||
+      policy === undefined ||
+      (this.options.providers?.length ?? 0) !== 0 ||
+      plan?.sandboxDriverId !== this.id ||
+      revision.sandboxDriverId !== this.id ||
+      auth.method !== "credential_source" ||
+      !isDeepStrictEqual(plan.harnessCredentialSource, auth) ||
+      !isDeepStrictEqual(revision.credentialSources, [
+        {
+          credentialGatewayId: auth.credentialGatewayId,
+          sourceId: auth.sourceId,
+          sourceType: auth.sourceType,
+        },
+      ]) ||
+      plan.routes.length !== 0
+    ) {
+      throw new SandboxNetworkPolicyConflictError(
+        "Protected repository network policy requires its exact Harness credential source and no other egress routes.",
+      );
+    }
+    this.admitRepositoryNetworkPolicy(policy, snapshot);
+    this.openShellGit.validateRepositoryNetworkPolicy(revision);
+  }
+
   admitNetworkPolicy(
     additions: readonly SandboxNetworkGrant[],
     version: number,
@@ -4894,6 +5025,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       input.snapshot.implementation !== this.implementation
     ) {
       throw new Error("Live policy application is unsupported.");
+    }
+    if (
+      context.revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined ||
+      input.snapshot.repositoryNetworkPolicy !== undefined
+    ) {
+      throw new Error("Deploy a new revision to change repository network policy.");
     }
     // Backstop for the admission check (finding 2144): never add a Git route bypass live.
     const overlap =

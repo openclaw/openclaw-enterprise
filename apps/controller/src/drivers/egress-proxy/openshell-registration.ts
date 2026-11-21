@@ -72,6 +72,7 @@ export function createOpenShellCapabilities(input: {
       ...(git && {
         bindRepositoryGit: git.bindRepositoryGit.bind(git),
         previewEnforcement: git.previewEnforcement.bind(git),
+        boundGitRule: git.boundGitRule.bind(git),
         mandatoryEnforcement: git.mandatoryEnforcement.bind(git),
       }),
     });

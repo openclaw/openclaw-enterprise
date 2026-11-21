@@ -30,6 +30,9 @@ test("the Sandbox wire policy binds exact Git routes to an endpointless Provider
   } satisfies OpenShellPreparedGitScope;
   let addedProfileField: Record<string, unknown> | undefined;
   let wireSpec: unknown;
+  let member = false;
+  let anotherProvider: string | undefined;
+  let pageToken: string | undefined;
   const { client, world } = await gitExpiryGateway(t, {
     model: "model",
     workspace: scope.workspace,
@@ -45,6 +48,19 @@ test("the Sandbox wire policy binds exact Git routes to an endpointless Provider
           ? { profile: { ...response.profile, ...addedProfileField } }
           : response;
       };
+      methods.ListWorkspaceMembers = () => ({
+        members: member ? [{ principal_subject: "other-writer" }] : [],
+      });
+      methods.ListSandboxes = () => ({
+        sandboxes: [
+          { metadata: { id: "sandbox-id", workspace: scope.workspace }, spec: wireSpec },
+          {
+            metadata: { id: "unrelated", workspace: scope.workspace },
+            spec: { providers: anotherProvider ? [anotherProvider] : [] },
+          },
+        ],
+        next_page_token: pageToken,
+      });
       methods.CreateSandbox = (request) => {
         wireSpec = request.spec;
         return {
@@ -106,6 +122,7 @@ test("the Sandbox wire policy binds exact Git routes to an endpointless Provider
             {
               host: "github.com",
               port: 443,
+              path: "/fixture/a.git/**",
               protocol: "rest",
               enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
               credential_binding: { provider: binding.provider },
@@ -118,6 +135,16 @@ test("the Sandbox wire policy binds exact Git routes to an endpointless Provider
                   },
                 },
                 { allow: { method: "POST", path: "/fixture/a.git/git-upload-pack" } },
+              ],
+            },
+            {
+              host: "github.com",
+              port: 443,
+              path: "/fixture/b.git/**",
+              protocol: "rest",
+              enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+              credential_binding: { provider: binding.provider },
+              rules: [
                 {
                   allow: {
                     method: "GET",
@@ -141,6 +168,18 @@ test("the Sandbox wire policy binds exact Git routes to an endpointless Provider
       },
     },
   });
+
+  const exclusive = () =>
+    client.readExclusivePreviewWorkspace(scope.workspace, "sandbox-id", signal, binding.provider);
+  assert.equal(await exclusive(), true, "an unrelated Sandbox may coexist");
+  anotherProvider = binding.provider;
+  assert.equal(await exclusive(), false, "a second attachment refuses material");
+  anotherProvider = undefined;
+  pageToken = "another-page";
+  assert.equal(await exclusive(), false, "a partial inventory cannot establish exclusivity");
+  pageToken = undefined;
+  member = true;
+  assert.equal(await exclusive(), false, "the workspace must have isolated writers");
 
   // An endpointless managed Git credential still overlaps if offered as an ordinary Provider.
   await assert.rejects(

@@ -866,4 +866,3 @@ export {
   runStaticEgressResponseCommitCase,
 } from "./static-egress-receipt-persistence-cases.ts";
 export { createReceiptPersistenceFaults } from "./static-egress-receipt-support.ts";
-export { createStaticEgressAdmissionCases } from "./static-egress-admission-cases.ts";

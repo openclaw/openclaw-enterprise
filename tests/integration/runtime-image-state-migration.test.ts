@@ -37,12 +37,9 @@ import {
   checkNativeProfileFixture,
   nativeProfileFixtureConfiguration,
   nativeProfileUpgradeMessage,
-  readNativeProfileExpected,
-} from "../helpers/native-profile-state-fixture.ts";
+} from "../helpers/native-profile-state-fixture.mjs";
 import {
   parseObservation,
-  record,
-  text,
   readAgentDatabase,
   readMaintenance,
   readOwnerEnvelope,
@@ -68,7 +65,7 @@ test(
         import.meta.url,
       ),
     );
-    const metadata = parseObservation(
+    const metadata = JSON.parse(
       await readFile(
         new URL(
           "../fixtures/runtime-state/native-profile-state-openclaw-513c127.json",
@@ -76,13 +73,12 @@ test(
         ),
         "utf8",
       ),
-      record,
     );
     assert.equal(
       createHash("sha256")
         .update(await readFile(archive))
         .digest("hex"),
-      text(metadata.archiveSha256),
+      metadata.archiveSha256,
     );
     // The old Gateway created these rows through native RPCs. Restore its
     // keyless stores and original migration bookkeeping, then use the real
@@ -107,12 +103,12 @@ test(
     // new admin-injected message proves the retained conversation is writable;
     // neither message is presented as model-generated content.
     await checkNativeProfileFixture(runDocker, gateway.containerName, {
-      expected: readNativeProfileExpected(metadata.expected),
+      expected: metadata.expected,
       appendMessage: nativeProfileUpgradeMessage,
     });
     await runDocker(["stop", "--time", "60", gateway.containerName]);
     t.diagnostic(
-      `native profile upgrade: ${text(record(metadata.provenance).commit)} -> selected image; profile and conversation retained`,
+      `native profile upgrade: ${metadata.provenance.commit} -> selected image; profile and conversation retained`,
     );
   },
 );

@@ -139,12 +139,9 @@ export async function withNativeProfileBaseline<Result>(
   } catch {
     // Public, fixed source; never select credentials or a moving branch. CI's
     // checkout uses persist-credentials:false. Reuse its existing object store.
-    const { stdout } = await run(["rev-parse", "--is-shallow-repository"]);
-    const depth = stdout.trim() === "true" ? ["--depth=1"] : [];
     await run([
       "fetch",
       "--no-tags",
-      ...depth,
       "https://github.com/openclaw/openclaw-enterprise.git",
       nativeProfileBaseline.revision,
     ]);
