@@ -2428,6 +2428,7 @@ export class ControllerWorker {
     let completionCode: string | undefined;
     let expiryRevision: Readonly<AgentRevision> | undefined;
     let withdrawal: "withdrawn" | "pending" | "retire-runtime" | undefined;
+    let nativeRemoval: true | undefined;
     let denial: RevisionDispatchResult | undefined;
     let cause: string | undefined;
     let stoppedRevision: Readonly<AgentRevision> | undefined;
@@ -2477,7 +2478,7 @@ export class ControllerWorker {
           }
           // Session service outages cannot delay exact workload/material retirement.
           if (expiryRevision !== undefined) {
-            ({ withdrawal, denial } = await this.withdrawExpiredRepositoryAccess(
+            ({ withdrawal, denial, nativeRemoval } = await this.withdrawExpiredRepositoryAccess(
               claim,
               revision,
               resources,
@@ -2540,9 +2541,8 @@ export class ControllerWorker {
         const expiry = await queue.repositoryExpiryState(owner);
         const waitingForStop = expiry === "removal" && agent?.desiredRuntimeState === "stopped";
         const requiredModelWithdrawn =
-          withdrawal === "withdrawn" &&
-          expiry === "removal" &&
-          this.repositoryCredentials.selectsFiniteNativeWithdrawal(expiryRevision) &&
+          nativeRemoval === true &&
+          withdrawal !== "retire-runtime" &&
           expiryRevision.harnessAuth.method === "credential_source" &&
           (await unit.credentialSources.findCredentialWithdrawal(
             expiryRevision.namespaceId,
@@ -2552,6 +2552,7 @@ export class ControllerWorker {
         if (
           withdrawal === "retire-runtime" ||
           requiredModelWithdrawn ||
+          (nativeRemoval === true && expiry !== "removal") ||
           agent?.status !== "active" ||
           agent.activeRevisionId !== expiryRevision.id ||
           (!waitingForStop && agent.desiredRuntimeState !== "running") ||
@@ -2674,6 +2675,7 @@ export class ControllerWorker {
   ): Promise<{
     withdrawal: "withdrawn" | "pending" | "retire-runtime";
     denial?: RevisionDispatchResult;
+    nativeRemoval?: true;
   }> {
     const compute = this.compute;
     if (
@@ -2753,7 +2755,10 @@ export class ControllerWorker {
         expiry === "removal" &&
         this.repositoryCredentials.selectsFiniteNativeWithdrawal(revision)
       ) {
-        return { withdrawal: await this.withdrawFiniteNativeRepositoryAccess(revision, signal) };
+        return {
+          withdrawal: await this.withdrawFiniteNativeRepositoryAccess(revision, signal),
+          nativeRemoval: true,
+        };
       }
       try {
         const result =
@@ -2791,6 +2796,7 @@ export class ControllerWorker {
       // The caller already observed the irreversible removal fence. Neither receipt
       // observation can issue a credential or reopen the original admission.
       const broker = await this.repositoryCredentials.observeFiniteNativeWithdrawal(revision);
+      signal.throwIfAborted();
       if (broker.state !== "disposed") {
         return broker.state === "pending" ? "pending" : "retire-runtime";
       }
@@ -2802,6 +2808,15 @@ export class ControllerWorker {
       if (prepared !== "disposed") {
         return "retire-runtime";
       }
+    } catch (error) {
+      if (signal.aborted || error instanceof WorkClaimLostError) {
+        throw error;
+      }
+      // The fenced claim can retry receipt reads. The final transaction still
+      // rechecks the removal, revision owner and required model credential.
+      return unrecoverableRead(error) ? "retire-runtime" : "pending";
+    }
+    try {
       const runtime = await this.compute.observeRevision(
         revision,
         AbortSignal.any([signal, AbortSignal.timeout(10_000)]),

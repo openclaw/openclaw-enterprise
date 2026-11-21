@@ -320,7 +320,13 @@ function discoverNativeBearer(
   });
 }
 
-for (const outcome of ["settled", "unconfirmed revocation", "inference unavailable"] as const) {
+for (const outcome of [
+  "settled",
+  "unconfirmed revocation",
+  "inference unavailable",
+  "custody read recovers",
+  "unexpected custody family",
+] as const) {
   test(
     `finite native Git binding removal: ${outcome}`,
     { ...requiresPostgres, timeout: 65_000 },
@@ -451,6 +457,8 @@ for (const outcome of ["settled", "unconfirmed revocation", "inference unavailab
       const statuses: Readonly<Record<string, unknown>>[] = [];
       const observeNativeRepositoryWithdrawal = prepared.observeNativeWithdrawal;
       assert.ok(observeNativeRepositoryWithdrawal);
+      let failCustodyRead = false;
+      let failedCustodyReads = 0;
       const configured = createBackendWorkerDrivers(compute, []);
       const startWorker = async (pool = f.workerPool) => {
         const worker = createControllerWorker({
@@ -464,7 +472,16 @@ for (const outcome of ["settled", "unconfirmed revocation", "inference unavailab
             repositoryPolicy: driver,
             nativeRepositorySender: sender,
           },
-          observeNativeRepositoryWithdrawal,
+          async observeNativeRepositoryWithdrawal(revision, sessions) {
+            if (failCustodyRead) {
+              failCustodyRead = false;
+              failedCustodyReads++;
+              throw Object.assign(new Error("controlled connection loss reading custody"), {
+                code: "08006",
+              });
+            }
+            return observeNativeRepositoryWithdrawal(revision, sessions);
+          },
           emit: (event) => {
             if (event.event === "worker.completed") {
               statuses.push(event);
@@ -587,28 +604,56 @@ for (const outcome of ["settled", "unconfirmed revocation", "inference unavailab
         await worker.stop();
         worker = await startWorker(f.createWorkerPool());
       }
-      const beforeRetry = statuses.length;
-      assert.equal(
-        (
-          await f.observerPool.query(
-            "UPDATE occ.controller_work SET available_at=clock_timestamp() WHERE idempotency_key=$1 AND state='queued'",
-            [key],
-          )
-        ).rowCount,
-        1,
-      );
-      const completion = await waitFor(
-        "the same finite cleanup claim to publish its outcome",
-        async () => statuses.slice(beforeRetry).find(({ workId }) => workId === key),
-        10_000,
-      );
+      if (outcome === "unexpected custody family") {
+        // The metadata family shape accepts unrelated source fields. An extra family
+        // correlated to this admission must not disappear behind its canonical key.
+        const additionalId = `unexpected-family-${randomUUID()}`;
+        const extra = await f.observerPool.query(
+          `INSERT INTO occ.prepared_github_families(source_id, source, issuer, admission)
+           SELECT $2, source || jsonb_build_object('adoption','prepared',
+             'key', jsonb_build_object('source', jsonb_build_object('id',$2::text)),
+             'grant', source->'grant' || '{"profile":"metadata-read"}'::jsonb),
+             '{"backendRef":{}}'::jsonb, admission || jsonb_build_object('familyId',$2::text)
+           FROM occ.prepared_github_families WHERE source_id=$1`,
+          ["repository-git:" + receipt.admissionId, additionalId],
+        );
+        assert.equal(extra.rowCount, 1);
+      }
+      const runCleanupPass = async () => {
+        const beforeRetry = statuses.length;
+        assert.equal(
+          (
+            await f.observerPool.query(
+              "UPDATE occ.controller_work SET available_at=clock_timestamp() WHERE idempotency_key=$1 AND state='queued'",
+              [key],
+            )
+          ).rowCount,
+          1,
+        );
+        return waitFor(
+          "the same finite cleanup claim to publish its outcome",
+          async () => statuses.slice(beforeRetry).find(({ workId }) => workId === key),
+          10_000,
+        );
+      };
+      if (outcome === "custody read recovers") {
+        failCustodyRead = true;
+        const deferred = await runCleanupPass();
+        assert.equal(deferred.code, "REPOSITORY_CLEANUP_PENDING");
+        assert.equal(failedCustodyReads, 1);
+        assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
+        assert.deepEqual(stops, []);
+        assert.equal(runtimeObservations, 0);
+        await prepared.maintain();
+      }
+      const completion = await runCleanupPass();
       assert.equal(
         await discoverNativeBearer(git.listeners.address.port, git.tls.ca, admit.files.bearer),
         401,
       );
       assert.equal(origin.traffic().requests, initial + 1);
       assert.equal(subject.github.issuesOfTokens.length, 1);
-      if (outcome === "inference unavailable") {
+      if (outcome === "inference unavailable" || outcome === "unexpected custody family") {
         assert.equal(completion.code, "REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
         await waitFor(
           "terminal work to stop the exact original revision",
@@ -620,12 +665,24 @@ for (const outcome of ["settled", "unconfirmed revocation", "inference unavailab
       } else {
         assert.equal(
           completion.code,
-          outcome === "settled" ? "REPOSITORY_ACCESS_WITHDRAWN" : "REPOSITORY_CLEANUP_PENDING",
+          outcome === "unconfirmed revocation"
+            ? "REPOSITORY_CLEANUP_PENDING"
+            : "REPOSITORY_ACCESS_WITHDRAWN",
         );
         assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
         assert.deepEqual(stops, []);
       }
-      assert.equal(runtimeObservations, outcome === "unconfirmed revocation" ? 0 : 1);
+      assert.equal(
+        runtimeObservations,
+        outcome === "unconfirmed revocation" || outcome === "unexpected custody family" ? 0 : 1,
+      );
+      assert.equal(
+        subject.github.trace.filter(
+          ({ method, target }) => method === "DELETE" && target === "/installation/token",
+        ).length,
+        1,
+        "cleanup observation cannot replay provider revocation",
+      );
       if (outcome === "settled") {
         const due = await f.advanceMaintenance(candidate);
         assert.equal(due.rowCount, 1);

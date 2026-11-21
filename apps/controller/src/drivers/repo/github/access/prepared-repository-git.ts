@@ -100,6 +100,8 @@ function installationRecipient(proxy: Recipient) {
 
 const families = "occ.prepared_github_families";
 const attempts = "occ.prepared_github_attempts";
+const lockRepositoryGitIssuance = `SELECT FROM occ.agents WHERE (namespace_id,id) =
+  ($1::jsonb #>> '{session,namespaceId}', $1::jsonb #>> '{session,agentId}') FOR SHARE`;
 
 export interface PreparedRepositorySession {
   readonly standingApprovalId?: string;
@@ -415,8 +417,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       active: active(sessionQuery(proxy)),
       // Fence an issuance intent against a concurrently replaced active revision. After the
       // Agent lock is acquired, store() checks live authority at a new READ COMMITTED snapshot.
-      lockIssuance: `SELECT FROM occ.agents WHERE (namespace_id,id) =
-        ($1::jsonb #>> '{session,namespaceId}', $1::jsonb #>> '{session,agentId}') FOR SHARE`,
+      lockIssuance: lockRepositoryGitIssuance,
       adoption,
       owns: driver
         ? repositoryGitOwnerPredicate
@@ -494,6 +495,11 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       grant: source.grant,
     };
     return this.transaction(async (c) => {
+      if (!this.proxy) {
+        // Use a fresh snapshot after the Agent lock so a concurrent finite
+        // removal also fences publication of a native family for its session.
+        await c.query(lockRepositoryGitIssuance, [source]);
+      }
       await c.query(
         `INSERT INTO ${families}(source_id,source,issuer,admission)
         SELECT $1, $2::jsonb, '{"kind":"worker-mounted-github-app-key"}', $3::jsonb
@@ -572,7 +578,11 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     }
     const { rows } = await this.transaction((c) =>
       c.query(
-        `SELECT s.admission_id AS "admissionId", b.session_id AS "sessionId",
+        `WITH scoped_attempts AS (
+          SELECT * FROM occ.repository_session_attempts
+          WHERE (namespace_id,agent_id,revision_id)=($1,$2,$3)
+        )
+       SELECT s.admission_id AS "admissionId", b.session_id AS "sessionId",
          b.generation::text AS generation,
          (f.source_id IS NULL OR (
            f.source->>'adoption'=$4 AND f.admission->>'issuerAuthority'=$5
@@ -587,18 +597,33 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
          f.source_id IS NULL OR (NOT f.enabled AND NOT EXISTS (
            SELECT FROM ${attempts} a WHERE a.source_id=f.source_id
              AND NOT ${preparedAttemptSettled("a")})) AS settled
-       FROM occ.repository_session_attempts s
+       FROM scoped_attempts s
        JOIN occ.repository_broker_receipts b USING(admission_id)
        LEFT JOIN ${families} f ON f.source_id='repository-git:' || s.admission_id
        CROSS JOIN occ.installation i
-       WHERE (s.namespace_id,s.agent_id,s.revision_id,s.live_revision_id)=($1,$2,$3,$3)
-         AND s.phase='disposed' AND s.broker_protocol=3
-         AND b.state='disposed' AND b.session_id=s.session_id AND b.generation IS NOT NULL`,
-        [revision.namespaceId, revision.agentId, revision.id, legacyAdoption, this.authority],
+       WHERE (SELECT count(*) FROM scoped_attempts)=$6
+         AND s.live_revision_id=$3 AND s.phase='disposed' AND s.broker_protocol=3
+         AND b.state='disposed' AND b.session_id=s.session_id AND b.generation IS NOT NULL
+         AND NOT EXISTS (
+           SELECT FROM ${families} extra
+           WHERE (extra.source#>>'{session,revisionId}'=$3
+             OR extra.source#>>'{grant,isolationId}'=$3
+             OR extra.source#>>'{session,admissionId}' IN (SELECT admission_id FROM scoped_attempts))
+           AND NOT EXISTS (SELECT FROM scoped_attempts recorded
+             WHERE extra.source_id='repository-git:' || recorded.admission_id)
+         )`,
+        [
+          revision.namespaceId,
+          revision.agentId,
+          revision.id,
+          legacyAdoption,
+          this.authority,
+          requested.size,
+        ],
       ),
     );
-    // Attempts require a family row via an undeletable foreign key. An exact disposed
-    // session without a family has never issued. The removal fence prevents a later issue.
+    // Provider attempts require a family via a foreign key. Check for other correlated
+    // families before using absence as evidence; the removal fence prevents a later claim.
     const observed = rows as {
       admissionId: string;
       sessionId: string;
