@@ -160,7 +160,7 @@ type Phase =
   | "start-agents"
   | "chat-after-start"
   | "codex-audit-interruptions"
-  | "audit-disabled";
+  | "audit-switch";
 
 interface TimingRow {
   name: string | undefined;
@@ -193,7 +193,7 @@ export function createStepRecorder(now = () => performance.now()) {
     ["start-agents", "start audited Agents"],
     ["chat-after-start", "chat turns after start"],
     ["codex-audit-interruptions", "Codex provider retry, cancellation, and Gateway recovery"],
-    ["audit-disabled", "chat with the audit switch off"],
+    ["audit-switch", "change the audit setting on active revisions"],
   ]);
 
   async function step<T>(

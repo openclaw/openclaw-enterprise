@@ -7323,6 +7323,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
       }
     });
+    await this.prepareRevisionStage("gateway_runtime_audit", () =>
+      this.ensureGatewayRuntimeAudit(revision, gatewayNamespace, configuration.name, document),
+    );
     if (
       embedded &&
       this.options.runtime !== undefined &&
@@ -7381,9 +7384,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
         this.reconcilePluginRuntimeConfigMap(pluginRuntime, pluginOwnership, gatewayNamespace),
       );
     }
-    await this.prepareRevisionStage("gateway_runtime_audit", () =>
-      this.ensureGatewayRuntimeAudit(revision, gatewayNamespace, configuration.name, document),
-    );
     let launchPrepared = false;
     try {
       const gatewayEnvironment = embedded
@@ -8317,10 +8317,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
           repositoryMaterial,
         ),
       );
+      const volumes = asRecord(asRecord(gateway.spec?.template)?.spec)?.volumes;
+      const hasAuditVolume =
+        Array.isArray(volumes) &&
+        volumes.some((volume) => asRecord(volume)?.name === RUNTIME_AUDIT_VOLUME);
       if (
         currentRevisionId !== revision.id ||
-        annotations[REPOSITORY_MATERIAL_GENERATION] !== repositoryMaterial?.generation
+        annotations[REPOSITORY_MATERIAL_GENERATION] !== repositoryMaterial?.generation ||
+        hasAuditVolume !== (this.runtimeAuditTargetInNamespace(namespace) !== undefined)
       ) {
+        const configuration = this.gatewayConfiguration(admittedRevision);
+        await this.ensureGatewayRuntimeAudit(revision, namespace, configuration.name);
         const deliveredHarnessAuth = await this.deliverHarnessAuth(
           admittedRevision,
           context,
@@ -8351,8 +8358,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
               agentName,
               "gateway",
               launch.environment,
-              this.gatewayConfiguration(admittedRevision).loggingLevel,
-              this.gatewayConfiguration(admittedRevision),
+              configuration.loggingLevel,
+              configuration,
               true,
               revision.servicePrincipalId,
               deliveredHarnessAuth,
@@ -8394,6 +8401,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (!(await this.gatewayReady(gatewayOwnership, gatewayName, namespace))) {
         throw new Error("The exact AgentRevision gateway is not ready.");
       }
+      await this.releaseGatewayRuntimeAudit(revision, namespace, "disable");
       if (repositoryMaterial !== undefined) {
         if (!(await this.repositoryMaterialReady(revision, namespace, repositoryMaterial))) {
           throw new DependencyUnavailableError(
@@ -8680,6 +8688,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (!(await this.gatewayReady(gatewayOwnership, gatewayName, gatewayNamespace))) {
       throw new Error("The exact AgentRevision gateway is not ready.");
     }
+    await this.releaseGatewayRuntimeAudit(revision, gatewayNamespace, "disable");
     if (!(await this.workspaceNodeBindingApplied(revision, namespace, configuration))) {
       throw new ActivationPendingError(
         "WORKSPACE_NODE_BINDING_PENDING",
@@ -10747,12 +10756,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private async releaseGatewayRuntimeAudit(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
-    lifecycle: "stop" | "retire",
+    lifecycle: "stop" | "retire" | "disable",
   ): Promise<void> {
     const enrollment = this.gatewayRuntimeAudit;
     if (
       enrollment === undefined ||
       this.options.runtime === undefined ||
+      (lifecycle === "disable" && this.runtimeAuditTargetInNamespace(namespace) !== undefined) ||
       (revision.harness.id !== "openclaw" && revision.harness.id !== "codex")
     ) {
       return;
@@ -10767,7 +10777,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
           "The Gateway runtime audit grant remains but its owning Secret is missing.",
         );
       }
-      await this.removeGatewayRuntimeAuditTransport(revision, namespace);
+      if (lifecycle !== "disable") {
+        await this.removeGatewayRuntimeAuditTransport(revision, namespace);
+      }
       return;
     }
     const { grant, uid } = this.readGatewayRuntimeAuditCredential(revision, namespace, secret);
@@ -10779,7 +10791,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     await this.removeGatewayRuntimeAuditTransport(revision, namespace);
-    // A stopped revision can restart with its original credential. Retirement removes the Secret.
+    // Stop keeps the credential for restart. Re-enabling audit issues a fresh one.
     if (lifecycle === "stop") {
       return;
     }

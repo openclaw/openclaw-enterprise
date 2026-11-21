@@ -86,6 +86,7 @@ import {
   type OpenClawController,
   DriverConfigurationRegistry,
   type PostgresPlatformState,
+  type PostgresWorkQueue,
   type SkippedDefaultPreset,
 } from "@openclaw-enterprise/occ";
 
@@ -253,6 +254,7 @@ export interface InstallationRuntimeDrivers {
   readonly installation: InstallationStartupConfiguration;
   readonly computeDriver: ComputeDriver;
   readonly privateGatewayRuntimeAudit?: boolean;
+  readonly scheduleGatewayAuditMaintenance?: (queue: PostgresWorkQueue) => Promise<void>;
   readonly configurationDriver: ConfigurationDriver;
   readonly secretDriver: SecretDriver;
   readonly sandboxDriver?: SandboxDriver;
@@ -1719,6 +1721,7 @@ async function composeInstallationConfiguration(
   ]);
   let computeDriver: ComputeDriver;
   let privateGatewayRuntimeAudit = false;
+  let scheduleGatewayAuditMaintenance: InstallationRuntimeDrivers["scheduleGatewayAuditMaintenance"];
   if (computePackage !== undefined) {
     computeDriver = createExternalDriver(
       computePackage.module,
@@ -1744,6 +1747,14 @@ async function composeInstallationConfiguration(
       ? chartRuntimeAudit(environment.OCC_CHART_RUNTIME_AUDIT)
       : undefined;
     privateGatewayRuntimeAudit = chartAudit !== undefined && kubernetes.runtime !== undefined;
+    if (options.gatewayRuntimeAudit && kubernetes.runtime) {
+      scheduleGatewayAuditMaintenance = (queue) =>
+        queue.scheduleGatewayAuditMaintenance({
+          compute,
+          enabled: privateGatewayRuntimeAudit,
+          includeEmbedded: kubernetes.executionCluster === undefined,
+        });
+    }
     const selection: NonNullable<ConstructorParameters<typeof KubernetesComputeDriver>[1]> = {
       id: compute.id,
       implementation: compute.implementation,
@@ -1831,6 +1842,7 @@ async function composeInstallationConfiguration(
     installation,
     computeDriver,
     ...(privateGatewayRuntimeAudit ? { privateGatewayRuntimeAudit } : {}),
+    ...(scheduleGatewayAuditMaintenance ? { scheduleGatewayAuditMaintenance } : {}),
     namespaceLifecycleBindings,
     configurationDriver,
     secretDriver,

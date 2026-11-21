@@ -214,6 +214,7 @@ export interface Pod {
     labels?: Record<string, string>;
   };
   spec?: {
+    containers?: { name: string; env?: { name: string; value?: string }[] }[];
     volumes?: { configMap?: { name?: string } }[];
   };
   status?: {
@@ -611,9 +612,8 @@ export async function expectNoRuntimeAuditGrant(stack: InstalledAuditStack, revi
   assert.equal(count, "0", `The stopped revision ${revisionId} still has an audit credential.`);
 }
 
-export async function expectNoRuntimeAuditRows(stack: LocalSetup, revisionId: string) {
-  const count = await queryRevision(stack, revisionId, `SELECT count(*) ${runtimeRows};`);
-  assert.equal(count, "0", "the disabled audit switch allowed a runtime write");
+export function runtimeAuditRowCount(stack: LocalSetup, revisionId: string) {
+  return queryRevision(stack, revisionId, `SELECT count(*) ${runtimeRows};`);
 }
 
 export async function apiProcess(

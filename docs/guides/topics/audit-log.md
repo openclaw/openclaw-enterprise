@@ -93,13 +93,20 @@ If PostgreSQL loses confirmation of a result commit, `worker.error` reports
 ### Agent runtime activity
 
 Enable [Control Plane audit](../../reference/settings/production.md#control-plane-audit)
-on a Helm installation with managed Gateway routing. Deploy the Agent revision
-and send a message as usual. Compute loads the OCE plugin in the Gateway and
-gives it a credential for that revision. The Agent audit API returns the
-saved records with `event` set to `runtime_activity`. An audited revision
-requires the `oce-runtime-audit` plugin. Compute reports a configuration
-error if the revision disables plugins or blocks this plugin. If startup
-reports missing audit support, select a current OCE Gateway image.
+on a Helm installation with managed Gateway routing. OCE supplies the
+`oce-runtime-audit` plugin and a credential for each Agent revision whose
+Gateway runs on the control cluster. A configuration that disables this
+plugin prevents setup. If startup reports missing audit support, select
+a current OCE Gateway image.
+
+When you change the switch, the worker updates affected Gateways through
+maintenance. Kubernetes restarts each Gateway with the same Agent revision
+and chat history. This can interrupt a turn. Until the restart finishes,
+a chat request can fail or use the previous setting. After you enable audit,
+send a message and check its turn in the Agent audit API. If the record is missing, check the
+maintenance result. Maintenance requires the original deployer's permission
+to deploy the Agent. If maintenance fails permanently, correct the cause and
+deploy the Agent. The API uses `runtime_activity` for the following records.
 
 | Action                                     | What the Gateway observed                                                                                             |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
@@ -112,26 +119,21 @@ reports missing audit support, select a current OCE Gateway image.
 | `openclaw.runtime.model_call.completed`    | Embedded OpenClaw reported the result of the call. The same `modelCallId` links the two records.                      |
 | `openclaw.runtime.model_response.observed` | The Codex connection reported a provider response. `responseIdHash` identifies the response without storing its text. |
 
-Use `sessionId` and `turnId` together to find records for a run. OpenClaw can
-reuse a run ID during recovery. Each new dispatch needs a new admission record.
-A missing result leaves the outcome unknown. If an ID contains spaces, exceeds
-256 characters, or fails an audit format check, OCE uses its hash. If the
-session or message ID needs a hash, OCE omits the message link. A hashed
-turn ID still works with a message link. When a turn includes `details.messageId`, you can
-[open its saved user message](#open-the-message-for-a-turn).
+Find a run by `sessionId` and `turnId`. OpenClaw can reuse a run ID during
+recovery. Each dispatch needs its own admission record. A missing result leaves
+the outcome unknown. OCE uses a hash for IDs that contain spaces, exceed 256
+characters, or fail an audit format check. The [message link](#open-the-message-for-a-turn)
+requires the original session ID and message ID. It works with a hashed turn ID.
 
-Dedicated OpenClaw reports the turn through its Gateway. Its worker does not
-report individual model calls on that connection. Codex can return a response
-after one or more attempts. Its response record gives no count of failed or
-retried attempts. Embedded OpenClaw reports calls that it starts. A provider
-can retry within one call.
+Dedicated OpenClaw reports the turn. Individual model calls stay in the worker.
+Codex reports model responses. Requests that fail before a response can be
+missing. Embedded OpenClaw reports model calls. A provider can retry within
+one call. The audit API cannot give an exact attempt count.
 
 The Gateway waits up to two seconds for the control plane to confirm a turn
 admission. If the write fails or the confirmation is missing, the Gateway
-stops the turn before it sends the work to the agent. Check the control plane
-and [audit storage](#manage-audit-storage) if new chat requests fail. An
-admission record means the control plane accepted the request. Check the turn
-result to find out how the work ended.
+stops the turn. Check the control plane and [audit storage](#manage-audit-storage)
+if new chat requests fail.
 
 The Gateway can keep up to 256 other events on local disk. It retries delivery
 after a restart in the same Pod. If the queue is full, the plugin warns and

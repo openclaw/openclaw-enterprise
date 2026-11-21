@@ -1311,6 +1311,66 @@ export class PostgresWorkQueue {
     return row.withdrawal ?? undefined;
   }
 
+  /** Apply a changed audit setting to serving Gateways through ordinary authorized maintenance. */
+  async scheduleGatewayAuditMaintenance(options: {
+    readonly compute: { readonly id: string; readonly implementation: string };
+    readonly enabled: boolean;
+    readonly includeEmbedded: boolean;
+  }): Promise<void> {
+    // Inspect work history only for a serving revision whose enrollment differs from the setting.
+    // Repeating this check catches deployments completed by an outgoing worker during an upgrade.
+    const insert = `WITH affected AS MATERIALIZED (
+      SELECT revision.id, revision.agent_id, revision.namespace_id,
+        'agent_revision:' || revision.id || ':maintenance:' AS prefix
+      FROM occ.agents AS agent
+      JOIN occ.namespaces AS ns ON ns.id = agent.namespace_id
+      JOIN occ.agent_revisions AS revision ON (revision.namespace_id, revision.agent_id, revision.id)
+        = (agent.namespace_id, agent.id, agent.active_revision_id)
+      LEFT JOIN occ.gateway_runtime_audit_grants AS enrollment
+        ON (enrollment.namespace_id, enrollment.agent_id, enrollment.revision_id)
+        = (revision.namespace_id, revision.agent_id, revision.id)
+      WHERE ns.status = 'ready' AND agent.status = 'active' AND agent.desired_runtime_state = 'running'
+        AND (enrollment.revision_id IS NULL) = $1
+        AND revision.admitted_spec #>> '{compute,id}' = $2
+        AND revision.admitted_spec #>> '{compute,implementation}' = $3
+        AND revision.admitted_spec #>> '{harness,id}' IN ('openclaw', 'codex')
+        AND (revision.admitted_spec #>> '{harness,mode}' = 'dedicated'
+          OR ($4 AND revision.admitted_spec #>> '{harness,mode}' = 'embedded'))
+    )
+    INSERT INTO occ.controller_work (idempotency_key, namespace_id, agent_id, revision_id,
+      actor_id, state, available_at, created_at, updated_at)
+    SELECT revision.prefix || (COALESCE(previous.bucket, 0) + 1)::text, revision.namespace_id,
+      revision.agent_id, revision.id, deployment.actor_id, 'queued', now(), now(), now()
+    FROM affected AS revision
+    JOIN occ.controller_work AS deployment ON deployment.idempotency_key = 'agent_revision:' || revision.id || ':reconcile'
+      AND (deployment.namespace_id, deployment.agent_id, deployment.revision_id)
+        = (revision.namespace_id, revision.agent_id, revision.id)
+    LEFT JOIN LATERAL (
+      SELECT state, reason_code, substring(idempotency_key FROM ':maintenance:([0-9]+)$')::numeric AS bucket
+      FROM occ.controller_work
+      WHERE namespace_id = revision.namespace_id AND agent_id = revision.agent_id
+        AND revision_id = revision.id AND idempotency_key ~ ('^' || revision.prefix || '(0|[1-9][0-9]*)$')
+      ORDER BY length(idempotency_key) DESC, idempotency_key DESC LIMIT 1
+    ) AS previous ON true
+    WHERE deployment.state = 'succeeded' AND deployment.reason_code IN ('REVISION_ACTIVATED', 'REVISION_ALREADY_ACTIVE')
+      AND (previous.bucket IS NULL OR (previous.state = 'succeeded' AND previous.reason_code = 'REVISION_ALREADY_ACTIVE'))
+      AND NOT EXISTS (
+        SELECT 1 FROM occ.controller_work AS pending
+        WHERE pending.namespace_id = revision.namespace_id AND pending.agent_id = revision.agent_id
+          AND pending.${PENDING_WORK_PREDICATE} AND pending.revision_id IS NOT NULL
+          AND pending.idempotency_key = 'agent_revision:' || pending.revision_id || ':reconcile'
+      )
+    ORDER BY revision.id LIMIT 8
+    ON CONFLICT (idempotency_key) DO NOTHING RETURNING *`;
+    const { compute, enabled, includeEmbedded } = options;
+    const args = [enabled, compute.id, compute.implementation, includeEmbedded];
+    if (this.controlPlaneAuditEnabled) {
+      await this.client.query(enqueueWithAuditSql(insert, 5), [...args, null]);
+    } else {
+      await this.client.query(insert, args);
+    }
+  }
+
   /** Resume the maintenance chain interrupted by Git expiry, even after a clock adjustment. */
   async latestRevisionMaintenanceKey(owner: RepositoryRevisionOwner): Promise<string | undefined> {
     const { namespaceId, agentId, revisionId } = owner;

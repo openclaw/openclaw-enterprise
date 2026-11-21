@@ -26,7 +26,7 @@ import { createStepRecorder, log, workDirectory } from "./first-agent-smoke/proc
 import {
   apiProcess,
   expectNoRuntimeAuditGrant,
-  expectNoRuntimeAuditRows,
+  runtimeAuditRowCount,
   expectPersistedRuntimeAudit,
   checkMessageDisclosure,
   clusterName,
@@ -49,7 +49,9 @@ import {
   proveCodexAuditInterruptions,
   readLogs,
   runFirstAgent,
+  startAuditSwitchChat,
   stopAgent,
+  waitForAuditMode,
 } from "./first-agent-smoke/agents.ts";
 import {
   configureSmokeInstallation,
@@ -278,12 +280,30 @@ async function smoke() {
         "the API restarted during Gateway recovery",
       );
     });
-    await smokeStep("audit-disabled", async () => {
-      await stopAgent(stack, embedded.agent);
+    await smokeStep("audit-switch", async () => {
+      const chats = await Promise.all([
+        startAuditSwitchChat(
+          stack,
+          embedded.agent,
+          embeddedRevision,
+          embeddedReader,
+          "embedded-openclaw",
+        ),
+        startAuditSwitchChat(stack, codex.agent, codexRevision, codexReader, "codex"),
+      ]);
+      await stopAgent(stack, control.agent);
       await setLocalSetupAudit(stack, false);
-      const unauditedRevision = await deployAgent(stack, embedded.agent);
-      await chatTurn(stack, embedded.agent, unauditedRevision);
-      await expectNoRuntimeAuditRows(stack, unauditedRevision);
+      await Promise.all(chats.map((chat) => chat.whileDisabled()));
+
+      // The control Agent starts its new revision while logging is off.
+      const revisionId = await deployAgent(stack, control.agent);
+      await chatTurn(stack, control.agent, revisionId);
+      assert.equal(await runtimeAuditRowCount(stack, revisionId), "0");
+      await setLocalSetupAudit(stack, true);
+      await Promise.all(chats.map((chat) => chat.afterEnable()));
+      const controlReader = await allowAgentAuditRead(stack, control.agent, adminPassword);
+      await waitForAuditMode(stack, control.agent, revisionId, "codex", true);
+      await chatCodexWithAudit(stack, control.agent, revisionId, controlReader.readAudit);
     });
     assert.equal(auditFailures.length, 0, auditFailures.join("\n"));
   } catch (error) {

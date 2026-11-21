@@ -23,6 +23,7 @@ import {
   kubectl,
   modelEvents,
   podList,
+  runtimeAuditRowCount,
   signInConsole,
   wireField,
   withRefusedTurnWrite,
@@ -143,23 +144,27 @@ export interface GatewayPod {
   pod: string;
 }
 
-export async function readyGateway(
+async function readyGatewayPods(
   stack: KubernetesAccess,
   agentId: string,
   revisionId: string,
-): Promise<GatewayPod> {
+): Promise<Pod[]> {
   const pods = await agentPods(stack, agentId);
-  const gateways = pods.filter(
+  return pods.filter(
     (pod) =>
       pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway" &&
       mountsGatewayRevision(pod, agentId, revisionId) &&
       pod.status?.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
   );
-  assert.equal(
-    gateways.length,
-    1,
-    `expected one Ready gateway Pod for ${revisionId}, found ${gateways.length} of ${pods.length} Agent Pods`,
-  );
+}
+
+export async function readyGateway(
+  stack: KubernetesAccess,
+  agentId: string,
+  revisionId: string,
+): Promise<GatewayPod> {
+  const gateways = await readyGatewayPods(stack, agentId, revisionId);
+  assert.equal(gateways.length, 1, `expected one Ready Gateway Pod for ${revisionId}`);
   const { namespace, name } = gateways[0]!.metadata;
   return { namespace, pod: name };
 }
@@ -294,6 +299,7 @@ export async function allowAgentAuditRead(
 }
 
 type AuditReader = Awaited<ReturnType<typeof allowAgentAuditRead>>;
+type SmokeRuntime = "codex" | "embedded-openclaw" | "dedicated-openclaw";
 
 export async function assertAgentTurnAudit(
   readAudit: () => Promise<AgentAuditPage>,
@@ -538,19 +544,8 @@ async function checkSessionStarted(
   );
 }
 
-export async function checkHttpTurnAudit(
-  stack: KubernetesAccess & Pick<LocalSetup, "api" | "state">,
-  agent: SmokeAgent,
-  revisionId: string,
-  reader: AuditReader,
-  runtime: "codex" | "embedded-openclaw" | "dedicated-openclaw",
-  countModelRequests = async () =>
-    (await modelEvents()).filter(
-      ({ event, caller }) => event === "request" && caller === agent.label,
-    ).length,
-) {
+function openHttpChat(stack: KubernetesAccess & Pick<LocalSetup, "api">, agent: SmokeAgent) {
   const signal = stack.commandOptions?.signal;
-  const gateway = await readyGateway(stack, agent.id, revisionId);
   const user = `audit-http-${randomUUID()}`;
   const nonce = `OCE_SMOKE_${randomUUID()}`;
   const text = `Reply with exactly this nonce and no other text: ${nonce}`;
@@ -568,7 +563,7 @@ export async function checkHttpTurnAudit(
       },
     );
   }
-  async function send(responseNumber: number, inputs = [text]) {
+  async function send(inputs = [text]) {
     const result = await post(inputs);
     const choices = wireField(result, "choices");
     assert.ok(Array.isArray(choices) && choices.length === 1);
@@ -576,6 +571,35 @@ export async function checkHttpTurnAudit(
     assertAssistantReply(reply, nonce, agent.label);
     const turnId = wireField(result, "id");
     assert.ok(typeof turnId === "string" && turnId.length > 0);
+    return turnId;
+  }
+  return { nonce, text, send, post };
+}
+
+async function httpMessageIds(stack: KubernetesAccess, gateway: GatewayPod, sessionId: string) {
+  const session = await gatewayRpc(stack, gateway, "sessions.resolve", { sessionId });
+  assert.equal(wireField(session, "ok"), true);
+  const sessionKey = wireField(session, "key");
+  assert.ok(typeof sessionKey === "string" && sessionKey.length > 0);
+  return savedUserMessageIds(stack, gateway, sessionKey, sessionId);
+}
+
+export async function checkHttpTurnAudit(
+  stack: KubernetesAccess & Pick<LocalSetup, "api" | "state">,
+  agent: SmokeAgent,
+  revisionId: string,
+  reader: AuditReader,
+  runtime: SmokeRuntime,
+  countModelRequests = async () =>
+    (await modelEvents()).filter(
+      ({ event, caller }) => event === "request" && caller === agent.label,
+    ).length,
+) {
+  const gateway = await readyGateway(stack, agent.id, revisionId);
+  const chat = openHttpChat(stack, agent);
+  const { nonce, text } = chat;
+  async function send(responseNumber: number, inputs = [text]) {
+    const turnId = await chat.send(inputs);
     if (runtime !== "dedicated-openclaw") {
       await assertModelAnswered(nonce, agent.label, responseNumber);
     }
@@ -597,11 +621,7 @@ export async function checkHttpTurnAudit(
   const second = await send(2);
   assert.notEqual(first.details.turnId, second.details.turnId);
   assert.equal(second.details.sessionId, sessionId);
-  const session = await gatewayRpc(stack, gateway, "sessions.resolve", { sessionId });
-  assert.equal(wireField(session, "ok"), true);
-  const sessionKey = wireField(session, "key");
-  assert.ok(typeof sessionKey === "string" && sessionKey.length > 0);
-  const ids = await savedUserMessageIds(stack, gateway, sessionKey, sessionId);
+  const ids = await httpMessageIds(stack, gateway, sessionId);
   await assertAgentAuditMessage(reader, first, { messageId: ids.first, text });
   await assertAgentAuditMessage(reader, second, { messageId: ids.second, text });
   if (runtime !== "codex") {
@@ -629,13 +649,111 @@ export async function checkHttpTurnAudit(
     before > initialRequests,
     `${agent.label}: the model request counter missed the HTTP turns`,
   );
-  await withRefusedTurnWrite(stack, revisionId, "admitted", () => post([text], 500));
+  await withRefusedTurnWrite(stack, revisionId, "admitted", () => chat.post([text], 500));
   assert.equal(
     await countModelRequests(),
     before,
     `${agent.label}: refused turn reached the model`,
   );
   log(`${agent.label}: PostgreSQL refused admission before a model request`);
+}
+
+async function connectedNodeIds(stack: KubernetesAccess, gateway: GatewayPod) {
+  const nodes = wireField(await gatewayRpc(stack, gateway, "node.list", {}), "nodes");
+  assert.ok(Array.isArray(nodes));
+  return nodes
+    .filter((node) => wireField(node, "paired") === true && wireField(node, "connected") === true)
+    .map((node) => wireField(node, "nodeId"));
+}
+
+// A dedicated workspace reconnects only after the replacement Gateway is ready.
+export async function waitForAuditMode(
+  stack: KubernetesAccess,
+  agent: SmokeAgent,
+  revisionId: string,
+  runtime: SmokeRuntime,
+  enabled: boolean,
+) {
+  await waitFor(
+    `${agent.label} Gateway to apply audit=${enabled} on ${revisionId}`,
+    async () => {
+      const pods = await readyGatewayPods(stack, agent.id, revisionId);
+      const gateway = pods[0]?.spec?.containers?.find(({ name }) => name === "gateway");
+      const required = gateway?.env?.some(
+        ({ name, value }) => name === "OPENCLAW_REQUIRED_TURN_ADMISSION_PLUGIN" && !!value,
+      );
+      if (pods.length !== 1 || !gateway || Boolean(required) !== enabled) {
+        return { done: false };
+      }
+      if (runtime !== "embedded-openclaw") {
+        const { namespace, name } = pods[0]!.metadata;
+        const nodes = await connectedNodeIds(stack, { namespace, pod: name });
+        return { done: nodes.length > 0, state: { connectedNodes: nodes.length } };
+      }
+      return { done: true };
+    },
+    3 * minute,
+  );
+}
+
+export async function startAuditSwitchChat(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  revisionId: string,
+  reader: AuditReader,
+  runtime: SmokeRuntime,
+) {
+  const chat = openHttpChat(stack, agent);
+  async function auditedTurn() {
+    return assertAgentTurnAudit(reader.readAudit, {
+      label: agent.label,
+      revisionId,
+      runtimeSource: runtime === "codex" ? "codex" : "openclaw",
+      turnId: await chat.send(),
+    });
+  }
+  async function revisions() {
+    const path = `/namespaces/${stack.namespaceId}/agents/${agent.id}/revisions`;
+    const items = await stack.api("GET", path);
+    assert.ok(Array.isArray(items));
+    return items.map((item) => wireField(item, "id"));
+  }
+  const original = await auditedTurn();
+  const { sessionId, messageId } = original.details;
+  assert.ok(messageId);
+  const ids = await revisions();
+  let disabledTurnId: string;
+  return {
+    async whileDisabled() {
+      await waitForAuditMode(stack, agent, revisionId, runtime, false);
+      const before = await runtimeAuditRowCount(stack, revisionId);
+      disabledTurnId = await chat.send();
+      assert.equal(await runtimeAuditRowCount(stack, revisionId), before);
+    },
+    async afterEnable() {
+      await waitForAuditMode(stack, agent, revisionId, runtime, true);
+      // History must include both messages, including the one sent with audit off.
+      const gateway = await readyGateway(stack, agent.id, revisionId);
+      const history = await httpMessageIds(stack, gateway, sessionId);
+      assert.equal(history.first, messageId);
+      await assertAgentAuditMessage(reader, original, { messageId, text: chat.text });
+      const current = await auditedTurn();
+      assert.equal(current.details.sessionId, sessionId);
+      await checkSessionStarted(reader, revisionId, sessionId);
+      assert.deepEqual(await revisions(), ids);
+      // Re-enabling audit must not deliver records for a turn sent while it was off.
+      const page = await reader.readAudit();
+      assert.ok(
+        !page.events.some(
+          (event) =>
+            event.event === "runtime_activity" &&
+            "turnId" in event.details &&
+            event.details.turnId === disabledTurnId,
+        ),
+      );
+      log(`${agent.label}: audit stopped and resumed on the same revision and chat`);
+    },
+  };
 }
 
 export async function checkLinkedChat(
@@ -791,14 +909,7 @@ export async function proveCodexAuditInterruptions(
   );
   log(`${agent.label}: stored cancellation of the active turn`);
 
-  const connectedNodeIds = async () => {
-    const nodes = wireField(await rpc("node.list", {}), "nodes");
-    assert.ok(Array.isArray(nodes));
-    return nodes
-      .filter((node) => wireField(node, "paired") === true && wireField(node, "connected") === true)
-      .map((node) => wireField(node, "nodeId"));
-  };
-  const nodes = await connectedNodeIds();
+  const nodes = await connectedNodeIds(stack, gateway);
   assert.equal(nodes.length, 1, "expected the dedicated Codex workspace node");
   const [workspaceNodeId] = nodes;
   assert.ok(typeof workspaceNodeId === "string" && workspaceNodeId.length > 0);
@@ -873,7 +984,7 @@ export async function proveCodexAuditInterruptions(
   // A chat reads skills from that node, so wait for its live connection first.
   await waitFor(
     "the same Codex workspace node to reconnect to the restarted Gateway",
-    async () => ({ done: (await connectedNodeIds()).includes(workspaceNodeId) }),
+    async () => ({ done: (await connectedNodeIds(stack, gateway)).includes(workspaceNodeId) }),
     2 * minute,
   );
   await chatCodexWithAudit(stack, agent, revisionId, readAudit);

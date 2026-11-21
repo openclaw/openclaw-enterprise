@@ -2119,6 +2119,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       "findWorkAttempt",
       "hasRepositoryExecutionRedeployRequired",
       "repositoryExpiryState",
+      "scheduleGatewayAuditMaintenance",
       "latestRevisionMaintenanceKey",
       "countRefusedStopWaits",
     ]);

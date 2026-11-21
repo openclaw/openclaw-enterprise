@@ -136,8 +136,7 @@ HTTP request. The turn must finish. Its audit event must omit the message
 ID because the turn has two inputs. The message lookup must return HTTP 404.
 
 For embedded OpenClaw, the smoke test finds the model call and its result
-by turn ID. It then disables audit, deploys a new revision, and sends a
-message. The test expects a reply and zero runtime audit records for that revision.
+by turn ID.
 
 For dedicated Codex, the test matches the response ID from the test provider
 to its hash in the audit API. It repeats this check after the provider rejects
@@ -148,6 +147,14 @@ To test recovery, PostgreSQL temporarily rejects the record for the start of
 one Codex turn. The provider receives the request. The test restarts the Gateway
 in the same Pod, then restores database writes. It checks that the API returns
 the original audit ID once and that the interrupted turn has no recorded result.
+
+The test changes the Helm audit setting for running embedded OpenClaw and
+dedicated Codex Agents. It waits for each Gateway to apply the setting.
+With audit off, each Agent must answer in the same chat. The runtime record
+count must stay at its previous value. With audit on again, the reader must
+see the next turn and open the first message. The session ID and revision
+list must stay the same. A third Agent starts a revision while audit is off.
+That revision must start recording when the test enables audit.
 
 ## Files
 

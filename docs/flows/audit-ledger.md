@@ -229,24 +229,20 @@ copies and array are immutable.
 `packages/occ/src/index.ts:OpenClawController.listAgentAuditEvents`, and
 `apps/controller/src/composition/control-plane-audit.ts:postgresAgentAuditState`
 
-When audit is enabled, composition supplies the PostgreSQL audit reader. The
-reader checks that the selected Native IAM Driver uses the same State as the
-controller. OCC then opens a transaction and holds the caller's session.
-Native IAM checks for a direct `read_audit` binding for the human Principal, the
-Agent, and its Namespace. The same rule applies when Native IAM checks which
-grants an account or service-key manager must hold. The reader locks the active
-Agent, its ready Namespace, and the policy tables through commit. It checks the
-grant again under these locks. The query selects approved event types for that
-Agent and limits the time window and page size.
+The PostgreSQL audit reader requires enabled audit and a Native IAM Driver
+that shares State with OCC. OCC holds the caller's session in a transaction.
+Native IAM requires a direct `read_audit` binding for the human Principal,
+Agent, and Namespace. It applies the same rule to an account or service-key
+manager. The reader locks the active Agent, its ready Namespace, and policy
+tables through commit. It checks the grant again under lock. It selects
+approved events for the Agent and limits the time window and page size.
 
-State builds the page from named fields. It derives a public work ID from the
-stored key. Agent lifecycle records show the saved action. State includes a
-revision ID only when the revision belongs to the requested Agent. The same
-transaction appends
-`openclaw.audit.agent.read` with the actor, Agent, request ID, time window,
-projection version, and number of returned records. The API releases the
-page after it confirms commit. The next-page cursor is encrypted and bound
-to the same session, Agent, and window.
+State selects named fields and derives a public work ID from the stored key.
+Lifecycle records show the saved action. Each included revision ID belongs to
+the Agent. The transaction appends `openclaw.audit.agent.read` with the actor,
+Agent, request ID, time window, projection version, and record count. The API
+releases the page after commit. The encrypted cursor requires the same session,
+Agent, and window.
 
 ### 7. A Gateway reports work for one revision
 
@@ -257,6 +253,11 @@ With audit and managed Gateway routing, Helm creates a private HTTPS listener.
 Compute mounts the revision token and CA certificate, permits the connection,
 and stores the token hash in PostgreSQL. Compute revokes the grant after stop
 and deletes the Secret at retirement.
+
+`PostgresWorkQueue.scheduleGatewayAuditMaintenance` compares the setting with
+grants for running revisions. Each check queues up to eight updates.
+Maintenance checks the original deployer’s authority. Compute updates the
+Gateway Deployment. With audit off, Compute removes the grant after replacement.
 
 Compute requires `oce-runtime-audit` through `OPENCLAW_REQUIRED_TURN_ADMISSION_PLUGIN`.
 The launcher checks `build.json` for session and admission support before
@@ -337,6 +338,8 @@ a hash. The link requires the original session and message IDs.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:35: Trace audit setting changes for running Gateways. (authoring-run/2fce19b6-c5f9-489d-862a-df3396f922c2 - fb0f4dc39a9b736919375069d258bab9c7d98b75)
 
 - 2026-11-20 15:15: Trace session creation and the required turn admission write. (authoring-run/2fce19b6-c5f9-489d-862a-df3396f922c2 - e2d6da28746ecc1cc756a226c91bd0e360da2211)
 
