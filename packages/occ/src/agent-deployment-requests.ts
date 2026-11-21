@@ -10,9 +10,10 @@ import { canonicalProvisioningJson } from "./agent-provisioning.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import type { createConfigurationOperations } from "./configuration-operations.ts";
-import type {
+import {
   createAgentDeploymentAdmission,
-  FirstDeploymentGuard,
+  type DeploymentAdmissionDependencies,
+  type FirstDeploymentGuard,
 } from "./agent-deployment-admission.ts";
 import type { createDeploymentChannelChecks } from "./deployment-channels.ts";
 import {
@@ -48,7 +49,7 @@ interface DeploymentRequestDependencies {
   readonly admitDeployment: ReturnType<typeof createAgentDeploymentAdmission>;
 }
 
-export function createDeploymentRequests(dependencies: DeploymentRequestDependencies) {
+function createDeploymentRequests(dependencies: DeploymentRequestDependencies) {
   function normalizedHarnessOverrides(value: unknown): Readonly<Record<string, unknown>> {
     const overrides = value === undefined ? {} : asRecord(value);
     if (overrides === undefined) {
@@ -274,4 +275,27 @@ export function createDeploymentRequests(dependencies: DeploymentRequestDependen
   }
 
   return { recoverAgentFirstDeployment, deployAgentFirst, deployAgentWithAuthorization };
+}
+
+type AgentDeploymentDependencies = DeploymentAdmissionDependencies &
+  Pick<
+    DeploymentRequestDependencies,
+    "authority" | "channels" | "configuration" | "selectedCompute" | "transactions"
+  >;
+
+export function createAgentDeploymentOperations(
+  installationId: string,
+  dependencies: AgentDeploymentDependencies,
+) {
+  const admitDeployment = createAgentDeploymentAdmission(dependencies);
+  const { authority, channels, configuration, selectedCompute, transactions } = dependencies;
+  return createDeploymentRequests({
+    installationId,
+    authority,
+    transactions,
+    channels,
+    selectedCompute,
+    configuration,
+    admitDeployment,
+  });
 }

@@ -96,7 +96,7 @@ export interface FirstDeploymentGuard {
     { readonly prepared: PreparedDeploymentChannels } | { readonly error: unknown };
 }
 
-interface DeploymentAdmissionDependencies {
+export interface DeploymentAdmissionDependencies {
   readonly transactions: Pick<ControllerTransactions, "transact">;
   readonly authority: Pick<
     ControllerAuthority,
