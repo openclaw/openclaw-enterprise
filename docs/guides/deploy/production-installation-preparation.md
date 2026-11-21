@@ -71,6 +71,70 @@ Before installation, [check each digest](../../testing/docker.md#check-published
 on native hosts for every target architecture, without skips. Configure pull
 credentials only when the selected registry requires them.
 
+### Build a controller for native Git
+
+The current Enterprise Containers workflow does not embed these pins in the GHCR
+controller. For native Git, initialize the variables above, run the runtime build
+first, and derive its immutable reference from `runtime.json`:
+
+```bash
+if unset RUNTIME_IMAGE RUNTIME_DIGEST CONTROLLER_IMAGE &&
+  [[ -f "${OCC_IMAGE_METADATA:-}/runtime.json" ]] &&
+  RUNTIME_DIGEST="$(yq -p=json -e -r '."containerimage.digest" | select(test("^sha256:[a-f0-9]{64}$"))' "$OCC_IMAGE_METADATA/runtime.json")" &&
+  [[ ${RUNTIME_DIGEST:-} =~ ^sha256:[a-f0-9]{64}$ ]]; then
+  export RUNTIME_IMAGE="$OCC_IMAGE_REPOSITORY/runtime@$RUNTIME_DIGEST"
+else
+  unset RUNTIME_IMAGE RUNTIME_DIGEST CONTROLLER_IMAGE
+  printf '%s\n' 'Runtime metadata or digest is missing or invalid.' >&2
+  false
+fi
+```
+
+Qualify the selected image with the lane's [prepared dependencies](../../testing/docker.md#check-published-images).
+Override the runtime built by preparation. Build and push the controller only after
+smoke, preparation, suite and cleanup succeed. Use a fresh metadata directory for each attempt:
+
+```bash
+CONTROLLER_ATTEMPT_TAG="$OCC_IMAGE_TAG-${OCC_IMAGE_METADATA##*/}"
+RUNTIME_CHECK_STATUS=0
+[[ ${RUNTIME_DIGEST:-} =~ ^sha256:[a-f0-9]{64}$ ]] &&
+  docker run --rm --platform "$OCC_IMAGE_PLATFORM" "$RUNTIME_IMAGE" codex --version &&
+  node scripts/ci/prepare.ts --lane images-runtime-startup \
+    --state "$OCC_IMAGE_METADATA/runtime-check.json" --github-env "$OCC_IMAGE_METADATA/runtime-check.env" &&
+  (
+    set -a &&
+      . "$OCC_IMAGE_METADATA/runtime-check.env" &&
+      set +a &&
+      DOCKER_DEFAULT_PLATFORM="$OCC_IMAGE_PLATFORM" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_IMAGE" \
+        OPENCLAW_ENTERPRISE_CI_STATE="$OCC_IMAGE_METADATA/runtime-check.json" \
+        node --test tests/integration/runtime-image-startup.test.ts \
+          tests/integration/runtime-image-gateway-workspace.test.ts
+  ) || RUNTIME_CHECK_STATUS=$?
+[[ -f "$OCC_IMAGE_METADATA/runtime-check.json" ]] &&
+  node scripts/ci/cleanup.ts --state "$OCC_IMAGE_METADATA/runtime-check.json" || RUNTIME_CHECK_STATUS=1
+CONTROLLER_PUSH_DIGEST_PATTERN=': digest: (sha256:[a-f0-9]{64}) size: [0-9]+'
+if unset CONTROLLER_IMAGE CONTROLLER_PUSH_OUTPUT &&
+  (( RUNTIME_CHECK_STATUS == 0 )) &&
+  [[ ${RUNTIME_DIGEST:-} =~ ^sha256:[a-f0-9]{64}$ ]] &&
+  node scripts/build-controller.ts docker --platform "$OCC_IMAGE_PLATFORM" --target runtime \
+    --build-arg NODE_BASE_IMAGE="$NODE_BASE_IMAGE" \
+    --build-arg OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST="$RUNTIME_DIGEST" \
+    --build-arg OCC_INSPECTED_WORKSPACE_AGENT_DIGEST="$RUNTIME_DIGEST" \
+    --tag "$OCC_IMAGE_REPOSITORY/controller:$CONTROLLER_ATTEMPT_TAG" &&
+  CONTROLLER_PUSH_OUTPUT="$(docker push "$OCC_IMAGE_REPOSITORY/controller:$CONTROLLER_ATTEMPT_TAG")" &&
+  [[ "$CONTROLLER_PUSH_OUTPUT" =~ $CONTROLLER_PUSH_DIGEST_PATTERN ]]; then
+  export CONTROLLER_IMAGE="$OCC_IMAGE_REPOSITORY/controller@${BASH_REMATCH[1]}"
+else
+  unset RUNTIME_DIGEST RUNTIME_IMAGE CONTROLLER_IMAGE CONTROLLER_PUSH_OUTPUT
+  printf '%s\n' 'Runtime qualification or controller publication failed.' >&2
+  false
+fi
+```
+
+For distinct qualified images, pass each role's exact same-source manifest digest.
+Configure Gateway and Agent with their matching immutable image references, then
+run the normal controller/runtime image checks above against `CONTROLLER_IMAGE`.
+
 ### Build through a package registry mirror
 
 When building either image from source, Corepack downloads the pinned pnpm
