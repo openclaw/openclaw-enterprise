@@ -18,7 +18,7 @@ stops when Compute returns its existing lifecycle observation to OCC or the inde
 
 - Trigger: OCC reconciliation or an independently claimed Namespace or Agent revision lifecycle job.
 - Source: `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`,
-  `packages/occ/src/index.ts:OpenClawController.selectDriver`, and
+  `packages/occ/src/driver-registry.ts:DriverRegistry.selectDriver`, and
   `apps/controller/src/worker.ts:ControllerWorker`.
 - Assumptions: one server-owned Installation, exact selected Driver identities, established IAM
   authorization, a Namespace or saved Agent version, and an unchanged concrete ComputeDriver.
@@ -54,8 +54,8 @@ graph TD
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
 
 The [Driver package loading flow](driver-plugin-loading.md) resolves exact IAM,
-Configuration, and Compute identities. OCC and worker startup attach selected
-non-Compute lifecycle owners once before the first operation. The selected IAM
+Configuration, and Compute identities. During OCC and worker startup, the OCC Driver registry gives Compute its selected
+lifecycle hooks before publishing each new selection. The selected IAM
 Driver remains stable and loads current policy for every authorization decision.
 
 Trusted startup enforces the
