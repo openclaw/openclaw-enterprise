@@ -15169,6 +15169,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     namespace: KubernetesNamespaceAddress,
     service: ManagedKubernetesObject<"Service">,
     access: "operator" | "node" | "sandbox" = "operator",
+    publishUserRoutes = true,
   ): ManagedKubernetesObject<"HTTPRoute"> | undefined {
     const routing = this.options.gatewayRouting;
     if (routing === undefined) {
@@ -15245,7 +15246,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                   access,
                   "Exact",
                 ),
-                ...(access === "operator" && this.getGatewayBrowserEndpoint(revision) !== undefined
+                ...(access === "operator" &&
+                publishUserRoutes &&
+                this.getGatewayBrowserEndpoint(revision) !== undefined
                   ? [
                       this.gatewayRootRouteRule(
                         service,
@@ -15358,7 +15361,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     revision: AgentRevision,
     ownership: Ownership,
     namespace: KubernetesNamespaceAddress,
-    publishAgentRoutes = true,
+    publishUserRoutes = true,
   ): Promise<void> {
     if (this.options.gatewayRouting === undefined) {
       return;
@@ -15369,7 +15372,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       return;
     }
     const chatEndpoint = this.getChatCompletionsEndpoint(revision);
-    if (publishAgentRoutes && chatEndpoint.status === "available") {
+    if (publishUserRoutes && chatEndpoint.status === "available") {
       const chatName = `chat-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`;
       const chatOwnership = { ...ownership, revisionId: revision.id };
       const chatService = this.service(chatName, chatOwnership, namespace, {
@@ -15441,11 +15444,16 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         namespace,
       );
     }
-    if (publishAgentRoutes) {
-      const route = this.gatewayRoute(revision, ownership, namespace, service);
-      if (route !== undefined) {
-        await this.reconcile(route, ownership, namespace);
-      }
+    const route = this.gatewayRoute(
+      revision,
+      ownership,
+      namespace,
+      service,
+      "operator",
+      publishUserRoutes,
+    );
+    if (route !== undefined) {
+      await this.reconcile(route, ownership, namespace);
     }
     if (this.options.runtime === undefined || revision.harness.mode !== "dedicated") {
       return;

@@ -65,6 +65,7 @@ import {
   options,
   digest,
   gatewayRouting,
+  routedGatewayConfiguration,
   routedOptions,
   routedRevision,
   admitRevisionHarness,
@@ -958,8 +959,67 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
     context,
     revision: stagedRevision,
   });
+  const routedGateway = routedGatewayConfiguration();
+  revision.configuration = {
+    ...revision.configuration,
+    gateway: {
+      ...revision.configuration.gateway,
+      ...routedGateway,
+      auth: {
+        ...routedGateway.auth,
+        trustedProxy: {
+          ...routedGateway.auth.trustedProxy,
+          ...revision.configuration.gateway.auth.trustedProxy,
+        },
+      },
+      controlUi: { enabled: true, allowedOrigins: ["https://agent.example.test"] },
+    },
+  };
+  assert.ok(driver.getGatewayBrowserEndpoint(revision));
+  const chatName = `chat-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
+  const createSetup = driver.nodeEnrollment.createSetup.bind(driver.nodeEnrollment);
+  driver.nodeEnrollment.createSetup = async (operatorUrl, nodeUrl, signal) => {
+    const route = objects.get(key("HTTPRoute", gatewayName));
+    assert.ok(route, "node enrollment needs the authenticated operator route");
+    assert.equal(operatorUrl, driver.getGatewayEndpoint(revision));
+    assert.equal(nodeUrl, `${operatorUrl}/node`);
+    assert.equal(route.spec.parentRefs[0].sectionName, "https");
+    assert.equal(objects.has(key("SecurityPolicy", gatewayName)), false);
+    assert.equal(
+      route.spec.rules.some((rule) =>
+        rule.matches.some(({ path }) => path.value.startsWith("/native-browser/")),
+      ),
+      false,
+    );
+    const headers = route.spec.rules[0].filters.find(
+      ({ type }) => type === "RequestHeaderModifier",
+    ).requestHeaderModifier;
+    assert.ok(
+      headers.set.some(
+        ({ name, value }) => name === "x-occ-identity" && value === "occ-workspace-files",
+      ),
+    );
+    assert.ok(
+      headers.set.some(
+        ({ name, value }) => name === "x-openclaw-scopes" && value === "operator.admin",
+      ),
+    );
+    assert.ok(
+      headers.set.some(
+        ({ name, value }) =>
+          name === "x-real-ip" && value === "%DOWNSTREAM_DIRECT_REMOTE_ADDRESS_WITHOUT_PORT%",
+      ),
+    );
+    assert.ok(headers.remove.includes("authorization"));
+    assert.ok(headers.remove.includes("cookie"));
+    assert.equal(objects.has(key("HTTPRoute", chatName)), false);
+    events.push("node-setup-route");
+    return createSetup(operatorUrl, nodeUrl, signal);
+  };
   assert.doesNotThrow(() => driver.validateExecutionAdmission(revision, selectedOwner));
   assert.equal((await prepare()).ready, false);
+  assert.equal(objects.has(key("HTTPRoute", gatewayName)), true);
+  assert.equal(objects.has(key("HTTPRoute", chatName)), false);
   markReady(gatewayName);
 
   // Proxy and network readiness do not allow launch while the idle Sandbox cannot run setup.
@@ -990,7 +1050,12 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
   assert.equal(prepared.preparedForCredentialActivation, true);
   assert.ok(events.includes("workspace-setup"), "the ready Sandbox must initialize its workspace");
   assert.equal(started, false);
-  assert.deepEqual(events.slice(0, 3), ["deploy-proxy", "provision-idle", "configure-proxy"]);
+  assert.deepEqual(events.slice(0, 4), [
+    "node-setup-route",
+    "deploy-proxy",
+    "provision-idle",
+    "configure-proxy",
+  ]);
   assert.ok(events.indexOf("configure-proxy") < events.indexOf("network-status"));
   assert.ok(events.indexOf("network-status") < events.indexOf("apply-network"));
   assert.ok(events.indexOf("apply-network") < events.indexOf("proxy-ready"));
@@ -998,7 +1063,8 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
   assert.ok(events.indexOf("workspace-setup") < events.lastIndexOf("prepare-launch"));
   assert.ok(events.lastIndexOf("network-status") < events.lastIndexOf("prepare-launch"));
   assert.ok(events.lastIndexOf("proxy-status") < events.lastIndexOf("prepare-launch"));
-  assert.equal(objects.has(key("HTTPRoute", gatewayName)), false);
+  assert.equal(objects.has(key("HTTPRoute", gatewayName)), true);
+  assert.equal(objects.has(key("HTTPRoute", chatName)), false);
   assert.equal(events.filter((event) => event === "provision-idle").length, 1);
 
   // Activation starts the Harness, but cannot publish until ordinary Harness and node readiness.
@@ -1007,7 +1073,8 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
   });
   assert.equal(started, true);
   assert.ok(events.indexOf("workspace-setup") < events.indexOf("activate"));
-  assert.equal(objects.has(key("HTTPRoute", gatewayName)), false);
+  assert.equal(objects.has(key("HTTPRoute", gatewayName)), true);
+  assert.equal(objects.has(key("HTTPRoute", chatName)), false);
   state.providerPod = readyNativeHarnessPod(namespace, workloadLabels);
   state.connected = true;
   assert.equal((await prepare()).ready, false, "the Gateway must apply the node binding");
@@ -1018,6 +1085,14 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
   assert.equal((await prepare()).ready, true);
   await driver.activateRevision(revision, context);
   assert.equal(objects.has(key("HTTPRoute", gatewayName)), true);
+  assert.equal(objects.has(key("HTTPRoute", chatName)), true);
+  assert.ok(
+    objects
+      .get(key("HTTPRoute", gatewayName))
+      .spec.rules.some((rule) =>
+        rule.matches.some(({ path }) => path.value.startsWith("/native-browser/")),
+      ),
+  );
 
   // Stop removes the Harness before its target-bound Proxy deployment. A real Proxy failure
   // retains only the target ID so a later ordinary Stop can retry the removal.

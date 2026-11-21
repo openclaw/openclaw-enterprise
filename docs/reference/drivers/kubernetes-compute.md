@@ -172,7 +172,8 @@ candidates (including one Ready and one unready), or a single unready candidate
 leave preparation at `ready: false`. For a staged credential revision, Compute
 can report `preparedForCredentialActivation` after preparing an idle target and fresh launch inputs.
 Worker selects the revision and authorizes the source before activation starts
-the Harness. Compute publishes the Agent route after the Harness is serving and
+the Harness. The authenticated Gateway operator route is available during preparation
+for node enrollment; Compute publishes user chat and delegated browser routes only after the Harness is serving and
 the node is ready. Staged managed-credential replacement is unsupported. Other
 unready revisions cannot activate. Pods with a valid
 deletion timestamp, in another namespace, or with another Agent ID, Agent revision ID, or
