@@ -8,7 +8,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import {
-  backendDefinition,
+  apiKeyPath,
   backendId,
   serviceAccountDriverId,
   workspaceId,
@@ -438,10 +438,9 @@ export function registerRevisionSnapshotCase(revisionTest: RevisionTest<Snapshot
   revisionTest(
     "revision dispatch never substitutes a later ChatGPT credential or reconfigured Backend for its admitted snapshot",
     async (fixture) => {
-      const provider = backendDefinition();
       const account = await boundAccount(fixture, "credential-replaced");
       const { owner, candidate } = await fixture.admitInitialRevision("credential-replaced", {
-        agent: { executionMode: "dedicated", serviceAccountId: account.id, backendId: provider.id },
+        agent: { executionMode: "dedicated", serviceAccountId: account.id, backendId },
       });
       await fixture.state.transact((unit) =>
         unit.serviceAccounts.updateCredential(fixture.namespace.id, account.id, {
@@ -457,7 +456,7 @@ export function registerRevisionSnapshotCase(revisionTest: RevisionTest<Snapshot
           agent: {
             executionMode: "dedicated",
             serviceAccountId: workspaceAccount.id,
-            backendId: provider.id,
+            backendId,
           },
         },
       );
@@ -475,8 +474,10 @@ export function registerRevisionSnapshotCase(revisionTest: RevisionTest<Snapshot
         {
           providers: [
             {
-              ...provider,
-              configuration: { ...provider.configuration, workspaceId: changedWorkspace },
+              id: backendId,
+              type: "chatgpt",
+              configuration: { workspaceId: changedWorkspace, apiKeyPath },
+              drivers: { service_account: serviceAccountDriverId },
             },
           ],
         },
