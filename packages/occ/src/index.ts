@@ -346,7 +346,6 @@ import {
   AgentCredentialSourceBindingError,
   AgentDeletingError,
   BrowserAuthorizationError,
-  AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
   CallerStateDeniedError,
   DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
@@ -448,6 +447,24 @@ import {
 } from "./backends.ts";
 import type { TokenServiceInstance } from "./ports/token-service.ts";
 import type { AgentAuditSelection, AgentAuditState } from "./ports/agent-audit.ts";
+import {
+  createControllerAuthority,
+  type AuthorityFence,
+  type AuthorizationTarget,
+  type ControllerAuthority,
+  type AuthorizationSnapshot as DeployAgentAuthorization,
+  type ControllerAuthorizationOverride,
+} from "./controller-authority.ts";
+import {
+  createControllerTransactions,
+  type ControllerTransactions,
+} from "./controller-transactions.ts";
+import { exactAgent, exactNamespace, lockNamespace, namespaceIdentity } from "./resource-scope.ts";
+
+export type {
+  AuthorityFence,
+  AuthorizationSnapshot as DeployAgentAuthorization,
+} from "./controller-authority.ts";
 import {
   InMemoryPlatformState,
   type PlatformReadView,
@@ -821,9 +838,6 @@ export interface RuntimeLogReadGrant {
  */
 export type RuntimeLogReadAdmission = <T>(read: () => Promise<T>) => Promise<T>;
 
-/** Holds the caller's authority in a unit of work; throws when it is no longer current. */
-export type AuthorityFence = (state: PlatformUnitOfWork) => Promise<void>;
-
 export class AgentAuditDisclosureUnavailableError extends DependencyUnavailableError {
   constructor() {
     super("The Agent audit disclosure record is unavailable.");
@@ -864,9 +878,7 @@ export interface ControllerOptions {
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
   /** Installation configuration `iam`; `applyIAMConfiguration` writes it to IAM policy. */
   readonly iamConfiguration?: InstallationIAMConfiguration;
-  readonly authorize?: (
-    request: AuthorizationRequest,
-  ) => AuthorizationDecision | Promise<AuthorizationDecision>;
+  readonly authorize?: ControllerAuthorizationOverride;
   readonly now?: () => Date;
   readonly createId?: (kind: ResourceKind) => string;
   readonly state?: PlatformStateStore;
@@ -1150,11 +1162,6 @@ interface FirstDeploymentGuard {
     { readonly prepared: PreparedDeploymentChannels } | { readonly error: unknown };
 }
 
-export interface DeployAgentAuthorization {
-  readonly request: Readonly<AuthorizationRequest>;
-  readonly decision: Readonly<AuthorizationDecision>;
-}
-
 export interface AuthorizedAgentDeployment {
   readonly revision: Readonly<AgentRevision>;
   readonly authorization: Readonly<DeployAgentAuthorization>;
@@ -1260,30 +1267,6 @@ const HARNESS_LOST_CODES: ReadonlySet<string> = new Set<SandboxHarnessLostCode>(
   "SANDBOX_FAILED",
   "HARNESS_EXITED",
 ]);
-/**
- * A resource to authorize. For an `agent_revision`, OCC also names the Agent that owns it, taken
- * from stored state or from the route whose later lookups are scoped to that Agent; IAM then
- * applies that Agent's exact bindings to the revision (RFC-0026).
- */
-type AuthorizationTarget = ResourceRef & { readonly parentAgentId?: string };
-
-function authorizationResource({ kind, id, namespaceId }: AuthorizationTarget): ResourceRef {
-  return namespaceId === undefined ? { kind, id } : { kind, id, namespaceId };
-}
-
-/**
- * The Agent that owns the target. A sandbox policy's ID derives from its Agent's ID, which the
- * database enforces (migration 0058), so OCC supplies its parent without a lookup.
- */
-function authorizationParentAgentId(target: AuthorizationTarget): string | undefined {
-  if (target.kind === "agent_revision") {
-    return target.parentAgentId;
-  }
-  if (target.kind === "sandbox_policy" && /^sbp_[0-9a-f-]{36}$/.test(target.id)) {
-    return `agt_${target.id.slice(4)}`;
-  }
-  return undefined;
-}
 
 /**
  * A Credential Gateway must finish any effect of an aborted registration within
@@ -2199,11 +2182,10 @@ export class OpenClawController {
   private readonly identifier?: ControllerOptions["createId"];
   private readonly state: PlatformStateStore;
   private readonly agentAuditState: ControllerOptions["agentAuditState"];
-  private readonly transactionContext = new AsyncLocalStorage<PlatformUnitOfWork>();
-  private readonly authorityFence = new AsyncLocalStorage<AuthorityFence>();
+  private readonly authority: ControllerAuthority;
+  private readonly transactions: ControllerTransactions;
   private readonly requestAuditId = new AsyncLocalStorage<string>();
   private readonly provisioningContext = new AsyncLocalStorage<ClaimedWork>();
-  private readonly mutationRollbacks = new AsyncLocalStorage<(() => Promise<void>)[]>();
   private readonly shouldRecordOperations: boolean;
   private readonly nativeWorkers: NativeWorkerSupportSource | undefined;
   private readonly credentialProxyCapacity: CredentialProxyCapacity;
@@ -2290,6 +2272,19 @@ export class OpenClawController {
     this.clock = options.now ?? (() => new Date());
     this.identifier = options.createId;
     this.state = options.state ?? new InMemoryPlatformState();
+    this.transactions = createControllerTransactions({
+      readSnapshot: (work) => this.state.read(work),
+      runTransaction: (work) => this.state.transact(work),
+      installation: this.installation,
+      commitOutcomeUnknown: (error) => error instanceof PostgresCommitOutcomeUnknownError,
+    });
+    const authorizeOverride = this.authorization;
+    this.authority = createControllerAuthority({
+      selectedIAM: () => this.selectedDriver("iam"),
+      authorizeOverride: authorizeOverride
+        ? (request) => Reflect.apply(authorizeOverride, this, [request])
+        : undefined,
+    });
     if (options.authenticationStateEncryptionSecret) {
       this.deviceLoginCipher = deviceAuthorizationCipher(
         options.authenticationStateEncryptionSecret,
@@ -5692,7 +5687,7 @@ export class OpenClawController {
    * sign-out or account disable cannot commit in between (#2311).
    */
   withAuthorityFence<T>(fence: AuthorityFence, work: () => Promise<T>): Promise<T> {
-    return this.authorityFence.run(fence, work);
+    return this.authority.withAuthorityFence(fence, work);
   }
 
   /** Attach the server-generated HTTP request ID to any work this operation queues. */
@@ -5700,16 +5695,8 @@ export class OpenClawController {
     return this.requestAuditId.run(requestId, work);
   }
 
-  /**
-   * Fences a transaction that writes durable authority (an Owner binding or deploy-time grants)
-   * before it authorizes. It applies the caller's session fence, if any, then holds the IAM
-   * configuration lock shared. Applying a changed `iam` configuration takes that lock
-   * exclusively, so it commits either before this, and the authorization below sees it, or
-   * after this COMMIT.
-   */
-  private async holdAuthority(state: PlatformUnitOfWork): Promise<void> {
-    await this.authorityFence.getStore()?.(state);
-    await state.installations.holdIAMConfiguration("shared");
+  private holdAuthority(state: PlatformUnitOfWork): Promise<void> {
+    return this.authority.holdAuthority(state);
   }
 
   /**
@@ -6311,7 +6298,7 @@ export class OpenClawController {
         classificationRefused: async (use, rule) => {
           const execution = use.route.binding.execution;
           if (
-            this.transactionContext.getStore() !== undefined ||
+            this.transactions.hasContext() ||
             execution.installationId !== this.installation.id ||
             !isDeepStrictEqual(execution, use.installation.plan.execution)
           ) {
@@ -6357,7 +6344,7 @@ export class OpenClawController {
             options,
           ),
         authorizeSend: async (use, source, attempt, mintAuthorization, provider) => {
-          if (this.transactionContext.getStore()) {
+          if (this.transactions.hasContext()) {
             return { kind: "unavailable", code: "authority" };
           }
           const material = attempt.material;
@@ -6485,7 +6472,7 @@ export class OpenClawController {
   ): Promise<ProtectedEgressSource | EgressRefusal> {
     // Never borrow an enclosing controller/IAM snapshot. The two RPCs each establish a new
     // platform unit and the native IAM Driver loads policy within that exact fresh unit.
-    if (this.transactionContext.getStore() !== undefined) {
+    if (this.transactions.hasContext()) {
       return { kind: "unavailable", code: "authority" };
     }
     return this.transact((state) =>
@@ -8214,7 +8201,7 @@ export class OpenClawController {
     audit?: AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
     this.namespaceIdentity(input.namespaceId);
-    const ownsTransaction = this.transactionContext.getStore() === undefined;
+    const ownsTransaction = !this.transactions.hasContext();
     const rotation = await this.mutate(async (state) => {
       await this.authorize(principalId, "update", {
         kind: "credential_source",
@@ -11643,7 +11630,7 @@ export class OpenClawController {
     resolveHarness: HarnessResolver,
     auditEvent?: (result: Readonly<AuthorizedAgentDeployment>) => AuditEvent,
   ): Promise<Readonly<FirstDeploymentReceipt>> {
-    if (this.transactionContext.getStore() !== undefined) {
+    if (this.transactions.hasContext()) {
       throw new ResourceConflictError(
         "Guarded channel validation must run outside a controller transaction.",
       );
@@ -11752,7 +11739,7 @@ export class OpenClawController {
     if (driver?.validateCredentials === undefined) {
       return undefined;
     }
-    if (this.transactionContext.getStore() !== undefined) {
+    if (this.transactions.hasContext()) {
       throw new ResourceConflictError(
         "Channel validation must run outside a controller transaction.",
       );
@@ -13445,56 +13432,12 @@ export class OpenClawController {
 
   /** Stage resources, reconciliation intents, and audit evidence as one unit. */
   async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
-    const active = this.transactionContext.getStore();
-    if (active) {
-      return work(active);
-    }
-
-    const rollbacks: (() => Promise<void>)[] = [];
-    try {
-      return await this.state.transact(async (state) =>
-        this.transactionContext.run(state, () =>
-          this.mutationRollbacks.run(rollbacks, async () => {
-            const existing = await state.installations.getInstallation();
-            if (!existing) {
-              await state.installations.createInstallation(this.installation);
-            } else if (existing.id !== this.installation.id) {
-              throw new ScopeViolationError(
-                "The controller state belongs to another Installation.",
-              );
-            }
-            return work(state);
-          }),
-        ),
-      );
-    } catch (error) {
-      if (error instanceof PostgresCommitOutcomeUnknownError) {
-        throw error;
-      }
-      let rollbackFailed = false;
-      for (const rollback of rollbacks.reverse()) {
-        try {
-          await rollback();
-        } catch {
-          rollbackFailed = true;
-        }
-      }
-      if (rollbackFailed) {
-        throw new DependencyUnavailableError(
-          "A Driver could not roll back a failed resource mutation.",
-        );
-      }
-      throw error;
-    }
+    return this.transactions.transact(work);
   }
 
   /** Compensate a Driver side effect if the owning resource transaction fails. */
   registerRollback(rollback: () => Promise<void>): void {
-    const rollbacks = this.mutationRollbacks.getStore();
-    if (rollbacks === undefined || this.transactionContext.getStore() === undefined) {
-      throw new DependencyUnavailableError("The platform mutation transaction is unavailable.");
-    }
-    rollbacks.push(rollback);
+    this.transactions.registerRollback(rollback);
   }
 
   pendingOperations(): readonly Readonly<ReconciliationOperation>[] {
@@ -13504,89 +13447,36 @@ export class OpenClawController {
     return Object.freeze([]);
   }
 
-  private async authorize(
+  private authorize(
     principalId: string,
     action: AuthorizationRequest["action"],
     target: AuthorizationTarget,
     selected?: IAMDriver,
     authorize?: IAMDriver["authorize"],
   ): Promise<Readonly<DeployAgentAuthorization>> {
-    const authorization = await this.authorizationDecision(
-      principalId,
-      action,
-      target,
-      selected,
-      authorize,
-    );
-    if (!authorization.decision.allowed) {
-      throw new AuthorizationDeniedError(
-        isNonEmptyString(authorization.decision.reason)
-          ? authorization.decision.reason
-          : "The exact operation was denied.",
-        authorization.decision.evidence,
-        { action, resource: authorizationResource(target) },
-        principalId,
-      );
-    }
-    return authorization;
+    return this.authority.authorize(principalId, action, target, selected, authorize);
   }
 
-  /**
-   * Authorizes an Agent's own service principal and names it and the grant when denied. The
-   * resource comes from the Agent's stored bindings, so the denial records whether the caller
-   * may read both it and the Agent: HTTP names it only then, or when the request sent its ID
-   * (finding 2592). Secret read alone does not show that this Agent uses the Secret; the binding
-   * is part of the Agent record.
-   */
-  private async authorizeAgentPrincipal(
+  private authorizeAgentPrincipal(
     callerId: string,
     agent: Pick<Agent, "id" | "namespaceId" | "servicePrincipalId">,
     action: AuthorizationRequest["action"],
     resource: ResourceRef,
   ): Promise<void> {
-    try {
-      await this.authorize(agent.servicePrincipalId, action, resource);
-    } catch (error) {
-      if (
-        error instanceof AuthorizationDeniedError &&
-        !(error instanceof DependencyUnavailableError)
-      ) {
-        // An outage while checking the caller's reads only hides the ID.
-        const callerMayReadResource =
-          (await this.canRead(callerId, {
-            kind: "agent",
-            id: agent.id,
-            namespaceId: agent.namespaceId,
-          }).catch(() => false)) && (await this.canRead(callerId, resource).catch(() => false));
-        throw new AgentPrincipalAuthorizationError(
-          agent.servicePrincipalId,
-          action,
-          resource,
-          error.evidence,
-          { agentId: agent.id, callerMayReadResource },
-        );
-      }
-      throw error;
-    }
+    return this.authority.authorizeAgentPrincipal(callerId, agent, action, resource);
   }
 
-  private async readableListRows<Row extends { readonly id: string }>(
+  private readableListRows<Row extends { readonly id: string }>(
     principalId: string,
     namespaceId: string,
     kind: "agent" | "service_account" | "preset",
     rows: readonly Row[],
   ): Promise<readonly Row[]> {
-    const readable: Row[] = [];
-    for (const row of rows) {
-      if (await this.canRead(principalId, { kind, id: row.id, namespaceId })) {
-        readable.push(row);
-      }
-    }
-    return Object.freeze(readable);
+    return this.authority.readableListRows(principalId, namespaceId, kind, rows);
   }
 
-  private async canRead(principalId: string, target: AuthorizationTarget): Promise<boolean> {
-    return (await this.authorizationDecision(principalId, "read", target)).decision.allowed;
+  private canRead(principalId: string, target: AuthorizationTarget): Promise<boolean> {
+    return this.authority.canRead(principalId, target);
   }
 
   /**
@@ -13734,141 +13624,39 @@ export class OpenClawController {
   }
 
   private authorizationAuthority(principalId: string): IAMDriver {
-    if (!isNonEmptyString(principalId)) {
-      throw new CallerStateDeniedError("The acting identity is unavailable.");
-    }
-    try {
-      return this.selectedDriver("iam");
-    } catch {
-      throw new DependencyUnavailableError("The selected authorization Driver is unavailable.");
-    }
+    return this.authority.authorizationAuthority(principalId);
   }
 
-  private async authorizationDecision(
+  private authorizationDecision(
     principalId: string,
     action: AuthorizationRequest["action"],
     target: AuthorizationTarget,
-    selected: IAMDriver = this.authorizationAuthority(principalId),
+    selected?: IAMDriver,
     authorize?: IAMDriver["authorize"],
   ): Promise<Readonly<DeployAgentAuthorization>> {
-    const parentAgentId = authorizationParentAgentId(target);
-    const request: AuthorizationRequest = Object.freeze({
-      principalId,
-      action,
-      resource: Object.freeze(authorizationResource(target)),
-      ...(parentAgentId === undefined ? {} : { parentAgentId }),
-    });
-    let decision: AuthorizationDecision;
-    try {
-      decision = this.authorization
-        ? await this.authorization(request)
-        : await Reflect.apply(authorize ?? selected.authorize, selected, [request]);
-    } catch {
-      throw new DependencyUnavailableError(
-        "The selected authorization Driver could not verify the operation.",
-      );
-    }
-    const snapshotIds = (entries: unknown): readonly string[] | undefined => {
-      if (!Array.isArray(entries)) {
-        return undefined;
-      }
-      const result: string[] = [];
-      const length = entries.length;
-      for (let index = 0; index < length; index += 1) {
-        if (!Object.prototype.hasOwnProperty.call(entries, index)) {
-          return undefined;
-        }
-        const id: unknown = entries[index];
-        if (!isNonEmptyString(id)) {
-          return undefined;
-        }
-        result.push(id);
-      }
-      return Object.freeze(result);
-    };
-    const allowed = decision?.allowed;
-    const reason = decision?.reason;
-    const driverId = decision?.driverId;
-    const evidence = decision?.evidence;
-    const identityId = evidence?.identityId;
-    const groupIds = snapshotIds(evidence?.groupIds);
-    const bindingIds = snapshotIds(evidence?.bindingIds);
-    const roleIds = snapshotIds(evidence?.roleIds);
-    const restrictionIds = snapshotIds(evidence?.restrictionIds);
-    if (
-      typeof allowed !== "boolean" ||
-      typeof reason !== "string" ||
-      !isNonEmptyString(driverId) ||
-      !evidence ||
-      (identityId !== undefined && !isNonEmptyString(identityId)) ||
-      !groupIds ||
-      !bindingIds ||
-      !roleIds ||
-      !restrictionIds
-    ) {
-      throw new DependencyUnavailableError(
-        "The selected authorization Driver returned an invalid decision.",
-      );
-    }
-    if (driverId !== selected.id || this.authorizationAuthority(principalId) !== selected) {
-      throw new DependencyUnavailableError("The authorization decision belongs to another Driver.");
-    }
-    const snapshot = Object.freeze({
-      allowed,
-      reason,
-      driverId,
-      evidence: Object.freeze({
-        ...(identityId === undefined ? {} : { identityId }),
-        groupIds,
-        bindingIds,
-        roleIds,
-        restrictionIds,
-      }),
-    });
-    return Object.freeze({ request, decision: snapshot });
+    return this.authority.authorizationDecision(principalId, action, target, selected, authorize);
   }
 
-  private async exactNamespace(
+  private exactNamespace(
     state: PlatformReadView,
     namespaceId: string,
   ): Promise<Readonly<Namespace>> {
-    this.namespaceIdentity(namespaceId);
-    const namespace = await state.namespaces.findNamespace(namespaceId);
-    if (!namespace) {
-      throw new ScopeViolationError(
-        "The Namespace does not belong to the server-owned Installation.",
-      );
-    }
-    return namespace;
+    return exactNamespace(state, namespaceId);
   }
 
-  private async exactAgent(
+  private exactAgent(
     state: PlatformReadView,
     namespaceId: string,
     agentId: string,
   ): Promise<{ namespace: Readonly<Namespace>; agent: Readonly<Agent> }> {
-    const namespace = await this.exactNamespace(state, namespaceId);
-    const agent = await state.agents.findAgent(namespace.id, agentId);
-    if (!agent) {
-      throw new ScopeViolationError(
-        "The Agent does not belong to the exact Installation and Namespace.",
-      );
-    }
-    return { namespace, agent };
+    return exactAgent(state, namespaceId, agentId);
   }
 
-  private async lockNamespace(
+  private lockNamespace(
     state: PlatformUnitOfWork,
     namespaceId: string,
   ): Promise<Readonly<Namespace>> {
-    this.namespaceIdentity(namespaceId);
-    const namespace = await state.namespaces.lockNamespace(namespaceId);
-    if (!namespace) {
-      throw new ScopeViolationError(
-        "The Namespace does not belong to the server-owned Installation.",
-      );
-    }
-    return namespace;
+    return lockNamespace(state, namespaceId);
   }
 
   /**
@@ -16573,9 +16361,7 @@ export class OpenClawController {
   }
 
   private namespaceIdentity(namespaceId: string): void {
-    if (!isNonEmptyString(namespaceId)) {
-      throw new ScopeViolationError("The exact Namespace identity is missing.");
-    }
+    namespaceIdentity(namespaceId);
   }
 
   private serviceAccountIdentity(namespaceId: string, serviceAccountId: string): void {
@@ -17575,21 +17361,16 @@ export class OpenClawController {
     );
   }
 
-  private async read<T>(work: (state: PlatformReadView) => Promise<T>): Promise<T> {
-    const active = this.transactionContext.getStore();
-    return active ? work(active) : this.state.read(work);
+  private read<T>(work: (state: PlatformReadView) => Promise<T>): Promise<T> {
+    return this.transactions.read(work);
   }
 
   private requireIndependentMutation(operation: string): void {
-    // Async descendants can retain the borrowed unit after its transaction has ended.
-    if (this.transactionContext.getStore() !== undefined) {
-      throw new ResourceConflictError(`${operation} cannot run in a controller transaction.`);
-    }
+    this.transactions.requireIndependentMutation(operation);
   }
 
-  private async mutate<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
-    const active = this.transactionContext.getStore();
-    return active ? work(active) : this.transact(work);
+  private mutate<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
+    return this.transactions.transact(work);
   }
 
   private validateLifecycleScope(result: unknown, namespace: Readonly<Namespace>): void {
