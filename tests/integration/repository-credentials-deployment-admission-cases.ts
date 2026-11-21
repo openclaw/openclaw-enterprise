@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { selectFixtureRelease } from "../helpers/inspected-workspace-release.ts";
 import type { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -924,6 +925,7 @@ interface ProtectedPolicyDeploymentFixtures {
       readonly harness: "codex";
       readonly bindings: readonly RepositoryBindingSelection[];
       readonly installedProfile: "repository";
+      readonly inspected?: boolean;
       readonly gatewayVersion: string;
       readonly credentialGateway: true;
       readonly repositoryNetworkPolicyCeiling: readonly RepositoryNetworkGrant[];
@@ -939,7 +941,13 @@ interface ProtectedPolicyDeploymentFixtures {
 
 export function selectedRepositoryRegistry(
   contents: "read" | "write",
-  overrides: Readonly<Record<string, "read" | "write">> = {},
+  {
+    nativeGit,
+    overrides = {},
+  }: {
+    nativeGit?: "v1" | undefined;
+    overrides?: Readonly<Record<string, "read" | "write">>;
+  } = {},
 ) {
   return (registry: GitHubRepositoryRegistry): GitHubRepositoryRegistry => ({
     ...registry,
@@ -949,6 +957,7 @@ export function selectedRepositoryRegistry(
         namespaceId,
         profiles: ["github-repository"],
         permissions: { contents: overrides[repo.repositoryRef] ?? contents, metadata: "read" },
+        ...(nativeGit && { nativeGit }),
       })),
     })),
   });
@@ -958,45 +967,40 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
   protectedOpenShellComposition,
   seedRepositoryPolicy,
 }: ProtectedPolicyDeploymentFixtures): void {
-  async function setup(
+  async function scopedFixture(
     t: TestContext,
-    selected: RepositoryNetworkGrant,
-    bindings: readonly RepositoryBindingSelection[],
-    repositoryNetworkPolicyCeiling: readonly RepositoryNetworkGrant[],
-    configureRegistry: (registry: GitHubRepositoryRegistry) => GitHubRepositoryRegistry,
+    {
+      nativeGit,
+      bindings: configuredBindings,
+      ceiling,
+      configureRegistry = selectedRepositoryRegistry("read", { nativeGit }),
+    }: {
+      nativeGit?: "v1";
+      bindings?: readonly RepositoryBindingSelection[];
+      ceiling?: readonly RepositoryNetworkGrant[];
+      configureRegistry?: (registry: GitHubRepositoryRegistry) => GitHubRepositoryRegistry;
+    } = {},
   ) {
+    const selected = { repository: "example/selected", access: "read" } as const;
+    const writeGrant = { ...selected, access: "write" } as const;
+    const unselected = { repository: "example/project", access: "read" } as const;
+    const foreign = { repository: "example/foreign-project", access: "read" } as const;
+    const bindings = configuredBindings ?? [
+      { repositoryRef: "selected", profile: "github-repository" },
+    ];
     const f = await protectedOpenShellComposition(t, {
       harness: "codex",
       bindings,
       installedProfile: "repository",
       gatewayVersion: "0.1.8",
       credentialGateway: true,
-      repositoryNetworkPolicyCeiling,
+      repositoryNetworkPolicyCeiling: ceiling ?? [writeGrant, unselected, foreign],
       configureRegistry,
+      inspected: nativeGit === "v1",
     });
     const fixtureCompute = f.controller.selectedDriver("compute");
     const sandbox = f.controller.selectedDriver("sandbox");
     assert.ok(sandbox);
-    const validate = t.mock.fn<
-      NonNullable<ComputeDriver["validateProtectedRepositoryNetworkPolicy"]>
-    >((revision) => {
-      assert.ok(Object.isFrozen(revision));
-      assert.equal(revision.executionAdmission.mode, "protected");
-      assert.deepEqual(revision.sandboxPolicy?.repositoryNetworkPolicy?.grants, [selected]);
-    });
-    const credentialStatus = t.mock.fn(async () => ({ transportConfigured: true }));
-    const provisioned = t.mock.fn(async () =>
-      assert.fail("this admission test must never provision runtime credentials"),
-    );
-    // Control placement without an execution provider. The API still owns grant,
-    // authority, policy snapshot and revision admission.
-    Object.assign(fixtureCompute, {
-      admitRevision: () => undefined,
-      snapshotRuntimeInputs: () => undefined,
-      validateProtectedRepositoryNetworkPolicy: validate,
-      getAgentRuntimeCredentialStatus: credentialStatus,
-      provisionAgentRuntimeCredentials: provisioned,
-    });
     await f.state.transact((unit) =>
       unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
     );
@@ -1019,9 +1023,10 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       201,
     );
     const sourceId = model.id;
-    async function createSelectedAgent() {
+    async function createSelectedAgent(gatewayManagedMode?: boolean) {
       const agent = await f.createAgent({
         executionMode: "dedicated",
+        ...(gatewayManagedMode === undefined ? {} : { gatewayManagedMode }),
         repositoryBindings: [...bindings],
         harnessAuth: { method: "credential_source", sourceId },
         credentialSources: [{ sourceId }],
@@ -1043,13 +1048,142 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
     }
     return {
       f,
+      selected,
+      writeGrant,
+      unselected,
+      foreign,
       fixtureCompute,
       sandbox,
-      validate,
-      credentialStatus,
-      provisioned,
       createSelectedAgent,
+      sourceId,
+      bindings,
     };
+  }
+
+  test("an unpinned Compute cannot offer repository policy editing", async (t) => {
+    const { f, createSelectedAgent } = await scopedFixture(t, { nativeGit: "v1" });
+    const unqualified = await createSelectedAgent();
+    const path = `${f.collection}/${unqualified.id}/sandbox-policy/networking`;
+    assert.equal((await f.request("PATCH", path + "/editing", { enabled: true })).status, 200);
+    const { data: disabled } = checkedEnvelope(
+      await f.request("GET", path),
+      SandboxPolicyViewResponse,
+      200,
+    );
+    assert.equal(disabled.repositoryNetworkPolicySaveSupported, false);
+  });
+
+  test("a pinned unmanaged Gateway refuses the repository policy hint and first saves", async (t) => {
+    selectFixtureRelease(t);
+    const { f, selected, createSelectedAgent } = await scopedFixture(t, { nativeGit: "v1" });
+    const agent = await createSelectedAgent(false);
+    const path = `${f.collection}/${agent.id}/sandbox-policy/networking`;
+    assert.equal((await f.request("PATCH", path + "/editing", { enabled: true })).status, 200);
+    const read = async () =>
+      checkedEnvelope(await f.request("GET", path), SandboxPolicyViewResponse, 200).data;
+    const before = await read();
+    assert.equal(agent.gatewayManagedMode, false);
+    assert.ok(
+      before.repositoryNetworkPolicyCeiling.some(
+        ({ repository }) => repository === selected.repository,
+      ),
+    );
+    for (const repositoryNetworkPolicy of [[selected], []]) {
+      checkedEnvelope(
+        await f.request("PUT", path, {
+          expectedVersion: before.policy.version,
+          additions: [],
+          repositoryNetworkPolicy,
+        }),
+        ErrorResponse,
+        409,
+      );
+    }
+    assert.deepEqual((await read()).policy, before.policy);
+    assert.equal(before.repositoryNetworkPolicySaveSupported, false);
+  });
+
+  test("a saved repository grant selects native Git for its deployment only", async (t) => {
+    selectFixtureRelease(t);
+    const { f, selected, createSelectedAgent } = await scopedFixture(t, { nativeGit: "v1" });
+
+    for (const grants of [undefined, [], [selected]]) {
+      const agent = await createSelectedAgent();
+      const path = `${f.collection}/${agent.id}`;
+      if (grants) {
+        const policyPath = path + "/sandbox-policy/networking";
+        assert.equal(
+          (await f.request("PATCH", policyPath + "/editing", { enabled: true })).status,
+          200,
+        );
+        const { data: before } = checkedEnvelope(
+          await f.request("GET", policyPath),
+          SandboxPolicyViewResponse,
+          200,
+        );
+        assert.equal(before.repositoryNetworkPolicySaveSupported, true);
+        const { data: saved } = checkedEnvelope(
+          await f.request("PUT", policyPath, {
+            expectedVersion: before.policy.version,
+            additions: [],
+            repositoryNetworkPolicy: grants,
+          }),
+          SandboxPolicyResponse,
+          200,
+        );
+        assert.deepEqual(saved.repositoryNetworkPolicy, grants);
+      }
+      if (grants?.length) {
+        const changed = selectFixtureRelease(t, "sha256:" + "c".repeat(64));
+        checkedEnvelope(await f.request("POST", path + "/deploy"), ErrorResponse, 409);
+        assert.deepEqual((await f.request("GET", path + "/revisions")).data, []);
+        changed.mock.restore();
+      }
+      const reply = await f.request("POST", path + "/deploy");
+      if (grants?.length === 0) {
+        checkedEnvelope(reply, ErrorResponse, 409);
+        assert.deepEqual((await f.request("GET", path + "/revisions")).data, []);
+        continue;
+      }
+      const { data } = checkedEnvelope(reply, AgentRevisionResponse, 202);
+      const revision = await f.state.read((view) =>
+        view.revisions.findRevision(f.namespace.id, agent.id, data.id),
+      );
+      assert.equal(revision?.executionAdmission.version, grants ? 8 : 5);
+      assert.equal(
+        revision.egressPlan?.repositoryGitAuthorization,
+        grants ? "network-policy" : "online-request",
+      );
+      assert.deepEqual(revision.sandboxPolicy?.repositoryNetworkPolicy?.grants, grants);
+    }
+  });
+
+  function stubAdmissionCompute(
+    t: TestContext,
+    fixtureCompute: ComputeDriver,
+    selected: RepositoryNetworkGrant,
+  ) {
+    const validate = t.mock.fn<
+      NonNullable<ComputeDriver["validateProtectedRepositoryNetworkPolicy"]>
+    >((revision) => {
+      assert.ok(Object.isFrozen(revision));
+      assert.equal(revision.executionAdmission.mode, "protected");
+      assert.deepEqual(revision.sandboxPolicy?.repositoryNetworkPolicy?.grants, [selected]);
+    });
+    const credentialStatus = t.mock.fn(async () => ({ transportConfigured: true }));
+    const provisioned = t.mock.fn(async () =>
+      assert.fail("this admission test must never provision runtime credentials"),
+    );
+    // Control placement without an execution provider. The API still owns grant,
+    // authority, policy snapshot and revision admission.
+    Object.assign(fixtureCompute, {
+      admitRevision: () => undefined,
+      snapshotRuntimeInputs: () => undefined,
+      validateProtectedRepositoryNetworkPolicy: validate,
+      getAgentRuntimeCredentialStatus: credentialStatus,
+      provisionAgentRuntimeCredentials: provisioned,
+    });
+    return { validate, credentialStatus, provisioned };
   }
 
   const read = { repository: "example/selected", access: "read" } as const;
@@ -1068,7 +1202,7 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
     {
       name: "a selected read credential cannot use a Namespace-approved write on another repository",
       profile: "github-repository",
-      configure: selectedRepositoryRegistry("read", { project: "write" }),
+      configure: selectedRepositoryRegistry("read", { overrides: { project: "write" } }),
       ceiling: [read, other],
       selectedGrants: [read],
       requested: other,
@@ -1086,8 +1220,12 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
   ] as const) {
     test(scenario.name, async (t) => {
       const bindings = [{ repositoryRef: "selected", profile: scenario.profile }];
-      const { f, fixtureCompute, sandbox, credentialStatus, provisioned, createSelectedAgent } =
-        await setup(t, read, bindings, scenario.ceiling, scenario.configure);
+      const { f, fixtureCompute, sandbox, createSelectedAgent } = await scopedFixture(t, {
+        bindings,
+        ceiling: scenario.ceiling,
+        configureRegistry: scenario.configure,
+      });
+      const { credentialStatus, provisioned } = stubAdmissionCompute(t, fixtureCompute, read);
       fixtureCompute.validateProtectedRepositoryNetworkPolicy = () => {};
       fixtureCompute.admitsProtectedRepositoryNetworkPolicySave = () => true;
       sandbox.admitRepositoryNetworkPolicy = (_policy, network) => network.defaults;
@@ -1157,25 +1295,16 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
   }
 
   test("Deploy requires scoped Driver admission before preparing runtime credentials", async (t) => {
-    const selected = { repository: "example/selected", access: "read" } as const;
-    const writeGrant = { ...selected, access: "write" } as const;
-    const unselected = { repository: "example/project", access: "read" } as const;
-    const foreign = { repository: "example/foreign-project", access: "read" } as const;
-    const bindings = [{ repositoryRef: "selected", profile: "github-repository" }] as const;
-    const {
-      f,
-      fixtureCompute,
-      sandbox,
-      validate,
-      credentialStatus,
-      provisioned,
-      createSelectedAgent,
-    } = await setup(
+    const { f, selected, writeGrant, unselected, fixtureCompute, sandbox, createSelectedAgent } =
+      await scopedFixture(t);
+    Object.assign(sandbox, {
+      admitRepositoryNetworkPolicy: undefined,
+      validateProtectedRepositoryNetworkPolicy: undefined,
+    });
+    const { validate, credentialStatus, provisioned } = stubAdmissionCompute(
       t,
+      fixtureCompute,
       selected,
-      bindings,
-      [writeGrant, unselected, foreign],
-      selectedRepositoryRegistry("read"),
     );
     const agent = await createSelectedAgent();
     const path = `${f.collection}/${agent.id}`;
@@ -1383,10 +1512,17 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
         });
         repo.repositoryNetworkPolicyAllows = ({ grant }) =>
           pair.some((item) => item.repository === grant.repository);
-        fixtureCompute.admitsProtectedRepositoryNetworkPolicySave = ({ repositoryNetworkPolicy }) =>
-          isDeepStrictEqual(repositoryNetworkPolicy?.grants, pair);
+        const requests: (readonly RepositoryNetworkGrant[] | undefined)[] = [];
+        fixtureCompute.admitsProtectedRepositoryNetworkPolicySave = ({
+          repositoryNetworkPolicy,
+        }) => {
+          const grants = repositoryNetworkPolicy?.grants;
+          requests.push(grants);
+          return isDeepStrictEqual(grants, pair);
+        };
         try {
           await savedPolicyAgent(pair, [[], [unselected], [writeGrant]]);
+          assert.deepEqual(requests, [[], [unselected], [writeGrant], pair]);
         } finally {
           repo.resolveBindings = originalResolver;
           repo.repositoryNetworkPolicyAllows = originalAllows;

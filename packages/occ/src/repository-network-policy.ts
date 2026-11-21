@@ -41,6 +41,8 @@ export type RepositoryGrantPolicy = {
 };
 
 export type RepositoryPolicyResolution = RepositoryCredentialResolution & {
+  /** The selected registry permits deployment-scoped Git when the Agent saves an ACL. */
+  readonly nativeGit?: "v1";
   /** The network access of these resolved bindings. The Namespace ceiling is independent. */
   readonly selectedRepositoryNetworkGrants?: RepositoryNetworkPolicyCeiling;
 };
@@ -180,7 +182,16 @@ export async function readRepositoryEditTopology(
   ) {
     return undefined;
   }
-  return { harness, source };
+  return {
+    harness,
+    source,
+    placement: {
+      namespaceId,
+      agentId: agent.id,
+      gatewayManagedMode: agent.gatewayManagedMode,
+      configuration: values,
+    },
+  };
 }
 
 export function bindRepositoryPolicyAuthorization(current: () => IAMDriver) {
@@ -209,6 +220,7 @@ export function bindRepositoryPolicyAuthorization(current: () => IAMDriver) {
 
 export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: InstalledDriver) {
   const admit = compute.admitsProtectedRepositoryNetworkPolicySave;
+  const supportsPlacement = compute.supportsProtectedRepositoryNetworkPolicyPlacement;
   const validateFrozen = compute.validateProtectedRepositoryNetworkPolicy;
   if (typeof admit !== "function" || typeof validateFrozen !== "function") {
     return undefined;
@@ -236,6 +248,7 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
     ) => Reflect.apply(admitRepository, sandbox, [policy, network]),
   };
   return (
+    placement: NonNullable<ProtectedRepositoryNetworkPolicySaveContext["placement"]>,
     harness: HarnessDescriptor,
     source: ProtectedRepositoryNetworkPolicySaveContext["harnessCredentialSource"],
     resolution: RepositoryPolicyResolution,
@@ -253,6 +266,7 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
             authority?.unchanged() === true &&
             stillApproved?.() !== false &&
             compute.admitsProtectedRepositoryNetworkPolicySave === admit &&
+            compute.supportsProtectedRepositoryNetworkPolicyPlacement === supportsPlacement &&
             compute.validateProtectedRepositoryNetworkPolicy === validateFrozen &&
             sandbox.admitProtectedCodexArtifactPolicy === admitArtifacts &&
             sandbox.admitRepositoryNetworkPolicy === admitRepository &&
@@ -267,6 +281,16 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
     const fitsSelected = (grant: RepositoryNetworkGrant) =>
       selectedRepositoryGrantAllows(resolution.selectedRepositoryNetworkGrants, grant);
     const dedicated = { id: harness.id, version: harness.version, mode: "dedicated" } as const;
+    const { type, ownerCapability, driverId } = source;
+    const topology: ProtectedRepositoryNetworkPolicySaveContext = immutableCopy({
+      placement,
+      ...(resolution.nativeGit && { nativeGit: resolution.nativeGit }),
+      harness: dedicated,
+      sandboxDriverId: boundSandbox.id,
+      protectedDriver: owner.ref,
+      repositoryBindings: resolution.bindings,
+      harnessCredentialSource: { type, ownerCapability, driverId },
+    });
     const basePolicy = () =>
       defaultDeploymentSandboxPolicy(boundSandbox, version, true, dedicated, {
         repositoryCredentials: true,
@@ -290,15 +314,7 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
       }
       const assertApproved = () => assertCurrent(ownerUnchanged);
       assertApproved();
-      const { type, ownerCapability, driverId } = source;
-      const context: ProtectedRepositoryNetworkPolicySaveContext = immutableCopy({
-        harness: dedicated,
-        sandboxDriverId: boundSandbox.id,
-        protectedDriver: owner.ref,
-        repositoryBindings: resolution.bindings,
-        repositoryNetworkPolicy: policy,
-        harnessCredentialSource: { type, ownerCapability, driverId },
-      });
+      const context = immutableCopy({ ...topology, repositoryNetworkPolicy: policy });
       if (!approves(() => Reflect.apply(admit, compute, [context]))) {
         return undefined;
       }
@@ -315,7 +331,10 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
         }
         return approves(() => {
           assertCurrent();
-          const ready = basePolicy() !== undefined;
+          const ready =
+            basePolicy() !== undefined &&
+            (supportsPlacement === undefined ||
+              approves(() => supportsPlacement.call(compute, topology)));
           assertCurrent();
           return ready;
         });

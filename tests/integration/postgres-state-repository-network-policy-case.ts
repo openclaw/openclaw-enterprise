@@ -406,6 +406,39 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
   assert.deepEqual(protectedRead?.egressPlan, protectedRevision.egressPlan);
   assert.deepEqual(protectedRead?.sandboxPolicy?.repositoryNetworkPolicy, admitted);
 
+  // A deployment-scoped Git credential needs a finite admission and a nonempty,
+  // marked Sandbox policy in the same immutable revision.
+  const successor = protectedSuccessor(protectedRevision, installation.id);
+  const credentials = {
+    driver: { id: "test-repo", implementation: "test" },
+    deadlineWallMs: Date.now() + 600_000,
+    bindings: [
+      {
+        backendId: "backend",
+        repositoryRef: "project",
+        profile: "github-repository",
+        grant: { providerInstanceId: "provider", repositoryId: "123", grantId: "grant" },
+      },
+    ],
+  };
+  const native = {
+    ...successor,
+    executionAdmission: { version: 8, mode: "protected" } as const,
+    repositoryCredentials: credentials,
+    egressPlan: {
+      ...successor.egressPlan!,
+      repositoryGit: credentials,
+      repositoryGitAuthorization: "network-policy" as const,
+    },
+  };
+  await createRevision(native);
+  const network = await readStoredSpec(native.id);
+  assert.deepEqual(network.execution_admission, { ...native.executionAdmission, ...marker });
+  assert.equal(network.harness_auth.protectedExecutionVersion, 8);
+  const readNative = await readRevision(native.id);
+  assert.deepEqual(readNative?.egressPlan, native.egressPlan);
+  assert.deepEqual(readNative?.sandboxPolicy?.repositoryNetworkPolicy, admitted);
+
   const denyAll = { ...desired, version: desired.version + 1, repositoryNetworkPolicy: [] };
   // The user can withdraw existing grants even after losing the Sandbox Driver.
   const path = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
@@ -432,12 +465,32 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
     admitted,
   );
 
+  const probeId = `rev_${randomUUID()}`;
+  await assert.rejects(
+    insertStoredRevision(
+      { id: probeId, revision: native.revision + 1 },
+      {
+        ...network,
+        egress_plan: {
+          ...native.egressPlan,
+          execution: { ...native.egressPlan.execution, revisionId: probeId },
+        },
+        sandbox_policy: {
+          ...baseSnapshot,
+          version: denyAll.version,
+          repositoryNetworkPolicy: snapshotPolicy([]),
+        },
+      },
+    ),
+    { code: "23514", constraint: "agent_revisions_execution_admission" },
+  );
+
   const admittedDenyAll = snapshotPolicy([]);
   assert.ok(admittedDenyAll);
   const denyAllRevision: AgentRevision = {
     ...scopedUnprotectedRevision,
     id: `rev_${randomUUID()}`,
-    revision: protectedRevision.revision + 1,
+    revision: native.revision + 1,
     sandboxPolicy: { ...baseSnapshot, repositoryNetworkPolicy: admittedDenyAll },
   };
   // Even with the correct grants and identity, admission must use the saved version.

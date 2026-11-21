@@ -5805,7 +5805,9 @@ export class ControllerWorker {
         ((revision.executionAdmission.version === 6 &&
           revision.egressPlan?.repositoryGitAuthorization === "request-hook-observed") ||
           (revision.executionAdmission.version === 5 &&
-            revision.egressPlan?.repositoryGitAuthorization === "online-request")) &&
+            revision.egressPlan?.repositoryGitAuthorization === "online-request") ||
+          (revision.executionAdmission.version === 8 &&
+            revision.egressPlan?.repositoryGitAuthorization === "network-policy")) &&
         this.compute.activationOrder !== "beforeCommit" &&
         !observation.ready &&
         observation.heldForRepositoryGitMaterial === true &&
@@ -5948,6 +5950,18 @@ export class ControllerWorker {
         );
       }
       await this.compute.validateProtectedRepositoryNetworkPolicy(revision);
+      if (revision.executionAdmission.version === 8) {
+        const sandbox = this.sandbox;
+        if (
+          sandbox?.validateProtectedRepositoryNetworkPolicy === undefined ||
+          sandbox.id !== revision.sandboxDriverId
+        ) {
+          throw new DependencyUnavailableError(
+            "The selected Sandbox cannot enforce this repository network policy.",
+          );
+        }
+        sandbox.validateProtectedRepositoryNetworkPolicy(revision);
+      }
     }
   }
 
@@ -6795,7 +6809,9 @@ export class ControllerWorker {
           resolved.code === "REPOSITORY_GIT_ROUTE_PENDING" &&
           (activated.executionAdmission.version === 6 ||
             (activated.executionAdmission.version === 5 &&
-              activated.egressPlan?.repositoryGitAuthorization === "online-request"))
+              activated.egressPlan?.repositoryGitAuthorization === "online-request") ||
+            (activated.executionAdmission.version === 8 &&
+              activated.egressPlan?.repositoryGitAuthorization === "network-policy"))
         ) {
           // Re-enter normal preparation after custody can install material. Do not mark this
           // deployment ready, retire a predecessor, or release traffic at the held boundary.

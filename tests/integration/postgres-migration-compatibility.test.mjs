@@ -1471,6 +1471,7 @@ test(
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
       [85, "preRepositoryNetworkPolicy"],
+      [86, "preNativeGitDelivery"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1921,6 +1922,7 @@ test(
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
       [85, "preRepositoryNetworkPolicy"],
+      [86, "preNativeGitDelivery"],
     ]);
     for (const [prefix, history] of histories) {
       void context.test(`populated canonical ${history}`, async (child) => {
@@ -2230,6 +2232,7 @@ test(
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
       [85, "preRepositoryNetworkPolicy"],
+      [86, "preNativeGitDelivery"],
     ])) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2454,6 +2457,7 @@ test(
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
       [85, "preRepositoryNetworkPolicy"],
+      [86, "preNativeGitDelivery"],
     ])) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2481,6 +2485,7 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [86, "CREATE FUNCTION"],
                 [85, "CREATE TRIGGER"],
                 [84, "GRANT"],
                 [83, "GRANT"],
@@ -2516,6 +2521,10 @@ test(
             SELECT 1 FROM pg_constraint WHERE conrelid='occ.agent_revisions'::regclass
             AND conname='agent_revisions_repository_policy_reader_version'
           ) THEN RETURN; END IF;`;
+        } else if (prefix === 86) {
+          // Abort 0087's final function replacement after the validator and constraint exist.
+          failAt =
+            "IF to_regprocedure('occ.repository_git_network_admission_is_valid(jsonb)') IS NULL THEN RETURN; END IF;";
         } else if (prefix >= 58) {
           failAt =
             "IF to_regclass('occ.credential_delivery_reductions') IS NULL THEN RETURN; END IF;";

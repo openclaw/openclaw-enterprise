@@ -668,7 +668,11 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       );
     }
     const { selectedRepositoryNetworkGrants: selectedGrants } = resolved.resolution;
-    return { credentials: immutableCopy(snapshot), selectedGrants };
+    return {
+      credentials: immutableCopy(snapshot),
+      selectedGrants,
+      nativeGit: resolved.resolution.nativeGit,
+    };
   }
 
   // Recheck administer after the Namespace and Agent row locks.
@@ -944,6 +948,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
         dependencies.configurationDriver() === configuration &&
         dependencies.credentialSourceOwner(source).driver === sourceDriver;
       return validate(
+        topology.placement,
         harness,
         source,
         repository.resolution,

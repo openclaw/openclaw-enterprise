@@ -56,6 +56,7 @@ export function signComputeExecutionRelease(
   privateKey: KeyObject,
   startupId: string,
   { plan, enforcement, sandboxId }: EgressInstallation,
+  evidenceExpiresAt?: number,
 ) {
   const installation = {
     sandboxId,
@@ -86,6 +87,12 @@ export function signComputeExecutionRelease(
   ) {
     throw new Error("The observed request hook belongs to another Harness startup.");
   }
+  if (
+    plan.repositoryGitAuthorization === "network-policy" &&
+    enforcement.repositoryGitRecipient?.nativeStartupId !== startupId
+  ) {
+    throw new Error("The network policy recipient belongs to another Harness startup.");
+  }
   const released = plan.repositoryGit
     ? { ...installation, repositoryGitRecipient: enforcement.repositoryGitRecipient }
     : installation;
@@ -94,7 +101,13 @@ export function signComputeExecutionRelease(
     ...harnessEgressEnrollment(plan),
     startupId,
   };
-  const expiresAt = Date.now() + 30_000;
+  const now = Date.now();
+  const expiryLimit =
+    plan.repositoryGitAuthorization === "network-policy" ? evidenceExpiresAt : now + 30_000;
+  if (expiryLimit === undefined || !Number.isSafeInteger(expiryLimit) || expiryLimit <= now) {
+    throw new Error("Protected execution release expiry requires current evidence.");
+  }
+  const expiresAt = Math.min(now + 30_000, expiryLimit);
   const transcript = JSON.stringify([challenge, released, expiresAt]);
   return {
     challenge,
