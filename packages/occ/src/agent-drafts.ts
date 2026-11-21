@@ -443,12 +443,14 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
               configurationPreparation,
             );
       const savedConfiguration = dependencies.savedConfigurationReader(configuration);
-      await admitNetworkProxy(
-        dependencies.selectedCompute(),
-        networkProxy,
-        executionMode,
-        (await savedConfiguration()).values,
-      );
+      if (networkProxy !== undefined) {
+        await admitNetworkProxy(
+          dependencies.selectedCompute(),
+          networkProxy,
+          executionMode,
+          (await savedConfiguration()).values,
+        );
+      }
       const driver = await dependencies.validateAgentPlugins(
         plugins,
         pluginApprovers,
@@ -789,12 +791,14 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       await dependencies.authorizeBindings(state, principalId, namespace.id, secretBindings);
       const savedConfiguration = dependencies.savedConfigurationReader(configuration);
       const selectedProxy = requestedProxy === undefined ? agent.networkProxy : requestedProxy;
-      await admitNetworkProxy(
-        dependencies.selectedCompute(),
-        selectedProxy ?? undefined,
-        input.executionMode ?? agent.executionMode,
-        (await savedConfiguration()).values,
-      );
+      if (selectedProxy != null) {
+        await admitNetworkProxy(
+          dependencies.selectedCompute(),
+          selectedProxy,
+          input.executionMode ?? agent.executionMode,
+          (await savedConfiguration()).values,
+        );
+      }
       const selections = plugins ?? agent.plugins;
       const driver = await dependencies.validateAgentPlugins(
         selections,

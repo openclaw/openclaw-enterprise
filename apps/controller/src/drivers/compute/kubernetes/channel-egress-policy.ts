@@ -3,8 +3,14 @@ import {
   normalizeAgentNetworkProxy,
   normalizeNetworkDestinationRules,
 } from "@openclaw-enterprise/contracts";
-import { BlockList, isIP } from "node:net";
+import { isIP } from "node:net";
 import { match } from "ts-pattern";
+import {
+  CHANNEL_EGRESS_EXCLUDED_IPV4_CIDRS,
+  proxyAddressForbidden,
+} from "./channel-proxy-address.ts";
+
+export { CHANNEL_EGRESS_EXCLUDED_IPV4_CIDRS } from "./channel-proxy-address.ts";
 
 export interface ChannelEgressOptions {
   readonly gatewayName: string;
@@ -50,24 +56,6 @@ export const CHANNEL_EGRESS_FORWARD_CLUSTER = {
     },
   },
 } as const;
-
-export const CHANNEL_EGRESS_EXCLUDED_IPV4_CIDRS = Object.freeze([
-  "0.0.0.0/8",
-  "10.0.0.0/8",
-  "100.64.0.0/10",
-  "127.0.0.0/8",
-  "169.254.0.0/16",
-  "172.16.0.0/12",
-  "192.0.0.0/24",
-  "192.0.2.0/24",
-  "192.88.99.0/24",
-  "192.168.0.0/16",
-  "198.18.0.0/15",
-  "198.51.100.0/24",
-  "203.0.113.0/24",
-  "224.0.0.0/4",
-  "240.0.0.0/4",
-]);
 
 const portSchema = { type: "integer", minimum: 1024, maximum: 65535 };
 export const channelEgressConfigurationSchema: JSONSchema = {
@@ -198,27 +186,6 @@ export function validateChannelEgressOptions(options: ChannelEgressOptions): voi
   }
 }
 
-export function proxyAddressForbidden(
-  address: string,
-  installationExclusions: readonly string[],
-): boolean {
-  const privateRanges = new Set(["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]);
-  for (const cidr of [
-    ...CHANNEL_EGRESS_EXCLUDED_IPV4_CIDRS.filter((entry) => !privateRanges.has(entry)),
-    ...installationExclusions,
-  ]) {
-    const [network, bits] = cidr.split("/");
-    if (isIP(network ?? "") !== 4) {
-      continue;
-    }
-    const block = new BlockList();
-    block.addSubnet(network!, Number(bits), "ipv4");
-    if (block.check(address, "ipv4")) {
-      return true;
-    }
-  }
-  return false;
-}
 export function requireSupportedChannelDestinations(
   rules: readonly NetworkDestinationRule[],
 ): void {

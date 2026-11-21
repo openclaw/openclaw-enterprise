@@ -409,6 +409,7 @@ export function createSecretReferenceField({
   selectClassName,
   disabled = false,
   required = false,
+  loadOnFocus = false,
 }: {
   context: SecretContext;
   id: string;
@@ -426,6 +427,7 @@ export function createSecretReferenceField({
   selectClassName?: string;
   disabled?: boolean;
   required?: boolean;
+  loadOnFocus?: boolean;
 }) {
   const inputClassName = ["secret-typeahead-input", selectClassName].filter(Boolean).join(" ");
   const input = element("input", {
@@ -1259,8 +1261,13 @@ export function createSecretReferenceField({
   } else {
     setSecretOptions();
     readCreateAnswer();
-    status.textContent = "Loading available Secrets...";
-    void loadSecrets();
+    if (loadOnFocus) {
+      status.textContent =
+        currentSecretId() === null ? "Choose a Secret when needed." : BOUND_SECRET_METADATA;
+    } else {
+      status.textContent = "Loading available Secrets...";
+      void loadSecrets();
+    }
   }
 
   const withinListbox = (node: EventTarget | null) =>
@@ -1280,6 +1287,9 @@ export function createSecretReferenceField({
     }
     searchQuery = "";
     input.select();
+    if (loadOnFocus && !secretsListed) {
+      void loadSecrets(true);
+    }
     // A field showing its error opens on click, typing or ArrowDown, not on focus: the console's
     // own check focuses it, and the open list covered the error under it (finding 1988).
     if (suppressFocusOpen || input.getAttribute("aria-invalid") === "true") {

@@ -83,6 +83,7 @@ export function createNetworkProxyFields({
     createDialogTitle: "Create proxy credential Secret",
     metadataLabel: "View proxy credential Secret metadata",
     noSecretLabel: "No proxy credential",
+    loadOnFocus: true,
     stagedHint:
       "Proxy credential staged. Save the Agent setting to apply it on the next deployment.",
   });

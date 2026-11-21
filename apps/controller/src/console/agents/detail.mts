@@ -453,11 +453,12 @@ function errorPanel(
 function summary(
   values: OpenClawConfigurationDocument,
   details: [string, string | Node | null | undefined][],
+  includeModel = true,
 ) {
   const primary = configuredModel(values);
   const list = element("dl", { className: "configuration-summary agent-settings-summary" });
   for (const [name, value] of [
-    ["Model", typeof primary === "string" ? primary : "Not specified"],
+    ...(includeModel ? [["Model", typeof primary === "string" ? primary : "Not specified"]] : []),
     ...details,
   ]) {
     list.append(element("dt", {}, name), element("dd", {}, value ?? "None"));
@@ -6122,16 +6123,6 @@ export async function renderAgentDetail(
           draft ? "Gateway managed mode" : "Requested Gateway managed mode",
           draft ? data.managedMode.value : snapshot.gatewayManagedMode ? "On" : "Off",
         ],
-        [
-          "Network proxy URL (Gateway channels)",
-          draft ? data.networkProxy.value : (snapshot.networkProxy?.url ?? "None"),
-        ],
-        [
-          "Proxy credential Secret",
-          draft
-            ? data.networkProxy.credential
-            : (snapshot.networkProxy?.credentialSecretId ?? "None"),
-        ],
         ["Backend (experimental)", draft ? agent.backendId : snapshot.backendId],
         [
           "Repository access",
@@ -6235,6 +6226,22 @@ export async function renderAgentDetail(
             ? (data.managedMode.control ??
                 element("p", { className: "hint" }, GATEWAY_MANAGED_MODE_ADMINISTRATOR_ONLY))
             : null,
+          summary(
+            values,
+            [
+              [
+                "Network proxy URL (Gateway channels)",
+                draft ? data.networkProxy.value : (snapshot.networkProxy?.url ?? "None"),
+              ],
+              [
+                "Proxy credential Secret",
+                draft
+                  ? data.networkProxy.credential
+                  : (snapshot.networkProxy?.credentialSecretId ?? "None"),
+              ],
+            ],
+            false,
+          ),
           draft ? data.networkProxy.control : null,
         ),
       );
