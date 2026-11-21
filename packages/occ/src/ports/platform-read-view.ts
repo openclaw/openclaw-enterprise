@@ -2,6 +2,8 @@ import { bindRepository } from "./repository-factory.ts";
 import type { RepositoryTransactionLifetime } from "./transaction.ts";
 import type { PlatformReadView } from "../state/platform-state.ts";
 
+export type { PlatformReadView };
+
 /** The explicit outward projection shares one transaction lifetime. */
 export function createPlatformReadView(
   repositories: PlatformReadView,

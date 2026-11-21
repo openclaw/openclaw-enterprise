@@ -20,6 +20,7 @@ import { DatabaseError } from "pg";
 
 import { CREDENTIAL_WITHDRAWAL_TARGET } from "../controller-work.ts";
 import { REPOSITORY_CLEANUP_KEY_SEPARATOR } from "../repository-withdrawal.ts";
+import type { PresetRepository } from "../ports/presets.ts";
 import type { AgentAuditSelection } from "../ports/agent-audit.ts";
 import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
 import { bindRepository } from "../ports/repository-factory.ts";
@@ -118,7 +119,6 @@ import type {
   IAMPolicyRepository,
   NamespaceRepository,
   PersistedNamespace,
-  PresetRepository,
   PlatformAuditSink,
   PlatformOperation,
   PlatformReadView,

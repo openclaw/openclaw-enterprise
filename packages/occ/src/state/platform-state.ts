@@ -1,3 +1,4 @@
+import type { PresetReadRepository, PresetRepository } from "../ports/presets.ts";
 import {
   cancelledDeviceAuthorization,
   type DeviceAuthenticationState,
@@ -74,7 +75,6 @@ import type {
   PluginDriverIdentity,
   PluginApprovers,
   Preset,
-  PresetSummary,
   RepositoryBindingSelection,
   RepositoryAccess,
   Secret,
@@ -496,24 +496,6 @@ export interface SavedConnectionRepository extends SavedConnectionReadRepository
   confirmConnectionRevocation(namespaceId: string, sourceId: string, at: string): Promise<void>;
   createSavedConnection(connection: SavedConnection): Promise<Readonly<SavedConnection>>;
   deleteSavedConnection(namespaceId: string, credentialSourceId: string): Promise<boolean>;
-}
-
-export interface PresetReadRepository {
-  findPreset(namespaceId: string, presetId: string): Promise<Readonly<Preset> | undefined>;
-  listPresets(namespaceId: string): Promise<readonly Readonly<Preset>[]>;
-  /** The Namespace's Presets in listPresets order, without their templates. */
-  listPresetSummaries(namespaceId: string): Promise<readonly Readonly<PresetSummary>[]>;
-}
-
-export interface PresetRepository extends PresetReadRepository {
-  createPreset(preset: Preset): Promise<Readonly<Preset>>;
-  lockPreset(namespaceId: string, presetId: string): Promise<Readonly<Preset> | undefined>;
-  updatePreset(
-    namespaceId: string,
-    presetId: string,
-    changes: Partial<Pick<Preset, "name" | "template">>,
-  ): Promise<Readonly<Preset> | undefined>;
-  deletePreset(namespaceId: string, presetId: string): Promise<boolean>;
 }
 
 /**
