@@ -371,7 +371,6 @@ import {
   CredentialSourceConfigError,
   CredentialSourceDriverError,
   CredentialSourceTypeNotOfferedError,
-  CredentialSourceUnprotectedError,
   CredentialWithdrawalInProgressError,
   CredentialWithdrawalNotFoundError,
   HarnessAuthSecretDriverError,
