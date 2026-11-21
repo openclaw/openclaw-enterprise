@@ -1,10 +1,12 @@
 import type {
   AccessBinding,
   Agent,
+  IAMPolicyReadRepository,
   ResourceKind,
   Restriction,
 } from "@openclaw-enterprise/contracts";
-import type { PlatformReadView, PlatformUnitOfWork } from "./state/platform-state.ts";
+import type { PlatformReadView } from "./ports/platform-read-view.ts";
+import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 
 /** An AccessBinding removed as a side effect, as recorded in the audit of the removal. */
 export interface RemovedAccessBinding {
@@ -32,7 +34,7 @@ function removedAccessBinding(binding: Readonly<AccessBinding>): RemovedAccessBi
  * removes them, so callers record the list in that deletion's audit event.
  */
 export async function accessBindingsTargeting(
-  state: Pick<PlatformReadView, "iamPolicy">,
+  state: { readonly iamPolicy: Pick<IAMPolicyReadRepository, "listAccessBindings"> },
   namespaceId: string,
   resourceKind: ResourceKind,
   resourceId: string,

@@ -16,6 +16,7 @@ import {
 } from "./ci-prepare-k3d-image-custody-cases.ts";
 import {
   registerBoundedNodeLogCases,
+  registerCutOutputCases,
   registerNodeLogChronologyCases,
 } from "./ci-prepare-k3d-node-log-cases.ts";
 import { registerRuntimeProvenanceCases } from "./ci-prepare-k3d-provenance-cases.ts";
@@ -40,4 +41,5 @@ describe("CI k3d preparation", { concurrency: 4 }, () => {
 });
 
 registerNodeLogChronologyCases();
+registerCutOutputCases();
 registerAgentSandboxImageCustodyCase();

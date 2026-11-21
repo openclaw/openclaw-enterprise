@@ -13,7 +13,7 @@ import type {
   SecretBindings,
   SecretMetadata,
 } from "../../packages/contracts/src/index.ts";
-import type { PlatformUnitOfWork } from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformUnitOfWork } from "../../packages/occ/src/ports/platform-unit-of-work.ts";
 
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";

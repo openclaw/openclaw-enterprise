@@ -599,16 +599,19 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
       const fileTimeoutMs = runnerDeadline ? runnerTimeoutMs : 10000;
       const pendingActivation = caseDeadline || controlledDeadline;
       const sameRevision = mode === "same-revision";
-      const observedRequest = mode === "request" || sameRevision || mode === "activation";
+      const reconciliation = mode === "reconciliation";
+      const observedActivation = mode === "activation" || reconciliation;
+      const observedRequest = mode === "request" || sameRevision || observedActivation;
       const observedProgress = [
         ...requestProgress,
-        ...(mode === "activation" ? ["activation"] : []),
+        ...(observedActivation ? ["activation"] : []),
+        ...(reconciliation ? ["reconciliation"] : []),
         "replacement:failed",
       ];
       const beforeFailure = [...requestStart, ...observedProgress];
       const success = mode === "success";
       const name = mode === "wrong-case" ? "another case" : title;
-      const upstreamLane = mode === "reconciliation" ? "openshell" : "openshell-installers";
+      const upstreamLane = reconciliation ? "openshell" : "openshell-installers";
       const lane = mode === "wrong-lane" ? "other-installers" : upstreamLane;
       const file =
         mode === "wrong-file" ? "tests/integration/other-upstream.test.ts" : upstreamFile;

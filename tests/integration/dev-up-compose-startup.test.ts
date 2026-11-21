@@ -7,17 +7,19 @@ import { browserEnvironment } from "../helpers/compose.ts";
 import {
   composeInvocations,
   composeOptions,
-  createFixture,
-  customRuntimeOverride,
-  defaultRuntimeImage,
   matchingInstallationId,
-  perImageOverride,
-  prepareLifecycleCommands,
-  publicControllerOverride,
   readJsonLines,
   runCommand,
   runDevDown,
   runDevUp,
+} from "../helpers/dev-up-commands.ts";
+import {
+  createFixture,
+  customRuntimeOverride,
+  defaultRuntimeImage,
+  perImageOverride,
+  prepareLifecycleCommands,
+  publicControllerOverride,
   serviceKey,
 } from "../helpers/dev-up.mjs";
 

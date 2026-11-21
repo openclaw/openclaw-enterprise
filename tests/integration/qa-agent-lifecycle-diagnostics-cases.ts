@@ -764,3 +764,70 @@ export function registerQaAgentLifecycleDiagnosticsCases(): void {
     assert.equal(clock, bound);
   });
 }
+
+export async function runQaWaitDiagnosticCase(): Promise<void> {
+  const { waitFor } = await import("../helpers/qa-wait.ts");
+  let observations = 0;
+  let last: { observation: number; pods: string[] } | undefined;
+  // Advance through the deadline on the second observation.
+  let clock = 0;
+  await assert.rejects(
+    waitFor(
+      "fake condition",
+      async () => {
+        observations += 1;
+        assert.ok(observations < 100, "the wait follows the fake clock");
+        clock += 100;
+        last = { observation: observations, pods: ["runtime-0"] };
+        return false;
+      },
+      200,
+      { describe: () => JSON.stringify(last), interval: 0, now: () => clock },
+    ),
+    (error) => {
+      assert.ok(error instanceof Error);
+      assert.equal(
+        error.message,
+        'Timed out: fake condition; last observation: {"observation":2,"pods":["runtime-0"]}',
+      );
+      return true;
+    },
+  );
+  assert.equal(observations, 2, "the timeout ends the wait after the deadline observation");
+
+  // The next observation can succeed even when its timer wakes at the deadline.
+  let clockReads = 0;
+  let readinessReads = 0;
+  const ready = { pod: "runtime-0" };
+  assert.equal(
+    await waitFor(
+      "ready at the deadline",
+      () => (++readinessReads === 2 ? ready : undefined),
+      100,
+      { interval: 0, now: () => (clockReads++ < 2 ? 0 : 100) },
+    ),
+    ready,
+  );
+  assert.equal(readinessReads, 2);
+
+  // Without `describe` the message is unchanged; a failing `describe` keeps the timeout.
+  await assert.rejects(
+    waitFor("plain condition", async () => false, 10, { interval: 5 }),
+    (error) => error instanceof Error && error.message === "Timed out: plain condition",
+  );
+  await assert.rejects(
+    waitFor("broken describe", async () => false, 10, {
+      interval: 5,
+      describe: () => {
+        throw new Error("no state");
+      },
+    }),
+    (error) =>
+      error instanceof Error &&
+      error.message === "Timed out: broken describe; last observation unavailable (no state)",
+  );
+  assert.equal(
+    await waitFor("ready", async () => "value", 10, { describe: () => "unused" }),
+    "value",
+  );
+}
