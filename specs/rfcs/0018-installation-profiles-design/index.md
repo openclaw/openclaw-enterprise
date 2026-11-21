@@ -12,6 +12,8 @@ status: Accepted
 
 **Owner:** Enterprise installation packaging
 
+[Proposed amendment: first installation in an operator-owned Namespace](named-workspace-first-installation.md)
+
 ## Goal and scope
 
 Offer two installation profiles over one Enterprise Helm chart and one shared
