@@ -21,6 +21,9 @@ import { createConsoleAppFixture } from "../../helpers/console-app.mjs";
 import { createReadyComputeDriver } from "../../helpers/development.ts";
 import { createHarnessConfiguration } from "../../helpers/harness-configuration.mjs";
 import { grantRole } from "../../helpers/iam-grants.ts";
+import { runDocker } from "../../helpers/runtime-image-docker.ts";
+import { waitForContainerReady } from "../../helpers/runtime-image-gateway-observations.ts";
+import { cpuScaledImageTimeoutMs } from "../../helpers/image-smoke-timeout.ts";
 
 // Use the SDK's installed WebSocket transport for a transparent, test-owned fault proxy.
 // No fixture generates native RPC replies: every successful reply comes from OpenClaw.
@@ -55,7 +58,13 @@ const tlsKeyPath = process.env.OCC_AUTOMATION_PROOF_TLS_KEY;
 assert.ok(endpoint && keyPath && certPath && tlsKeyPath);
 const apiKey = await readFile(keyPath, "utf8");
 const nativeContainer = process.env.OCC_AUTOMATION_PROOF_NATIVE_CONTAINER;
-assert.ok(nativeContainer);
+const replacementArgumentsPath = process.env.OCC_AUTOMATION_PROOF_REPLACEMENT_ARGS;
+assert.ok(nativeContainer && replacementArgumentsPath);
+const replacementArguments: unknown = JSON.parse(await readFile(replacementArgumentsPath, "utf8"));
+assert.ok(
+  Array.isArray(replacementArguments) &&
+    replacementArguments.every((arg) => typeof arg === "string"),
+);
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
 const scope = {
   after: (cleanup: () => unknown | Promise<unknown>) => {
@@ -69,6 +78,7 @@ let nativeCreates = 0;
 let nativeUpdates = 0;
 let verifiedBindingBeforeActivation = false;
 let beforeActivation: undefined | ((id: string) => Promise<void>);
+let beforeUpdate: undefined | (() => Promise<void>);
 const nativeErrors: string[] = [];
 let loseCreateReply = false;
 let afterCreate: undefined | (() => Promise<void>);
@@ -104,13 +114,14 @@ proxy.on("upgrade", (request, socket, head) => {
       };
       if (frame.method === "cron.update") {
         nativeUpdates++;
-      }
-      if (
-        frame.method === "cron.update" &&
-        frame.params?.patch?.enabled === true &&
-        frame.params.id
-      ) {
-        void beforeActivation?.(frame.params.id)
+        const action = beforeUpdate;
+        beforeUpdate = undefined;
+        void (async () => {
+          await action?.();
+          if (frame.params?.patch?.enabled === true && frame.params.id) {
+            await beforeActivation?.(frame.params.id);
+          }
+        })()
           .then(forward)
           .catch(() => {
             downstream.terminate();
@@ -302,7 +313,7 @@ try {
     body: { name: "Updated through OCC", expectedConfigRevision: job.configRevision },
   });
   assert.equal(changed.status, 200);
-  const current = changed.data as AgentAutomationData;
+  let current = changed.data as AgentAutomationData;
   assert.notEqual(current.configRevision, job.configRevision);
   assert.equal(
     (
@@ -312,6 +323,41 @@ try {
     ).status,
     409,
   );
+
+  // Both OCC requests read the same revision. Hold the first native update until
+  // the second commits, so the native atomic precondition must preserve the winner.
+  let releaseUpdate!: () => void;
+  let updateHeld!: () => void;
+  const updateRelease = new Promise<void>((resolve) => {
+    releaseUpdate = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    updateHeld = resolve;
+  });
+  beforeUpdate = async () => {
+    updateHeld();
+    await updateRelease;
+  };
+  const losingEdit = request("PATCH", `${base}/${job.id}`, {
+    body: { name: "Losing concurrent OCC edit", expectedConfigRevision: current.configRevision },
+  });
+  await held;
+  let winningEdit: Awaited<ReturnType<typeof request>>;
+  try {
+    winningEdit = await request("PATCH", `${base}/${job.id}`, {
+      body: { name: "Winning concurrent OCC edit", expectedConfigRevision: current.configRevision },
+    });
+  } finally {
+    releaseUpdate();
+  }
+  assert.equal(winningEdit.status, 200, JSON.stringify(winningEdit.body));
+  assert.equal(
+    (await losingEdit).status,
+    409,
+    "native CAS must reject the already-read stale update",
+  );
+  current = winningEdit.data as AgentAutomationData;
+  assert.deepEqual((await request("GET", `${base}/${job.id}`)).data, current);
   assert.equal(
     (
       await request(
@@ -384,7 +430,7 @@ try {
   );
 
   // Change the actual OCC revision after native commit and before forwarding its reply.
-  // This tests revision fencing, not a physical Gateway replacement (the QA scenario owns that).
+  // This first transition tests the post-dispatch fence. Physical replacement follows below.
   afterCreate = async () => {
     const next = await f.deployAgent(namespace.id, agent.id);
     await f.activateRevision(namespace.id, agent.id, next.id, revision.id);
@@ -395,6 +441,68 @@ try {
   assert.equal(replaced.status, 503);
   assert.equal(replaced.body.error.code, "UNKNOWN_OUTCOME");
   assert.equal(nativeCreates, beforeRevision + 1);
+
+  // Replace the real Gateway process and container, retaining its named state volume.
+  // OCC and Compute remain fixtures: this proves native persistence and broker identity,
+  // not PostgreSQL-backed OCC restart or the production Kubernetes cutover workflow.
+  const ownershipBefore = await f.controller.getAgentAutomationOwnership(
+    f.principal.id,
+    namespace.id,
+    agent.id,
+    job.id,
+  );
+  assert.ok(ownershipBefore.record.nativeJobId);
+  const previousContainerId = (
+    await runDocker(["inspect", "--format", "{{.Id}}", nativeContainer])
+  ).stdout.trim();
+  const previousRevisionId = revision.id;
+  const createsBeforeReplacement = nativeCreates;
+  const updatesBeforeReplacement = nativeUpdates;
+  const callsBeforeReplacement = await runDocker([
+    "exec",
+    nativeContainer,
+    "node",
+    "-e",
+    'fetch("http://127.0.0.1:18880/counter").then(r=>r.json()).then(v=>console.log(v.modelCalls));',
+  ]);
+  assert.equal(callsBeforeReplacement.stdout.trim(), "0");
+  await runDocker(["stop", "--time", "30", nativeContainer]);
+  await runDocker(["rm", "--volumes", nativeContainer]);
+  await runDocker(replacementArguments);
+  const replacementContainerId = (
+    await runDocker(["inspect", "--format", "{{.Id}}", nativeContainer])
+  ).stdout.trim();
+  assert.notEqual(
+    replacementContainerId,
+    previousContainerId,
+    "the Gateway must be a new container",
+  );
+  await waitForContainerReady(nativeContainer, {
+    label: "Replacement native Gateway",
+    request:
+      '() => fetch("http://127.0.0.1:18800/readyz",{signal:AbortSignal.timeout(5000)}).then(r=>r.status)',
+    timeoutMs: cpuScaledImageTimeoutMs(75_000),
+  });
+  const replacementRevision = await f.deployAgent(namespace.id, agent.id);
+  await f.activateRevision(namespace.id, agent.id, replacementRevision.id, revision.id);
+  revision = replacementRevision;
+  assert.notEqual(revision.id, previousRevisionId);
+  const retained = await request("GET", `${base}/${job.id}`);
+  assert.equal(retained.status, 200, JSON.stringify(retained.body));
+  assert.deepEqual(retained.data, current, "paused job and native revision survive replacement");
+  assert.equal(retained.data.enabled, false);
+  assert.deepEqual(
+    (await f.controller.getAgentAutomationOwnership(f.principal.id, namespace.id, agent.id, job.id))
+      .record,
+    ownershipBefore.record,
+    "creator, public ID and bound native ID survive the physical Gateway replacement",
+  );
+  assert.equal(nativeCreates, createsBeforeReplacement, "replacement must not recreate jobs");
+  assert.equal(
+    nativeUpdates,
+    updatesBeforeReplacement,
+    "replacement must not rewrite or activate jobs",
+  );
 
   const all = (await request("GET", base)).data.jobs as AgentAutomationData[];
   assert.equal(all.length, 6);
@@ -433,6 +541,14 @@ try {
 }
 process.stdout.write(
   "OCC_AUTOMATION_PROTOCOL_PROOF " +
-    JSON.stringify({ automationProtocol: true, nativeCreates, modelExecution: false }) +
+    JSON.stringify({
+      automationProtocol: true,
+      nativeCreates,
+      concurrentNativeCas: true,
+      physicalGatewayReplacement: true,
+      pausedJobRetained: true,
+      ownershipStorage: "in-memory",
+      modelExecution: false,
+    }) +
     "\n",
 );

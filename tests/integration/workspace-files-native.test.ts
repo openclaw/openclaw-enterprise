@@ -158,15 +158,18 @@ test(
     const network = `${owner}-network`;
     const native = `${owner}-gateway`;
     const envoy = `${owner}-envoy`;
+    const stateVolume = `${owner}-state`;
     const containers = new Set<string>();
     t.after(async () => {
       for (const name of containers) {
         await runDocker(["rm", "--force", "--volumes", name]);
       }
+      await runDocker(["volume", "rm", stateVolume]);
       await runDocker(["network", "rm", network]);
       await rm(directory, { recursive: true, force: true });
     });
     await runDocker(["network", "create", "--label", `oce.workspace-proof=${owner}`, network]);
+    await runDocker(["volume", "create", "--label", `oce.workspace-proof=${owner}`, stateVolume]);
     const subnet = networkSubnet((await runDocker(["network", "inspect", network])).stdout);
     await execute("openssl", [
       "req",
@@ -284,7 +287,7 @@ test(
       await writeFile(join(directory, "config.json"), JSON.stringify(configuration));
       await writeFile(join(directory, "api-key"), "proof-admin", { mode: 0o600 });
       const provider = `let modelCalls=0;require("node:http").createServer((q,r)=>{if(q.method==="POST")modelCalls++;r.end(JSON.stringify(q.url==="/counter"?{modelCalls}:{data:[]}));}).listen(18880,"127.0.0.1");\n`;
-      await runDocker([
+      const nativeArguments = [
         "run",
         "--detach",
         "--pull=never",
@@ -303,8 +306,9 @@ test(
         "ALL",
         "--security-opt",
         "no-new-privileges",
-        "--tmpfs",
-        "/home/node:uid=1000,gid=1000,mode=700",
+        ...(index === 0
+          ? ["--mount", `type=volume,src=${stateVolume},dst=/home/node`]
+          : ["--tmpfs", "/home/node:uid=1000,gid=1000,mode=700"]),
         "--tmpfs",
         "/tmp:uid=1000,gid=1000,mode=1777",
         ...mounts(["config.json"], "/etc/openclaw"),
@@ -323,7 +327,9 @@ test(
         image,
         "-e",
         ...nodeProgramArguments(provider + GATEWAY_RUNTIME_ENTRYPOINT),
-      ]);
+      ];
+      await writeFile(join(directory, "gateway-run.json"), JSON.stringify(nativeArguments));
+      await runDocker(nativeArguments);
       containers.add(native);
       try {
         // One docker exec polls /readyz (see waitForContainerReady): a Node start per
@@ -352,10 +358,11 @@ test(
                     OCC_WORKSPACE_PROOF_ENDPOINT: `wss://127.0.0.1:${port}`,
                     OCC_WORKSPACE_PROOF_KEY_PATH: join(directory, "api-key"),
                     OCC_AUTOMATION_PROOF_NATIVE_CONTAINER: native,
+                    OCC_AUTOMATION_PROOF_REPLACEMENT_ARGS: join(directory, "gateway-run.json"),
                     OCC_AUTOMATION_PROOF_CERT: join(directory, "cert.pem"),
                     OCC_AUTOMATION_PROOF_TLS_KEY: join(directory, "key.pem"),
                   },
-                  timeout: 120_000,
+                  timeout: 180_000,
                 },
               );
               const records = proof.stdout
@@ -371,6 +378,10 @@ test(
                 {
                   automationProtocol: true,
                   nativeCreates: 6,
+                  concurrentNativeCas: true,
+                  physicalGatewayReplacement: true,
+                  pausedJobRetained: true,
+                  ownershipStorage: "in-memory",
                   modelExecution: false,
                 },
               );
