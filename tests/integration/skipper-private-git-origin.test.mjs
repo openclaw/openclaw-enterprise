@@ -487,9 +487,47 @@ test(
       allowFailure: true,
     });
     assert.equal(refused.code, 0, "new authenticated Git process sees the explicit refusal");
+    const incorrectStatus = await run("sh", ["-c", fetchAfterWithdrawalCommand(".", 503)], {
+      cwd: client,
+      env: { ...env, ...envAuth },
+      allowFailure: true,
+    });
+    assert.equal(incorrectStatus.code, 43, "an authenticated 401 cannot satisfy a 503 oracle");
     assert.ok(fixture.snapshot().requests > beforeFresh);
     const uncredentialed = await run("sh", ["-c", fresh], { cwd: client, env, allowFailure: true });
-    assert.notEqual(uncredentialed.code, 0, "anonymous refusal must fail the withdrawal oracle");
+    assert.equal(uncredentialed.code, 42, "anonymous refusal must fail the withdrawal oracle");
+    // Check the content-free return codes even when a process reports only exit 128.
+    const trace = (method, status, basic = true) => [
+      "=> Send header: " +
+        method +
+        " /fixture/repo.git/" +
+        (method === "GET" ? "info/refs?service=git-upload-pack" : "git-upload-pack") +
+        " HTTP/1.1",
+      ...(basic ? ["=> Send header: Authorization: Basic <redacted>"] : []),
+      ...(status === undefined ? [] : ["<= Recv header: HTTP/1.1 " + status]),
+    ];
+    const discovery = trace("GET", 200);
+    for (const [cmd, lines, code] of [
+      [fresh, [...trace("GET", 401), ...trace("GET", 401)], 0],
+      [fresh, [...trace("GET", 200), ...trace("GET", 401)], 43],
+      [command, trace("GET", undefined), 41],
+      [command, discovery, 42],
+      [command, [...discovery, ...trace("POST", 401, false)], 47],
+      [command, [...discovery, ...trace("POST", 401)], 0],
+      [command, [...discovery, ...trace("POST", 503)], 48],
+      [command, [...discovery, ...trace("POST", 403)], 43],
+    ]) {
+      const git =
+        "git() { printf '%s\\n' " +
+        lines.map((line) => "'" + line + "'").join(" ") +
+        " >&2; return 128; }";
+      const result = await run("sh", ["-c", git + "\n" + cmd], {
+        cwd: client,
+        env,
+        allowFailure: true,
+      });
+      assert.equal(result.code, code);
+    }
     assert.notEqual(
       (await git(["clone", fixture.cloneUrl, "revoked"], token, { allowFailure: true })).code,
       0,

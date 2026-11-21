@@ -291,6 +291,13 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     /occ-repository-app|prepared-repository|custody\.key|private-key\.pem|openshell/i,
   );
   assert.ok(
+    hc.volumeMounts.some(
+      (m) =>
+        m.mountPath === "/home/node/workspace" && m.name === "openclaw-workspace" && !m.readOnly,
+    ),
+    "Codex and the Agent container must share the retained workspace for the fixture barrier",
+  );
+  assert.ok(
     hc.volumeMounts.some((m) => m.mountPath === "/run/oce/repository-credentials" && m.readOnly),
   );
   assert.ok(
@@ -338,6 +345,29 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     );
     assert.equal(record(await api("GET", agentPath)).activeRevisionId, revision.id);
   };
+  /** @param {string} path @param {"ready" | "release"} operation */
+  async function withdrawalBarrier(path, operation) {
+    assert.match(path, /^\/home\/node\/workspace\/\.oce-git-withdrawal-[a-f0-9]{16}$/);
+    const { name, namespace, uid } = harness.metadata;
+    assert.equal((await resource("pod", name, "-n", namespace)).metadata.uid, uid);
+    const { stdout } = await kubectlWithTimeout(
+      10_000,
+      "exec",
+      name,
+      "-n",
+      namespace,
+      "-c",
+      "agent",
+      "--",
+      "sh",
+      "-c",
+      'if [ -d "$1/ready" ]; then if [ "$2" = release ]; then : > "$1/release" || exit; fi; printf "ready\\n"; fi',
+      "sh",
+      path,
+      operation,
+    );
+    return stdout === "ready\n";
+  }
   const gatewayTarget = [
     gateway.metadata.name,
     "-n",
@@ -528,6 +558,7 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     stable,
     sendScript,
     ordinaryChat,
+    withdrawalBarrier,
   };
 }
 
