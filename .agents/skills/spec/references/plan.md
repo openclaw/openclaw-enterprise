@@ -94,7 +94,7 @@ session identifier when available; never fabricate provenance.
 
 Review for duplicate requirements, unnecessary phases, unsupported interfaces,
 and missing caller or failure proof. Run documentation length, link, and scoped
-formatting checks using the installed toolchain. Run `node scripts/check-specs.mjs`
+formatting checks using the installed toolchain. Run `node scripts/check-specs.ts`
 (or `pnpm docs:check`, which includes it) to check spec metadata and link targets.
 Do not install dependencies or run product tests merely to validate a plan. Follow requested independent review.
 Report the ID/path, RFC relationship or independent scope, open blockers, and

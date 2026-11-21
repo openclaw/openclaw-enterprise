@@ -5,6 +5,8 @@ import { cp, mkdir, open, readFile, readdir, writeFile } from "node:fs/promises"
 import { join, relative } from "node:path";
 import test from "node:test";
 
+import { createDocsParser, docsParser } from "../../scripts/docs-site/parser-boundary.ts";
+import { checkMarkdownWordCounts, countMarkdownWords } from "../../scripts/docs-site/word-count.ts";
 import { renderMatrixMarkdown, type DriverMatrix } from "../../scripts/generate-compute-matrix.ts";
 import {
   buildDocs,
@@ -343,7 +345,7 @@ test("spec validation rejects links to missing headings", async (t) => {
   await writeFile(join(fixture, "docs/guide.md"), "# Guide\n\n## Setup\n\n## Setup\n");
   const validate = async (target: string) => {
     await writeFile(join(fixture, "specs/plan.md"), `# Plan\n\n## Scope\n\n[Link](${target})\n`);
-    return spawnSync(process.execPath, [join(root, "scripts/check-specs.mjs")], {
+    return spawnSync(process.execPath, [join(root, "scripts/check-specs.ts")], {
       cwd: fixture,
       encoding: "utf8",
       timeout: 30_000,
@@ -358,6 +360,161 @@ test("spec validation rejects links to missing headings", async (t) => {
     assert.notEqual(result.status, 0, `Spec validation accepted ${target}`);
     assert.match(result.stderr, /missing heading/);
   }
+});
+
+test("word counter preserves custom parsers and rejects malformed parsers at the boundary", async (t) => {
+  const source = "```\nalpha beta\n```\n";
+  const parser = createDocsParser().disable("fence");
+  assert.equal(countMarkdownWords(source, { markdown: parser }).proseWords, 2);
+  assert.equal(countMarkdownWords(source, { markdown: parser }).codeWords, 0);
+
+  for (const [shape, target] of [
+    ["plain", {}],
+    ["callable", () => {}],
+    ["array", []],
+  ] as const) {
+    await t.test(shape, () => {
+      const rendered: string[] = [];
+      const renderer = createDocsParser().renderer;
+      const renderText = renderer.rules.text;
+      assert.ok(renderText);
+      let parsedEnv: unknown;
+      let parseReads = 0;
+      const forwardingParser = Object.assign(target, {
+        renderer: parser.renderer,
+        options: parser.options,
+        utils: parser.utils,
+      });
+      renderer.rules.text = (tokens, index, options, env, self) => {
+        assert.equal(env, parsedEnv);
+        assert.equal(options, forwardingParser.options);
+        assert.equal(self, renderer);
+        const token = tokens[index];
+        assert.ok(token);
+        rendered.push(token.content);
+        return renderText(tokens, index, options, env, self);
+      };
+      Object.defineProperty(forwardingParser, "parse", {
+        get() {
+          parseReads += 1;
+          return function (
+            this: typeof forwardingParser,
+            text: string,
+            env: Parameters<typeof parser.parse>[1],
+          ) {
+            assert.equal(this, forwardingParser);
+            parsedEnv = env;
+            // The vendor must see facilities replaced during parsing, after adaptation.
+            this.renderer = renderer;
+            this.options = { ...parser.options };
+            this.utils = { ...parser.utils };
+            return parser.parse(text, env);
+          };
+        },
+      });
+      const markdown = docsParser(forwardingParser);
+      const env = {};
+      markdown.parse("direct parse", env);
+      assert.equal(parsedEnv, env);
+      assert.equal(markdown.options, forwardingParser.options);
+      assert.equal(markdown.utils, forwardingParser.utils);
+      const counts = countMarkdownWords(source, { markdown });
+      assert.equal(counts.proseWords, 2);
+      assert.equal(counts.codeWords, 0);
+      assert.equal(countMarkdownWords("three more words", { markdown }).totalWords, 3);
+      assert.ok(
+        rendered.includes("three more words"),
+        "the live supplied renderer must process text",
+      );
+      assert.equal(parseReads, 1, "structural adaptation must read parse only once");
+    });
+  }
+  for (const markdown of [undefined, null]) {
+    assert.equal(countMarkdownWords(source, { markdown }).codeWords, 2);
+  }
+  for (const markdown of [{}, { parse: true }, false, 1, "text", [], () => {}]) {
+    assert.throws(() => countMarkdownWords(source, { markdown }), {
+      name: "TypeError",
+      message: "Unsupported docs parser contract: expected object with callable parse",
+    });
+  }
+});
+
+test("word counter reads a supplied MarkdownIt parse getter only once", () => {
+  const parser = createDocsParser().disable("fence");
+  const parse = parser.parse;
+  let parseReads = 0;
+  let parseCalls = 0;
+  Object.defineProperty(parser, "parse", {
+    get() {
+      parseReads += 1;
+      if (parseReads !== 1) {
+        return undefined;
+      }
+      return function (this: typeof parser, text: string, env: Parameters<typeof parser.parse>[1]) {
+        parseCalls += 1;
+        assert.equal(this, parser);
+        return parse.call(this, text, env);
+      };
+    },
+  });
+
+  const counts = countMarkdownWords("```\nalpha beta\n```\n", { markdown: parser });
+  assert.equal(counts.proseWords, 2);
+  assert.equal(counts.codeWords, 0);
+  assert.equal(counts.totalWords, 2);
+  assert.equal(parseReads, 1);
+  assert.equal(parseCalls, 1);
+});
+
+test("word counter excludes parsed comments and counts literal delimiters", async (t) => {
+  const directory = await temporaryDirectory(t, "enterprise-docs-comment-counts-");
+  execFileSync("git", ["init"], { cwd: directory, stdio: "ignore" });
+  const cases = [
+    ["adjacent.md", "a<!-- hidden -->b", 1, 0],
+    ["consecutive.md", "one<!-- hidden --><!-- also hidden -->two three", 2, 0],
+    ["fenced.md", "```html\n<!<!-- cut -->-- hidden -->visible\n```\n", 0, 3],
+    ["nested-closed.md", "<!<!-- cut -->-- hidden -->visible", 2, 0],
+    ["nested-multiple.md", "<!<!-- a -->-<!-- b -->- hidden words", 2, 0],
+    ["nested-open.md", "<!<!-- cut -->-- hidden words", 2, 0],
+    ["tag.md", "before <sp<!-- gap -->an> after", 3, 0],
+    ["block.md", "<div>before <sp<!-- gap -->an> after</div>", 3, 0],
+    ["heading.md", "# before<!-- private -->after", 1, 0],
+    ["image.md", "![before<!-- private -->after](image.png)", 1, 0],
+    ["spaced.md", "one <!-- hidden -->two three", 3, 0],
+    ["unclosed.md", "before <!-- still visible", 3, 0],
+    ["code.md", "`<!-- inline example -->`\n\n~~~txt\n<!-- fenced example -->\n~~~", 2, 2],
+  ] as const;
+  for (const [file, content] of cases) {
+    await writeFile(join(directory, file), content);
+  }
+
+  const result = checkMarkdownWordCounts({ root: directory });
+  assert.equal(result.ok, true);
+  const rows = new Map(result.rows.map((row) => [row.path, row]));
+  assert.equal(rows.size, cases.length);
+  assert.equal(rows.get("heading.md")?.sections[1]?.heading, "beforeafter");
+  for (const [file, , prose, code] of cases) {
+    const row = rows.get(file);
+    assert.ok(row, file);
+    assert.deepEqual(
+      [row.proseWords, row.codeWords, row.totalWords],
+      [prose, code, prose + code],
+      file,
+    );
+  }
+});
+
+test("word counter resolves only intact snippet directives", async (t) => {
+  const directory = await temporaryDirectory(t, "enterprise-docs-snippet-counts-");
+  const page = join(directory, "README.md");
+  const attributes = 'file="absent.txt" lang="txt"';
+  const count = () => checkMarkdownWordCounts({ root: directory, files: ["README.md"] });
+  await writeFile(page, `before <Sni<!-- gap -->ppet ${attributes} /> after\n`);
+  assert.equal(count().rows[0]?.proseWords, 5);
+
+  await writeFile(page, `before <Snippet ${attributes} /> after\n`);
+  assert.throws(count, /Missing or out-of-scope code snippet .*absent\.txt/);
 });
 
 // `scope` is authored matrix metadata carried in the fixture alongside renderer fields.

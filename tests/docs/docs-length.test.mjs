@@ -7,7 +7,7 @@ import test from "node:test";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const cli = join(root, "scripts/docs-site/word-count.mjs");
+const cli = join(root, "scripts/docs-site/word-count.ts");
 
 async function fixture(t) {
   const directory = await temporaryDirectory(t, "enterprise-docs-length-");
