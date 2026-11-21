@@ -30,7 +30,7 @@ model turns across revision cutover plus Slack delivery. PostgreSQL uses the
 repository's pinned fixture image unless `OCC_TEST_PRODUCTION_POSTGRES_IMAGE`
 selects another qualified immutable reference.
 
-Before provisioning the Slack-enabled topology or posting, the focused test checks each bot’s existing `conversations.info` response. Each response must identify the exact configured public or private channel and explicitly report boolean `false` for both `is_im` and `is_mpim`. This rule also applies to legacy private channels. The test rejects malformed or contradictory type flags. The separate membership check reports which bot needs a channel invitation.
+Before provisioning the Slack-enabled topology or posting, the test uses the Gateway bot's `conversations.info` response to identify the exact public or private channel. The response must explicitly report `false` for both `is_im` and `is_mpim`, including for legacy private channels. The Gateway bot's paginated `conversations.members` response must include both bot users. The distinct sender must independently read channel history. The sender does not need channel-read scope.
 
 Put these settings in the private environment file:
 

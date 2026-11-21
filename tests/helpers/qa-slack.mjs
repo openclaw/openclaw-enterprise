@@ -10,7 +10,7 @@ import { slackApi } from "./slack-web-api.ts";
 import {
   allMessages,
   assertSlackBotAuthor,
-  assertSlackChannelDestination,
+  verifySlackChannelAccess,
   verifySingleSlackDelivery,
 } from "./slack-delivery.ts";
 import { createControlledChannelProxy } from "./channel-upstream-proxy.ts";
@@ -66,18 +66,14 @@ export async function verifyQaSlack(f, agent) {
   const senderIdentity = await slackApi("auth.test", slack.senderBotToken);
   assert.notEqual(gatewayIdentity.user_id, senderIdentity.user_id);
   assert.equal(gatewayIdentity.team_id, senderIdentity.team_id);
-  for (const token of [slack.botToken, slack.senderBotToken]) {
-    const info = await slackApi("conversations.info", token, { channel: slack.channelId });
-    assertSlackChannelDestination(info, slack.channelId);
-    assert.equal(info.channel.is_member, true, "Both authorized bots must join the test channel.");
-  }
+  await verifySlackChannelAccess({
+    channelId: slack.channelId,
+    gatewayToken: slack.botToken,
+    senderToken: slack.senderBotToken,
+    gatewayIdentity,
+    senderIdentity,
+  });
   const proxy = await createControlledChannelProxy(f.resources, { cluster: f.state.cluster });
-  for (const token of [slack.botToken, slack.senderBotToken]) {
-    assert.equal(
-      (await slackApi("conversations.info", token, { channel: slack.channelId })).channel.is_member,
-      true,
-    );
-  }
   await prepareQaSlack(f, proxy);
   const base = `/namespaces/${agent.namespaceId}`;
   const configuration = await f.api("GET", `${base}/configurations/${agent.configurationId}`);

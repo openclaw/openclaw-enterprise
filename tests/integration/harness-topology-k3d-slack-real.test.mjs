@@ -2,10 +2,7 @@ import { writeFile } from "node:fs/promises";
 import { lookup } from "node:dns/promises";
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  assertSlackChannelDestination,
-  verifySingleSlackDelivery,
-} from "../helpers/slack-delivery.ts";
+import { verifySlackChannelAccess, verifySingleSlackDelivery } from "../helpers/slack-delivery.ts";
 import { gatewaySlackEvidence } from "../helpers/slack-native-evidence.ts";
 import {
   arrangeProductionTopology,
@@ -65,34 +62,16 @@ test(
     );
     assert.equal(slack.botToken.startsWith("xoxb-"), true, "Slack requires an approved bot token");
     assert.equal(slack.senderBotToken.startsWith("xoxb-"), true);
-    const members = [
-      { role: "gateway", token: slack.botToken, userId: gatewayIdentity.user_id },
-      { role: "sender", token: slack.senderBotToken, userId: senderIdentity.user_id },
-    ];
-    const memberships = await Promise.allSettled(
-      members.map(({ token }) =>
-        slackApi("conversations.info", token, { channel: slack.channelId }),
-      ),
+    await verifySlackChannelAccess({
+      channelId: slack.channelId,
+      gatewayToken: slack.botToken,
+      senderToken: slack.senderBotToken,
+      gatewayIdentity,
+      senderIdentity,
+    });
+    testContext.diagnostic(
+      `Slack Gateway and distinct sender are members of channel ${slack.channelId}.`,
     );
-    const membershipFailures = [];
-    for (const [index, result] of memberships.entries()) {
-      const { role, userId } = members[index];
-      let status = "unverified";
-      if (result.status === "fulfilled") {
-        assertSlackChannelDestination(result.value, slack.channelId);
-        status = result.value.channel?.is_member === true ? "member" : "not-member";
-      }
-      testContext.diagnostic(
-        `Slack ${role} channel membership=${status}; channel=${slack.channelId}; user=${userId}`,
-      );
-      if (status !== "member") {
-        const reason = result.status === "rejected" ? ` ${result.reason.message}` : "";
-        membershipFailures.push(
-          `Slack ${role} membership=${status}.${reason} Invite bot ${userId} to channel ${slack.channelId} and ensure it can read channel information before rerunning.`,
-        );
-      }
-    }
-    assert.equal(membershipFailures.length, 0, membershipFailures.join("\n"));
 
     const topology = await arrangeProductionTopology(context, "dedicated", slack);
     // Deployment already validated the saved Slack credentials through OCC's

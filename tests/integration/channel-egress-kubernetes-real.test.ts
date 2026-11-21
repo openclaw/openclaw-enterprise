@@ -9,7 +9,7 @@ import { boundedTeardown } from "../helpers/bounded-teardown.ts";
 import { slackApi } from "../helpers/slack-web-api.ts";
 import { probeChannelConnect } from "../helpers/channel-egress-probe.ts";
 import { createControlledChannelProxy } from "../helpers/channel-upstream-proxy.ts";
-import { assertSlackChannelDestination } from "../helpers/slack-delivery.ts";
+import { verifySlackChannelAccess } from "../helpers/slack-delivery.ts";
 import {
   arrangeProductionTopology,
   assertActualModelTurn,
@@ -56,11 +56,21 @@ test(
     assert.ok(
       process.env.SLACK_APP_TOKEN &&
         process.env.SLACK_BOT_TOKEN &&
-        process.env.OCC_TEST_SLACK_CHANNEL_ID,
+        process.env.OCC_TEST_SLACK_CHANNEL_ID &&
+        process.env.OCC_TEST_SLACK_SENDER_BOT_TOKEN,
     );
-    const sender =
-      process.env.OCC_TEST_SLACK_SENDER_USER_ID ??
-      (await slackApi("auth.test", process.env.OCC_TEST_SLACK_SENDER_BOT_TOKEN!)).user_id;
+    const [gatewayIdentity, senderIdentity] = await Promise.all([
+      slackApi("auth.test", process.env.SLACK_BOT_TOKEN),
+      slackApi("auth.test", process.env.OCC_TEST_SLACK_SENDER_BOT_TOKEN),
+    ]);
+    await verifySlackChannelAccess({
+      channelId: process.env.OCC_TEST_SLACK_CHANNEL_ID,
+      gatewayToken: process.env.SLACK_BOT_TOKEN,
+      senderToken: process.env.OCC_TEST_SLACK_SENDER_BOT_TOKEN,
+      gatewayIdentity,
+      senderIdentity,
+    });
+    const sender = senderIdentity.user_id;
     const slack = {
       allowedUserId: sender,
       channelId: process.env.OCC_TEST_SLACK_CHANNEL_ID,
@@ -860,17 +870,13 @@ test(
     ]);
     assert.equal(gatewayIdentity.team_id, senderIdentity.team_id);
     assert.notEqual(gatewayIdentity.user_id, senderIdentity.user_id);
-    for (const token of [botToken, senderToken]) {
-      const info: { readonly channel?: unknown } = await slackApi("conversations.info", token, {
-        channel: channelId,
-      });
-      assertSlackChannelDestination(info, channelId);
-      assert.equal(
-        record(info.channel).is_member,
-        true,
-        "Both authorized bots must join the test channel.",
-      );
-    }
+    await verifySlackChannelAccess({
+      channelId,
+      gatewayToken: botToken,
+      senderToken,
+      gatewayIdentity,
+      senderIdentity,
+    });
     const proxy = await createControlledChannelProxy(context);
     const peerProxy = await createControlledChannelProxy(context);
     const slack = {
@@ -1129,6 +1135,30 @@ test(
     assert.equal(directory.status, 200);
     assert.equal(proxy.observations.length, beforeDirectory);
 
+    // A real proxy authentication refusal closes existing tunnels and must never permit direct fallback.
+    const connectedBeforeRefusal = proxy.observations.filter((item) => item.connected).length;
+    proxy.rejectAuthentication();
+    const rejected = await probeChannelConnect(
+      topology.gatewayPlacement,
+      gatewayPod,
+      assignedEnvoy,
+      "slack.com",
+    );
+    assert.equal(rejected.status, 407);
+    assert.equal(proxy.observations.at(-1)?.connected, false);
+    const slackAddress = (await lookup("slack.com", { family: 4 })).address;
+    await assertDeniedConnection(topology.gatewayPlacement, gatewayPod, slackAddress, 443);
+    assert.deepEqual(
+      await probeChannelConnect(topology.gatewayPlacement, peerPod, peerEnvoy, "slack.com"),
+      { status: 200, tlsVerified: true },
+    );
+    proxy.allowAuthentication();
+    await waitFor(
+      "Gateway channel retry after proxy authentication recovery",
+      async () =>
+        proxy.observations.filter((item) => item.connected).length > connectedBeforeRefusal,
+    );
+
     // Destroy existing tunnels and prove a selected request fails through Envoy while direct egress remains denied.
     await proxy.stop();
     const unavailable = await probeChannelConnect(
@@ -1143,7 +1173,6 @@ test(
       { status: 200, tlsVerified: true },
       "An outage on one Agent's proxy must not affect the other Agent's selected proxy.",
     );
-    const slackAddress = (await lookup("slack.com", { family: 4 })).address;
     await assertDeniedConnection(topology.gatewayPlacement, gatewayPod, slackAddress, 443);
     assert.equal((await topology.adminRequest("DELETE", peerPath)).status, 202);
     await waitFor("peer proxy binding retirement", async () => {

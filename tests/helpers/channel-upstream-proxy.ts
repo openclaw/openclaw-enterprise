@@ -34,6 +34,7 @@ export async function createControlledChannelProxy(
   const expected = Buffer.from(authorization);
   const observations: ProxyObservation[] = [];
   const sockets = new Set<Socket>();
+  let acceptCredentials = true;
   const server = createServer((socket) => {
     sockets.add(socket);
     socket.on("error", () => socket.destroy());
@@ -68,7 +69,7 @@ export async function createControlledChannelProxy(
       observations.push(observation);
       const remainder = buffered.subarray(end + 4);
       buffered = Buffer.alloc(0);
-      if (!authenticated) {
+      if (!authenticated || !acceptCredentials) {
         socket.end("HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n");
         return;
       }
@@ -114,6 +115,13 @@ export async function createControlledChannelProxy(
     }
     await new Promise<void>((resolve) => server.close(() => resolve()));
   };
+  const rejectAuthentication = () => {
+    acceptCredentials = false;
+    // Drop existing tunnels so the real Gateway must reconnect through the rejecting proxy.
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+  };
   context.after(stop);
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -129,6 +137,10 @@ export async function createControlledChannelProxy(
     port: listening.port,
     authorization,
     observations,
+    rejectAuthentication,
+    allowAuthentication: () => {
+      acceptCredentials = true;
+    },
     stop,
   };
 }
