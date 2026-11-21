@@ -17,16 +17,28 @@ import {
 } from "../helpers/harness-topology-k3d-real.mjs";
 import { slackApi } from "../helpers/slack-web-api.ts";
 import { boundedTeardown } from "../helpers/bounded-teardown.ts";
+import { redactQaError } from "../helpers/qa-secrets.ts";
 
 // The topology registers its platform Namespace delete before the worker and port-forward stops.
 // Run them newest-first, each bounded and all attempted (finding 1711).
+const patSelected = () => process.env.OCC_TEST_CODEX_TOKEN_FILE !== undefined;
+const protectPatFailure = (work) => async (context) => {
+  try {
+    await work(context);
+  } catch (error) {
+    throw patSelected() ? redactQaError(error) : error;
+  }
+};
 const topologyTeardown = (testContext) =>
-  boundedTeardown(testContext, { label: "production topology teardown" });
+  boundedTeardown(testContext, {
+    label: "production topology teardown",
+    ...(patSelected() ? { sanitizeError: redactQaError } : {}),
+  });
 
 test(
   "production k3d gateway replies once to a real Slack message through its assigned Envoy listener and Codex Agent",
   { ...requiresLiveSlack, timeout: 1_800_000 },
-  async (testContext) => {
+  protectPatFailure(async (testContext) => {
     const { context } = topologyTeardown(testContext);
     for (const key of [
       "OCC_TEST_SLACK_CHANNEL_ID",
@@ -73,7 +85,18 @@ test(
       `Slack Gateway and distinct sender are members of channel ${slack.channelId}.`,
     );
 
-    const topology = await arrangeProductionTopology(context, "dedicated", slack);
+    const tokenFile = process.env.OCC_TEST_CODEX_TOKEN_FILE;
+    const topology = await arrangeProductionTopology(context, "dedicated", slack, {
+      ...(tokenFile !== undefined
+        ? { modelAuthentication: { method: "codex_pat", tokenFile } }
+        : {}),
+    });
+    const modelCredential = topology.protectedModelCredential();
+    const protectedModelVariants = [
+      modelCredential,
+      encodeURIComponent(modelCredential),
+      Buffer.from(modelCredential).toString("base64"),
+    ];
     // Deployment already validated the saved Slack credentials through OCC's
     // listener. Exercise both directory operations through their real API owner.
     for (const [kind, id] of [
@@ -209,6 +232,15 @@ test(
     for (const token of [slack.appToken, slack.botToken, slack.senderBotToken].filter(Boolean)) {
       assert.ok(!JSON.stringify(fleet).includes(token), "Envoy must not receive Slack credentials");
     }
+    const modelSurfaces = [topology.agent, topology.revision, gateway, fleet].map((value) =>
+      JSON.stringify(value),
+    );
+    assert.ok(
+      !protectedModelVariants.some((value) =>
+        modelSurfaces.some((surface) => surface.includes(value)),
+      ),
+      "A Harness model credential appeared in a public, Gateway, or Envoy surface.",
+    );
 
     await waitFor("a genuine authenticated Slack Socket Mode connection", async () => {
       const logs = await kubectl(
@@ -216,6 +248,10 @@ test(
         topology.gatewayPod.metadata.name,
         "--namespace",
         topology.gatewayPlacement,
+      );
+      assert.ok(
+        !protectedModelVariants.some((value) => logs.includes(value)),
+        "Gateway logs must not expose a Harness model credential.",
       );
       assert.equal(logs.includes(slack.appToken), false, "gateway logs must not expose app tokens");
       assert.equal(logs.includes(slack.botToken), false, "gateway logs must not expose bot tokens");
@@ -353,5 +389,5 @@ test(
     context.diagnostic(
       "Channel credential isolation, assigned Envoy listener, and single-message native Codex Slack delivery verified.",
     );
-  },
+  }),
 );

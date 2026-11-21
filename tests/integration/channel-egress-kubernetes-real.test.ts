@@ -2,7 +2,7 @@ import { lookup } from "node:dns/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { asRecord } from "../../packages/utils/src/objects.ts";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { boundedTeardown } from "../helpers/bounded-teardown.ts";
+import { redactQaError } from "../helpers/qa-secrets.ts";
 import { slackApi } from "../helpers/slack-web-api.ts";
 import { probeChannelConnect } from "../helpers/channel-egress-probe.ts";
 import { createControlledChannelProxy } from "../helpers/channel-upstream-proxy.ts";
@@ -62,6 +63,22 @@ function environment(deployment: unknown) {
 }
 
 const selected = process.env.OCC_TEST_SLACK_LIVE === "1";
+const patSelected = () => process.env.OCC_TEST_CODEX_TOKEN_FILE !== undefined;
+const patTeardownOptions = () => (patSelected() ? { sanitizeError: redactQaError } : {});
+const protectPatFailure =
+  (work: (context: TestContext) => Promise<void>) => async (context: TestContext) => {
+    try {
+      await work(context);
+    } catch (error) {
+      throw patSelected() ? redactQaError(error) : error;
+    }
+  };
+const selectedTopologyModelAuthentication = () => {
+  const tokenFile = process.env.OCC_TEST_CODEX_TOKEN_FILE;
+  return tokenFile !== undefined
+    ? { modelAuthentication: { method: "codex_pat" as const, tokenFile } }
+    : {};
+};
 test(
   "channel egress isolates current Driver generations and retires real Agent bindings",
   {
@@ -70,8 +87,11 @@ test(
       : "Select the credentialed Slack Kubernetes lane with real runtime images.",
     timeout: 1_800_000,
   },
-  async (t) => {
-    const { context } = boundedTeardown(t, { label: "channel egress topology cleanup" });
+  protectPatFailure(async (t) => {
+    const { context } = boundedTeardown(t, {
+      label: "channel egress topology cleanup",
+      ...patTeardownOptions(),
+    });
     assert.ok(
       process.env.SLACK_APP_TOKEN &&
         process.env.SLACK_BOT_TOKEN &&
@@ -99,6 +119,7 @@ test(
     // No messages are posted here. Multiple Gateways temporarily use the test app
     // only for transport; the separate delivery test has exactly one consumer.
     const topology = await arrangeProductionTopology(context, "dedicated", slack, {
+      ...selectedTopologyModelAuthentication(),
       channelEgressCapacity: 2,
       namespaceQuota: { pods: "12", "limits.cpu": "20", "limits.memory": "32Gi" },
     });
@@ -862,7 +883,7 @@ test(
       "deletion to revoke both channel bindings",
       async () => (await bindings()).length === 0,
     );
-  },
+  }),
 );
 
 test(
@@ -873,8 +894,11 @@ test(
       : "Select the credentialed Slack Kubernetes lane with real runtime images.",
     timeout: 1_800_000,
   },
-  async (t) => {
-    const { context } = boundedTeardown(t, { label: "upstream proxy Slack topology cleanup" });
+  protectPatFailure(async (t) => {
+    const { context } = boundedTeardown(t, {
+      label: "upstream proxy Slack topology cleanup",
+      ...patTeardownOptions(),
+    });
     const appToken = process.env.SLACK_APP_TOKEN;
     const botToken = process.env.SLACK_BOT_TOKEN;
     const senderToken = process.env.OCC_TEST_SLACK_SENDER_BOT_TOKEN;
@@ -953,6 +977,7 @@ test(
       botToken,
     };
     const topology = await arrangeProductionTopology(context, "dedicated", slack, {
+      ...selectedTopologyModelAuthentication(),
       channelEgressCapacity: 2,
       channelEgress: {
         upstreamProxies: [
@@ -1651,6 +1676,8 @@ test(
           ...[proxy, peerProxy, badProxy].flatMap((item) => proxyVariants(item.authorization)),
           appToken,
           botToken,
+          topology.protectedModelCredential(),
+          encodeURIComponent(topology.protectedModelCredential()),
         ].flatMap((value) => [value, Buffer.from(value).toString("base64")]),
       ),
     ];
@@ -1929,5 +1956,5 @@ test(
       slots.every((slot) => Object.keys(record(slot).data ?? {}).length === 0),
       true,
     );
-  },
+  }),
 );
