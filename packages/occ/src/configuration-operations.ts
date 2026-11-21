@@ -12,10 +12,13 @@ import {
   type SecretBindings,
   type SecretDriver,
 } from "@openclaw-enterprise/contracts";
-import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { isNonEmptyString } from "@openclaw-enterprise/utils";
 import { normalizeRequestSecretBindings } from "./agent-provisioning.ts";
 import type { ModelPolicyAgent } from "./configured-harness.ts";
-import { validateConfigurationSettings } from "./configuration-settings.ts";
+import {
+  freezeConfigurationValues,
+  validateConfigurationSettings,
+} from "./configuration-settings.ts";
 import {
   ConfigurationGenerationConflictError,
   DependencyUnavailableError,
@@ -58,13 +61,6 @@ export interface UpdateConfigurationInput {
  * A document further ahead fails closed, as any other mismatch does.
  */
 const MAX_CONFIGURATION_LEFTOVER_LEAD = 100;
-
-export function freezeConfigurationValues(value: unknown): Readonly<OpenClawConfigurationDocument> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new ScopeViolationError("Configuration values must be a JSON object.");
-  }
-  return immutableCopy(value as OpenClawConfigurationDocument);
-}
 
 /**
  * Rejects requested Secret references (bindings and Harness authentication) that name
