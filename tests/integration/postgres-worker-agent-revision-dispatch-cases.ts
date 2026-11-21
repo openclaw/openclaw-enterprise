@@ -13,6 +13,7 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import { PostgresWorkQueue, type OpenClawController } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
+import { registerRevisionSnapshotCase } from "./postgres-worker-agent-revision-refusal-cases.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import type {
   RevisionFixture,
@@ -184,11 +185,16 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         },
         {
           state: "failed_permanent",
-          reason: "EXECUTION_ADMISSION_UNAVAILABLE",
+          reason: "REPOSITORY_POLICY_PLACEMENT_UNSUPPORTED",
           candidateWasPrepared: false,
           keptPredecessor: true,
         },
       );
+      assert.deepEqual((await fixture.deploymentStatus(owner, candidate)).error, {
+        code: "REPOSITORY_POLICY_PLACEMENT_UNSUPPORTED",
+        message:
+          "The selected execution placement cannot enforce this version's repository network policy. Ask an Installation administrator for a placement that supports the policy, then deploy again.",
+      });
       assert.deepEqual(checked, [candidate.id]);
       assert.deepEqual(prepared, [ordinary.id]);
       assert.equal((await fixture.currentAgent(control))?.activeRevisionId, ordinary.id);
@@ -228,6 +234,11 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
       const result = await settledRevision(fixture, candidate);
       assert.deepEqual(calls, []);
       assert.equal(result.reasonCode, "REPOSITORY_POLICY_HISTORY_INCOMPATIBLE");
+      assert.deepEqual((await fixture.deploymentStatus(owner, candidate)).error, {
+        code: "REPOSITORY_POLICY_HISTORY_INCOMPATIBLE",
+        message:
+          "This Agent has deployment history without a repository network policy. Save the policy for a new Agent before its first deployment.",
+      });
       assert.equal((await fixture.currentAgent(owner))?.activeRevisionId, previous.id);
     },
   );
@@ -343,7 +354,7 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
           },
         });
         const refused = await settledRevision(fixture, candidate);
-        assert.equal(refused.reasonCode, "EXECUTION_ADMISSION_UNAVAILABLE");
+        assert.equal(refused.reasonCode, "REPOSITORY_POLICY_PLACEMENT_UNSUPPORTED");
         assert.equal(
           (await queue.findWorkAttempt(candidate.idempotencyKey))?.candidateNotStarted,
           undefined,
@@ -609,7 +620,9 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
           );
           assert.equal(
             (await settledRevision(fixture, candidate)).reasonCode,
-            capability === "revoked" ? "AUTHORIZATION_DENIED" : "EXECUTION_ADMISSION_UNAVAILABLE",
+            capability === "revoked"
+              ? "AUTHORIZATION_DENIED"
+              : "REPOSITORY_POLICY_PLACEMENT_UNSUPPORTED",
           );
           const {
             rows: [following],
@@ -1022,6 +1035,8 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
   for (const boundary of [
     "binding",
     "preparation",
+    "repository credential preparation",
+    "repository credential preparation after binding",
     "activation before commit",
     "activation after commit",
   ] as const) {
@@ -1029,34 +1044,62 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
       `a current claim refuses revoked policy authority before ${boundary}`,
       requiresPostgres,
       async (context) => {
-        const fixture = await setup(context, { leaseDurationMs: 60_000 });
+        const repository = boundary.startsWith("repository credential")
+          ? repositoryBoundary()
+          : undefined;
+        const withoutBinding = boundary === "repository credential preparation";
+        const untouched = boundary === "binding" || withoutBinding;
+        const fixture = await setup(context, {
+          leaseDurationMs: 60_000,
+          ...(repository ? { repoDriver: repository.driver } : {}),
+        });
         const owner = await fixture.agent("policy-revocation-during-validation", {
-          executionMode: "dedicated",
+          executionMode: repository ? "embedded" : "dedicated",
         });
         const { id: policyId, options } = await saveRepositoryPolicy(fixture, owner, []);
         const previous = await fixture.revision(owner, 1, options);
-        await fixture.start(computeSupportingRepositoryPolicy(fixture.compute));
+        await fixture.start({
+          ...computeSupportingRepositoryPolicy(fixture.compute),
+          maintenanceIntervalMs: 3_600_000,
+        });
         await fixture.work(previous, "succeeded");
         await fixture.stop();
-        const candidate = await fixture.revision(owner, 2, options);
+        const candidate = await fixture.revision(owner, 2, {
+          ...options,
+          ...(repository ? { repositoryCredentials: repository.snapshot } : {}),
+        });
         const resume = Promise.withResolvers<void>();
         let blocked = false;
         const calls: string[] = [];
         const afterCommit = boundary === "activation after commit";
-        const expected =
-          boundary === "binding" ? [] : boundary === "preparation" ? ["bind"] : ["bind", "prepare"];
+        const expected = untouched
+          ? []
+          : repository || boundary === "preparation"
+            ? ["bind"]
+            : ["bind", "prepare"];
         await fixture.start({
-          ...fixture.compute,
+          ...(repository
+            ? repositoryCompute(fixture.compute, options.sandboxDriverId)
+            : fixture.compute),
+          maintenanceIntervalMs: 3_600_000,
           activationOrder: afterCommit ? "afterCommit" : "beforeCommit",
           validateProtectedRepositoryNetworkPolicy() {
-            if (!blocked && calls.length === expected.length) {
+            if (
+              !blocked &&
+              calls.length === expected.length &&
+              (!repository || currentComputeAbortSignal() !== undefined)
+            ) {
               blocked = true;
               return resume.promise;
             }
           },
-          async bindAgent() {
-            calls.push("bind");
-          },
+          ...(withoutBinding
+            ? {}
+            : {
+                async bindAgent() {
+                  calls.push("bind");
+                },
+              }),
           async prepareRevision(revision, ctx) {
             calls.push("prepare");
             return fixture.compute.prepareRevision(revision, ctx);
@@ -1087,6 +1130,44 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
           (await fixture.currentAgent(owner))?.activeRevisionId,
           afterCommit ? candidate.id : previous.id,
         );
+        if (repository) {
+          assert.deepEqual(repository.calls, []);
+        }
+        const queue = new PostgresWorkQueue(fixture.observerPool);
+        const attempt = await queue.findWorkAttempt(candidate.idempotencyKey);
+        const denied = await fixture.observerPool.query<{ authorization: unknown }>(
+          `SELECT details->'__occAuditMetadata'->'authorization' AS authorization
+           FROM occ.audit_events WHERE namespace_id = $1 AND kind = 'authorization_denial'`,
+          [fixture.namespace.id],
+        );
+        assert.deepEqual(
+          { untouched: attempt?.candidateNotStarted, authorizations: denied.rows },
+          {
+            untouched: untouched ? true : undefined,
+            authorizations: [
+              {
+                authorization: {
+                  principalId: fixture.actor.id,
+                  action: "update",
+                  resource: {
+                    kind: "sandbox_policy",
+                    id: policyId,
+                    namespaceId: fixture.namespace.id,
+                  },
+                },
+              },
+            ],
+          },
+        );
+        if (!afterCommit) {
+          const key = (await fixture.advanceMaintenance(previous)).rows[0]?.idempotency_key;
+          assert.ok(key);
+          const repair = await settledRevision(fixture, { id: previous.id, idempotencyKey: key });
+          assert.equal(
+            repair.reasonCode,
+            untouched ? "REVISION_ALREADY_ACTIVE" : "SUCCESSOR_EXECUTION_ADMISSION_UNAVAILABLE",
+          );
+        }
       },
     );
   }
@@ -1429,4 +1510,6 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
       });
     },
   );
+
+  registerRevisionSnapshotCase(revisionTest);
 }

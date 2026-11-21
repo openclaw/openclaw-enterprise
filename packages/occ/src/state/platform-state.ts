@@ -1062,16 +1062,6 @@ function assertProtectedEgressSource(
   }
 }
 
-function validTokenServiceRegistration(value: unknown): boolean {
-  return (
-    isPlainRecord(value) &&
-    Object.keys(value).every((key) => key === "backendRef") &&
-    (value.backendRef === undefined ||
-      (isPlainRecord(value.backendRef) &&
-        Object.values(value.backendRef).every((item) => typeof item === "string")))
-  );
-}
-
 /** Mirrors the PostgreSQL credential source constraints for the in-memory adapter. */
 function assertCredentialSource(source: CredentialSource): void {
   if (source.egress !== undefined) {
@@ -1084,19 +1074,9 @@ function assertCredentialSource(source: CredentialSource): void {
       ? source.egress === undefined &&
         source.driverId === undefined &&
         (source.tokenServiceInstanceId === undefined
-          ? source.type === "oauth2-refresh-token" &&
-            source.registration === undefined &&
-            source.registrationDispatchedAt === undefined
+          ? source.type === "oauth2-refresh-token"
           : source.type !== "oauth2-refresh-token" &&
-            (source.registration === undefined ||
-              validTokenServiceRegistration(source.registration)) &&
-            (source.registrationDispatchedAt === undefined ||
-              (Number.isFinite(Date.parse(source.registrationDispatchedAt)) &&
-                Date.parse(source.registrationDispatchedAt) >= Date.parse(source.createdAt))) &&
-            (source.state !== "registering" || source.registration === undefined) &&
-            (source.state !== "ready" ||
-              (source.registration !== undefined &&
-                source.registrationDispatchedAt !== undefined)) &&
+            (source.state === "ready" || source.state === "deleting") &&
             Object.keys(source.secrets).length === 0)
       : (source.ownerCapability === "credential_gateway" ||
           (source.ownerCapability === "credential_proxy" && source.egress !== undefined)) &&
@@ -2511,29 +2491,6 @@ function repositories(
       snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
       return saved;
     },
-    setCredentialSourceRegistrationDispatch: async (
-      namespaceId,
-      credentialSourceId,
-      dispatchedAt,
-    ) => {
-      const current = await findCredentialSource(namespaceId, credentialSourceId);
-      if (
-        current?.ownerCapability !== "token_service" ||
-        current.tokenServiceInstanceId === undefined ||
-        current.registration !== undefined ||
-        current.state !== (dispatchedAt === undefined ? "deleting" : "registering") ||
-        (current.registrationDispatchedAt === undefined) === (dispatchedAt === undefined)
-      ) {
-        return false;
-      }
-      const { registrationDispatchedAt: _, ...rest } = current;
-      const saved = immutableCopy(
-        dispatchedAt === undefined ? rest : { ...rest, registrationDispatchedAt: dispatchedAt },
-      );
-      assertCredentialSource(saved);
-      snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
-      return true;
-    },
     updateCredentialSourceConfig: async (namespaceId, credentialSourceId, config) => {
       const current = await findCredentialSource(namespaceId, credentialSourceId);
       if (
@@ -2548,24 +2505,12 @@ function repositories(
       snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
       return saved;
     },
-    markCredentialSourceReady: async (namespaceId, credentialSourceId, registration, config) => {
+    markCredentialSourceReady: async (namespaceId, credentialSourceId) => {
       const current = await findCredentialSource(namespaceId, credentialSourceId);
       if (current === undefined || current.state !== "registering") {
         return undefined;
       }
-      if (
-        config !== undefined &&
-        (current.ownerCapability !== "token_service" ||
-          current.tokenServiceInstanceId === undefined)
-      ) {
-        return undefined;
-      }
-      const saved = immutableCopy({
-        ...current,
-        state: "ready" as const,
-        ...(registration === undefined ? {} : { registration }),
-        ...(config === undefined ? {} : { config }),
-      });
+      const saved = immutableCopy({ ...current, state: "ready" as const });
       assertCredentialSource(saved);
       snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
       return saved;
