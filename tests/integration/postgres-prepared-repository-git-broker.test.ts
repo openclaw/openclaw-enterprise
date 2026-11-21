@@ -354,6 +354,7 @@ for (const outcome of [
   "unexpected custody family",
   "settled draft-capable transport",
   "unsettled draft receipt",
+  "draft provider reply lost",
   "unissued draft-capable transport",
   "stored execution admission incompatible",
   "model account changes",
@@ -380,9 +381,11 @@ for (const outcome of [
         drivers: { repo: driverId },
       };
       const f = await setupNativeWithdrawal(t, { backends: [...modelBackends, gitBackend] });
+      const lostDraftReply = outcome === "draft provider reply lost";
+      const draftMustRetire = lostDraftReply || outcome === "unsettled draft receipt";
       const draftTransport =
         outcome === "settled draft-capable transport" ||
-        outcome === "unsettled draft receipt" ||
+        draftMustRetire ||
         outcome === "unissued draft-capable transport";
       const withoutFamily = outcome === "unissued draft-capable transport";
       const clock = createControlledClock();
@@ -732,7 +735,10 @@ for (const outcome of [
           held?.then(() => assert.fail("the admitted upload never reached the held origin")),
           delay(5000).then(() => assert.fail("the admitted upload did not start")),
         ]);
-        assert.equal(await draft(), 201, "the original exact ref and base allow draft creation");
+        if (lostDraftReply) {
+          provider.disconnectAfterMutation("POST", draftPath);
+        }
+        assert.equal(await draft(), lostDraftReply ? 409 : 201);
         assert.equal(provider.pulls.size, 1);
       }
       const removed = await f.controller.updateAgent(f.actor.id, {
@@ -864,7 +870,9 @@ for (const outcome of [
           "SELECT outcome, settled_at IS NOT NULL AS settled FROM occ.prepared_repository_draft_pulls WHERE admission_id=$1",
           [receipt.admissionId],
         );
-        assert.deepEqual(readback.rows, [{ outcome: "created", settled: true }]);
+        assert.deepEqual(readback.rows, [
+          { outcome: lostDraftReply ? "outcome_unknown" : "created", settled: true },
+        ]);
         if (outcome === "unsettled draft receipt") {
           // A broker crash after the provider reply can leave the original authorization
           // committed with no final receipt. Reproduce that exact persisted boundary.
@@ -1050,7 +1058,7 @@ for (const outcome of [
       if (
         outcome === "inference unavailable" ||
         outcome === "unexpected custody family" ||
-        outcome === "unsettled draft receipt" ||
+        draftMustRetire ||
         outcome === "model account binding revoked during observation" ||
         outcome === "model account final IAM fault with revoked binding"
       ) {
@@ -1079,7 +1087,7 @@ for (const outcome of [
         runtimeObservations,
         outcome === "unconfirmed revocation" ||
           outcome === "unexpected custody family" ||
-          outcome === "unsettled draft receipt"
+          draftMustRetire
           ? 0
           : outcome === "model account final read recovers"
             ? 2

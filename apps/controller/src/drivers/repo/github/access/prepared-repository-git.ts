@@ -626,6 +626,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
                OR p.scope->>'base' IS DISTINCT FROM f.source#>>'{grant,pullRequestBase}'
                OR p.scope->>'apiOrigin' IS DISTINCT FROM split_part($5,'#',1)
                OR p.send_start_by IS NULL OR p.settled_at IS NULL
+               OR p.outcome NOT IN ('created', 'not-submitted')
              )
          ) AND NOT EXISTS (
            SELECT FROM occ.prepared_repository_git_uses u
