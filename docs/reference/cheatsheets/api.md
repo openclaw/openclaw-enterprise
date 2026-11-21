@@ -234,12 +234,12 @@
 
 ### Agent automations
 
-- [`listAgentAutomationRuns`](../api.md#get-namespacesnamespaceidagentsagentidautomationsautomationidruns): Request Agent automation history (runtime qualification pending).
-- [`listAgentAutomations`](../api.md#get-namespacesnamespaceidagentsagentidautomations): Request Agent automation inventory (runtime qualification pending).
-- [`getAgentAutomation`](../api.md#get-namespacesnamespaceidagentsagentidautomationsautomationid): Request an Agent automation (runtime qualification pending).
-- [`createAgentAutomation`](../api.md#post-namespacesnamespaceidagentsagentidautomations): Request an Agent automation (runtime qualification pending).
-- [`updateAgentAutomation`](../api.md#patch-namespacesnamespaceidagentsagentidautomationsautomationid): Request an Agent automation edit (runtime qualification pending).
-- [`deleteAgentAutomation`](../api.md#delete-namespacesnamespaceidagentsagentidautomationsautomationid): Request Agent automation deletion (runtime qualification pending).
+- [`listAgentAutomationRuns`](../api.md#get-namespacesnamespaceidagentsagentidautomationsautomationidruns): Read authorized Agent automation history.
+- [`listAgentAutomations`](../api.md#get-namespacesnamespaceidagentsagentidautomations): List authorized Agent automations.
+- [`getAgentAutomation`](../api.md#get-namespacesnamespaceidagentsagentidautomationsautomationid): Read a managed Agent automation.
+- [`createAgentAutomation`](../api.md#post-namespacesnamespaceidagentsagentidautomations): Create a scheduled Agent automation.
+- [`updateAgentAutomation`](../api.md#patch-namespacesnamespaceidagentsagentidautomationsautomationid): Update an Agent automation.
+- [`deleteAgentAutomation`](../api.md#delete-namespacesnamespaceidagentsagentidautomationsautomationid): Delete an Agent automation.
 
 ### Credential sources
 

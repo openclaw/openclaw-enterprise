@@ -1,16 +1,6 @@
 {
   "components": {
     "examples": {
-      "AUTOMATIONS_UNQUALIFIED": {
-        "summary": "AUTOMATIONS_UNQUALIFIED",
-        "value": {
-          "error": {
-            "code": "AUTOMATIONS_UNQUALIFIED",
-            "message": "The runtime automation authority and retained-history contract is not qualified."
-          },
-          "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-        }
-      },
       "BAD_GATEWAY": {
         "summary": "BAD_GATEWAY",
         "value": {
@@ -22961,7 +22951,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/automations": {
       "get": {
-        "description": "Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.",
+        "description": "Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. OCC enforces creator ownership and uses private native administrative transport. Scheduled execution uses approved Agent service authority; native edits are outside the supported workflow.",
         "operationId": "listAgentAutomations",
         "parameters": [
           {
@@ -23020,6 +23010,213 @@
           }
         ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "jobs": [
+                          {
+                            "configRevision": "observed-native-revision",
+                            "enabled": true,
+                            "id": "7ed6c814-7412-46e7-9aae-12b13ec16d34",
+                            "lastRunStatus": null,
+                            "name": "Daily report",
+                            "nextRunAtMs": 1795276800000,
+                            "schedule": {
+                              "expr": "0 9 * * *",
+                              "kind": "cron",
+                              "staggerMs": 0,
+                              "tz": "America/Los_Angeles"
+                            }
+                          }
+                        ],
+                        "nextOffset": null,
+                        "snapshotRevision": "example-inventory-revision",
+                        "total": 1
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "jobs": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "properties": {
+                                  "configRevision": {
+                                    "maxLength": 128,
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "enabled": { "type": "boolean" },
+                                  "id": {
+                                    "maxLength": 128,
+                                    "minLength": 1,
+                                    "pattern": "^[A-Za-z0-9_-]+$",
+                                    "type": "string"
+                                  },
+                                  "lastRunStatus": {
+                                    "anyOf": [
+                                      { "const": "ok", "type": "string" },
+                                      { "const": "error", "type": "string" },
+                                      { "const": "skipped", "type": "string" },
+                                      { "type": "null" }
+                                    ]
+                                  },
+                                  "name": { "maxLength": 200, "minLength": 1, "type": "string" },
+                                  "nextRunAtMs": {
+                                    "anyOf": [
+                                      {
+                                        "maximum": 9007199254740991,
+                                        "minimum": 0,
+                                        "type": "integer"
+                                      },
+                                      { "type": "null" }
+                                    ]
+                                  },
+                                  "schedule": {
+                                    "anyOf": [
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "at": {
+                                            "format": "date-time",
+                                            "maxLength": 64,
+                                            "type": "string"
+                                          },
+                                          "kind": { "const": "at", "type": "string" }
+                                        },
+                                        "required": ["kind", "at"],
+                                        "type": "object"
+                                      },
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "anchorMs": {
+                                            "maximum": 9007199254740991,
+                                            "minimum": 0,
+                                            "type": "integer"
+                                          },
+                                          "everyMs": {
+                                            "maximum": 9007199254740991,
+                                            "minimum": 1,
+                                            "type": "integer"
+                                          },
+                                          "kind": { "const": "every", "type": "string" }
+                                        },
+                                        "required": ["kind", "everyMs"],
+                                        "type": "object"
+                                      },
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "expr": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "kind": { "const": "cron", "type": "string" },
+                                          "staggerMs": {
+                                            "maximum": 9007199254740991,
+                                            "minimum": 0,
+                                            "type": "integer"
+                                          },
+                                          "tz": {
+                                            "maxLength": 128,
+                                            "minLength": 1,
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": ["kind", "expr", "tz"],
+                                        "type": "object"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "configRevision",
+                                  "name",
+                                  "enabled",
+                                  "schedule",
+                                  "nextRunAtMs",
+                                  "lastRunStatus"
+                                ],
+                                "type": "object"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "configRevision": {
+                                    "maxLength": 128,
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "enabled": { "type": "boolean" },
+                                  "id": {
+                                    "maxLength": 128,
+                                    "minLength": 1,
+                                    "pattern": "^[A-Za-z0-9_-]+$",
+                                    "type": "string"
+                                  },
+                                  "name": { "maxLength": 200, "minLength": 1, "type": "string" },
+                                  "scheduleKind": {
+                                    "maxLength": 64,
+                                    "minLength": 1,
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "configRevision",
+                                  "name",
+                                  "enabled",
+                                  "scheduleKind"
+                                ],
+                                "type": "object"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "nextOffset": {
+                          "anyOf": [{ "minimum": 0, "type": "integer" }, { "type": "null" }]
+                        },
+                        "snapshotRevision": { "maxLength": 128, "minLength": 1, "type": "string" },
+                        "total": { "minimum": 0, "type": "integer" }
+                      },
+                      "required": ["jobs", "total", "nextOffset", "snapshotRevision"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
           "400": {
             "content": {
               "application/json": {
@@ -23056,6 +23253,15 @@
             },
             "description": "The requested platform resource was not found."
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
           "500": {
             "content": {
               "application/json": {
@@ -23069,16 +23275,16 @@
             "content": {
               "application/json": {
                 "examples": {
-                  "example": { "$ref": "#/components/examples/AUTOMATIONS_UNQUALIFIED" }
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
                 },
                 "schema": { "$ref": "#/components/schemas/def-7" }
               }
             },
-            "description": "The runtime automation authority and retained-history contract is not qualified."
+            "description": "A required dependency is unavailable."
           }
         },
         "security": [{ "sessionCookie": [] }],
-        "summary": "Request Agent automation inventory (runtime qualification pending)",
+        "summary": "List authorized Agent automations",
         "tags": ["Agent automations"],
         "x-openclaw-permissions": [
           { "action": "operate", "resourceKind": "agent", "scope": "requested" },
@@ -23091,7 +23297,7 @@
         ]
       },
       "post": {
-        "description": "Requires a human session and operate on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.",
+        "description": "Requires a human session and operate on the exact Agent. Mutations require the configured Origin and session CSRF checks. OCC enforces creator ownership and uses private native administrative transport. Scheduled execution uses approved Agent service authority; native edits are outside the supported workflow.",
         "operationId": "createAgentAutomation",
         "parameters": [
           {
@@ -23190,6 +23396,146 @@
           "required": true
         },
         "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "configRevision": "observed-native-revision",
+                        "enabled": true,
+                        "id": "7ed6c814-7412-46e7-9aae-12b13ec16d34",
+                        "lastRunStatus": null,
+                        "name": "Daily report",
+                        "nextRunAtMs": 1795276800000,
+                        "prompt": "Generate the daily report",
+                        "schedule": {
+                          "expr": "0 9 * * *",
+                          "kind": "cron",
+                          "staggerMs": 0,
+                          "tz": "America/Los_Angeles"
+                        }
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "configRevision": { "maxLength": 128, "minLength": 1, "type": "string" },
+                        "enabled": { "type": "boolean" },
+                        "id": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "pattern": "^[A-Za-z0-9_-]+$",
+                          "type": "string"
+                        },
+                        "lastRunStatus": {
+                          "anyOf": [
+                            { "const": "ok", "type": "string" },
+                            { "const": "error", "type": "string" },
+                            { "const": "skipped", "type": "string" },
+                            { "type": "null" }
+                          ]
+                        },
+                        "name": { "maxLength": 200, "minLength": 1, "type": "string" },
+                        "nextRunAtMs": {
+                          "anyOf": [
+                            { "maximum": 9007199254740991, "minimum": 0, "type": "integer" },
+                            { "type": "null" }
+                          ]
+                        },
+                        "prompt": { "maxLength": 16384, "minLength": 1, "type": "string" },
+                        "schedule": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "at": { "format": "date-time", "maxLength": 64, "type": "string" },
+                                "kind": { "const": "at", "type": "string" }
+                              },
+                              "required": ["kind", "at"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "anchorMs": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "everyMs": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "kind": { "const": "every", "type": "string" }
+                              },
+                              "required": ["kind", "everyMs"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "expr": { "maxLength": 256, "minLength": 1, "type": "string" },
+                                "kind": { "const": "cron", "type": "string" },
+                                "staggerMs": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "tz": { "maxLength": 128, "minLength": 1, "type": "string" }
+                              },
+                              "required": ["kind", "expr", "tz"],
+                              "type": "object"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "configRevision",
+                        "name",
+                        "enabled",
+                        "schedule",
+                        "prompt",
+                        "nextRunAtMs",
+                        "lastRunStatus"
+                      ],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created automation",
+            "headers": {
+              "Location": {
+                "description": "OCC automation path. On UNKNOWN_OUTCOME, use it to inspect the job or its retained history without replaying the mutation.",
+                "schema": { "schema": { "type": "string" } }
+              }
+            }
+          },
           "400": {
             "content": {
               "application/json": {
@@ -23268,16 +23614,22 @@
             "content": {
               "application/json": {
                 "examples": {
-                  "example": { "$ref": "#/components/examples/AUTOMATIONS_UNQUALIFIED" }
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
                 },
                 "schema": { "$ref": "#/components/schemas/def-7" }
               }
             },
-            "description": "The runtime automation authority and retained-history contract is not qualified."
+            "description": "Unavailable dependency or uncertain mutation; Location is present when OCC reserved an automation identity.",
+            "headers": {
+              "Location": {
+                "description": "OCC automation path. On UNKNOWN_OUTCOME, use it to inspect the job or its retained history without replaying the mutation.",
+                "schema": { "schema": { "type": "string" } }
+              }
+            }
           }
         },
         "security": [{ "sessionCookie": [] }],
-        "summary": "Request an Agent automation (runtime qualification pending)",
+        "summary": "Create a scheduled Agent automation",
         "tags": ["Agent automations"],
         "x-openclaw-permissions": [
           { "action": "operate", "resourceKind": "agent", "scope": "requested" }
@@ -23286,7 +23638,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}": {
       "delete": {
-        "description": "Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.",
+        "description": "Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. OCC enforces creator ownership and uses private native administrative transport. Scheduled execution uses approved Agent service authority; native edits are outside the supported workflow.",
         "operationId": "deleteAgentAutomation",
         "parameters": [
           {
@@ -23350,6 +23702,7 @@
           }
         ],
         "responses": {
+          "204": { "description": "No Content" },
           "400": {
             "content": {
               "application/json": {
@@ -23395,6 +23748,26 @@
             },
             "description": "The requested operation conflicts with the current resource state."
           },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
           "500": {
             "content": {
               "application/json": {
@@ -23408,16 +23781,22 @@
             "content": {
               "application/json": {
                 "examples": {
-                  "example": { "$ref": "#/components/examples/AUTOMATIONS_UNQUALIFIED" }
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
                 },
                 "schema": { "$ref": "#/components/schemas/def-7" }
               }
             },
-            "description": "The runtime automation authority and retained-history contract is not qualified."
+            "description": "Unavailable dependency or uncertain mutation; Location is present when OCC reserved an automation identity.",
+            "headers": {
+              "Location": {
+                "description": "OCC automation path. On UNKNOWN_OUTCOME, use it to inspect the job or its retained history without replaying the mutation.",
+                "schema": { "schema": { "type": "string" } }
+              }
+            }
           }
         },
         "security": [{ "sessionCookie": [] }],
-        "summary": "Request Agent automation deletion (runtime qualification pending)",
+        "summary": "Delete an Agent automation",
         "tags": ["Agent automations"],
         "x-openclaw-permissions": [
           { "action": "operate", "resourceKind": "agent", "scope": "requested" },
@@ -23430,7 +23809,7 @@
         ]
       },
       "get": {
-        "description": "Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.",
+        "description": "Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. OCC enforces creator ownership and uses private native administrative transport. Scheduled execution uses approved Agent service authority; native edits are outside the supported workflow.",
         "operationId": "getAgentAutomation",
         "parameters": [
           {
@@ -23482,6 +23861,140 @@
           }
         ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "configRevision": "observed-native-revision",
+                        "enabled": true,
+                        "id": "7ed6c814-7412-46e7-9aae-12b13ec16d34",
+                        "lastRunStatus": null,
+                        "name": "Daily report",
+                        "nextRunAtMs": 1795276800000,
+                        "prompt": "Generate the daily report",
+                        "schedule": {
+                          "expr": "0 9 * * *",
+                          "kind": "cron",
+                          "staggerMs": 0,
+                          "tz": "America/Los_Angeles"
+                        }
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "configRevision": { "maxLength": 128, "minLength": 1, "type": "string" },
+                        "enabled": { "type": "boolean" },
+                        "id": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "pattern": "^[A-Za-z0-9_-]+$",
+                          "type": "string"
+                        },
+                        "lastRunStatus": {
+                          "anyOf": [
+                            { "const": "ok", "type": "string" },
+                            { "const": "error", "type": "string" },
+                            { "const": "skipped", "type": "string" },
+                            { "type": "null" }
+                          ]
+                        },
+                        "name": { "maxLength": 200, "minLength": 1, "type": "string" },
+                        "nextRunAtMs": {
+                          "anyOf": [
+                            { "maximum": 9007199254740991, "minimum": 0, "type": "integer" },
+                            { "type": "null" }
+                          ]
+                        },
+                        "prompt": { "maxLength": 16384, "minLength": 1, "type": "string" },
+                        "schedule": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "at": { "format": "date-time", "maxLength": 64, "type": "string" },
+                                "kind": { "const": "at", "type": "string" }
+                              },
+                              "required": ["kind", "at"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "anchorMs": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "everyMs": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "kind": { "const": "every", "type": "string" }
+                              },
+                              "required": ["kind", "everyMs"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "expr": { "maxLength": 256, "minLength": 1, "type": "string" },
+                                "kind": { "const": "cron", "type": "string" },
+                                "staggerMs": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "tz": { "maxLength": 128, "minLength": 1, "type": "string" }
+                              },
+                              "required": ["kind", "expr", "tz"],
+                              "type": "object"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "configRevision",
+                        "name",
+                        "enabled",
+                        "schedule",
+                        "prompt",
+                        "nextRunAtMs",
+                        "lastRunStatus"
+                      ],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
           "400": {
             "content": {
               "application/json": {
@@ -23540,16 +24053,16 @@
             "content": {
               "application/json": {
                 "examples": {
-                  "example": { "$ref": "#/components/examples/AUTOMATIONS_UNQUALIFIED" }
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
                 },
                 "schema": { "$ref": "#/components/schemas/def-7" }
               }
             },
-            "description": "The runtime automation authority and retained-history contract is not qualified."
+            "description": "A required dependency is unavailable."
           }
         },
         "security": [{ "sessionCookie": [] }],
-        "summary": "Request an Agent automation (runtime qualification pending)",
+        "summary": "Read a managed Agent automation",
         "tags": ["Agent automations"],
         "x-openclaw-permissions": [
           { "action": "operate", "resourceKind": "agent", "scope": "requested" },
@@ -23562,7 +24075,7 @@
         ]
       },
       "patch": {
-        "description": "Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.",
+        "description": "Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. OCC enforces creator ownership and uses private native administrative transport. Scheduled execution uses approved Agent service authority; native edits are outside the supported workflow.",
         "operationId": "updateAgentAutomation",
         "parameters": [
           {
@@ -23678,6 +24191,140 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "configRevision": "observed-native-revision",
+                        "enabled": false,
+                        "id": "7ed6c814-7412-46e7-9aae-12b13ec16d34",
+                        "lastRunStatus": null,
+                        "name": "Daily report",
+                        "nextRunAtMs": null,
+                        "prompt": "Generate the daily report",
+                        "schedule": {
+                          "expr": "0 9 * * *",
+                          "kind": "cron",
+                          "staggerMs": 0,
+                          "tz": "America/Los_Angeles"
+                        }
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "configRevision": { "maxLength": 128, "minLength": 1, "type": "string" },
+                        "enabled": { "type": "boolean" },
+                        "id": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "pattern": "^[A-Za-z0-9_-]+$",
+                          "type": "string"
+                        },
+                        "lastRunStatus": {
+                          "anyOf": [
+                            { "const": "ok", "type": "string" },
+                            { "const": "error", "type": "string" },
+                            { "const": "skipped", "type": "string" },
+                            { "type": "null" }
+                          ]
+                        },
+                        "name": { "maxLength": 200, "minLength": 1, "type": "string" },
+                        "nextRunAtMs": {
+                          "anyOf": [
+                            { "maximum": 9007199254740991, "minimum": 0, "type": "integer" },
+                            { "type": "null" }
+                          ]
+                        },
+                        "prompt": { "maxLength": 16384, "minLength": 1, "type": "string" },
+                        "schedule": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "at": { "format": "date-time", "maxLength": 64, "type": "string" },
+                                "kind": { "const": "at", "type": "string" }
+                              },
+                              "required": ["kind", "at"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "anchorMs": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "everyMs": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "kind": { "const": "every", "type": "string" }
+                              },
+                              "required": ["kind", "everyMs"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "expr": { "maxLength": 256, "minLength": 1, "type": "string" },
+                                "kind": { "const": "cron", "type": "string" },
+                                "staggerMs": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "tz": { "maxLength": 128, "minLength": 1, "type": "string" }
+                              },
+                              "required": ["kind", "expr", "tz"],
+                              "type": "object"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "configRevision",
+                        "name",
+                        "enabled",
+                        "schedule",
+                        "prompt",
+                        "nextRunAtMs",
+                        "lastRunStatus"
+                      ],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
           "400": {
             "content": {
               "application/json": {
@@ -23756,16 +24403,22 @@
             "content": {
               "application/json": {
                 "examples": {
-                  "example": { "$ref": "#/components/examples/AUTOMATIONS_UNQUALIFIED" }
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
                 },
                 "schema": { "$ref": "#/components/schemas/def-7" }
               }
             },
-            "description": "The runtime automation authority and retained-history contract is not qualified."
+            "description": "Unavailable dependency or uncertain mutation; Location is present when OCC reserved an automation identity.",
+            "headers": {
+              "Location": {
+                "description": "OCC automation path. On UNKNOWN_OUTCOME, use it to inspect the job or its retained history without replaying the mutation.",
+                "schema": { "schema": { "type": "string" } }
+              }
+            }
           }
         },
         "security": [{ "sessionCookie": [] }],
-        "summary": "Request an Agent automation edit (runtime qualification pending)",
+        "summary": "Update an Agent automation",
         "tags": ["Agent automations"],
         "x-openclaw-permissions": [
           { "action": "operate", "resourceKind": "agent", "scope": "requested" },
@@ -23780,7 +24433,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}/runs": {
       "get": {
-        "description": "Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.",
+        "description": "Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. OCC enforces creator ownership and uses private native administrative transport. Scheduled execution uses approved Agent service authority; native edits are outside the supported workflow.",
         "operationId": "listAgentAutomationRuns",
         "parameters": [
           {
@@ -23856,6 +24509,108 @@
           }
         ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": { "nextOffset": null, "runs": [], "total": 0 },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "nextOffset": {
+                          "anyOf": [{ "minimum": 0, "type": "integer" }, { "type": "null" }]
+                        },
+                        "runs": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "completionStatus": {
+                                "anyOf": [
+                                  { "const": "succeeded", "type": "string" },
+                                  { "const": "failed", "type": "string" },
+                                  { "const": "unknown", "type": "string" },
+                                  { "type": "null" }
+                                ]
+                              },
+                              "deliveryStatus": {
+                                "anyOf": [
+                                  { "const": "delivered", "type": "string" },
+                                  { "const": "not-delivered", "type": "string" },
+                                  { "const": "not-requested", "type": "string" },
+                                  { "const": "unknown", "type": "string" },
+                                  { "type": "null" }
+                                ]
+                              },
+                              "error": { "type": "string" },
+                              "finishedAtMs": {
+                                "anyOf": [
+                                  { "maximum": 9007199254740991, "minimum": 0, "type": "integer" },
+                                  { "type": "null" }
+                                ]
+                              },
+                              "runId": { "maxLength": 200, "minLength": 1, "type": "string" },
+                              "startedAtMs": {
+                                "anyOf": [
+                                  { "maximum": 9007199254740991, "minimum": 0, "type": "integer" },
+                                  { "type": "null" }
+                                ]
+                              },
+                              "status": {
+                                "anyOf": [
+                                  { "const": "ok", "type": "string" },
+                                  { "const": "error", "type": "string" },
+                                  { "const": "skipped", "type": "string" },
+                                  { "type": "null" }
+                                ]
+                              },
+                              "summary": { "type": "string" }
+                            },
+                            "required": [
+                              "runId",
+                              "startedAtMs",
+                              "finishedAtMs",
+                              "status",
+                              "completionStatus",
+                              "deliveryStatus"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "total": { "minimum": 0, "type": "integer" }
+                      },
+                      "required": ["runs", "total", "nextOffset"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
           "400": {
             "content": {
               "application/json": {
@@ -23905,16 +24660,16 @@
             "content": {
               "application/json": {
                 "examples": {
-                  "example": { "$ref": "#/components/examples/AUTOMATIONS_UNQUALIFIED" }
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
                 },
                 "schema": { "$ref": "#/components/schemas/def-7" }
               }
             },
-            "description": "The runtime automation authority and retained-history contract is not qualified."
+            "description": "A required dependency is unavailable."
           }
         },
         "security": [{ "sessionCookie": [] }],
-        "summary": "Request Agent automation history (runtime qualification pending)",
+        "summary": "Read authorized Agent automation history",
         "tags": ["Agent automations"],
         "x-openclaw-permissions": [
           { "action": "operate", "resourceKind": "agent", "scope": "requested" },

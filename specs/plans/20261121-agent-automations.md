@@ -20,8 +20,9 @@ management permissions; execution uses the deployed Agent's service authority
 and approved tools. Retained ownership authorizes native history after deletion.
 
 No upstream writes, dependency patches or new upstream scope are required.
-The current implementation still refuses dispatch; the broker and its runtime
-proof remain incomplete.
+The working tree implements broker dispatch, durable ownership and native ID
+binding. Protocol and PostgreSQL checks pass. Model execution, policy enforcement,
+deployed replacement and independent review remain incomplete.
 
 ## Owners and touchpoints
 
@@ -39,7 +40,7 @@ proof remain incomplete.
 1. Submit the revised RFC before changing the reserved Compute delegation mode.
    Keep the current RFC PR's author and branch. Implementation can continue while
    the proposal is reviewed unless a specific hold is recorded.
-2. Add immutable ownership reservations keyed by native job ID. Bind each row to
+2. Add immutable ownership reservations keyed by OCC UUID. Bind each row to
    the exact Namespace, Agent, human Principal and selected native Agent. Use
    database constraints for identity and parent ownership, and cascade Agent
    deletion. The in-memory adapter mirrors those invariants.
@@ -50,7 +51,10 @@ proof remain incomplete.
    operator scope, method support and server-selected native Agent. Keep the RPC
    surface fixed to the six supported methods; no caller-selected method, identity,
    target, policy or credential reaches this client.
-5. Reserve ownership before create dispatch. Round-trip native normalization.
+5. Reserve ownership before native create. Use a unique declaration key and create
+   disabled, bind the server-generated native ID durably, then activate if requested.
+   Resolve a lost create reply by read-only native inventory and one-time OCC binding,
+   without replay or automatic activation. Round-trip native normalization.
    For PATCH, authorize ownership, read the full job, validate its shape and same-read
    revision, then send that revision to the atomic native update. DELETE also
    uses the observed native revision. Filter inventory by OCC ownership before
@@ -62,7 +66,8 @@ proof remain incomplete.
    denied and indeterminate outcomes without prompt or native payload content.
    After a mutation might have reached native execution, a lost reply, changed
    revision, malformed acknowledgement or failed success audit is
-   `UNKNOWN_OUTCOME`; there is no automatic replay.
+   `UNKNOWN_OUTCOME`; return the OCC automation path in `Location` when known.
+   There is no automatic replay.
 8. Update the existing flow, reference, guide links, OpenAPI, permission and
    database-entity cheat sheets. The environment-variable inventory is unchanged
    unless implementation demonstrates a supported configuration need.
@@ -74,13 +79,13 @@ proof remain incomplete.
 
 | Required outcome | Proof | Current result |
 | --- | --- | --- |
-| Human and exact-Agent admission | Real HTTP app, sessions and Native IAM | Existing refusal case passed; broker success coverage pending |
-| Ownership constraints and cleanup | Disposable migrated PostgreSQL, application role, actual repository operations | Pending |
-| Normalization and lifecycle | OCC HTTP calls to a real packaged Gateway in the regular Agent workflow | Pending |
-| Approved and denied tools | Scheduled real model turn in each selected Harness; include current policy reduction and app/MCP boundaries | Pending |
-| History after deletion | Successful one-shot and explicit deletion, then creator/admin and foreign-creator history requests | Pending |
-| Unknown outcomes | Lost mutation reply, post-dispatch revision change and failed audit append; count native dispatches | Pending |
-| Revision replacement | Owned disposable Gateway workload and persistent state across replacement | Pending |
+| Human and exact-Agent admission | Real HTTP app, sessions and Native IAM | HTTP checks pass; native protocol case verifies creator filtering and successful dispatch |
+| Ownership constraints and cleanup | Disposable migrated PostgreSQL, application role, actual repository operations | Reservation, one-time binding, uniqueness, immutable creator and audit rollback pass; Agent deletion cascade still needs workflow proof |
+| Normalization and lifecycle | OCC HTTP calls to a real packaged Gateway in the regular Agent workflow | Real Gateway protocol case passes all three schedule forms, CRUD and stale revisions; deployed workflow blocked before startup |
+| Approved and denied tools | Scheduled real model turn in each selected Harness; include current policy reduction and app/MCP boundaries | Kubernetes startup blocked by host file-watcher exhaustion; no model turn ran. Add policy-reduction and app/MCP cases before qualification |
+| History after deletion | Successful one-shot and explicit deletion, then creator/admin and foreign-creator history requests | Never-run deleted job correctly returns 404 in native proof; completed-run history remains unverified |
+| Unknown outcomes | Lost mutation reply, post-dispatch revision change and failed audit append; count native dispatches | Real Gateway fault cases pass without create replay; lost create reply leaves a disabled recoverable job |
+| Revision replacement | Owned disposable Gateway workload and persistent state across replacement | OCC revision fencing passes with fixture Compute; physical workload replacement remains unverified |
 | Independent review | Canonical autoreview, without provider or isolation bypass | Previous attempt blocked before reviewer launch; unchanged blocker until repaired |
 
 Use Node 24.22.1, pnpm 11.15.1 and Bun 1.4.4. Follow the
@@ -100,6 +105,18 @@ lane. Fixture or source-only checks do not satisfy native runtime acceptance.
 - The former upstream qualification dependency is replaced by the broker design.
   Existing native APIs must still be qualified on the packaged runtime. The
   previous tests prove refusal paths, not functioning scheduling.
+- On the working tree based on `fbf9ad567d`, the real Gateway protocol suite passed
+  2 tests without a model call, PostgreSQL ownership passed 1 test, and focused HTTP
+  checks passed 5 tests, all without skips. Migration upgrade, Provider continuation
+  and rollback passed 150 tests, including the pre-automation predecessor. Pending
+  SandboxPolicy custody upgrades passed another 11 tests without skips.
+- Type checking, lint, formatting, generated OpenAPI, workspace boundaries, CI
+  manifest audit, documentation links/length and flow validation passed.
+- The Kubernetes QA run used local controller digest `d4f7adb91eaeaf86d8590d058a99ccbebd6bde0910d5013225390cae3bae4b59`
+  and runtime digest `f2899d88e62a796f22eb27e0641384272c27ee689e89bb70d047fc5ef38bf31f`.
+  These are working-tree builds, not published releases. k3s exited while creating
+  its image-import watcher with `too many open files`. The run failed before Agent
+  deployment; the owned cluster was removed. Host-wide limits were not changed.
 - Canonical review previously stopped at isolation preflight: launcher bootstrap
   returned HTTP 403 without an isolated cached executable. Normal login-shell
   bootstrap also failed on read-only cache metadata. No reviewer or report ran.
@@ -109,6 +126,9 @@ lane. Fixture or source-only checks do not satisfy native runtime acceptance.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-21: Record broker protocol, persistence and upgrade results, and the blocked Kubernetes model proof. Keep policy and independent-review gaps explicit.
+- 2026-11-21: Real native protocol verification found that cron.add rejects caller-selected IDs. Use OCC IDs, native declaration keys, disabled creation and a durable one-time native binding before activation.
 
 - 2026-11-21: Revise delivery around the selected OCC broker and sole-manager assumption; retain prior verification limits.
 - 2026-11-20 20:31: Correct creation admission to require operate before resource lookup. The real HTTP regression failed on commit `465a76013e` (administer-only POST returned 503 instead of 403) and passed after the correction. Administration still admits the other five operations to the qualification refusal.

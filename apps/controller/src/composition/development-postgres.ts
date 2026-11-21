@@ -1,3 +1,4 @@
+import { createAgentAutomationsAccess } from "./agent-automations.ts";
 import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
@@ -332,7 +333,13 @@ export async function composePostgresDevelopment(
         cursorSecret: config.authSecret,
       },
       ...(config.gatewayApiKeyPath !== undefined
-        ? { nativeAdminGatewayApiKey: () => readWorkspaceFilesApiKey(config.gatewayApiKeyPath!) }
+        ? {
+            nativeAdminGatewayApiKey: () => readWorkspaceFilesApiKey(config.gatewayApiKeyPath!),
+            agentAutomations: createAgentAutomationsAccess(
+              computeDriver,
+              config.gatewayApiKeyPath!,
+            ),
+          }
         : {}),
       ...(configurationDriver === undefined ? {} : { configurationDriver }),
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),

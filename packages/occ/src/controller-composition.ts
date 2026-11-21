@@ -1,3 +1,4 @@
+import { createAgentAutomations } from "./agent-automations.ts";
 import {
   reconcileNamespaceLifecycle,
   type NamespaceLifecycleBinding,
@@ -802,6 +803,11 @@ export function createControllerComposition(
     selectedCompute,
     timestamp: resourceValues.timestamp,
   });
+  const agentAutomations = createAgentAutomations({
+    transactions,
+    authority,
+    timestamp: resourceValues.timestamp,
+  });
   const agentQueries = createAgentQueries({
     transactions,
     authority,
@@ -1164,6 +1170,7 @@ export function createControllerComposition(
     installation: admittedInstallation,
     agentCredentialWithdrawal,
     agentDrafts,
+    agentAutomations,
     agentQueries,
     agentTermination,
     bindInstallationRepository,

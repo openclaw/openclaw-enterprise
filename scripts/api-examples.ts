@@ -505,7 +505,30 @@ export const requestExamples = {
 };
 
 // Values below are data members. The generator adds the common meta envelope.
+const automation = {
+  id: "7ed6c814-7412-46e7-9aae-12b13ec16d34",
+  configRevision: "observed-native-revision",
+  name: "Daily report",
+  enabled: true,
+  schedule: { kind: "cron", expr: "0 9 * * *", tz: "America/Los_Angeles", staggerMs: 0 },
+  prompt: "Generate the daily report",
+  nextRunAtMs: 1795276800000,
+  lastRunStatus: null,
+};
+const { prompt: _automationPrompt, ...automationSummary } = automation;
+
 export const responseExamples = {
+  createAgentAutomation: automation,
+  getAgentAutomation: automation,
+  updateAgentAutomation: { ...automation, enabled: false, nextRunAtMs: null },
+  listAgentAutomations: {
+    jobs: [automationSummary],
+    total: 1,
+    nextOffset: null,
+    snapshotRevision: "example-inventory-revision",
+  },
+  listAgentAutomationRuns: { runs: [], total: 0, nextOffset: null },
+
   createModelProvider: modelProvider,
   updateModelProvider: modelProvider,
   getModelProvider: modelProvider,

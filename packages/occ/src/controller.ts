@@ -1,3 +1,5 @@
+import type { AgentAutomationOwnership } from "@openclaw-enterprise/contracts";
+import type { BindAgentAutomationInput, ReserveAgentAutomationInput } from "./agent-automations.ts";
 import {
   createControllerComposition,
   type ControllerComposition,
@@ -394,6 +396,38 @@ export class OpenClawController {
     readonly endpoint: AgentChatCompletionsResolution;
   }> {
     return this.composition.agentQueries.resolveAgentChat(principalId, agentId, namespaceScope);
+  }
+
+  async reserveAgentAutomation(
+    principalId: string,
+    input: ReserveAgentAutomationInput,
+    audit: (record: Readonly<AgentAutomationOwnership>) => AuditEvent,
+  ) {
+    return this.composition.agentAutomations.reserve(principalId, input, audit);
+  }
+
+  async bindAgentAutomation(
+    principalId: string,
+    input: BindAgentAutomationInput,
+    audit: (
+      record: Readonly<AgentAutomationOwnership>,
+      action: "operate" | "administer",
+    ) => AuditEvent,
+  ) {
+    return this.composition.agentAutomations.bind(principalId, input, audit);
+  }
+
+  async listAgentAutomationOwnership(principalId: string, namespaceId: string, agentId: string) {
+    return this.composition.agentAutomations.list(principalId, namespaceId, agentId);
+  }
+
+  async getAgentAutomationOwnership(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    id: string,
+  ) {
+    return this.composition.agentAutomations.get(principalId, namespaceId, agentId, id);
   }
 
   async getOperableAgent(

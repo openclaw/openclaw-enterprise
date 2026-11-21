@@ -23,6 +23,9 @@ import {
 import { Type } from "typebox";
 import { AgentAuditQuery, AgentAuditResponse } from "./agent-audit.ts";
 import {
+  AgentAutomationResponse,
+  AgentAutomationListResponse,
+  AgentAutomationRunsResponse,
   AgentAutomationParams,
   AgentAutomationPageQuery,
   CreateAgentAutomationBody,
@@ -187,6 +190,23 @@ const mutationErrors = {
   409: ErrorResponseRef,
 } as const;
 
+const automationLocationHeader = {
+  Location: {
+    description:
+      "OCC automation path. On UNKNOWN_OUTCOME, use it to inspect the job or its retained history without replaying the mutation.",
+    schema: Type.String(),
+  },
+};
+const automationMutationErrors = {
+  ...createErrors,
+  503: {
+    description:
+      "Unavailable dependency or uncertain mutation; Location is present when OCC reserved an automation identity.",
+    headers: automationLocationHeader,
+    content: { "application/json": { schema: ErrorResponseRef } },
+  },
+};
+
 const runtimeReadErrors = {
   ...readErrors,
   429: ErrorResponseRef,
@@ -206,7 +226,6 @@ const chatErrors = Object.fromEntries(
 );
 
 export const occApiRoutes = [
-  // These admission paths remain unavailable until the native authority contract is qualified.
   {
     operationId: "createAgentAutomation",
     method: "POST",
@@ -215,13 +234,20 @@ export const occApiRoutes = [
     iamAction: "operate",
     resourceKind: "agent",
     authorizationTarget: "agent",
-    summary: "Request an Agent automation (runtime qualification pending)",
+    summary: "Create a scheduled Agent automation",
     tags: ["Agent automations"],
     schema: {
       params: AgentParams,
       querystring: EmptyQuery,
       body: CreateAgentAutomationBody,
-      response: createErrors,
+      response: {
+        201: {
+          description: "Created automation",
+          headers: automationLocationHeader,
+          content: { "application/json": { schema: AgentAutomationResponse } },
+        },
+        ...automationMutationErrors,
+      },
     },
   },
   {
@@ -232,9 +258,13 @@ export const occApiRoutes = [
     iamAction: "operate",
     resourceKind: "agent",
     authorizationTarget: "agent",
-    summary: "Request Agent automation inventory (runtime qualification pending)",
+    summary: "List authorized Agent automations",
     tags: ["Agent automations"],
-    schema: { params: AgentParams, querystring: AgentAutomationPageQuery, response: readErrors },
+    schema: {
+      params: AgentParams,
+      querystring: AgentAutomationPageQuery,
+      response: { 200: AgentAutomationListResponse, ...mutationErrors },
+    },
   },
   {
     operationId: "getAgentAutomation",
@@ -244,9 +274,13 @@ export const occApiRoutes = [
     iamAction: "operate",
     resourceKind: "agent",
     authorizationTarget: "agent",
-    summary: "Request an Agent automation (runtime qualification pending)",
+    summary: "Read a managed Agent automation",
     tags: ["Agent automations"],
-    schema: { params: AgentAutomationParams, querystring: EmptyQuery, response: mutationErrors },
+    schema: {
+      params: AgentAutomationParams,
+      querystring: EmptyQuery,
+      response: { 200: AgentAutomationResponse, ...mutationErrors },
+    },
   },
   {
     operationId: "updateAgentAutomation",
@@ -256,13 +290,13 @@ export const occApiRoutes = [
     iamAction: "operate",
     resourceKind: "agent",
     authorizationTarget: "agent",
-    summary: "Request an Agent automation edit (runtime qualification pending)",
+    summary: "Update an Agent automation",
     tags: ["Agent automations"],
     schema: {
       params: AgentAutomationParams,
       querystring: EmptyQuery,
       body: UpdateAgentAutomationBody,
-      response: createErrors,
+      response: { 200: AgentAutomationResponse, ...automationMutationErrors },
     },
   },
   {
@@ -273,12 +307,12 @@ export const occApiRoutes = [
     iamAction: "operate",
     resourceKind: "agent",
     authorizationTarget: "agent",
-    summary: "Request Agent automation deletion (runtime qualification pending)",
+    summary: "Delete an Agent automation",
     tags: ["Agent automations"],
     schema: {
       params: AgentAutomationParams,
       querystring: DeleteAgentAutomationQuery,
-      response: mutationErrors,
+      response: { 204: Type.Null(), ...automationMutationErrors },
     },
   },
   {
@@ -289,12 +323,12 @@ export const occApiRoutes = [
     iamAction: "operate",
     resourceKind: "agent",
     authorizationTarget: "agent",
-    summary: "Request Agent automation history (runtime qualification pending)",
+    summary: "Read authorized Agent automation history",
     tags: ["Agent automations"],
     schema: {
       params: AgentAutomationParams,
       querystring: AgentAutomationPageQuery,
-      response: readErrors,
+      response: { 200: AgentAutomationRunsResponse, ...readErrors },
     },
   },
   {

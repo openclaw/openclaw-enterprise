@@ -23,7 +23,7 @@ const envoyImage = process.env.OCC_TEST_WORKSPACE_ENVOY_IMAGE;
 const selected = image !== undefined || envoyImage !== undefined;
 // The limit grows with the readiness wait below on runners with fewer CPUs.
 const options = selected
-  ? { timeout: cpuScaledImageTimeoutMs(180_000) }
+  ? { timeout: cpuScaledImageTimeoutMs(300_000) }
   : { skip: "Set OCC_TEST_RUNTIME_IMAGE and OCC_TEST_WORKSPACE_ENVOY_IMAGE to prepared images." };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -337,6 +337,46 @@ test(
           timeoutMs: cpuScaledImageTimeoutMs(75_000),
         });
         await mkdir(join(directory, "client-home"), { recursive: true });
+        if (index === 0) {
+          await t.test(
+            "OCC automations preserve ownership across real native replies and indeterminate mutations",
+            async () => {
+              const proof = await execute(
+                process.execPath,
+                ["tests/fixtures/gateway-routing/automation-native-probe.ts"],
+                {
+                  env: {
+                    PATH: process.env.PATH,
+                    HOME: join(directory, "client-home"),
+                    NODE_EXTRA_CA_CERTS: join(directory, "cert.pem"),
+                    OCC_WORKSPACE_PROOF_ENDPOINT: `wss://127.0.0.1:${port}`,
+                    OCC_WORKSPACE_PROOF_KEY_PATH: join(directory, "api-key"),
+                    OCC_AUTOMATION_PROOF_NATIVE_CONTAINER: native,
+                    OCC_AUTOMATION_PROOF_CERT: join(directory, "cert.pem"),
+                    OCC_AUTOMATION_PROOF_TLS_KEY: join(directory, "key.pem"),
+                  },
+                  timeout: 120_000,
+                },
+              );
+              const records = proof.stdout
+                .split("\n")
+                .filter((line) => line.startsWith("OCC_AUTOMATION_PROTOCOL_PROOF "));
+              assert.equal(
+                records.length,
+                1,
+                "native probe must emit exactly one completed proof record",
+              );
+              assert.deepEqual(
+                JSON.parse(records[0]!.slice("OCC_AUTOMATION_PROTOCOL_PROOF ".length)),
+                {
+                  automationProtocol: true,
+                  nativeCreates: 6,
+                  modelExecution: false,
+                },
+              );
+            },
+          );
+        }
         const content = `Owned native workspace ${index}: exact text.\n`;
         const deniedWrites: WorkspaceNativeProbeInput["deniedWrite"][] = [
           {

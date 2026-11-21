@@ -97,10 +97,16 @@ flowchart LR
 
 ### Ownership records
 
-Before sending `cron.add`, OCC generates a new native job ID and durably reserves
-it with the Installation's exact Namespace, Agent, authenticated human creator,
-server-selected native Agent ID and creation time. IDs are never reused. A record
-contains no prompt, tool credential or duplicate native job definition.
+Before sending `cron.add`, OCC reserves a public automation UUID with the exact
+Namespace, Agent, authenticated human creator, server-selected native Agent and
+creation time. OpenClaw allocates the native job ID; its public create API does
+not accept a caller-selected ID. OCC supplies a unique declaration key derived
+from its reservation and creates the job disabled. It durably binds the returned
+native ID before a separate native update enables the job when requested.
+
+Creator and target fields never change. A native ID binds once and cannot be
+shared by two records for the same Agent. Records contain no prompt, credential
+or duplicate job definition. OCC IDs are never reused.
 
 Only records created by OCC authorize API access. The broker neither adopts nor
 returns unregistered native jobs. This is a lookup rule, not a native-edit
@@ -109,8 +115,10 @@ native jobs. Native inventory reads must use a consistent snapshot; a changed
 snapshot requires the caller to restart the scan.
 
 Ownership survives explicit deletion and native one-shot deletion. A reserved
-record also survives a lost create reply: inventory can discover the native job
-if creation committed. A reservation alone is not evidence that a job exists.
+record also survives a lost create reply: inventory or exact lookup can recover
+the disabled job by its declaration key and bind its native ID. Recovery records
+that association but never repeats create or enables the job automatically.
+A reservation alone is not evidence that a job exists.
 Agent deletion removes its ownership records with the Agent's existing lifecycle.
 The supported sole-manager assumption ensures each native job ID continues to
 refer to the exact OCE Agent and creator recorded at reservation.
@@ -160,11 +168,14 @@ or history response cannot establish human ownership by itself.
 
 Native job state remains on the Agent-owned Gateway volume. OCC ownership is
 PostgreSQL state. There is no distributed transaction between those stores.
-The ownership reservation commits before create dispatch; successful mutation
-audit follows the native acknowledgement. A lost reply, revision change after
+The ownership reservation commits before disabled create dispatch; native-ID
+binding commits before activation. A failed activation can leave a disabled job.
+Successful mutation audit follows the final native acknowledgement. A lost reply, revision change after
 dispatch, malformed mutation acknowledgement, or failed audit append after a
 native commit returns `503 UNKNOWN_OUTCOME`. Do not retry or replay automatically.
-The caller refreshes inventory or the affected job before deciding what to do.
+The response supplies the public automation path in `Location` when known.
+The caller inspects that job or its history before deciding what to do; a missing
+live job does not prove it never executed.
 
 PATCH reads the full authorized job, checks the expected revision from that same
 read, validates eligibility, and passes the revision to native atomic update.
@@ -204,8 +215,9 @@ credentials and native payloads.
 
 ### Database entities
 
-Add an Agent-owned automation ownership registry with immutable job ID, Namespace,
-Agent, human creator, native Agent ID and creation time. Enforce identity and
+Add an Agent-owned registry with immutable public UUID, Namespace, Agent, human
+creator, native Agent ID and creation time, plus a nullable native job ID that
+binds once. Enforce unique native identity within the owning Agent. Enforce identity and
 Agent ownership in database constraints. Retain records after job deletion;
 remove them with Agent deletion. Do not duplicate native scheduling or history.
 
@@ -241,8 +253,8 @@ editing automations there is outside this workflow's supported assumptions.
 
 ## Delivery and verification
 
-The existing branch implements admission and refusal only. Submit this revised
-broker decision, implement ownership and native dispatch, then qualify the
+The broker implementation and its integration checks are in progress. Submit
+material protocol refinements with this RFC, then qualify the
 packaged runtime through the real Agent workflow. Local fixture success does not
 prove native scheduling, model execution or tool restrictions.
 

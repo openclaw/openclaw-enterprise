@@ -69,7 +69,8 @@
     {
       "path": "tests/integration/workspace-files-native.test.ts",
       "expectedTests": [
-        "native workspace files follow a sole roster through OCC and preserve explicit targets and grants"
+        "native workspace files follow a sole roster through OCC and preserve explicit targets and grants",
+        "OCC automations preserve ownership across real native replies and indeterminate mutations"
       ]
     },
     {

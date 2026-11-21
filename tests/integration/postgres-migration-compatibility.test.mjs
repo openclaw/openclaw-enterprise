@@ -1470,6 +1470,7 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
+      [85, "preAgentAutomations"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1746,6 +1747,7 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
+      [85, "preAgentAutomations"],
     ]);
     for (const [prefix, history] of histories) {
       void context.test(`populated canonical ${history}`, async (child) => {
@@ -2054,6 +2056,7 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
+      [85, "preAgentAutomations"],
     ])) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2244,6 +2247,7 @@ test(
       [82, "preNativeRestartRecovery"],
       [83, "preRevisionEgressInstallations"],
       [84, "preStaticTokenServiceSources"],
+      [85, "preAgentAutomations"],
     ])) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

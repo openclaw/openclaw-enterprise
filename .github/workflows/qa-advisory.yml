@@ -91,10 +91,10 @@ jobs:
             openshellFiles = undefined;
             installationFiles = process.env.GITHUB_EVENT_NAME === 'push' ? [] : undefined;
             qa.push(
-              { installation: 'compose', preset: 'Codex', scenarios: 'console-secrets,agent-audit,http-chat', focused: false },
-              { installation: 'kubernetes', preset: 'Codex', scenarios: 'console-secrets,http-chat', focused: false },
-              { installation: 'kubernetes', preset: 'OpenClaw', scenarios: 'http-chat', focused: true },
-              { installation: 'compose', preset: 'OpenClaw', scenarios: 'http-chat', focused: true },
+              { installation: 'compose', preset: 'Codex', scenarios: 'console-secrets,agent-audit,http-chat,agent-automations', focused: false },
+              { installation: 'kubernetes', preset: 'Codex', scenarios: 'console-secrets,http-chat,agent-automations', focused: false },
+              { installation: 'kubernetes', preset: 'OpenClaw', scenarios: 'http-chat,agent-automations', focused: true },
+              { installation: 'compose', preset: 'OpenClaw', scenarios: 'http-chat,agent-automations', focused: true },
             );
           } else {
             if (labels.has('qa-openshell-compose')) {

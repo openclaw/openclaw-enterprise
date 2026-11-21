@@ -13699,22 +13699,22 @@ Example response
 
 | Operation | Summary |
 | --- | --- |
-| [`GET /namespaces/{namespaceId}/agents/{agentId}/automations`](#get-namespacesnamespaceidagentsagentidautomations) | Request Agent automation inventory (runtime qualification pending) |
-| [`POST /namespaces/{namespaceId}/agents/{agentId}/automations`](#post-namespacesnamespaceidagentsagentidautomations) | Request an Agent automation (runtime qualification pending) |
-| [`DELETE /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#delete-namespacesnamespaceidagentsagentidautomationsautomationid) | Request Agent automation deletion (runtime qualification pending) |
-| [`GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#get-namespacesnamespaceidagentsagentidautomationsautomationid) | Request an Agent automation (runtime qualification pending) |
-| [`PATCH /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#patch-namespacesnamespaceidagentsagentidautomationsautomationid) | Request an Agent automation edit (runtime qualification pending) |
-| [`GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}/runs`](#get-namespacesnamespaceidagentsagentidautomationsautomationidruns) | Request Agent automation history (runtime qualification pending) |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/automations`](#get-namespacesnamespaceidagentsagentidautomations) | List authorized Agent automations |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/automations`](#post-namespacesnamespaceidagentsagentidautomations) | Create a scheduled Agent automation |
+| [`DELETE /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#delete-namespacesnamespaceidagentsagentidautomationsautomationid) | Delete an Agent automation |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#get-namespacesnamespaceidagentsagentidautomationsautomationid) | Read a managed Agent automation |
+| [`PATCH /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#patch-namespacesnamespaceidagentsagentidautomationsautomationid) | Update an Agent automation |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}/runs`](#get-namespacesnamespaceidagentsagentidautomationsautomationidruns) | Read authorized Agent automation history |
 
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/automations`
 
 <span id="get-namespacesnamespaceidagentsagentidautomations"></span>
 
-Request Agent automation inventory (runtime qualification pending)
+List authorized Agent automations
 
 **Operation ID:** `listAgentAutomations`
 
-**Permissions:** Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.
+**Permissions:** Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. OCC enforces creator ownership and uses private native administrative transport. Scheduled execution uses approved Agent service authority; native edits are outside the supported workflow.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -13734,22 +13734,66 @@ Request Agent automation inventory (runtime qualification pending)
 
 | Status | Meaning |
 | --- | --- |
+| `200` | OK |
 | `400` | The request does not match the operation contract. |
 | `401` | The caller did not provide valid credentials. |
 | `403` | The caller is not allowed to perform this operation. |
 | `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
 | `500` | The platform request could not be completed. |
-| `503` | The runtime automation authority and retained-history contract is not qualified. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.jobs` | `array<object or object>` | Yes | — |
+| `data.nextOffset` | `integer or null` | Yes | — |
+| `data.snapshotRevision` | `string` | Yes | min length: 1; max length: 128 |
+| `data.total` | `integer` | Yes | minimum: 0 |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "jobs": [
+      {
+        "configRevision": "observed-native-revision",
+        "enabled": true,
+        "id": "7ed6c814-7412-46e7-9aae-12b13ec16d34",
+        "lastRunStatus": null,
+        "name": "Daily report",
+        "nextRunAtMs": 1795276800000,
+        "schedule": {
+          "expr": "0 9 * * *",
+          "kind": "cron",
+          "staggerMs": 0,
+          "tz": "America/Los_Angeles"
+        }
+      }
+    ],
+    "nextOffset": null,
+    "snapshotRevision": "example-inventory-revision",
+    "total": 1
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `POST /namespaces/{namespaceId}/agents/{agentId}/automations`
 
 <span id="post-namespacesnamespaceidagentsagentidautomations"></span>
 
-Request an Agent automation (runtime qualification pending)
+Create a scheduled Agent automation
 
 **Operation ID:** `createAgentAutomation`
 
-**Permissions:** Requires a human session and operate on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.
+**Permissions:** Requires a human session and operate on the exact Agent. Mutations require the configured Origin and session CSRF checks. OCC enforces creator ownership and uses private native administrative transport. Scheduled execution uses approved Agent service authority; native edits are outside the supported workflow.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -13793,6 +13837,7 @@ Example request
 
 | Status | Meaning |
 | --- | --- |
+| `201` | Created automation |
 | `400` | The request does not match the operation contract. |
 | `401` | The caller did not provide valid credentials. |
 | `403` | The caller is not allowed to perform this operation. |
@@ -13801,17 +13846,57 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `503` | The runtime automation authority and retained-history contract is not qualified. |
+| `503` | Unavailable dependency or uncertain mutation; Location is present when OCC reserved an automation identity. |
+
+**`201` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.configRevision` | `string` | Yes | min length: 1; max length: 128 |
+| `data.enabled` | `boolean` | Yes | — |
+| `data.id` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9_-]+$` |
+| `data.lastRunStatus` | `"ok" or "error" or "skipped" or null` | Yes | — |
+| `data.name` | `string` | Yes | min length: 1; max length: 200 |
+| `data.nextRunAtMs` | `integer or null` | Yes | — |
+| `data.prompt` | `string` | Yes | min length: 1; max length: 16384 |
+| `data.schedule` | `object or object or object` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "configRevision": "observed-native-revision",
+    "enabled": true,
+    "id": "7ed6c814-7412-46e7-9aae-12b13ec16d34",
+    "lastRunStatus": null,
+    "name": "Daily report",
+    "nextRunAtMs": 1795276800000,
+    "prompt": "Generate the daily report",
+    "schedule": {
+      "expr": "0 9 * * *",
+      "kind": "cron",
+      "staggerMs": 0,
+      "tz": "America/Los_Angeles"
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `DELETE /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`
 
 <span id="delete-namespacesnamespaceidagentsagentidautomationsautomationid"></span>
 
-Request Agent automation deletion (runtime qualification pending)
+Delete an Agent automation
 
 **Operation ID:** `deleteAgentAutomation`
 
-**Permissions:** Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.
+**Permissions:** Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. OCC enforces creator ownership and uses private native administrative transport. Scheduled execution uses approved Agent service authority; native edits are outside the supported workflow.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -13831,23 +13916,26 @@ Request Agent automation deletion (runtime qualification pending)
 
 | Status | Meaning |
 | --- | --- |
+| `204` | No Content |
 | `400` | The request does not match the operation contract. |
 | `401` | The caller did not provide valid credentials. |
 | `403` | The caller is not allowed to perform this operation. |
 | `404` | The requested platform resource was not found. |
 | `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `503` | The runtime automation authority and retained-history contract is not qualified. |
+| `503` | Unavailable dependency or uncertain mutation; Location is present when OCC reserved an automation identity. |
 
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`
 
 <span id="get-namespacesnamespaceidagentsagentidautomationsautomationid"></span>
 
-Request an Agent automation (runtime qualification pending)
+Read a managed Agent automation
 
 **Operation ID:** `getAgentAutomation`
 
-**Permissions:** Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.
+**Permissions:** Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. OCC enforces creator ownership and uses private native administrative transport. Scheduled execution uses approved Agent service authority; native edits are outside the supported workflow.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -13866,23 +13954,64 @@ Request an Agent automation (runtime qualification pending)
 
 | Status | Meaning |
 | --- | --- |
+| `200` | OK |
 | `400` | The request does not match the operation contract. |
 | `401` | The caller did not provide valid credentials. |
 | `403` | The caller is not allowed to perform this operation. |
 | `404` | The requested platform resource was not found. |
 | `409` | The requested operation conflicts with the current resource state. |
 | `500` | The platform request could not be completed. |
-| `503` | The runtime automation authority and retained-history contract is not qualified. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.configRevision` | `string` | Yes | min length: 1; max length: 128 |
+| `data.enabled` | `boolean` | Yes | — |
+| `data.id` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9_-]+$` |
+| `data.lastRunStatus` | `"ok" or "error" or "skipped" or null` | Yes | — |
+| `data.name` | `string` | Yes | min length: 1; max length: 200 |
+| `data.nextRunAtMs` | `integer or null` | Yes | — |
+| `data.prompt` | `string` | Yes | min length: 1; max length: 16384 |
+| `data.schedule` | `object or object or object` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "configRevision": "observed-native-revision",
+    "enabled": true,
+    "id": "7ed6c814-7412-46e7-9aae-12b13ec16d34",
+    "lastRunStatus": null,
+    "name": "Daily report",
+    "nextRunAtMs": 1795276800000,
+    "prompt": "Generate the daily report",
+    "schedule": {
+      "expr": "0 9 * * *",
+      "kind": "cron",
+      "staggerMs": 0,
+      "tz": "America/Los_Angeles"
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `PATCH /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`
 
 <span id="patch-namespacesnamespaceidagentsagentidautomationsautomationid"></span>
 
-Request an Agent automation edit (runtime qualification pending)
+Update an Agent automation
 
 **Operation ID:** `updateAgentAutomation`
 
-**Permissions:** Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.
+**Permissions:** Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. OCC enforces creator ownership and uses private native administrative transport. Scheduled execution uses approved Agent service authority; native edits are outside the supported workflow.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -13923,6 +14052,7 @@ Example request
 
 | Status | Meaning |
 | --- | --- |
+| `200` | OK |
 | `400` | The request does not match the operation contract. |
 | `401` | The caller did not provide valid credentials. |
 | `403` | The caller is not allowed to perform this operation. |
@@ -13931,17 +14061,57 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `503` | The runtime automation authority and retained-history contract is not qualified. |
+| `503` | Unavailable dependency or uncertain mutation; Location is present when OCC reserved an automation identity. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.configRevision` | `string` | Yes | min length: 1; max length: 128 |
+| `data.enabled` | `boolean` | Yes | — |
+| `data.id` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9_-]+$` |
+| `data.lastRunStatus` | `"ok" or "error" or "skipped" or null` | Yes | — |
+| `data.name` | `string` | Yes | min length: 1; max length: 200 |
+| `data.nextRunAtMs` | `integer or null` | Yes | — |
+| `data.prompt` | `string` | Yes | min length: 1; max length: 16384 |
+| `data.schedule` | `object or object or object` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "configRevision": "observed-native-revision",
+    "enabled": false,
+    "id": "7ed6c814-7412-46e7-9aae-12b13ec16d34",
+    "lastRunStatus": null,
+    "name": "Daily report",
+    "nextRunAtMs": null,
+    "prompt": "Generate the daily report",
+    "schedule": {
+      "expr": "0 9 * * *",
+      "kind": "cron",
+      "staggerMs": 0,
+      "tz": "America/Los_Angeles"
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}/runs`
 
 <span id="get-namespacesnamespaceidagentsagentidautomationsautomationidruns"></span>
 
-Request Agent automation history (runtime qualification pending)
+Read authorized Agent automation history
 
 **Operation ID:** `listAgentAutomationRuns`
 
-**Permissions:** Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.
+**Permissions:** Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. OCC enforces creator ownership and uses private native administrative transport. Scheduled execution uses approved Agent service authority; native edits are outside the supported workflow.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -13962,12 +14132,46 @@ Request Agent automation history (runtime qualification pending)
 
 | Status | Meaning |
 | --- | --- |
+| `200` | OK |
 | `400` | The request does not match the operation contract. |
 | `401` | The caller did not provide valid credentials. |
 | `403` | The caller is not allowed to perform this operation. |
 | `404` | The requested platform resource was not found. |
 | `500` | The platform request could not be completed. |
-| `503` | The runtime automation authority and retained-history contract is not qualified. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.nextOffset` | `integer or null` | Yes | — |
+| `data.runs` | `array<object>` | Yes | — |
+| `data.runs[].completionStatus` | `"succeeded" or "failed" or "unknown" or null` | Yes | — |
+| `data.runs[].deliveryStatus` | `"delivered" or "not-delivered" or "not-requested" or "unknown" or null` | Yes | — |
+| `data.runs[].error` | `string` | No | — |
+| `data.runs[].finishedAtMs` | `integer or null` | Yes | — |
+| `data.runs[].runId` | `string` | Yes | min length: 1; max length: 200 |
+| `data.runs[].startedAtMs` | `integer or null` | Yes | — |
+| `data.runs[].status` | `"ok" or "error" or "skipped" or null` | Yes | — |
+| `data.runs[].summary` | `string` | No | — |
+| `data.total` | `integer` | Yes | minimum: 0 |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "nextOffset": null,
+    "runs": [],
+    "total": 0
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
 
 ## Shared schemas
 

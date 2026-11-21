@@ -1,0 +1,224 @@
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import test from "node:test";
+
+import { AuditEventFactory } from "../../packages/audit/src/index.ts";
+import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
+import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
+import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
+
+test(
+  "PostgreSQL automation reservations retain exact ownership and commit admission audit atomically",
+  requiresPostgres,
+  async (t) => {
+    const f = await createPostgresAgentApp(t, {
+      label: "automation-ownership",
+      authSecret: "automation-ownership-postgres-session-secret",
+    });
+    const { agent, namespace, revision } = await f.deployAgent("Automation reservation");
+    // Activate the admitted revision for this storage scenario. Compute is the existing fixture;
+    // this proves OCC ownership/persistence, not a native Gateway or model turn.
+    await f.state.transact(async (unit) => {
+      assert.ok(
+        await unit.agents.compareAndSetActiveRevision(
+          namespace.id,
+          agent.id,
+          undefined,
+          revision.id,
+        ),
+      );
+    });
+    const factory = new AuditEventFactory();
+    const resource = { kind: "agent" as const, id: agent.id, namespaceId: namespace.id };
+    const input = {
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      revisionId: revision.id,
+      nativeAgentId: "main",
+    };
+    const audit = (id: string) =>
+      factory.create({
+        installationId: f.controller.installation.id,
+        namespaceId: namespace.id,
+        actorId: f.principal.id,
+        kind: "mutation",
+        action: "openclaw.agents.automations.create.admitted",
+        resource,
+        details: { jobId: id, revisionId: revision.id },
+      });
+    let ownership = await f.controller.reserveAgentAutomation(f.principal.id, input, (record) =>
+      audit(record.id),
+    );
+    const reopened = new PostgresPlatformState(testPool(t, { connectionString: databaseUrl }));
+    assert.deepEqual(
+      await reopened.read((unit) =>
+        unit.agentAutomations.find(namespace.id, agent.id, ownership.id),
+      ),
+      ownership,
+    );
+    assert.deepEqual(
+      await f.controller.listAgentAutomationOwnership(f.principal.id, namespace.id, agent.id),
+      [ownership],
+    );
+    assert.equal(
+      await reopened.read((unit) =>
+        unit.agentAutomations.find(`ns_${randomUUID()}`, agent.id, ownership.id),
+      ),
+      undefined,
+    );
+    assert.equal(
+      await reopened.read((unit) =>
+        unit.agentAutomations.find(namespace.id, `agt_${randomUUID()}`, ownership.id),
+      ),
+      undefined,
+    );
+    assert.deepEqual(
+      await reopened.read((unit) =>
+        unit.agentAutomations.list(namespace.id, agent.id, "another-creator"),
+      ),
+      [],
+    );
+    const evidence = await f.pool.query(
+      "SELECT details FROM occ.audit_events WHERE action=$1 AND details->>'jobId'=$2",
+      ["openclaw.agents.automations.create.admitted", ownership.id],
+    );
+    assert.equal(evidence.rowCount, 1);
+
+    // A failed admission audit rolls back the reservation before any native create can run.
+    let failedId: string | undefined;
+    await assert.rejects(
+      f.controller.reserveAgentAutomation(f.principal.id, input, (record) => {
+        failedId = record.id;
+        throw new Error("admission audit construction failed");
+      }),
+      /admission audit construction failed/u,
+    );
+    assert.ok(failedId);
+    assert.equal(
+      await reopened.read((unit) => unit.agentAutomations.find(namespace.id, agent.id, failedId!)),
+      undefined,
+    );
+
+    // Native IDs are fixture values here; the native protocol case proves their real producer.
+    const nativeJobId = randomUUID();
+    const binding = {
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      id: ownership.id,
+      nativeJobId,
+      requireOperate: true,
+    };
+    await assert.rejects(
+      f.controller.bindAgentAutomation(f.principal.id, binding, () => {
+        throw new Error("binding audit failed");
+      }),
+      /binding audit failed/u,
+    );
+    assert.equal(
+      (
+        await reopened.read((unit) =>
+          unit.agentAutomations.find(namespace.id, agent.id, ownership.id),
+        )
+      )?.nativeJobId,
+      null,
+    );
+    ownership = await f.controller.bindAgentAutomation(f.principal.id, binding, (record) =>
+      factory.create({
+        installationId: f.controller.installation.id,
+        namespaceId: namespace.id,
+        actorId: f.principal.id,
+        kind: "mutation",
+        action: "openclaw.agents.automations.create.bound",
+        resource,
+        details: { jobId: record.id, nativeJobId: record.nativeJobId },
+      }),
+    );
+    assert.equal(ownership.nativeJobId, nativeJobId);
+    assert.deepEqual(
+      await f.controller.bindAgentAutomation(f.principal.id, binding, () => {
+        throw new Error("duplicate binding audit");
+      }),
+      ownership,
+    );
+    await assert.rejects(
+      f.controller.bindAgentAutomation(
+        f.principal.id,
+        { ...binding, nativeJobId: randomUUID() },
+        (record) => audit(record.id),
+      ),
+      { name: "ResourceStateConflictError" },
+    );
+    await assert.rejects(
+      f.pool.query("UPDATE occ.agent_automations SET native_job_id=$2 WHERE id=$1", [
+        ownership.id,
+        randomUUID(),
+      ]),
+      { code: "55000" },
+    );
+    const otherReservation = await f.controller.reserveAgentAutomation(
+      f.principal.id,
+      input,
+      (record) => audit(record.id),
+    );
+    await assert.rejects(
+      f.controller.bindAgentAutomation(
+        f.principal.id,
+        { ...binding, id: otherReservation.id },
+        (record) => audit(record.id),
+      ),
+      { name: "ResourceConflictError" },
+    );
+
+    // The application role cannot change the creator, reuse an ID, or delete retained evidence.
+    await assert.rejects(
+      f.pool.query("UPDATE occ.agent_automations SET creator_principal_id=$2 WHERE id=$1", [
+        ownership.id,
+        "another-creator",
+      ]),
+      { code: "42501" },
+    );
+    await assert.rejects(
+      f.pool.query("DELETE FROM occ.agent_automations WHERE id=$1", [ownership.id]),
+      { code: "42501" },
+    );
+    await assert.rejects(
+      f.state.transact((unit) => unit.agentAutomations.create(ownership)),
+      { name: "ResourceConflictError" },
+    );
+    const other = await f.deployAgent("Other automation parent");
+    await assert.rejects(
+      f.state.transact((unit) =>
+        unit.agentAutomations.create({
+          ...ownership,
+          id: randomUUID(),
+          namespaceId: other.namespace.id,
+        }),
+      ),
+      { name: "ScopeViolationError" },
+    );
+    await assert.rejects(
+      f.state.transact((unit) =>
+        unit.agentAutomations.create({ ...ownership, id: randomUUID(), nativeAgentId: "../other" }),
+      ),
+      { name: "ScopeViolationError" },
+    );
+
+    // A stop preserves management evidence for later history and blocks fresh reservations.
+    await f.controller.stopAgent(f.principal.id, namespace.id, agent.id);
+    await assert.rejects(
+      f.controller.reserveAgentAutomation(f.principal.id, input, (record) => audit(record.id)),
+      { name: "ResourceStateConflictError" },
+    );
+    assert.deepEqual(
+      (
+        await f.controller.getAgentAutomationOwnership(
+          f.principal.id,
+          namespace.id,
+          agent.id,
+          ownership.id,
+        )
+      ).record,
+      ownership,
+    );
+  },
+);

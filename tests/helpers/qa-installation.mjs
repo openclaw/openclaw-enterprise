@@ -840,7 +840,7 @@ export async function createQaAgent(
   presetName,
   browserOrigin,
   nameSuffix = "",
-  { apiKeyAuth = false, httpChat = false } = {},
+  { apiKeyAuth = false, httpChat = false, agentAutomations = false } = {},
 ) {
   assert.ok(!f.retained, "unresolved repository cleanup prevents new Agent work");
   // The Preset list returns summaries; the exact Preset carries the template.
@@ -907,6 +907,9 @@ export async function createQaAgent(
   const agent = await f.api("POST", `/namespaces/${f.namespace.id}/agents`, {
     ...rendered.agent,
     configurationId: configuration.id,
+    ...(agentAutomations
+      ? { nativeAdmin: true, expectedConfigurationGeneration: configuration.generation }
+      : {}),
     harnessAuth: auth,
   });
   f.agents.push(agent);
@@ -914,7 +917,12 @@ export async function createQaAgent(
   agent.qaScenario = nameSuffix;
   agent.configuration = configuration;
   agent.harnessAuth = auth;
-  if (f.controlPlane === "kubernetes" && !httpChat) {
+  if (agentAutomations) {
+    agent.configuration = await f.api(
+      "GET",
+      `/namespaces/${f.namespace.id}/configurations/${configuration.id}`,
+    );
+  } else if (f.controlPlane === "kubernetes" && !httpChat) {
     // Persist the same native access opt-in as Agent provisioning, including the required scope header.
     const nativeValues = prepareNativeAdminConfiguration(values, {
       publicOrigin: f.consoleUrl,

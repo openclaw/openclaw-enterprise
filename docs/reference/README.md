@@ -52,8 +52,8 @@ pool/schema ownership for controller authentication.
 - [Agent Presets](presets.md) defines reusable launch settings, variables, and CRUD permissions.
 - [Agent native admin UI](agent-native-admin.md) covers trusted operator access,
   exact Agent authorization, and routing limits.
-- [Agent automation API availability](agent-automations.md) describes admission
-  and the native qualification gate; scheduling remains unavailable.
+- [Agent automations](agent-automations.md) defines scheduling, creator ownership
+  and native execution through the OCC broker.
 
 <span id="drivers"></span>
 

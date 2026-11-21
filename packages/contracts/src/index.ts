@@ -1797,3 +1797,21 @@ export type {
   HarnessStartupRef,
   SandboxDeploymentContract,
 } from "./drivers/sandbox/deployment.ts";
+
+export type { AgentAutomationOwnership } from "./agent-automations.ts";
+
+export {
+  AgentAutomationSchema,
+  AgentAutomationResponse,
+  AgentAutomationListResponse,
+  AgentAutomationRunsPageSchema,
+  AgentAutomationRunsResponse,
+  AgentAutomationUnsupportedSummary,
+} from "./api/agent-automations.ts";
+export type {
+  AgentAutomationCreateInput,
+  AgentAutomationUpdateInput,
+  AgentAutomationData,
+  AgentAutomationSummary,
+  AgentAutomationRunsPage,
+} from "./api/agent-automations.ts";

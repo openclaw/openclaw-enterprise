@@ -5199,7 +5199,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     input: {
       readonly installationId: string;
       readonly principalId: string;
-      readonly mode: "admin" | "chat" | "automation";
+      readonly mode: "admin" | "chat";
     },
     signal: AbortSignal,
   ): Promise<
@@ -5210,11 +5210,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }
     | undefined
   > {
-    if (input.mode === "automation") {
-      // TODO(RFC-20261121-agent-automations): qualify the upstream six-method delegation,
-      // execution authority and retained-history contract before releasing any credentials.
-      return undefined;
-    }
     const endpoint = this.getGatewayBrowserEndpoint(revision);
     if (endpoint === undefined) {
       return undefined;

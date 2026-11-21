@@ -1,3 +1,4 @@
+import type { AgentAutomationsAccess } from "./gateway/agent-automations-client.ts";
 import { AGENT_CHAT_BODY_LIMIT, relayAgentChat } from "./http/agent-chat.ts";
 import {
   createAgentAutomationHandlers,
@@ -204,6 +205,7 @@ export interface DevelopmentAdmission {
 }
 
 export interface ControllerAppOptions {
+  readonly agentAutomations?: AgentAutomationsAccess;
   readonly consoleTheme?: ConsoleTheme;
   readonly metrics?: import("./metrics/index.ts").OccMetrics;
   readonly controller?: OpenClawController;
@@ -1088,7 +1090,7 @@ function permissionDescription(
   if (operation !== undefined && isAgentAutomationOperation(operation)) {
     const authority =
       operation.operationId === "createAgentAutomation" ? "operate" : "operate or administer";
-    return `Requires a human session and ${authority} on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.`;
+    return `Requires a human session and ${authority} on the exact Agent. Mutations require the configured Origin and session CSRF checks. OCC enforces creator ownership and uses private native administrative transport. Scheduled execution uses approved Agent service authority; native edits are outside the supported workflow.`;
   }
   if (operation?.operationId === "listAgentAuditEvents") {
     return "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected audit metadata from the preceding 24 hours.";
@@ -1942,6 +1944,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     connectionOrigin && `${connectionOrigin}${CONNECTION_CALLBACK_PATH}`;
   const handlers: ResourceHandlers = {
     ...createAgentAutomationHandlers({
+      access: options.agentAutomations,
+      factory,
+      auditSink: options.auditSink,
+      reauthenticate: async (request, context) => {
+        await admit(request, context.operation);
+        await resolveIdentity(request, context.operation);
+        const current = contexts.get(request);
+        if (current?.actorId !== context.actorId || current.sessionId !== context.sessionId) {
+          throw dependencyUnavailable();
+        }
+      },
+      logAuditFailure: (request, error) => {
+        const context = contexts.get(request);
+        if (context) {
+          logRequestAuditFailure(request, context.operation, context.operation.action, error);
+        }
+      },
       installationId,
       publicOrigin,
       nativeAdmin: options.nativeAdmin,

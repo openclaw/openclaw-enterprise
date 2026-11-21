@@ -76,6 +76,18 @@ See [per-Agent policies](../sandbox-policies.md).
 - `version`
 - `document` (additions, pending/latest application, last confirmed live version)
 
+### `agent_automations`
+
+Retains immutable creator and native-job ownership for the [automation broker](../agent-automations.md), including after job deletion. Rows end with Agent deletion.
+
+- `id`
+- `namespace_id`
+- `agent_id`
+- `creator_principal_id`
+- `native_agent_id`
+- `native_job_id` (bound once)
+- `created_at`
+
 ### `agent_revisions`
 
 Stores numbered, immutable snapshots of Agent settings accepted for deployment.

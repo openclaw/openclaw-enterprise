@@ -218,8 +218,12 @@
                     "label": "HTTP Chat Contract"
                   },
                   {
+                    "page": "guides/agent-automations",
+                    "label": "Schedule Automations"
+                  },
+                  {
                     "page": "reference/agent-automations",
-                    "label": "Automation API Availability"
+                    "label": "Automations"
                   },
                   {
                     "page": "reference/agent-native-admin",

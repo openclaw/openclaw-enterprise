@@ -82,7 +82,8 @@
     "tests/integration/postgres-readiness-capacity.test.ts",
     "tests/integration/postgres-private-secret-create.test.ts",
     "tests/integration/postgres-iam-durable-authority.test.ts",
-    "tests/integration/postgres-egress-replacement.test.ts"
+    "tests/integration/postgres-egress-replacement.test.ts",
+    "tests/integration/postgres-agent-automations.test.ts"
   ],
   "files": [
     {
@@ -814,6 +815,12 @@
     },
     {
       "path": "tests/integration/postgres-egress-replacement.test.ts"
+    },
+    {
+      "path": "tests/integration/postgres-agent-automations.test.ts",
+      "expectedTests": [
+        "PostgreSQL automation reservations retain exact ownership and commit admission audit atomically"
+      ]
     }
   ]
 }

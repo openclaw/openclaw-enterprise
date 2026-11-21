@@ -1,3 +1,5 @@
+import type { AgentAutomationOwnership } from "@openclaw-enterprise/contracts";
+import type { AgentAutomationRepository } from "../ports/agent-automations.ts";
 import type {
   WorkspaceSetupRepository,
   SandboxPolicyRepository,
@@ -564,6 +566,7 @@ interface IAMSubjectSource {
 }
 
 interface PlatformSnapshot {
+  readonly agentAutomations: Map<string, Readonly<AgentAutomationOwnership>>;
   readonly egressSendReceipts: Map<string, StoredSendReceipt>;
   installation: Readonly<Installation> | undefined;
   tokenServiceInstance: Readonly<TokenServiceInstance> | undefined;
@@ -741,6 +744,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     oauthConnectionTemplateVersions: new Map(snapshot.oauthConnectionTemplateVersions),
     connectionTokenCustody: new Map(snapshot.connectionTokenCustody),
     savedConnections: new Map(snapshot.savedConnections),
+    agentAutomations: copyStoredMap(snapshot.agentAutomations),
     presets: copyStoredMap(snapshot.presets),
     authenticationStates: new Map(snapshot.authenticationStates),
     secrets: copyStoredMap(snapshot.secrets),
@@ -1754,6 +1758,82 @@ function repositories(
     },
     deleteSavedConnection: async (namespaceId, credentialSourceId) =>
       snapshot.savedConnections.delete(agentKey(namespaceId, credentialSourceId)),
+  };
+
+  const agentAutomations: AgentAutomationRepository = {
+    async find(namespaceId, agentId, id) {
+      const record = snapshot.agentAutomations.get(id);
+      return record?.namespaceId === namespaceId && record.agentId === agentId
+        ? immutableCopy(record)
+        : undefined;
+    },
+    async list(namespaceId, agentId, creatorPrincipalId) {
+      return Object.freeze(
+        [...snapshot.agentAutomations.values()]
+          .filter(
+            (record) =>
+              record.namespaceId === namespaceId &&
+              record.agentId === agentId &&
+              (creatorPrincipalId === undefined ||
+                record.creatorPrincipalId === creatorPrincipalId),
+          )
+          .sort((a, b) => a.id.localeCompare(b.id))
+          .map((record) => immutableCopy(record)),
+      );
+    },
+    async bind(namespaceId, agentId, id, nativeJobId) {
+      const current = snapshot.agentAutomations.get(id);
+      if (!current || current.namespaceId !== namespaceId || current.agentId !== agentId) {
+        return undefined;
+      }
+      if (current.nativeJobId !== null) {
+        return current.nativeJobId === nativeJobId
+          ? { record: immutableCopy(current), changed: false }
+          : undefined;
+      }
+      if (
+        !nativeJobId ||
+        nativeJobId.length > 128 ||
+        nativeJobId.trim() !== nativeJobId ||
+        /\p{Cc}/u.test(nativeJobId)
+      ) {
+        throw new ScopeViolationError("The native automation identity is invalid.");
+      }
+      if (
+        [...snapshot.agentAutomations.values()].some(
+          (row) =>
+            row.namespaceId === namespaceId &&
+            row.agentId === agentId &&
+            row.nativeJobId === nativeJobId,
+        )
+      ) {
+        throw new ResourceConflictError("The native automation identity is already bound.");
+      }
+      const record = immutableCopy({ ...current, nativeJobId });
+      snapshot.agentAutomations.set(id, record);
+      return { record, changed: true };
+    },
+    async create(record) {
+      assertInitialized(snapshot);
+      if (
+        !snapshot.agents.has(agentKey(record.namespaceId, record.agentId)) ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(record.id) ||
+        !/^[a-z0-9][a-z0-9_-]{0,63}$/u.test(record.nativeAgentId) ||
+        record.creatorPrincipalId.length < 1 ||
+        record.creatorPrincipalId.length > 200 ||
+        record.creatorPrincipalId.trim() !== record.creatorPrincipalId ||
+        /\p{Cc}/u.test(record.creatorPrincipalId) ||
+        !Number.isFinite(Date.parse(record.createdAt))
+      ) {
+        throw new ScopeViolationError("The automation ownership record is invalid.");
+      }
+      if (snapshot.agentAutomations.has(record.id)) {
+        throw new ResourceConflictError("The automation identity is already reserved.");
+      }
+      const saved = immutableCopy({ ...record, nativeJobId: null });
+      snapshot.agentAutomations.set(record.id, saved);
+      return saved;
+    },
   };
 
   const presets: PresetRepository = {
@@ -3829,6 +3909,7 @@ function repositories(
     connectionTemplates,
     savedConnections,
     authenticationStates,
+    agentAutomations,
     presets,
     secrets,
     credentialSources,
@@ -4116,6 +4197,11 @@ function finalizeAgentDeletion(
   }
   snapshot.revisions.delete(key);
   snapshot.sandboxPolicies.delete(key);
+  for (const [id, record] of snapshot.agentAutomations) {
+    if (record.namespaceId === namespaceId && record.agentId === agentId) {
+      snapshot.agentAutomations.delete(id);
+    }
+  }
   snapshot.agents.delete(key);
   snapshot.predecessorReplacements.delete(key);
 
@@ -4161,6 +4247,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     oauthConnectionTemplateVersions: new Map(),
     connectionTokenCustody: new Map(),
     savedConnections: new Map(),
+    agentAutomations: new Map(),
     presets: new Map(),
     authenticationStates: new Map(),
     secrets: new Map(),

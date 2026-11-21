@@ -4,7 +4,7 @@ Expose native Agent chat or administration on an isolated host through OCC. Requ
 
 ## Local development
 
-[Automation API](../../reference/agent-automations.md) dispatch remains unavailable.
+Manage [automations](../agent-automations.md) through OCC.
 
 Local setup prepares private routing and the browser endpoint. When you
 [create an Agent in the console](../../reference/console/create-and-deploy.md),

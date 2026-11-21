@@ -383,7 +383,12 @@ test(
                         async () => {
                           assert.ok(ready, "blocked by preset preparation failure");
                           return createQaAgent(f, preset, browser?.nativeOrigin, suffix, {
-                            apiKeyAuth: name === "codex-search-config" || name === "http-chat",
+                            apiKeyAuth: [
+                              "codex-search-config",
+                              "http-chat",
+                              "agent-automations",
+                            ].includes(name),
+                            agentAutomations: name === "agent-automations",
                             httpChat: name === "http-chat",
                           });
                         },
@@ -414,6 +419,17 @@ test(
                   });
                 }
                 const scenarios = [
+                  [
+                    "agent-automations",
+                    async (agent, step) => {
+                      const { verifyQaAgentAutomations } =
+                        await import("../helpers/qa-agent-automations.ts");
+                      await step(
+                        "OCC scheduling, revision conflicts, tool execution and retained history",
+                        () => verifyQaAgentAutomations(f, agent),
+                      );
+                    },
+                  ],
                   [
                     "http-chat",
                     async (agent, step) => {
