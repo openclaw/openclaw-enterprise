@@ -142,6 +142,7 @@ export {
   ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
   NetworkProxyValidationError,
+  NetworkProxyEnforcementUnavailableError,
   ConfigurationSizeError,
   configurationSettingMessage,
   CredentialGatewayNotConfiguredError,

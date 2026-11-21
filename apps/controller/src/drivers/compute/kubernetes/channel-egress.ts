@@ -7,6 +7,7 @@ import type {
   NetworkDestinationRule,
 } from "@openclaw-enterprise/contracts";
 import { validNetworkProxyAuthorization } from "@openclaw-enterprise/contracts";
+import { ConfigurationHarnessError } from "@openclaw-enterprise/occ";
 import { randomUUID, X509Certificate } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { asRecord, readCappedBody, sha256Hex } from "@openclaw-enterprise/utils";
@@ -501,11 +502,15 @@ export class KubernetesChannelEgress {
     context: { readonly executionMode: HarnessExecutionMode; readonly channelsEnabled: boolean },
   ): Promise<string> {
     if (context.channelsEnabled && context.executionMode !== "dedicated") {
-      throw new Error("Gateway channel proxy routing requires dedicated execution.");
+      throw new ConfigurationHarnessError(
+        "Gateway channel proxy routing requires dedicated execution. Select dedicated execution or disable the channels.",
+      );
     }
     const endpoint = this.options.upstreamProxies?.find(({ url }) => url === selection.url);
     if (!endpoint) {
-      throw new Error("The channel proxy endpoint is not configured by the Installation.");
+      throw new ConfigurationHarnessError(
+        "The Network proxy endpoint is not configured by the Installation. Select an installed endpoint.",
+      );
     }
     const fleet = await this.fleet();
     const gateway = await this.read(

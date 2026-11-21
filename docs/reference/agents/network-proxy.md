@@ -25,6 +25,12 @@ admission and worker dispatch check authority again. A changed credential
 version cannot alter an existing binding on retry. Deploy a new revision after
 rotating the Secret.
 
+An unsupported endpoint or topology is an invalid request. Select an endpoint
+installed for the current Compute topology. If enforcement is unavailable, retry.
+If the failure continues, ask an Installation administrator to check the Envoy
+fleet, trust bundle, and DNS. Error responses do not include the submitted URL
+or credential value.
+
 ## Compute and trust boundary
 
 The route requires single-cluster Kubernetes Compute with managed channel

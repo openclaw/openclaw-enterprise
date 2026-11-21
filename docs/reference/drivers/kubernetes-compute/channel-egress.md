@@ -166,7 +166,6 @@ Slack tokens stay with their authorized consumers; Envoy receives none.
 Use the [Kubernetes tests](../../../testing/kubernetes.md) and
 [Slack proof](../../../testing/slack.md) for real enforcement and model execution.
 Per-Agent ports are temporary until verified Gateway workload identity supports
-authenticated shared listeners. Customer upstream proxies and Microsoft Teams
-are not implemented by this change.
+authenticated shared listeners. Microsoft Teams is not implemented.
 
 See the [source-backed flow](../../../flows/channel-egress.md) for reconciliation.

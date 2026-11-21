@@ -506,7 +506,10 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     revision.compute === null ||
     Array.isArray(revision.compute) ||
     Object.keys(revision.compute).some(
-      (key) => !["id", "implementation", "admission", "runtimeInputs"].includes(key),
+      (key) =>
+        !["id", "implementation", "admission", "runtimeInputs", "networkProxyAdmission"].includes(
+          key,
+        ),
     ) ||
     !Object.hasOwn(revision.compute, "id") ||
     !Object.hasOwn(revision.compute, "implementation") ||

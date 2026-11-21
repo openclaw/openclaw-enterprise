@@ -483,6 +483,16 @@ export class NetworkProxyValidationError extends ScopeViolationError {
   }
 }
 
+/** A fixed operational recovery message; supplier errors can contain sensitive values. */
+export class NetworkProxyEnforcementUnavailableError extends DependencyUnavailableError {
+  constructor() {
+    super(
+      "Gateway channel proxy enforcement is unavailable. Retry; if the problem continues, ask an Installation administrator to check the Envoy fleet, trust bundle, and DNS.",
+    );
+    this.name = "NetworkProxyEnforcementUnavailableError";
+  }
+}
+
 /**
  * An Agent's `harnessAuth` names a credential source its `credentialSources` list does not
  * hold. OCC raises it only after every source authorization, and the rule depends only on
