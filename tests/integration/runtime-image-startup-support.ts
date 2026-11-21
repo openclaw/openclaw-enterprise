@@ -23,6 +23,7 @@ type ControllerStartupInputs = {
   harness: string;
   repositoryMaterialInit: string;
   repositoryNativeGitInit: string;
+  repositoryGitHelperPath: string;
   nativeWorker: string;
   gatewayStopTimeoutMs: number;
   pluginRuntimeHelpers: string;
@@ -54,6 +55,8 @@ export async function selectStartupProfile(
         harness: AGENT_RUNTIME_ENTRYPOINT,
         repositoryMaterialInit: REPOSITORY_MATERIAL_INIT_ENTRYPOINT,
         repositoryNativeGitInit: REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT,
+        repositoryGitHelperPath:
+          "/opt/oce/repository-credentials/dist/drivers/repo/github/access/client/git-helper.js",
         nativeWorker: NATIVE_WORKER_ENTRYPOINT,
         gatewayStopTimeoutMs: GATEWAY_STOP_TIMEOUT_MS,
         pluginRuntimeHelpers: PLUGIN_RUNTIME_HELPERS,
@@ -130,6 +133,8 @@ export async function selectStartupProfile(
       harness: text(inputs.harness),
       repositoryMaterialInit: text(inputs.repositoryMaterialInit),
       repositoryNativeGitInit: text(inputs.repositoryNativeGitInit),
+      repositoryGitHelperPath:
+        "/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/git-helper.js",
       nativeWorker: text(inputs.nativeWorker),
       gatewayStopTimeoutMs,
       pluginRuntimeHelpers: text(inputs.pluginRuntimeHelpers),

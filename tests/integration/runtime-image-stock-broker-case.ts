@@ -245,11 +245,12 @@ export async function verifyStockBroker(
   image: string,
   controller: Pick<
     StartupProfile["controller"],
-    "harness" | "repositoryMaterialInit" | "repositoryNativeGitInit"
+    "harness" | "repositoryMaterialInit" | "repositoryNativeGitInit" | "repositoryGitHelperPath"
   >,
   seccompOptions: SeccompOptions,
 ) {
-  const { harness, repositoryMaterialInit, repositoryNativeGitInit } = controller;
+  const { harness, repositoryMaterialInit, repositoryNativeGitInit, repositoryGitHelperPath } =
+    controller;
   const suffix = randomBytes(6).toString("hex");
   const networkName = `oce-runtime-broker-${suffix}`;
   const proxyName = `oce-runtime-broker-proxy-${suffix}`;
@@ -490,6 +491,7 @@ NODE`;
       entrypoint: harness,
       materialInit: repositoryMaterialInit,
       nativeGitInit: repositoryNativeGitInit,
+      repositoryGitHelperPath,
       pluginRuntime: {
         manifest: { kind: "codex", selections: {} },
         brokerCodexConfiguration: brokerCodexConfiguration({ host: "git.oce.svc", domains: {} }),
