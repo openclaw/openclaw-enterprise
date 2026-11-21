@@ -150,7 +150,6 @@ function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
-  assertHarnessDiagnostics(diagnostics);
   return { servers, diagnostics, appServerStarts };
 }
 
@@ -205,6 +204,7 @@ test("a provider-owned Codex Harness serves its held startup failure only to the
         env: providerEnv,
         ...options,
       });
+      assertHarnessDiagnostics(diagnostics);
       assertCodexHeldFailure(
         { servers, diagnostics, appServerStarts },
         expected,
@@ -309,7 +309,10 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
     const answer = call(handler, { url: "//" });
     assert.equal(answer.status, 400);
     assert.deepEqual(answer.body, badRequest);
-    assert.equal(call(handler, {}).body.runtimeFailure.code, "MODEL_PROBE_FAILED");
+    assert.equal(
+      readHarnessRecord(call(handler, {}).body.runtimeFailure).code,
+      "MODEL_PROBE_FAILED",
+    );
   });
 
   await t.test(
