@@ -37,6 +37,7 @@ PR runs test the merge commit. New commits replace opted-in runs; unrelated
 labels cannot restart or cancel them. Remove labels before pushing unreviewed
 code; removal stops future selection but does not cancel active runs. Eligible
 main pushes finish independently. Authors triage regressions.
+[Verify PR source before labeling](configuration.md#verify-pr-source-before-labeling).
 
 Keycloak needs no model credential and allows 180 minutes; OpenClaw allows 120.
 Together they allow 300 runtime runner-minutes per attempt, plus selection—not
