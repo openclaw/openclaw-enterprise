@@ -268,12 +268,12 @@ logs](agent-logs.md#sandbox-source) for the cause.
 OCE does not replace a Sandbox whose Pod was deleted or evicted, or that a node
 restart stopped. The Agent stays `active` while every chat fails. `occ agent get`
 and `occ agent runtime` show `Harness Sandbox: lost (CODE)` (`SANDBOX_FAILED`
-here, `SANDBOX_STOPPED` after a node restart, or `HARNESS_EXITED` for an older
-version whose Harness exited), the Console's **Live serving** shows
-**Sandbox lost**, and the version's diagnostics lead with a
-failed `agent` `sandbox` check carrying the same code. Deploy the Agent again
-(`occ agent deploy AGENT_ID`): the new version gets a new Sandbox and the old one
-is removed. `unknown (UNAVAILABLE)` means OCC could not read the Sandbox record.
+here, `SANDBOX_STOPPED` after a node restart or supervisor Pod deletion, or
+`HARNESS_EXITED` for an older version whose Harness exited), the Console's
+**Live serving** shows **Sandbox lost**, and the version's diagnostics lead with
+a failed `agent` `sandbox` check carrying the same code. Deploy the Agent again
+(`occ agent deploy AGENT_ID`): the new version replaces the old Sandbox.
+`unknown (UNAVAILABLE)` means OCC could not read the Sandbox record.
 
 If a controller upgrade changes an older development Sandbox's immutable
 command, exact-content adoption can fail; deploy the Agent again.

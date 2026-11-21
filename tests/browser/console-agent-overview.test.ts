@@ -2107,9 +2107,9 @@ test("Every failed deployment code has its own message and next step", async () 
     Object.keys(DEPLOYMENT_FAILURE_STEPS).sort(),
     Object.values(steps).flat().sort(),
   );
-  // The codes OCC's message switch handles (`deploymentErrorMessage` in controller-work.ts).
+  // The codes OCC's message switch handles (`deploymentErrorMessage` in deployment-work-status.ts).
   const source = await readFile(
-    new URL("../../packages/occ/src/state/controller-work.ts", import.meta.url),
+    new URL("../../packages/occ/src/deployment-work-status.ts", import.meta.url),
     "utf8",
   );
   const start = source.indexOf("function deploymentErrorMessage(");

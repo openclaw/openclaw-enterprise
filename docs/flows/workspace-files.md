@@ -224,16 +224,15 @@ owns recovery. Native provisioning requires Sandbox; expired unpaired setup awai
   group after exit; malformed inputs preserve it. Operator stop cancels renewal.
   [Harness storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
   defines timing and validation.
-- The native renewal bridge returns bounded `NODE_NOT_READY` responses for
-  invocations received before credential verification, permitting Gateway retry
-  without premature execution.
-- With the status proxy, a Codex Gateway hot-loads `file-transfer` from an
-  Agent-owned ConfigMap, replacing Codex's plugin runtime. Activation requires
-  OpenClaw's report and an active plugin. The wrapper polls `plugins.list` through
-  the Gateway SDK, cancelling timed-out connections after eight seconds.
-  Fixed auth refusal reports `GATEWAY_UNAUTHORIZED` and fails activation with
-  `AGENT_GATEWAY_UNAUTHORIZED`; rate limits and pairing still wait. Without the
-  proxy, the ID is set at Gateway start; losing it fails.
+- Before credential verification, the renewal bridge returns bounded
+  `NODE_NOT_READY` so the Gateway can retry.
+- With the status proxy, the Codex Gateway hot-loads `file-transfer` from
+  the Agent's ConfigMap. Activation polls `plugins.list` for an active
+  plugin (eight-second timeout). The SDK uses local backend `operator.read`
+  with the managed password and port. If either is absent, it uses the
+  existing client. Fixed auth refusal reports `GATEWAY_UNAUTHORIZED` and
+  fails activation with `AGENT_GATEWAY_UNAUTHORIZED`. Rate limits and pairing
+  still wait. Without the proxy, startup sets the node ID and losing it fails.
 - The Gateway's own `/home/node/workspace` stays empty. Through
   `codexDynamicToolsExclude` (keeping owner entries) Codex loses OpenClaw tools
   acting in the Gateway Pod (`ls`, `read`, `write`, `edit`, `apply_patch`,

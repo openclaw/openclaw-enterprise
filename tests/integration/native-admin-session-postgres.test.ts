@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import { Check } from "typebox/value";
+
+import { NamespaceSchema } from "../../packages/contracts/src/index.ts";
+import { asRecord, isNonEmptyString } from "../../packages/utils/src/index.ts";
 
 import { injectJson as inject } from "../helpers/inject-json.ts";
 import {
@@ -21,6 +25,7 @@ import {
   assertSocketClosesAfterMutation,
 } from "../helpers/native-admin-postgres.ts";
 import {
+  type LeaseDependencies,
   assertSocketAuditCloseReason,
   parentSessionRow,
   registerLeaseDependencyCases,
@@ -32,7 +37,45 @@ import {
   waitForAuthorizationDenialAudit,
 } from "./native-admin-session-lease-cases.ts";
 
-async function openNativeAdminSocketScenario(t, label, options = {}) {
+type ScenarioOptions = NonNullable<
+  Parameters<LeaseDependencies["openNativeAdminSocketScenario"]>[2]
+>;
+type RawNativeAgent = Pick<
+  Awaited<ReturnType<typeof createNativeAgent>>,
+  "agent" | "revision" | "principal"
+> & {
+  namespace: unknown;
+  native: unknown;
+};
+type SessionOperator = Omit<Awaited<ReturnType<typeof createAgentPermissionSession>>, "account"> & {
+  account: unknown;
+};
+
+function isNativeAccess(value: unknown): value is Record<string, unknown> & { origin: string } {
+  const access = asRecord(value);
+  return access !== undefined && isNonEmptyString(access.origin);
+}
+
+async function createSessionTarget(
+  api: Awaited<ReturnType<typeof createApi>>,
+  session: Awaited<ReturnType<typeof signIn>>,
+  upstream: Awaited<ReturnType<typeof startNativeHttpsUpstream>>,
+) {
+  const { namespace, agent, revision, native, principal }: RawNativeAgent = await createNativeAgent(
+    api,
+    session,
+    upstream,
+  );
+  assert.ok(Check(NamespaceSchema, namespace), "the fixture must create a Namespace");
+  assert.ok(isNativeAccess(native), "native access must return an origin");
+  return { namespace, agent, revision, native, principal };
+}
+
+async function openNativeAdminSocketScenario(
+  t: TestContext,
+  label: string,
+  options: ScenarioOptions = {},
+) {
   await ensureBootstrap(t);
   const upstream = await startNativeHttpsUpstream(t);
   trustLocalUpstreamCertificate(t, upstream.cert);
@@ -43,12 +86,15 @@ async function openNativeAdminSocketScenario(t, label, options = {}) {
   t.after(() => Promise.allSettled([apiA.app.close(), apiB.app.close()]));
   let session = await signIn(apiA.app);
   let parentSession = await parentSessionRow(apiA);
-  let { namespace, agent, revision, native, principal } = await createNativeAgent(
-    apiA,
-    session,
-    upstream,
-  );
-  let operator;
+  const {
+    namespace,
+    agent,
+    revision,
+    native,
+    principal: administrator,
+  } = await createSessionTarget(apiA, session, upstream);
+  let principal = administrator;
+  let operator: SessionOperator | undefined;
   if (options.mode === "chat") {
     operator = await createAgentPermissionSession(apiA, namespace.id, agent.id, label, ["operate"]);
     session = operator.session;
@@ -60,12 +106,19 @@ async function openNativeAdminSocketScenario(t, label, options = {}) {
   const socket = await openNativeWebSocket(port, native, nativeCookie);
   t.after(() => socket.destroy());
   assert.equal(upstream.upgrades.length, 1);
+  const [upgrade] = upstream.upgrades;
+  assert.ok(upgrade, "the upstream must record the socket upgrade");
   assert.equal(
-    upstream.upgrades[0].url,
-    `${options.mode === "chat" ? "/native-chat" : ""}/namespaces/${namespace.id}/agents/${agent.id}/session/socket`,
+    upgrade.url,
+    `/native-browser/namespaces/${namespace.id}/agents/${agent.id}/session/socket`,
   );
-  assert.equal(upstream.upgrades[0].headers.origin, native.origin);
-  assert.equal(upstream.upgrades[0].headers["x-api-key"], nativeGatewayApiKey);
+  assert.equal(upgrade.headers.origin, native.origin);
+  assert.equal(upgrade.headers["x-api-key"], nativeGatewayApiKey);
+  assert.equal(
+    upgrade.headers["x-openclaw-scopes"],
+    options.mode === "chat" ? "operator.sessions.write" : "operator.admin",
+  );
+  assert.equal(upgrade.headers["x-occ-browser-key"], "server-browser-credential");
   await waitForAuditActions(apiA.pool, namespace.id, agent.id, [
     "openclaw.agents.native_admin.websocket.connect",
   ]);
@@ -101,8 +154,13 @@ test(
     ]);
     t.after(() => Promise.allSettled([apiA.app.close(), apiB.app.close()]));
     const session = await signIn(apiA.app);
-    const { namespace, agent, revision, native } = await createNativeAgent(apiA, session, upstream);
+    const { namespace, agent, revision, native } = await createSessionTarget(
+      apiA,
+      session,
+      upstream,
+    );
     assert.equal(native.activeRevisionId, revision.id);
+    assert.ok(isNonEmptyString(native.url), "native access must return a URL");
     assert.equal(new URL(native.url).origin, native.origin);
     assert.equal(native.bootstrapUrl, undefined);
     const nativeCookie = session.cookie;
@@ -111,13 +169,15 @@ test(
     assert.equal(proxied.headers["x-native-upstream"], "reached");
     assert.equal(proxied.headers["set-cookie"], undefined);
     assert.equal(upstream.requests.length, 1);
+    const [request] = upstream.requests;
+    assert.ok(request, "the upstream must record the proxied request");
     assert.equal(
-      upstream.requests[0].url,
-      `/namespaces/${namespace.id}/agents/${agent.id}/settings/profile?tab=devices`,
+      request.url,
+      `/native-browser/namespaces/${namespace.id}/agents/${agent.id}/settings/profile?tab=devices`,
     );
-    assert.equal(upstream.requests[0].headers.origin, native.origin);
-    assert.equal(upstream.requests[0].headers["x-api-key"], nativeGatewayApiKey);
-    assert.equal(upstream.requests[0].headers.cookie, undefined);
+    assert.equal(request.headers.origin, native.origin);
+    assert.equal(request.headers["x-api-key"], nativeGatewayApiKey);
+    assert.equal(request.headers.cookie, undefined);
 
     const keyOnly = await inject(apiB.app, "GET", "/", {
       headers: {
@@ -135,7 +195,7 @@ test(
     await assertNativeWebSocketRejected(port, native, nativeCookie, { origin: publicOrigin });
     assert.equal(upstream.upgrades.length, upgradesBeforeOriginChecks);
 
-    const limited = await createAgentPermissionSession(
+    const limited: SessionOperator = await createAgentPermissionSession(
       apiA,
       namespace.id,
       agent.id,
@@ -158,8 +218,7 @@ test(
   },
 );
 
-/** @satisfies {import("./native-admin-session-lease-cases.ts").LeaseDependencies} */
-const leaseDependencies = { openNativeAdminSocketScenario };
+const leaseDependencies = { openNativeAdminSocketScenario } satisfies LeaseDependencies;
 
 registerLeaseParentAndRestrictionCases(leaseDependencies);
 registerLeaseDependencyCases(leaseDependencies);
@@ -172,8 +231,11 @@ test(
   { ...requiresPostgres, timeout: 30_000 },
   async (t) => {
     const scenario = await openNativeAdminSocketScenario(t, "admin-downgrade");
+    const [initialUpgrade] = scenario.upstream.upgrades;
+    assert.ok(initialUpgrade, "the upstream must record the initial socket upgrade");
+    const nativeSubject = initialUpgrade.headers["x-occ-identity"];
     await assertSocketClosesAfterMutation(scenario.socket, () =>
-      scenario.apiA.pool.query(
+      scenario.apiA.pool.query<Record<string, unknown>, string[]>(
         `INSERT INTO occ.iam_restrictions (id, namespace_id, action, resource_kind, resource_id, effect)
      VALUES ($1, $2, 'administer', 'agent', $3, 'deny')`,
         [`restriction-${randomUUID()}`, scenario.namespace.id, scenario.agent.id],
@@ -182,9 +244,17 @@ test(
     await assertSocketAuditCloseReason(scenario, "authorization_denied");
     const socket = await openNativeWebSocket(scenario.port, scenario.native, scenario.nativeCookie);
     t.after(() => socket.destroy());
+    const reconnected = scenario.upstream.upgrades.at(-1);
+    assert.ok(reconnected, "the upstream must record the reconnected socket upgrade");
     assert.equal(
-      scenario.upstream.upgrades.at(-1).url,
-      `/native-chat/namespaces/${scenario.namespace.id}/agents/${scenario.agent.id}/session/socket`,
+      reconnected.url,
+      `/native-browser/namespaces/${scenario.namespace.id}/agents/${scenario.agent.id}/session/socket`,
+    );
+    assert.equal(reconnected.headers["x-openclaw-scopes"], "operator.sessions.write");
+    assert.equal(
+      reconnected.headers["x-occ-identity"],
+      nativeSubject,
+      "downgrade changes authority, not the native identity",
     );
   },
 );

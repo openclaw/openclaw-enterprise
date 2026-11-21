@@ -62,7 +62,7 @@ After reading the Agent, `loadDetails` settles history and snapshot independentl
 Rejected history warns beside readable drafts. Deploy stays unavailable.
 `snapshotErrorPanel` explains Configuration refusal and hides drafts. Numeric `401` returns to sign-in.
 
-Browsing: `packages/occ/src/index.ts:listAgents`, `listRevisions`,
+Browsing: `packages/occ/src/agent-queries.ts:listAgents`, `listRevisions`,
 `getAgentForBrowsing`, and `getRevisionForBrowsing`.
 `packages/occ/src/state/postgres-state.ts:browseSavedConfiguration` returns metadata
 plus `configurationReadError` on decode failure. Operational reads and queries stay strict. Unreadable drafts block editing and deployment without defaults.

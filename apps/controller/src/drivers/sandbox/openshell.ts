@@ -2413,6 +2413,8 @@ function sandboxLaunchSpec(
         run_as_user: options.policy.process.runAsUser,
         run_as_group: options.policy.process.runAsGroup,
       },
+      // Never both: openShellPluginPolicy refuses a managed plugin with repository credentials,
+      // proxy wiring or an egress plan, so these two maps never meet.
       ...(egressPolicy && { network_middlewares: egressPolicy.network_middlewares }),
       ...(plugin && { network_middlewares: plugin.middlewares }),
       network_policies: {
