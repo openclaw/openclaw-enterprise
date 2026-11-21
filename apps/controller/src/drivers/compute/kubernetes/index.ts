@@ -15444,14 +15444,39 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         namespace,
       );
     }
-    const route = this.gatewayRoute(
-      revision,
-      ownership,
-      namespace,
-      service,
-      "operator",
-      publishUserRoutes,
-    );
+    const publishedRoute = this.gatewayRoute(revision, ownership, namespace, service);
+    const currentRoute = publishUserRoutes
+      ? undefined
+      : await this.getOwned("HTTPRoute", name, namespace, ownership);
+    // Activation may already have published the delegated browser rules for this exact
+    // revision. API-server defaults can change the observed spec, so identify those rules
+    // by their canonical matches instead of comparing the complete observed manifest.
+    const browserPath = `/native-browser${this.gatewayRoutePath(revision)}`;
+    const hasBrowserRule = (type: "Exact" | "PathPrefix", value: string): boolean => {
+      const rules = currentRoute?.spec?.rules;
+      return (
+        Array.isArray(rules) &&
+        rules.some((rule) => {
+          const matches = asRecord(rule)?.matches;
+          return (
+            Array.isArray(matches) &&
+            matches.some((entry) => {
+              const path = asRecord(asRecord(entry)?.path);
+              return path?.type === type && path.value === value;
+            })
+          );
+        })
+      );
+    };
+    const alreadyPublished =
+      currentRoute?.metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION] === revision.id &&
+      this.getGatewayBrowserEndpoint(revision) !== undefined &&
+      hasBrowserRule("Exact", browserPath) &&
+      hasBrowserRule("PathPrefix", `${browserPath}/`);
+    const route =
+      publishUserRoutes || alreadyPublished
+        ? publishedRoute
+        : this.gatewayRoute(revision, ownership, namespace, service, "operator", false);
     if (route !== undefined) {
       await this.reconcile(route, ownership, namespace);
     }

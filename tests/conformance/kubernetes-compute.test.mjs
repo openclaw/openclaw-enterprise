@@ -742,10 +742,16 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
     tokenServiceInstanceId: "tokens",
     sourceType: "static",
   };
-  const request = {
-    binary: "/usr/bin/node",
+  const grant = {
+    id: "model-egress",
+    binary: "/usr/local/bin/node",
     host: "api.openai.com",
     ports: [{ from: 443, to: 443 }],
+  };
+  const request = {
+    binary: grant.binary,
+    host: grant.host,
+    ports: grant.ports,
     requestPolicy: { type: "http", method: "POST", path: "/v1/responses" },
   };
   const binding = {
@@ -901,13 +907,15 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
       implementation: sandboxDriver.implementation,
       version: 1,
       defaults: {},
-      additions: [],
+      additions: [grant],
     },
     executionAdmission: { version: 8, mode: "standalone" },
     credentialDeployment: {
       proxyDriverId: proxyDriver.id,
       driver: selectedOwner.ref,
-      networkAccessPolicy: { allowed: [request] },
+      networkAccessPolicy: {
+        allowed: [{ binary: grant.binary, host: grant.host, ports: grant.ports }],
+      },
       bindings: [binding],
       injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [request] }],
     },
@@ -1093,6 +1101,30 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
         rule.matches.some(({ path }) => path.value.startsWith("/native-browser/")),
       ),
   );
+  // The Gateway API CRD defaults HTTPRoute backend weights on reads from the API server.
+  for (const rule of objects.get(key("HTTPRoute", gatewayName)).spec.rules) {
+    for (const backend of rule.backendRefs) {
+      backend.weight = 1;
+    }
+  }
+  await prepare();
+  const reconciledOperatorRoute = objects.get(key("HTTPRoute", gatewayName));
+  const browserPath = new URL(driver.getGatewayBrowserEndpoint(revision)).pathname;
+  assert.equal(
+    reconciledOperatorRoute.metadata.annotations["openclaw.dev/agent-revision-id"],
+    revision.id,
+  );
+  for (const [type, value] of [
+    ["Exact", browserPath],
+    ["PathPrefix", `${browserPath}/`],
+  ]) {
+    assert.ok(
+      reconciledOperatorRoute.spec.rules.some((rule) =>
+        rule.matches.some(({ path }) => path.type === type && path.value === value),
+      ),
+      "reconciliation must preserve the published delegated browser route",
+    );
+  }
 
   // Stop removes the Harness before its target-bound Proxy deployment. A real Proxy failure
   // retains only the target ID so a later ordinary Stop can retry the removal.
