@@ -2444,7 +2444,7 @@ test("Access groups exact Agent grants and removes only the selected binding", a
 
   await summary.focus();
   await page.keyboard.press("Enter");
-  const row = principals.locator("details[open]");
+  const row = principals.locator(":scope > li > details[open]");
   await row
     .locator(".agent-access-subject-id code")
     .getByText(person.principal.id, { exact: true })
@@ -2458,6 +2458,12 @@ test("Access groups exact Agent grants and removes only the selected binding", a
   const administration = bindingRows
     .getByRole("listitem")
     .filter({ hasText: "Runtime administration" });
+  const researchChat = bindingRows.getByRole("listitem").filter({ hasText: "Research chat" });
+  await administration.getByText("Administer Agent", { exact: true }).waitFor();
+  await researchChat.getByText("Chat access", { exact: true }).waitFor();
+  assert.equal(await bindingRows.getByText("View Agent in OCC", { exact: true }).count(), 0);
+  await administration.getByText("Technical details", { exact: true }).click();
+  await researchChat.getByText("Technical details", { exact: true }).click();
   await administration.getByText(admin.roleId, { exact: true }).waitFor();
   await administration.getByText(admin.bindingId, { exact: true }).waitFor();
   await administration.getByText("agent: administer", { exact: true }).waitFor();
@@ -2473,7 +2479,7 @@ test("Access groups exact Agent grants and removes only the selected binding", a
   const summaryLabel = row.locator(":scope > summary");
   await summaryLabel.getByText("Chat access · operate", { exact: true }).waitFor();
   assert.equal(await summaryLabel.getByRole("link").count(), 0);
-  await row.getByText(chat.bindingId, { exact: true }).waitFor();
+  await researchChat.getByText(chat.bindingId, { exact: true }).waitFor();
   assert.equal(await administration.count(), 0);
 });
 
@@ -2517,7 +2523,10 @@ test("A return to the Access tab after a revoke shows the member notice, audited
   const remove = page.getByRole("button", { name: "Remove binding", exact: true });
   await accessTab.click();
   await loaded.waitFor();
-  await page.getByRole("list", { name: "Principal grants" }).locator("summary").click();
+  await page
+    .getByRole("list", { name: "Principal grants" })
+    .locator(":scope > li > details > summary")
+    .click();
   await waitForEnabled(remove.first());
   await configurationTab.click();
   await waitForIdleFetches(page);
@@ -2581,7 +2590,11 @@ test("A return to the Access tab after a revoke shows the member notice, audited
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await accessTab.click();
   await loaded.waitFor();
-  await panel.getByRole("list", { name: "Principal grants" }).locator("summary").first().click();
+  await panel
+    .getByRole("list", { name: "Principal grants" })
+    .locator(":scope > li > details > summary")
+    .first()
+    .click();
   await waitForEnabled(remove.first());
   assert.equal(iamDenials().length, 1);
 });

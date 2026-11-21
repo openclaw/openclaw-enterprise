@@ -110,10 +110,11 @@ Pending-read stories use the real client's 15-second timeout; reset them to repl
 loading.
 
 In **Pages → Agent detail → Direct Agent grant roster**, expand **Morgan Chen**
-to see the full Principal ID and a single **Research chat** binding with both
-`agent:read` and `agent:operate`. Expand the separate read-only Principal to see
-the **Research support** binding. It shows **View Agent in OCC**; open
-**Technical details** to see the raw permission and IDs. The read-only Principal
+to see the full Principal ID and a single **Research chat** binding. It shows
+**View Agent in OCC** and **Chat access**. Open **Technical details** to see
+`agent:read`, `agent:operate`, and the IDs. Expand **Avery Patel** to compare the
+administration binding, and expand the separate read-only Principal to see
+the **Research support** binding. The read-only Principal
 uses the ID because no name is available. The Service Principal is listed
 separately. **Direct Agent grant names unavailable** shows
 the ID fallback when the optional name read is refused. **Share an Agent**

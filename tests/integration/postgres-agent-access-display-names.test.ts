@@ -123,7 +123,10 @@ test(
     const unnamed = await person();
     const unrelated = await person("Unrelated Person");
     const policy = `${namespacePath}/iam`;
-    async function role(name: string, actions: readonly ("read" | "operate" | "administer")[]) {
+    async function role(
+      name: string,
+      actions: readonly ("read" | "operate" | "administer" | "read_logs")[],
+    ) {
       return text(
         (
           await create(`${policy}/roles`, {
@@ -134,8 +137,12 @@ test(
       );
     }
     const readRole = await role("Research support", ["read"]);
-    const chatRole = await role("Research chat", ["operate"]);
-    const adminRole = await role("Agent native administration", ["read", "administer"]);
+    const chatRole = await role("Research chat", ["read", "operate"]);
+    const adminRole = await role("Agent native administration", [
+      "read",
+      "administer",
+      "read_logs",
+    ]);
     const service = await create(`${policy}/service-principals`, {});
     async function bind(principalId: string, resourceId: string, roleId = readRole) {
       return text(
@@ -151,8 +158,8 @@ test(
       );
     }
     const readBinding = await bind(first.principalId, agentId);
-    await bind(second.principalId, agentId, chatRole);
-    await bind(second.principalId, agentId, adminRole);
+    const chatBinding = await bind(second.principalId, agentId, chatRole);
+    const adminBinding = await bind(second.principalId, agentId, adminRole);
     await bind(unnamed.principalId, agentId);
     await bind(unrelated.principalId, siblingId);
     await bind(text(service.id), agentId);
@@ -298,9 +305,27 @@ test(
       .locator(":scope > summary")
       .getByText("Open Agent UI · administer", { exact: true })
       .waitFor();
-    await secondRow.getByText("agent: operate", { exact: true }).waitFor();
-    await secondRow.getByText("agent: read, agent: administer", { exact: true }).waitFor();
-    assert.equal(await secondRow.getByText("Technical details", { exact: true }).count(), 0);
+    const chat = secondRow.getByRole("listitem").filter({ hasText: "Research chat" });
+    const adminGrant = secondRow
+      .getByRole("listitem")
+      .filter({ hasText: "Agent native administration" });
+    await chat.getByText("View Agent in OCC · Chat access", { exact: true }).waitFor();
+    await adminGrant
+      .getByText("View Agent in OCC · Administer Agent · Other permissions", { exact: true })
+      .waitFor();
+    assert.equal(await chat.getByRole("link").count(), 0);
+    assert.equal(await chat.getByText(chatBinding, { exact: true }).isVisible(), false);
+    assert.equal(await adminGrant.getByText(adminBinding, { exact: true }).isVisible(), false);
+    await chat.getByText("Technical details", { exact: true }).click();
+    await chat.getByText("agent: read, agent: operate", { exact: true }).waitFor();
+    await chat.getByText(chatRole, { exact: true }).waitFor();
+    await chat.getByText(chatBinding, { exact: true }).waitFor();
+    await adminGrant.getByText("Technical details", { exact: true }).click();
+    await adminGrant
+      .getByText("agent: read, agent: administer, agent: read_logs", { exact: true })
+      .waitFor();
+    await adminGrant.getByText(adminRole, { exact: true }).waitFor();
+    await adminGrant.getByText(adminBinding, { exact: true }).waitFor();
 
     // A failure of the second (name-only) read must not discard bindings or disable removal.
     await page.route(`${origin}${url}`, (route) => route.fulfill({ status: 503 }));
@@ -318,6 +343,8 @@ test(
     );
     await removeReadBinding.click();
     assert.equal((await removed).status(), 204);
+    await chat.getByText(chatBinding, { exact: true }).waitFor();
+    await adminGrant.getByText(adminBinding, { exact: true }).waitFor();
     assert.deepEqual(await readNames(), [
       { principalId: second.principalId, displayName: "Morgan Chen" },
     ]);

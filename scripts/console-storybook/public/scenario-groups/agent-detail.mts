@@ -606,8 +606,9 @@ export function createAgentDetailScenarios({
           "Inspect direct grants by account display name when available. This is not a directory or an effective-access report.",
         steps: [
           "Compare Morgan Chen's chat grant to Avery Patel's administration grant.",
-          "Open Morgan Chen's row to read the full Principal ID and the single Research chat binding, which grants both agent:read and agent:operate.",
-          "Expand the separate read-only Principal. Its Research support binding says View Agent in OCC. Open Technical details to inspect the raw permission and identifiers.",
+          "Open Morgan Chen's row to see the full Principal ID and the Research chat binding: View Agent in OCC and Chat access.",
+          "Open Technical details to see both agent:read and agent:operate along with the Role and binding IDs.",
+          "Expand Avery Patel and the separate read-only Principal. Both show the same Technical details control, with the capabilities for their own Role.",
           "The read-only Principal uses the full ID because no account name is available. The Service Principal is listed separately.",
         ],
         gap: "Simulated policy state and writes; no deployed Agent, account directory, or effective access check.",
@@ -630,7 +631,7 @@ export function createAgentDetailScenarios({
         description:
           "A binding whose Role was not listed stays visible without a guessed browser grant. Refresh sharing reads the current Role and restores the label.",
         steps: [
-          "Expand the Principal marked Browser grant unknown. Check that the Role and binding IDs remain visible.",
+          "Expand the Principal marked Browser grant unknown. Open the binding's Technical details to see the Role and binding IDs.",
           "Select Refresh sharing. The row shows Open Agent UI · administer when the Role is returned.",
         ],
       },
@@ -709,7 +710,7 @@ export function createAgentDetailScenarios({
         path: `${draft}&tab=access`,
         actions: [
           ...shareExistingPerson,
-          { selector: ".agent-access-roster summary", click: true },
+          { selector: ".agent-access-roster > li > details > summary", click: true },
           click("Remove binding"),
         ],
         description:
