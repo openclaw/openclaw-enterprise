@@ -2887,7 +2887,7 @@ export class ControllerWorker {
     signal: AbortSignal,
   ): Promise<"withdrawn" | "pending" | "retire-runtime"> {
     const observePrepared = this.observeNativeRepositoryWithdrawal;
-    if (!observePrepared) {
+    if (!observePrepared || typeof this.compute.observeRevision !== "function") {
       return "retire-runtime";
     }
     try {
@@ -2913,7 +2913,7 @@ export class ControllerWorker {
     }
     const deadline = AbortSignal.any([signal, AbortSignal.timeout(10_000)]);
     try {
-      const runtime = await this.compute.observeRevision?.(revision, deadline);
+      const runtime = await this.compute.observeRevision(revision, deadline);
       deadline.throwIfAborted();
       return runtime?.state === "running" ? "withdrawn" : "pending";
     } catch (error) {

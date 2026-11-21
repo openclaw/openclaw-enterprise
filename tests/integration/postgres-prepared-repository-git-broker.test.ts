@@ -351,6 +351,7 @@ for (const outcome of [
   "unconfirmed revocation",
   "runtime observation is unavailable",
   "runtime remains unready",
+  "runtime observer is missing",
   "custody read recovers",
   "unexpected custody family",
   "settled draft-capable transport",
@@ -1011,10 +1012,19 @@ for (const outcome of [
       assert.deepEqual(rows, [
         { custody: outcome === "unconfirmed revocation" ? "unknown" : "revoked" },
       ]);
-      if (outcome === "settled") {
+      if (outcome === "settled" || outcome === "runtime observer is missing") {
         // Recover the cleanup from durable receipts on a replacement Worker.
         await worker.stop();
-        worker = await startWorker(f.createWorkerPool());
+        if (outcome === "runtime observer is missing") {
+          const withoutObserver = { ...compute };
+          delete withoutObserver.observeRevision;
+          worker = await startWorker(
+            f.createWorkerPool(),
+            createBackendWorkerDrivers(withoutObserver, modelBackends),
+          );
+        } else {
+          worker = await startWorker(f.createWorkerPool());
+        }
       }
       if (outcome === "unexpected custody family") {
         // The metadata family shape accepts unrelated source fields. An extra family
@@ -1100,6 +1110,7 @@ for (const outcome of [
       }
       if (
         outcome === "unexpected custody family" ||
+        outcome === "runtime observer is missing" ||
         draftMustRetire ||
         modelBindingRevokedAfterCustody ||
         outcome === "model account final IAM fault with revoked binding"
