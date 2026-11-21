@@ -15,9 +15,13 @@ import {
   injectJson,
   nativeDomain,
   publicOrigin,
-  type NativeAdminCaseDependencies,
 } from "./native-admin-access-fixture.ts";
-import { errorRecord, readRecord, readString } from "./native-admin-authority-cases.ts";
+import {
+  errorRecord,
+  readRecord,
+  readString,
+  type NativeAdminObservedDependencies,
+} from "./native-admin-authority-cases.ts";
 
 const parseJson: (text: string) => unknown = JSON.parse;
 
@@ -27,7 +31,7 @@ export function registerNativeAdminComputeOwnerCases(
     createNativeAdminFixture,
     nativeOriginForAgent,
     trustLocalUpstreamCertificate,
-  }: NativeAdminCaseDependencies,
+  }: NativeAdminObservedDependencies,
   nativeComputeDriver: (upstreamPort: number) => ComputeDriver,
   nativeGatewayApiKey: string,
   signInToControllerApp: typeof signIn,
@@ -58,10 +62,8 @@ export function registerNativeAdminComputeOwnerCases(
       controller.registerDriver(fixture.iamDriver);
       controller.selectDriver("iam", fixture.iamDriver.id);
       const calls = { endpoint: 0, key: 0 };
-      const upstreamPort = readRecord(upstream, "native upstream").port;
-      assert.ok(typeof upstreamPort === "number", "native upstream port");
       const compute: ComputeDriver = {
-        ...nativeComputeDriver(upstreamPort),
+        ...nativeComputeDriver(upstream.port),
         ...(changedField === undefined ? {} : { [changedField]: `replacement-${changedField}` }),
         async getGatewayBrowserRequest(selectedRevision, input, signal) {
           calls.endpoint += 1;

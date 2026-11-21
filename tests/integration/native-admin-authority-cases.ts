@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type nodeTest from "node:test";
+import type { TestContext } from "node:test";
 
-import type { Permission } from "../../packages/contracts/src/index.ts";
 import { NoActiveAgentRevisionError, ResourceConflictError } from "../../packages/occ/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import type { ActionsByKind } from "../helpers/iam-grants.ts";
+import type { ActionsByKind, grantRole } from "../helpers/iam-grants.ts";
 import { callerDenied } from "../helpers/refusal-text.mjs";
 import {
   adminPrincipal,
@@ -22,9 +22,27 @@ import {
   type Session,
 } from "./native-admin-access-fixture.ts";
 import { continueNativeAdminProxyCase } from "./native-admin-browser-access-cases.ts";
+import type { NativeAdminHttpObservations } from "./native-admin-http-integrity-cases.ts";
 
-type ExactResource = { kind: Permission["resourceKind"]; id: string };
-type AuthorityDependencies = Omit<NativeAdminCaseDependencies, "createAgentPermissionSession"> & {
+type ExactResource = NonNullable<Parameters<typeof grantRole>[2]["resource"]>;
+export type NativeAdminObservedDependencies = Omit<
+  NativeAdminCaseDependencies,
+  "createNativeAdminFixture"
+> & {
+  createNativeAdminFixture(
+    t: TestContext,
+    options?: Parameters<NativeAdminCaseDependencies["createNativeAdminFixture"]>[1],
+  ): Promise<
+    NativeAdminFixture & {
+      upstream: NativeAdminFixture["upstream"] &
+        Pick<NativeAdminHttpObservations, "requests"> & { port: number };
+    }
+  >;
+};
+type AuthorityDependencies = Omit<
+  NativeAdminObservedDependencies,
+  "createAgentPermissionSession"
+> & {
   createAgentPermissionSession(
     context: NativeAdminFixture,
     label: string,
@@ -370,8 +388,9 @@ export function registerNativeAdminProxyCase(
     assert.match(String(proxied.headers["content-security-policy"]), /worker-src 'none'/);
 
     assert.equal(context.upstream.requests.length, 1);
-    const observed = readRecord(context.upstream.requests[0], "native upstream request");
-    const observedHeaders = readRecord(observed.headers, "native upstream headers");
+    const observed = context.upstream.requests[0];
+    assert.ok(observed, "native upstream request");
+    const observedHeaders = observed.headers;
     assert.equal(
       observed.url,
       `/native-browser/namespaces/${context.namespace.id}/agents/${context.agent.id}/settings/profile?tab=devices`,
