@@ -489,7 +489,7 @@ export function createAgentDetailScenarios({
         name: "Gateway channel proxy Secrets loading",
         path: draft,
         deployed: true,
-        rules: [{ suffix: "/secrets", method: "GET", delayMs: 4000, once: true }],
+        rules: [{ suffix: "/secrets", method: "GET", delayMs: 4000 }],
         description:
           "The existing Secret selector reports loading while its Namespace list is pending.",
         gap: "Simulated delayed Secret list.",
