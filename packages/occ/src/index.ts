@@ -350,7 +350,6 @@ import { readDeploymentInventory } from "./deployment-inventory.ts";
 import { readInstallationCapabilities } from "./installation-capabilities.ts";
 import {
   AGENT_NAME_CONFLICT,
-  SERVICE_ACCOUNT_CROSS_NAMESPACE,
   AgentCredentialSourceBindingError,
   AgentDeletingError,
   AuthorizationDeniedError,
@@ -393,6 +392,7 @@ import {
   SavedRepositorySelectionError,
   ResourceConflictError,
   ResourceStateConflictError,
+  SERVICE_ACCOUNT_CROSS_NAMESPACE,
   ProtectedExecutionNetworkPolicyError,
   RuntimeCredentialsForbiddenByClusterError,
   ScopeViolationError,
