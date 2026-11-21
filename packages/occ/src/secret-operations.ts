@@ -69,11 +69,7 @@ interface SecretOperationsDependencies {
     principalId: string,
     target: ResourceRef & { readonly namespaceId: string },
   ) => Promise<Readonly<Namespace>>;
-  readonly secretDriver: () => SecretDriver;
-  readonly ownedSecretDriver: (
-    driverId: string,
-    failure: () => SecretDriverOwnershipError,
-  ) => SecretDriver;
+  readonly selectDriver: () => SecretDriver;
   readonly nextIdentifier: (kind: "secret") => string;
   readonly timestamp: () => string;
   readonly registerRollback: (compensate: () => Promise<void>) => void;
@@ -147,9 +143,52 @@ export async function secretOperation<T>(operation: () => Promise<T>): Promise<T
   }
 }
 
+export function sameSecretBackend(left: Secret, right: Secret): boolean {
+  return (
+    left.id === right.id &&
+    left.namespaceId === right.namespaceId &&
+    left.driverId === right.driverId &&
+    left.backendRef.uid === right.backendRef.uid &&
+    left.backendRef.name === right.backendRef.name &&
+    left.backendRef.namespaceName === right.backendRef.namespaceName &&
+    left.backendRef.key === right.backendRef.key
+  );
+}
+
 export function createSecretOperations(installationId: string, deps: SecretOperationsDependencies) {
   const { read, transact } = deps.transactions;
   const { authorize, authorizationDecision, canRead, holdAuthority } = deps.authority;
+
+  function secretDriver(expectedId?: string): SecretDriver {
+    try {
+      const driver = deps.selectDriver();
+      if (expectedId !== undefined && driver.id !== expectedId) {
+        throw new Error("Driver identity mismatch.");
+      }
+      return driver;
+    } catch {
+      throw new DependencyUnavailableError(
+        "The selected Secret Driver is unavailable or does not own this Secret.",
+      );
+    }
+  }
+
+  /**
+   * The selected Secret Driver when it owns a Secret the caller has already been granted and
+   * looked up; otherwise the path's own SecretDriverOwnershipError, whose fixed message names
+   * that path's fix. Call it only after the grant and the lookup, so it is no existence oracle.
+   * No usable selected driver is an outage, not an ownership problem: it keeps the generic 503.
+   */
+  function ownedSecretDriver(
+    driverId: string,
+    failure: () => SecretDriverOwnershipError,
+  ): SecretDriver {
+    const driver = secretDriver();
+    if (driver.id !== driverId) {
+      throw failure();
+    }
+    return driver;
+  }
 
   async function createSecret(
     principalId: string,
@@ -175,7 +214,7 @@ export function createSecretOperations(installationId: string, deps: SecretOpera
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
-      const driver = deps.secretDriver();
+      const driver = secretDriver();
       const identity = {
         id: deps.nextIdentifier("secret"),
         namespaceId: namespace.id,
@@ -289,7 +328,7 @@ export function createSecretOperations(installationId: string, deps: SecretOpera
       if (!secret) {
         throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
       }
-      const driver = deps.ownedSecretDriver(
+      const driver = ownedSecretDriver(
         secret.driverId,
         () => new SecretStorageDriverError("update"),
       );
@@ -323,7 +362,7 @@ export function createSecretOperations(installationId: string, deps: SecretOpera
         throw new SecretReferencedError(consumers);
       }
       const removed = await accessBindingsTargeting(state, namespace.id, "secret", secret.id);
-      const driver = deps.ownedSecretDriver(
+      const driver = ownedSecretDriver(
         secret.driverId,
         () => new SecretStorageDriverError("delete"),
       );
@@ -463,6 +502,8 @@ export function createSecretOperations(installationId: string, deps: SecretOpera
   }
 
   return {
+    secretDriver,
+    ownedSecretDriver,
     createSecret,
     readSecret,
     listSecrets,
@@ -471,3 +512,5 @@ export function createSecretOperations(installationId: string, deps: SecretOpera
     deleteSecret,
   };
 }
+
+export type SecretOperations = ReturnType<typeof createSecretOperations>;
