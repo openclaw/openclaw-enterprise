@@ -9,8 +9,16 @@ import {
 import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { ProtectedEgressSource, EgressInstallation } from "@openclaw-enterprise/contracts";
 import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
-import type { SandboxPolicyRepository } from "../ports/agents.ts";
-import type { StoredCredentialWithdrawal } from "../ports/credential-sources.ts";
+import type {
+  AgentRepository,
+  AgentRevisionRepository,
+  SandboxPolicyRepository,
+  WorkspaceSetupRepository,
+} from "../ports/agents.ts";
+import type {
+  CredentialSourceRepository,
+  StoredCredentialWithdrawal,
+} from "../ports/credential-sources.ts";
 import type { PredecessorReplacement } from "../ports/agent-reads.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
@@ -106,13 +114,9 @@ import {
   RepositorySessionWithdrawnError,
   WorkClaimLostError,
 } from "../errors.ts";
-import type {
-  AgentRepository,
-  WorkspaceSetupRepository,
-  AgentRevisionRepository,
-} from "../ports/agents.ts";
+
 import type { ConfigurationOwnership, ConfigurationRepository } from "../ports/configurations.ts";
-import type { CredentialSourceRepository } from "../ports/credential-sources.ts";
+
 import type { InstallationRepository } from "../ports/installations.ts";
 import type { IAMPolicyRepository } from "@openclaw-enterprise/contracts";
 import type { NamespaceRepository, PersistedNamespace } from "../ports/namespaces.ts";

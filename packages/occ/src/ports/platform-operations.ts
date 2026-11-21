@@ -1,10 +1,5 @@
-import type {
-  CREDENTIAL_WITHDRAWAL_TARGET,
-  ControllerWork,
-  ControllerWorkAttempt,
-  ControllerWorkLookup,
-} from "../controller-work.ts";
-import type { RepositoryRevisionOwner } from "./repository-sessions.ts";
+import type { CREDENTIAL_WITHDRAWAL_TARGET } from "../controller-work.ts";
+import type { AgentDeploymentWorkReader } from "./agent-reads.ts";
 
 interface PlatformOperationBase {
   readonly action: "reconcile";
@@ -43,13 +38,8 @@ export type PlatformOperation =
       readonly operationId?: never;
     });
 
-export interface PlatformOperationReadRepository {
+export interface PlatformOperationReadRepository extends AgentDeploymentWorkReader {
   list(): Promise<readonly Readonly<PlatformOperation>[]>;
-  findWork(idempotencyKey: string): Promise<Readonly<ControllerWork> | undefined>;
-  findWorkByKeys(idempotencyKeys: readonly string[]): Promise<ControllerWorkLookup>;
-  findWorkAttempt(idempotencyKey: string): Promise<Readonly<ControllerWorkAttempt> | undefined>;
-  /** Whether this revision completed maintenance requiring fresh repository execution. */
-  hasRepositoryExecutionRedeployRequired(owner: RepositoryRevisionOwner): Promise<boolean>;
   /** True while credential withdrawal work for the revision is queued or claimed. */
   hasOutstandingCredentialWithdrawalWork(namespaceId: string, revisionId: string): Promise<boolean>;
 }

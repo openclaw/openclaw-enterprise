@@ -7,6 +7,12 @@ import type {
   AgentRevisionSummaryPage,
   FirstDeploymentReceipt,
 } from "@openclaw-enterprise/contracts";
+import type {
+  ControllerWork,
+  ControllerWorkAttempt,
+  ControllerWorkLookup,
+} from "../controller-work.ts";
+import type { RepositoryRevisionOwner } from "./repository-sessions.ts";
 
 export interface AgentReadRepository {
   findPredecessorReplacement(
@@ -80,4 +86,12 @@ export interface AgentRevisionReadRepository {
     agentId: string,
     page: { readonly before?: number; readonly limit: number },
   ): Promise<Readonly<AgentRevisionSummaryPage>>;
+}
+
+export interface AgentDeploymentWorkReader {
+  findWork(idempotencyKey: string): Promise<Readonly<ControllerWork> | undefined>;
+  findWorkByKeys(idempotencyKeys: readonly string[]): Promise<ControllerWorkLookup>;
+  findWorkAttempt(idempotencyKey: string): Promise<Readonly<ControllerWorkAttempt> | undefined>;
+  /** Whether this revision completed maintenance requiring fresh repository execution. */
+  hasRepositoryExecutionRedeployRequired(owner: RepositoryRevisionOwner): Promise<boolean>;
 }

@@ -1,4 +1,3 @@
-import type { ControllerWorkAttempt } from "../controller-work.ts";
 import { immutableCopy, isNonEmptyString, isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 import { isComputePreparationFailureEvidence } from "@openclaw-enterprise/contracts";
 import type { RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
@@ -7,11 +6,13 @@ import {
   CREDENTIAL_WITHDRAWAL_TARGET,
   type ControllerWork,
   type ControllerWorkKind,
+  type ControllerWorkAttempt,
+  type DeploymentStatus,
+  type DeploymentStatusError,
+  type DeploymentStatusResult,
+  type PluginDeploymentWarning,
 } from "../controller-work.ts";
-import {
-  repositoryExecutionRedeployMessage,
-  type DeploymentRepositoryAccessStatus,
-} from "../deployment-repository-access.ts";
+import { repositoryExecutionRedeployMessage } from "../deployment-repository-access.ts";
 import { SandboxRepositoryRecipientUnverifiedError, ScopeViolationError } from "../errors.ts";
 import { recognizedRuntimeFailureValues, runtimeFailureCause } from "../runtime-failure-cause.ts";
 
@@ -22,40 +23,16 @@ export type {
   ControllerWork,
   ControllerWorkKind,
   ControllerWorkState,
+  ControllerWorkAttempt,
+  ControllerWorkLookup,
+  DeploymentStatus,
+  DeploymentStatusError,
+  DeploymentStatusResult,
+  PluginDeploymentWarning,
 } from "../controller-work.ts";
 export { WorkClaimLostError } from "../errors.ts";
 
 export type { RuntimeFailureCause, RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
-
-export type DeploymentStatus = "queued" | "running" | "succeeded" | "failed";
-
-export interface DeploymentStatusError {
-  readonly code: string;
-  readonly message: string;
-  readonly data?: Readonly<Record<string, unknown>>;
-}
-
-export interface DeploymentStatusResult {
-  readonly deploymentId: string;
-  readonly namespaceId: string;
-  readonly agentId: string;
-  readonly status: DeploymentStatus;
-  readonly error: DeploymentStatusError | null;
-  readonly repositoryAccess?: DeploymentRepositoryAccessStatus;
-  readonly warnings: readonly PluginDeploymentWarning[];
-  readonly progress: {
-    readonly lastAttempt: {
-      readonly at: string;
-      readonly code: string;
-      readonly message: string;
-    } | null;
-    readonly nextAttemptAt: string | null;
-  } | null;
-  readonly cleanup: {
-    readonly status: DeploymentStatus;
-    readonly nextAttemptAt: string | null;
-  } | null;
-}
 
 const FAILURE_CODE = /^[A-Z0-9_]{1,64}$/u;
 
@@ -224,11 +201,6 @@ export function deploymentProgressForWork(
           }),
     nextAttemptAt: work.state === "queued" ? work.availableAt.toISOString() : null,
   });
-}
-
-export interface PluginDeploymentWarning {
-  readonly code: "PLUGIN_INSTALL_FAILED" | "PLUGIN_AUTH_REQUIRED";
-  readonly pluginId: string;
 }
 
 const CREDENTIAL_WITHDRAWAL_ACTION = "reconcile";

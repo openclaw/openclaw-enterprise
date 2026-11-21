@@ -1,4 +1,3 @@
-import type { PredecessorReplacement } from "../ports/agent-reads.ts";
 import type {
   WorkspaceSetupRepository,
   SandboxPolicyRepository,
@@ -59,6 +58,7 @@ import type {
   EgressInstallation,
   EgressMaterialEvidence,
 } from "@openclaw-enterprise/contracts";
+import type { PredecessorReplacement } from "../ports/agent-reads.ts";
 import type { StoredOAuthClient } from "../ports/oauth-client.ts";
 import type { TokenServiceInstance } from "../ports/token-service.ts";
 import type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
@@ -144,8 +144,6 @@ import {
 import { CREDENTIAL_WITHDRAWAL_TARGET } from "../controller-work.ts";
 import { credentialWithdrawalWorkKey } from "./controller-work.ts";
 import type { ControllerWork } from "../controller-work.ts";
-
-export type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
 
 const serviceAccountIdentifier =
   /^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -535,8 +533,6 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     );
   }
 }
-
-export type { IAMPolicyReadRepository, IAMPolicyRepository } from "@openclaw-enterprise/contracts";
 
 export interface TransactionalAuditWriter {
   append(event: AuditEvent): Promise<void>;

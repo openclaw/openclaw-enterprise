@@ -1,12 +1,11 @@
 import type {
+  AgentProvisioningRecord,
+  ProvisioningEffectReceipt,
   ProvisioningEffectTarget,
   ProvisioningPendingEffect,
-  ProvisioningEffectReceipt,
 } from "./ports/agent-provisioning.ts";
 import { randomUUID } from "node:crypto";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-
-import type { AgentProvisioningRecord } from "./ports/agent-provisioning.ts";
 
 function targetIdFor(
   record: Pick<AgentProvisioningRecord, "agentId" | "configurationId">,
