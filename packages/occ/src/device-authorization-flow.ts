@@ -15,7 +15,6 @@ import type {
 import {
   cancelledDeviceAuthorization,
   deviceAuthorizationScope,
-  type DeviceAuthenticationState,
   type DeviceAuthorizationSession,
   type deviceAuthorizationCipher,
 } from "./device-authorization.ts";
@@ -28,26 +27,20 @@ import {
   RetryLaterError,
   ScopeViolationError,
 } from "./errors.ts";
+import type {
+  AuthenticationStateReadRepository,
+  AuthenticationStateRepository,
+} from "./ports/authentication-states.ts";
 
 type DeviceAuthorizationReadState = {
-  readonly authenticationStates: {
-    findDevice(namespaceId: string, id: string): Promise<DeviceAuthenticationState | undefined>;
-  };
+  readonly authenticationStates: AuthenticationStateReadRepository;
 };
 
 type DeviceAuthorizationWriteState = {
   readonly audit: {
     append(event: AuditEvent): Promise<void>;
   };
-  readonly authenticationStates: {
-    create(state: DeviceAuthenticationState): Promise<void>;
-    replaceDevice(
-      namespaceId: string,
-      id: string,
-      version: number,
-      session: DeviceAuthorizationSession,
-    ): Promise<boolean>;
-  };
+  readonly authenticationStates: Pick<AuthenticationStateRepository, "create" | "replaceDevice">;
 };
 
 type SourceAudit = (source: Readonly<CredentialSourceMetadata>) => AuditEvent;
