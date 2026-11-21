@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-11-07
-last_updated_session: authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1
+updated: 2026-11-20
+last_updated_session: authoring-run/0c835bbb-ddf1-4774-98f0-abeeaad6ed97
 ---
 
 # Compute Driver Lifecycle Hooks Flow
@@ -179,6 +179,8 @@ after the remaining resources. The worker settles deletion only from the resulti
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:28: Trace lifecycle hook selection through the OCC Driver registry. (authoring-run/0c835bbb-ddf1-4774-98f0-abeeaad6ed97 - 890c90afd2db8ab7406fe4ea0f7483be2a44e597)
 
 - 2026-11-06 23:26: Move Namespace orchestration to OCC in the accompanying implementation. (authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1 - 91b1a51eb)
 
