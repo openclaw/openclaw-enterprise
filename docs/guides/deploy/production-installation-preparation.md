@@ -109,9 +109,8 @@ RUNTIME_CHECK_STATUS=0
         node --test tests/integration/runtime-image-startup.test.ts \
           tests/integration/runtime-image-gateway-workspace.test.ts
   ) || RUNTIME_CHECK_STATUS=$?
-if [[ -f "$OCC_IMAGE_METADATA/runtime-check.json" ]]; then
-  node scripts/ci/cleanup.ts --state "$OCC_IMAGE_METADATA/runtime-check.json" || RUNTIME_CHECK_STATUS=$?
-fi
+[[ -f "$OCC_IMAGE_METADATA/runtime-check.json" ]] &&
+  node scripts/ci/cleanup.ts --state "$OCC_IMAGE_METADATA/runtime-check.json" || RUNTIME_CHECK_STATUS=1
 CONTROLLER_PUSH_DIGEST_PATTERN=': digest: (sha256:[a-f0-9]{64}) size: [0-9]+'
 if unset CONTROLLER_IMAGE CONTROLLER_PUSH_OUTPUT &&
   (( RUNTIME_CHECK_STATUS == 0 )) &&
