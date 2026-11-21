@@ -1,4 +1,4 @@
-import type { AgentRevisionRead } from "@openclaw-enterprise/contracts";
+import type { AgentRevision, AgentRevisionRead } from "@openclaw-enterprise/contracts";
 import type { IAMDriver } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError, ResourceStateConflictError } from "./errors.ts";
 
@@ -70,6 +70,7 @@ function repositoryGrantMethod(policy: RepositoryGrantPolicy): RepositoryGrantMe
 
 type RepositoryGrantAuthority = {
   readonly allows: (grant: RepositoryNetworkGrant) => boolean;
+  readonly approvesAll: (grants: readonly RepositoryNetworkGrant[]) => boolean;
   readonly unchanged: () => boolean;
 };
 
@@ -79,6 +80,14 @@ function synchronouslyApproved(value: unknown): boolean {
     void Promise.prototype.then.call(value, undefined, () => undefined);
   }
   return value === true;
+}
+
+function verified(check: () => boolean): boolean {
+  try {
+    return check();
+  } catch {
+    return false;
+  }
 }
 
 export function repositoryGrantAuthority(
@@ -94,10 +103,13 @@ export function repositoryGrantAuthority(
     if (!allows) {
       return undefined;
     }
+    const approve = (grant: RepositoryNetworkGrant) =>
+      synchronouslyApproved(Reflect.apply(allows, policy, [{ namespaceId, grant }]));
     return {
-      allows: (grant) =>
-        synchronouslyApproved(Reflect.apply(allows, policy, [{ namespaceId, grant }])),
-      unchanged: () => ownerUnchanged() && repositoryGrantMethod(policy) === allows,
+      // Ceiling filtering must distinguish a denial (try read) from a throw (discard all).
+      allows: approve,
+      approvesAll: (grants) => verified(() => grants.every(approve)),
+      unchanged: () => verified(() => ownerUnchanged() && repositoryGrantMethod(policy) === allows),
     };
   } catch {
     return undefined;
@@ -138,4 +150,12 @@ export function hasOnlyScopedRepositoryRevisions(
       revision.revision === index + 1 &&
       revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined,
   );
+}
+
+export function assertScopedRepositoryHistory(history: readonly Readonly<AgentRevision>[]): void {
+  if (!hasOnlyScopedRepositoryRevisions(history)) {
+    throw new ResourceStateConflictError(
+      "This Agent has a deployment without a repository policy. Create a new Agent and save its repository policy before its first deployment.",
+    );
+  }
 }

@@ -1,3 +1,4 @@
+import type { RepositoryNetworkGrant } from "@openclaw-enterprise/contracts";
 import type { RepositoryNetworkPolicyCeiling } from "@openclaw-enterprise/contracts";
 import {
   delegatedRepositoryCeiling,
@@ -858,8 +859,30 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     );
   }
 
+  function requireDeploymentRepositoryOwner(
+    namespaceId: string,
+    grants: readonly RepositoryNetworkGrant[],
+  ) {
+    const owner = repositoryPermissionOwner(installationRepositoryAdmission);
+    const authority = repositoryGrantAuthority(
+      namespaceId,
+      owner?.admission?.policy,
+      owner?.unchanged,
+    );
+    const approved = () =>
+      authority?.unchanged() === true && authority.approvesAll(grants) && authority.unchanged();
+    if (!approved()) {
+      throw new ResourceStateConflictError(
+        "Cannot verify Namespace repository network grants. Review the Installation repository policy before deploying.",
+      );
+    }
+    return approved;
+  }
+
   return {
     namespaceRepositoryNetworkPolicyCeiling,
+    requireDeploymentRepositoryOwner,
+    repositoryNetworkPolicyCeiling: dependencies.repositoryNetworkPolicyCeiling,
     bindInstallation,
     hasBuiltInRepositoryPolicy,
     builtInBackendDriver,

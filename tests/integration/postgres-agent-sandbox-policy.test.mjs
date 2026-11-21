@@ -12,7 +12,11 @@ import {
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
-import { editStoredRepositoryGrants } from "./postgres-state-repository-network-policy-case.ts";
+import {
+  editStoredRepositoryGrants,
+  verifyScopedDeploymentTransition,
+  verifyChannelPolicyHandoff,
+} from "./postgres-state-repository-network-policy-case.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { callerDenied, GRANT_EXCEEDS_CEILING } from "../helpers/refusal-text.mjs";
@@ -1151,5 +1155,21 @@ test(
   async (t) => {
     const fixture = await createPolicyApp(t);
     await editStoredRepositoryGrants(fixture, fixture.grant);
+  },
+);
+
+test(
+  "scoped deployment refuses an Agent with unscoped history after confirmed retirement",
+  requiresPostgres,
+  async (t) => {
+    await verifyScopedDeploymentTransition(await createPolicyApp(t, true));
+  },
+);
+
+test(
+  "Channel credential handoff respects a concurrent Secret permission revocation",
+  requiresPostgres,
+  async (t) => {
+    await verifyChannelPolicyHandoff(await createPolicyApp(t));
   },
 );

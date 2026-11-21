@@ -168,7 +168,22 @@ Set `repositoryNetworkPolicyCeiling` on the Installation to bound repository del
 
 `GET /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/networking` requires Agent and SandboxPolicy read access and returns saved repository grants and withdrawal availability. An absent policy retains legacy behavior. An explicit `[]` records zero grants.
 
-PUT preserves omitted `repositoryNetworkPolicy`. To withdraw an existing policy's grants, submit `additions: []` and `repositoryNetworkPolicy: []` with `expectedVersion`, editing enabled and normal authorization. Withdrawal remains available after Driver capability loss. First saves and edits that grant access require further Driver support. Explicit policies, including `[]`, block deployment before credential provisioning and block live application. Use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.
+PUT preserves omitted `repositoryNetworkPolicy`. To withdraw an existing policy's grants, submit `additions: []` and `repositoryNetworkPolicy: []` with `expectedVersion`, editing enabled and normal authorization. Withdrawal remains available after Driver capability loss. First saves and edits that grant access require further Driver support. Deployment of stored grants requires unprotected execution, approving Drivers and current Namespace permission. Live application refuses every explicit policy, including `[]`. Use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.
+
+When a Channel needs a bound Secret, the controller checks the saved repository
+policy and the caller's Secret access before handing the value to the Channel.
+The handoff shares the lock used by permission changes. The controller releases
+the lock before waiting for the provider and checks deployment admission again
+before saving the revision.
+
+To opt into repository policy, an Agent must have an explicit list from its
+first deployment. Ordinary Agents can keep deploying without a list.
+A delayed write to its Gateway can outlive a Worker claim and a completed
+stop. Deployment returns 409 if any earlier revision has no list. The Worker
+checks the same history before preparing a queued scoped revision. For a
+previously deployed Agent with that history, create a new Agent and save
+the list before deploying it. An Agent that started with a list can
+deploy subsequent policy changes under the same Agent ID.
 
 After refusing a scoped replacement before its first provider call, the Worker
 can maintain the serving predecessor if the deployment has no earlier attempt.

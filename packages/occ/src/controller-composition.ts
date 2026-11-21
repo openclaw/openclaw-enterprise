@@ -1089,6 +1089,7 @@ export function createControllerComposition(
       publicController.deployAgent(principalId, input, resolveHarness),
   });
   const deploymentRequests = createAgentDeploymentOperations(admittedInstallation.id, {
+    selection: (capability) => drivers.selection(capability),
     transactions,
     authority,
     channels: deploymentChannels,
