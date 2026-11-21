@@ -12,6 +12,9 @@ export function executionAdmissionFor(egressPlan: AgentRevision["egressPlan"]): 
   if (egressPlan.repositoryGit && egressPlan.policyReductionVersion === 2) {
     return { version: 7, mode: "protected" };
   }
+  if (egressPlan.repositoryGitAuthorization === "network-policy") {
+    return { version: 8, mode: "protected" };
+  }
   if (egressPlan.repositoryGitAuthorization === "request-hook-observed") {
     return { version: 6, mode: "protected" };
   }

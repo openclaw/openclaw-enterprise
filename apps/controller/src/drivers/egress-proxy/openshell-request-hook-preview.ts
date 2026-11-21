@@ -10,8 +10,12 @@ import type {
   OpenShellGatewayClient,
   OpenShellSandboxResponse,
 } from "../sandbox/openshell-gateway-client.ts";
-import type { OpenShellPreparedGitInstalled } from "./openshell-prepared-git-provider.ts";
+import type {
+  OpenShellExpectedProviderRule,
+  OpenShellPreparedGitInstalled,
+} from "./openshell-prepared-git-provider.ts";
 import type { OpenShellOnlineHttpRequest } from "./openshell-online-authority.ts";
+import { openShellEffectiveBoundGitRule } from "./openshell-repository-policy-readback.ts";
 import { wirePolicy } from "./openshell-wire-policy.ts";
 
 export const observedRequestHook = "request-hook-observed" as const;
@@ -20,6 +24,7 @@ type Hook = NonNullable<RepositoryGitRecipient["observedHook"]>;
 
 interface Selection {
   readonly mandatory?: true;
+  readonly native?: boolean;
   readonly client: OpenShellGatewayClient;
   readonly sandbox: OpenShellSandboxResponse;
   readonly observed: OpenShellPreparedGitInstalled;
@@ -28,7 +33,8 @@ interface Selection {
   readonly modelProvider: string;
   readonly runtimeProvider: string;
   readonly sourcePolicy: Readonly<Record<string, unknown>>;
-  readonly gitRule: { name: string; endpoints: readonly Record<string, unknown>[] };
+  readonly gitRule: OpenShellExpectedProviderRule["rule"];
+  readonly boundGitRule?: OpenShellExpectedProviderRule["rule"] | undefined;
   readonly execution: (
     sandbox: OpenShellSandboxResponse,
     signal: AbortSignal,
@@ -44,6 +50,8 @@ function expectedPolicy(
   git: Selection["gitRule"],
   modelProvider: string,
   runtimeProvider: string,
+  gitProvider: string,
+  boundGitRule?: Selection["boundGitRule"],
 ) {
   const { network_policies: desired, ...staticPolicy } = source;
   const { network_policies: network, ...applied } = effective;
@@ -62,14 +70,30 @@ function expectedPolicy(
   // Even the endpointless runtime-files provider gets a named, empty rule in stock 0.1.5.
   const runtimeName = "_provider_" + runtimeProvider.replaceAll("-", "_");
   const { [modelName]: model, [runtimeName]: runtime, ...sourceRules } = others;
+  let expectedSourceRules = desired ?? {};
+  if (boundGitRule) {
+    const authored = asRecord(desired);
+    const bound = openShellEffectiveBoundGitRule(
+      boundGitRule,
+      authored?.[boundGitRule.name],
+      gitProvider,
+    );
+    if (!bound || git.endpoints.length !== 0 || git.binaries.length !== 0) {
+      return false;
+    }
+    expectedSourceRules = { ...authored, [bound.name]: bound };
+  }
   if (
     !model ||
     !isDeepStrictEqual(wirePolicy(runtime), { name: runtimeName }) ||
-    !isDeepStrictEqual(wirePolicy(sourceRules), wirePolicy(desired ?? {}))
+    !isDeepStrictEqual(wirePolicy(sourceRules), wirePolicy(expectedSourceRules))
   ) {
     return false;
   }
-  for (const raw of Object.values(others)) {
+  for (const [name, raw] of Object.entries(others)) {
+    if (name === boundGitRule?.name) {
+      continue;
+    }
     const endpoints = asRecord(raw)?.endpoints ?? [];
     if (
       !Array.isArray(endpoints) ||
@@ -100,12 +124,14 @@ export async function previewPolicyAndRecipient({
   registration,
   audience,
   gitRule,
+  boundGitRule,
   modelProvider,
   runtimeProvider,
   sourcePolicy,
   execution,
   signal,
   mandatory,
+  native,
 }: Selection): Promise<string | undefined> {
   const admission = sandbox.configurationAdmission;
   const started = sandbox.mainProcessStartedAt;
@@ -123,7 +149,13 @@ export async function previewPolicyAndRecipient({
     admission.policy_hash !== o.policyHash ||
     admission.config_revision !== o.configRevision ||
     admission.provider_env_revision !== o.providerEnvRevision ||
-    (!mandatory && !(await client.readExclusivePreviewWorkspace?.(o.workspace, sandbox.id, signal)))
+    ((native || !mandatory) &&
+      !(await client.readExclusivePreviewWorkspace?.(
+        o.workspace,
+        sandbox.id,
+        signal,
+        native ? o.provider : undefined,
+      )))
   ) {
     return;
   }
@@ -144,7 +176,15 @@ export async function previewPolicyAndRecipient({
   if (
     !c ||
     !policy ||
-    !expectedPolicy(sourcePolicy, policy, gitRule, modelProvider, runtimeProvider) ||
+    !expectedPolicy(
+      sourcePolicy,
+      policy,
+      gitRule,
+      modelProvider,
+      runtimeProvider,
+      o.provider,
+      boundGitRule,
+    ) ||
     c.version !== admission.policy_version ||
     c.workspace !== o.workspace ||
     c.configuration_instance_id !== admission.instance_id ||
@@ -212,11 +252,16 @@ export async function previewPolicyAndRecipient({
   } = o;
   const { processInstanceId, networkInstanceId, supervisorSessionId, ...executionRecipient } =
     identity;
+  const fingerprint = native
+    ? { ...executionRecipient, processInstanceId, networkInstanceId }
+    : mandatory
+      ? executionRecipient
+      : identity;
   return createHash("sha256")
     .update(
       JSON.stringify([
-        mandatory ? executionRecipient : identity,
-        ...(mandatory ? [] : [started, admission.instance_id]),
+        fingerprint,
+        ...(mandatory && !native ? [] : [started, admission.instance_id]),
         wirePolicy(policy),
         wirePolicy(service),
         executionIdentity,
@@ -239,14 +284,44 @@ export class ObservedHookPreview {
     requestId?: string;
   };
   hook?: Hook;
+  private nativeStartupId?: string;
   recipient?: string;
   bootstrapRevision?: string;
   /** A local deadline to stop and retire, never a lease or an authorization deadline. */
   verifyInstallBy?: number | undefined;
-  release?: "sending" | "acknowledged";
+  release?: "preparing" | "sending" | "acknowledged";
+
+  get startupId(): string | undefined {
+    return this.nativeStartupId ?? this.hook?.startupId;
+  }
+
+  get configurationId(): string | undefined {
+    if (this.recipient === undefined || this.nativeStartupId === undefined) {
+      return this.recipient;
+    }
+    return createHash("sha256")
+      .update(JSON.stringify([this.recipient, this.nativeStartupId]))
+      .digest("hex");
+  }
+
+  bindNativeStartup(startupId: string): void {
+    if (
+      !this.native ||
+      !this.mandatory ||
+      this.startupId ||
+      !this.recipient ||
+      !this.bootstrapRevision
+    ) {
+      throw new Error("Native Git requires a fresh, verified held launcher.");
+    }
+    this.nativeStartupId = startupId;
+  }
 
   /** A new current runtime needs its own denial and release. Authority and configuration stay. */
   recover(): void {
+    if (this.native) {
+      throw new Error("Native Git requires a new revision after launcher replacement.");
+    }
     delete this.armed;
     delete this.hook;
     delete this.release;
@@ -254,12 +329,14 @@ export class ObservedHookPreview {
   }
 
   enrollment(): OpenShellPreparedGitInstalled["enrollment"] {
-    return this.mandatory && this.recipient && this.bootstrapRevision
+    const configurationId = this.configurationId;
+    return this.mandatory && configurationId && this.bootstrapRevision
       ? {
-          configurationId: this.recipient,
+          configurationId,
           bootstrapRevision: this.bootstrapRevision,
+          ...(this.nativeStartupId && { nativeStartupId: this.nativeStartupId }),
           ...(this.hook && { hook: this.hook }),
-          release: this.release ?? "held",
+          release: this.release === "preparing" ? "held" : (this.release ?? "held"),
         }
       : undefined;
   }
@@ -305,8 +382,10 @@ export class ObservedHookPreview {
   }
 
   readonly mandatory: boolean;
-  constructor(workspace: string, bindingId: string, mandatory = false) {
+  readonly native: boolean;
+  constructor(workspace: string, bindingId: string, mandatory = false, native = false) {
     this.mandatory = mandatory;
+    this.native = native;
     this.workspace = workspace;
     this.bindingId = bindingId;
   }

@@ -132,6 +132,12 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 84 && completedCount > 84) {
     return "preStaticTokenServiceSources";
   }
+  if (count === 85 && completedCount > 85) {
+    return "preRepositoryNetworkPolicy";
+  }
+  if (count === 86 && completedCount > 86) {
+    return "preNativeGitDelivery";
+  }
   if (count === completedCount) {
     return "completed";
   }

@@ -1,7 +1,7 @@
 ---
 created: "2026-10-22"
-updated: "2026-11-19"
-last_updated_session: authoring-run/e1008b80-26f9-4622-91f0-e6a875bba268
+updated: "2026-11-21"
+last_updated_session: authoring-run/e0eab11e-42e2-49a4-bb29-18490c7d2429
 ---
 
 # Managed OpenShell workload flow
@@ -111,7 +111,15 @@ identity across two reads. Git verifies Provider receipts, network and superviso
 identities against [OpenShell execution reports](../reference/repository-credentials/protected-openshell-git.md#execution-identity).
 The launch fingerprint excludes OpenShell-internal annotations.
 
-After a restart, `observeHeldPreview` requires a fresh authenticated denial before
+For a deployment-scoped Git grant (execution version 8), the Sandbox binds each
+repository route to one attached Provider. Its profile supplies credentials and
+contributes zero endpoints. The Worker compares the loaded policy with the
+authored rules, the sibling Providers and the current supervisor generation.
+It binds the held launcher to that observation before selecting the finite
+credential and checks the recipient again before rotation and release. OpenShell
+authorizes Git locally. Replacing the launcher requires a new revision.
+
+For an online grant after a restart, `observeHeldPreview` requires a fresh authenticated denial before
 `releasePreview` acknowledges the launcher. The original worker records release
 intent before sending. Uncertain release or worker replacement requires a new
 revision. Git lookup checks the same startup acknowledgment after observation.
@@ -149,6 +157,15 @@ enrolls, the existing withdrawal path deletes the exposure again. Codex retains
 its service for the app-server transport.
 
 ### 3. Select storage paths and connect the node
+
+For a saved native Git grant, Kubernetes Compute freezes the inspected image
+pair and the Agent's Gateway node URL. The Sandbox verifies the node setup
+against that URL and checks the exact Workspace rule during policy readback.
+The generated Gateway pairs the node identified by the revision's binding.
+If an installed binding disappears, becomes invalid, or changes, the Gateway
+drops its acknowledgment and stops the process that holds the old File Transfer
+policy. The restart reads the current binding and rebuilds the policy from the
+admitted configuration. A changed image or route blocks startup.
 
 `deploy/runtime/openshell-bootstrap.cjs:prepareManaged` creates the private
 home at `/opt/oce/managed/private/home` and links retained workspace, generated images
@@ -216,6 +233,8 @@ do not establish cluster isolation or durable replacement after failures.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-21 08:42: Require a current Workspace binding for the Gateway acknowledgment. (authoring-run/e0eab11e-42e2-49a4-bb29-18490c7d2429 - 785f76cca5bf3e6fa2f836c86389016dbc6f31db)
 
 - 2026-11-19 22:19: Condense the managed workload trace. (authoring-run/e1008b80-26f9-4622-91f0-e6a875bba268 - 0173500d9e950c1722fb6738af08f9857e44be3d)
 

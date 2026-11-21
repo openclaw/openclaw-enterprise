@@ -11,31 +11,29 @@ import {
   nativeProfileFixtureConfiguration,
   nativeProfileFixtureMessage,
   nativeProfileFixtureName,
-} from "../tests/helpers/native-profile-state-fixture.ts";
+} from "../tests/helpers/native-profile-state-fixture.mjs";
 
 const { values } = parseArgs({ options: { image: { type: "string" }, out: { type: "string" } } });
-const image = values.image ?? "";
-assert.match(image, /@sha256:[a-f0-9]{64}$/, "--image must be immutable");
+assert.match(values.image ?? "", /@sha256:[a-f0-9]{64}$/, "--image must be immutable");
 assert.ok(values.out, "--out must name a new output directory");
+const image = values.image;
 const output = resolve(values.out);
 await mkdir(output, { mode: 0o700 });
 const temporary = await mkdtemp(join(tmpdir(), "oce-profile-fixture-"));
-const containers: string[] = [];
-const volumes: string[] = [];
+const containers = [];
+const volumes = [];
 const execute = promisify(execFile);
-async function docker(args: readonly string[]) {
+async function docker(args) {
   try {
     return await execute("docker", args, { timeout: 180_000, maxBuffer: 1024 * 1024 });
   } catch (error) {
-    const stderr =
-      typeof error === "object" && error !== null && "stderr" in error ? error.stderr : undefined;
-    throw new Error(`Docker ${args[0]} failed: ${String(stderr ?? "").slice(-8000)}`, {
+    throw new Error(`Docker ${args[0]} failed: ${String(error.stderr ?? "").slice(-8000)}`, {
       cause: error,
     });
   }
 }
 
-async function stateVolume(archive?: string) {
+async function stateVolume(archive) {
   const volume = `oce-profile-fixture-${randomUUID()}`;
   await docker(["volume", "create", volume]);
   volumes.push(volume);
@@ -58,7 +56,7 @@ async function stateVolume(archive?: string) {
   return volume;
 }
 
-async function startGateway(volume: string) {
+async function startGateway(volume) {
   const name = `oce-profile-fixture-${randomUUID()}`;
   containers.push(name);
   await docker([
@@ -120,12 +118,12 @@ async function startGateway(volume: string) {
       throw new Error(`Old Gateway exited before readiness: ${logs.stdout}\n${logs.stderr}`);
     }
     assert.ok(Date.now() < deadline, "Old Gateway did not become ready");
-    await new Promise<void>((done) => setTimeout(done, 500));
+    await new Promise((done) => setTimeout(done, 500));
   }
 }
 
-let captureFailure: unknown;
-const cleanupFailures: unknown[] = [];
+let captureFailure;
+const cleanupFailures = [];
 try {
   await writeFile(
     join(temporary, "config.json"),
@@ -147,7 +145,7 @@ try {
     image,
     "/opt/oce/runtime/provenance.json",
   ]);
-  const provenance: unknown = JSON.parse(stdout);
+  const provenance = JSON.parse(stdout);
   const volume = await stateVolume();
   const gateway = await startGateway(volume);
   const expected = await checkNativeProfileFixture(docker, gateway, {
@@ -251,12 +249,12 @@ for (const relative of [".openclaw/state/openclaw.sqlite", ".openclaw/agents/mai
   captureFailure = error;
 } finally {
   for (const name of containers.reverse()) {
-    await docker(["rm", "-f", name]).catch((error: unknown) => cleanupFailures.push(error));
+    await docker(["rm", "-f", name]).catch((error) => cleanupFailures.push(error));
   }
   for (const volume of volumes.reverse()) {
-    await docker(["volume", "rm", volume]).catch((error: unknown) => cleanupFailures.push(error));
+    await docker(["volume", "rm", volume]).catch((error) => cleanupFailures.push(error));
   }
-  await rm(temporary, { recursive: true, force: true }).catch((error: unknown) =>
+  await rm(temporary, { recursive: true, force: true }).catch((error) =>
     cleanupFailures.push(error),
   );
 }

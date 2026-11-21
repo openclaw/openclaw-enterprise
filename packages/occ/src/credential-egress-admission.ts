@@ -337,6 +337,7 @@ export function createCredentialEgressAdmission(
     repositoryGit?: RepositoryRevisionState,
     harnessAuth?: HarnessAuthSnapshot,
     harnessConfiguration?: Readonly<Record<string, unknown>>,
+    nativeGit?: "v1",
   ): Promise<{ plan: ProxyPlan; assertProvidersCurrent: () => void } | undefined> {
     const sources: CredentialSource[] = [];
     let harnessCredentialSource: ProxyPlan["harnessCredentialSource"];
@@ -416,6 +417,7 @@ export function createCredentialEgressAdmission(
       driver.sourceControl,
       AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
       gitProfile,
+      nativeGit,
     );
     if (gitAuthorization === "unavailable") {
       throw new DependencyUnavailableError(
@@ -515,7 +517,9 @@ export function createCredentialEgressAdmission(
       ...(policyReductionVersion !== undefined && { policyReductionVersion }),
       ...(repositoryGit && { repositoryGit }),
       ...(repositoryGit &&
-        (gitAuthorization === "online-request" || gitAuthorization === "request-hook-observed") && {
+        (gitAuthorization === "online-request" ||
+          gitAuthorization === "request-hook-observed" ||
+          gitAuthorization === "network-policy") && {
           repositoryGitAuthorization: gitAuthorization,
         }),
       ...(harnessCredentialSource && { harnessCredentialSource }),

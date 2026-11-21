@@ -114,14 +114,16 @@ function canonicalGrants(grants: readonly RepositoryNetworkGrant[]): RepositoryN
   return policy.sort((left, right) => (left.repository < right.repository ? -1 : 1));
 }
 
-function repositoryNetworkRules(
-  policy: readonly RepositoryNetworkGrant[],
-): NonNullable<OpenShellProviderProfileEndpoint["rules"]> {
-  return policy.flatMap(({ repository, access }) => {
-    const root = `/${repository}.git`;
-    const services =
-      access === "write" ? ["git-upload-pack", "git-receive-pack"] : ["git-upload-pack"];
-    return services.flatMap((service) => [
+function repositoryNetworkEndpoint({ repository, access }: RepositoryNetworkGrant) {
+  const root = `/${repository}.git`;
+  const services =
+    access === "write" ? ["git-upload-pack", "git-receive-pack"] : ["git-upload-pack"];
+  return openShellProfileEndpoint({
+    host: "github.com",
+    port: 443,
+    protocol: "rest",
+    path: `${root}/**`,
+    rules: services.flatMap((service) => [
       {
         allow: {
           method: "GET",
@@ -130,7 +132,7 @@ function repositoryNetworkRules(
         },
       },
       { allow: { method: "POST", path: `${root}/${service}` } },
-    ]);
+    ]),
   });
 }
 
@@ -158,15 +160,12 @@ export function compileOpenShellBoundGitRule(
       throw new Error("Expected exact Git transport binary paths.");
     }
   }
-  const endpoint = openShellProfileEndpoint({
-    host: "github.com",
-    port: 443,
-    protocol: "rest",
-    rules: repositoryNetworkRules(canonicalGrants(grants)),
-  });
   return {
     name: "repository-git-network",
     binaries: binaries.map((path) => ({ path })),
-    endpoints: [{ ...endpoint, credential_binding: { provider } }],
+    endpoints: canonicalGrants(grants).map((grant) => ({
+      ...repositoryNetworkEndpoint(grant),
+      credential_binding: { provider },
+    })),
   };
 }

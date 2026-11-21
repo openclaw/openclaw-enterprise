@@ -41,7 +41,10 @@ import {
 } from "./openshell-exchange-capabilities.ts";
 import { createOpenAiStaticProvider } from "./openai-provider.ts";
 import { openShellProtectedCodexArtifacts } from "../sandbox/openshell-codex-artifacts.ts";
-import { assertBoundedWorkspaceNodeRule } from "../sandbox/openshell-workspace-node-policy.ts";
+import {
+  assertBoundedWorkspaceNodeRule,
+  workspaceNodePathFor,
+} from "../sandbox/openshell-workspace-node-policy.ts";
 
 /** Whether `registration` is a registered supervisor middleware advertising no execution capability. */
 function registeredWithoutExecution(extensions: unknown, registration: string): boolean {
@@ -234,6 +237,7 @@ export function openShellEgressConfiguration(
       network_middlewares: openShellGitMiddleware(
         options.repositoryMiddlewareName,
         plan.execution.executionId,
+        plan.repositoryGitAuthorization === "network-policy",
       ),
     });
   }
@@ -281,6 +285,7 @@ export class OpenShellLegacyEgressProxyDriver implements LegacyEgressProxyDriver
   readonly sourceControl: CredentialSourceControl;
   readonly bindExchange?: NonNullable<LegacyEgressProxyDriver["bindExchange"]>;
   readonly bindRepositoryGit?: NonNullable<LegacyEgressProxyDriver["bindRepositoryGit"]>;
+  private readonly boundGitRule?: OpenShellGitRuntime["boundGitRule"];
   private readonly mandatoryEnforcement?: OpenShellGitRuntime["mandatoryEnforcement"];
   private readonly previewEnforcement?: OpenShellGitRuntime["previewEnforcement"];
   private readonly backend: Backend<OpenShellGateway>;
@@ -338,6 +343,7 @@ export class OpenShellLegacyEgressProxyDriver implements LegacyEgressProxyDriver
       readonly sandbox: SandboxDriver;
       readonly exchangeAuthority?: EgressAuthorityConfiguration;
       readonly bindRepositoryGit?: NonNullable<LegacyEgressProxyDriver["bindRepositoryGit"]>;
+      readonly boundGitRule?: OpenShellGitRuntime["boundGitRule"];
       readonly mandatoryEnforcement?: OpenShellGitRuntime["mandatoryEnforcement"];
       readonly previewEnforcement?: OpenShellGitRuntime["previewEnforcement"];
       readonly preparedProviders?: readonly CredentialProviderDefinition[];
@@ -358,6 +364,9 @@ export class OpenShellLegacyEgressProxyDriver implements LegacyEgressProxyDriver
     if (options.observedHookPreviewWorkspace && selection.previewEnforcement) {
       this.previewEnforcement = selection.previewEnforcement;
     }
+    if (selection.boundGitRule) {
+      this.boundGitRule = selection.boundGitRule;
+    }
     if (selection.mandatoryEnforcement) {
       this.mandatoryEnforcement = selection.mandatoryEnforcement;
     }
@@ -374,7 +383,11 @@ export class OpenShellLegacyEgressProxyDriver implements LegacyEgressProxyDriver
         credentialFreeMetadataProvider,
         ...(selection.preparedProviders ?? []),
       ],
-      assertAvailable: async (signal: AbortSignal, profile?: RepositoryGitDeliveryProfile) => {
+      assertAvailable: async (
+        signal: AbortSignal,
+        profile?: RepositoryGitDeliveryProfile,
+        nativeGit?: "v1",
+      ) => {
         this.assertRepositoryGitProfileAvailable(profile);
         const client = this.backend.client.clientForNamespace("");
         if (!client.getGatewayInfo) {
@@ -423,6 +436,14 @@ export class OpenShellLegacyEgressProxyDriver implements LegacyEgressProxyDriver
         }
         // Advertise the explicitly selected assurance. The held launcher, actual policy and
         // recipient must still be verified before any usable Git credential is selected.
+        if (nativeGit !== undefined) {
+          return nativeGit === "v1" &&
+            profile === "github_repository" &&
+            this.boundGitRule &&
+            this.mandatoryEnforcement
+            ? { profile, authorization: "network-policy" as const }
+            : undefined;
+        }
         if (
           profile === "github_installation" &&
           this.options.observedHookPreviewWorkspace &&
@@ -495,12 +516,23 @@ export class OpenShellLegacyEgressProxyDriver implements LegacyEgressProxyDriver
     const expected = prepared.configuration;
     const expectedPolicies = asRecord(expected.network_policies);
     if (expectedPolicies && Object.hasOwn(expectedPolicies, "workspace-node-enrollment")) {
-      assertBoundedWorkspaceNodeRule(expectedPolicies["workspace-node-enrollment"]);
+      assertBoundedWorkspaceNodeRule(
+        expectedPolicies["workspace-node-enrollment"],
+        context.revision.sandboxPolicy?.repositoryNetworkPolicy === undefined
+          ? undefined
+          : workspaceNodePathFor(context.revision.namespaceId, context.revision.agentId),
+      );
     }
     // SandboxResourceRef carries the paired Sandbox's exact WorkspaceNodeBinding-derived
     // auxiliary rule. It grants no artifact authority: every other rule comes from admission.
+    const native = context.plan.repositoryGitAuthorization === "network-policy";
+    const bound = native ? this.boundGitRule?.(context.revision) : undefined;
+    if (native && !bound) {
+      return;
+    }
     const canonicalPolicies = {
       ...asRecord(protectedConfiguration.network_policies),
+      ...(bound && { [bound.name]: bound }),
       ...(expectedPolicies && Object.hasOwn(expectedPolicies, "workspace-node-enrollment")
         ? { "workspace-node-enrollment": expectedPolicies["workspace-node-enrollment"] }
         : {}),

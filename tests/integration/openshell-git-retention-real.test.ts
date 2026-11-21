@@ -10,6 +10,7 @@ import type { InstallationDeploymentInventory } from "@openclaw-enterprise/contr
 
 import type {
   OpenShellProviderResponse,
+  OpenShellSandboxCreateRequest,
   OpenShellStoredProviderProfile,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -18,7 +19,9 @@ import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-ex
 import {
   deployFiniteAgent,
   deployStandingAgent,
+  directGitLaunchVerifier,
   observeUntil,
+  traceDirectGitBootstrap,
 } from "../helpers/finite-git-agent.ts";
 import { createFiniteGitProviderObservation } from "../helpers/finite-git-providers.ts";
 import { OpenShellPreparedGitProvider } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
@@ -28,6 +31,7 @@ import {
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.ts";
 import { createOpenShellGitInstallation } from "../helpers/openshell-git-installation.mjs";
+import { waitForStockSupervisor } from "../helpers/openshell-stock-supervisor-readiness.ts";
 import { ownFirstAgentWork } from "../helpers/local-first-agent-stack.mjs";
 import {
   createFiniteGitConversation,
@@ -45,6 +49,129 @@ import {
 const selected = process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1";
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "openshell";
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "kubernetes";
+
+// The installed lane keeps its declared cases. Ordinary integration runs exercise polling off-cluster.
+if (!selected) {
+  test("stock Supervisor readiness pins the Pod and its container", async (t) => {
+    const digest = "sha256:" + "a".repeat(64);
+    const configDigest = "sha256:" + "b".repeat(64);
+    const otherDigest = "sha256:" + "c".repeat(64);
+    const expected = {
+      sandboxId: "sandbox",
+      sandboxUid: "sandbox-uid",
+      image: `registry.example/supervisor@${digest}`,
+      digests: [digest, configDigest],
+    };
+    const pod = {
+      metadata: {
+        uid: "pod-uid",
+        name: "supervisor",
+        labels: {
+          "openshell.ai/boundary-role": "supervisor",
+          "openshell.ai/boundary-pair": "pair",
+        },
+        annotations: { "openshell.ai/sandbox-id": expected.sandboxId },
+        ownerReferences: [{ kind: "Sandbox", uid: expected.sandboxUid }],
+      },
+      spec: { containers: [{ name: "supervisor", image: expected.image }] },
+    };
+    const running = {
+      name: "supervisor",
+      ready: true,
+      imageID: `containerd://${configDigest}`,
+      containerID: "containerd://owned",
+      state: { running: {} },
+    };
+    const ready = { ...pod, status: { phase: "Running", containerStatuses: [running] } };
+    const pending = {
+      ...pod,
+      status: {
+        phase: "Pending",
+        containerStatuses: [
+          { name: "supervisor", ready: false, state: { waiting: { reason: "ContainerCreating" } } },
+        ],
+      },
+    };
+    const noRead = async () =>
+      assert.fail("must check the initial identity and image before reading");
+    await t.test(
+      "waits for the selected container's ready status and runtime digest",
+      async (t) => {
+        let reads = 0;
+        const readPod = async (signal: AbortSignal) => {
+          assert.equal(signal.aborted, false);
+          reads++;
+          return ready;
+        };
+        assert.deepEqual(
+          await waitForStockSupervisor(pending, readPod, expected, t.signal),
+          running,
+        );
+        assert.equal(reads, 1);
+        assert.deepEqual(await waitForStockSupervisor(ready, noRead, expected, t.signal), running);
+      },
+    );
+    await t.test("rejects a wrong requested or resolved image before readiness", async (t) => {
+      await assert.rejects(
+        waitForStockSupervisor(
+          { ...pending, spec: { containers: [{ name: "supervisor", image: "other" }] } },
+          noRead,
+          expected,
+          t.signal,
+        ),
+        /must select the verified stock image/,
+      );
+      const wrongImage = {
+        ...ready,
+        status: {
+          ...ready.status,
+          containerStatuses: [{ ...running, ready: false, imageID: otherDigest }],
+        },
+      };
+      await assert.rejects(
+        waitForStockSupervisor(wrongImage, noRead, expected, t.signal),
+        /running supervisor image must match/,
+      );
+    });
+    await t.test("refuses a replaced Pod or restarted container during the wait", async (t) => {
+      await assert.rejects(
+        waitForStockSupervisor(
+          pending,
+          async () => ({ ...ready, metadata: { ...pod.metadata, uid: "replacement" } }),
+          expected,
+          t.signal,
+        ),
+        /supervisor Pod UID changed/,
+      );
+      const starting = {
+        ...ready,
+        status: { ...ready.status, containerStatuses: [{ ...running, ready: false }] },
+      };
+      const replacement = {
+        ...ready,
+        status: {
+          ...ready.status,
+          containerStatuses: [{ ...running, containerID: "containerd://replacement" }],
+        },
+      };
+      await assert.rejects(
+        waitForStockSupervisor(starting, async () => replacement, expected, t.signal),
+        /supervisor container identity changed/,
+      );
+    });
+    await t.test("reports the last waiting reason when startup does not finish", async (t) => {
+      await assert.rejects(
+        waitForStockSupervisor(pending, noRead, expected, t.signal, 25),
+        /did not become ready within 25 ms \(phase=Pending, reason=ContainerCreating/,
+      );
+      const cancellation = new Error("cancelled fixture");
+      await assert.rejects(
+        waitForStockSupervisor(pending, noRead, expected, AbortSignal.abort(cancellation)),
+        (error) => error === cancellation,
+      );
+    });
+  });
+}
 
 interface OriginToken {
   uses: number;
@@ -1034,34 +1161,33 @@ test(
       name: string,
       providers: string[],
       gitRule?: ReturnType<typeof compileOpenShellBoundGitRule>,
-    ): Promise<Target> => {
+    ) => {
       const selector = { workspace, name };
       assert.ok(!(await gatewayClient.getSandbox(selector, t.signal)), "ACL_NAME_ALREADY_USED");
-      const created = await gatewayClient.createSandbox(
-        {
-          name,
-          workspace,
-          requestId: randomUUID(),
-          labels: { [runLabel]: runId },
-          annotations: {},
-          serviceExposures: [],
-          spec: {
-            template: { image: fixture.sandboxImage },
-            command: ["/bin/sh", "-c", "sleep 3600"],
-            providers,
-            policy: {
-              version: 1,
-              filesystem: {
-                read_only: ["/usr", "/bin", "/lib", "/lib64", "/etc"],
-                read_write: ["/tmp", "/dev/null"],
-              },
-              process: { run_as_user: "1000", run_as_group: "1000" },
-              network_policies: gitRule ? { [gitRule.name]: gitRule } : {},
+      const request: OpenShellSandboxCreateRequest = {
+        name,
+        workspace,
+        requestId: randomUUID(),
+        labels: { [runLabel]: runId },
+        annotations: {},
+        serviceExposures: [],
+        spec: {
+          template: { image: fixture.sandboxImage },
+          command: ["/bin/sh", "-c", "sleep 3600"],
+          providers,
+          policy: {
+            version: 1,
+            filesystem: {
+              read_only: ["/usr", "/bin", "/lib", "/lib64", "/etc"],
+              read_write: ["/tmp", "/dev/null"],
             },
+            process: { run_as_user: "1000", run_as_group: "1000" },
+            network_policies: gitRule ? { [gitRule.name]: gitRule } : {},
           },
         },
-        t.signal,
-      );
+      };
+      const verifyLaunch = directGitLaunchVerifier(request);
+      const created = await gatewayClient.createSandbox(request, t.signal);
       assert.ok(created.id);
       await observeUntil(
         "disposable Git Sandbox startup",
@@ -1071,8 +1197,7 @@ test(
           assert.ok(current?.id === created.id, "ACL_SANDBOX_IDENTITY");
           assert.equal(current.workspace, workspace);
           assert.equal(current.labels[runLabel], runId);
-          // This configured attachment set is checked even when the Provider's
-          // installed-policy readback is unavailable on a standalone test branch.
+          // Verify the intended attachment while the Sandbox is starting.
           assert.deepEqual(current.spec?.providers ?? [], providers);
           return current.phase === "SANDBOX_PHASE_READY" || current.phase === 2
             ? current
@@ -1080,7 +1205,7 @@ test(
         },
         180_000,
       );
-      return { sandboxName: name, sandboxId: created.id };
+      return { sandboxName: name, sandboxId: created.id, verifyLaunch };
     };
 
     // Resolve the real networking executables in the selected image before binding
@@ -1114,28 +1239,87 @@ test(
         apiOrigin: "https://api.github.com",
         binaries: [gitHelper, curl],
         nativeGit: "v1" as const,
+        repositoryNetworkPolicy,
+        expectedProviders: [],
+        managedSandbox: true as const,
       };
-      const provider = new OpenShellPreparedGitProvider(gatewayClient, scope);
-      const binding = await provider.prepare(
-        { value: token, expiresAt: new Date(Date.now() + 3_500_000).toISOString() },
-        t.signal,
-      );
+      const observation = traceDirectGitBootstrap(gatewayClient);
+      const provider = new OpenShellPreparedGitProvider(observation.client, scope);
+      // The first generation holds only a sentinel. The real credential is
+      // eligible for delivery after the selected Sandbox loads its bound rules.
+      const bootstrap = await provider.bootstrap(t.signal);
       const rule = compileOpenShellBoundGitRule(
         repositoryNetworkPolicy,
-        binding.provider,
+        bootstrap.provider,
         scope.binaries,
       );
-      const target = await createSandbox(name, [binding.provider], rule);
+      const target = await createSandbox(name, [bootstrap.provider], rule);
       const supervisor = await fixture.verifySupervisorImage(target);
       await fixture.checkpoint("installed-supervisor", supervisor);
+      const observeBootstrap = () => {
+        observation.reset();
+        return provider.observe(
+          bootstrap,
+          target.sandboxId,
+          t.signal,
+          undefined,
+          target.verifyLaunch,
+        );
+      };
+      const initial = await observeUntil(
+        "loaded Git policy with bootstrap Provider",
+        t.signal,
+        observeBootstrap,
+        120_000,
+      ).catch((error: unknown) => {
+        try {
+          const evidence = observation.summary(bootstrap, target.sandboxId, rule);
+          t.diagnostic(`OpenShell bootstrap readback: ${JSON.stringify(evidence)}`);
+        } catch {
+          t.diagnostic("OpenShell bootstrap readback unavailable");
+        }
+        throw error;
+      });
+      assert.equal(initial.credentialState, "bootstrap");
+
+      const expiresAt = Date.now() + 3_500_000;
+      const binding = await provider.rotate(
+        bootstrap,
+        async () => {
+          // After the Gateway client authenticates, recheck the same loaded
+          // generation and the complete Provider attachment inventory.
+          const current = await observeBootstrap();
+          assert.ok(current && isDeepStrictEqual(current, initial), "ACL_BOOTSTRAP_CHANGED");
+          assert.ok(
+            await gatewayClient.readExclusivePreviewWorkspace(
+              workspace,
+              target.sandboxId,
+              t.signal,
+              bootstrap.provider,
+            ),
+            "ACL_PROVIDER_RECIPIENT",
+          );
+          const isCurrent = () =>
+            !t.signal.aborted &&
+            Date.now() < expiresAt &&
+            provider.repositoryPolicyIsFresh(current);
+          return { value: token, expiresAt: new Date(expiresAt).toISOString(), isCurrent };
+        },
+        t.signal,
+      );
+      assert.ok(binding, "ACL_GUARDED_CREDENTIAL_UPDATE");
+      assert.equal(binding.providerId, bootstrap.providerId);
+      assert.notEqual(binding.resourceVersion, bootstrap.resourceVersion);
       const installed = await observeUntil(
         "installed managed Git Provider",
         t.signal,
-        () => provider.observe(binding, target.sandboxId, t.signal),
+        () => provider.observe(binding, target.sandboxId, t.signal, undefined, target.verifyLaunch),
         120_000,
       );
       assert.equal(installed.credentialState, "active");
       assert.equal(installed.providerResourceVersion, binding.resourceVersion);
+      assert.equal(installed.attachmentEpoch, initial.attachmentEpoch);
+      assert.equal(installed.policyHash, initial.policyHash);
       return { target, supervisor, installed, provider, binding };
     };
 

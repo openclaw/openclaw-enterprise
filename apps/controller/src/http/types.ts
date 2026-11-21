@@ -7,6 +7,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type {
   DeployAgentAuthorization,
+  HarnessResolver,
   OpenClawController,
   RemovedAccessBinding,
   PlatformUnitOfWork,
@@ -24,6 +25,7 @@ export interface RequestContext {
 
 export type ResourceHandler = (input: {
   readonly controller: OpenClawController;
+  readonly resolveHarness: HarnessResolver;
   readonly context: RequestContext;
   readonly request: FastifyRequest;
   readonly reply: FastifyReply;

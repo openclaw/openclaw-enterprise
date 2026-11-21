@@ -371,7 +371,10 @@
     },
     {
       "path": "tests/conformance/openshell-provider-profile-wire.test.ts",
-      "expectedTests": ["provider profile wire defaults preserve Git overlap enforcement"]
+      "expectedTests": [
+        "provider profile wire defaults preserve Git overlap enforcement",
+        "direct Git bootstrap reports missing readiness and a mismatched loaded selector"
+      ]
     },
     {
       "path": "tests/conformance/oauth-connection.test.mjs"
