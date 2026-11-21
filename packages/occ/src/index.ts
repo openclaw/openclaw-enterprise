@@ -341,7 +341,6 @@ import { DriverRegistry, unchangedDriver, type DriverFor } from "./driver-regist
 import { readDeploymentInventory } from "./deployment-inventory.ts";
 import { readInstallationCapabilities } from "./installation-capabilities.ts";
 import {
-  AGENT_NAME_CONFLICT,
   AgentDeletingError,
   AuthorizationDeniedError,
   CallerStateDeniedError,
@@ -365,7 +364,6 @@ import {
   keyedSettingPath,
   NamespaceNotReadyError,
   NotImplementedError,
-  PluginPolicyValidationError,
   ProvisioningSecretDriverError,
   QualifiedAuthorizationDeniedError,
   RetryLaterError,
