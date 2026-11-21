@@ -87,18 +87,26 @@ Qualify that trusted, same-source `RUNTIME_IMAGE` for Gateway and Agent roles wi
 Then assemble the production controller:
 
 ```bash
-node scripts/build-controller.ts docker --target runtime \
-  --build-arg NODE_BASE_IMAGE="$NODE_BASE_IMAGE" \
-  --build-arg OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST="$RUNTIME_DIGEST" \
-  --build-arg OCC_INSPECTED_WORKSPACE_AGENT_DIGEST="$RUNTIME_DIGEST" \
-  --tag "$OCC_IMAGE_REPOSITORY/controller:$OCC_IMAGE_TAG"
-docker push "$OCC_IMAGE_REPOSITORY/controller:$OCC_IMAGE_TAG"
+CONTROLLER_PUSH_DIGEST_PATTERN=': digest: (sha256:[a-f0-9]{64}) size: [0-9]+'
+if unset CONTROLLER_IMAGE &&
+  node scripts/build-controller.ts docker --target runtime \
+    --build-arg NODE_BASE_IMAGE="$NODE_BASE_IMAGE" \
+    --build-arg OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST="$RUNTIME_DIGEST" \
+    --build-arg OCC_INSPECTED_WORKSPACE_AGENT_DIGEST="$RUNTIME_DIGEST" \
+    --tag "$OCC_IMAGE_REPOSITORY/controller:$OCC_IMAGE_TAG" &&
+  CONTROLLER_PUSH_OUTPUT="$(docker push "$OCC_IMAGE_REPOSITORY/controller:$OCC_IMAGE_TAG")" &&
+  [[ "$CONTROLLER_PUSH_OUTPUT" =~ $CONTROLLER_PUSH_DIGEST_PATTERN ]]; then
+  export CONTROLLER_IMAGE="$OCC_IMAGE_REPOSITORY/controller@${BASH_REMATCH[1]}"
+else
+  unset CONTROLLER_IMAGE
+  printf '%s\n' 'Controller build, push, or digest extraction failed.' >&2
+  false
+fi
 ```
 
 For distinct qualified images, pass each role's exact same-source manifest digest.
-Resolve the pushed controller tag to immutable `CONTROLLER_IMAGE`, configure Gateway
-and Agent with their matching immutable image references, then run the normal
-controller/runtime image checks above.
+Configure Gateway and Agent with their matching immutable image references, then
+run the normal controller/runtime image checks above against `CONTROLLER_IMAGE`.
 
 ### Build through a package registry mirror
 
