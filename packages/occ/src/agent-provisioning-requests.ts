@@ -66,6 +66,7 @@ import { resolveConfiguredHarnessId } from "./configured-harness.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import { workMatchesRevision, type ControllerWork } from "./controller-work.ts";
+import { deploymentProgressForWork } from "./deployment-work-status.ts";
 import {
   CallerStateDeniedError,
   ConfigurationHarnessError,
@@ -95,10 +96,6 @@ interface ProvisioningRequestDependencies {
     namespaceId: string,
     name: string,
   ) => Promise<void>;
-  readonly deploymentProgressForWork: (
-    work: Readonly<ControllerWork>,
-    attempt?: Awaited<ReturnType<PlatformReadView["operations"]["findWorkAttempt"]>>,
-  ) => AgentProvisioningDeploymentProgress;
   readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
   readonly authority: Pick<
     ControllerAuthority,
@@ -716,7 +713,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     ) {
       return undefined;
     }
-    return dependencies.deploymentProgressForWork(
+    return deploymentProgressForWork(
       deployment,
       deployment.state === "queued" || deployment.state === "claimed"
         ? await state.operations.findWorkAttempt(key)

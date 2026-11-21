@@ -2316,7 +2316,6 @@ export class OpenClawController {
       this.exactServiceAccount(state, namespaceId, id),
     refuseTakenAgentName: (state, namespaceId, name) =>
       this.refuseTakenAgentName(state, namespaceId, name),
-    deploymentProgressForWork,
     transactions: {
       read: (work) => this.read(work),
       transact: (work) => this.mutate(work),
