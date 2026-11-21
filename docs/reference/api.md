@@ -13855,7 +13855,7 @@ Example request
 | `data` | `object` | Yes | — |
 | `data.configRevision` | `string` | Yes | min length: 1; max length: 128 |
 | `data.enabled` | `boolean` | Yes | — |
-| `data.id` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9_-]+$` |
+| `data.id` | `string (uuid)` | Yes | — |
 | `data.lastRunStatus` | `"ok" or "error" or "skipped" or null` | Yes | — |
 | `data.name` | `string` | Yes | min length: 1; max length: 200 |
 | `data.nextRunAtMs` | `integer or null` | Yes | — |
@@ -13910,7 +13910,7 @@ Delete an Agent automation
 | `expectedConfigRevision` | query | `string` | Yes | min length: 1; max length: 128 | "observed-native-revision" |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 | `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
-| `automationId` | path | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9_-]+$` | "daily-report" |
+| `automationId` | path | `string (uuid)` | Yes | — | "7ed6c814-7412-46e7-9aae-12b13ec16d34" |
 
 ##### Responses
 
@@ -13948,7 +13948,7 @@ Read a managed Agent automation
 | --- | --- | --- | --- | --- | --- |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 | `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
-| `automationId` | path | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9_-]+$` | "daily-report" |
+| `automationId` | path | `string (uuid)` | Yes | — | "7ed6c814-7412-46e7-9aae-12b13ec16d34" |
 
 ##### Responses
 
@@ -13970,7 +13970,7 @@ Read a managed Agent automation
 | `data` | `object` | Yes | — |
 | `data.configRevision` | `string` | Yes | min length: 1; max length: 128 |
 | `data.enabled` | `boolean` | Yes | — |
-| `data.id` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9_-]+$` |
+| `data.id` | `string (uuid)` | Yes | — |
 | `data.lastRunStatus` | `"ok" or "error" or "skipped" or null` | Yes | — |
 | `data.name` | `string` | Yes | min length: 1; max length: 200 |
 | `data.nextRunAtMs` | `integer or null` | Yes | — |
@@ -14024,7 +14024,7 @@ Update an Agent automation
 | --- | --- | --- | --- | --- | --- |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 | `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
-| `automationId` | path | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9_-]+$` | "daily-report" |
+| `automationId` | path | `string (uuid)` | Yes | — | "7ed6c814-7412-46e7-9aae-12b13ec16d34" |
 
 ##### Request body
 
@@ -14070,7 +14070,7 @@ Example request
 | `data` | `object` | Yes | — |
 | `data.configRevision` | `string` | Yes | min length: 1; max length: 128 |
 | `data.enabled` | `boolean` | Yes | — |
-| `data.id` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9_-]+$` |
+| `data.id` | `string (uuid)` | Yes | — |
 | `data.lastRunStatus` | `"ok" or "error" or "skipped" or null` | Yes | — |
 | `data.name` | `string` | Yes | min length: 1; max length: 200 |
 | `data.nextRunAtMs` | `integer or null` | Yes | — |
@@ -14126,7 +14126,7 @@ Read authorized Agent automation history
 | `limit` | query | `string` | No | pattern: `^([1-9][0-9]?\|100)$` | "20" |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 | `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
-| `automationId` | path | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9_-]+$` | "daily-report" |
+| `automationId` | path | `string (uuid)` | Yes | — | "7ed6c814-7412-46e7-9aae-12b13ec16d34" |
 
 ##### Responses
 

@@ -71,6 +71,10 @@ it changes. A registered unsupported job returns only ID, name, enabled state,
 schedule kind and revision; GET and PATCH reject it. An Agent administrator can
 remove it using the observed revision.
 
+Automation IDs are UUIDs. Malformed IDs return 400 before persistence lookup;
+well-formed missing IDs return 404. List disclosure uses the final authority mode,
+so losing `administer` cannot expose rows loaded under the earlier grant.
+
 PATCH checks its `expectedConfigRevision` against the full job read used for
 eligibility, then passes that revision to the native atomic mutation. DELETE
 also uses a native revision precondition. Refresh after a 409; do not overwrite

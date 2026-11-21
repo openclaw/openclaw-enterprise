@@ -381,6 +381,7 @@ test(
                   nativeCreates: 5,
                   executionQualified: false,
                   unsafeDispatchBlocked: true,
+                  adminDemotionProtected: true,
                   nativeSchedulerUnchanged: true,
                   retainedEnabledJobPaused: true,
                   legacyFixtureSetup: true,

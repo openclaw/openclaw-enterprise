@@ -315,7 +315,7 @@ const savedAccount = {
 };
 
 export const parameterExamples = {
-  automationId: "daily-report",
+  automationId: "7ed6c814-7412-46e7-9aae-12b13ec16d34",
   expectedConfigRevision: "observed-native-revision",
   offset: "0",
   modelProviderId: modelProvider.id,

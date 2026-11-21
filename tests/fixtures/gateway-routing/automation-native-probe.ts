@@ -21,6 +21,7 @@ import { prepareNativeAdminConfiguration } from "../../../apps/controller/src/ga
 import { createConsoleAppFixture } from "../../helpers/console-app.mjs";
 import { createReadyComputeDriver } from "../../helpers/development.ts";
 import { createHarnessConfiguration } from "../../helpers/harness-configuration.mjs";
+import type { PlatformStateStore } from "../../../packages/occ/src/index.ts";
 import { grantRole } from "../../helpers/iam-grants.ts";
 import { runDocker } from "../../helpers/runtime-image-docker.ts";
 import { waitForContainerReady } from "../../helpers/runtime-image-gateway-observations.ts";
@@ -228,8 +229,42 @@ const compute = createReadyComputeDriver("automation-native-probe", {
   },
 });
 const publicOrigin = "https://console.oce.example.test";
+let holdOwnershipList = false;
+const ownershipCaptured = Promise.withResolvers<void>();
+const ownershipReleased = Promise.withResolvers<void>();
+
 try {
   const f = await createConsoleAppFixture(scope, {
+    provisionedPeople: [],
+    wrapState: (state: PlatformStateStore): PlatformStateStore => ({
+      async read(work) {
+        let captured = false;
+        const result = await state.read((view) =>
+          work({
+            ...view,
+            agentAutomations: {
+              ...view.agentAutomations,
+              async list(...args: Parameters<typeof view.agentAutomations.list>) {
+                const records = await view.agentAutomations.list(...args);
+                if (holdOwnershipList && args[2] === undefined) {
+                  holdOwnershipList = false;
+                  captured = true;
+                }
+                return records;
+              },
+            },
+          }),
+        );
+        // Hold only the already-read result, after the real repository view closes.
+        // IAM revocation can commit normally; no policy decision or data is faked.
+        if (captured) {
+          ownershipCaptured.resolve();
+          await ownershipReleased.promise;
+        }
+        return result;
+      },
+      transact: (work) => state.transact(work),
+    }),
     computeDriver: compute,
     agentGatewayManagedMode: false,
     auditSink,
@@ -522,6 +557,51 @@ try {
   assert.deepEqual(guestList.data.jobs, []);
   assert.equal(guestList.data.total, 0);
 
+  // Grant and revoke administration through real HTTP IAM operations while a
+  // list holds its all-creator result. Demotion must not disclose that stale view.
+  const iam = `/namespaces/${namespace.id}/iam`;
+  const role = await request("POST", `${iam}/roles`, {
+    body: {
+      name: "Automation race administrator",
+      permissions: [{ action: "administer", resourceKind: "agent" }],
+    },
+  });
+  assert.equal(role.status, 201);
+  const binding = await request("POST", `${iam}/access-bindings`, {
+    body: {
+      subjectKind: "identity",
+      subjectId: guest.principal.id,
+      roleId: role.data.id,
+      resourceKind: "agent",
+      resourceId: agent.id,
+    },
+  });
+  assert.equal(binding.status, 201);
+  const adminView = await request("GET", `${base}?limit=1`, { session: guestSession });
+  assert.equal(adminView.status, 200);
+  assert.equal(adminView.data.total, 4);
+  assert.equal(adminView.data.jobs.length, 1);
+  holdOwnershipList = true;
+  const demotedList = request("GET", `${base}?limit=1`, { session: guestSession });
+  const timer = setTimeout(
+    () => ownershipCaptured.reject(new Error("ownership read barrier timed out")),
+    10_000,
+  );
+  try {
+    await ownershipCaptured.promise;
+    const revoked = await request("DELETE", `${iam}/access-bindings/${binding.data.id}`);
+    assert.equal(revoked.status, 204);
+  } finally {
+    clearTimeout(timer);
+    ownershipReleased.resolve();
+  }
+  const afterDemotion = await demotedList;
+  assert.equal(afterDemotion.status, 200);
+  assert.deepEqual(afterDemotion.data.jobs, [], "demoted administrator must not see foreign jobs");
+  assert.equal(afterDemotion.data.total, 0);
+  assert.equal(afterDemotion.data.nextOffset, null);
+  assert.equal(afterDemotion.data.snapshotRevision, guestList.data.snapshotRevision);
+
   // A retained pre-gate lost create remains discoverable and can bind once.
   const updatesBeforeRecovery = nativeUpdates;
   await assert.rejects(seedLegacy({ ...input, name: "Retained lost reply" }, true), {
@@ -713,6 +793,7 @@ process.stdout.write(
       nativeCreates,
       executionQualified: false,
       unsafeDispatchBlocked: true,
+      adminDemotionProtected: true,
       nativeSchedulerUnchanged: true,
       retainedEnabledJobPaused: true,
       legacyFixtureSetup: true,

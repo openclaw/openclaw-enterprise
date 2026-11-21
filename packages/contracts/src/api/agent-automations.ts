@@ -32,7 +32,7 @@ const schedule = Type.Union([
 export const AgentAutomationParams = Type.Object(
   {
     ...AgentParams.properties,
-    automationId: Type.String({ minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9_-]+$" }),
+    automationId: Type.String({ format: "uuid" }),
   },
   { additionalProperties: false },
 );

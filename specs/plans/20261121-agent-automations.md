@@ -88,7 +88,7 @@ and qualified. Working credentials alone cannot resolve that hold.
 | Completed-run history | Successful one-shot then authorized post-deletion history | Unverified; never-run deleted history correctly returns 404 |
 | Safe mutation recovery | Lost pause reply, native CAS, post-commit audit/revision failure | Final native case covers explicit disabling edits without replay and retained unbound-record recovery |
 | Physical replacement | Genuine Gateway on retained native storage | Paused job and unchanged in-memory OCC ownership verified; PostgreSQL-backed production cutover remains unverified |
-| Independent review | Canonical autoreview, same host/model/authentication route | `b50e0e4704`: `reviewer_unavailable`, `report_produced=false`, authentication failure. Later changes are not independently reviewed |
+| Independent review | Same-host independent app review and canonical CLI status | App review at `91654c716b` found P1 demotion disclosure and P2 malformed-ID failures; fixes await confirmation. The earlier canonical CLI attempt at `b50e0e4704` failed authentication without a report |
 
 Use Node 24.22.1, pnpm 11.15.1 and Bun 1.4.4. Follow the
 [PostgreSQL setup](../../docs/testing/postgresql.md) and
@@ -138,7 +138,7 @@ no token extraction, manual refresh or provider fallback was attempted.
   Existing native APIs must still be qualified on the packaged runtime. The
   previous tests prove refusal paths, not functioning scheduling.
 - On the working tree based on `fbf9ad567d`, the real Gateway protocol suite passed
-  2 tests without a model call, PostgreSQL ownership passed 1 test, and focused HTTP
+  2 tests without a model call, PostgreSQL ownership passed 1 test, and serialization/preset
   checks passed 5 tests, all without skips. Migration upgrade, Provider continuation
   and rollback passed 150 tests, including the pre-automation predecessor. Pending
   SandboxPolicy custody upgrades passed another 11 tests without skips.
@@ -202,8 +202,19 @@ no token extraction, manual refresh or provider fallback was attempted.
   or model calls. Native cron remained enabled; fixture jobs used far-future
   schedules. Creation and unsafe edits dispatched no native mutation. Atomic pause,
   deletion, recovery, concurrent CAS, mutation uncertainty and retained-state
-  replacement passed. The focused HTTP suite passed 5 tests. Type checking, lint,
+  replacement passed. The serialization/preset suite passed 5 tests; that invocation did not select the
+  automation-admission file. Type checking, lint,
   formatting, OpenAPI, workspace, CI manifest, docs and flow checks passed.
+
+- Independent app review found two defects at `91654c716b`. A real HTTP IAM
+  revocation while an all-creator list was held reproduced foreign-job disclosure;
+  final-scope filtering fixes it. Invalid public IDs reproduced PostgreSQL-backed
+  HTTP 500 responses; route UUID validation now returns 400, with valid absent IDs
+  remaining 404. Both regressions failed before their fixes and passed afterward.
+  The native suite passed 2 tests; the PostgreSQL case passed 1. The correctly
+  selected `Agent automation admission` HTTP case passed 1 test with no skips.
+  Earlier references to 5 focused HTTP tests meant serialization/preset checks,
+  not this automation-admission case.
 
 ## Manual Notes
 
@@ -211,6 +222,7 @@ no token extraction, manual refresh or provider fallback was attempted.
 
 ## Changelog
 
+- 2026-11-21: Fix the independent review findings with reproduced HTTP/IAM and PostgreSQL regressions; correct the earlier five-test suite attribution.
 - 2026-11-21: Gate the confirmed operator-schedule authority gap; preserve atomic disable/delete/recovery and ordinary native cron. Mark positive AC1–AC3 and model history unmet, independent of credentials.
 - 2026-11-21: Fix rejected-create reservation retention. The real HTTP/native regression fails before the fix and passes afterward; PostgreSQL proves atomic cleanup/audit rollback, creator isolation and a row-lock race that preserves a concurrent native binding.
 - 2026-11-21: Add genuine Gateway replacement and concurrent native CAS proof without model calls; retain the PostgreSQL-backed production cutover and model-history gaps.

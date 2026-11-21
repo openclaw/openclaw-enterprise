@@ -77,6 +77,12 @@ selected revision through the HTTP handler's `assertCurrent` callback.
 
 ### 3. Gate execution and manage retained jobs
 
+The final runtime selection determines administrative scope. Non-administrative
+lists discard other creators' records even if those records were read under an
+earlier grant. Exact-job requests reject a changed authority mode before dispatch;
+the existing RPC and response checks fence later changes. Route UUID validation
+precedes persistence lookup.
+
 `apps/controller/src/http/agent-automations.ts:createAgentAutomationHandlers`
 rejects POST and explicit enabling after human authorization
 and ownership checks. For other edits, the native adapter reads the current job,

@@ -86,7 +86,7 @@ export function createAgentAutomationHandlers(options: {
     setAuditReadTarget({ kind: "agent", namespaceId: agent.namespaceId, id: agent.id });
     // Ownership precedes native availability and eligibility, including history and DELETE.
     let record: Readonly<AgentAutomationOwnership> | undefined;
-    let administer = false;
+    let ownershipAdminister: boolean | undefined;
     let owned: readonly Readonly<AgentAutomationOwnership>[] = [];
     if (operation === "listAgentAutomations") {
       owned = await controller.listAgentAutomationOwnership(context.actorId, namespaceId, agentId);
@@ -98,7 +98,7 @@ export function createAgentAutomationHandlers(options: {
         params.automationId!,
       );
       record = access.record;
-      administer = access.administer;
+      ownershipAdminister = access.administer;
     }
     // TODO: Admit creation and execution only after a stock route establishes
     // non-owner Agent service authority (Agent automations RFC, AC3). The current
@@ -146,6 +146,15 @@ export function createAgentAutomationHandlers(options: {
       return selection;
     }
     const selection = await select();
+    const administer = selection.mode === "admin";
+    if (ownershipAdminister !== undefined && ownershipAdminister !== administer) {
+      throw dependencyUnavailable();
+    }
+    // The ownership read can finish under an earlier grant. Commit disclosure to
+    // this final mode; assertCurrent fences subsequent mode changes around RPCs.
+    if (!administer) {
+      owned = owned.filter((entry) => entry.creatorPrincipalId === context.actorId);
+    }
     const domain = normalizeNativeAdminDomain(options.nativeAdmin.domain);
     if (options.publicOrigin === undefined || domain === undefined) {
       throw dependencyUnavailable();

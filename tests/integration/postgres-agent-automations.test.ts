@@ -29,6 +29,27 @@ test(
         ),
       );
     });
+    // Public IDs are UUIDs. Invalid text must be refused by the actual HTTP
+    // schema before PostgreSQL attempts UUID coercion; valid absent IDs stay 404.
+    const path = `/namespaces/${namespace.id}/agents/${agent.id}/automations`;
+    for (const id of ["missing-job", "1234", "00000000-0000-0000-0000-not-a-uuid00"]) {
+      for (const [method, suffix, payload] of [
+        ["GET", `/${id}`, undefined],
+        ["PATCH", `/${id}`, { enabled: false, expectedConfigRevision: "observed" }],
+        ["DELETE", `/${id}?expectedConfigRevision=observed`, undefined],
+        ["GET", `/${id}/runs`, undefined],
+      ] as const) {
+        const response = await f.inject(method, path + suffix, payload);
+        assert.equal(
+          response.statusCode,
+          400,
+          "malformed automation ID must be an HTTP input error",
+        );
+        assert.equal(response.json().error.code, "INVALID_REQUEST");
+      }
+    }
+    assert.equal((await f.inject("GET", `${path}/${randomUUID()}`)).statusCode, 404);
+
     const factory = new AuditEventFactory();
     const resource = { kind: "agent" as const, id: agent.id, namespaceId: namespace.id };
     const input = {

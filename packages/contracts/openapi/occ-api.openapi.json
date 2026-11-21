@@ -23059,12 +23059,7 @@
                                     "type": "string"
                                   },
                                   "enabled": { "type": "boolean" },
-                                  "id": {
-                                    "maxLength": 128,
-                                    "minLength": 1,
-                                    "pattern": "^[A-Za-z0-9_-]+$",
-                                    "type": "string"
-                                  },
+                                  "id": { "format": "uuid", "type": "string" },
                                   "lastRunStatus": {
                                     "anyOf": [
                                       { "const": "ok", "type": "string" },
@@ -23163,12 +23158,7 @@
                                     "type": "string"
                                   },
                                   "enabled": { "type": "boolean" },
-                                  "id": {
-                                    "maxLength": 128,
-                                    "minLength": 1,
-                                    "pattern": "^[A-Za-z0-9_-]+$",
-                                    "type": "string"
-                                  },
+                                  "id": { "format": "uuid", "type": "string" },
                                   "name": { "maxLength": 200, "minLength": 1, "type": "string" },
                                   "scheduleKind": {
                                     "maxLength": 64,
@@ -23430,12 +23420,7 @@
                       "properties": {
                         "configRevision": { "maxLength": 128, "minLength": 1, "type": "string" },
                         "enabled": { "type": "boolean" },
-                        "id": {
-                          "maxLength": 128,
-                          "minLength": 1,
-                          "pattern": "^[A-Za-z0-9_-]+$",
-                          "type": "string"
-                        },
+                        "id": { "format": "uuid", "type": "string" },
                         "lastRunStatus": {
                           "anyOf": [
                             { "const": "ok", "type": "string" },
@@ -23687,18 +23672,13 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "daily-report"
+                "value": "7ed6c814-7412-46e7-9aae-12b13ec16d34"
               }
             },
             "in": "path",
             "name": "automationId",
             "required": true,
-            "schema": {
-              "maxLength": 128,
-              "minLength": 1,
-              "pattern": "^[A-Za-z0-9_-]+$",
-              "type": "string"
-            }
+            "schema": { "format": "uuid", "type": "string" }
           }
         ],
         "responses": {
@@ -23846,18 +23826,13 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "daily-report"
+                "value": "7ed6c814-7412-46e7-9aae-12b13ec16d34"
               }
             },
             "in": "path",
             "name": "automationId",
             "required": true,
-            "schema": {
-              "maxLength": 128,
-              "minLength": 1,
-              "pattern": "^[A-Za-z0-9_-]+$",
-              "type": "string"
-            }
+            "schema": { "format": "uuid", "type": "string" }
           }
         ],
         "responses": {
@@ -23895,12 +23870,7 @@
                       "properties": {
                         "configRevision": { "maxLength": 128, "minLength": 1, "type": "string" },
                         "enabled": { "type": "boolean" },
-                        "id": {
-                          "maxLength": 128,
-                          "minLength": 1,
-                          "pattern": "^[A-Za-z0-9_-]+$",
-                          "type": "string"
-                        },
+                        "id": { "format": "uuid", "type": "string" },
                         "lastRunStatus": {
                           "anyOf": [
                             { "const": "ok", "type": "string" },
@@ -24112,18 +24082,13 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "daily-report"
+                "value": "7ed6c814-7412-46e7-9aae-12b13ec16d34"
               }
             },
             "in": "path",
             "name": "automationId",
             "required": true,
-            "schema": {
-              "maxLength": 128,
-              "minLength": 1,
-              "pattern": "^[A-Za-z0-9_-]+$",
-              "type": "string"
-            }
+            "schema": { "format": "uuid", "type": "string" }
           }
         ],
         "requestBody": {
@@ -24225,12 +24190,7 @@
                       "properties": {
                         "configRevision": { "maxLength": 128, "minLength": 1, "type": "string" },
                         "enabled": { "type": "boolean" },
-                        "id": {
-                          "maxLength": 128,
-                          "minLength": 1,
-                          "pattern": "^[A-Za-z0-9_-]+$",
-                          "type": "string"
-                        },
+                        "id": { "format": "uuid", "type": "string" },
                         "lastRunStatus": {
                           "anyOf": [
                             { "const": "ok", "type": "string" },
@@ -24494,18 +24454,13 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "daily-report"
+                "value": "7ed6c814-7412-46e7-9aae-12b13ec16d34"
               }
             },
             "in": "path",
             "name": "automationId",
             "required": true,
-            "schema": {
-              "maxLength": 128,
-              "minLength": 1,
-              "pattern": "^[A-Za-z0-9_-]+$",
-              "type": "string"
-            }
+            "schema": { "format": "uuid", "type": "string" }
           }
         ],
         "responses": {
