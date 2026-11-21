@@ -27,17 +27,17 @@ installations with real dependencies. Results gate neither merge nor publication
 | Eligible PR with `qa-openclaw-model-ui`            | Kubernetes / OpenClaw / `model-ui` only                                           |
 | Push to `main`, when `QA_ADVISORY_ON_PUSH=true`    | QA matrix, native Agent browser and all OpenShell jobs; no local installation job |
 
-Maintainers label reviewed same-repository PRs. Dependabot authors and triggers
-are ineligible. Narrow labels select their union. `full-qa` runs `console-secrets` for Codex,
+Maintainers [verify the source](configuration.md#verify-pr-source-before-labeling)
+before labeling reviewed same-repository PRs. Dependabot authors and triggers
+are ineligible. Narrow labels combine. `full-qa` runs `console-secrets` for Codex,
 `agent-audit` in Compose, and `http-chat` for both presets and placements.
 The Compose job checks
 native redeployment and required-worker execution on Kubernetes workloads.
 
-PR runs test the merge commit. New commits replace opted-in runs; unrelated
-labels cannot restart or cancel them. Remove labels before pushing unreviewed
-code; removal stops future selection but does not cancel active runs. Eligible
-main pushes finish independently. Authors triage regressions.
-[Verify PR source before labeling](configuration.md#verify-pr-source-before-labeling).
+PR runs test the merge commit. New commits replace opted-in runs. Unrelated
+labels leave them unchanged. Remove QA labels before pushing unreviewed code.
+Removal prevents future selection and leaves active runs intact. Eligible main
+pushes finish independently. Authors triage regressions.
 
 Keycloak needs no model credential and allows 180 minutes; OpenClaw allows 120.
 Together they allow 300 runtime runner-minutes per attempt, plus selection—not
@@ -48,7 +48,7 @@ OpenClaw requires `OPENAI_API_KEY` and nonblank `OCC_TEST_OPENAI_MODEL` in
 before the lane. Each cell materializes only its provider credential, removed
 after success or failure.
 
-The schedule does not require `QA_ADVISORY_ON_PUSH`. Credentialed QA and OpenShell
+`QA_ADVISORY_ON_PUSH` affects only pushes. Credentialed QA and OpenShell
 jobs use [`integration-qa-pr`](configuration.md#environments).
 
 ## Scenarios
