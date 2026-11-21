@@ -151,8 +151,8 @@ through the real caller; register new cases in CI.
 
 - The RFC is Proposed and retains its human-review/manual-merge hold.
   [Implementation PR #6856](https://github.com/openclaw/openclaw-enterprise/pull/6856)
-  is open; its reviewed routing fix is at `e66d1168`, with CI harness corrections
-  at `fb8dc2a8`. Submission and implementation do not establish acceptance or
+  is open; its reviewed routing fix is at `e66d1168`, and hosted acceptance
+  is pending at `7b8abf664`. Submission and implementation do not establish acceptance or
   permission to merge.
 - Main pins OpenClaw source `cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef`.
   The exact submitted RFC records the earlier pin `82b682c…`; qualification
@@ -240,18 +240,26 @@ through the real caller; register new cases in CI.
   `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`,
   `OCC_TEST_SLACK_SENDER_BOT_TOKEN`, and `OCC_TEST_SLACK_CHANNEL_ID`.
   A dedicated QA app, distinct driver, and non-DM channel passed read-only
-  identity, membership, and history checks. The supported fixture lease,
-  explicit authorization for test posts, and a usable dedicated sandbox host
-  remain pending. No real Socket Mode connection or message was started. The
-  controlled provider does not satisfy live Slack acceptance.
+  identity, membership, and history checks. The human conditionally authorized
+  the exact test posts, but the supported fixture lease and a usable dedicated
+  sandbox host remain pending. A separate no-message attempt stopped at OCC
+  admission: enabled channels require a dedicated Agent workload. No real Socket
+  Mode connection or message was started. The controlled provider does not
+  satisfy live Slack acceptance.
 
-- Main-only publication of a source-matching immutable runtime is being
-  qualified separately. Gateway and Harness use the same OCE runtime digest;
-  local verification images do not establish publication of the PR revision.
+- [Main-only publisher run 44955206942](https://github.com/openclaw/openclaw-enterprise/actions/runs/44955206942)
+  succeeded for OCE main `e9abd346` and OpenClaw `cf0b3bb0`. Its runtime index is
+  `ghcr.io/openclaw/openclaw-enterprise-runtime@sha256:05247b40b16fd6f1154198d783f35b06c7313444858dc7603802e7f62365e2f8`
+  (amd64 `sha256:6d2af2efbc2e0ceb8435e5dfe4bcb22b2dd38d09fd31c1374652d4094adb432e`;
+  arm64 `sha256:6dd842b052b96ca419205d2b6fccdafb6ed95b9c9eb4a183a5d9b35e9b04ffd3`).
+  Select the same runtime index for Gateway and Harness. This publication is
+  from main; the implementation controller must still be built from PR source.
 
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-21: Record the published runtime candidate and the dedicated-only channel admission boundary (authoring-run/01a1fbf1-03d5-7d21-af95-cdba37f77298).
 
 - 2026-11-21 14:26: Record implementation PR, partial AC evidence, live fixture
   constraints, and publication boundary (authoring-run/01a1fbf1-03d5-7d21-af95-cdba37f77298 - 61ad9f42bcf90c723711443c3f616c7dc185d189).
