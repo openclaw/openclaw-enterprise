@@ -1,5 +1,9 @@
 import { asRecord } from "../../packages/utils/src/index.ts";
 
+// The pinned Gateway can surface a superseded sharing read through its generic RPC envelope.
+const supersededHistoryRead =
+  "SessionMutationFactsUnavailableError: Session access facts are unavailable; retry after session storage is ready. <- Error: Session sharing acquisition is no longer current";
+
 export function installedGatewayRpc(
   execNode: (script: string) => Promise<string>,
   defaultTimeoutMs: number,
@@ -46,10 +50,10 @@ export function installedGatewayRpc(
       if (
         failure?.type === "gateway_request_error" &&
         failure.code === "UNAVAILABLE" &&
-        failure.retryable === true &&
-        asRecord(failure.details)?.method === "chat.history"
+        ((failure.retryable === true && asRecord(failure.details)?.method === "chat.history") ||
+          (failure.details === undefined && failure.message === supersededHistoryRead))
       ) {
-        // Startup can still be preparing history after the Pod becomes ready.
+        // The next history poll acquires current session facts.
         return undefined;
       }
       throw error;
