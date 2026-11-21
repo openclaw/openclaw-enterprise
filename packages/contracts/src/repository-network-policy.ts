@@ -9,13 +9,14 @@ export interface RepositoryNetworkPolicy {
   readonly identity: string;
 }
 
-const repositoryPattern = /^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$/;
+export const maxRepositoryNetworkGrants = 32;
+export const repositoryNetworkGrantPattern = /^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$/;
 
 /** Match the persisted format, including a strict ordering that excludes duplicates. */
 export function isCanonicalRepositoryGrantList(
   value: unknown,
 ): value is readonly RepositoryNetworkGrant[] {
-  if (!Array.isArray(value) || value.length > 32) {
+  if (!Array.isArray(value) || value.length > maxRepositoryNetworkGrants) {
     return false;
   }
   let previous = "";
@@ -33,7 +34,7 @@ export function isCanonicalRepositoryGrantList(
     const { repository, access } = grant as Record<string, unknown>;
     if (
       typeof repository !== "string" ||
-      !repositoryPattern.test(repository) ||
+      !repositoryNetworkGrantPattern.test(repository) ||
       repository.endsWith(".git") ||
       repository <= previous ||
       (access !== "read" && access !== "write")

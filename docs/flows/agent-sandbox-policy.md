@@ -119,11 +119,11 @@ Both adapters reject removing pending applications, even at the current version.
 The worker records the expected provider resource version and settles the same
 application as `applied` or `failed`. Agent deletion cascades policy and exact IAM access removal.
 
-Migration 0086 lets State persist an optional ordered list of repository grants
-in the versioned policy. An absent list preserves the existing policy format.
-An empty list records zero grants. Once recorded, changing the list requires
-a new version, and omitting the list is rejected. The public policy editor
-continues to accept only ordinary network additions.
+Migration 0086 stores versioned repository grants. GET exposes the saved list
+and withdrawal availability to authorized readers. PUT preserves an
+omitted list. An authorized editor can [clear a saved list](../reference/sandbox-policies.md#repository-network-policy)
+after Driver support is lost. Deployment and live apply refuse explicit lists,
+including `[]`.
 
 A revision carrying repository grants must match the saved policy version,
 grants, and canonical identity. PostgreSQL requires a reader version in its

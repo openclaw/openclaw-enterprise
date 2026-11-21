@@ -208,6 +208,7 @@ export interface WorkspaceSetupRepository extends WorkspaceSetupReadRepository {
 }
 
 export interface SandboxPolicyReadRepository {
+  readonly supportsRepositoryNetworkPolicy?: true;
   find(namespaceId: string, agentId: string): Promise<Readonly<SandboxPolicy> | undefined>;
 }
 export interface SandboxPolicyRepository extends SandboxPolicyReadRepository {
@@ -3542,6 +3543,7 @@ function repositories(
   };
 
   const sandboxPolicies: SandboxPolicyRepository = {
+    supportsRepositoryNetworkPolicy: true,
     find: async (namespaceId, agentId) => {
       const value = snapshot.sandboxPolicies.get(agentKey(namespaceId, agentId));
       return value === undefined ? undefined : immutableCopy(value);

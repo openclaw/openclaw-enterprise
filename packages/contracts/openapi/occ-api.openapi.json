@@ -32272,7 +32272,8 @@
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                           "version": 1
                         },
-                        "protectedExecution": false
+                        "protectedExecution": false,
+                        "repositoryNetworkPolicySaveSupported": false
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
@@ -32625,17 +32626,45 @@
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
+                            "repositoryNetworkPolicy": {
+                              "description": "Saved repository grants. An empty array denies all repositories.",
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "access": {
+                                    "anyOf": [
+                                      { "const": "read", "type": "string" },
+                                      { "const": "write", "type": "string" }
+                                    ]
+                                  },
+                                  "repository": {
+                                    "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                                    "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                                    "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["repository", "access"],
+                                "type": "object"
+                              },
+                              "maxItems": 32,
+                              "type": "array"
+                            },
                             "version": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
                           },
                           "required": ["id", "namespaceId", "agentId", "version", "additions"],
                           "type": "object"
                         },
                         "protectedExecution": {
-                          "description": "True while the active revision or the next deploy runs under protected execution. Saving network policy additions is then refused with SANDBOX_POLICY_PROTECTED_EXECUTION; saving an empty policy stays allowed.",
+                          "description": "True while the active revision or the next deploy runs under protected execution. Creating a repository list, saving a nonempty list, or saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone.",
+                          "type": "boolean"
+                        },
+                        "repositoryNetworkPolicySaveSupported": {
+                          "description": "Whether the state adapter can save a withdrawal of this Agent's existing repository grants.",
                           "type": "boolean"
                         },
                         "unavailableReason": {
-                          "description": "Why per-Agent network policy is unavailable, when capability is null: the sentence the save, validate, apply and editing refusals give.",
+                          "description": "Why per-Agent network policy is unavailable when capability is null. An authorized administrator can still enable editing to withdraw an existing repository list.",
                           "type": "string"
                         }
                       },
@@ -32644,6 +32673,7 @@
                         "editingEnabled",
                         "protectedExecution",
                         "ceiling",
+                        "repositoryNetworkPolicySaveSupported",
                         "defaults",
                         "capability"
                       ],
@@ -32864,7 +32894,31 @@
                     "title": "Network rules",
                     "type": "array"
                   },
-                  "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
+                  "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" },
+                  "repositoryNetworkPolicy": {
+                    "description": "Omit to preserve the saved grants. Send an empty array to change an existing list to deny-all. Send empty arrays for both additions and repositoryNetworkPolicy to withdraw under protected execution or without Sandbox Driver support. This version refuses a first list and nonempty lists.",
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "access": {
+                          "anyOf": [
+                            { "const": "read", "type": "string" },
+                            { "const": "write", "type": "string" }
+                          ]
+                        },
+                        "repository": {
+                          "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                          "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                          "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["repository", "access"],
+                      "type": "object"
+                    },
+                    "maxItems": 32,
+                    "type": "array"
+                  }
                 },
                 "required": ["expectedVersion", "additions"],
                 "type": "object"
@@ -33022,6 +33076,30 @@
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
+                        },
+                        "repositoryNetworkPolicy": {
+                          "description": "Saved repository grants. An empty array denies all repositories.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "access": {
+                                "anyOf": [
+                                  { "const": "read", "type": "string" },
+                                  { "const": "write", "type": "string" }
+                                ]
+                              },
+                              "repository": {
+                                "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                                "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                                "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["repository", "access"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
                         },
                         "version": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
                       },
@@ -33209,7 +33287,7 @@
               },
               "schema": {
                 "additionalProperties": false,
-                "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction.",
+                "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction. This operation returns HTTP 409 when the saved policy or active Agent revision has a repository network policy. Applying the saved repository policy requires a deployment that can enforce it. If the policy is present only on the active revision, stop the Agent and confirm that its workload has stopped before investigating the mismatch.",
                 "properties": {
                   "additions": {
                     "items": {
@@ -33280,7 +33358,7 @@
               }
             }
           },
-          "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction.",
+          "description": "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction. This operation returns HTTP 409 when the saved policy or active Agent revision has a repository network policy. Applying the saved repository policy requires a deployment that can enforce it. If the policy is present only on the active revision, stop the Agent and confirm that its workload has stopped before investigating the mismatch.",
           "required": true
         },
         "responses": {
@@ -33440,6 +33518,30 @@
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
+                        },
+                        "repositoryNetworkPolicy": {
+                          "description": "Saved repository grants. An empty array denies all repositories.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "access": {
+                                "anyOf": [
+                                  { "const": "read", "type": "string" },
+                                  { "const": "write", "type": "string" }
+                                ]
+                              },
+                              "repository": {
+                                "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                                "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                                "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["repository", "access"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
                         },
                         "version": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
                       },
