@@ -337,16 +337,14 @@ func TestDevelopmentImageImportKeepsTheArchivePathForOtherImages(t *testing.T) {
 	staging := fmt.Sprintf("openclaw-development/import-%x:%s", sum[:6], state.Cluster)
 	reference := "docker.io/" + strings.TrimSuffix(staging, ":"+state.Cluster) + "@" + profileTestDigest
 	server := "k3d-" + state.Cluster + "-server-0"
+	archive := developmentImageArchiveFixture(t, "example.invalid/original:tag")
 	commands := fakeProfileCommands(t, map[string]string{
-		"docker": `"image inspect ` + staging + `") exit 1 ;;
-"tag ` + image + ` ` + staging + `") ;;
-"image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + staging + `"]' ;;
-"image inspect --format {{.Os}}/{{.Architecture}} ` + staging + `") echo linux/amd64 ;;
-"image save --platform linux/amd64 --output "*" ` + staging + `") printf archive > "$6" ;;
+		"docker": `"image inspect --format {{.Os}}/{{.Architecture}} ` + image + `") echo linux/amd64 ;;
+"buildx imagetools inspect --format {{json .}} ` + image + `") echo '{}' ;;
+"image save --platform linux/amd64 --output "*" ` + image + `") /bin/cp ` + shellQuote(archive) + ` "$6" ;;
 "exec ` + server + ` ctr -n k8s.io images list") echo "` + staging + ` application/vnd.oci.image.manifest.v1+json ` + profileTestDigest + `" ;;
-"exec ` + server + ` ctr -n k8s.io images tag ` + staging + ` ` + reference + `") ;;
-"image rm ` + staging + `") ;;`,
-		"k3d": `"image import --mode direct "*" -c ` + state.Cluster + `") ;;`,
+"exec ` + server + ` ctr -n k8s.io images tag ` + staging + ` ` + reference + `") ;;`,
+		"k3d": `"image import --mode direct "*" -c ` + state.Cluster + `") [ -s "$5" ] ;;`,
 	})
 	r := newRegistryTestRunner(state.Repository)
 	r.imageRegistry.network, r.imageRegistry.address = "k3d-"+state.Cluster, registryTestAddress
@@ -357,6 +355,7 @@ func TestDevelopmentImageImportKeepsTheArchivePathForOtherImages(t *testing.T) {
 	if !slices.ContainsFunc(commands(), func(call string) bool { return strings.HasPrefix(call, "k3d image import --mode direct ") }) {
 		t.Fatalf("the archive was not imported: %v", commands())
 	}
+	assertNoDevelopmentHostTagMutations(t, "docker", commands())
 }
 
 // TestK3dRegistryAttachmentOrdering runs the Kubernetes-only lifecycle with
@@ -372,12 +371,11 @@ func TestK3dRegistryAttachmentOrdering(t *testing.T) {
 	imageCases, imageList := "", registryListed(registryTestRuntime, controllerImage)
 	sum := sha256.Sum256([]byte(developmentPostgres))
 	staging := fmt.Sprintf("openclaw-development/import-%x:%s", sum[:6], cluster)
-	imageCases += `"image inspect ` + staging + `") exit 1 ;;
-"tag ` + developmentPostgres + ` ` + staging + `") ;;
-"image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + staging + `"]' ;;
-"image inspect --format {{.Os}}/{{.Architecture}} ` + staging + `") echo linux/amd64 ;;
+	archive := developmentImageArchiveFixture(t, "example.invalid/postgres:tag")
+	imageCases += `"image inspect --format {{.Os}}/{{.Architecture}} ` + developmentPostgres + `") echo linux/amd64 ;;
+"buildx imagetools inspect --format {{json .}} ` + developmentPostgres + `") echo '{}' ;;
+"image save --platform linux/amd64 --output "*" ` + developmentPostgres + `") /bin/cp ` + shellQuote(archive) + ` "$6" ;;
 "exec k3d-` + cluster + `-server-0 ctr -n k8s.io images tag ` + staging + ` "*) ;;
-"image rm ` + staging + `") ;;
 `
 	imageList += staging + " application/vnd.oci.image.manifest.v1+json " + profileTestDigest + "\n"
 	for _, key := range []string{"DOCKER_CONTEXT", "OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY", "OCC_DEVELOPMENT_REPOSITORY_IMAGE", "OCC_DEVELOPMENT_OPENSHELL_HELM_CHART", "OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART", "OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST"} {
@@ -417,8 +415,7 @@ func TestK3dRegistryAttachmentOrdering(t *testing.T) {
 "image inspect ` + registryTestRuntime + `") ;;
 "image inspect ` + controllerImage + `") ;;
 "image inspect ` + developmentPostgres + `") ;;
-` + imageCases + `"image save --platform linux/amd64 --output "*) ;;
-` + strings.ReplaceAll(registryPullCases(cluster, filepath.Join(root, "connected"), imageList), `"network disconnect k3d-`+cluster+` `+registryTestContainer+`") `,
+` + imageCases + strings.ReplaceAll(registryPullCases(cluster, filepath.Join(root, "connected"), imageList), `"network disconnect k3d-`+cluster+` `+registryTestContainer+`") `,
 			`"network disconnect k3d-`+cluster+` `+registryTestContainer+`") [ -f `+shellQuote(filepath.Join(root, "deleted"))+` ] && exit 98; `),
 		"k3d": `"cluster list -o json") if [ -f ` + shellQuote(filepath.Join(root, "created")) + ` ]; then echo '[{"name":"` + cluster + `"}]'; else echo '[]'; fi ;;
 "cluster create ` + cluster + ` "*) : > ` + shellQuote(filepath.Join(root, "created")) + ` ;;
@@ -473,7 +470,7 @@ func TestK3dRegistryAttachmentOrdering(t *testing.T) {
 		if strings.HasPrefix(call, "docker exec k3d-"+cluster+"-server-0 ctr -n k8s.io images pull ") && i >= disconnect {
 			t.Fatalf("registry pull after disconnect: %s", call)
 		}
-		if strings.Contains(call, "image save") && !strings.Contains(call, staging) {
+		if strings.Contains(call, "image save") && !strings.HasSuffix(call, " "+developmentPostgres) {
 			t.Fatalf("a registry image was exported: %s", call)
 		}
 	}

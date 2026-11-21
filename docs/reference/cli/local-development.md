@@ -34,6 +34,13 @@ In the Go Kubernetes helpers, a failed exclusive write removes its newly created
 output, including a partial key file. Existing targets stay unchanged. If removal
 also fails, the returned error includes both failures.
 
+The general Kubernetes image importer saves an immutable image reference in a
+private temporary directory. It assigns the import name inside a single-image
+Docker archive, imports that archive, and verifies the image digest in the node.
+It does not create or remove staging tags in the host container engine.
+Incomplete or ambiguous archives fail before import. Cleanup removes only the
+importer's temporary directory.
+
 Compose global options, when needed, must follow `--`. Keep the cleanup command
 printed by startup so it selects the same profile and state directory.
 Without a Compute Driver selection, `occ dev down` reads the state directory

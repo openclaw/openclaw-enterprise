@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { after } from "node:test";
 
 import { commandPath, composeConfigurationProvider } from "./compose.ts";
+import { DevUpImageArchives } from "./dev-up-image-archive.ts";
 import {
   forwardedEnv,
   hold,
@@ -363,7 +364,13 @@ function lifecycleCommand(fake, invocation, io) {
     if (engine === "podman") {
       return recordedTag(name);
     }
-    return name.includes("/") ? "docker.io/" + name : "docker.io/library/" + name;
+    if (!name.includes("/")) {
+      return "docker.io/library/" + name;
+    }
+    const first = name.split("/")[0];
+    return first === "localhost" || first.includes(".") || first.includes(":")
+      ? name
+      : "docker.io/" + name;
   };
   if (command === engine) {
     if (
@@ -420,9 +427,32 @@ function lifecycleCommand(fake, invocation, io) {
     ) {
       output(JSON.stringify([recordedTag(args.at(-1))]));
     } else if (args[0] === "image" && args[1] === "inspect" && args.includes("--format")) {
-      output("linux/amd64");
+      const source = args.at(-1);
+      const format = args[args.indexOf("--format") + 1];
+      assert.ok(typeof source === "string" && typeof format === "string");
+      assert.deepEqual(args, ["image", "inspect", "--format", format, source]);
+      if (format === "{{.Id}}") {
+        const id = fake.images.identity(
+          source.startsWith("sha256:") ? source : recordedTag(source),
+        );
+        output(scenario === "invalid-image-identity" ? "invalid-image-id" : id);
+      } else if (format === "{{.Os}}/{{.Architecture}}") {
+        output(fake.images.platform(source));
+      } else {
+        fail("unexpected image inspection format: " + format);
+      }
     } else if (args[0] === "image" && args[1] === "save") {
-      writeFileSync(resolve(cwd, args[args.indexOf("--output") + 1]), "fixture image archive\n");
+      const platform = args[2] === "--platform" ? ["--platform", "linux/amd64"] : [];
+      assert.ok(platform.length === 0 || engine === "docker");
+      const destination = args[args.indexOf("--output") + 1];
+      const source = args.at(-1);
+      assert.ok(typeof destination === "string" && typeof source === "string");
+      assert.deepEqual(args, ["image", "save", ...platform, "--output", destination, source]);
+      fake.images.save(
+        source,
+        resolve(cwd, destination),
+        scenario === "image-archive-missing-config",
+      );
     } else if (
       args[0] === "image" &&
       args[1] === "inspect" &&
@@ -501,10 +531,10 @@ function lifecycleCommand(fake, invocation, io) {
       output(args[5] + " dev cni0 src 10.42.0.1 uid 0\n    cache");
     } else if (args[0] === "exec" && args.includes("images")) {
       if (args.includes("list")) {
-        output(
+        // Preserve the separate released OpenShell fixtures. Local build images
+        // appear only after the prepared archive has reached this node.
+        const inventory = new Map(
           [
-            ["openclaw-enterprise-runtime:kubernetes-quickstart", "a".repeat(64)],
-            ["openclaw-enterprise-controller:kubernetes-quickstart", "b".repeat(64)],
             ["openclaw-development/import-b9b4e5950649:occ-dev-owned", "c".repeat(64)],
             [
               "openclaw-development/openshell-gateway:occ-dev-owned",
@@ -518,11 +548,14 @@ function lifecycleCommand(fake, invocation, io) {
               "openclaw-development/openshell-supervisor:occ-dev-owned",
               "deadeacfdba6d12ca27e538d0002696369d4de5a4fcad075ab503495503af9d1",
             ],
-          ]
-            .map(
-              ([name, digest]) =>
-                importedTag(name) + " application/vnd.oci.image.manifest.v1+json sha256:" + digest,
-            )
+          ].map(([name, digest]) => [importedTag(name), "sha256:" + digest]),
+        );
+        for (const [name, digest] of fake.importedImages.get(args[1]) ?? []) {
+          inventory.set(name, digest);
+        }
+        output(
+          [...inventory]
+            .map(([name, digest]) => name + " application/vnd.oci.image.manifest.v1+json " + digest)
             .join("\n"),
         );
       }
@@ -547,8 +580,22 @@ function lifecycleCommand(fake, invocation, io) {
     } else {
       fail("unexpected " + engine + ": " + args.join(" "));
     }
+  } else if (command === "k3d" && args[0] === "image") {
+    const archive = args[4];
+    const cluster = args[6];
+    assert.ok(typeof archive === "string" && typeof cluster === "string");
+    assert.deepEqual(args, ["image", "import", "--mode", "direct", archive, "-c", cluster]);
+    assert.ok(state.clusters.includes(cluster), "Image imports must target an existing cluster");
+    const imported = fake.images.imported(resolve(cwd, archive));
+    const node = "k3d-" + cluster + "-server-0";
+    let inventory = fake.importedImages.get(node);
+    if (!inventory) {
+      inventory = new Map();
+      fake.importedImages.set(node, inventory);
+    }
+    inventory.set(importedTag(imported.name), imported.digest);
   } else if (command === "k3d" || command === "kubectl" || command === "helm") {
-    return kubernetesLifecycleCommand(command, {
+    const result = kubernetesLifecycleCommand(command, {
       args,
       scenario,
       state,
@@ -556,6 +603,10 @@ function lifecycleCommand(fake, invocation, io) {
       output,
       fail,
     });
+    if (command === "k3d" && args[0] === "cluster" && args[1] === "delete") {
+      fake.importedImages.delete("k3d-" + args[2] + "-server-0");
+    }
+    return result;
   }
 }
 
@@ -637,7 +688,15 @@ async function createFixture(t, options = {}) {
   const engineLog = join(directory, `${engine}.log`);
   const provider = (configurationProvider ??= composeConfigurationProvider());
   const cli = await developmentCli();
-  const fake = { directory, engine, options, cli, lifecycle: false };
+  const fake = {
+    directory,
+    engine,
+    options,
+    cli,
+    lifecycle: false,
+    images: new DevUpImageArchives(),
+    importedImages: new Map(),
+  };
   fake.server = await startCommandServer({
     forwardedEnv,
     handle: ({ command, args, env, cwd, io }) => fakeCommand(fake, { command, args, env, cwd }, io),
@@ -744,7 +803,8 @@ exit 86
 /**
  * @typedef {"success" | "cancelled-creation" | "docker-stack-holds-api-port" | "node-dns-refused" |
  *   "compose-up-failed" | "compose-down-failed" | "cluster-create-rolled-back" | "cluster-create-failed" |
- *   "cluster-delete-failed" | "readiness-blocked" | "api-unauthorized" | "api-mismatch"} LifecycleScenario
+ *   "cluster-delete-failed" | "readiness-blocked" | "api-unauthorized" | "api-mismatch" |
+ *   "invalid-image-identity" | "image-archive-missing-config"} LifecycleScenario
  * @param {Awaited<ReturnType<typeof createFixture>>} fixture
  * @param {LifecycleScenario} [scenario]
  * @param {{engine?: ContainerEngine}} [options]

@@ -1,7 +1,7 @@
 import { requireConfiguration } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { readFile, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { createRequire } from "node:module";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
@@ -130,6 +130,39 @@ test("Kubernetes dev-up authenticates the Installation and cleanup uses its save
   assert.match(config, /transportSecretPrefix: openclaw-agent-transport/);
   assert.doesNotMatch(config, /modelSecretPrefix/);
   const startupCommands = await readJsonLines(fixture.env.SAFETY_LOG);
+  // The real launcher must freeze a local image, prepare its owned Docker
+  // archive, and import that archive before the fixture exposes it on the node.
+  const imageExportIndex = startupCommands.findIndex(
+    (entry) =>
+      entry.command === "docker" &&
+      entry.args[0] === "image" &&
+      entry.args[1] === "save" &&
+      /^sha256:[a-f0-9]{64}$/.test(entry.args.at(-1)),
+  );
+  assert.ok(imageExportIndex >= 0, "The local image must be exported by its immutable ID");
+  const imageExport = startupCommands[imageExportIndex];
+  const exportedArchive = imageExport.args[imageExport.args.indexOf("--output") + 1];
+  const imageImportIndex = startupCommands.findIndex(
+    (entry, index) =>
+      index > imageExportIndex &&
+      entry.command === "k3d" &&
+      entry.args.slice(0, 4).join(" ") === "image import --mode direct" &&
+      dirname(entry.args[4]) === dirname(exportedArchive),
+  );
+  assert.ok(imageImportIndex > imageExportIndex, "The owned export must reach k3d");
+  assert.notEqual(startupCommands[imageImportIndex].args[4], exportedArchive);
+  assert.equal(
+    startupCommands
+      .slice(0, imageImportIndex + 1)
+      .some(
+        (entry) =>
+          entry.command === "docker" &&
+          (entry.args[0] === "tag" || (entry.args[0] === "image" && entry.args[1] === "rm")),
+      ),
+    false,
+    "Image import must not mutate daemon tags",
+  );
+  await assert.rejects(stat(dirname(exportedArchive)), { code: "ENOENT" });
   const clusterCreate = startupCommands.find(
     (entry) => entry.command === "k3d" && entry.args[0] === "cluster" && entry.args[1] === "create",
   );

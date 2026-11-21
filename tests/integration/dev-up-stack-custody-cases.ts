@@ -126,6 +126,11 @@ const rollbackCases = [
   { scenario: "compose-up-failed", diagnostic: /partial compose startup/ },
   { scenario: "cluster-create-failed", diagnostic: /partial cluster creation/ },
   { scenario: "node-dns-refused", diagnostic: /cannot resolve registry-1\.docker\.io/ },
+  { scenario: "invalid-image-identity", diagnostic: /invalid local image identity/ },
+  {
+    scenario: "image-archive-missing-config",
+    diagnostic: /prepare development image archive: image archive content .* is missing or invalid/,
+  },
   { scenario: "api-mismatch", diagnostic: /invalid Installation ID/ },
   { scenario: "api-unauthorized", diagnostic: /authorization failed/ },
 ] as const satisfies readonly { scenario: LifecycleScenario; diagnostic: RegExp }[];
@@ -175,6 +180,32 @@ export function registerStackRollbackCases(kubernetesFixture: CreateKubernetesFi
           commands.some(({ command, args }) => command === "k3d" && args[0] === "image"),
           false,
         );
+      }
+      if (scenario === "invalid-image-identity" || scenario === "image-archive-missing-config") {
+        // These invalid inputs reach the actual Go validation. Neither refusal
+        // may import an image or mutate a daemon tag before ordinary rollback.
+        const commands = await lifecycleInvocations(fixture.env);
+        assert.equal(
+          commands.some(({ command, args }) => command === "k3d" && args[0] === "image"),
+          false,
+        );
+        assert.equal(
+          commands.some(
+            ({ command, args }) =>
+              command === "docker" &&
+              (args[0] === "tag" || (args[0] === "image" && args[1] === "rm")),
+          ),
+          false,
+        );
+        const imageExports = commands.filter(
+          ({ command, args }) => command === "docker" && args[0] === "image" && args[1] === "save",
+        );
+        assert.equal(imageExports.length, scenario === "invalid-image-identity" ? 0 : 1);
+        if (scenario === "image-archive-missing-config") {
+          const imageExport = imageExports[0];
+          assert.ok(imageExport);
+          assert.match(imageExport.args.at(-1) ?? "", /^sha256:[a-f0-9]{64}$/);
+        }
       }
       if (scenario.startsWith("api-")) {
         await assert.rejects(stat(keyOutput), { code: "ENOENT" });

@@ -153,12 +153,11 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				sum := sha256.Sum256([]byte(image))
 				staging := fmt.Sprintf("openclaw-development/import-%x:occ-dev-order", sum[:6])
 				imported := "docker.io/" + strings.Split(staging, ":")[0] + "@" + profileTestDigest
-				imageCases += `"image inspect ` + staging + `") exit 1 ;;
-"tag ` + image + ` ` + staging + `") ;;
-"image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + staging + `"]' ;;
-"image inspect --format {{.Os}}/{{.Architecture}} ` + staging + `") echo linux/amd64 ;;
+				archive := developmentImageArchiveFixture(t, "example.invalid/original:tag")
+				imageCases += `"image inspect --format {{.Os}}/{{.Architecture}} ` + image + `") echo linux/amd64 ;;
+"buildx imagetools inspect --format {{json .}} ` + image + `") echo '{}' ;;
+"image save --platform linux/amd64 --output "*" ` + image + `") /bin/cp ` + shellQuote(archive) + ` "$6" ;;
 "exec k3d-occ-dev-order-server-0 ctr -n k8s.io images tag ` + staging + ` ` + imported + `") ;;
-"image rm ` + staging + `") ;;
 `
 				imageList += staging + " application/vnd.oci.image.manifest.v1+json " + profileTestDigest + "\n"
 			}
@@ -254,8 +253,7 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 "image inspect ` + runtimeImage + `") ;;
 "image inspect ` + controllerImage + `") ` + controllerPresent + ` ;;
 "image inspect ` + developmentPostgres + `") ;;
-` + imageCases + `"image save --platform linux/amd64 --output "*) ;;
-"exec k3d-occ-dev-order-server-0 ctr -n k8s.io images list") printf '` + imageList + `' ;;`,
+` + imageCases + `"exec k3d-occ-dev-order-server-0 ctr -n k8s.io images list") printf '` + imageList + `' ;;`,
 				"k3d": `"cluster list -o json") if [ -f ` + shellQuote(filepath.Join(root, "created")) + ` ]; then echo '[{"name":"occ-dev-order"}]'; else echo '[]'; fi ;;
 "cluster create occ-dev-order "*) : > ` + shellQuote(filepath.Join(root, "created")) + ` ;;
 "kubeconfig get occ-dev-order") printf '%s\n' 'contexts:' '- name: k3d-occ-dev-order' '  context:' '    cluster: owned' 'clusters:' '- name: owned' '  cluster:' '    server: https://127.0.0.1:6443' ;;
@@ -383,9 +381,14 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 			}
 			previous := -1
 			stages := []string{"k3d cluster create ", "docker exec k3d-occ-dev-order-server-0 nslookup ", "k3d kubeconfig get ", "kubectl --kubeconfig "}
-			runtimeImport := "k3d image import --mode direct " + filepath.Join(state, developmentImportArchive(staging)) + " "
+			runtimeImport := "k3d image import --mode direct <runtime-not-imported>"
+			for _, call := range calls {
+				if strings.HasPrefix(call, "k3d image import --mode direct ") && strings.Contains(call, "/"+developmentImportArchive(staging)+" -c ") {
+					runtimeImport = call
+				}
+			}
 			if driver == "none" && scenario != "API failure" {
-				stages = append(stages, "docker tag "+runtimeImage, runtimeImport, "docker exec k3d-occ-dev-order-server-0 ctr -n k8s.io images tag "+staging+" ", "node scripts/prepare-development-codex-seccomp.ts ")
+				stages = append(stages, "docker image inspect --format {{.Os}}/{{.Architecture}} "+runtimeImage, runtimeImport, "docker exec k3d-occ-dev-order-server-0 ctr -n k8s.io images tag "+staging+" ", "node scripts/prepare-development-codex-seccomp.ts ")
 			} else if scenario == "routing and rollback failure" {
 				if index(runtimeImport) < 0 || index("helm show chart ") < 0 || index("node ") >= 0 {
 					t.Fatal("expected OpenShell asset preparation before routing refusal")
