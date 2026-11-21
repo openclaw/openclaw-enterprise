@@ -138,21 +138,21 @@ and a real Gateway channel connection. Extend
 [channel egress integration](../../tests/integration/channel-egress-kubernetes-real.test.ts)
 through the real caller; register new cases in CI.
 
-| Required outcome           | Evidence and remaining check                                                                                                                                                   | Result  |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------- |
-| AC-1 routing and admission | Normal no-channel Agent admission, deployment, outage recovery, and model turn passed at `bc396a31`; channel-enabled direct/proxied route remains unverified.                  | Partial |
-| AC-2 compatibility         | Pinned HTTP/HTTPS, Basic, private-CA, bad-TLS, streaming and WebSocket qualification passed; published-runtime normal-Agent HTTPS and certificate-failure paths remain.        | Partial |
-| AC-3 isolation             | Real fixture and pinned Envoy CIDR, excluded-IP, and alternate-numeric denial proofs passed; two live Agents with distinct proxies remain.                                     | Partial |
-| AC-4 lifecycle             | Revision persistence and real-cluster drain/reuse and delayed-write fencing passed; controlled 407 propagation passed; live retry, outage, and authentication recovery remain. | Partial |
-| AC-5 scope                 | No-channel no-grant and model turn passed; post-selection OCC credential/directory and dedicated Harness containment remain.                                                   | Partial |
-| AC-6 Secrets and UI        | Secret denial, redaction, inspection/log qualification, and rebuilt Console media passed; integrated channel-enabled Gateway/audit/inspection containment remains.             | Partial |
+| Required outcome           | Evidence and remaining check                                                                                                                                               | Result  |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| AC-1 routing and admission | Normal no-channel Agent admission, deployment, outage recovery, and model turn passed with the published runtime; channel-enabled direct/proxied route remains unverified. | Partial |
+| AC-2 compatibility         | Pinned transport qualification and real API SOCKS/PAC safe-refusal checks passed; published-runtime channel-enabled HTTPS and certificate-failure paths remain.            | Partial |
+| AC-3 isolation             | Real fixture and pinned Envoy CIDR, excluded-IP, and alternate-numeric denial proofs passed; two live Agents with distinct proxies remain.                                 | Partial |
+| AC-4 lifecycle             | Revision persistence, real-cluster reuse/fencing, a deterministic Driver drain barrier, and controlled 407 passed; live retry, outage, and recovery remain.                | Partial |
+| AC-5 scope                 | No-channel no-grant and model turn passed; post-selection OCC credential/directory and dedicated Harness containment remain.                                               | Partial |
+| AC-6 Secrets and UI        | Secret denial, redaction, inspection/log qualification, and rebuilt Console media passed; integrated channel-enabled Gateway/audit/inspection containment remains.         | Partial |
 
 ## Qualification and delivery record
 
 - The RFC is Proposed and retains its human-review/manual-merge hold.
   [Implementation PR #6856](https://github.com/openclaw/openclaw-enterprise/pull/6856)
-  is open; its reviewed routing fix is at `e66d1168`, and hosted acceptance
-  is pending at `7b8abf664`. Submission and implementation do not establish acceptance or
+  is open; its reviewed routing fix is at `e66d1168`. Hosted controlled
+  acceptance remains pending. Submission and implementation do not establish acceptance or
   permission to merge.
 - Main pins OpenClaw source `cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef`.
   The exact submitted RFC records the earlier pin `82b682c…`; qualification
@@ -254,10 +254,27 @@ through the real caller; register new cases in CI.
   arm64 `sha256:6dd842b052b96ca419205d2b6fccdafb6ed95b9c9eb4a183a5d9b35e9b04ffd3`).
   Select the same runtime index for Gateway and Harness. This publication is
   from main; the implementation controller must still be built from PR source.
+- The no-channel normal-Agent integration passed 1/1 with zero skips on an
+  enforcing disposable k3d cluster and migrated limited-role PostgreSQL database.
+  Gateway and Harness selected the published amd64 manifest
+  `sha256:6d2af2efbc2e0ceb8435e5dfe4bcb22b2dd38d09fd31c1374652d4094adb432e`;
+  the PR controller manifest was
+  `sha256:00eae515400a293a9c6a835ea7734fd9ecefc7fdf8f6a7a5777713772bdd4850`.
+  The test covered safe SOCKS5 and PAC refusal without draft mutation, exact
+  Secret denial, actual enforcement outage and recovery, immutable revisions, an
+  embedded `gpt-6-astra` turn, and absence of a channel grant or proxy contact.
+  It did not exercise an enabled channel.
+- The one-port drain conformance test passed 1/1 with zero skips. It uses the
+  production Kubernetes Driver with an injected Envoy inspection response: gauge
+  1 holds the slot in revoking state and refuses a new allocation without a
+  write; gauge 0 permits retirement and same-port reuse. This is deterministic
+  Driver conformance, not a real Envoy drain-timing measurement.
 
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-21: Record the published-runtime no-channel Agent proof and real SOCKS/PAC refusal checks (authoring-run/01a1fbf1-03d5-7d21-af95-cdba37f77298).
 
 - 2026-11-21: Record the published runtime candidate and the dedicated-only channel admission boundary (authoring-run/01a1fbf1-03d5-7d21-af95-cdba37f77298).
 
