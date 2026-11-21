@@ -12,17 +12,16 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 
-import {
-  workMatchesRevision,
-  type ControllerWork,
-  type ControllerWorkAttempt,
-  type DeploymentStatusResult,
-  type DeploymentStatusError,
-  type PluginDeploymentWarning,
-} from "./controller-work.ts";
+import { workMatchesRevision, type DeploymentStatusResult } from "./controller-work.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import { deploymentRepositoryAccessStatus } from "./deployment-repository-access.ts";
+import {
+  deploymentStatusForWork,
+  deploymentErrorForWork,
+  deploymentProgressForWork,
+  deploymentWarningsForWork,
+} from "./deployment-work-status.ts";
 import {
   AgentDeletingError,
   AuthorizationDeniedError,
@@ -73,17 +72,6 @@ interface AgentQueryDependencies {
   readonly getNamespace: (principalId: string, namespaceId: string) => Promise<Readonly<Namespace>>;
   readonly selectCompute: () => ComputeDriver;
   readonly clock: () => Date;
-  readonly deploymentStatusForWork: (
-    work: ControllerWork,
-    attempt: ControllerWorkAttempt | undefined,
-    now: Date,
-  ) => DeploymentStatusResult["status"];
-  readonly deploymentErrorForWork: (work: ControllerWork) => DeploymentStatusError | null;
-  readonly deploymentProgressForWork: (
-    work: ControllerWork,
-    attempt: ControllerWorkAttempt | undefined,
-  ) => DeploymentStatusResult["progress"];
-  readonly deploymentWarningsForWork: (work: ControllerWork) => readonly PluginDeploymentWarning[];
 }
 
 export function createAgentQueries(deps: AgentQueryDependencies) {
@@ -302,11 +290,9 @@ export function createAgentQueries(deps: AgentQueryDependencies) {
             Object.freeze({
               ...revision,
               deploymentStatus: matches
-                ? deps.deploymentStatusForWork(work, attempt, deps.clock())
+                ? deploymentStatusForWork(work, attempt, deps.clock())
                 : null,
-              deploymentErrorCode: matches
-                ? (deps.deploymentErrorForWork(work)?.code ?? null)
-                : null,
+              deploymentErrorCode: matches ? (deploymentErrorForWork(work)?.code ?? null) : null,
             }),
           );
         }
@@ -450,7 +436,7 @@ export function createAgentQueries(deps: AgentQueryDependencies) {
           revisionId: revision.id,
         }),
       );
-      const status = deps.deploymentStatusForWork(work, attempt, deps.clock());
+      const status = deploymentStatusForWork(work, attempt, deps.clock());
       const stopped = work.state === "succeeded" && work.reasonCode === "REVISION_STOPPED";
       const lostSelection = status === "succeeded" && agent.activeRevisionId !== revision.id;
       return Object.freeze({
@@ -459,10 +445,10 @@ export function createAgentQueries(deps: AgentQueryDependencies) {
         agentId: revision.agentId,
         status,
         cleanup: await deploymentCleanupStatus(state, revision, stopped || lostSelection),
-        error: deps.deploymentErrorForWork(work),
+        error: deploymentErrorForWork(work),
         ...(repositoryAccess === undefined ? {} : { repositoryAccess }),
-        warnings: deps.deploymentWarningsForWork(work),
-        progress: deps.deploymentProgressForWork(work, attempt),
+        warnings: deploymentWarningsForWork(work),
+        progress: deploymentProgressForWork(work, attempt),
       });
     });
   }
@@ -511,7 +497,7 @@ export function createAgentQueries(deps: AgentQueryDependencies) {
     const running =
       disposal?.state === "claimed" ||
       (retirement !== undefined &&
-        deps.deploymentStatusForWork(retirement, attempt, deps.clock()) === "running");
+        deploymentStatusForWork(retirement, attempt, deps.clock()) === "running");
     return Object.freeze({
       status: running ? "running" : nextAttemptAt === null ? "succeeded" : "queued",
       nextAttemptAt: nextAttemptAt?.toISOString() ?? null,

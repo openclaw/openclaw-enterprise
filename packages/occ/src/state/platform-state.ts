@@ -141,8 +141,7 @@ import {
   SERVICE_ACCOUNT_NAME_CONFLICT,
   ScopeViolationError,
 } from "../errors.ts";
-import { CREDENTIAL_WITHDRAWAL_TARGET } from "../controller-work.ts";
-import { credentialWithdrawalWorkKey } from "./controller-work.ts";
+import { CREDENTIAL_WITHDRAWAL_TARGET, credentialWithdrawalWorkKey } from "../controller-work.ts";
 import type { ControllerWork } from "../controller-work.ts";
 
 const serviceAccountIdentifier =
