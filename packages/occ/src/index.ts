@@ -10619,7 +10619,7 @@ export class OpenClawController {
     };
   }
 
-  startAgentDeviceAuthorization(
+  async startAgentDeviceAuthorization(
     principalId: string,
     namespaceId: string,
     harnessId: string,
@@ -10629,7 +10629,7 @@ export class OpenClawController {
     return this.deviceAuthorization.start(principalId, namespaceId, harnessId, agentId, audit);
   }
 
-  pollAgentDeviceAuthorization(
+  async pollAgentDeviceAuthorization(
     principalId: string,
     namespaceId: string,
     sessionId: string,
@@ -10638,7 +10638,7 @@ export class OpenClawController {
     return this.deviceAuthorization.poll(principalId, namespaceId, sessionId, agentId);
   }
 
-  cancelAgentDeviceAuthorization(
+  async cancelAgentDeviceAuthorization(
     principalId: string,
     namespaceId: string,
     sessionId: string,

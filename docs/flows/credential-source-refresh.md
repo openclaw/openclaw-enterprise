@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: "2026-11-18"
-last_updated_session: "authoring-run/038990d2-f182-4b8e-8b66-afc5c706ca11"
+updated: "2026-11-20"
+last_updated_session: "authoring-run/6b146686-4bcb-4c54-9b42-4c9f0f8e7a15"
 ---
 
 # Credential source refresh Flow
@@ -116,8 +116,8 @@ failure code. Otherwise OCC commits `ready` with audit.
 
 ### Device authorization and configuration
 
-`packages/occ/src/device-authorization-flow.ts` handles device login.
-`packages/occ/src/index.ts:withPluginDiscoveryCredential` uses the source for plugin discovery.
+`packages/occ/src/device-authorization-flow.ts:createDeviceAuthorizationFlow`
+`packages/occ/src/index.ts:withPluginDiscoveryCredential`
 
 OCC checks Agent authority and Namespace `credential_source:create`, registers the
 source, then rechecks authority before starting login. It audits `source_registering`,
@@ -312,6 +312,8 @@ clears publication buffers on success/failure. Callers own detached reads; clear
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:18: Update source pointers for the device login workflow. (authoring-run/6b146686-4bcb-4c54-9b42-4c9f0f8e7a15 - c77f4a6376b5412d0544e7dc69194877d755e2f7)
 
 - 2026-11-18 21:15: Simplify authentication state. (authoring-run/038990d2-f182-4b8e-8b66-afc5c706ca11 - fb3be388136a143306686807d06e415f93c1f5e4)
 

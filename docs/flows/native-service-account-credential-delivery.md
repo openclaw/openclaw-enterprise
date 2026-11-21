@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
 updated: 2026-11-20
-last_updated_session: authoring-run/a5334b64-f17c-4030-bf48-74ef016aa7cd
+last_updated_session: authoring-run/6b146686-4bcb-4c54-9b42-4c9f0f8e7a15
 ---
 
 # Harness Authentication Binding Flow
@@ -62,7 +62,7 @@ graph TD
 
 ### 1. Acquire or select one credential source
 
-`packages/occ/src/device-authorization-flow.ts` handles start, poll, and cancel.
+`packages/occ/src/device-authorization-flow.ts:createDeviceAuthorizationFlow` handles start, poll, and cancel.
 
 Device login creates a credential source and asks its Credential Refresh Driver
 to start and poll authorization. OCC binds the login to the actor, Namespace,
@@ -329,6 +329,8 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:18: Update source pointers for the device login workflow. (authoring-run/6b146686-4bcb-4c54-9b42-4c9f0f8e7a15 - c77f4a6376b5412d0544e7dc69194877d755e2f7)
 
 - 2026-11-20 06:28: Trace retained Harness source checks and failed deploy grant rollback. (authoring-run/a5334b64-f17c-4030-bf48-74ef016aa7cd - 0d220dfad528032b978eaa8e9cb55885686add44)
 
