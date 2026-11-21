@@ -8,7 +8,7 @@ author: mrunalp
 
 - **ID:** RFC-0040 (provisional; renumber before merge)
 - **Created:** 2026-10-29
-- **Last updated:** 2026-11-16
+- **Last updated:** 2026-11-20
 - **RFC PR:** [#4207](https://github.com/openclaw/openclaw-enterprise/pull/4207)
 - **Implementation plan:** [Default users](../plans/0040-default-users.md)
 - **Related:** [Agent Author role (#4045)](https://github.com/openclaw/openclaw-enterprise/pull/4045),
@@ -16,6 +16,7 @@ author: mrunalp
   [Agent OAuth connections (#3068)](https://github.com/openclaw/openclaw-enterprise/pull/3068),
   [RFC-0006](0006-basic-rbac/index.md), [RFC-0031](0031-oidc-agent-chat.md),
   [RFC-0032](0032-oidc-account-enrollment.md), [RFC-0037](0037-oidc-enrollment-claims.md),
+  [SCIM provisioning (RFC-0044, #6520)](https://github.com/openclaw/openclaw-enterprise/pull/6520),
   [Authorization](../../docs/reference/authorization.md)
 
 <a id="problem-and-decision"></a>
@@ -77,7 +78,9 @@ Kubernetes namespace ([security](../../docs/reference/security.md)).
   bound.
 - Connection templates and personal or shared connections. The Agent OAuth
   connections work owns them.
-- SCIM provisioning, which is the [follow-up](#revocation) for faster removal.
+- SCIM provisioning, which
+  [RFC-0044](https://github.com/openclaw/openclaw-enterprise/pull/6520)
+  proposes; see [revocation](#revocation).
 - Session lifetime changes, Roles that owners define, and owners sharing their
   resources.
 - Mapping provider groups to the Installation administrator Role (#889).
@@ -135,9 +138,9 @@ Roles hold no `installation` permission. Leaving out the `namespace_creator`
 binding replaces a Namespace create switch.
 
 Each account created through `POST /api/auth/accounts` joins every
-`defaultUserGroups` Group. Mapping rules and SCIM later map provider groups to
-these same Groups. A binding applies only the Role permissions whose kind
-matches its target, so one Owner Role serves every kind.
+`defaultUserGroups` Group. Mapping rules map provider groups, and later SCIM
+groups, to these same Groups. A binding applies only the Role permissions whose
+kind matches its target, so one Owner Role serves every kind.
 
 ### Creators own what they create
 
@@ -222,6 +225,9 @@ Sign-in changes only `sign_in_mapping` memberships. OCC records each person's
 last mapped sign-in, and the Default users list shows it. Every change is
 audited.
 
+With SCIM on an OIDC provider, RFC-0044 refuses account creation at sign-in, so
+that provider's rules create no account and change no membership.
+
 <a id="revocation"></a>
 
 ### Revocation keeps what people created
@@ -235,20 +241,18 @@ ends all of their API access. Either way, Owner bindings, Namespaces, Agents,
 and grants stay, and the Agents keep running, until an administrator deletes the
 resources or the Owner bindings.
 
-OCC learns of a change as follows:
-
 | Change                                              | Takes effect                                          |
 | --------------------------------------------------- | ----------------------------------------------------- |
 | An administrator disables an account                | The next request; policy and session lookups are live |
 | An administrator changes the `iam` configuration    | The next API and worker startup                       |
 | The provider removes a group or disables the person | The next sign-in; sessions last at most eight hours   |
 
-A person whom the provider disabled
-cannot sign in again, so their last mapped sign-in in the Default users list
-grows old. SCIM, through Better Auth's `@better-auth/scim` plugin, is the
-follow-up for enterprise providers that push changes. It writes memberships with
-the source `scim`, maps a deactivated user to a disabled account, and ends their
-sessions.
+A person whom the provider disabled cannot sign in again, so their last mapped
+sign-in grows old.
+[RFC-0044](https://github.com/openclaw/openclaw-enterprise/pull/6520)
+proposes SCIM, which disables a deactivated account, ends its sessions, and
+keeps directory groups out of IAM. A later mapping rule could map a SCIM group,
+by its server ID, to an OCC Group as the directory pushes changes.
 
 ```mermaid
 sequenceDiagram
@@ -324,9 +328,8 @@ Guardrails work replaces them. An empty ceiling allows no additions.
 
 Owner bindings, bindings without a resource for any Role, Group subjects, Group
 membership writes, parent checks for revisions and sandbox policies, and account
-creation at sign-in change the IAM Driver contract. The proposal does not depend
-on #4045. The [implementation plan](../plans/0040-default-users.md) orders the
-work.
+creation at sign-in change the IAM Driver contract. The
+[implementation plan](../plans/0040-default-users.md) orders the work.
 
 Required outcomes, proved with PostgreSQL integration tests and the regular
 Kubernetes Agent workflow, with OIDC on the Keycloak lane and a real `groups`
@@ -360,9 +363,8 @@ claim:
 
 ## Rationale and alternatives
 
-- **A Namespace for each person by default.** Strong isolation, but 100,000
-  people need 100,000 Kubernetes namespaces. It stays available through a
-  `namespace_creator` binding.
+- **A Namespace for each person by default.** Too many Kubernetes namespaces
+  ([Motivation](#motivation)); a `namespace_creator` binding still allows it.
 - **Owner bindings only for Namespaces.** A one-off rule; the general rule gives
   every creator the same result.
 - **Namespace-wide bindings only for configured Roles.** Safe, but administrators
@@ -373,8 +375,8 @@ claim:
 - **Grant at deploy only when a built-in Role allows the caller.** Custom Roles
   would gain nothing, but it needs built-in Roles, and a caller who can operate
   a source can already bind it to an Agent.
-- **SCIM in the first release.** It covers only providers that push, needs its
-  own tables and tokens, and still needs the same Group mapping.
+- **SCIM in the first release.** It covers only providers that push and needs
+  its own tables and tokens.
 - **Build on the proposed Agent Author Role (#4045).** It is not accepted, it
   omits `agent:administer`, and an administrator assigns it per person.
 

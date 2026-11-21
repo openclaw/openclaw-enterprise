@@ -120,7 +120,9 @@ Other work changed the remaining slices by 2026-11-16, after slice 1 merged:
    member Role for mapped Groups, Create Namespace in the console, and an
    empty-state landing.
 
-SCIM through `@better-auth/scim` is a later plan.
+SCIM is a separate proposal,
+[RFC-0044](https://github.com/openclaw/openclaw-enterprise/pull/6520). After
+its Groups milestone, a later slice could let mapping rules name a SCIM group.
 
 ## Verification
 
