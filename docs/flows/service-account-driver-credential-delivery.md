@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-11
-last_updated_session: authoring-run/18242737-895e-484c-a1a9-29c2cd289d43
+updated: "2026-11-20"
+last_updated_session: "authoring-run/458791ca-cb2c-4838-b771-39a35c8aa29c"
 ---
 
 # Service Account Driver Credential Delivery Flow
@@ -72,9 +72,9 @@ stale or mismatched deployment snapshots before Compute effects.
 
 ### 2. Create the account and private Backend binding
 
-`packages/occ/src/index.ts:OpenClawController.createServiceAccount`
+`packages/occ/src/service-account-operations.ts:createServiceAccount`
 
-`OpenClawController.createServiceAccount` authorizes the exact Namespace and
+`createServiceAccount` authorizes the exact Namespace and
 allocates its `sa_*` identity. `ChatGPTServiceAccountDriver.create` creates the
 upstream account, registers rollback, and persists its private Backend binding
 in the same PostgreSQL transaction, including Backend, Driver, Namespace,
@@ -112,7 +112,7 @@ force is ignored and revocation runs.
 
 `apps/controller/src/drivers/service-account/chatgpt.ts:ChatGPTServiceAccountDriver.createCredential`
 
-`OpenClawController.createServiceAccountCredential` authorizes account `update`
+`createServiceAccountCredential` authorizes account `update`
 before `ChatGPTServiceAccountDriver.createCredential` issues a Codex-scoped
 token and registers one rollback callback. The callback first confirms revocation
 of that exact provider credential, then removes only the account-owned Secret
@@ -234,6 +234,7 @@ Refresh, rotation, and automated reconciliation remain deferred.
 
 ## Changelog
 
+- 2026-11-20 16:31: Update OCC ServiceAccount operation source pointers. (authoring-run/458791ca-cb2c-4838-b771-39a35c8aa29c - 8eb97c71e0aa0b84779e19f9bbacc2d37f22fa14)
 - 2026-11-11 02:28: Confirm exact Secret readback and revoke provider credentials before deleting failed-issuance recovery receipts. (authoring-run/18242737-895e-484c-a1a9-29c2cd289d43 - 7fed115af7b57060bba5c6e276ad4cf316b9b58d)
 - 2026-11-04 09:42: Remove the retired hosted Provider Account test from verification instructions; retain service-account implementation coverage. (authoring-run/390095eb-01a9-4e24-b609-791b49f19f81 - e2311f4d2250874d622ab12c2fe8588a076bd19b)
 - 2026-10-15 05:30: Issuance and account deletion reclaim the token Secret and provider credential of an issuance that never committed. (fix-1397, finding 1397)
