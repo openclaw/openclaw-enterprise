@@ -347,6 +347,25 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     });
   }
 
+  async function activePolicyRevision(
+    state: PlatformReadView,
+    agent: Readonly<Agent>,
+    hasRepositoryPolicy: boolean,
+  ) {
+    const { namespaceId, id, activeRevisionId } = agent;
+    if (activeRevisionId === undefined) return undefined;
+    if (!hasRepositoryPolicy)
+      return state.revisions.findRevision(namespaceId, id, activeRevisionId);
+    // An older controller can still show and withdraw saved grants when it cannot
+    // decode the active revision. Never infer deployed settings from that payload.
+    const revision = await state.revisions.findRevisionForBrowsing(
+      namespaceId,
+      id,
+      activeRevisionId,
+    );
+    return revision && "configurationReadError" in revision ? null : revision;
+  }
+
   async function getAgentSandboxPolicy(
     principalId: string,
     namespaceId: string,
@@ -362,27 +381,32 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       if (agent === undefined || policy === undefined) {
         throw new ScopeViolationError("The Agent policy is unavailable in this Namespace.");
       }
-      const revision =
-        agent.activeRevisionId === undefined
-          ? undefined
-          : await state.revisions.findRevision(namespaceId, agentId, agent.activeRevisionId);
+      const revision = await activePolicyRevision(
+        state,
+        agent,
+        policy.repositoryNetworkPolicy !== undefined,
+      );
       const driver = dependencies.sandboxDriver();
       const unavailableReason = networkPolicyUnavailable();
       const defaults =
-        revision?.sandboxPolicy?.defaults ??
-        driver?.admitNetworkPolicy?.([], policy.version).defaults ??
-        null;
+        revision === null
+          ? null
+          : (revision?.sandboxPolicy?.defaults ??
+            driver?.admitNetworkPolicy?.([], policy.version).defaults ??
+            null);
       return {
         policy,
         configuration: await policyConfigurationDescriptor(
           principalId,
           agent,
           policy,
-          revision,
+          revision ?? undefined,
           facet,
         ),
         editingEnabled: agent.sandboxPolicyEditing === true,
-        protectedExecution: await dependencies.protectedExecutionApplies(state, agent, revision),
+        protectedExecution:
+          revision === null ||
+          (await dependencies.protectedExecutionApplies(state, agent, revision)),
         capability: dependencies.sandboxDriver()?.networkPolicy ?? null,
         ...(unavailableReason === undefined ? {} : { unavailableReason }),
         ceiling: dependencies.ceiling,
@@ -597,11 +621,15 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       }
       const withdrawal = clearsRepository && previous.repositoryNetworkPolicy !== undefined;
       if (additions.length > 0 || (repositoryNetworkPolicy !== undefined && !withdrawal)) {
-        const active =
-          agent.activeRevisionId === undefined
-            ? undefined
-            : await state.revisions.findRevision(namespaceId, agentId, agent.activeRevisionId);
-        if (await dependencies.protectedExecutionApplies(state, agent, active)) {
+        const active = await activePolicyRevision(
+          state,
+          agent,
+          previous.repositoryNetworkPolicy !== undefined,
+        );
+        if (
+          active === null ||
+          (await dependencies.protectedExecutionApplies(state, agent, active))
+        ) {
           throw new ProtectedExecutionNetworkPolicyError(
             repositoryNetworkPolicy === undefined ? "save" : "saveRepository",
           );
@@ -692,13 +720,13 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       if (policy.application?.state === "pending") {
         throw new ResourceStateConflictError("A policy application is already pending.");
       }
-      const driver = dependencies.sandboxDriver();
-      const revision = await state.revisions.findRevision(namespaceId, agentId, revisionId);
       if (policy.repositoryNetworkPolicy !== undefined) {
         throw new ResourceStateConflictError(
           "Live application is unavailable for the saved repository network policy. To end current access, stop the Agent and confirm its workload has stopped. Applying the saved policy requires a deployment that can enforce it.",
         );
       }
+      const driver = dependencies.sandboxDriver();
+      const revision = await state.revisions.findRevision(namespaceId, agentId, revisionId);
       if (revision?.sandboxPolicy?.repositoryNetworkPolicy !== undefined) {
         throw new ResourceStateConflictError(
           "The active revision has a repository network policy that is missing from the saved policy. Stop the Agent and confirm its workload has stopped before investigating the mismatch.",

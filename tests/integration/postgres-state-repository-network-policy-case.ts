@@ -18,6 +18,20 @@ import {
 import { seedPlatformState } from "../conformance/platform-state-contract-fixture.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 
+type PolicyApp = Awaited<ReturnType<typeof createPostgresAgentApp>>;
+
+function storedRevisionWriter(pool: PolicyApp["pool"], originalId: string) {
+  return (candidate: Pick<AgentRevision, "id" | "revision">, spec: Record<string, unknown>) =>
+    pool.query(
+      `INSERT INTO occ.agent_revisions
+        (id,namespace_id,agent_id,revision_number,backend_id,admitted_spec,gateway_managed_mode,admitted_at)
+       SELECT $1,namespace_id,agent_id,$2,backend_id,
+         admitted_spec || $3::jsonb,gateway_managed_mode,now()
+       FROM occ.agent_revisions WHERE id=$4`,
+      [candidate.id, candidate.revision, JSON.stringify(spec), originalId],
+    );
+}
+
 function snapshotPolicy(grants: readonly RepositoryNetworkGrant[]) {
   const version = 1 as const;
   return { version, grants, identity: JSON.stringify({ version, grants }) };
@@ -163,18 +177,7 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
   }>("SELECT admitted_spec FROM occ.agent_revisions WHERE id=$1", [revision.id]);
   assert.ok(stored);
   assert.deepEqual(stored.admitted_spec.execution_admission, revision.executionAdmission);
-  const insertStoredRevision = (
-    candidate: Pick<AgentRevision, "id" | "revision">,
-    spec: Record<string, unknown>,
-  ) =>
-    pool.query(
-      `INSERT INTO occ.agent_revisions
-        (id,namespace_id,agent_id,revision_number,backend_id,admitted_spec,gateway_managed_mode,admitted_at)
-       SELECT $1,namespace_id,agent_id,$2,backend_id,
-         admitted_spec || $3::jsonb,gateway_managed_mode,now()
-       FROM occ.agent_revisions WHERE id=$4`,
-      [candidate.id, candidate.revision, JSON.stringify(spec), revision.id],
-    );
+  const insertStoredRevision = storedRevisionWriter(pool, revision.id);
   const readerVersionConstraint = "agent_revisions_repository_policy_reader_version";
   await assert.rejects(
     insertStoredRevision(
@@ -361,16 +364,13 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
   );
 }
 
-export async function editStoredRepositoryGrants(
-  { deployAgent, inject, state, pool }: Awaited<ReturnType<typeof createPostgresAgentApp>>,
-  addition: SandboxNetworkGrant,
-): Promise<void> {
-  const { namespace, agent } = await deployAgent("Edit stored repository grants");
+async function policyEditor({ deployAgent, inject, state, pool }: PolicyApp) {
+  const { namespace, agent, revision } = await deployAgent("Edit stored repository grants");
   const path = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
-  const read = async () => {
+  const view = async () => {
     const response = await inject("GET", path);
     assert.equal(response.statusCode, 200, response.body);
-    return response.json().data.policy;
+    return response.json().data;
   };
   const stored = async () => {
     const { rows } = await pool.query<{ document: SandboxPolicy }>(
@@ -384,8 +384,59 @@ export async function editStoredRepositoryGrants(
   assert.equal(enabled.statusCode, 200, enabled.body);
 
   const original = await stored();
-  assert.equal(Object.hasOwn(await read(), "repositoryNetworkPolicy"), false);
   const grants = [{ repository: "example/project", access: "write" }] as const;
+  const read = async () => (await view()).policy;
+  const seed = async () => {
+    // Begin with a policy persisted by an installation supporting grant creation.
+    const existing = {
+      ...original,
+      version: original.version + 1,
+      repositoryNetworkPolicy: grants,
+    };
+    await state.transact((unit) => unit.sandboxPolicies.save(existing, original.version));
+    return existing;
+  };
+  const deny = (action: "read" | "update") =>
+    pool.query(
+      "INSERT INTO occ.iam_restrictions (id,namespace_id,action,resource_kind,resource_id,effect) VALUES ($1,$2,$3,'sandbox_policy',$4,'deny')",
+      ["restriction-" + randomUUID(), namespace.id, action, original.id],
+    );
+  return { namespace, agent, revision, path, original, grants, stored, view, read, seed, deny };
+}
+
+async function verifyUpdateWithoutRead(fixture: PolicyApp, addition: SandboxNetworkGrant) {
+  const { path, stored, seed, deny } = await policyEditor(fixture);
+  const policy = await seed();
+  await deny("read");
+  const { inject } = fixture;
+  const get = await inject("GET", path);
+  assert.equal(get.statusCode, 403, get.body);
+  const put = await inject("PUT", path, { expectedVersion: policy.version, additions: [addition] });
+  assert.equal(put.statusCode, 200, put.body);
+  const { repositoryNetworkPolicy: grants, ...ordinary } = policy;
+  const updated = { ...ordinary, version: policy.version + 1, additions: [addition] };
+  assert.deepEqual(put.json().data, updated);
+  const retained = { ...updated, repositoryNetworkPolicy: grants };
+  assert.deepEqual(await stored(), retained);
+  const clear = await inject("PUT", path, {
+    expectedVersion: retained.version,
+    additions: [],
+    repositoryNetworkPolicy: [],
+  });
+  assert.equal(clear.statusCode, 403, clear.body);
+  assert.deepEqual(await stored(), retained);
+}
+
+export async function editStoredRepositoryGrants(
+  fixture: PolicyApp,
+  addition: SandboxNetworkGrant,
+): Promise<void> {
+  await verifyUpdateWithoutRead(fixture, addition);
+  const { inject, pool, state } = fixture;
+  const { namespace, agent, revision, path, original, grants, stored, view, read, seed, deny } =
+    await policyEditor(fixture);
+  assert.equal(Object.hasOwn(await read(), "repositoryNetworkPolicy"), false);
+
   for (const repositoryNetworkPolicy of [[], grants]) {
     const first = await inject("PUT", path, {
       expectedVersion: original.version,
@@ -396,9 +447,7 @@ export async function editStoredRepositoryGrants(
     assert.deepEqual(await stored(), original);
   }
 
-  // Begin with a policy persisted by an installation supporting grant creation.
-  const existing = { ...original, version: original.version + 1, repositoryNetworkPolicy: grants };
-  await state.transact((unit) => unit.sandboxPolicies.save(existing, original.version));
+  const existing = await seed();
   assert.deepEqual(await read(), existing);
 
   const saved = await inject("PUT", path, {
@@ -410,9 +459,46 @@ export async function editStoredRepositoryGrants(
   assert.deepEqual(await stored(), preserved);
   assert.deepEqual(await read(), preserved);
 
+  // Model a compatible controller having admitted and selected a restricted revision.
+  const id = `rev_${randomUUID()}`;
+  const insert = storedRevisionWriter(pool, revision.id);
+  assert.ok(revision.sandboxPolicy);
+  await insert(
+    { id, revision: revision.revision + 1 },
+    {
+      sandbox_policy: {
+        ...revision.sandboxPolicy,
+        version: preserved.version,
+        additions: preserved.additions,
+        repositoryNetworkPolicy: snapshotPolicy(grants),
+      },
+      execution_admission: { ...revision.executionAdmission, repositoryNetworkPolicyVersion: 1 },
+    },
+  );
+  const activated = await pool.query(
+    "UPDATE occ.agents SET active_revision_id=$1, desired_runtime_state='running' WHERE namespace_id=$2 AND id=$3",
+    [id, namespace.id, agent.id],
+  );
+  assert.equal(activated.rowCount, 1);
+  const revisionRead = () =>
+    state.read((view) => view.revisions.findRevision(namespace.id, agent.id, id));
+  await assert.rejects(revisionRead(), PersistedStateInvalidError);
+  const observed = await view();
+  assert.deepEqual(observed.policy, preserved);
+  assert.equal(observed.repositoryNetworkPolicySaveSupported, true);
+  assert.equal(observed.defaultsRevisionId, undefined);
+  assert.equal(observed.deployedPolicyVersion, undefined);
+  const apply = await inject("POST", path + "/apply", {
+    expectedVersion: preserved.version,
+    revisionId: id,
+  });
+  assert.equal(apply.statusCode, 409, apply.body);
+  assert.match(apply.json().error.message, /stop the Agent/i);
+  assert.deepEqual(await stored(), preserved);
+
   const withdrawal = {
     expectedVersion: preserved.version,
-    additions: [addition],
+    additions: [],
     repositoryNetworkPolicy: [],
   };
   const stale = await inject("PUT", path, { ...withdrawal, expectedVersion: existing.version });
@@ -420,9 +506,15 @@ export async function editStoredRepositoryGrants(
   assert.deepEqual(await stored(), preserved);
   const updated = await inject("PUT", path, withdrawal);
   assert.equal(updated.statusCode, 200, updated.body);
-  const cleared = { ...preserved, version: preserved.version + 1, repositoryNetworkPolicy: [] };
+  const cleared = {
+    ...preserved,
+    additions: [],
+    version: preserved.version + 1,
+    repositoryNetworkPolicy: [],
+  };
   assert.deepEqual(await stored(), cleared);
   assert.deepEqual(await read(), cleared);
+  await assert.rejects(revisionRead(), PersistedStateInvalidError);
   const regrant = await inject("PUT", path, {
     ...withdrawal,
     expectedVersion: cleared.version,
@@ -431,11 +523,7 @@ export async function editStoredRepositoryGrants(
   assert.equal(regrant.statusCode, 409, regrant.body);
   assert.deepEqual(await stored(), cleared);
 
-  const restriction = "restriction-" + randomUUID();
-  await pool.query(
-    "INSERT INTO occ.iam_restrictions (id,namespace_id,action,resource_kind,resource_id,effect) VALUES ($1,$2,'update','sandbox_policy',$3,'deny')",
-    [restriction, namespace.id, existing.id],
-  );
+  await deny("update");
   const forbidden = await inject("PUT", path, { ...withdrawal, expectedVersion: cleared.version });
   assert.equal(forbidden.statusCode, 403, forbidden.body);
   assert.deepEqual(await stored(), cleared);
