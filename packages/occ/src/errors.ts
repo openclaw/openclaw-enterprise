@@ -531,6 +531,11 @@ function keyedSettingMessage(
   return configurationFieldMessage(keyedSettingPath(parent, key), message);
 }
 
+// A rule about the request alone, checked before any ServiceAccount grant or lookup, so the text
+// is the same whether the named account exists (finding 2536).
+export const SERVICE_ACCOUNT_CROSS_NAMESPACE =
+  "Agent setting harnessAuth.source names a ServiceAccount in another Namespace. Harness authentication can use only a ServiceAccount in the Agent's own Namespace: select one from this Namespace.";
+
 // The Console's secret reference reader shows names with these too (environment-references.ts).
 export { configurationSettingMessage, keyedSettingPath, quotedSettingKey };
 
