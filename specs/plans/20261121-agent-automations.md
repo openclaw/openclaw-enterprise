@@ -20,7 +20,7 @@ management permissions; execution uses the deployed Agent's service authority
 and approved tools. Retained ownership authorizes native history after deletion.
 
 No upstream writes, dependency patches or new upstream scope are required.
-The working tree implements broker dispatch, durable ownership and native ID
+The implementation provides broker dispatch, durable ownership and native ID
 binding. Protocol and PostgreSQL checks pass. Model execution, policy enforcement,
 deployed replacement and independent review remain incomplete.
 
@@ -80,19 +80,41 @@ deployed replacement and independent review remain incomplete.
 | Required outcome | Proof | Current result |
 | --- | --- | --- |
 | Human and exact-Agent admission | Real HTTP app, sessions and Native IAM | HTTP checks pass; native protocol case verifies creator filtering and successful dispatch |
-| Ownership constraints and cleanup | Disposable migrated PostgreSQL, application role, actual repository operations | Reservation, one-time binding, uniqueness, immutable creator and audit rollback pass; Agent deletion cascade still needs workflow proof |
-| Normalization and lifecycle | OCC HTTP calls to a real packaged Gateway in the regular Agent workflow | Real Gateway protocol case passes all three schedule forms, CRUD and stale revisions; deployed workflow blocked before startup |
-| Approved and denied tools | Scheduled real model turn in each selected Harness; include current policy reduction and app/MCP boundaries | Kubernetes startup blocked by host file-watcher exhaustion; no model turn ran. Add policy-reduction and app/MCP cases before qualification |
+| Ownership constraints and cleanup | Disposable migrated PostgreSQL, application role, actual repository operations | Reservation, one-time binding, uniqueness, immutable creator and audit rollback pass. Real deletion worker removes ownership after a teardown retry and preserves sibling ownership |
+| Normalization and lifecycle | OCC HTTP calls to a real packaged Gateway in the regular Agent workflow | Real Gateway protocol case passes all three schedule forms, CRUD and stale revisions; installed workflow reaches Agent deployment but model authentication fails |
+| Approved and denied tools | Scheduled real model turn in each selected Harness; include current policy reduction and app/MCP boundaries | Embedded OpenClaw and dedicated Codex both fail model authentication. No scheduled model turn ran. Policy-reduction and app/MCP cases still need implementation and real proof |
 | History after deletion | Successful one-shot and explicit deletion, then creator/admin and foreign-creator history requests | Never-run deleted job correctly returns 404 in native proof; completed-run history remains unverified |
 | Unknown outcomes | Lost mutation reply, post-dispatch revision change and failed audit append; count native dispatches | Real Gateway fault cases pass without create replay; lost create reply leaves a disabled recoverable job |
 | Revision replacement | Owned disposable Gateway workload and persistent state across replacement | OCC revision fencing passes with fixture Compute; physical workload replacement remains unverified |
-| Independent review | Canonical autoreview, without provider or isolation bypass | Previous attempt blocked before reviewer launch; unchanged blocker until repaired |
+| Independent review | Canonical autoreview, without provider or isolation bypass | CLI and sandbox preflight repaired; review of `b50e0e4704` returns `reviewer_unavailable`, `report_produced=false`, authentication failure |
 
 Use Node 24.22.1, pnpm 11.15.1 and Bun 1.4.4. Follow the
 [PostgreSQL setup](../../docs/testing/postgresql.md) and
 [real-runtime procedures](../../docs/testing/kubernetes.md).
 Register the Agent scenario in the QA selector, manifest and applicable advisory
 lane. Fixture or source-only checks do not satisfy native runtime acceptance.
+
+### RFC acceptance audit
+
+| Criterion | Established | Remaining |
+| --- | --- | --- |
+| AC1: Scheduling | Three schedule forms and normalization through the real native protocol | Approved-tool scheduled execution in both Harnesses |
+| AC2: Lifecycle | CRUD, pause/resume and stale-revision refusal through the real native protocol | Successful one-shot execution and retained history after deletion |
+| AC3: Authority | HTTP session, exact-Agent, creator, service-key and Origin refusals | Real approved/denied tools, policy reduction and app/MCP restrictions in embedded and dedicated execution |
+| AC4: Recovery | Lost replies, CAS conflicts, failed audit and OCC revision fencing without create replay | Physical Gateway replacement with paused state, identity and history retained |
+| AC5: Persistence and audit | PostgreSQL invariants, atomic audit, native-ID binding and deletion-worker cleanup with sibling preservation | Model-run evidence required by the other criteria; no persistence-specific gap remains in the selected cases |
+
+The runtime guide's `OCC_TEST_QA_OPENAI_KEY_FILE` and `OCC_TEST_QA_MODEL_API_KEY`
+are unset in the task environment. The selected `OPENAI_API_KEY` reached the
+OpenClaw Pod unchanged, but the provider returned `401 invalid_api_key`. No other
+documented credential for the selected endpoint was available. Do not substitute
+a staging credential or another provider.
+
+The normal CLI reports workload-identity login. Its documented login help has no
+same-identity workload refresh command. The canonical review's authentication
+failure does not establish whether that identity is rejected or unavailable in
+review isolation. Restore the existing host identity integration before retrying;
+no token extraction, manual refresh or provider fallback was attempted.
 
 ## Delivery record
 
@@ -120,6 +142,26 @@ lane. Fixture or source-only checks do not satisfy native runtime acceptance.
 - Canonical review previously stopped at isolation preflight: launcher bootstrap
   returned HTTP 403 without an isolated cached executable. Normal login-shell
   bootstrap also failed on read-only cache metadata. No reviewer or report ran.
+- `b50e0e4704b58cd4ff6664909bc557c16af8396b` freezes the broker implementation.
+  The next Kubernetes run used controller digest
+  `5db7ced05dbb95109a4b085769bdf8ccc56e2e1ac93744d62f497f2f3fb0dcea`
+  and runtime digest `72bbe64b51957f5cba8c3a631f67e1fc57d54f90b5e4df4a58d0e9d0e8a11b4a`.
+  Temporary file-watcher capacity and a task-owned copy of Ubuntu's restrictive
+  Bubblewrap profile resolved host startup and sandbox preparation. Helm startup,
+  network checks and both plugin catalogs passed. Both Harness deployments then
+  failed with `RUNTIME_AUTHENTICATION_FAILED`; scheduling cases did not run.
+  Node reported 17 tests: 5 passed, 12 failed, 0 skipped. Failures include parent
+  aggregation and blocked dependent cases, not 12 independent product defects.
+- The extended existing Agent-deletion worker case passed: 1 test, no skips.
+  It creates real broker reservations, exercises teardown retry and the database
+  finalizer, and verifies removed target ownership and retained sibling ownership.
+- Canonical review of `b50e0e4704` used GPT-6 Astra with no model/authentication
+  fallback. Its complete 412,957-byte prompt fit one pass, and sandbox preflight
+  passed. Authentication failed after launch; no report was produced.
+- The disposable Kubernetes installation was removed after both Agent cleanups.
+  The file-watcher limit was restored to 128 after checking current usage. The
+  task-owned AppArmor profiles, reviewer installation and model-key copy were
+  removed; the normal host profiles and Codex installation were preserved.
 
 ## Manual Notes
 
@@ -127,6 +169,7 @@ lane. Fixture or source-only checks do not satisfy native runtime acceptance.
 
 ## Changelog
 
+- 2026-11-21: Repair local infrastructure, record both Harness authentication failures and canonical review status, add deletion-worker ownership proof, and audit AC1–AC5 without claiming model qualification.
 - 2026-11-21: Record broker protocol, persistence and upgrade results, and the blocked Kubernetes model proof. Keep policy and independent-review gaps explicit.
 - 2026-11-21: Real native protocol verification found that cron.add rejects caller-selected IDs. Use OCC IDs, native declaration keys, disabled creation and a durable one-time native binding before activation.
 

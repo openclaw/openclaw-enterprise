@@ -116,8 +116,8 @@ native effect, and a lost HTTP response can also lose its recovery reference.
 
 The refusal and ownership checks exercise the real HTTP application, session and
 Native IAM boundaries. PostgreSQL coverage checks durable ownership, immutable
-application-role access and atomic reservation/audit rollback. These checks do
-not prove native model execution.
+application-role access, atomic reservation/audit rollback and ownership cleanup
+through the Agent deletion worker. These checks do not prove native model execution.
 
 The native protocol case in `tests/integration/workspace-files-native.test.ts`
 uses a real Gateway with a transparent fault proxy and in-memory OCC persistence.
