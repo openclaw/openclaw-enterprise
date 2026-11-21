@@ -18,7 +18,10 @@ import type {
 import { grpc, loader, openShellService, type Grpc } from "../helpers/openshell-grpc-sdk.ts";
 import { bindWireServer } from "./openshell-gateway-wire-fixture.ts";
 import { completeSandboxRevision } from "../integration/sandbox-driver-revision-fixture.ts";
-import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
+import {
+  DependencyUnavailableError,
+  SandboxGatewayUnauthorizedError,
+} from "../../packages/occ/src/errors.ts";
 
 type Wire = Record<string, unknown>;
 type Handler = (request: Wire) => Wire | undefined;
@@ -137,6 +140,7 @@ async function fixture(t: TestContext) {
     detaches: [] as Wire[],
     sandboxReads: 0,
     sandboxPresent: true,
+    workspaceDenied: false,
     sandboxReadMode: "normal" as "normal" | "unavailable-after-detach",
     detachMode: "normal" as "normal" | "permission-denied",
     forbiddenMutations: [] as string[],
@@ -165,7 +169,7 @@ async function fixture(t: TestContext) {
       if (state.sandboxReadMode === "unavailable-after-detach" && state.detaches.length > 0) {
         throw Object.assign(new Error("Gateway unavailable"), { code: grpc.status.UNAVAILABLE });
       }
-      if (!state.sandboxPresent) {
+      if (!state.sandboxPresent || state.workspaceDenied) {
         return undefined;
       }
       if (state.detachOnNextSandboxRead) {
@@ -175,18 +179,25 @@ async function fixture(t: TestContext) {
       }
       return { sandbox };
     },
-    GetWorkspace: () => ({
-      workspace: {
-        metadata: {
-          id: "workspace-id",
-          name: namespace.name,
-          labels: {
-            "app.kubernetes.io/managed-by": "openclaw-enterprise",
-            "openclaw.dev/namespace-id": namespace.id,
+    GetWorkspace: () => {
+      if (state.workspaceDenied) {
+        throw Object.assign(new Error("Workspace role denied"), {
+          code: grpc.status.PERMISSION_DENIED,
+        });
+      }
+      return {
+        workspace: {
+          metadata: {
+            id: "workspace-id",
+            name: namespace.name,
+            labels: {
+              "app.kubernetes.io/managed-by": "openclaw-enterprise",
+              "openclaw.dev/namespace-id": namespace.id,
+            },
           },
         },
-      },
-    }),
+      };
+    },
     GetProvider: () => {
       if (state.attachMode === "detach-race" && state.attaches.length > 0) {
         state.detachOnNextSandboxRead = true;
@@ -551,6 +562,7 @@ async function fixture(t: TestContext) {
       config_revision: configRevision,
       policy_hash: policyHash,
     };
+    // Stock proto3 omits the zero-valued reason from both observation and READY status.
     const observed = {
       session_id: "f1d7e6c5-1b2a-4c3d-8e9f-102938475612",
       sequence: "1",
@@ -562,11 +574,9 @@ async function fixture(t: TestContext) {
       policy_active: true,
       launch_environment_installed: true,
       process_instance_id: processId,
-      reason: "PROVIDER_READINESS_REASON_UNSPECIFIED",
     };
     state.providerStatus = {
       state: "PROVIDER_READINESS_STATE_READY",
-      reason: "PROVIDER_READINESS_REASON_UNSPECIFIED",
       receipt: {
         receipt_id: receiptId,
         mutation_id: receiptId,
@@ -997,7 +1007,7 @@ test("staged OpenShell Proxy refuses a loaded policy outside the admitted reques
       record(f.sandbox.status.configuration_admission).policy_hash = changedHash;
       evidence.desired.policy_hash = changedHash;
       evidence.observed.policy_hash = changedHash;
-      assert.notEqual((await f.proxy.getDeploymentStatus(f.context, configuration)).state, "ready");
+      assert.equal((await f.proxy.getDeploymentStatus(f.context, configuration)).state, "failed");
     });
   }
   await t.test("policy not loaded", async () => {
@@ -1087,12 +1097,24 @@ test("staged OpenShell Proxy detaches a target binding without deleting its shar
   );
   const restoredProvider = structuredClone(currentProvider);
 
-  f.state.detachMode = "permission-denied";
-  await assert.rejects(remove(), (error: unknown) => {
-    assert.ok(error instanceof DependencyUnavailableError);
+  const permanentGatewayRefusal = (error: unknown) => {
+    assert.ok(error instanceof SandboxGatewayUnauthorizedError);
+    assert.equal(error.code, "SANDBOX_GATEWAY_UNAUTHORIZED");
+    assert.equal(error.transient, false);
     assert.doesNotMatch(String(error), /upstream-private-detail/);
     return true;
-  });
+  };
+  // Stock Gateway hides an attached Sandbox behind NOT_FOUND after Workspace role loss.
+  // GetWorkspace still returns PERMISSION_DENIED, so cleanup cannot report the binding removed.
+  const detachesBeforeHiddenRoleLoss = f.state.detaches.length;
+  f.state.workspaceDenied = true;
+  await assert.rejects(remove(), permanentGatewayRefusal);
+  assert.equal(f.state.detaches.length, detachesBeforeHiddenRoleLoss);
+  assert.deepEqual(f.sandbox.spec.providers, [provider!.metadata.name]);
+  f.state.workspaceDenied = false;
+
+  f.state.detachMode = "permission-denied";
+  await assert.rejects(remove(), permanentGatewayRefusal);
   assert.deepEqual(f.sandbox.spec.providers, [provider!.metadata.name]);
   f.state.detachMode = "normal";
 

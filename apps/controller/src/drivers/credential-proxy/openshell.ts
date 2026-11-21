@@ -12,14 +12,22 @@ import type {
   CredentialProxyRouting,
   SandboxDriver,
 } from "@openclaw-enterprise/contracts";
-import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
+import {
+  DependencyUnavailableError,
+  SandboxGatewayUnauthorizedError,
+} from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
 import {
   openShellProviderName,
   openShellWorkspaceName,
   type OpenShellGateway,
 } from "../../backends/openshell.ts";
-import { OpenShellAdmissionLimitError, statusCode } from "../sandbox/openshell-gateway-errors.ts";
+import {
+  confirmSandboxAbsent,
+  gatewayIdentityRefusal,
+  OpenShellAdmissionLimitError,
+  statusCode,
+} from "../sandbox/openshell-gateway-errors.ts";
 import {
   assertOpenShellDeploymentConfiguration,
   assertOpenShellDeploymentContext,
@@ -280,7 +288,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       const unspecified = "PROVIDER_READINESS_REASON_UNSPECIFIED";
       if (
         status.state !== "PROVIDER_READINESS_STATE_READY" ||
-        status.reason !== unspecified ||
+        (status.reason !== undefined && status.reason !== unspecified) ||
         status.receipt?.kind !== "PROVIDER_MUTATION_KIND_OBSERVE" ||
         !status.receipt.receiptId ||
         status.receipt.workspace !== target.workspace ||
@@ -297,7 +305,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         !observed ||
         !observed.sessionId ||
         !positiveRevision(observed.sequence) ||
-        observed.reason !== unspecified ||
+        (observed.reason !== "" && observed.reason !== unspecified) ||
         observed.attachmentEpoch !== desired.attachmentEpoch ||
         observed.providerEnvRevision !== desired.providerEnvRevision ||
         observed.configRevision !== desired.configRevision ||
@@ -356,10 +364,22 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     assertOpenShellDeploymentConfiguration(context, expected);
     try {
       const scope = this.pushedScope(context);
-      const sandbox = await scope.client.getSandbox(
-        { workspace: scope.workspace, name: scope.name },
-        context.signal,
+      const read = () =>
+        scope.client.getSandbox({ workspace: scope.workspace, name: scope.name }, context.signal);
+      const refused = gatewayIdentityRefusal(
+        scope.workspace,
+        "credential withdrawal is unconfirmed",
       );
+      const absent = () =>
+        confirmSandboxAbsent(
+          scope.client,
+          scope.workspace,
+          context.signal,
+          refused,
+          () => new OpenShellCredentialDeliveryRefusedError(),
+          read,
+        );
+      const sandbox = (await refused(read)) ?? (await absent());
       if (!sandbox) {
         return;
       }
@@ -380,24 +400,25 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       if (!providers?.includes(openShellProviderName(binding.sourceRef.id))) {
         return;
       }
-      const provider = await readOwnedOpenShellPushedProvider({
-        client: scope.client,
-        workspace: scope.workspace,
-        binding,
-        signal: context.signal,
-      });
+      const provider = await refused(() =>
+        readOwnedOpenShellPushedProvider({
+          client: scope.client,
+          workspace: scope.workspace,
+          binding,
+          signal: context.signal,
+        }),
+      );
       // TODO(CP2): accepted same-name replacement race until Gateway can enforce the immutable
       // Sandbox ID before detach: https://github.com/NVIDIA/OpenShell/issues/5794
-      await scope.client.detachSandboxProvider(
-        scope.workspace,
-        scope.name,
-        provider.name,
-        context.signal,
+      await refused(() =>
+        scope.client.detachSandboxProvider(
+          scope.workspace,
+          scope.name,
+          provider.name,
+          context.signal,
+        ),
       );
-      const after = await scope.client.getSandbox(
-        { workspace: scope.workspace, name: scope.name },
-        context.signal,
-      );
+      const after = (await refused(read)) ?? (await absent());
       if (!after) {
         return;
       }
@@ -414,7 +435,8 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       context.signal.throwIfAborted();
       if (
         error instanceof OpenShellCredentialDeliveryRefusedError ||
-        error instanceof OpenShellAdmissionLimitError
+        error instanceof OpenShellAdmissionLimitError ||
+        error instanceof SandboxGatewayUnauthorizedError
       ) {
         throw error;
       }
