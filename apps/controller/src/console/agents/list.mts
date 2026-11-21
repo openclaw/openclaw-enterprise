@@ -6,7 +6,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { GENERIC_DENIAL, namedDenial, requestFailure, responseFields } from "../api-client.mjs";
-import { element } from "../dom.mjs";
+import { bindLinkClick, element } from "../dom.mjs";
 import type { createNavigation } from "../navigation.mjs";
 import {
   ACCESS_NOT_INCLUDED,
@@ -30,13 +30,7 @@ export type AgentNavigation = Pick<ReturnType<typeof createNavigation>, "navigat
 
 export function link(label: string, target: string, context: AgentNavigation) {
   const node = element("a", { href: context.pageUrl(target) }, label);
-  node.addEventListener("click", (event) => {
-    if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
-      return;
-    }
-    event.preventDefault();
-    context.navigate(target);
-  });
+  bindLinkClick(node, () => context.navigate(target));
   return node;
 }
 
