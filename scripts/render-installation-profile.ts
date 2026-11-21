@@ -1,10 +1,10 @@
 /// <reference lib="es2024.string" />
-import {
-  proxyAddressForbidden,
-  type ChannelEgressOptions,
-  type ChannelUpstreamProxyEndpoint,
+import type {
+  ChannelEgressOptions,
+  ChannelUpstreamProxyEndpoint,
 } from "../apps/controller/src/drivers/compute/kubernetes/channel-egress-policy.ts";
-import { normalizeAgentNetworkProxy } from "../packages/contracts/src/index.ts";
+import { proxyAddressForbidden } from "../apps/controller/src/drivers/compute/kubernetes/channel-proxy-address.ts";
+import { normalizeAgentNetworkProxy } from "../packages/contracts/src/agent-network-proxy.ts";
 import { oidcEnrollmentPolicy } from "../apps/controller/src/auth/oidc-enrollment.ts";
 import { createHash } from "node:crypto";
 import dns from "node:dns/promises";
