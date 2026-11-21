@@ -322,11 +322,16 @@ export function assertOpenShellPushedBinding(
   binding: DeploymentCredentialBinding,
   policies: readonly CredentialInjectionPolicy[],
 ): void {
+  const admitted = context.revision.credentialDeployment;
   if (
+    context.revision.executionAdmission.version !== 8 ||
+    context.revision.executionAdmission.mode !== "standalone" ||
+    !admitted ||
+    admitted.bindings.length !== 1 ||
+    !isDeepStrictEqual(admitted.bindings[0], binding) ||
+    !isDeepStrictEqual(admitted.injectionPolicies, policies) ||
     !binding.bindingRef ||
     binding.consumer.kind !== "model" ||
-    !context.revision.harness.modelProviderId ||
-    binding.consumer.providerId !== context.revision.harness.modelProviderId ||
     binding.sourceRef.kind !== "credential_source" ||
     !binding.sourceRef.id ||
     binding.sourceRef.namespaceId !== context.namespace.id ||

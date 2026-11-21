@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-21
-last_updated_session: 01a1ec21-b384-7472-887f-945ae0ab16fc
+last_updated_session: authoring-run/f9a96a90-7e99-4a4b-a6d8-d40f4bf1b797
 ---
 
 # Credential source lifecycle flow
@@ -75,7 +75,7 @@ The worker rechecks actor and Agent grants, selected Driver identity, live sourc
 
 `apps/controller/src/drivers/credential-proxy/openshell.ts:configureDeployment`, `apps/controller/src/drivers/sandbox/openshell-gateway-client.ts:attachSandboxProviderWithReceipt`
 
-The staged native Proxy accepts a trusted admitted binding, exact target, and source-bound resolver. It rejects a mismatched target before resolving material. First use transfers material into an OpenShell Provider delivery copy and attaches it with a Sandbox resource-version precondition; compatible reuse does not resolve or repair material. The OpenShell Gateway API client validates the receipt and returned Sandbox, and the Proxy checks Provider identity/version and final membership before returning a runtime placeholder projection.
+The staged native Proxy compares the binding and injection policy with the frozen v8 admission. The binding's runtime provider key is distinct from the catalog ModelProvider ID. It rejects a mismatched target before resolving material. First use transfers material into an OpenShell Provider delivery copy and attaches it with a Sandbox resource-version precondition; compatible reuse does not resolve or repair material. The OpenShell Gateway API client validates the receipt and returned Sandbox, and the Proxy checks Provider identity/version and final membership before returning a runtime placeholder projection.
 
 For OCC TokenService, composition registers `credential_proxy_delivery` on the selected Sandbox owner. Worker and Compute use that registration for delivery and cleanup. Worker checks source authority, withdrawal, and the held target before supplying a source-bound resolver, then repeats release checks after configuration. Status fails closed because current source-version authority and exact native executable enforcement remain unqualified. A same-name replacement with the same resource version can still receive the Provider before the Proxy rejects its ID ([OpenShell issue](https://github.com/NVIDIA/OpenShell/issues/5794)). The native RPC rejects malformed receipts and sanitizes errors; legacy serving keeps its separate Attach operation.
 
@@ -107,6 +107,8 @@ Inspect source `status`, worker reason codes, and withdrawal state. `CREDENTIAL_
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-21 20:14: Validate native delivery against the admitted runtime binding and policy. (authoring-run/f9a96a90-7e99-4a4b-a6d8-d40f4bf1b797 - 28a98dda9)
 
 - 2026-11-21 19:51: Reconcile OCC service owners. (01a1ec21-b384-7472-887f-945ae0ab16fc - e12513764)
 - 2026-11-20 23:19: Record staged provision dispatch and observe the saved target on every retry. (01a1ec21-b384-7472-887f-945ae0ab16fc - 63d179f67)

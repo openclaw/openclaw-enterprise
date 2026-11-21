@@ -333,8 +333,8 @@ async function fixture(t: TestContext) {
     backend,
     sandbox: selectedSandbox,
   });
-  // This is a direct Driver contract test; the published Agent workflow does not admit
-  // TokenService credential delivery into a revision yet.
+  // Exercise the admitted runtime provider key separately from the catalog ModelProvider ID.
+  // This controlled Gateway fixture does not qualify a real Agent or native enforcement.
   const revision = completeSandboxRevision({
     namespaceId: namespace.id,
     agentId: configuration.targetRef.agentId,
@@ -347,7 +347,19 @@ async function fixture(t: TestContext) {
     revision: {
       ...revision,
       configurationId: configuration.configurationId,
-      harness: { ...revision.harness, modelProviderId: binding.consumer.providerId },
+      executionAdmission: { version: 8, mode: "standalone" },
+      harness: { ...revision.harness, modelProviderId: "mp_catalog" },
+      credentialDeployment: {
+        driver: {
+          id: selectedSandbox.id,
+          implementation: "openshell",
+          configurationId: "a".repeat(64),
+        },
+        proxyDriverId: proxy.id,
+        networkAccessPolicy: { allowed: [request] },
+        bindings: [binding],
+        injectionPolicies: [injection],
+      },
     },
     signal: t.signal,
   } satisfies CredentialDeploymentContext;
@@ -486,6 +498,22 @@ test("staged OpenShell Proxy validates direct deployment policy and binding inpu
   );
   await assert.rejects(
     f.configure({ injectionPolicies: [{ ...injection, bindingRef: "other-binding" }] }),
+    DependencyUnavailableError,
+  );
+  await assert.rejects(
+    f.configure({
+      injectionPolicies: [
+        {
+          ...injection,
+          allowedRequests: [
+            {
+              ...request,
+              requestPolicy: { type: "http", method: "POST", path: "/v1/chat/completions" },
+            },
+          ],
+        },
+      ],
+    }),
     DependencyUnavailableError,
   );
   assert.equal(f.resolutions(), 0);
