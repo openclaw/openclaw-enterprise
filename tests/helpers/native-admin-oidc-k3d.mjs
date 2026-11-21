@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { randomInt, randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { temporaryDirectory } from "./temporary-directory.mjs";
@@ -118,11 +119,11 @@ export async function enableInstalledOidcNativeAdmin({
     "--namespace",
     namespace,
   ];
-  const run = (command, args) =>
+  const run = (command, args, limits = { timeout: 300_000 }) =>
     execute(command, args, {
       cwd: repository,
       env: environment,
-      timeout: 300_000,
+      ...limits,
       maxBuffer: 8 * 1024 * 1024,
     });
   const helm = process.env.OCC_HELM_BIN ?? "helm";
@@ -264,6 +265,91 @@ process.stdout.write(resources.map(item => JSON.stringify(item)).join("\\n---\\n
     parentCookieName: "__Host-openclaw_occ.session_token",
     releaseRevision: status.version,
     controllerImage: api.image,
+    async replaceApiPod(agentId, revisionId) {
+      const uid = async (scope, selector, limits) => {
+        const { stdout } = await run(
+          "kubectl",
+          [
+            ...kubectl,
+            ...scope,
+            "get",
+            "pods",
+            "-l",
+            selector,
+            "-o",
+            "jsonpath={.items[*].metadata.uid}",
+          ],
+          limits,
+        );
+        const ids = stdout.trim().split(/\s+/);
+        assert.equal(ids.length, 1);
+        assert.match(ids[0], /^[0-9a-f-]{36}$/);
+        return ids[0];
+      };
+      const apiScope = ["-n", namespace];
+      const apiSelector = Object.entries(deployment.spec.selector.matchLabels)
+        .map(([name, value]) => name + "=" + value)
+        .join(",");
+      const gatewaySelector = `openclaw.dev/agent=${agentId},openclaw.dev/revision=${revisionId},openclaw.dev/workload-role=gateway`;
+      const apiBefore = await uid(apiScope, apiSelector);
+      const gateway = await uid(["-A"], gatewaySelector);
+      const target = `deployment/${release}-api`;
+      await run("kubectl", [...kubectl, ...apiScope, "rollout", "restart", target]);
+      const deadline = performance.now() + 120_000;
+      const remainingMs = () => {
+        const ms = Math.ceil(deadline - performance.now());
+        assert.ok(ms > 0, "Timed out waiting for one ready replacement API Pod");
+        return ms;
+      };
+      const commandLimits = () => ({ timeout: remainingMs(), killSignal: "SIGKILL" });
+      const rollout = commandLimits();
+      await run(
+        "kubectl",
+        [
+          ...kubectl,
+          ...apiScope,
+          "rollout",
+          "status",
+          target,
+          `--timeout=${rollout.timeout / 1_000}s`,
+        ],
+        rollout,
+      );
+      // A rollout can complete while its terminating predecessor is still listed.
+      for (;;) {
+        const limits = commandLimits();
+        const { stdout } = await run(
+          "kubectl",
+          [
+            ...kubectl,
+            ...apiScope,
+            "get",
+            "pods",
+            "-l",
+            apiSelector,
+            "-o",
+            "json",
+            "--request-timeout=" + limits.timeout + "ms",
+          ],
+          limits,
+        );
+        const { items } = JSON.parse(stdout);
+        const [pod] = items;
+        if (
+          items.length === 1 &&
+          pod.metadata.uid !== apiBefore &&
+          !pod.metadata.deletionTimestamp &&
+          pod.status?.conditions?.some(({ type, status }) => type === "Ready" && status === "True")
+        ) {
+          const apiAfter = pod.metadata.uid;
+          assert.match(apiAfter, /^[0-9a-f-]{36}$/);
+          assert.equal(await uid(["-A"], gatewaySelector, commandLimits()), gateway);
+          remainingMs();
+          return { apiBefore, apiAfter, gateway };
+        }
+        await delay(Math.min(250, remainingMs()));
+      }
+    },
     async authorizeRoute(route) {
       const url = new URL(route.request().url());
       assert.equal(url.origin + url.pathname, `${issuer}/authorize`);
