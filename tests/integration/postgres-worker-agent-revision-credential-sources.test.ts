@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, type TestContext } from "node:test";
-import type { ComputeDriver, Namespace } from "../../packages/contracts/src/index.ts";
-import { OpenClawController, ResourceStateConflictError } from "../../packages/occ/src/index.ts";
-import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
+import type {
+  ComputeDriver,
+  CredentialProxyDriver,
+  DeploymentCredentialBinding,
+  Namespace,
+  ResolvedCredential,
+} from "../../packages/contracts/src/index.ts";
+import {
+  InstalledDriver,
+  OpenClawController,
+  ResourceStateConflictError,
+} from "../../packages/occ/src/index.ts";
 import { installationControllerOptions } from "../../apps/controller/src/composition/installation-config.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
 import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
@@ -14,7 +23,6 @@ import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { auditEvent } from "./postgres-namespace-iam-fixture.ts";
 import { buildSandboxInstallation } from "./sandbox-driver-installation-fixture.ts";
-import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 import {
   createCredentialSourceRevisionCases,
   removeSourceGrant,
@@ -34,96 +42,11 @@ registerDeploymentWithdrawalCases(cases);
 registerWithdrawalMaintenanceCases(cases);
 registerFiniteGitCases(import.meta.url);
 
-function stagedGatewayClient(namespace: Namespace) {
-  const gateway = workspaceGatewayClient([
-    {
-      id: randomUUID(),
-      name: namespace.name,
-      labels: {
-        "app.kubernetes.io/managed-by": "openclaw-enterprise",
-        "openclaw.dev/namespace-id": namespace.id,
-      },
-      phase: "WORKSPACE_PHASE_ACTIVE",
-    },
-  ]);
-  const importProfile = gateway.importProviderProfile;
-  gateway.importProviderProfile = async (workspace, profile, signal) => {
-    await importProfile(workspace, profile, signal);
-    const stored = gateway.profiles.get(profile.id);
-    assert.ok(stored);
-    gateway.profiles.set(profile.id, {
-      ...stored,
-      definition: {
-        inference_capable: profile.inferenceCapable,
-        credentials: profile.credentials.map((credential) => ({
-          name: credential.name,
-          env_vars: credential.envVars,
-          required: credential.required,
-          auth_style: credential.authStyle,
-          header_name: credential.headerName,
-          stable_placeholder: credential.stablePlaceholder,
-        })),
-        endpoints: [],
-        binaries: [],
-      },
-    });
-  };
-  const createProvider = gateway.createProvider;
-  gateway.createProvider = async (request, signal) => {
-    const created = await createProvider(request, signal);
-    const provider = {
-      ...created,
-      id: randomUUID(),
-      workspace: request.workspace,
-      profileWorkspace: request.workspace,
-    };
-    gateway.providers.set(request.name, provider);
-    return provider;
-  };
-  gateway.attachSandboxProviderWithReceipt = async (
-    workspace,
-    name,
-    providerName,
-    _signal,
-    conditional,
-  ) => {
-    const sandbox = gateway.sandboxes.get(name);
-    const provider = gateway.providers.get(providerName);
-    assert.ok(sandbox && provider?.id);
-    assert.equal(sandbox.workspace, workspace);
-    assert.equal(sandbox.resourceVersion, conditional.expectedResourceVersion);
-    assert.ok(conditional.requestId);
-    const attached = {
-      ...sandbox,
-      resourceVersion: String(Number(sandbox.resourceVersion) + 1),
-      spec: { ...sandbox.spec, providers: [providerName] },
-    };
-    gateway.sandboxes.set(name, attached);
-    return {
-      sandbox: attached,
-      attached: true,
-      receiptId: randomUUID(),
-      providerId: provider.id,
-      providerResourceVersion: provider.resourceVersion,
-    };
-  };
-  return gateway;
-}
-
 async function stagedCredentialScenario(
   fixture: RevisionFixture,
   context: TestContext,
   extendCompute: (compute: ComputeDriver) => ComputeDriver,
 ) {
-  // OpenShell identifies a workspace by a DNS label of at most 19 characters. The shared
-  // Worker fixture's generic Namespace name is intentionally not an OpenShell workspace name.
-  const namespace: Namespace = {
-    ...fixture.namespace,
-    id: `ns_${randomUUID()}`,
-    name: `staged-${randomUUID().slice(0, 8)}`,
-  };
-  await fixture.state.transact((state) => state.namespaces.createNamespace(namespace));
-  const gateway = stagedGatewayClient(namespace);
   const grant = {
     id: "model-egress",
     binary: "/app/bin/model-client",
@@ -138,21 +61,75 @@ async function stagedCredentialScenario(
   const baseline = installation.drivers.sandbox.configuration.policy.networkPolicies[0]!;
   baseline.name = "baseline";
   baseline.endpoints[0]!.host = "baseline.example.test";
-  const runtime = await loadInstallationFile(context, installation, {
-    createOpenShellBackend: (definition) =>
-      createOpenShellBackend(definition, { gatewayClient: gateway }),
-  });
+  const runtime = await loadInstallationFile(context, installation);
   assert.ok(runtime?.credentialDeliveryRegistration && runtime.sandboxDriver);
   const registration = runtime.credentialDeliveryRegistration;
   const sandbox = registration.require("sandbox");
-  // Compute and Gateway transport are controlled; the selected Proxy, TokenService, Worker,
-  // PostgreSQL, and Native IAM paths remain real. This does not prove native process readiness.
+  // Compute and the Worker-side Proxy are controlled. Admission, the Worker, TokenService,
+  // PostgreSQL, and Native IAM remain real; this does not qualify native OpenShell delivery.
+  const deliveries: {
+    namespace: Readonly<Namespace>;
+    targetRef: Parameters<CredentialProxyDriver["configureDeployment"]>[1]["targetRef"];
+    configurationId: string;
+    binding: DeploymentCredentialBinding;
+    credential: ResolvedCredential;
+  }[] = [];
+  const proxy: CredentialProxyDriver = {
+    capability: "credential_proxy_delivery",
+    id: sandbox.id,
+    implementation: sandbox.implementation,
+    async deployProxy() {
+      throw new Error("Unexpected Proxy staging in controlled Compute.");
+    },
+    async configureDeployment(deploymentContext, input) {
+      const supplied = input.bindings[0];
+      assert.ok(supplied && input.bindings.length === 1);
+      deliveries.push({
+        namespace: deploymentContext.namespace,
+        targetRef: input.targetRef,
+        configurationId: input.configurationId,
+        binding: supplied.binding,
+        credential: await supplied.resolveCredential(),
+      });
+      return {
+        credentialProjections: [
+          {
+            bindingRef: supplied.binding.bindingRef,
+            environment: supplied.binding.projection.environment,
+            placeholder: { kind: "runtime" },
+          },
+        ],
+      };
+    },
+    async getDeploymentStatus() {
+      throw new Error("Unexpected native readiness observation in controlled Compute.");
+    },
+    async removeDeployment() {
+      throw new Error("Unexpected Proxy removal in controlled Compute.");
+    },
+  };
+  const workerRegistration = new InstalledDriver(
+    {
+      id: sandbox.id,
+      implementation: sandbox.implementation,
+      configuration: {
+        sandbox: runtime.installation.drivers.sandbox!.configuration,
+        backend: runtime.installation.backend[0],
+      },
+    },
+    { capabilities: { sandbox, credential_proxy_delivery: proxy } },
+  );
+  assert.deepEqual(workerRegistration.ref, registration.ref);
+  const placedName = `placed-${randomUUID().slice(0, 8)}`;
   const compute = extendCompute({
     ...fixture.compute,
     resolveHarnessConfiguration: () => ({
       modelProvider: { protocol: "openai-responses", baseUrl: "https://api.openai.com/v1" },
     }),
     validateExecutionAdmission() {},
+    async resolveSandboxNamespace(namespace) {
+      return { ...namespace, name: placedName };
+    },
     async prepareRevision(revision) {
       return {
         ...(await fixture.compute.prepareRevision(revision)),
@@ -181,7 +158,7 @@ async function stagedCredentialScenario(
   installSelectedSandboxDrivers(controller, runtime);
   const { driver: secretDriver } = useInstallationSecretDriver(controller);
   await installTokenServiceDriver(controller, { ...runtime, secretDriver }, fixture.state);
-  const namespaceId = namespace.id;
+  const namespaceId = fixture.namespace.id;
   const actorId = fixture.actor.id;
   const enrolledCredential = randomUUID();
   const source = await controller.createManagedCredentialSource(
@@ -244,24 +221,21 @@ async function stagedCredentialScenario(
       },
       secretDriver,
       namespaceLifecycleBindings: runtime.namespaceLifecycleBindings,
-      credentialDeliveryRegistration: registration,
+      credentialDeliveryRegistration: workerRegistration,
       sandboxDriver: sandbox,
     }),
   } satisfies NonNullable<Parameters<RevisionFixture["start"]>[1]>;
   await fixture.start(compute, workerOptions);
-  const currentAgent = () =>
-    fixture.state.read((view) => view.agents.findAgent(namespaceId, owner.id));
   return {
     controller,
     owner,
     source,
-    namespace,
     namespaceId,
     actorId,
-    gateway,
-    sandbox,
     enrolledCredential,
-    currentAgent,
+    deliveries,
+    placedName,
+    currentAgent: () => fixture.currentAgent(owner),
   };
 }
 
@@ -270,17 +244,17 @@ cases.revisionTest(
   async (fixture, context) => {
     let preparations = 0;
     let activations = 0;
+    let configurationError: unknown;
     const sandboxId = randomUUID();
     const {
       controller,
       owner,
       source,
-      namespace,
       namespaceId,
       actorId,
-      gateway,
-      sandbox,
       enrolledCredential,
+      deliveries,
+      placedName,
       currentAgent,
     } = await stagedCredentialScenario(fixture, context, (compute) => ({
       ...compute,
@@ -289,38 +263,19 @@ cases.revisionTest(
         assert.equal(activations, 0, "activation succeeds without another preparation");
         assert.deepEqual(revisionContext?.harnessAuth, revision.harnessAuth);
         assert.deepEqual(revisionContext?.secretEnvironment, []);
-        const resource = sandbox.harnessResource!({ namespace, revision });
-        const targetRef = {
-          namespaceId,
-          agentId: owner.id,
-          revisionId: revision.id,
-          sandboxId,
-        };
-        gateway.sandboxes.set(resource.resourceName, {
-          id: sandboxId,
-          name: resource.resourceName,
-          workspace: namespace.name,
-          resourceVersion: "1",
-          labels: {
-            "app.kubernetes.io/managed-by": "openclaw-enterprise",
-            "openclaw.dev/namespace": namespaceId,
-            "openclaw.dev/agent": owner.id,
-            "openclaw.dev/revision": revision.id,
-          },
-          annotations: {
-            "openclaw.dev/namespace-id": namespaceId,
-            "openclaw.dev/agent-id": owner.id,
-            "openclaw.dev/revision-id": revision.id,
-            "openclaw.dev/configuration-id": revision.configurationId,
-          },
-          spec: { providers: [] },
-          serviceUrls: {},
-        });
         assert.ok(revisionContext?.configureCredentialDeployment);
-        const configured = await revisionContext.configureCredentialDeployment(
-          { targetRef, configurationId: revision.configurationId },
-          AbortSignal.timeout(5_000),
-        );
+        const configured = await revisionContext
+          .configureCredentialDeployment(
+            {
+              targetRef: { namespaceId, agentId: owner.id, revisionId: revision.id, sandboxId },
+              configurationId: revision.configurationId,
+            },
+            AbortSignal.timeout(5_000),
+          )
+          .catch((error: unknown) => {
+            configurationError = error;
+            throw error;
+          });
         assert.deepEqual(configured, {
           credentialProjections: [
             {
@@ -355,7 +310,9 @@ cases.revisionTest(
     );
     assert.equal(revision.executionAdmission.version, 8);
     const work = { id: revision.id, idempotencyKey: `agent_revision:${revision.id}:reconcile` };
-    await fixture.work(work, "succeeded");
+    await fixture.work(work, "succeeded").catch((error: unknown) => {
+      throw configurationError ?? error;
+    });
     assert.equal((await currentAgent())?.activeRevisionId, revision.id);
     assert.equal(preparations, 1);
     assert.equal(activations, 1);
@@ -367,17 +324,15 @@ cases.revisionTest(
         projection: { environment: "OPENAI_API_KEY", presentation: "bearer" },
       },
     ]);
-    const creates = gateway.calls.filter((call) => call[0] === "createProvider");
-    assert.equal(creates.length, 1);
-    const provider = creates[0]![1];
-    assert.equal(provider.workspace, namespace.name);
-    assert.deepEqual(provider.credentials, { OPENAI_API_KEY: enrolledCredential });
-    assert.deepEqual(provider.config, { oce_source_version: canonical.version });
-    assert.deepEqual(
-      gateway.sandboxes.get(sandbox.harnessResource!({ namespace, revision }).resourceName)?.spec
-        ?.providers,
-      [provider.name],
-    );
+    assert.deepEqual(deliveries, [
+      {
+        namespace: { ...fixture.namespace, name: placedName },
+        targetRef: { namespaceId, agentId: owner.id, revisionId: revision.id, sandboxId },
+        configurationId: revision.configurationId,
+        binding: revision.credentialDeployment!.bindings[0],
+        credential: { credential: enrolledCredential, version: canonical.version },
+      },
+    ]);
 
     // A Source used by the active staged revision cannot rotate until delivery notification
     // and retry can settle its existing projections. Refusal must leave custody unchanged.
