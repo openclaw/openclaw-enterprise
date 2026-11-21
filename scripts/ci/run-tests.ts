@@ -778,7 +778,14 @@ async function completePhaseChild() {
   if (!process.send || process.env.OPENCLAW_CI_COMPLETE_PHASE !== "1") {
     throw new Error("A lifecycle phase requires its owning IPC channel.");
   }
-  const stop = () => process.kill(-process.pid, "SIGKILL");
+  let preparationRefused = false;
+  const stop = () => {
+    if (preparationRefused) {
+      // No preparation code ran, so there are no phase descendants to stop.
+      process.exit(1);
+    }
+    process.kill(-process.pid, "SIGKILL");
+  };
   process.once("disconnect", stop);
   process.once("exit", stop);
   process.on("message", (message: unknown) => {
@@ -789,6 +796,24 @@ async function completePhaseChild() {
   const request = await new Promise<unknown>((resolveRequest) => {
     process.once("message", resolveRequest);
   });
+  // Preparation is the first phase in a fresh attempt. Check its owned group
+  // before importing an owner that could create resources at module load time.
+  if (optionalReporterField(request, "phase") === "prepare") {
+    try {
+      process.kill(-process.pid, 0);
+    } catch {
+      preparationRefused = true;
+      process.removeListener("exit", stop);
+      process.send({
+        type: "ci-lifecycle-result",
+        exitCode: 1,
+        uncertain: false,
+        error: { code: "phase-process-group-unavailable" },
+      });
+      await new Promise(() => {});
+      return;
+    }
+  }
   let exitCode = 1;
   let uncertain = false;
   let error: { code: "phase-failed" } | undefined;

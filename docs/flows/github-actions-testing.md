@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: "2026-11-19 19:23"
-last_updated_session: "authoring-run/ca808f62-526d-4d1c-84db-c33c517e3954"
+updated: "2026-11-20 12:21"
+last_updated_session: "authoring-run/5d8b0b38-d83c-432e-a645-6d020ce2db98"
 ---
 
 # GitHub Actions testing flow
@@ -118,7 +118,7 @@ Fixture lanes verify NetworkPolicy enforcement.
 `scripts/ci/run-tests.ts:runLane` runs files sequentially except audited
 `parallelFiles`. State and cleanup stay runner-local.
 
-Only the native IAM barrier test receives its migrated PostgreSQL database and application and migrator connection details. The CLI excludes them from `GITHUB_ENV`. The unregistered supplier stays in this disposable database. Production writers still require separate barrier verification.
+Only the native IAM barrier test receives migrated PostgreSQL and application/migrator connections; the CLI excludes them from `GITHUB_ENV`. The unregistered supplier stays disposable; production writers need separate verification.
 
 `runtime-artifact` supplies CI `image-lanes`, Full Integration's `image-lanes-same-sha`
 and Docker Model Runtime, and First Agent Smoke. Aggregates check producer and consumers.
@@ -182,11 +182,9 @@ owns credential isolation and historical-pair limits.
 
 ### 3. Execute and account for actual cases
 
-`scripts/ci/run-tests.ts:runFile` starts Node via `runner-process.ts:runNode`.
-`runner-reporter-output.ts:readFileEvidence` accounts for the JSON Lines output
-from `reporter.ts:jsonLinesReporter`. `runner-lifecycle.ts:runCompleteLifecycle`
-forks the same entry for each phase. The selected checkout supplies the manifest,
-tests, preparation, and cleanup.
+`scripts/ci/run-tests.ts:runFile` calls `runner-process.ts:runNode`; `runner-reporter-output.ts:readFileEvidence` reads `reporter.ts:jsonLinesReporter` JSON Lines.
+`runner-lifecycle.ts:runCompleteLifecycle` forks this runner for each phase. Before importing preparation from `--root`, `run-tests.ts:completePhaseChild` probes its group with signal 0.
+`runCompleteLifecycle` reports `phase-process-group-unavailable` once. Confirmed refusal skips cleanup only for fresh, stateless attempts. Effects require cleanup; uncertain termination requires reconciliation ([complete attempts](../testing/ci/run-lanes.md#run-a-complete-local-attempt)).
 
 `runner-inputs.ts:normalizeFile` validates `file.env`. `runFile` merges filtered
 inherited values, declared inputs, `lane.env`, preparation defaults, `file.env`,
@@ -196,9 +194,9 @@ preparation, `validateLaneInputsBeforeSideEffects` reads the manifest and
 `openshell`, `openshell-policy`, and `openshell-installers` require both
 credentials. `scripts/k3d` scopes preparation with `--selected-file`.
 
-The reporter retains names, locations, outcomes, failure messages (600 characters) and top frames (240). Redaction removes repository paths, substitutes nonpublic job/child values (8+ characters) with `[env:NAME]`, and masks token/key shapes, URL passwords and `password=` as `[redacted]`. Generated values require a matching shape.
+Reporter output: names, locations, outcomes, failure messages (600 characters), top frames (240). Redaction removes repository paths, replaces nonpublic job/child values (8+ characters) with `[env:NAME]`, and masks token/key shapes, URL passwords and `password=` as `[redacted]`; generated values require matching shapes.
 
-HTTP diagnostics retain numeric actual/expected statuses, allowlisted OCC codes and available ChatGPT operation/status. Denied traffic retains an allowlisted category and plugin failures an allowlisted readiness/rollout stage. Rollouts retain allowed Pod phases, readiness/scheduling flags, restart counts, exit codes and allowlisted reasons.
+HTTP diagnostics: numeric actual/expected statuses, allowlisted OCC codes, available ChatGPT operation/status. Denials: allowlisted category; plugin failures: allowlisted readiness/rollout stage. Rollouts: allowed Pod phases, readiness/scheduling flags, restart counts, exit codes, allowlisted reasons.
 
 `skipper-release.ts:runSkipperOperation` projects captured Skipper errors. After
 failed installed proof, the workflow invokes `skipper-failure-receipt.ts` to publish
@@ -292,6 +290,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 12:21: Clarify phases. (authoring-run/5d8b0b38-d83c-432e-a645-6d020ce2db98 - 5638d75a6c64953464efa39c402852f13cbe69b4)
 
 - 2026-11-19 19:23: Retry reads and report failures. (authoring-run/ca808f62-526d-4d1c-84db-c33c517e3954 - ebcbd2f60535c36b3a9b63847a2d052363cd29a6)
 
