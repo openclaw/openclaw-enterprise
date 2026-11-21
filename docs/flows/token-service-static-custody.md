@@ -1,7 +1,7 @@
 ---
 created: "2026-11-20"
 updated: 2026-11-21
-last_updated_session: authoring-run/bcb909b1-f021-43ea-95b6-2a657e3d0ea4
+last_updated_session: authoring-run/7d36e4b0-9d69-4099-8f8b-50144697a78a
 ---
 
 # Managed static credential source custody flow
@@ -48,7 +48,7 @@ Startup binds the selected TokenService instance to the Secret Driver's Installa
 
 `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`, `apps/controller/src/drivers/token-service/occ.ts:createSource`
 
-OCC checks the ready Namespace, collection permission, and approved provider preset. It commits registration intent and releases its locks before calling TokenService. TokenService assigns the Source ID, creates the canonical ready record and private credential in its own operation, commits its PostgreSQL transaction, and returns the Source. OCC uses the returned Source to commit creator IAM and completion audit separately. An operation admitted before IAM revocation may finish after revocation. The credential never enters public metadata, Namespace Secret references, logs, or audit details.
+The OCC Source manager authorizes the collection request, then checks the ready Namespace and approved provider preset. It commits registration intent and releases its locks before calling TokenService. TokenService assigns the Source ID, creates the canonical ready record and private credential in its own operation, commits its PostgreSQL transaction, and returns the Source. OCC uses the returned Source to commit creator IAM and completion audit separately. An operation admitted before IAM revocation may finish after revocation. The credential never enters public metadata, Namespace Secret references, logs, or audit details.
 
 An uncertain private-store write can leave material without a Source record. A failure after TokenService commits can leave a Source without its creator grant or completion audit. POST reports failure; the committed request intent remains. The private store has no inventory operation.
 
@@ -62,7 +62,7 @@ After exact IAM authorization, OCC reads Source metadata directly from the share
 
 `packages/occ/src/managed-credential-sources.ts:deleteCredentialSource`, `apps/controller/src/drivers/token-service/occ.ts:removeSource`
 
-OCC authorizes exact DELETE, refuses blocking references, and commits `deleting` and retirement intent. It releases its locks before calling TokenService once. TokenService locks the Namespace and Source in its own transaction, rechecks references, erases private material, and deletes the Source and its IAM bindings. TokenService returns the actual removed AccessBindings, and OCC records them in completion audit separately. An uncertain removal can leave `deleting` for retry. If TokenService commits before completion audit fails, the Source is already gone and a repeated DELETE returns `404`; retirement intent remains.
+OCC authorizes exact DELETE, refuses blocking references, and commits `deleting` and retirement intent. It releases its locks before calling TokenService once. TokenService locks the Namespace and Source in its own transaction, rechecks references, erases private material, and deletes the Source and its IAM bindings. TokenService returns the actual removed AccessBindings, and OCC records them in completion audit separately. An uncertain removal can leave `deleting` for retry. If TokenService commits before completion audit fails, the Source and its exact IAM bindings are gone. A retry can return `403` if the caller lost delete authority, or `404` if still authorized. Retirement intent remains.
 
 ### 5. Stop at the Agent delivery boundary
 
@@ -86,6 +86,8 @@ Run `node --test tests/integration/postgres-staged-agent-credential-binding.test
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-21 21:33: Authorize Source creation in the manager and clarify DELETE retry authority. (authoring-run/7d36e4b0-9d69-4099-8f8b-50144697a78a - 930293d2b18205276dcd78aec52414e0c9fdc616)
 
 - 2026-11-21 21:26: Finalize creator IAM and audit directly from the returned Source. (authoring-run/bcb909b1-f021-43ea-95b6-2a657e3d0ea4 - 5f52a10691de0b183726bb34698cd82a705f2254)
 

@@ -80,10 +80,8 @@ export const credentialSourceHandlers = {
   }) {
     let created: Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>;
     if (body && "secret" in body) {
-      await controller.authorizeCredentialSourceCreate(context.actorId, namespaceId);
-      const { settings, providerPreset } = managedConfig(
-        body.config as Record<string, string> | undefined,
-      );
+      const { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: providerPreset, ...settings } =
+        (body.config as Record<string, string> | undefined) ?? {};
       created = await controller.createManagedCredentialSource(
         context.actorId,
         namespaceId,

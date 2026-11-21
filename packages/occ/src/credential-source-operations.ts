@@ -246,19 +246,6 @@ export function auditUncommittedCredentialEffect(
 }
 
 export function createCredentialSourceOperations(dependencies: CredentialSourceDependencies) {
-  /** Authorize creation before the API reports errors in managed Source configuration. */
-  async function authorizeCredentialSourceCreate(
-    principalId: string,
-    namespaceId: string,
-  ): Promise<void> {
-    namespaceIdentity(namespaceId);
-    await dependencies.authority.authorize(principalId, "create", {
-      kind: "credential_source",
-      id: namespaceId,
-      namespaceId,
-    });
-  }
-
   /**
    * Registration records the source as `registering` before the gateway write, so an uncertain
    * gateway outcome always leaves a record an operator can list and delete. `audit` builds the
@@ -1129,7 +1116,6 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
   }
 
   return {
-    authorizeCredentialSourceCreate,
     credentialSourceUpdateIdentity,
     createCredentialSource,
     updateCredentialSource,

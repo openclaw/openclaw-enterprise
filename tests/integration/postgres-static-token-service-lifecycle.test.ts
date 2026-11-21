@@ -13,6 +13,7 @@ import type {
 import {
   AuditAppendUnavailableError,
   AuthorizationDeniedError,
+  CredentialSourceConfigError,
   ResourceStateConflictError,
   ScopeViolationError,
   TokenServiceSourceInputError,
@@ -121,11 +122,7 @@ test(
     });
     const createAudit = (ref: CredentialSourceReference, phase?: "registration_started") =>
       event(principal.id, "openclaw.credential_sources.create", ref, phase);
-    const createSource = (
-      name: string,
-      credential: string,
-      providerPreset?: SourceProviderPresetId,
-    ) =>
+    const createSource = (name: string, credential: string, providerPreset?: string) =>
       controller.createManagedCredentialSource(
         principal.id,
         namespaceId,
@@ -177,8 +174,8 @@ test(
     // Provider approval belongs to OCC. Neither an unknown ID nor a lifecycle setting can create it.
     for (const invalid of ["", "unknown"]) {
       await assert.rejects(
-        createSource("Invalid preset", randomUUID(), invalid as SourceProviderPresetId),
-        ScopeViolationError,
+        createSource("Invalid preset", randomUUID(), invalid),
+        CredentialSourceConfigError,
       );
     }
     await assert.rejects(

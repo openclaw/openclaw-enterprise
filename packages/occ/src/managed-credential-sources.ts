@@ -30,6 +30,7 @@ import {
   isManagedTokenServiceSource,
 } from "./credential-source-metadata.ts";
 import {
+  CredentialSourceConfigError,
   CredentialWithdrawalInProgressError,
   DependencyUnavailableError,
   DriverSelectionError,
@@ -169,7 +170,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
     principalId: string,
     namespaceId: string,
     input: Omit<SourceRegistrationInput, "namespaceId" | "config"> & {
-      readonly providerPreset?: SourceProviderPresetId;
+      readonly providerPreset?: string;
     },
     audit: (resource: CredentialSourceReference, phase?: "registration_started") => AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata>> {
@@ -188,8 +189,11 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
         throw new NamespaceNotReadyError();
       }
       assertManagedSourceLifecycleSettings(input.lifecycleConfig.settings);
-      if (input.providerPreset !== undefined) {
-        assertSourceProviderPreset(input.providerPreset);
+      if (input.providerPreset !== undefined && !isSourceProviderPresetId(input.providerPreset)) {
+        throw new CredentialSourceConfigError(
+          SOURCE_PROVIDER_PRESET_CONFIG_KEY,
+          "Choose an approved credential source provider preset.",
+        );
       }
       const owner = ownedTokenServiceDriver();
       await state.audit.append(audit(collection, "registration_started"));

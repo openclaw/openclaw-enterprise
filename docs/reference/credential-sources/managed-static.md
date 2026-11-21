@@ -43,7 +43,8 @@ DELETE requires exact `credential_source:delete` and refuses a referenced
 Source with `409`. TokenService retires the Source and its credential. DELETE
 returns `204` after Source removal and completion audit. An uncertain removal can
 leave a `deleting` Source for retry. If removal succeeds but completion audit
-fails, the Source is already gone and another DELETE returns `404`.
+fails, the Source is gone. A retry returns `403` if removing the Source also
+removed the caller's delete authority, or `404` if the caller remains authorized.
 
 An authorized Agent draft can bind the Source for Harness authentication.
 Deployment currently returns `409` before creating an Agent revision or work;

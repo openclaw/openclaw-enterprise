@@ -88,7 +88,6 @@ import type {
   ConnectionTemplate,
   CredentialSourceReference,
   SourceRegistrationInput,
-  SourceProviderPresetId,
   CredentialSourceMetadata,
   CredentialSourceStatus,
   CredentialWithdrawalStatus,
@@ -1150,7 +1149,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     input: Omit<SourceRegistrationInput, "namespaceId" | "config"> & {
-      readonly providerPreset?: SourceProviderPresetId;
+      readonly providerPreset?: string;
     },
     audit: (resource: CredentialSourceReference, phase?: "registration_started") => AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata>> {
@@ -1175,13 +1174,6 @@ export class OpenClawController {
       input,
       audit,
       failureAudit,
-    );
-  }
-
-  async authorizeCredentialSourceCreate(principalId: string, namespaceId: string): Promise<void> {
-    return this.composition.credentials.credentialSourceOperations.authorizeCredentialSourceCreate(
-      principalId,
-      namespaceId,
     );
   }
 

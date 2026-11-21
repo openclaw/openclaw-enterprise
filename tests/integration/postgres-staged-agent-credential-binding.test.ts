@@ -134,6 +134,20 @@ test(
       invalidSource.json().error.message,
       "Static sources accept only the optional provider_preset=openai configuration. Supply one nonempty UTF-8 credential without NUL; its encoded value must fit the Secret storage limit.",
     );
+    const invalidPreset = remember(
+      await inject("POST", `${base}/credential-sources`, {
+        name: "Invalid preset",
+        type: "static",
+        config: { provider_preset: "unknown" },
+        secret: { opaque: invalidMaterial },
+      }),
+    );
+    assert.equal(invalidPreset.statusCode, 400, invalidPreset.body);
+    assert.deepEqual(invalidPreset.json().error, {
+      code: "INVALID_REQUEST",
+      message: "Choose an approved credential source provider preset.",
+      details: [{ path: "/config/provider_preset", code: "INVALID_VALUE" }],
+    });
     assert.deepEqual((await inject("GET", `${base}/credential-sources`)).json().data, []);
     // Enrollment must reach the selected concrete TokenService through the supported Source route.
     const createdSource = remember(
