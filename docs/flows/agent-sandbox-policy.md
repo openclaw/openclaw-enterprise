@@ -117,7 +117,7 @@ Both adapters reject removing pending applications, even at the current version.
 The worker records the expected provider resource version and settles the same
 application as `applied` or `failed`. Agent deletion cascades policy and exact IAM access removal.
 
-Migration 0086 stores versioned repository grants. GET exposes the saved list
+Migration 0087 stores versioned repository grants. GET exposes the saved list
 and withdrawal availability to authorized readers. PUT preserves an
 omitted list. An authorized editor can [clear a saved list](../reference/sandbox-policies.md#repository-network-policy)
 after Driver support is lost. Deployment and live apply refuse explicit lists,
@@ -128,7 +128,7 @@ grants, and canonical identity. PostgreSQL requires a reader version in its
 execution admission so older Workers refuse that revision. Current deployment
 and live application refuse saved repository grants until the runtime can
 enforce them. See
-`migrations/0086_repository_network_policy.sql` and
+`migrations/0087_repository_network_policy.sql` and
 `tests/integration/postgres-state-repository-network-policy-case.ts`.
 
 ### 2. Freeze deployment or enqueue live application
