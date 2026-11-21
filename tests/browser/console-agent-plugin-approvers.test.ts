@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import type { Locator } from "playwright";
+import type { Locator, Page, Response } from "playwright";
 import { responseTo } from "./console-action-helpers.ts";
 import type { PluginFieldCatalog } from "../../apps/controller/src/console/agents/plugin-fields.mjs";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
@@ -248,7 +248,7 @@ test("A dedicated Agent with empty configuration can browse the default OpenClaw
     .waitFor({ state: "visible" });
 });
 
-test("Agent plugin discovery refuses mismatched details and retries the selected plugin", async (t) => {
+async function savedCodexPluginFixture(t: TestContext) {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Hosted plugin discovery");
   const driver = new CodexPluginDriver();
   fixture.controller.registerDriver(driver);
@@ -263,8 +263,24 @@ test("Agent plugin discovery refuses mismatched details and retries the selected
   await fixture.grantAgentSecretOperate(agent, secret.ref, { listed: false });
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const catalogUrl = new URL(`${path}/plugins`, fixture.origin).href;
-  const detailsUrl = `${catalogUrl}/details`;
   const { page } = await newPage(t, fixture, { browser });
+  return { fixture, namespace, driver, agent, path, page, catalogUrl };
+}
+
+async function discoveryResponse(
+  page: Page,
+  url: string,
+  action: () => Promise<void>,
+  status = 200,
+) {
+  const [response] = await Promise.all([responseTo(page, "POST", url), action()]);
+  assert.equal(response.status(), status);
+  return response;
+}
+
+test("Agent plugin discovery refuses mismatched details and retries the selected plugin", async (t) => {
+  const { fixture, namespace, agent, path, page, catalogUrl } = await savedCodexPluginFixture(t);
+  const detailsUrl = `${catalogUrl}/details`;
   const requests = apiRequests(page, fixture.origin);
 
   // Both catalog entries share a remote locator but have different canonical IDs.
@@ -328,6 +344,287 @@ test("Agent plugin discovery refuses mismatched details and retries the selected
   assert.equal(await addAlpha.isEnabled(), true);
   await addAlpha.click();
   assert.deepEqual(JSON.parse(await input.inputValue()), { [alpha.id]: { enabled: true } });
+});
+
+const conflictDraft = '{\n  "codex-plugin:draft@openai-curated-remote": { "enabled": false }\n}';
+
+async function savedPluginConflictFixture(t: TestContext) {
+  const { fixture, namespace, agent, driver, path, page, catalogUrl } =
+    await savedCodexPluginFixture(t);
+  const requests = apiRequests(page, fixture.origin);
+  const input = page.locator("#agent-plugins");
+  const approvers = page.getByLabel("Default plugin approvers mode", { exact: true });
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  const replacement = await fixture.createSecret(namespace.id, "Replacement token", "fixture-next");
+  await fixture.grantAgentSecretOperate(agent, replacement.ref, { listed: false });
+  const entries = ["Alpha", "Beta"].map((name) => {
+    const slug = name.toLowerCase();
+    return {
+      id: `codex-plugin:${slug}@openai-curated-remote`,
+      name,
+      remoteId: `remote-${slug}`,
+      tools: null,
+    };
+  });
+  let race: "catalog" | "details" | undefined;
+  let holdNextDetails: (() => Promise<void>) | undefined;
+  let rotated = false;
+
+  // Change the persisted binding during a provider read. The real API decides whether the
+  // response is still current before the Console can use it.
+  async function rotateDuring(read: "catalog" | "details") {
+    if (race === read) {
+      race = undefined;
+      const { status } = await fixture.request("PATCH", path, {
+        body: {
+          configurationId: agent.configurationId,
+          harnessAuth: { method: "codex_pat", source: replacement.ref },
+        },
+      });
+      assert.equal(status, 200, "the competing update must replace the saved binding");
+      rotated = true;
+    }
+  }
+
+  driver.discoverCatalog = async () => {
+    const plugins = rotated ? entries.filter(({ name }) => name === "Beta") : entries;
+    await rotateDuring("catalog");
+    return { plugins, nextCursor: null };
+  };
+  driver.getCatalogPlugin = async ({ pluginId }) => {
+    const entry = entries.find(({ remoteId }) => remoteId === pluginId);
+    assert.ok(entry, "details must use a known remote locator");
+    const hold = holdNextDetails;
+    holdNextDetails = undefined;
+    const origin = rotated ? "Current" : "Original";
+    const name = `${hold ? "Canceled" : origin} ${entry.name} tool`;
+    await hold?.();
+    await rotateDuring("details");
+    return { ...entry, tools: [{ id: "app_hosted/search", name, ownerId: "app_hosted" }] };
+  };
+
+  async function readSavedSelections() {
+    const response = await fixture.request("GET", path);
+    assert.equal(response.status, 200);
+    const { plugins, pluginApprovers } = responseData(response);
+    return { plugins, pluginApprovers };
+  }
+
+  const savedSelections = await readSavedSelections();
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await approvers.selectOption("none");
+  await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
+  await input.fill(conflictDraft);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const button = (name: string) => dialog.getByRole("button", { name, exact: true });
+  await button("Alpha").waitFor();
+
+  const isDiscoveryRead = ({ method, path: target }: (typeof requests)[number]) =>
+    method === "POST" && (target === `${path}/plugins` || target === `${path}/plugins/details`);
+
+  return {
+    page,
+    catalogUrl,
+    dialog,
+    button,
+    tool: (name: string) => dialog.locator("summary").getByText(name, { exact: true }),
+    loadCatalog: (status = 200) =>
+      discoveryResponse(page, catalogUrl, () => button("Load plugins").click(), status),
+    loadDetails: (label: string, status = 200) =>
+      discoveryResponse(page, `${catalogUrl}/details`, () => button(label).click(), status),
+    reads: () => requests.filter(isDiscoveryRead).map(({ body }) => body),
+    holdNextDetails() {
+      const started = Promise.withResolvers<void>();
+      const released = Promise.withResolvers<void>();
+      t.after(() => released.resolve());
+      holdNextDetails = () => {
+        started.resolve();
+        return released.promise;
+      };
+      return { started: started.promise, release: released.resolve };
+    },
+    rotateOn(read: "catalog" | "details") {
+      race = read;
+    },
+    async checkDraft() {
+      assert.equal(await input.inputValue(), conflictDraft);
+      assert.equal(await approvers.inputValue(), "none");
+      assert.deepEqual(await readSavedSelections(), savedSelections);
+      const writes = requests.filter(
+        (request) =>
+          /^(POST|PUT|PATCH|DELETE)$/.test(request.method) &&
+          (request.path === path || request.path.startsWith(`${path}/`)) &&
+          !isDiscoveryRead(request),
+      );
+      assert.deepEqual(writes, [], "discovery and recovery must not write the Agent");
+    },
+  };
+}
+
+async function conflictFeedback(response: Response, dialog: Locator) {
+  const body = record(await response.json());
+  const error = record(body.error);
+  assert.equal(error.code, "RESOURCE_CONFLICT");
+  const message = text(error.message);
+  assert.equal(message, "The Agent's plugin credential or catalog changed. Refresh and retry.");
+  const id = text(record(body.meta).requestId);
+  assert.ok(id);
+  assert.equal(response.headers()["x-request-id"], id);
+  const feedback = dialog.getByText(`Request ID: ${id}`);
+  await feedback.waitFor();
+  const advice = await feedback.innerText();
+  assert.ok(!advice.includes(message), "do not render server error detail as Console advice");
+  return { advice, feedback };
+}
+
+test("Saved plugin details conflict offers manual retry and keeps the draft", async (t) => {
+  const ui = await savedPluginConflictFixture(t);
+  await ui.loadDetails("Beta");
+  await ui.tool("Original Beta tool").waitFor();
+  await ui.button("Add Beta").click({ trial: true });
+
+  ui.rotateOn("details");
+  const { advice, feedback } = await conflictFeedback(
+    await ui.loadDetails("Alpha", 409),
+    ui.dialog,
+  );
+  assert.equal(await ui.button("Alpha").getAttribute("aria-current"), "true");
+  assert.equal(await ui.button("Retry tools for Alpha").isEnabled(), true);
+  assert.equal(await ui.button("Add Alpha").isDisabled(), true);
+  assert.equal(await ui.tool("Original Alpha tool").count(), 0);
+
+  // Reopening a warmed sibling must neither resurrect its old tools nor send a new read.
+  await ui.button("Beta").click();
+  const addBeta = ui.button("Add Beta");
+  const staleBetaAdd = (await addBeta.isVisible()) && (await addBeta.isEnabled());
+  const staleBetaTool = await ui.tool("Original Beta tool").isVisible();
+  await ui.button("Alpha").click();
+  await ui.checkDraft();
+  const reads = [{}, { pluginId: "remote-beta" }, { pluginId: "remote-alpha" }];
+  assert.deepEqual(ui.reads(), reads, "switching rows must not retry");
+
+  assert.deepEqual([staleBetaAdd, staleBetaTool], [false, false], "a sibling must lose stale Add");
+  assert.match(advice, /retry tools/i, "details conflict must give actionable retry advice");
+  assert.doesNotMatch(advice, /check the credential/i);
+
+  // Hold the real provider result until after the browser cancels the retry.
+  const detailsUrl = `${ui.catalogUrl}/details`;
+  const delivery = await holdRequests(t, ui.page, detailsUrl, {
+    method: "POST",
+    once: true,
+    afterServer: true,
+  });
+  const retry = ui.button("Retry tools for Alpha");
+  const provider = ui.holdNextDetails();
+  const alphaRead = { pluginId: "remote-alpha" };
+  const readsAfterCancel = [...reads, alphaRead];
+  try {
+    await retry.click();
+    await within(provider.started, "the explicit Alpha retry");
+    await ui.dialog.getByText("Loading tools…", { exact: true }).waitFor();
+    assert.equal(await feedback.count(), 0, "hide the prior refusal while the retry is pending");
+    const [request] = await Promise.all([
+      ui.page.waitForEvent("requestfailed", {
+        predicate: (failed) => failed.url() === detailsUrl && failed.method() === "POST",
+      }),
+      ui.button("Configured plugins").click(),
+    ]);
+    assert.deepEqual(request.postDataJSON(), alphaRead);
+    await ui.button("Available plugins").click();
+    await ui.button("Alpha").click();
+    assert.equal(
+      await feedback.isVisible(),
+      true,
+      "cancellation preserves the original request ID",
+    );
+    assert.equal(await retry.isEnabled(), true);
+    assert.deepEqual(ui.reads(), readsAfterCancel, "reopening after cancellation must not retry");
+
+    provider.release();
+    const late = await delivery.requested;
+    assert.ok(late);
+    assert.equal(late.status(), 200);
+    const lateTools = responseData(await late.json()).tools;
+    assert.deepEqual(lateTools, [
+      { id: "app_hosted/search", name: "Canceled Alpha tool", ownerId: "app_hosted" },
+    ]);
+    delivery.release();
+    await nextFrames(ui.page);
+    assert.equal(await ui.tool("Canceled Alpha tool").count(), 0);
+    assert.equal(await feedback.isVisible(), true);
+  } finally {
+    provider.release();
+    delivery.release();
+  }
+
+  await ui.loadDetails("Retry tools for Alpha");
+  await ui.tool("Current Alpha tool").waitFor();
+  assert.equal(await ui.tool("Canceled Alpha tool").count(), 0);
+  await ui.button("Add Alpha").click({ trial: true });
+  assert.equal(await feedback.count(), 0);
+  await ui.checkDraft();
+  assert.deepEqual(ui.reads(), [...readsAfterCancel, alphaRead]);
+});
+
+test("Saved plugin catalog conflict revokes previously loaded Add authority", async (t) => {
+  const ui = await savedPluginConflictFixture(t);
+  const search = ui.dialog.getByRole("searchbox", { name: "Search plugins" });
+  const query = { q: "a" };
+  await discoveryResponse(ui.page, ui.catalogUrl, () => search.fill(query.q));
+  await ui.loadDetails("Alpha");
+  await ui.tool("Original Alpha tool").waitFor();
+  const addAlpha = ui.button("Add Alpha");
+  await addAlpha.click({ trial: true });
+
+  ui.rotateOn("catalog");
+  const { advice, feedback } = await conflictFeedback(await ui.loadCatalog(409), ui.dialog);
+  assert.equal(await ui.button("Load plugins").isEnabled(), true);
+  assert.equal(await search.inputValue(), query.q);
+
+  // Refresh closes the card. Try the user's path back to the warmed row before reloading.
+  const alpha = ui.button("Alpha");
+  if ((await alpha.isVisible()) && (await alpha.isEnabled())) {
+    await alpha.click();
+  }
+  const staleAddEnabled = (await addAlpha.isVisible()) && (await addAlpha.isEnabled());
+  if (staleAddEnabled) {
+    await addAlpha.click({ trial: true });
+  }
+  assert.equal(
+    staleAddEnabled,
+    false,
+    "the warmed row must lose stale Add before leaving Available",
+  );
+  const reads = [{}, query, { pluginId: "remote-alpha" }, query];
+  await ui.checkDraft();
+  assert.deepEqual(ui.reads(), reads, "no automatic discovery after refusal");
+  assert.match(advice, /load plugins/i, "catalog conflict must give actionable reload advice");
+  assert.doesNotMatch(advice, /check the credential/i);
+
+  const configured = ui.button("Configured plugins");
+  await configured.click();
+  assert.equal(await configured.getAttribute("aria-pressed"), "true");
+  await feedback.waitFor();
+  assert.equal(await feedback.innerText(), advice);
+  assert.equal(await ui.button("Load plugins").isEnabled(), true);
+  await ui.checkDraft();
+  assert.deepEqual(ui.reads(), reads, "switching to Configured must not retry");
+
+  await ui.loadCatalog();
+  await feedback.waitFor({ state: "hidden" });
+  assert.equal(await configured.getAttribute("aria-pressed"), "true");
+  const available = ui.button("Available plugins");
+  await available.click();
+  assert.equal(await available.getAttribute("aria-pressed"), "true");
+  assert.equal(await search.inputValue(), query.q);
+  assert.equal(await feedback.count(), 0);
+  await ui.button("Beta").waitFor();
+  assert.equal(await alpha.count(), 0, "the fresh catalog dropped Alpha");
+  await ui.loadDetails("Beta");
+  await ui.tool("Current Beta tool").waitFor();
+  await ui.button("Add Beta").click({ trial: true });
+  await ui.checkDraft();
+  assert.deepEqual(ui.reads(), [...reads, query, { pluginId: "remote-beta" }]);
 });
 
 test("Managed MCP tool approval is saved per selected tool and removed when the tool is disabled", async (t) => {
