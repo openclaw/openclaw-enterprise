@@ -872,6 +872,7 @@ test(
       );
     }
     const proxy = await createControlledChannelProxy(context);
+    const peerProxy = await createControlledChannelProxy(context);
     const slack = {
       allowedUserId: senderIdentity.user_id,
       channelId,
@@ -881,7 +882,10 @@ test(
     const topology = await arrangeProductionTopology(context, "dedicated", slack, {
       channelEgressCapacity: 2,
       channelEgress: {
-        upstreamProxies: [{ url: proxy.url, addresses: [`${proxy.address}/32`] }],
+        upstreamProxies: [
+          { url: proxy.url, addresses: [`${proxy.address}/32`] },
+          { url: peerProxy.url, addresses: [`${peerProxy.address}/32`] },
+        ],
       },
       namespaceQuota: { pods: "12", "limits.cpu": "20", "limits.memory": "32Gi" },
     });
@@ -995,6 +999,100 @@ test(
     assert.ok(proxy.observations.some((item) => item.authority === "slack.com:443"));
     await assertActualModelTurn(topology);
 
+    // A second real Agent selects a different endpoint and credential on the same Envoy fleet.
+    const sourceConfiguration = await topology.adminRequest(
+      "GET",
+      `/namespaces/${namespaceId}/configurations/${agent.configurationId}`,
+    );
+    assert.equal(sourceConfiguration.status, 200);
+    const source = record(sourceConfiguration.data);
+    const peerConfiguration = await topology.adminRequest(
+      "POST",
+      `/namespaces/${namespaceId}/configurations`,
+      { kind: "agent", values: source.values, secretBindings: source.secretBindings },
+    );
+    assert.equal(peerConfiguration.status, 201);
+    const peerSecret = await topology.adminRequest("POST", `/namespaces/${namespaceId}/secrets`, {
+      name: "Peer Gateway upstream proxy credential",
+      value: peerProxy.authorization,
+    });
+    assert.equal(peerSecret.status, 201);
+    const peer = await topology.adminRequest("POST", `/namespaces/${namespaceId}/agents`, {
+      name: `proxy-peer-${randomUUID()}`,
+      configurationId: peerConfiguration.data.id,
+      executionMode: "dedicated",
+      harnessAuth: agent.harnessAuth,
+      ...(typeof agent.gatewayManagedMode === "boolean"
+        ? { gatewayManagedMode: agent.gatewayManagedMode }
+        : {}),
+      networkProxy: { url: peerProxy.url, credentialSecretId: peerSecret.data.id },
+    });
+    assert.equal(peer.status, 201);
+    const peerId = text(peer.data.id);
+    const peerPath = `/namespaces/${namespaceId}/agents/${peerId}`;
+    assert.equal(
+      (await topology.adminRequest("POST", `${peerPath}/runtime-credentials`, {})).status,
+      200,
+    );
+    const peerDeploy = await topology.adminRequest("POST", `${peerPath}/deploy`);
+    assert.equal(peerDeploy.status, 202);
+    await waitFor("peer Agent activation on its own proxy", async () => {
+      const current = await topology.adminRequest("GET", peerPath);
+      return current.data?.activeRevisionId === peerDeploy.data.id;
+    });
+    const peerPods = rows(
+      record(
+        JSON.parse(
+          await kubectl(
+            "get",
+            "pods",
+            "-n",
+            topology.gatewayPlacement,
+            "-l",
+            `openclaw.dev/agent=${peerId},openclaw.dev/revision=${peerDeploy.data.id},openclaw.dev/workload-role=gateway`,
+            "-o",
+            "json",
+          ),
+        ),
+      ).items,
+    );
+    assert.equal(peerPods.length, 1);
+    const peerPod = podName(peerPods[0]);
+    const peerDeployment = await resource(
+      "deployment",
+      `gateway-${hash(peerId)}`,
+      topology.gatewayPlacement,
+    );
+    const peerEnvoy = text(
+      environment(peerDeployment).find((entry) => entry.name === "HTTPS_PROXY")?.value,
+    );
+    assert.notEqual(peerEnvoy, assignedEnvoy);
+    await waitFor("peer Slack Socket Mode connection through its selected proxy", async () => {
+      const logs = await kubectl("logs", peerPod, "-n", topology.gatewayPlacement);
+      return (
+        /socket mode connected/iu.test(logs) &&
+        peerProxy.observations.filter((item) => item.connected).length >= 2
+      );
+    });
+    assert.ok(peerProxy.observations.every((item) => item.authenticated));
+    assert.ok(proxy.observations.every((item) => item.authenticated));
+    const serviceIP = text(
+      record(record(await resource("service", fleet.serviceName, fleet.envoyNamespace)).spec)
+        .clusterIP,
+    );
+    await assertDeniedConnection(
+      topology.gatewayPlacement,
+      gatewayPod,
+      serviceIP,
+      Number(new URL(peerEnvoy).port),
+    );
+    await assertDeniedConnection(
+      topology.gatewayPlacement,
+      peerPod,
+      serviceIP,
+      Number(new URL(assignedEnvoy).port),
+    );
+
     // OCC directory traffic keeps its separate listener and must not appear at the Agent's proxy.
     const beforeDirectory = proxy.observations.length;
     assert.ok("slackBot" in topology.secretApi);
@@ -1020,8 +1118,39 @@ test(
       "slack.com",
     );
     assert.equal(unavailable.status, 503);
+    assert.deepEqual(
+      await probeChannelConnect(topology.gatewayPlacement, peerPod, peerEnvoy, "slack.com"),
+      { status: 200, tlsVerified: true },
+      "An outage on one Agent's proxy must not affect the other Agent's selected proxy.",
+    );
     const slackAddress = (await lookup("slack.com", { family: 4 })).address;
     await assertDeniedConnection(topology.gatewayPlacement, gatewayPod, slackAddress, 443);
+    assert.equal((await topology.adminRequest("DELETE", peerPath)).status, 202);
+    await waitFor("peer proxy binding retirement", async () => {
+      const policies = rows(
+        record(
+          JSON.parse(
+            await kubectl(
+              "get",
+              "envoypatchpolicy",
+              "-n",
+              topology.platformNamespace,
+              "-o",
+              "json",
+            ),
+          ),
+        ).items,
+      );
+      return !policies.some((policy) => {
+        const binding = record(policy.metadata).annotations ?? {};
+        const encoded = record(binding)["openclaw.dev/channel-egress-binding"];
+        return (
+          typeof encoded === "string" &&
+          encoded !== "idle" &&
+          record(JSON.parse(encoded)).agentId === peerId
+        );
+      });
+    });
     const cleared = await topology.request("PATCH", path, { networkProxy: null });
     assert.equal(cleared.status, 200);
     const retained = await topology.request("GET", `${path}/revisions/${deployed.data.id}`);
