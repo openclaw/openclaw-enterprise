@@ -25,6 +25,10 @@ import {
   type OpenShellStoredProviderProfile,
   type OpenShellSandboxResponse,
 } from "../sandbox/openshell-gateway-client.ts";
+import {
+  openShellNetworkRouteMayOverlap,
+  sameOpenShellPolicy,
+} from "../sandbox/openshell-policy.ts";
 
 const NAMESPACE_ID = "openclaw.dev/namespace-id";
 const DELIVERY_OWNER = "openclaw.dev/credential-proxy-delivery";
@@ -315,6 +319,89 @@ export function assertOpenShellInjectionPolicy(
     refuse();
   }
   return request;
+}
+
+/** Check the Gateway's effective policy, including its derived credential marker. */
+export function openShellPushedPolicyMatches(
+  source: unknown,
+  effective: unknown,
+  request: DeploymentRequestMatch,
+  provider: string,
+): boolean {
+  const sourceNetworks = asRecord(asRecord(source)?.network_policies);
+  const networks = asRecord(asRecord(effective)?.network_policies);
+  const port = request.ports[0]?.from;
+  if (!sourceNetworks || !networks || !port || request.requestPolicy?.type !== "http") {
+    return false;
+  }
+  let matched: string | undefined;
+  for (const [name, value] of Object.entries(networks)) {
+    const rule = asRecord(value);
+    if (!rule) {
+      return false;
+    }
+    if (rule.endpoints === undefined) {
+      continue;
+    }
+    if (!Array.isArray(rule.endpoints)) {
+      return false;
+    }
+    for (const value of rule.endpoints) {
+      const endpoint = asRecord(value);
+      const host = typeof endpoint?.host === "string" ? endpoint.host.toLowerCase() : "";
+      const ports =
+        Array.isArray(endpoint?.ports) && endpoint.ports.length
+          ? endpoint.ports
+          : typeof endpoint?.port === "number" && endpoint.port > 0
+            ? [endpoint.port]
+            : [];
+      const binding = asRecord(endpoint?.credential_binding);
+      if (binding?.provider !== provider) {
+        continue;
+      }
+      if (
+        matched !== undefined ||
+        !endpoint ||
+        host !== request.host.toLowerCase() ||
+        !sameOpenShellPolicy(rule.binaries, [{ path: request.binary }]) ||
+        rule.name !== name ||
+        rule.endpoints.length !== 1 ||
+        !sameOpenShellPolicy(sourceNetworks[name], {
+          ...rule,
+          endpoints: [{ ...endpoint, provider_credentialed: undefined }],
+        }) ||
+        !sameOpenShellPolicy(
+          {
+            ...endpoint,
+            port: undefined,
+            ports,
+            enforcement:
+              endpoint.enforcement === 1
+                ? "NETWORK_ENFORCEMENT_MODE_ENFORCE"
+                : endpoint.enforcement,
+          },
+          {
+            host: request.host,
+            ports: [port],
+            protocol: "rest",
+            enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+            rules: [
+              { allow: { method: request.requestPolicy.method, path: request.requestPolicy.path } },
+            ],
+            credential_binding: { provider },
+            provider_credentialed: true,
+          },
+        )
+      ) {
+        return false;
+      }
+      matched = name;
+    }
+  }
+  return (
+    matched !== undefined &&
+    !openShellNetworkRouteMayOverlap(networks, { host: request.host, port }, [matched])
+  );
 }
 
 export function assertOpenShellPushedBinding(

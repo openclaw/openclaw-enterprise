@@ -91,6 +91,17 @@ function record(value: unknown): Wire {
   return value as Wire;
 }
 
+function sourcePolicyFrom(effective: Wire): Wire {
+  const source = structuredClone(effective);
+  for (const rule of Object.values(record(source.network_policies))) {
+    for (const endpoint of record(rule).endpoints as Wire[]) {
+      // OpenShell stamps this field when it composes the effective policy.
+      Reflect.deleteProperty(endpoint, "provider_credentialed");
+    }
+  }
+  return source;
+}
+
 async function fixture(t: TestContext) {
   const sandbox = {
     metadata: {
@@ -101,7 +112,12 @@ async function fixture(t: TestContext) {
       labels,
       annotations,
     },
-    spec: { providers: [] as string[], provider_attachment_epoch: "" },
+    spec: {
+      providers: [] as string[],
+      provider_attachment_epoch: "",
+      policy: undefined as Wire | undefined,
+    },
+    status: {} as Wire,
   };
   const state = {
     profile: undefined as Wire | undefined,
@@ -110,6 +126,10 @@ async function fixture(t: TestContext) {
     updates: [] as Wire[],
     attaches: [] as Wire[],
     sandboxReads: 0,
+    config: undefined as Wire | undefined,
+    policyStatus: undefined as Wire | undefined,
+    providerStatus: undefined as Wire | undefined,
+    statusReads: [] as Wire[],
     createMode: "normal" as "normal" | "stale-winner",
     attachMode: "normal" as
       | "normal"
@@ -154,6 +174,23 @@ async function fixture(t: TestContext) {
       return state.provider && { provider: state.provider };
     },
     GetProviderProfile: () => state.profile && { profile: state.profile },
+    GetSandboxConfig: () => state.config,
+    GetSandboxPolicyStatus: () => state.policyStatus,
+    GetSandboxProviderStatus: (input) => {
+      state.statusReads.push(input);
+      if (!state.providerStatus) {
+        return undefined;
+      }
+      // A provider-only query creates a new Gateway-owned OBSERVE receipt.
+      const receiptId = randomUUID();
+      const receipt = record(state.providerStatus.receipt);
+      receipt.receipt_id = receiptId;
+      receipt.mutation_id = receiptId;
+      if (state.providerStatus.operation) {
+        record(state.providerStatus.operation).operation_id = receiptId;
+      }
+      return { status: state.providerStatus };
+    },
     ImportProviderProfiles: (input) => {
       const profiles = input.profiles as Wire[];
       state.profile = {
@@ -378,6 +415,108 @@ async function fixture(t: TestContext) {
       injectionPolicies: [injection],
       ...overrides,
     });
+  const observeServing = () => {
+    assert.ok(state.provider);
+    const provider = state.provider;
+    const policyVersion = 7;
+    const policyHash = "b".repeat(64);
+    const configRevision = "11";
+    const providerEnvRevision = "12";
+    const instanceId = "f1d7e6c5-1b2a-4c3d-8e9f-102938475610";
+    const processId = "f1d7e6c5-1b2a-4c3d-8e9f-102938475611";
+    const networkId = "f1d7e6c5-1b2a-4c3d-8e9f-102938475613";
+    const time = { seconds: String(Math.floor(Date.now() / 1_000)), nanos: 0 };
+    const endpoint = {
+      host: request.host,
+      ports: [443],
+      protocol: "rest",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      rules: [{ allow: { method: "POST", path: "/v1/responses" } }],
+      credential_binding: { provider: provider.metadata.name },
+      provider_credentialed: true,
+    };
+    // This is controlled Gateway state installed by the Sandbox owner, not a Proxy policy write.
+    const rule = { name: "model", binaries: [{ path: request.binary }], endpoints: [endpoint] };
+    const policy = { version: 1, network_policies: { model: rule } };
+    sandbox.spec.policy = sourcePolicyFrom(policy);
+    sandbox.status = {
+      configuration_activated: true,
+      main_process_instance_id: networkId,
+      configuration_admission: {
+        instance_id: instanceId,
+        state: 2,
+        policy_version: policyVersion,
+        policy_hash: policyHash,
+        config_revision: configRevision,
+        provider_env_revision: providerEnvRevision,
+      },
+    };
+    state.config = {
+      policy,
+      version: policyVersion,
+      policy_hash: policyHash,
+      config_revision: configRevision,
+      provider_env_revision: providerEnvRevision,
+      provider_attachment_epoch: sandbox.spec.provider_attachment_epoch,
+      configuration_admitted: true,
+      configuration_instance_id: instanceId,
+      policy_source: 1,
+      policy_validation_failure_mode: "fail_closed",
+      workspace: namespace.name,
+    };
+    state.policyStatus = {
+      revision: {
+        version: policyVersion,
+        status: "POLICY_STATUS_LOADED",
+        policy_hash: "a".repeat(64),
+        policy: sourcePolicyFrom(policy),
+      },
+      active_version: policyVersion,
+    };
+    const receiptId = randomUUID();
+    const desired = {
+      sandbox_id: sandbox.metadata.id,
+      sandbox: sandbox.metadata.name,
+      attachment_epoch: sandbox.spec.provider_attachment_epoch,
+      provider_id: provider.metadata.id,
+      provider_resource_version: provider.metadata.resource_version,
+      provider_env_revision: providerEnvRevision,
+      config_revision: configRevision,
+      policy_hash: policyHash,
+    };
+    const observed = {
+      session_id: "f1d7e6c5-1b2a-4c3d-8e9f-102938475612",
+      sequence: "1",
+      attachment_epoch: sandbox.spec.provider_attachment_epoch,
+      provider_env_revision: providerEnvRevision,
+      config_revision: configRevision,
+      policy_hash: policyHash,
+      credentials_installed: true,
+      policy_active: true,
+      launch_environment_installed: true,
+      process_instance_id: processId,
+      reason: "PROVIDER_READINESS_REASON_UNSPECIFIED",
+    };
+    state.providerStatus = {
+      state: "PROVIDER_READINESS_STATE_READY",
+      reason: "PROVIDER_READINESS_REASON_UNSPECIFIED",
+      receipt: {
+        receipt_id: receiptId,
+        mutation_id: receiptId,
+        kind: "PROVIDER_MUTATION_KIND_OBSERVE",
+        workspace: namespace.name,
+        provider: provider.metadata.name,
+        desired,
+        persisted_time: time,
+      },
+      operation: { operation_id: receiptId, state: 2, outcome: 1, completed_time: time },
+      observed,
+      network_instance_id: networkId,
+      observed_time: time,
+      evaluated_time: time,
+    };
+    return { endpoint, rule, policy, desired, observed };
+  };
   return {
     client,
     proxy,
@@ -386,6 +525,7 @@ async function fixture(t: TestContext) {
     state,
     suppliedBinding,
     configure,
+    observeServing,
     resolutions: () => resolutions,
   };
 }
@@ -655,15 +795,139 @@ test("staged OpenShell Proxy refuses a stale concurrent first-use winner without
   assert.equal(f.state.updates.length, 0);
 });
 
-test("staged OpenShell Proxy fails closed after attachment because executable authority is unqualified", async (t) => {
+test("staged OpenShell Proxy observes the final Gateway configuration and serving Provider", async (t) => {
   const f = await fixture(t);
   await f.configure();
-  const readsBeforeStatus = f.state.sandboxReads;
-  assert.deepEqual(await f.proxy.getDeploymentStatus(f.context, configuration), {
-    state: "failed",
-    code: "NATIVE_EXECUTABLE_AUTHORITY_UNQUALIFIED",
+  f.observeServing();
+  const status = () => f.proxy.getDeploymentStatus(f.context, configuration);
+  assert.deepEqual(await status(), { state: "ready" });
+  assert.equal(f.state.statusReads[0]?.sandbox, f.sandbox.metadata.name);
+  assert.equal(f.state.statusReads[0]?.provider, f.state.provider!.metadata.name);
+  assert.equal(record(f.state.statusReads[0]?.workspace_scope).workspace, namespace.name);
+  // Provider-only status asks the Gateway for a current OBSERVE receipt. The Gateway may
+  // persist that receipt; this does not claim that the upstream RPC is write-free.
+  assert.equal(f.state.statusReads[0]?.receipt_id, undefined);
+
+  f.state.providerStatus!.state = "PROVIDER_READINESS_STATE_PENDING";
+  f.state.providerStatus!.reason = "PROVIDER_READINESS_REASON_WAITING_FOR_SUPERVISOR";
+  for (const key of [
+    "operation",
+    "observed",
+    "network_instance_id",
+    "observed_time",
+    "evaluated_time",
+  ]) {
+    Reflect.deleteProperty(f.state.providerStatus!, key);
+  }
+  assert.deepEqual(await status(), { state: "pending" });
+  f.state.providerStatus!.state = "PROVIDER_READINESS_STATE_FAILED";
+  f.state.providerStatus!.reason = "PROVIDER_READINESS_REASON_CREDENTIAL_INSTALL_FAILED";
+  assert.equal((await status()).state, "failed");
+
+  // Status may read evidence, but it must not resolve material, repair, or reattach a Provider.
+  assert.equal(f.resolutions(), 1);
+  assert.equal(f.state.creates.length, 1);
+  assert.equal(f.state.attaches.length, 1);
+  assert.equal(f.state.updates.length, 0);
+});
+
+test("staged OpenShell Proxy refuses a loaded policy outside the admitted request", async (t) => {
+  const f = await fixture(t);
+  await f.configure();
+  type Evidence = ReturnType<typeof f.observeServing>;
+  const scenarios: readonly {
+    name: string;
+    change: (evidence: Evidence) => void;
+  }[] = [
+    {
+      name: "wrong destination",
+      change: ({ endpoint }) => {
+        endpoint.host = "other.example.test";
+      },
+    },
+    {
+      name: "wrong port",
+      change: ({ endpoint }) => {
+        endpoint.ports = [8443];
+      },
+    },
+    {
+      name: "wrong binary",
+      change: ({ rule }) => {
+        rule.binaries[0]!.path = "/usr/bin/other";
+      },
+    },
+    {
+      name: "wrong method",
+      change: ({ endpoint }) => {
+        endpoint.rules[0]!.allow.method = "GET";
+      },
+    },
+    {
+      name: "wrong path",
+      change: ({ endpoint }) => {
+        endpoint.rules[0]!.allow.path = "/v1/models";
+      },
+    },
+    {
+      name: "missing credential binding",
+      change: ({ endpoint }) => {
+        Reflect.deleteProperty(endpoint, "credential_binding");
+        Reflect.deleteProperty(endpoint, "provider_credentialed");
+      },
+    },
+    {
+      name: "uninspected route with an unsupported overlapping selector",
+      change: ({ policy }) => {
+        record(policy.network_policies).overlap = {
+          name: "overlap",
+          binaries: [{ path: request.binary }],
+          endpoints: [{ host: "api.*.com", ports: [443] }],
+        };
+      },
+    },
+  ];
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const evidence = f.observeServing();
+      scenario.change(evidence);
+      // The Gateway and supervisor consistently report this different policy as loaded;
+      // rejection must come from checking its content against the admitted request.
+      const changedHash = "c".repeat(64);
+      f.state.config!.policy_hash = changedHash;
+      const revision = record(f.state.policyStatus!.revision);
+      revision.policy_hash = "d".repeat(64);
+      revision.policy = sourcePolicyFrom(evidence.policy);
+      f.sandbox.spec.policy = sourcePolicyFrom(evidence.policy);
+      record(f.sandbox.status.configuration_admission).policy_hash = changedHash;
+      evidence.desired.policy_hash = changedHash;
+      evidence.observed.policy_hash = changedHash;
+      assert.notEqual((await f.proxy.getDeploymentStatus(f.context, configuration)).state, "ready");
+    });
+  }
+  await t.test("policy not loaded", async () => {
+    f.observeServing();
+    record(f.state.policyStatus!.revision).status = "POLICY_STATUS_PENDING";
+    assert.deepEqual(await f.proxy.getDeploymentStatus(f.context, configuration), {
+      state: "pending",
+    });
   });
-  assert.equal(f.state.sandboxReads, readsBeforeStatus);
+  await t.test("policy history not found", async () => {
+    f.observeServing();
+    f.state.policyStatus = undefined;
+    assert.deepEqual(await f.proxy.getDeploymentStatus(f.context, configuration), {
+      state: "pending",
+    });
+  });
+  await t.test("missing last-delivered Source version", async () => {
+    // The Gateway can serve a Provider without OCC's custom delivery-version marker.
+    f.state.provider!.metadata.resource_version = "8";
+    f.state.provider!.config = {};
+    f.observeServing();
+    assert.notEqual((await f.proxy.getDeploymentStatus(f.context, configuration)).state, "ready");
+  });
+  assert.equal(f.resolutions(), 1);
+  assert.equal(f.state.updates.length, 0);
 });
 
 test("staged OpenShell Proxy refuses target-bound removal and safely cleans up unbound staging", async (t) => {
