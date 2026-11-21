@@ -80,6 +80,47 @@ issuance. Old receipts cannot grant access. Preserve spent or possibly spent dra
 grant across migration and renewal; if uncertain, deny another create. Dedicated Kubernetes Codex
 without a Sandbox can still select native Git, where the broker authorizes and sends. Never fall back to it.
 
+### Hand off a standing Git session during a planned controller update
+
+**Proposed decision.** Allow a serving worker to transfer an Agent’s current OpenShell Git session
+during a controller-only update. Start with one selected repository. Preserve its operations, ref
+and draft limits, Agent revision, execution, material and deadlines. The [current upgrade helper](../../../docs/reference/repository-credentials/worker-replacement.md)
+refuses to stop a required original worker. Its ordinary update stops both API and worker Pods.
+The first qualifying pair needs compatible storage and two builds that can overlap while the Agent
+serves. An incapable incumbent still requires refusal or an authorized interruption.
+
+Use the protocol proposed for [finite Git grants](https://github.com/openclaw/openclaw-enterprise/pull/5005).
+The launcher acknowledges release of the exact startup. Its fenced worker durably binds that
+acknowledgment to the delivery, execution, recipient and material attempt. While the incumbent
+serves, the candidate independently verifies the same running recipient and its route. On a failed
+check the incumbent can continue only while it holds current authority.
+
+The credential-delivery owner must order transfer with retirement, renewal, approval or policy
+changes and request authorization. After lock waits, recheck the maintenance claim, revision,
+open session and admission, approval ID, generation and scope fingerprint, effective grant, eligible
+material and deadlines. Advance the expected predecessor fence once. After an uncertain commit,
+read back the owner and fence before proceeding. Only ordinary standing renewal may open a successor
+session or issue replacement material.
+
+At the final credential-use check, validate current authority and fence after any wait. A request
+authorized before transfer cannot redeem on the old fence afterward. Route fresh requests to the
+successor. Keep the predecessor’s serving path alive until exchanges already past that check
+settle. They may complete after withdrawal. Preserve spent or uncertain draft allowances. If the
+origin outcome of a write cannot be established, report it as unknown and never replay it.
+
+**Installed acceptance.** Replace the actual controller with a distinct build. Keep a conversation
+stream and Git exchange open through cutover. Require one terminal reply on the original connection
+and continuation of the same conversation. Sample fresh requests throughout. After the fence moves,
+fetch a new private object through the normal Agent route on the first attempt. Correlate the
+origin response with the successor worker, new fence, original execution and material. Verify
+unchanged Gateway and Sandbox identities. For a writable binding, keep a permitted push in flight
+past its final credential-use check as the fence moves. Count one attempted push at the controlled
+origin and verify one ref change. Verify a forbidden ref stayed unchanged. Set request deadlines
+and the maximum allowed observation gap before the run. Record client timestamps, failures, retries
+and the largest actual gap. A gap above that limit leaves continuity unverified. Exercise withdrawal during
+transfer, stale redemption, a replaced recipient and lost commit response. Qualify ordinary renewal
+after the original deadline separately. Availability between observations remains unmeasured.
+
 ### Keep supervising a running Agent when Git cannot be verified
 
 For an active Agent execution admitted under standing approval, with no retirement intent, OCC continues
