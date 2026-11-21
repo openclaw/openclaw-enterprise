@@ -31,10 +31,21 @@ import {
   type SecretBindings,
   type SecretReference,
   type ServiceAccount,
-  type ServiceAccountReference,
 } from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
+import {
+  requireSandboxExecutionMode,
+  requireSandboxOpenClawMode,
+  validateComputeAgentProvisioning,
+  validateRepositoryTopology,
+  validateWorkspaceSetupTopology,
+} from "./agent-harness-topology.ts";
+import {
+  requireCredentialSourceSandbox,
+  SERVICE_ACCOUNT_CROSS_NAMESPACE,
+  type createHarnessAuthOperations,
+} from "./harness-auth.ts";
 import {
   canonicalProvisioningJson,
   normalizeGatewayManagedMode,
@@ -57,9 +68,6 @@ import type { ControllerTransactions } from "./controller-transactions.ts";
 import { workMatchesRevision, type ControllerWork } from "./controller-work.ts";
 import {
   CallerStateDeniedError,
-  SERVICE_ACCOUNT_CROSS_NAMESPACE,
-  ComputeGatewaySettingError,
-  ComputeProvisioningRefusedError,
   ConfigurationHarnessError,
   DependencyUnavailableError,
   NamespaceNotReadyError,
@@ -125,46 +133,17 @@ interface ProvisioningRequestDependencies {
       mode: HarnessExecutionMode,
     ): string;
   };
-  readonly harness: {
-    admitHarnessAuth(
-      state: PlatformUnitOfWork,
-      principalId: string,
-      agent: Readonly<Agent>,
-    ): Promise<readonly [HarnessAuthSnapshot, CredentialSourceType?]>;
-    assertCredentialGatewayDelivery(binding: HarnessAuthBinding | null): void;
-    authorizeHarnessAuthSource(
-      state: PlatformUnitOfWork,
-      principalId: string,
-      namespaceId: string,
-      binding: HarnessAuthBinding | null,
-    ): Promise<void>;
-    requireCredentialSourceDrivers(
-      auth: HarnessAuthSnapshot,
-      sandbox: SandboxDriver | undefined,
-    ): void;
-    requireCredentialSourceSandbox(sandbox: SandboxDriver | undefined): void;
-    requireSavedHarnessAuth(
-      namespaceId: string,
-      compute: ComputeDriver,
-      executionMode: HarnessExecutionMode,
-      harnessAuth: HarnessAuthBinding,
-      values: Readonly<OpenClawConfigurationDocument>,
-    ): void;
-    secretHarnessAuthSnapshot(
-      binding: Extract<HarnessAuthBinding, { readonly source: SecretReference }>,
-    ): HarnessAuthSnapshot;
-    credentialSourceHarnessAuthSnapshot(
-      state: PlatformUnitOfWork,
-      namespaceId: string,
-      binding: Extract<HarnessAuthBinding, { readonly method: "credential_source" }>,
-    ): Promise<readonly [HarnessAuthSnapshot, CredentialSourceType]>;
-    serviceAccountHarnessAuthSnapshot(
-      state: PlatformUnitOfWork,
-      namespaceId: string,
-      backendId: BackendRef,
-      binding: Extract<HarnessAuthBinding, { readonly source: ServiceAccountReference }>,
-    ): Promise<HarnessAuthSnapshot>;
-  };
+  readonly harness: () => Pick<
+    ReturnType<typeof createHarnessAuthOperations>,
+    | "admitHarnessAuth"
+    | "assertCredentialGatewayDelivery"
+    | "authorizeHarnessAuthSource"
+    | "requireCredentialSourceDrivers"
+    | "requireSavedHarnessAuth"
+    | "secretHarnessAuthSnapshot"
+    | "credentialSourceHarnessAuthSnapshot"
+    | "serviceAccountHarnessAuthSnapshot"
+  >;
   readonly plugins: {
     normalizeAgentPlugins(plugins: PluginDesiredState | undefined): PluginDesiredState | undefined;
     normalizeAgentPluginApprovers(value: unknown): PluginApprovers | undefined;
@@ -236,49 +215,7 @@ interface ProvisioningRequestDependencies {
         configuration: Readonly<OpenClawConfigurationDocument>;
       },
     ): void;
-    requireSandboxExecutionMode(
-      sandbox: SandboxDriver | undefined,
-      executionMode: HarnessExecutionMode,
-    ): void;
-    requireSandboxOpenClawMode(
-      sandbox: SandboxDriver | undefined,
-      executionMode: HarnessExecutionMode,
-    ): void;
-    validateRepositoryTopology(
-      compute: ComputeDriver,
-      harness: RevisionHarnessDescriptor,
-      sandboxDriverId: string | undefined,
-    ): void;
-    validateWorkspaceSetupTopology(
-      compute: ComputeDriver,
-      harness: RevisionHarnessDescriptor,
-      configuration: Readonly<OpenClawConfigurationDocument>,
-      sandboxDriverId: string | undefined,
-    ): void;
   };
-}
-
-// The Compute Driver refuses a plan it cannot provision (execution mode, gateway settings,
-// routing). Report that as a refusal of this plan, as validateHarnessAuth does, so the API
-// answers 409 rather than 500 and the worker does not retry a plan every attempt will refuse.
-// A gateway setting in the caller's own Configuration keeps the Driver's reason, which names
-// that setting; any other refusal gets fixed text and keeps its reason for the API log.
-function validateComputeAgentProvisioning(
-  compute: ComputeDriver,
-  executionMode: HarnessExecutionMode,
-  configuration: Readonly<OpenClawConfigurationDocument>,
-): void {
-  try {
-    compute.validateAgentProvisioning?.({ executionMode, configuration });
-  } catch (error) {
-    if (
-      error instanceof DependencyUnavailableError ||
-      error instanceof ComputeGatewaySettingError
-    ) {
-      throw error;
-    }
-    throw new ComputeProvisioningRefusedError(error);
-  }
 }
 
 export function createProvisioningRequests(dependencies: ProvisioningRequestDependencies) {
@@ -358,7 +295,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     }
     // A selected gateway owns model delivery for every dedicated Harness. Refuse
     // incompatible bindings before a job or external resource can be created.
-    harnessAuthAccess.assertCredentialGatewayDelivery(harnessAuth);
+    harnessAuthAccess().assertCredentialGatewayDelivery(harnessAuth);
     const acceptedInput = Object.freeze({
       requestId,
       namespaceId: input.namespaceId,
@@ -427,7 +364,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
         });
       }
       // A replay is checked against the current Installation by authorizeProvisioningRecord.
-      harnessAuthAccess.requireSavedHarnessAuth(
+      harnessAuthAccess().requireSavedHarnessAuth(
         input.namespaceId,
         compute,
         executionMode,
@@ -528,7 +465,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       // authorizeProvisioningRecord repeats this check for the stored record, after the Harness
       // authentication check; this copy also runs where no durable record can be stored.
       if (repositoryBindings !== undefined && repositoryBindings.length > 0) {
-        topology.validateRepositoryTopology(
+        validateRepositoryTopology(
           compute,
           {
             id: configuration.resolveHarness(configurationInput.values, executionMode),
@@ -886,7 +823,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       );
     }
     if (!statusRead) {
-      harnessAuthAccess.assertCredentialGatewayDelivery(binding);
+      harnessAuthAccess().assertCredentialGatewayDelivery(binding);
     }
     const backendId = dependencies.backendId(record.plan.backendId as BackendRef | undefined);
     const agent =
@@ -908,22 +845,26 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
           id: binding.sourceId,
         });
       }
-      harnessAuthAccess.requireCredentialSourceSandbox(drivers.sandbox());
+      requireCredentialSourceSandbox(drivers.sandbox());
     } else if (isSecretHarnessAuth(binding)) {
-      auth = harnessAuthAccess.secretHarnessAuthSnapshot(binding);
+      auth = harnessAuthAccess().secretHarnessAuthSnapshot(binding);
     } else if (agent !== undefined) {
-      [auth, credentialSourceType] = await harnessAuthAccess.admitHarnessAuth(state, principalId, {
-        ...agent,
-        harnessAuth: binding,
-      });
+      [auth, credentialSourceType] = await harnessAuthAccess().admitHarnessAuth(
+        state,
+        principalId,
+        {
+          ...agent,
+          harnessAuth: binding,
+        },
+      );
     } else if (binding.method === "credential_source") {
-      [auth, credentialSourceType] = await harnessAuthAccess.credentialSourceHarnessAuthSnapshot(
+      [auth, credentialSourceType] = await harnessAuthAccess().credentialSourceHarnessAuthSnapshot(
         state,
         namespaceId,
         binding,
       );
     } else {
-      auth = await harnessAuthAccess.serviceAccountHarnessAuthSnapshot(
+      auth = await harnessAuthAccess().serviceAccountHarnessAuthSnapshot(
         state,
         namespaceId,
         backendId,
@@ -937,7 +878,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     };
     const sandbox = drivers.sandbox();
     if (auth !== undefined) {
-      harnessAuthAccess.requireCredentialSourceDrivers(auth, sandbox);
+      harnessAuthAccess().requireCredentialSourceDrivers(auth, sandbox);
     }
     // Runtime image native worker support is admission for writes (replay, retry, the worker), like
     // the plugin policy below: a status read still reports the stored work after the image loses it.
@@ -949,9 +890,9 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     // Static support and real Configuration transformation are write admission; status reads
     // must still report stored work after Installation settings change.
     if (!statusRead) {
-      topology.requireSandboxExecutionMode(sandbox, harness.mode);
+      requireSandboxExecutionMode(sandbox, harness.mode);
       if (harness.id === "openclaw") {
-        topology.requireSandboxOpenClawMode(sandbox, harness.mode);
+        requireSandboxOpenClawMode(sandbox, harness.mode);
       }
     }
     const effectiveConfiguration = statusRead
@@ -992,12 +933,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
         );
       }
       if (asRecord(record.plan)?.initialWorkspaceFiles !== undefined) {
-        topology.validateWorkspaceSetupTopology(
-          compute,
-          harness,
-          effectiveConfiguration,
-          sandbox?.id,
-        );
+        validateWorkspaceSetupTopology(compute, harness, effectiveConfiguration, sandbox?.id);
       }
       // The request checks repository bindings before queueing (provisionAgent); retry and the
       // worker check them again until the Agent exists, when admitRepositoryCredentials does.
@@ -1007,7 +943,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
         Array.isArray(repositoryBindings) &&
         repositoryBindings.length > 0
       ) {
-        topology.validateRepositoryTopology(compute, harness, sandbox?.id);
+        validateRepositoryTopology(compute, harness, sandbox?.id);
       }
     }
     // Plugin policy is admission for writes (replay, retry, the worker). A status read reports
@@ -1133,7 +1069,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     if (isSecretHarnessAuth(harnessAuth)) {
       await authorizeProvisioningSecretSource(state, principalId, namespaceId, harnessAuth.source);
     } else if (harnessAuth?.method === "credential_source") {
-      await harnessAuthAccess.authorizeHarnessAuthSource(
+      await harnessAuthAccess().authorizeHarnessAuthSource(
         state,
         principalId,
         namespaceId,

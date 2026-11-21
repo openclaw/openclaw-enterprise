@@ -683,8 +683,7 @@ export function createWorkerRevisionFixtures(
       if (protectedRepositoryDriver) {
         const sandbox = protectedRepositoryDriver.require("sandbox");
         await state.transact(async (unit) => {
-          const [auth] = await controller.admitHarnessAuth(unit, actorId, owner);
-          assert.deepEqual(auth, harnessAuth);
+          // This fixture seeds a historical snapshot from the stored binding and source.
           const sources = await controller.admitCredentialSources(
             unit,
             actorId,
@@ -708,12 +707,12 @@ export function createWorkerRevisionFixtures(
               candidate.harness.configuration,
             );
           await assert.rejects(
-            plan({ ...auth, sourceId: "unselected" }),
+            plan({ ...harnessAuth, sourceId: "unselected" }),
             /created or adopted under the Proxy/,
           );
-          proxyAdmission = await plan(auth);
+          proxyAdmission = await plan(harnessAuth);
           const egressPlan = proxyAdmission.plan;
-          assert.deepEqual(egressPlan.harnessCredentialSource, auth);
+          assert.deepEqual(egressPlan.harnessCredentialSource, harnessAuth);
           assert.deepEqual(
             egressPlan.routes,
             [],
