@@ -57,7 +57,9 @@ interface SelectedRepositoryPolicyOwner {
 }
 
 interface RepositoryPolicyDependencies {
-  readonly drivers: Pick<DriverRegistry, "hasSelection" | "selectedDriver" | "selection">;
+  readonly drivers: Pick<DriverRegistry, "hasSelection" | "selection">;
+  readonly selectedRepository: () => RepositoryPolicyDriver;
+  readonly selectedCompute: () => ComputeDriver;
   readonly backends: ReadonlyMap<string, BackendDefinition>;
   readonly sandboxDriver: () => SandboxDriver | undefined;
   readonly authority: Pick<ControllerAuthority, "authorize">;
@@ -227,7 +229,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     }
     let driver: RepositoryPolicyDriver;
     try {
-      driver = dependencies.drivers.selectedDriver("repo");
+      driver = dependencies.selectedRepository();
     } catch {
       return undefined;
     }
@@ -288,7 +290,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     }
     let compute: ComputeDriver;
     try {
-      compute = dependencies.drivers.selectedDriver("compute");
+      compute = dependencies.selectedCompute();
     } catch {
       throw new RepositoryOptionsUnavailableError(
         "The selected Compute Driver cannot support repository options.",

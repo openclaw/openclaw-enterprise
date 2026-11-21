@@ -355,10 +355,7 @@ import {
   PluginPolicyValidationError,
   ProvisioningSecretDriverError,
   QualifiedAuthorizationDeniedError,
-  RepositoryBindingSelectionError,
-  RepositoryDriverNotConfiguredError,
   RetryLaterError,
-  SavedRepositorySelectionError,
   ResourceConflictError,
   ResourceStateConflictError,
   ProtectedExecutionNetworkPolicyError,
@@ -1598,6 +1595,8 @@ export class OpenClawController {
     this.backendMap = backendDefinitionMap(this.backends);
     this.repositoryPolicy = createRepositoryPolicyOperations({
       drivers: this.drivers,
+      selectedRepository: () => this.selectedDriver("repo"),
+      selectedCompute: () => this.selectedDriver("compute"),
       backends: this.backendMap,
       sandboxDriver: () => this.sandboxDriver(),
       authority: this.authority,
