@@ -1,16 +1,17 @@
 import { types } from "node:util";
-
 import { immutableCopy } from "@openclaw-enterprise/utils";
-import { Type } from "typebox";
-import { Check } from "typebox/value";
-import { ConfigurationValidationError, requireConfiguration } from "./configuration-definition.ts";
 import type { SandboxDriver } from "./drivers/sandbox/index.ts";
 import {
   admitRepositoryNetworkPolicy,
   RepositoryNetworkPolicyAdmissionError,
-  type RepositoryNetworkGrant,
-  type RepositoryNetworkPolicy,
 } from "./repository-network-policy.ts";
+import type {
+  RepositoryNetworkGrant,
+  RepositoryNetworkPolicy,
+} from "./repository-network-policy.ts";
+import { Type } from "typebox";
+import { Check } from "typebox/value";
+import { ConfigurationValidationError, requireConfiguration } from "./configuration-definition.ts";
 import type { ErrorDetail } from "./api/common.ts";
 import type { OpenClawConfigurationDocument } from "./index.ts";
 
@@ -59,7 +60,6 @@ export interface SandboxPolicySnapshot {
   readonly version: number;
   readonly defaults: Readonly<OpenClawConfigurationDocument>;
   readonly additions: readonly SandboxNetworkGrant[];
-  /** Present only after repository policy admission, including an explicit deny-all ACL. */
   readonly repositoryNetworkPolicy?: RepositoryNetworkPolicy;
 }
 
@@ -209,7 +209,6 @@ export interface SandboxPolicy {
   readonly agentId: string;
   readonly version: number;
   readonly additions: readonly SandboxNetworkGrant[];
-  /** Omission preserves ordinary network policy. An empty list explicitly denies repository traffic. */
   readonly repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[];
   readonly application?: SandboxPolicyApplication;
   readonly applied?: {

@@ -224,6 +224,7 @@ export type RepositoryWorkerRestartDisposition =
 
 /** Current desired topology and exact proposed policy, when saving. */
 export interface ProtectedRepositoryNetworkPolicySaveContext {
+  readonly nativeGit?: "v1";
   /** Saved Agent placement and its authorized Configuration, for local topology checks. */
   readonly placement?: Pick<
     AgentRevision,
@@ -234,7 +235,7 @@ export interface ProtectedRepositoryNetworkPolicySaveContext {
   /** The selected registration that owns both Sandbox and Credential Proxy. */
   readonly protectedDriver: DriverRegistrationRef;
   readonly repositoryBindings: readonly AdmittedRepositoryBinding[];
-  /** Omitted for a GET capability check. An affirmative GET does not admit a later save. */
+  /** The complete proposed policy, including an explicit empty list when applicable. */
   readonly repositoryNetworkPolicy?: RepositoryNetworkPolicy;
   readonly harnessCredentialSource: Readonly<{
     type: string;
@@ -266,9 +267,15 @@ export interface ComputeDriver extends Driver {
     source?: SelectedDriverRegistration | "stored",
   ): void;
   /**
-   * Confirm support for protected repository policies on the selected topology with inspected
-   * transport. When supplied, admit the exact proposed policy. Use only local Driver state.
-   * Only an affirmative result admits a save. Release still requires frozen revision admission.
+   * Optionally qualify the selected topology for editing when several policy lists are possible.
+   * Use only local Driver state. This hint is independent of any particular list.
+   */
+  supportsProtectedRepositoryNetworkPolicyPlacement?(
+    context: Omit<ProtectedRepositoryNetworkPolicySaveContext, "repositoryNetworkPolicy">,
+  ): true | false;
+  /**
+   * Admit the exact proposed policy using local Driver state. Only an affirmative result admits
+   * a save. Release still requires frozen revision admission.
    */
   admitsProtectedRepositoryNetworkPolicySave?(
     context: ProtectedRepositoryNetworkPolicySaveContext,
@@ -443,11 +450,28 @@ export interface ComputeDriver extends Driver {
   }): Promise<void>;
   getGatewayEndpoint?(revision: AgentRevision): string | undefined;
   /**
-   * Private WSS base for native chat, with an equivalent HTTPS UI endpoint. The Driver
-   * must enforce a session-writing ceiling across HTTP and WebSocket, including device
-   * grants. Undefined means unsupported; callers must not use the admin endpoint instead.
+   * Resolve a private browser transport for an already-authorized, exact AgentRevision.
+   * Installation and Principal IDs are server-owned. Returned headers are credentials:
+   * never serialize them to a browser or fall back to a shared machine endpoint.
+   * Subject is the non-secret native identity for connection attribution; never derive it from headers.
+   * Reads existing revision credentials only; absence is a dependency failure.
    */
-  getGatewayChatEndpoint?(revision: AgentRevision): string | undefined;
+  getGatewayBrowserRequest?(
+    revision: AgentRevision,
+    input: {
+      readonly installationId: string;
+      readonly principalId: string;
+      readonly mode: "admin" | "chat";
+    },
+    signal: AbortSignal,
+  ): Promise<
+    | {
+        readonly endpoint: string;
+        readonly subject: string;
+        readonly headers: Readonly<Record<string, string>>;
+      }
+    | undefined
+  >;
   /** Resolve only the private HTTP completion route for this exact revision. */
   getChatCompletionsEndpoint?(revision: AgentRevision): AgentChatCompletionsResolution;
   ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;

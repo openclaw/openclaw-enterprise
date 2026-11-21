@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { runInContext } from "node:vm";
 
 import { gatewayRuntimeEntrypoint } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { WORKSPACE_NODE_BINDING_PATH, workspaceNodeBinding } from "../helpers/plugin-runtime.mjs";
@@ -18,6 +19,7 @@ import {
   readConfig,
   record,
   type GatewayOptions,
+  type RuntimeSandbox,
 } from "./plugin-runtime-policy-fixture.ts";
 
 const configPath = "/home/node/.openclaw/openclaw.json";
@@ -54,6 +56,15 @@ function launchSelected(options: GatewayOptions = {}, useProfile = true) {
     gatewayEntrypoint: gatewayRuntimeEntrypoint(true, useProfile ? profile : undefined),
     setTimeout: () => ({ unref() {} }),
   });
+}
+
+const statusOwner = {
+  OPENCLAW_RUNTIME_STATUS_CONTAINER: "gateway",
+  OPENCLAW_POD_UID: "gateway-pod",
+};
+
+function acknowledgedNode(sandbox: RuntimeSandbox) {
+  return field(runInContext("runtimeStatusReport()", sandbox), "workspaceNodeId");
 }
 
 export function registerInspectedWorkspaceCases() {
@@ -168,6 +179,82 @@ export function registerInspectedWorkspaceCases() {
     const freshPolicy = transferPolicy(readConfig(fresh.files, configPath));
     assert.deepEqual(Object.keys(record(freshPolicy.nodes)), [replacement]);
     assert.equal(field(freshPolicy, "nodes", replacement, "boundedReplies"), true);
+  });
+
+  for (const [cause, invalidBinding] of [
+    ["deleted", undefined],
+    ["malformed", "{"],
+    ["from another revision", workspaceNodeBinding(enrolled, "foreign-revision")],
+  ] as const) {
+    test(`inspected workspace retires an acknowledged binding that is ${cause}`, async () => {
+      const intervals: NonNullable<GatewayOptions["intervals"]> = [];
+      const kills: NonNullable<GatewayOptions["kills"]> = [];
+      const gatewayCall = () => ({
+        generation: 2,
+        plugins: [{ id: "file-transfer", runtime: { state: "active" } }],
+      });
+      const { files, sandbox } = await launchSelected({
+        workspaceNodeId: enrolled,
+        env: statusOwner,
+        intervals,
+        kills,
+        gatewayCall,
+      });
+      const poll = intervals.find(({ ms }) => ms === 1000);
+      assert.ok(poll);
+      await poll.callback();
+      assert.equal(acknowledgedNode(sandbox), enrolled);
+      assert.deepEqual(Object.keys(record(transferPolicy(readConfig(files, configPath)).nodes)), [
+        enrolled,
+      ]);
+
+      if (invalidBinding === undefined) {
+        files.delete(WORKSPACE_NODE_BINDING_PATH);
+      } else {
+        files.set(WORKSPACE_NODE_BINDING_PATH, invalidBinding);
+        await poll.callback();
+      }
+      // The status reader itself must not serve an old ack between polls.
+      assert.equal(acknowledgedNode(sandbox), undefined);
+      assert.deepEqual(kills, [{ signal: "SIGTERM" }]);
+
+      // A clean restart uses the admitted configuration, even if the prior output still exists.
+      const freshIntervals: NonNullable<GatewayOptions["intervals"]> = [];
+      const fresh = await launchSelected({
+        files: [...files],
+        workspaceNodeId: replacement,
+        env: statusOwner,
+        intervals: freshIntervals,
+        gatewayCall,
+      });
+      const freshPoll = freshIntervals.find(({ ms }) => ms === 1000);
+      assert.ok(freshPoll);
+      await freshPoll.callback();
+      const policy = transferPolicy(readConfig(fresh.files, configPath));
+      assert.deepEqual(Object.keys(record(policy.nodes)), [replacement]);
+      assert.equal(field(policy, "workspaces", "main", "nodeId"), replacement);
+      assert.equal(acknowledgedNode(fresh.sandbox), replacement);
+    });
+  }
+
+  test("inspected workspace rejects a plugin result after its binding disappears", async () => {
+    const intervals: NonNullable<GatewayOptions["intervals"]> = [];
+    const kills: NonNullable<GatewayOptions["kills"]> = [];
+    const { files, sandbox } = await launchSelected({
+      workspaceNodeId: enrolled,
+      env: statusOwner,
+      intervals,
+      kills,
+      gatewayCall: () => {
+        files.delete(WORKSPACE_NODE_BINDING_PATH);
+        return { plugins: [{ id: "file-transfer", runtime: { state: "active" } }] };
+      },
+    });
+    const poll = intervals.find(({ ms }) => ms === 1000);
+    assert.ok(poll);
+    await poll.callback();
+    assert.deepEqual(kills, [{ signal: "SIGTERM" }]);
+    assert.equal(acknowledgedNode(sandbox), undefined);
   });
 
   test("inspected workspace preserves existing exact path and approval rights", async () => {

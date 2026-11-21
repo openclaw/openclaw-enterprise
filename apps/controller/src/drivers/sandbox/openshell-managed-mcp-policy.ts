@@ -9,10 +9,7 @@ import {
   managedMcpRequests,
 } from "../plugin/managed-catalog.ts";
 import { openShellProfileEndpoint } from "./openshell-gateway-client.ts";
-import {
-  sameOpenShellPolicy,
-  withoutOpenShellProviderTokenGrantOwners,
-} from "./openshell-policy.ts";
+import { sameOpenShellPolicy } from "./openshell-policy.ts";
 
 function managedMcpNetworkName(install: ManagedMcpInstall): string {
   return `oce-${install.runtimeName}-mcp`;
@@ -198,22 +195,25 @@ export function verifyManagedMcpPolicy(
     unsupported("OpenShell has not admitted the fail-closed managed MCP network policy.");
   }
   const policies = asRecord(asRecord(config.policy)?.network_policies);
-  const { provider, network } = expected;
-  const credentialedNetwork = {
-    ...network,
-    endpoints: network.endpoints.map((endpoint) => ({
-      ...endpoint,
-      provider_credentialed: true,
-    })),
-  };
-  if (
-    !sameOpenShellPolicy(
-      withoutOpenShellProviderTokenGrantOwners(policies?.[provider.name]),
-      provider,
-    ) ||
-    !sameOpenShellPolicy(policies?.[network.name], credentialedNetwork)
-  ) {
-    unsupported("OpenShell has not admitted the exact credentialed managed MCP rules.");
+  const network = expected.network;
+  const exact = [
+    expected.provider,
+    {
+      ...network,
+      endpoints: network.endpoints.map((endpoint) => ({
+        ...endpoint,
+        provider_credentialed: true,
+      })),
+    },
+  ];
+  for (const rule of exact) {
+    if (!sameOpenShellPolicy(policies?.[rule.name], rule)) {
+      unsupported("OpenShell has not admitted the exact credentialed managed MCP rules.");
+    }
   }
-  assertNoManagedMcpRouteOverlap(policies, expected.install, [provider.name, network.name]);
+  assertNoManagedMcpRouteOverlap(
+    policies,
+    expected.install,
+    exact.map(({ name }) => name),
+  );
 }

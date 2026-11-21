@@ -334,6 +334,7 @@ test(
   async (t) => {
     await beforeNarrowGitPreparation(
       t,
+      import.meta.url,
       async ({ runtime: first, revision, client, workspace, sandbox, pool, peer, writes }) => {
         let lostAcknowledgements = 0;
         const releases: boolean[] = [];
@@ -547,7 +548,6 @@ for (const fault of ["before write", "after commit", "during worker replacement"
         bindingId,
         fence: 1,
         preview: { hook },
-        authorization: {},
         supervisor: installed,
         installed,
       } as Parameters<OpenShellGitRuntime["reconcile"]>[0];

@@ -3065,75 +3065,127 @@ async function suiteFixture(
   return [f, await shallowBootstrap(f)] as const;
 }
 
-test("test graph advisory reports a missing owner alongside a transitive owner hint", async (t) => {
+test("test graph advisory reports indexed runtime consumers and retains fallback", async (t) => {
   const owned = "tests/helpers/owned.ts";
   const unowned = "tests/helpers/unowned.ts";
   const intermediate = "tests/helpers/intermediate.ts";
   const root = "tests/integration/typed.test.ts";
+  const helper = "tests/helpers/runtime.mjs";
+  const bridge = "tests/helpers/bridge.mjs";
+  const fullRoot = "tests/integration/openshell-real.test.mjs";
+  const ordinaryRoot = "tests/integration/postgres-a.test.mjs";
+  const unrelatedRoot = "tests/integration/unrelated.test.ts";
+  const security = "tests/helpers/auth.mjs";
+  const ci = "scripts/ci/helper.mjs";
+  const unknown = "tests/helpers/unknown.txt";
+  const unindexed = "tests/helpers/unindexed.mjs";
+  const initial = suiteFiles();
+  const registryPath = "scripts/ci/test-suites.json";
+  const registry = jsonRecord(present(initial[registryPath]));
+  const changed = {
+    [owned]: "export const value = 1;\n",
+    [unowned]: "export const value = 1;\n",
+    [helper]: "export const value = 1;\n",
+    [security]: "export const value = 1;\n",
+    [ci]: "export const value = 1;\n",
+    [unknown]: "unchanged input\n",
+    [unindexed]: "export const value = 1;\n",
+  };
   const f = await fixture(
     t,
     ({ put }) => {
-      put(owned, "export const value = 2;\n");
-      put(unowned, "export const value = 2;\n");
+      for (const [file, content] of Object.entries(changed)) {
+        put(file, content + "\n");
+      }
     },
     {
-      ...suiteFiles(),
+      ...initial,
+      ...changed,
+      [registryPath]: JSON.stringify({
+        ...registry,
+        lanes: { ...record(registry.lanes), unrelated: "./test-suites/unrelated.json" },
+        groups: { ...record(registry.groups), full: [...Object.keys(suiteLanes), "unrelated"] },
+      }),
+      "scripts/ci/test-suites/unrelated.json": laneManifest([unrelatedRoot]),
       "tests/tsconfig.json": JSON.stringify({
         compilerOptions: { incremental: true, noEmit: true },
       }),
-      [owned]: "export const value = 1;\n",
-      [unowned]: "export const value = 1;\n",
       [intermediate]: 'export { value } from "./owned.ts";\n',
-      [root]: 'import "../helpers/intermediate.ts";\n',
+      [root]: 'import "../helpers/intermediate.ts";\nimport "../helpers/runtime.mjs";\n',
+      [bridge]: 'export { value } from "./runtime.mjs";\n',
+      [fullRoot]: 'import "../helpers/bridge.mjs";\n',
+      [ordinaryRoot]: 'import "../helpers/runtime.mjs";\n',
+      [unrelatedRoot]:
+        'import "../helpers/auth.mjs";\nimport "../../scripts/ci/helper.mjs";\n' +
+        'import "../helpers/unindexed.mjs";\n',
     },
   );
   const { put } = repository(f.repo);
-  put(
-    ".build/tests/tsconfig.tsbuildinfo",
-    JSON.stringify({
-      version: "7.0.2",
-      options: { composite: false },
-      fileNames: [owned, unowned, intermediate, root].map((file) => `../../${file}`),
-      fileInfos: Array.from({ length: 4 }, () => "0".repeat(32)),
-      fileIdsList: [[1], [3]],
-      referencedMap: [
-        [3, 1],
-        [4, 2],
-      ],
-    }),
-  );
-  const result = await run(
-    process.execPath,
-    [join(repositoryRoot, "scripts/ci/test-graph-advisory.ts")],
-    {
-      cwd: f.repo,
-      env: {
-        ...process.env,
-        GITHUB_EVENT_NAME: "pull_request",
-        GITHUB_EVENT_PATH: f.eventPath,
-        GITHUB_SHA: f.tested,
-        GITHUB_RUN_ID: "17",
-        GITHUB_RUN_ATTEMPT: "2",
-        GITHUB_WORKFLOW_SHA: f.tested,
+  const versioned = [
+    owned,
+    unowned,
+    intermediate,
+    root,
+    helper,
+    bridge,
+    fullRoot,
+    ordinaryRoot,
+    unrelatedRoot,
+    security,
+    ci,
+    unknown,
+  ];
+  for (const includeBridge of [true, false]) {
+    put(
+      ".build/tests/tsconfig.tsbuildinfo",
+      JSON.stringify({
+        version: "7.0.2",
+        options: { composite: false },
+        fileNames: versioned.map((file) => `../../${file}`),
+        fileInfos: versioned.map(() => "0".repeat(32)),
+        fileIdsList: [[1], [3, 5], [5], [6], [10, 11]],
+        referencedMap: [[3, 1], [4, 2], [7, 4], [8, 3], [9, 5], ...(includeBridge ? [[6, 3]] : [])],
+      }),
+    );
+    const result = await run(
+      process.execPath,
+      [join(repositoryRoot, "scripts/ci/test-graph-advisory.ts")],
+      {
+        cwd: f.repo,
+        env: {
+          ...process.env,
+          GITHUB_EVENT_NAME: "pull_request",
+          GITHUB_EVENT_PATH: f.eventPath,
+          GITHUB_SHA: f.tested,
+          GITHUB_RUN_ID: "17",
+          GITHUB_RUN_ATTEMPT: "2",
+          GITHUB_WORKFLOW_SHA: f.tested,
+        },
       },
-    },
-  );
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stderr, "");
-  const advisory = jsonRecord(result.stdout);
-  assert.deepEqual(advisory.run, { id: "17", attempt: "2", workflow: f.tested });
-  assert.equal(record(advisory.source).tested, f.tested);
-  assert.deepEqual(advisory.hints, {
-    direct: [],
-    compiler: ["checks-baseline-1"],
-    staticFixture: [],
-  });
-  assert.deepEqual(advisory.fallback, [
-    "no_registered_owner",
-    "runtime_edges_unclassified",
-    "unindexed_mjs_roots",
-  ]);
-  assert.equal(advisory.omissions, 0);
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stderr, "");
+    const advisory = jsonRecord(result.stdout);
+    assert.deepEqual(advisory.run, { id: "17", attempt: "2", workflow: f.tested });
+    assert.equal(record(advisory.source).tested, f.tested);
+    const hints = record(advisory.hints);
+    assert.deepEqual(hints.direct, []);
+    assert.deepEqual(hints.compiler, ["checks-baseline-1"]);
+    assert.deepEqual(hints.staticFixture, []);
+    assert.deepEqual(advisory.fallback, [
+      "fixture_or_runtime",
+      "no_registered_owner",
+      "runtime_edges_unclassified",
+      "security_scope",
+      "unindexed_mjs_roots",
+      "unindexed_path",
+      "unknown_path",
+      "workflow_or_ci",
+    ]);
+    assert.equal(advisory.omissions, 0);
+    assert.deepEqual(hints.runtimeCompiler, ["checks-baseline-1", "postgres"]);
+    assert.deepEqual(hints.fullOnlyCompiler, includeBridge ? ["openshell"] : []);
+  }
 });
 
 test("main test advisory reports only a verified single modification and leaves selection full", async (t) => {

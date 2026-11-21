@@ -108,7 +108,7 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
           async callGatewayFromCli(method, rpcOptions, params, extra) {
             assert.equal(extra.sharedStateMode, "read-only");
             calls.push({ method, params });
-            const value = await options.gatewayCall?.(method, extra.signal);
+            const value = await options.gatewayCall?.(method, extra.signal, { rpcOptions, extra });
             if (value === undefined) {
               throw gatewayUnavailable;
             }

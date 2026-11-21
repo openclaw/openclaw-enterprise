@@ -10,10 +10,14 @@ import type {
   OpenShellGatewayClient,
   OpenShellSandboxCreateRequest,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { openShellPluginPolicy } from "../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts";
 import type {
   AgentRevision,
   CredentialSource,
   CredentialSourceInput,
+  HarnessWorkloadRequirements,
+  ProxyPlan,
+  RepositoryRevisionState,
   SandboxNetworkGrant,
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
@@ -102,9 +106,6 @@ function admitSlackProvider(
         mcp: { strict_tool_names: true, versions: [...install.mcpVersions] },
         rules: [{ allow: { method: "ping" } }],
         provider_credentialed: true,
-        // OpenShell 0.1.8 stamps only the composed Provider rule.
-        token_grant_owner:
-          "grant-owner:v1:807c84bef6223e1b5099c083966f40e38bc5bdfd90c20e326eb6265f74298930",
       },
     ],
   };
@@ -222,6 +223,11 @@ export function registerManagedPluginPolicyCases(
       access: "NETWORK_ACCESS_PRESET_READ_WRITE",
       provider_credentialed: true,
     };
+    const providerRule = {
+      name: provider,
+      binaries: [{ path: managedGoogleInstall.binaryPath }],
+      endpoints: [providerEndpoint],
+    };
     const independentEndpoint = {
       host: "independent.example",
       ports: [8443],
@@ -249,20 +255,7 @@ export function registerManagedPluginPolicyCases(
             ep.provider_credentialed = true;
           }
         }
-        routes[provider] = {
-          name: provider,
-          binaries: [{ path: managedGoogleInstall.binaryPath }],
-          endpoints: [
-            {
-              ...providerEndpoint,
-              // Capture the owner for each distinct stock Provider profile.
-              token_grant_owner:
-                providerEndpoint.path === "/**"
-                  ? "grant-owner:v1:b1d97fc283a578c99635a6be0440319ca8d8575c95fda3e6f8174cff1abb8551"
-                  : "grant-owner:v1:e3f04b2384b20e0e84db8307d01dc42c6b9413f9079eb1ff61554b9ea67c9bea",
-            },
-          ],
-        };
+        routes[provider] = providerRule;
       }
       admitSlackProvider(routes, slack.ref, managedSlackInstall);
       routes[independentProvider.name] = independentProvider;
@@ -433,6 +426,83 @@ export function registerManagedPluginPolicyCases(
     );
     assert.equal(asRecord(detachedPolicy.network_middlewares)?.[registration], undefined);
     assert.equal(detachedNetworks["oce-google-requests"], undefined);
+  });
+
+  // The launch policy takes network_middlewares from the egress policy or the plugin guard,
+  // never both: only this refusal keeps the two maps apart.
+  test("a managed Google plugin is refused with repository credentials, proxy wiring or an egress plan", () => {
+    const { revision: fixture, requirements } = runtimeSandboxFixture(
+      openShellDriver(workspaceGatewayClient()),
+      { harnessId: "openclaw" },
+    );
+    const sourceId = "cs_00000000-0000-4000-8000-000000000005";
+    const revision: AgentRevision = {
+      ...completeSandboxRevision(fixture),
+      plugins: {
+        driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+        plugins: {
+          [managedGoogleInstall.id]: {
+            enabled: true,
+            driverPolicy: {
+              releaseSha256: managedGoogleInstall.releaseSha256,
+              credentials: { account: sourceId },
+            },
+          },
+        },
+      },
+    };
+    const admitted = {
+      ...requirements,
+      credentialAttachments: [
+        {
+          sourceId,
+          ref: openShellProviderName(sourceId),
+          requestScope: {
+            host: "gmail.googleapis.com",
+            port: 443,
+            path: "/gmail/v1/users/me/messages",
+            scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+          },
+        },
+      ],
+    };
+    const endpoint = "https://authority.test:443";
+    assert.ok(openShellPluginPolicy(revision, admitted, endpoint, [])?.middlewares);
+    const repositoryCredentials: RepositoryRevisionState = {
+      driver: { id: "repository", implementation: "github" },
+      deadlineWallMs: Date.now() + 600_000,
+      bindings: [],
+    };
+    const plan: ProxyPlan = {
+      id: "00000000-0000-4000-8000-000000000001",
+      generation: 1,
+      routes: [],
+      sandboxDriverId: "openshell",
+      egressDriverId: "openshell",
+      execution: {
+        installationId: "ins_fixture",
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        servicePrincipalId: revision.servicePrincipalId,
+        revisionId: revision.id,
+        executionId: "00000000-0000-4000-8000-000000000002",
+      },
+    };
+    const cases: Array<[string, AgentRevision, HarnessWorkloadRequirements]> = [
+      ["repository credentials", { ...revision, repositoryCredentials }, admitted],
+      ["proxy wiring", revision, { ...admitted, proxyWiring: { plan, configuration: {} } }],
+      ["an egress plan", { ...revision, egressPlan: plan }, admitted],
+    ];
+    for (const [condition, refused, launch] of cases) {
+      assert.throws(
+        () => openShellPluginPolicy(refused, launch, endpoint, []),
+        {
+          code: "SANDBOX_HARNESS_UNSUPPORTED",
+          message: /requires its selected OpenShell provider, the dedicated OpenClaw worker/,
+        },
+        `A managed Google plugin must be refused with ${condition}.`,
+      );
+    }
   });
 
   test("OpenShell builds managed MCP rules for the declared endpoint and upstream tool name", () => {

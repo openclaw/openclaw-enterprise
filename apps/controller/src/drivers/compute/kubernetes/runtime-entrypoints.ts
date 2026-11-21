@@ -16,7 +16,7 @@ import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
 import { compactNodeChildArguments, nodeProgramArguments } from "../node-program.ts";
 import {
   HARNESS_EGRESS_ENROLLMENT_HELPER,
-  HARNESS_REPOSITORY_GIT_ENROLLMENT_HELPER,
+  HARNESS_NATIVE_GIT_ENROLLMENT_HELPER,
 } from "../harness-egress-enrollment.ts";
 import {
   DELIBERATE_RESTART_EXIT_STATUS,
@@ -692,7 +692,18 @@ function mergeOpenClawPluginConfiguration(base, overlay, options = {}) {
 
 `;
 
-function pluginRuntimeHelpers(includeOpenClawInstaller: boolean): string {
+function pluginRuntimeHelpers(
+  includeOpenClawInstaller: boolean,
+  includeWorkspaceProbeTransport = false,
+): string {
+  // Keep the shared OpenShell launcher within its command size limit.
+  const transport = includeWorkspaceProbeTransport
+    ? {
+        parameter: ", transport",
+        options: "...transport?.options, ",
+        client: "...transport?.client,\n        ",
+      }
+    : { parameter: "", options: "", client: "" };
   return String.raw`
 const pluginRuntimeTranslator = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
 const {
@@ -848,6 +859,7 @@ let runtimeStartupFailure;
 // loaded from a config with the node), and the current reason it is not.
 let runtimeWorkspaceNodeId;
 let runtimeWorkspaceNodeFailure;
+let refreshRuntimeWorkspaceNodeBinding;
 
 function publishPluginRuntimeStatus(report) {
   if (pluginRuntimeStatusPort() === undefined) return;
@@ -908,6 +920,7 @@ function runtimeDiagnosticCheck(check, state, checkedAt, code) {
 }
 
 function runtimeStatusReport() {
+  refreshRuntimeWorkspaceNodeBinding?.();
   return {
     revisionId: requireNonEmptyString(process.env.OPENCLAW_AGENT_REVISION_ID, "Runtime status revision ID"),
     container: runtimeStatusContainer(),
@@ -992,7 +1005,7 @@ function gatewayRefusedUnknownChannel(gatewayRuntime, error, channel) {
 // Query the running Gateway through OpenClaw's public SDK. Starting a CLI here
 // also starts its launcher/respawn lifecycle; killing that launcher cannot bound
 // a probe whose descendant still owns stdout.
-function callNativeGateway(method, params, timeoutMs, abortSignal, maxBytes = 65536) {
+function callNativeGateway(method, params, timeoutMs, abortSignal, maxBytes = 65536${transport.parameter}) {
   return new Promise((resolve) => {
     const controller = new AbortController();
     let settled = false;
@@ -1018,8 +1031,8 @@ function callNativeGateway(method, params, timeoutMs, abortSignal, maxBytes = 65
     Promise.resolve().then(async () => {
       if (settled) return;
       gatewayRuntime = require("openclaw/plugin-sdk/gateway-runtime");
-      const value = await gatewayRuntime.callGatewayFromCli(method, { json: true, timeout: String(timeoutMs) }, params, {
-        progress: false,
+      const value = await gatewayRuntime.callGatewayFromCli(method, { ${transport.options}json: true, timeout: String(timeoutMs) }, params, {
+        ${transport.client}progress: false,
         // Status probes must not initialize shared state alongside Gateway startup.
         sharedStateMode: "read-only",
         signal: controller.signal,
@@ -2778,7 +2791,7 @@ if (countsUnexplainedExits) {
   countUnexplainedExits(previous + 1);
 }
 
-${PLUGIN_RUNTIME_HELPERS}
+${pluginRuntimeHelpers(true, true)}
 ${MANAGED_INSTALL_HELPERS}
 ${GATEWAY_TOOL_POLICY_RUNTIME}
 ${WORKSPACE_ASSET_HELPERS}
@@ -3318,14 +3331,29 @@ function replaceOpenClawConfig(config) {
 // The running Gateway's own view of file-transfer: its runtime state in the
 // live plugin registry ("active", "service-failed", "disabled", "unloaded")
 // and that registry's generation, which every plugin reload replaces. A Gateway
-// that refused this CLI's credentials answers { refused: true, reason }.
+// that refused its local probe's credentials answers { refused: true, reason }.
 async function openClawFileTransferState() {
+  const port = process.env.OPENCLAW_GATEWAY_PORT;
+  const password = process.env.OPENCLAW_GATEWAY_PASSWORD;
+  // The SDK's port option targets the child Gateway and ignores URL overrides.
+  // Trusted-proxy Gateway auth accepts its provisioned password on loopback.
+  // Without this managed connection, keep the SDK's existing paired-client path.
+  const transport = port?.trim() && password?.trim() ? {
+    options: { port, password },
+    client: {
+      clientName: "gateway-client",
+      mode: "backend",
+      deviceIdentity: null,
+      scopes: ["operator.read"],
+    },
+  } : undefined;
   const result = await callNativeGateway(
     "plugins.list",
     {},
     8000,
     undefined,
     4 * 1024 * 1024,
+    transport,
   );
   if (result.authenticationRefused === true) {
     return { refused: true, reason: result.authenticationRefusalReason };
@@ -3777,22 +3805,43 @@ if (workspaceNodeBindingPath !== undefined) {
       ...(reason === undefined ? {} : { reason }),
     }));
   };
-  const pollWorkspaceNode = async () => {
-    const deviceId = readWorkspaceNodeBinding();
-    if (deviceId === undefined || deviceId === runtimeWorkspaceNodeId) return;
-    if (written !== undefined && written.deviceId !== deviceId) {
-      // Another node for this revision: replace the config from a clean start.
-      if (stoppingForChangedWorkspaceNode) return;
-      stoppingForChangedWorkspaceNode = true;
+  const retireChangedWorkspaceNode = (deviceId) => {
+    if (written === undefined || written.deviceId === deviceId${inspected ? "" : " || deviceId === undefined"}) {
+      return false;
+    }
+    if (!stoppingForChangedWorkspaceNode) {
+      stoppingForChangedWorkspaceNode = true;${
+        inspected
+          ? String.raw`
+      // Drop the ack before retiring the process that holds the old File Transfer policy.
+      runtimeWorkspaceNodeId = undefined;
+      runtimeWorkspaceNodeFailure = undefined;`
+          : ""
+      }
       clearInterval(workspaceNodePoll);
       logStartupPhase("workspace-node-changed", startupPhaseOrigin);
       stopContainer("WORKSPACE_NODE_CHANGED");
+    }
+    return true;
+  };
+  const pollWorkspaceNode = async () => {
+    const deviceId = readWorkspaceNodeBinding();
+    if (retireChangedWorkspaceNode(deviceId) || deviceId === undefined || deviceId === runtimeWorkspaceNodeId) {
       return;
     }
     firstSeenAt ??= Date.now();
     const generation = gatewayGeneration;
-    // A respawn replaced the process this poll was talking to: start over.
-    const superseded = () => respawning || generation !== gatewayGeneration;
+    const superseded = () => {
+      if (respawning || stoppingForChangedWorkspaceNode || generation !== gatewayGeneration) return true;${
+        inspected
+          ? String.raw`
+      // A probe result only applies to the binding that launched it.
+      const current = readWorkspaceNodeBinding();
+      return retireChangedWorkspaceNode(current) || current !== deviceId;`
+          : String.raw`
+      return false;`
+      }
+    };
     if (written === undefined) {
       const before = await openClawFileTransferState();
       if (superseded()) return;
@@ -3820,7 +3869,7 @@ if (workspaceNodeBindingPath !== undefined) {
     const after = await openClawFileTransferState();
     if (superseded()) return;
     if (after?.refused) {
-      // The Gateway refuses its own CLI: it cannot confirm this node, now or later.
+      // The Gateway refuses its local probe: it cannot confirm this node, now or later.
       reportFailure("GATEWAY_UNAUTHORIZED", after.reason);
       return;
     }
@@ -3840,7 +3889,7 @@ if (workspaceNodeBindingPath !== undefined) {
     }
   };
   const workspaceNodePoll = setInterval(async () => {
-    if (pollInFlight || respawning || gatewayStartupHeld) return;
+    if (pollInFlight || respawning || gatewayStartupHeld || stoppingForChangedWorkspaceNode) return;
     pollInFlight = true;
     try {
       await pollWorkspaceNode();
@@ -3851,7 +3900,15 @@ if (workspaceNodeBindingPath !== undefined) {
       pollInFlight = false;
     }
   }, 1_000);
-  workspaceNodePoll.unref?.();
+  workspaceNodePoll.unref?.();${
+    inspected
+      ? String.raw`
+  // A status read between polls may see a retired or replaced binding.
+  refreshRuntimeWorkspaceNodeBinding = () => {
+    if (written !== undefined) retireChangedWorkspaceNode(readWorkspaceNodeBinding());
+  };`
+      : ""
+  }
 }
 if (followsPeerStatus) {
   let pollInFlight = false;
@@ -4396,7 +4453,7 @@ function agentRuntimeEntrypoint({
   patRecovery = false,
   boxHttps = false,
   explicitProxy = false,
-  repositoryGitProbe = false,
+  nativeGit = false,
 } = {}): string {
   const processFailed = patRecovery ? "!cleanExit" : "result.status !== 0 || result.error";
   return String.raw`
@@ -4410,7 +4467,7 @@ ${AUTH_PROBE_FAILURE_HELPER}
 ${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
 ${CODEX_STDERR_FILTER_HELPER}
 ${CODEX_PLUGIN_STDIO_HELPER}
-${repositoryGitProbe ? HARNESS_REPOSITORY_GIT_ENROLLMENT_HELPER : HARNESS_EGRESS_ENROLLMENT_HELPER}
+${nativeGit ? HARNESS_NATIVE_GIT_ENROLLMENT_HELPER : HARNESS_EGRESS_ENROLLMENT_HELPER}
 ${startupPhaseHelper("agent")}
 ${computeOwned ? CODEX_READINESS_HELPER + "\n" : ""}
 // codex is the npm launcher: a timeout's SIGKILL ended only it and left its native child
@@ -5798,8 +5855,6 @@ const explicitProxyLaunches = new Map<string, string>();
 let compactPatLaunch: string | undefined;
 let compactProviderLaunch: string | undefined;
 let compactProtectedLaunch: string | undefined;
-let compactRepositoryGitLaunch: string | undefined;
-let repositoryGitLaunch: string | undefined;
 
 function compactWorkspaceNodeLaunch(child: string): string {
   return agentWithNodeEntrypoint(compactNodeChildArguments(child));
@@ -5811,7 +5866,7 @@ export interface CodexLaunch {
   readonly openShellProgram?: "pat" | "ordinary";
   readonly withNode?: boolean;
   readonly workspaceSetup?: boolean;
-  readonly repositoryGitProbe?: boolean;
+  readonly nativeGit?: boolean;
   readonly strandsBox?: boolean;
   /**
    * A provider-owned launch whose Sandbox may name an explicit egress proxy in the Harness
@@ -5830,21 +5885,15 @@ export function codexLaunchEntrypoint(
     workspaceSetup,
     strandsBox,
     explicitProxy,
-    repositoryGitProbe,
+    nativeGit,
   }: CodexLaunch = { providerOwned: false, protected: false },
 ): string {
-  if (repositoryGitProbe) {
+  if (nativeGit) {
     if (!providerOwned || !protectedLaunch || openShellProgram !== "ordinary") {
       throw new Error("A repository network policy requires a protected OpenShell Codex launch.");
     }
-    return withNode
-      ? (compactRepositoryGitLaunch ??= compactWorkspaceNodeLaunch(
-          agentRuntimeEntrypoint({ withNode: true, protected: true, repositoryGitProbe: true }),
-        ))
-      : (repositoryGitLaunch ??= agentRuntimeEntrypoint({
-          protected: true,
-          repositoryGitProbe: true,
-        }));
+    const child = agentRuntimeEntrypoint({ protected: true, withNode: !!withNode, nativeGit });
+    return withNode ? compactWorkspaceNodeLaunch(child) : child;
   }
   if (!providerOwned) {
     if (protectedLaunch) {

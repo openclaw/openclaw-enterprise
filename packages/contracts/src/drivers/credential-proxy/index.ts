@@ -143,11 +143,12 @@ export interface ProxyPlan {
   readonly driver?: DriverRegistrationRef;
   /** Capability required by this admission, including after process restart. */
   readonly policyReductionVersion?: 1 | 2;
-  /** v4–v7: the repository or installation grant, independent of sender and grant duration. */
+  /** v4–v8: the repository or installation grant, independent of sender and grant duration. */
   readonly repositoryGit?: RepositoryRevisionState;
-  /** v4/v7 are exact dispatch; v5 requires online authorization; v6 records an observed request hook. */
-  readonly repositoryGitAuthorization?: "online-request" | "request-hook-observed";
-  /** v4–v7: the Harness model attachment independently admitted by the Credential Gateway. */
+  /** v8 admits finite Git authorization by the deployed network policy. */
+  readonly repositoryGitAuthorization?:
+    "online-request" | "request-hook-observed" | "network-policy";
+  /** v4–v8: the Harness model attachment independently admitted by the Credential Gateway. */
   readonly harnessCredentialSource?: Extract<HarnessAuthSnapshot, { method: "credential_source" }>;
   readonly routes: readonly EgressRoute[];
 }
@@ -174,7 +175,9 @@ export type RepositoryGitRecipient = Readonly<
      * observed that hook at startup; a trusted operator could subsequently make stock skip it.
      * Both require verified TLS, a dedicated fresh recipient, and no bypass in the admitted
      * configuration. An already authorized request may finish. v4 enforces exact send start. */
-    authorization?: "online-request" | "request-hook-observed";
+    authorization?: NonNullable<ProxyPlan["repositoryGitAuthorization"]>;
+    /** Signed launch identity for a deployment-scoped network grant. */
+    nativeStartupId?: string;
     /** Per-start denial, present only in the explicitly admitted preview. */
     observedHook?: Readonly<{ startupId: string; observationId: string }>;
   }
@@ -191,8 +194,14 @@ export function validRepositoryGitRecipient(
   return (
     !!value &&
     profile !== undefined &&
+    (authorization === "network-policy"
+      ? /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+          value.nativeStartupId ?? "",
+        )
+      : !Object.hasOwn(value, "nativeStartupId")) &&
     (authorization === undefined ||
       authorization === "online-request" ||
+      (authorization === "network-policy" && profile === "github_repository") ||
       (authorization === "request-hook-observed" &&
         profile === "github_installation" &&
         /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
@@ -356,12 +365,13 @@ export interface CredentialSourceControl {
   assertAvailable(
     signal: AbortSignal,
     profile?: RepositoryGitDeliveryProfile,
+    nativeGit?: "v1",
   ): Promise<
     | void
     | "github_installation"
     | {
         readonly profile: RepositoryGitDeliveryProfile;
-        readonly authorization: "online-request" | "request-hook-observed";
+        readonly authorization: NonNullable<ProxyPlan["repositoryGitAuthorization"]>;
       }
   >;
 }
@@ -374,7 +384,22 @@ export async function repositoryGitAuthorization(
   control: CredentialSourceControl,
   signal: AbortSignal,
   profile?: RepositoryGitDeliveryProfile,
-): Promise<"exact-dispatch" | "online-request" | "request-hook-observed" | "unavailable"> {
+  nativeGit?: "v1",
+): Promise<
+  "exact-dispatch" | NonNullable<ProxyPlan["repositoryGitAuthorization"]> | "unavailable"
+> {
+  if (nativeGit !== undefined) {
+    if (nativeGit !== "v1" || profile !== "github_repository") {
+      return "unavailable";
+    }
+    const confirmed = await control.assertAvailable(signal, profile, nativeGit);
+    return confirmed &&
+      typeof confirmed === "object" &&
+      confirmed.profile === profile &&
+      confirmed.authorization === "network-policy"
+      ? "network-policy"
+      : "unavailable";
+  }
   const confirmed = await control.assertAvailable(signal, profile);
   if (profile && typeof confirmed === "object" && confirmed !== null) {
     if (
@@ -472,7 +497,8 @@ export interface CredentialUpdateNotification {
   readonly version?: string;
 }
 
-export interface CredentialProxyDriver extends Driver {
+// TODO(credential proxy cutover): remove this contract after legacy protected serving is retired.
+export interface LegacyEgressProxyDriver extends Driver {
   readonly capability: "credential_proxy";
   readonly sourceControl: CredentialSourceControl;
   readonly policyReduction?: CredentialPolicyReducer;
@@ -493,9 +519,21 @@ export interface CredentialProxyDriver extends Driver {
     installation: EgressInstallation,
   ): Promise<boolean>;
   removeRevision(context: ProxyRevisionContext): Promise<boolean>;
+}
+
+/** Trusted, material-free context for a staged credential deployment. */
+export interface CredentialDeploymentContext {
+  readonly namespace: Readonly<Namespace>;
+  readonly revision: Readonly<AgentRevision>;
+  readonly signal: AbortSignal;
+}
+
+/** Credential delivery for staged Agent deployments, independent of legacy protected egress. */
+export interface CredentialProxyDriver extends Driver {
+  readonly capability: "credential_proxy_delivery";
   /** Prepare staged proxy resources for this exact Namespace and Agent revision. */
-  deployProxy?(
-    context: Pick<ProxyRevisionContext, "namespace" | "revision" | "signal">,
+  deployProxy(
+    context: CredentialDeploymentContext,
     input: {
       readonly deployment: CredentialDeploymentRef;
       readonly networkAccessPolicy: NetworkAccessPolicy;
@@ -503,8 +541,8 @@ export interface CredentialProxyDriver extends Driver {
     },
   ): Promise<{ readonly proxyRouting?: CredentialProxyRouting }>;
   /** Configure this revision's actual target; reject a mismatched target before resolving. */
-  configureDeployment?(
-    context: Pick<ProxyRevisionContext, "namespace" | "revision" | "signal">,
+  configureDeployment(
+    context: CredentialDeploymentContext,
     input: CredentialDeploymentConfiguration & {
       readonly bindings: readonly {
         readonly binding: DeploymentCredentialBinding;
@@ -519,13 +557,13 @@ export interface CredentialProxyDriver extends Driver {
   /** Observe without reload, repair or upstream user operations. Each binding using pushed material
    * needs a serving copy on this target, and every serving copy must have the expected version.
    * A shared provider instead needs the current effective policy. Both require the expected configuration. */
-  getDeploymentStatus?(
-    context: Pick<ProxyRevisionContext, "namespace" | "revision" | "signal">,
+  getDeploymentStatus(
+    context: CredentialDeploymentContext,
     expected: CredentialDeploymentConfiguration,
   ): Promise<CredentialDeploymentReadiness>;
   /** Remove only resources bound to this target, or unbound resources if staging failed. */
-  removeDeployment?(
-    context: Pick<ProxyRevisionContext, "namespace" | "revision" | "signal">,
+  removeDeployment(
+    context: CredentialDeploymentContext,
     input:
       | { readonly targetRef: CredentialDeploymentTarget; readonly bindingRefs?: readonly string[] }
       | { readonly unboundDeployment: CredentialDeploymentRef },
@@ -541,10 +579,10 @@ export interface CredentialProxyDriver extends Driver {
   ): Promise<void>;
 }
 
-/** Durable admission semantics. v7 adds verified Git policy reduction to exact dispatch. */
+/** Durable admission semantics. v8 selects finite native Git enforcement. */
 export type ExecutionAdmission =
   | { readonly version: 2; readonly mode: "unprotected" }
-  | { readonly version: 3 | 4 | 5 | 6 | 7; readonly mode: "protected" };
+  | { readonly version: 3 | 4 | 5 | 6 | 7 | 8; readonly mode: "protected" };
 
 export function protectedRepositoryGitAdmission(
   admission: ExecutionAdmission | undefined,
@@ -553,7 +591,8 @@ export function protectedRepositoryGitAdmission(
     admission?.version === 4 ||
     admission?.version === 5 ||
     admission?.version === 6 ||
-    admission?.version === 7
+    admission?.version === 7 ||
+    admission?.version === 8
   );
 }
 
@@ -597,16 +636,27 @@ export function assertExecutionAdmission(
     throw new Error("Reducible repository Git requires reduction version 2.");
   }
   const repository = revision.egressPlan?.repositoryGit;
+  const profile = repositoryGitDeliveryProfile(repository);
+  const authorization = {
+    2: undefined,
+    3: undefined,
+    4: undefined,
+    5: "online-request",
+    6: "request-hook-observed",
+    7: undefined,
+    8: "network-policy",
+  } as const;
   if (
     (protectedRepositoryGitAdmission(admission)
-      ? !repositoryGitDeliveryProfile(repository)
+      ? profile === undefined
       : repository !== undefined) ||
-    (admission.version === 6
-      ? revision.egressPlan?.repositoryGitAuthorization !== "request-hook-observed" ||
-        repositoryGitDeliveryProfile(repository) !== "github_installation"
-      : admission.version === 5
-        ? revision.egressPlan?.repositoryGitAuthorization !== "online-request"
-        : revision.egressPlan?.repositoryGitAuthorization !== undefined)
+    authorization[admission.version] !== plan?.repositoryGitAuthorization ||
+    (admission.version === 6 && profile !== "github_installation") ||
+    (admission.version === 8 &&
+      (profile !== "github_repository" ||
+        repository?.standingApprovalId !== undefined ||
+        !Number.isSafeInteger(repository?.deadlineWallMs) ||
+        repository!.deadlineWallMs <= 0))
   ) {
     throw new Error("Repository Credential Proxy requires its own protected execution admission.");
   }

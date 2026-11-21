@@ -180,6 +180,10 @@ export interface GatewayOptions extends RuntimeOptions {
   gatewayCall?: (
     method: string,
     signal: AbortSignal,
+    transport: {
+      rpcOptions: Readonly<Record<string, unknown>>;
+      extra: Readonly<Record<string, unknown>>;
+    },
   ) => Record<string, unknown> | undefined | Promise<Record<string, unknown> | undefined>;
   setTimeout?: (callback: () => void, ms: number) => { unref(): void };
   Date?: Pick<DateConstructor, "now">;

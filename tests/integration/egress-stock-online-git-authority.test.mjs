@@ -8,18 +8,12 @@ import { createServer as httpsServer } from "node:https";
 import { createConnection } from "node:net";
 import { readFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
-import {
-  harnessEgressEnrollment,
-  signComputeExecutionRelease,
-  signComputeRepositoryGitProbe,
-} from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { createOpenShellOnlineGitAuthority } from "../../apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts";
 import { onlineGitAllow, openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
 import { invoke, token } from "../helpers/openshell-online-wire.mjs";
 import {
   HARNESS_EGRESS_ENROLLMENT_HELPER,
   HARNESS_EGRESS_ENROLLMENT_PATH,
-  HARNESS_REPOSITORY_GIT_ENROLLMENT_HELPER,
 } from "../../apps/controller/src/drivers/compute/harness-egress-enrollment.ts";
 import { ObservedHookPreview } from "../../apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts";
 import { OpenShellPreparedGitProvider } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
@@ -1069,36 +1063,24 @@ test("repository API credential issuance is refused while ordinary collaboration
 
 // The generated launcher uses real curl, verified loopback TLS and the signed RPC.
 // The HTTP adapter does not emulate stock policy enforcement: the assertion compares
-// the actual request with the provider's emitted discovery rule.
+// the actual request with the provider's emitted literal-prefix endpoint contract.
 // This is startup protocol integration, not an installed OpenShell supervisor proof.
 test(
   "held Git startup observes a denial inside its provider endpoint without credential access",
   { timeout: 30000 },
   async (t) => {
-    for (const scope of [
-      { repository: "example/project" },
-      { installationId: "1234" },
-      {
-        installationId: "1234",
-        repositoryNetworkPolicy: [{ repository: "oce-observe-request/project", access: "read" }],
-      },
-    ]) {
-      const aclRepository = scope.repositoryNetworkPolicy?.[0]?.repository;
+    for (const scope of [{ repository: "example/project" }, { installationId: "1234" }]) {
       await t.test(
-        aclRepository
-          ? "repository ACL discovery"
-          : scope.repository
-            ? "repository endpoint"
-            : "installation endpoint",
+        scope.repository ? "repository endpoint" : "installation endpoint",
         async (t) => {
           const preview = new ObservedHookPreview(
             binding.workspace,
             binding.bindingId,
-            Boolean(scope.repository || aclRepository),
+            !!scope.repository,
           );
           preview.recipient = "qualified-recipient";
           preview.bootstrapRevision = "1";
-          const provider = new OpenShellPreparedGitProvider(
+          const rule = new OpenShellPreparedGitProvider(
             {},
             {
               ...scope,
@@ -1110,43 +1092,25 @@ test(
               apiOrigin: "https://api.github.com",
               binaries: ["/usr/bin/git"],
             },
-          );
-          const endpoint = provider
-            .previewNetworkRule()
-            .endpoints.find((value) => value.host === "github.com");
+          ).previewNetworkRule();
+          const endpoint = rule.endpoints.find((value) => value.host === "github.com");
           let hookCalls = 0;
           let requests = 0;
           let lookups = 0;
-          let released = false;
-          const approvals = [];
+          let approvals = 0;
           const { client, keys } = await openShellOnlineGitWire(t, {
             registrationName: "oce-prepared-git",
-            reservesLegacyProbePath: () => !provider.hasRepositoryNetworkPolicy,
             previewDenial: (q) => {
               hookCalls++;
-              return released ? undefined : preview.deny(q, binding.sandboxId);
+              return preview.deny(q, binding.sandboxId);
             },
             lookupBinding: async () => {
               lookups++;
-              return released
-                ? {
-                    ...binding,
-                    scope: "github-repository",
-                    installationId: scope.installationId,
-                    apiOrigin: "https://api.github.com",
-                    repositories: [
-                      { repositoryId: binding.repositoryId, repository: aclRepository },
-                    ],
-                    installed: {
-                      ...binding.installed,
-                      route: { revisionId: binding.executionId, fence: 1 },
-                    },
-                  }
-                : undefined;
+              return undefined;
             },
-            authorizeOnlineRequest: async (q, installed) => {
-              approvals.push(q.operation);
-              return onlineGitAllow(q, installed);
+            authorizeOnlineRequest: async () => {
+              approvals++;
+              return { kind: "denied", reason: "unavailable" };
             },
           });
           const bearer = token(keys, "supervisor", binding.sandboxId);
@@ -1166,15 +1130,7 @@ test(
               assert.equal(req.headers.cookie, undefined);
               const url = new URL(req.url, "https://github.com");
               assert.equal(url.search, "?service=git-upload-pack");
-              if (aclRepository) {
-                assert.deepEqual(endpoint.rules[0], {
-                  allow: {
-                    method: "GET",
-                    path: url.pathname,
-                    query: { service: { glob: "git-upload-pack" } },
-                  },
-                });
-              } else if (scope.repository) {
+              if (scope.repository) {
                 assert.equal(endpoint.path, "/example/project.git/**");
                 assert.ok(
                   url.pathname.startsWith(endpoint.path.slice(0, -2)),
@@ -1186,13 +1142,7 @@ test(
                 });
                 assert.ok(url.pathname.endsWith("/info/refs"));
               }
-              const nonce = req.headers["x-oce-git-startup-probe"];
-              const q = request(
-                url.pathname,
-                "GET",
-                Buffer.alloc(0),
-                nonce === undefined ? [] : [{ name: "x-oce-git-startup-probe", value: nonce }],
-              );
+              const q = request(url.pathname);
               q.middleware_name = "oce-prepared-git";
               q.target.query = url.search.slice(1);
               const decision = await invoke(client, "EvaluateHttpRequest", q, bearer);
@@ -1234,55 +1184,22 @@ test(
           const reservation = await reservePort({ host: "0.0.0.0" });
           t.after(() => reservation.release());
           const revisionId = "revision-fixture";
-          const execution = {
-            installationId: "installation",
-            namespaceId: "tenant",
-            agentId: "agent",
-            servicePrincipalId: "principal",
-            revisionId,
-            executionId: binding.executionId,
-          };
-          const enrolledPath = aclRepository ? "/" + aclRepository + ".git/info/refs" : undefined;
-          const plan = {
-            id: "plan",
-            generation: 1,
-            execution,
-            sandboxDriverId: "openshell",
-            egressDriverId: "openshell",
-            repositoryGitAuthorization:
-              scope.repository || aclRepository ? "online-request" : "request-hook-observed",
-            ...(aclRepository && {
-              harnessCredentialSource: {
-                method: "credential_source",
-                sourceId: "model-credential",
-                credentialGatewayId: "openshell",
-                sourceType: "openai",
-                loginMode: "api_key",
-              },
-            }),
-            routes: [],
-            repositoryGit: {
-              driver: { id: "repo", implementation: "github" },
-              deadlineWallMs: Date.now() + 300_000,
-              bindings: [
-                {
-                  profile: aclRepository
-                    ? "github-repository"
-                    : scope.repository
-                      ? "git-write"
-                      : "github-installation",
-                  backendId: "github",
-                  repositoryRef: "fixture-repository",
-                  grant: {
-                    providerInstanceId: binding.providerInstanceId,
-                    repositoryId: binding.repositoryId,
-                    grantId: binding.grantId,
-                  },
-                },
-              ],
+          const enrollment = {
+            inference: false,
+            routeCount: 1,
+            plan: { id: "plan", generation: 1 },
+            execution: {
+              installationId: "installation",
+              namespaceId: "tenant",
+              agentId: "agent",
+              servicePrincipalId: "principal",
+              revisionId,
+              executionId: binding.executionId,
             },
+            repositoryGitAuthorization: scope.repository
+              ? "online-request"
+              : "request-hook-observed",
           };
-          const enrollment = harnessEgressEnrollment(plan, enrolledPath);
           const releaseKey = generateKeyPairSync("ed25519");
           const transport = "synthetic-harness-transport";
           const launcher = spawn(
@@ -1292,9 +1209,7 @@ test(
               "--input-type=commonjs",
               "-e",
               "const isPlainObject = v => !!v && Object.getPrototypeOf(v) === Object.prototype;\n" +
-                (aclRepository
-                  ? HARNESS_REPOSITORY_GIT_ENROLLMENT_HELPER
-                  : HARNESS_EGRESS_ENROLLMENT_HELPER) +
+                HARNESS_EGRESS_ENROLLMENT_HELPER +
                 "\nwaitForHarnessEgressEnrollment(" +
                 JSON.stringify(enrollment) +
                 ").catch(() => process.exitCode = 1);",
@@ -1348,28 +1263,12 @@ test(
             "content-type": "application/json",
           };
           const challenge = await (await fetch(url, { headers })).json();
-          const { probePath, probeNonce } = aclRepository
-            ? preview.armRepositoryDiscovery(challenge.startupId, aclRepository)
-            : { probePath: preview.arm(challenge.startupId, scope.repository) };
-          const probeSignature =
-            probeNonce === undefined
-              ? undefined
-              : signComputeRepositoryGitProbe(
-                  releaseKey.privateKey,
-                  challenge.startupId,
-                  probePath,
-                  probeNonce,
-                );
+          const probePath = preview.arm(challenge.startupId, scope.repository);
           const send = (path) =>
             fetch(url, {
               method: "POST",
               headers,
-              body: JSON.stringify({
-                startupId: challenge.startupId,
-                probePath: path,
-                probeNonce,
-                probeSignature,
-              }),
+              body: JSON.stringify({ startupId: challenge.startupId, probePath: path }),
               signal: AbortSignal.timeout(15000),
             });
           // Invalid URLs cannot send a request or consume the single valid challenge.
@@ -1392,20 +1291,11 @@ test(
           // Malformed, replayed and substituted challenges stay on the denial path before binding lookup.
           for (const path of [
             probePath,
-            aclRepository
-              ? "/other/project.git/info/refs"
-              : probePath.replace(/[0-9a-f]{32}\.git/, "bad-nonce.git"),
+            probePath.replace(/[0-9a-f]{32}\.git/, "bad-nonce.git"),
             probePath.replace("/info/refs", "/git-upload-pack"),
             "/other/project.git/oce-observe-request/" + "0".repeat(32) + ".git/info/refs",
           ]) {
-            const q = request(
-              path,
-              "GET",
-              Buffer.alloc(0),
-              probeNonce === undefined
-                ? []
-                : [{ name: "x-oce-git-startup-probe", value: probeNonce }],
-            );
+            const q = request(path);
             q.middleware_name = "oce-prepared-git";
             q.target.query = "service=git-upload-pack";
             assert.deepEqual(await invoke(client, "EvaluateHttpRequest", q, bearer), {
@@ -1414,78 +1304,12 @@ test(
             });
           }
           assert.equal(lookups, 0, "startup must not look up credential material");
-          assert.deepEqual(approvals, [], "startup must never authorize a Git operation");
+          assert.equal(approvals, 0, "startup must never authorize a Git operation");
           assert.equal(
             (await fetch(url, { headers })).status,
             200,
             "observation alone must not release the held launcher",
           );
-          if (aclRepository) {
-            const installation = {
-              plan,
-              sandboxId: binding.sandboxId,
-              sender: { id: "sender", generation: 1 },
-              installedAt: new Date().toISOString(),
-              enforcement: {
-                instanceId: "instance",
-                configurationId: "configuration",
-                policyHash: "policy",
-                authorityScope: "execution",
-                repositoryGitRecipient: {
-                  providerId: "provider",
-                  attachmentEpoch: "attachment",
-                  processInstanceId: "process",
-                  networkInstanceId: "network",
-                  deliveryProfile: "github_repository",
-                  authorization: "online-request",
-                },
-              },
-            };
-            const signedRelease = signComputeExecutionRelease(
-              releaseKey.privateKey,
-              challenge.startupId,
-              installation,
-              enrolledPath,
-            );
-            const release = await fetch(url, {
-              method: "POST",
-              headers,
-              body: JSON.stringify(signedRelease),
-            });
-            assert.equal(release.status, 200);
-            assert.deepEqual(await release.json(), {
-              enrolled: true,
-              startupId: challenge.startupId,
-            });
-            assert.deepEqual(await exited, [0, null]);
-            released = true;
-
-            // The same repository path belongs to regular Git traffic after release.
-            const discovery = (marker) => {
-              const q = request(
-                probePath,
-                "GET",
-                Buffer.alloc(0),
-                marker ? [{ name: "x-oce-git-startup-probe", value: probeNonce }] : [],
-              );
-              q.middleware_name = "oce-prepared-git";
-              q.target.query = "service=git-upload-pack";
-              return invoke(client, "EvaluateHttpRequest", q, bearer);
-            };
-            assert.deepEqual(await discovery(true), {
-              decision: 2,
-              reason_code: "preview_challenge_refused",
-            });
-            assert.equal(
-              lookups,
-              0,
-              "marked requests remain outside credential lookup after release",
-            );
-            assert.deepEqual(approvals, []);
-            assert.equal((await discovery(false)).decision, 1);
-            assert.equal(lookups, 1);
-            assert.deepEqual(approvals, ["advertise-upload-pack"]);
-          }
         },
       );
     }

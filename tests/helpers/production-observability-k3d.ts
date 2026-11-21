@@ -9,7 +9,7 @@ import { Check } from "typebox/value";
 import type { OpenClawConfigurationDocument } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { run as runCommand } from "../fixtures/repository-credentials/process.ts";
-import { prepareObservabilityNativeRepository } from "./observability-native-repository.mjs";
+import { prepareObservabilityNativeRepository } from "./observability-native-repository.ts";
 import { createObservabilityCollector } from "./production-observability-collector.ts";
 import { installProductionHelmControlPlane } from "./production-helm-real.ts";
 import {
@@ -65,6 +65,8 @@ const nativeRepositoryValues = Type.Object({
   upstreamCidrs: Type.Array(Type.String()),
 });
 
+export type NativeRepositoryValues = Static<typeof nativeRepositoryValues>;
+
 type HarnessConfiguration = OpenClawConfigurationDocument & {
   agents: { defaults: OpenClawConfigurationDocument };
 };
@@ -110,6 +112,19 @@ export const observabilitySelection = {
       : "Select k3d-observability with the CI runner; see docs/testing/local.md#kubernetes-observability-acceptance.",
   timeout: 1_200_000,
 };
+
+// A waited Namespace delete costs about 16 s of Kubernetes namespace-controller passes.
+// Each test starts its deletes; the test file's after hook waits for all of them once, so a
+// later test overlaps an earlier teardown and a Namespace that never goes still fails the file.
+const pendingNamespaceDeletes: (() => Promise<unknown>)[] = [];
+
+export async function waitForObservabilityNamespaces() {
+  const results = await Promise.allSettled(pendingNamespaceDeletes.splice(0).map((wait) => wait()));
+  const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+  if (errors.length) {
+    throw new AggregateError(errors, "observability namespace cleanup failed");
+  }
+}
 
 // Own only test resources. API calls, lifecycle, telemetry and policy enforcement
 // all use the installed production implementations, with a credential-free runtime fixture.
@@ -223,17 +238,21 @@ export async function installObservabilityControlPlane(
       errors.push(error);
     }
     try {
-      await kubectl(
+      await kubectl("delete", "namespace", ...namespaces, "--ignore-not-found", "--wait=false");
+    } catch (error) {
+      errors.push(error);
+    }
+    // Callers register waitForObservabilityNamespaces as their file's after hook.
+    pendingNamespaceDeletes.push(() =>
+      kubectl(
         "delete",
         "namespace",
         ...namespaces,
         "--ignore-not-found",
         "--wait=true",
         "--timeout=120s",
-      );
-    } catch (error) {
-      errors.push(error);
-    }
+      ),
+    );
     await rm(directory, { recursive: true, force: true });
     if (errors.length) {
       throw new AggregateError(errors, "observability resource cleanup failed");
@@ -266,9 +285,9 @@ export async function installObservabilityControlPlane(
       modelProvider: { protocol: "openai-responses", baseUrl: "https://model.stub.invalid/v1" },
     });
   }
-  let repositoryCredentials: Static<typeof nativeRepositoryValues> | undefined;
+  let repositoryCredentials: NativeRepositoryValues | undefined;
   if (nativeRepository) {
-    const prepared: unknown = await prepareObservabilityNativeRepository({
+    const prepared = await prepareObservabilityNativeRepository({
       configuration,
       system,
       release,

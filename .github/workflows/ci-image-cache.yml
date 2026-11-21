@@ -33,7 +33,6 @@ on:
       - scripts/auth-maintain.ts
       - scripts/build-repository-credentials.ts
       - scripts/build-runtime-assets.ts
-      - scripts/write-inspected-workspace-image-pin.ts
       - scripts/ci/download-pinned.sh
       - scripts/ci/prepare.ts
       - scripts/ci/prepare-inputs.ts

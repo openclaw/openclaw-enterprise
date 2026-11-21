@@ -1,15 +1,10 @@
-import { fixtureRelease, selectFixtureRelease } from "../helpers/inspected-workspace-release.ts";
-import {
-  workspaceNodeSetupSecret,
-  workspaceNodeSetupSecretData,
-} from "./sandbox-driver-workspace-node-setup-fixture.ts";
 import {
   assertGitExecutionContinuity,
   verifyManagedGitReplacement,
-} from "./sandbox-driver-managed-git-cases.mjs";
+} from "./sandbox-driver-managed-git-cases.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { generateKeyPairSync, randomUUID, verify } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
@@ -19,39 +14,11 @@ import {
   openShellWorkspaceName,
 } from "../../apps/controller/src/backends/openshell.ts";
 import { bindRepositoryGitTransport } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
-import {
-  COMPUTE_RELEASE_PROFILE,
-  HARNESS_EGRESS_ENROLLMENT_PATH,
-  harnessEgressEnrollment,
-  repositoryGitStartupProbePath,
-  signComputeExecutionRelease,
-  signComputeRepositoryGitProbe,
-} from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
-import {
-  COMPUTE_REPOSITORY_GIT_PROBE_PROFILE,
-  HARNESS_REPOSITORY_GIT_PROBE_HEADER,
-} from "../../apps/controller/src/drivers/compute/harness-egress-enrollment.ts";
-import { openShellPolicyBaselineDigest } from "../../apps/controller/src/drivers/sandbox/openshell-policy.ts";
-import type { OpenShellSandboxResponse } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import {
-  KubernetesComputeDriver,
-  type KubernetesComputeDriverOptions,
-} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { harnessEgressEnrollment } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
-import {
-  resolveGitHubRepositoryBinding,
-  validateGitHubRepositoryRegistry,
-} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
-import {
-  admitSandboxRepositoryNetworkPolicy,
-  freezeAgentRevision,
-  admitLoggingConfiguration,
-} from "../../packages/contracts/src/index.ts";
 import type {
   AgentRevision,
-  EgressInstallation,
-  ProtectedGitHubRepositoryMaterial,
   HarnessWorkloadRequirements,
   ProtectedRepositoryGitAuthority,
   ProxyPlan,
@@ -62,7 +29,6 @@ import { asRecord } from "../../packages/utils/src/index.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.ts";
 import type { GitWorkspaceInput } from "../fixtures/openshell-git-workspace.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { stockGitPolicy } from "../helpers/openshell-stock-git-policy.ts";
 import { verifyOpenShellPushNegotiation } from "../helpers/openshell-git-push-negotiation.ts";
 import { runDocker } from "../helpers/runtime-image-docker.ts";
 import { image, imageTestOptions } from "../helpers/runtime-image-startup.ts";
@@ -79,9 +45,6 @@ const noMaterial = {
 async function bindGitWithFixtureRoutes(
   t: TestContext,
   drivers: ProtectedOpenShellGitFixture["protectedGit"],
-  readMaterial: NonNullable<
-    ProtectedRepositoryGitAuthority["online"]["githubRepository"]
-  >["readMaterial"] = noMaterial.readMaterial,
 ) {
   // The image lane has no PostgreSQL. Substitute the existing route-store fixture at
   // the public runtime start boundary while binding the real worker, authority, and Sandbox.
@@ -89,7 +52,7 @@ async function bindGitWithFixtureRoutes(
   const routes = routeStore();
   const authority = {
     ...noMaterial,
-    online: { ...noMaterial, githubRepository: { ...noMaterial, readMaterial } },
+    online: { ...noMaterial, githubRepository: noMaterial },
     recipients: { observe: outOfScope, beginInstall: outOfScope, confirmInstall: outOfScope },
   } satisfies ProtectedRepositoryGitAuthority;
   const start = OpenShellGitRuntime.prototype.start;
@@ -122,7 +85,6 @@ async function bindGitWithFixtureRoutes(
 function enrolledRequirements(
   requirements: HarnessWorkloadRequirements,
   proxyWiring: ProxyWiring,
-  probePath?: string,
 ): HarnessWorkloadRequirements {
   const [manifest, ...files] = requirements.files;
   assert.ok(manifest);
@@ -140,7 +102,7 @@ function enrolledRequirements(
           kind: "codex",
           selections: {},
           providerTools: "none",
-          egressEnrollment: harnessEgressEnrollment(proxyWiring.plan, probePath),
+          egressEnrollment: harnessEgressEnrollment(proxyWiring.plan),
         }),
       },
       ...files,
@@ -171,8 +133,31 @@ function observedGitSpec(spec: Readonly<Record<string, unknown>>) {
   return { providerNames, environment: env, networkPolicies, gitEnvironment };
 }
 
-function protectedRevision(fixture: ProtectedOpenShellGitFixture) {
-  const { owner, auth, sandbox, protectedGit, revision } = fixture;
+export async function verifyProtectedOpenShellGitExecution(
+  subtest: TestContext,
+  {
+    protectedGit,
+    owner,
+    sandbox,
+    context,
+    revision,
+    requirements,
+    auth,
+    inferenceProvider,
+    gateway,
+    getCreated,
+    restoreCreated,
+    registry,
+    sandboxConfiguration,
+    workspaceMountPath,
+    backend,
+    authorityPort,
+    tlsDirectory,
+    loadSandbox,
+    reloadWithRegistry,
+  }: ProtectedOpenShellGitFixture,
+): Promise<void> {
+  const proxy = protectedGit.proxyDriver;
   const revisionId = "rev_" + randomUUID();
   const plan: ProxyPlan = {
     id: randomUUID(),
@@ -191,17 +176,12 @@ function protectedRevision(fixture: ProtectedOpenShellGitFixture) {
     repositoryGit: revision.repositoryCredentials,
     repositoryGitAuthorization: "online-request",
     sandboxDriverId: sandbox.id,
-    egressDriverId: protectedGit.proxyDriver.id,
+    egressDriverId: proxy.id,
   };
   const configuration = createHarnessConfiguration("codex", "gpt-5");
-  return {
+  const rev: AgentRevision = {
     ...revision,
     id: revisionId,
-    compute: {
-      id: protectedGit.computeDriver.id,
-      implementation: protectedGit.computeDriver.implementation,
-    },
-    sandboxDriverId: sandbox.id,
     harnessAuth: auth,
     egressPlan: plan,
     executionAdmission: { version: 5, mode: "protected" },
@@ -214,264 +194,7 @@ function protectedRevision(fixture: ProtectedOpenShellGitFixture) {
         configuration,
       ),
     },
-  } satisfies AgentRevision;
-}
-
-function repositoryScopedRevision(
-  { registry, sandbox }: ProtectedOpenShellGitFixture,
-  rev: ReturnType<typeof protectedRevision>,
-  standingApprovalId?: string,
-) {
-  const selected = resolveGitHubRepositoryBinding(validateGitHubRepositoryRegistry(registry), {
-    namespaceId: rev.namespaceId,
-    repositoryRef: "read-source",
-    profile: "github-repository",
-  });
-  const repositoryCredentials = {
-    ...rev.repositoryCredentials,
-    bindings: [selected] as const,
-    ...(standingApprovalId && { standingApprovalId }),
   };
-  const grants = [{ repository: "example/read-source", access: "read" }] as const;
-  const sandboxPolicy = admitSandboxRepositoryNetworkPolicy(
-    sandbox.admitProtectedCodexArtifactPolicy(3).snapshot,
-    grants,
-    grants,
-    sandbox,
-  );
-  return {
-    ...rev,
-    egressPlan: { ...rev.egressPlan, repositoryGit: repositoryCredentials },
-    repositoryCredentials,
-    sandboxPolicy,
-  };
-}
-
-export function capturedWorkspaceRevision(
-  fixture: ProtectedOpenShellGitFixture,
-  compute: KubernetesComputeDriver,
-  standingApprovalId?: string,
-) {
-  const { credentialGatewayId, sourceId, sourceType } = fixture.auth;
-  const draft = {
-    ...repositoryScopedRevision(fixture, protectedRevision(fixture), standingApprovalId),
-    gatewayManagedMode: true,
-    configuration: admitLoggingConfiguration(createHarnessConfiguration("codex", "gpt-5"), "info"),
-    credentialSources: [{ credentialGatewayId, sourceId, sourceType }],
-  };
-  const admission = compute.admitRevision(draft);
-  assert.ok(admission);
-  const admitted = { ...draft, compute: { ...draft.compute, admission } };
-  const runtimeInputs = compute.snapshotRuntimeInputs(admitted);
-  assert.ok(runtimeInputs);
-  return { ...admitted, compute: { ...admitted.compute, runtimeInputs } };
-}
-
-export async function verifyProtectedRepositoryRuntimeImages(
-  fixture: ProtectedOpenShellGitFixture,
-) {
-  const { protectedGit, owner, sandbox, context, revision, requirements } = fixture;
-  const providersBefore = [...fixture.gateway.providers.keys()];
-  const profilesBefore = [...fixture.gateway.profiles.keys()];
-  const compute = protectedGit.computeDriver;
-  const { credentialGatewayDriver } = protectedGit;
-  const nodeEnrollment = compute["nodeEnrollment"];
-  const options = compute["options"];
-  assert.ok(credentialGatewayDriver && nodeEnrollment);
-  const images = options.images;
-  const { gateway, agent } = images;
-  const computeWithImages = (selected: KubernetesComputeDriverOptions["images"]) =>
-    new KubernetesComputeDriver(
-      { ...options, images: selected },
-      {
-        id: compute.id,
-        implementation: compute.implementation,
-        protectedDriver: owner,
-        credentialGatewayDriver,
-        nodeEnrollment,
-      },
-    );
-  const { credentialGatewayId, sourceId, sourceType } = fixture.auth;
-  const draft = {
-    ...repositoryScopedRevision(fixture, protectedRevision(fixture)),
-    credentialSources: [{ credentialGatewayId, sourceId, sourceType }],
-  };
-  const admit = (driver: KubernetesComputeDriver) => {
-    const admission = driver.admitRevision(draft);
-    assert.ok(admission);
-    return { ...draft, compute: { ...draft.compute, admission } };
-  };
-  const admitted = admit(compute);
-  const runtimeInputs = compute.snapshotRuntimeInputs(admitted);
-  assert.ok(runtimeInputs, "the protected repository policy must carry its saved image selection");
-  assert.match(runtimeInputs, /^planned-runtime:v2:/);
-  const withInputs = (inputs?: string): AgentRevision =>
-    freezeAgentRevision({
-      ...admitted,
-      compute: { ...admitted.compute, ...(inputs !== undefined && { runtimeInputs: inputs }) },
-    });
-  const saved = withInputs(runtimeInputs);
-  assert.equal(compute["workloadImages"](saved, "gateway").runtime, gateway);
-  const harnessImage = compute["workloadImages"](saved, "agent").runtime;
-  assert.equal(harnessImage, agent);
-  // This renderer check observes the image field only. Routed activation must still refuse.
-  const spec = sandbox["harnessSpec"](
-    { ...context, revision, requirements: { ...requirements, image: harnessImage } },
-    "runtime-files",
-    new Set(["OPENCLAW_NODE_SETUP_CODE", "OPENCLAW_NODE_CA_PEM"]),
-  );
-  assert.equal(spec.template.image, agent);
-
-  for (const input of [
-    undefined,
-    "planned-runtime:v2:{",
-    runtimeInputs.replace("planned-runtime:v2:", "planned-runtime:v3:"),
-    runtimeInputs.replace("planned-runtime:v2:", "planned-runtime:v1:"),
-    runtimeInputs.replace(agent, "registry.example.test/runtime/agent:latest"),
-    runtimeInputs.replace(agent, agent.replace("/runtime/", "/Invalid/")),
-  ]) {
-    await assert.rejects(
-      compute.prepareRevision(withInputs(input)),
-      /runtime admission is invalid/,
-    );
-    await assert.rejects(
-      compute.activateRevision(withInputs(input)),
-      /runtime admission is invalid/,
-    );
-  }
-  const unscoped = {
-    ...saved,
-    sandboxPolicy: sandbox.admitProtectedCodexArtifactPolicy(3).snapshot,
-  };
-  await assert.rejects(compute.prepareRevision(unscoped), /runtime admission is invalid/);
-
-  const wrongOwner = { ...saved, compute: { ...saved.compute, id: "foreign-compute" } };
-  const wrongActor = { ...saved, servicePrincipalId: "foreign-service-principal" };
-  const wrongExecution = { ...saved, id: "rev_" + randomUUID() };
-  for (const revision of [wrongOwner, wrongActor, wrongExecution]) {
-    await assert.rejects(
-      compute.prepareRevision(revision),
-      /requires its admitted protected Codex runtime/,
-    );
-  }
-  const changedPolicy = {
-    ...saved,
-    sandboxPolicy: { ...admitted.sandboxPolicy, version: admitted.sandboxPolicy.version + 1 },
-  };
-  const changedDigest = (reference: string) =>
-    reference.replace(/sha256:.*$/, "sha256:" + "c".repeat(64));
-  for (const revision of [
-    changedPolicy,
-    withInputs(runtimeInputs.replace(agent, changedDigest(agent))),
-    withInputs(
-      runtimeInputs.replace(gateway, agent).replace('"agent":"' + agent, '"agent":"' + gateway),
-    ),
-  ]) {
-    await assert.rejects(compute.prepareRevision(revision), /images or policy no longer match/);
-  }
-  const legacy = protectedRevision(fixture);
-  for (const role of ["gateway", "agent"] as const) {
-    const drifted = computeWithImages({ ...images, [role]: changedDigest(images[role]) });
-    await assert.rejects(drifted.activateRevision(saved), /images or policy no longer match/);
-    const tagged = computeWithImages({
-      ...images,
-      requireImmutableDigest: false,
-      [role]: images[role].replace(/@.*/, ":legacy"),
-    });
-    assert.throws(
-      () => tagged.snapshotRuntimeInputs(admit(tagged)),
-      /requires immutable Gateway and Harness/,
-    );
-    assert.equal(tagged.snapshotRuntimeInputs(legacy), undefined);
-    assert.equal(
-      tagged["workloadImages"](legacy, role).runtime,
-      images[role].replace(/@.*/, ":legacy"),
-    );
-  }
-
-  await assert.rejects(
-    compute.prepareRevision(saved),
-    /cannot share Workspace node enrollment over WSS/,
-  );
-  await assert.rejects(
-    compute.activateRevision(saved),
-    /cannot share Workspace node enrollment over WSS/,
-  );
-
-  // Use the same paired Drivers and images in a valid Installation whose direct Gateway
-  // clients cannot supply dedicated placement. The saved revision still pins its own inputs.
-  const { gatewayRouting: _gatewayRouting, ...unroutedOptions } = options;
-  const unrouted = new KubernetesComputeDriver(
-    {
-      ...unroutedOptions,
-      network: {
-        ...options.network,
-        gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }],
-      },
-    },
-    {
-      id: compute.id,
-      implementation: compute.implementation,
-      protectedDriver: owner,
-      credentialGatewayDriver,
-      nodeEnrollment,
-    },
-  );
-  const unroutedAdmission = admit(unrouted);
-  const unroutedInputs = unrouted.snapshotRuntimeInputs(unroutedAdmission);
-  assert.ok(unroutedInputs);
-  const unroutedRevision = freezeAgentRevision({
-    ...unroutedAdmission,
-    compute: { ...unroutedAdmission.compute, runtimeInputs: unroutedInputs },
-  });
-  sandbox.validateProtectedRepositoryNetworkPolicy(unroutedRevision);
-  assert.equal(unrouted.requiresStoppedPredecessors(unroutedRevision), true);
-  assert.throws(
-    () => unrouted.validateProtectedRepositoryNetworkPolicy(unroutedRevision),
-    /Dedicated Agents need gatewayRouting/,
-    "the Worker's pre-stop validator must refuse the missing placement",
-  );
-  await assert.rejects(
-    unrouted.prepareRevision(unroutedRevision),
-    /Dedicated Agents need gatewayRouting/,
-  );
-  await assert.rejects(
-    unrouted.activateRevision(unroutedRevision),
-    /Dedicated Agents need gatewayRouting/,
-  );
-
-  assert.equal(fixture.getCreated(), undefined, "the checks did not create a Sandbox");
-  assert.deepEqual([...fixture.gateway.providers.keys()], providersBefore);
-  assert.deepEqual([...fixture.gateway.profiles.keys()], profilesBefore);
-}
-
-export async function verifyProtectedOpenShellGitExecution(
-  subtest: TestContext,
-  fixture: ProtectedOpenShellGitFixture,
-): Promise<void> {
-  const {
-    protectedGit,
-    owner,
-    sandbox,
-    context,
-    revision,
-    requirements,
-    inferenceProvider,
-    gateway,
-    getCreated,
-    restoreCreated,
-    registry,
-    sandboxConfiguration,
-    workspaceMountPath,
-    backend,
-    authorityPort,
-    tlsDirectory,
-    loadSandbox,
-    reloadWithRegistry,
-  } = fixture;
-  const proxy = protectedGit.proxyDriver;
-  const rev = protectedRevision(fixture);
-  const plan = rev.egressPlan;
   const ctx = { ...context, plan, revision: rev };
   protectedGit.computeDriver.validateExecutionAdmission(rev, owner);
   const admitted = protectedGit.computeDriver.admitRevision(rev);
@@ -513,7 +236,7 @@ export async function verifyProtectedOpenShellGitExecution(
   for (const credentialAttachments of [
     [],
     [{ sourceId: "cs_other", ref: inferenceProvider }],
-    [{ sourceId: fixture.auth.sourceId, ref: openShellProviderName("other") }],
+    [{ sourceId: auth.sourceId, ref: openShellProviderName("other") }],
     [...required.credentialAttachments, { sourceId: "extra", ref: openShellProviderName("extra") }],
   ]) {
     await assert.rejects(
@@ -543,7 +266,6 @@ export async function verifyProtectedOpenShellGitExecution(
   );
   assert.equal(getCreated(), undefined, "the online sender cannot take over a v4 execution");
   // The Git worker has bound its authority port since it started.
-  assert.ok(authorityPort);
   await authorityPort.release();
   const result = await sandbox.provisionHarness({ ...ctx, requirements: required });
   const cold = sandbox.standingGitExecution(ctx);
@@ -643,54 +365,6 @@ export async function verifyProtectedOpenShellGitExecution(
     sandboxes: gateway.sandboxes,
     getCreated,
   });
-
-  await subtest.test(
-    "repository policy refuses routed Workspace enrollment before provisioning",
-    async () => {
-      const compute = protectedGit.computeDriver;
-      const scoped = repositoryScopedRevision(fixture, rev);
-      const scopedAdmission = compute.admitRevision(scoped);
-      assert.ok(scopedAdmission);
-      const routed = { ...scoped, compute: { ...scoped.compute, admission: scopedAdmission } };
-      const runtimeInputs = compute.snapshotRuntimeInputs(routed);
-      assert.ok(runtimeInputs);
-      const pinned = freezeAgentRevision({
-        ...routed,
-        compute: { ...routed.compute, runtimeInputs },
-      });
-      const providersBefore = [...gateway.providers.keys()];
-      const profilesBefore = [...gateway.profiles.keys()];
-      const read = subtest.mock.method(context.kubernetes, "read");
-      try {
-        await assert.rejects(
-          compute.prepareRevision(pinned),
-          /cannot share Workspace node enrollment over WSS/,
-        );
-        assert.equal(
-          required.environment.some(({ name }) => name === "OPENCLAW_NODE_SETUP_CODE"),
-          true,
-          "the same rendered setup is supported by the legacy Git revision",
-        );
-        await assert.rejects(
-          sandbox.provisionHarness({
-            ...ctx,
-            revision: routed,
-            requirements: {
-              ...required,
-              proxyWiring: { ...required.proxyWiring!, plan: routed.egressPlan },
-            },
-          }),
-          /cannot use OpenShell Workspace node enrollment/,
-        );
-        assert.equal(read.mock.callCount(), 0, "no projected setup Secret is read");
-        assert.deepEqual([...gateway.providers.keys()], providersBefore);
-        assert.deepEqual([...gateway.profiles.keys()], profilesBefore);
-        assert.equal(getCreated(), created, "no Sandbox is created");
-      } finally {
-        read.mock.restore();
-      }
-    },
-  );
 
   // Finding 2206: the revision's Git provider and its profile go with its Sandbox. Left
   // behind, they kept the Namespace's Workspace forever: OpenShell refuses DeleteWorkspace
@@ -800,451 +474,4 @@ export async function verifyProtectedOpenShellGitExecution(
   gateway.profiles.delete(reused);
   await sandbox.cleanup(context);
   assert.equal(gateway.workspaces.has(workspace), false, "Workspace deleted");
-}
-
-// OpenShell retains its creation policy in the spec across a stopped workload update.
-function retainedSandboxGateway(gateway: ProtectedOpenShellGitFixture["gateway"], name: string) {
-  let version = 1;
-  const current = () => {
-    const box = gateway.sandboxes.get(name);
-    assert.ok(box);
-    return box;
-  };
-  const mutate = (changes: Partial<OpenShellSandboxResponse>, expected?: string) => {
-    const box = current();
-    if (!changes.phase) {
-      assert.equal(expected, box.resourceVersion, "only mutate the observed version");
-      assert.equal(box.phase, "SANDBOX_PHASE_STOPPED");
-    }
-    const resourceVersion = String(Number(box.resourceVersion) + 1);
-    const updated = { ...box, ...changes, resourceVersion };
-    gateway.sandboxes.set(name, updated);
-    return updated;
-  };
-  gateway.stopSandbox = async () => mutate({ phase: "SANDBOX_PHASE_STOPPED" });
-  gateway.startSandbox = async () =>
-    mutate({
-      phase: "SANDBOX_PHASE_READY",
-      mainProcessInstanceId: randomUUID(),
-      mainProcessStartedAt: new Date().toISOString(),
-    });
-  gateway.updatePolicy = async (request) => {
-    mutate({}, request.expectedResourceVersion);
-    const policy = structuredClone(request.policy);
-    version++;
-    gateway.getPolicyStatus = async () => ({
-      policy: structuredClone(policy),
-      state: "POLICY_STATUS_LOADED",
-      version,
-      activeVersion: version,
-    });
-  };
-  gateway.attachSandboxProvider = async (_workspace, _name, provider, _signal, check) => {
-    const spec = current().spec;
-    assert.ok(Array.isArray(spec?.providers) && check);
-    mutate(
-      { spec: { ...spec, providers: [...spec.providers, provider] } },
-      check.expectedResourceVersion,
-    );
-  };
-  gateway.updateSandbox = async ({ labels, annotations, spec, expectedResourceVersion }) => {
-    const previous = current().spec;
-    assert.ok(previous);
-    const { policy, providers } = previous;
-    return mutate(
-      { labels, annotations, spec: { ...spec, policy, providers } },
-      expectedResourceVersion,
-    );
-  };
-  return current;
-}
-
-async function scopedSupervisor(
-  fixture: ProtectedOpenShellGitFixture,
-  box: OpenShellSandboxResponse,
-  provider: string,
-  token: string,
-) {
-  const { gateway, context } = fixture;
-  const { name, workspace } = box;
-  assert.ok(workspace && gateway.getPolicyStatus);
-  const { policy: loaded, version } = await gateway.getPolicyStatus(
-    { workspace, sandbox: name },
-    context.signal,
-  );
-  assert.ok(asRecord(loaded.network_middlewares)?.["oce-prepared-git"]);
-  const admission = {
-    state: 2,
-    instance_id: "admitted-config",
-    policy_version: version,
-    policy_hash: "policy-one",
-    config_revision: "1",
-    provider_env_revision: "1",
-  };
-  const active = {
-    ...box,
-    spec: { ...box.spec, provider_attachment_epoch: "epoch-one" },
-    configurationAdmission: admission,
-  };
-  gateway.sandboxes.set(name, active);
-  // A source and effective policy can agree on an extra egress destination.
-  // Neither that agreement nor a matching digest on the box proves admission.
-  const extraEndpoint = {
-    host: "mirror.example.test",
-    port: 443,
-    protocol: "rest",
-    enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-    access: "NETWORK_ACCESS_PRESET_READ_WRITE",
-  };
-  const unexpected = {
-    name: "unexpected",
-    binaries: [{ path: "/usr/bin/curl" }],
-    endpoints: [extraEndpoint],
-  };
-  const poison = {
-    ...loaded,
-    network_policies: { ...asRecord(loaded.network_policies), unexpected },
-  };
-  let fault: "source" | "forged annotation" | "effective" | "generation" | undefined;
-  let paired = false;
-  const forged = {
-    ...active,
-    annotations: {
-      ...active.annotations,
-      "openclaw.dev/managed-policy-baseline-v1": openShellPolicyBaselineDigest(poison),
-    },
-  };
-  let forgeAnnotation = false;
-  gateway.getSandbox = async ({ name }) => {
-    const box = forgeAnnotation && name === active.name ? forged : gateway.sandboxes.get(name);
-    forgeAnnotation = false;
-    return box;
-  };
-  // Change the paired policy observations only. Earlier workload verification
-  // and later recipient reads still see the genuine revision and configuration.
-  gateway.getSandboxPolicyStatus = async () => {
-    paired = true;
-    return {
-      active_version: version,
-      revision: {
-        version,
-        status: "POLICY_STATUS_LOADED",
-        policy: fault === "source" || fault === "forged annotation" ? poison : loaded,
-      },
-    };
-  };
-  const names = box.spec?.providers;
-  assert.ok(Array.isArray(names));
-  const rules: Record<string, unknown> = {};
-  for (const providerName of names) {
-    assert.ok(typeof providerName === "string");
-    const attached = gateway.providers.get(providerName);
-    const definition = attached && gateway.profiles.get(attached.type)?.definition;
-    assert.ok(attached?.id && definition);
-    const { binaries = [], endpoints = [], credentials = [] } = definition;
-    assert.ok(Array.isArray(binaries) && Array.isArray(endpoints) && Array.isArray(credentials));
-    const name = "_provider_" + providerName.replaceAll("-", "_");
-    const targets = endpoints.map((raw: unknown) => {
-      const endpoint = asRecord(raw);
-      assert.ok(typeof endpoint?.host === "string");
-      return { ...endpoint, host: endpoint.host, provider_credentialed: credentials.length > 0 };
-    });
-    rules[name] = stockGitPolicy({ name, binaries, endpoints: targets }, attached.id);
-  }
-  gateway.getSandboxConfig = async () => {
-    const change = paired ? fault : undefined;
-    paired = false;
-    forgeAnnotation = change === "forged annotation";
-    const policy = change && change !== "generation" ? poison : loaded;
-    return {
-      policy: { ...policy, network_policies: { ...asRecord(policy.network_policies), ...rules } },
-      version,
-      workspace: box.workspace,
-      configuration_instance_id: admission.instance_id,
-      policy_source: 1,
-      configuration_admitted: true,
-      policy_validation_failure_mode: "fail_closed",
-      extension_authentication_enabled: true,
-      provider_attachment_epoch: active.spec.provider_attachment_epoch,
-      policy_hash: admission.policy_hash,
-      config_revision: change === "generation" ? "2" : admission.config_revision,
-      provider_env_revision: admission.provider_env_revision,
-      supervisor_middleware_services: [
-        {
-          name: "oce-prepared-git",
-          grpc_endpoint: "https://gateway.example.test",
-          audience: "online-authorizer",
-          request_timeout: { seconds: "5" },
-          binding_policy: 2,
-          bindings: [1],
-        },
-      ],
-    };
-  };
-  const rotate: NonNullable<typeof gateway.updateProviderCredentialsConditionally> = async (
-    request,
-    expectedVersion,
-  ) => {
-    assert.equal(request.name, provider);
-    assert.deepEqual(Object.values(request.credentials), [token]);
-    const old = gateway.providers.get(provider);
-    assert.equal(old?.resourceVersion, "1");
-    assert.equal(old.resourceVersion, expectedVersion);
-    assert.ok(old?.id);
-    const receipt = {
-      receipt_id: "git-update",
-      mutation_id: "git-rotation",
-      kind: "PROVIDER_MUTATION_KIND_UPDATE",
-      workspace,
-      provider,
-      desired: { sandbox: name, provider_id: old.id, provider_resource_version: "2" },
-    };
-    const current = {
-      ...old,
-      resourceVersion: "2",
-      mutationId: receipt.mutation_id,
-      targetReceipts: [receipt],
-    };
-    admission.provider_env_revision = "2";
-    gateway.providers.set(provider, current);
-    return current;
-  };
-
-  gateway.prepareProviderCredentialUpdate = async () => rotate;
-  gateway.updateProviderCredentialsConditionally = rotate;
-  return (change?: typeof fault) => {
-    fault = change;
-  };
-}
-
-export async function verifyManagedScopedGitExecution(
-  t: TestContext,
-  fixture: ProtectedOpenShellGitFixture,
-  inspected = false,
-): Promise<void> {
-  const { sandbox: managed, context, revision, requirements, gateway } = fixture;
-  const git = managed["openShellGit"];
-  assert.ok(git);
-  const compute = new ProtectedExecutionDriver(fixture.owner);
-  const workspace = openShellWorkspaceName(context.namespace);
-  // The first workload has neither a Git provider nor middleware. The service
-  // retains its spec after cleanup, even when the next launch enables scoped Git.
-  const { repositoryCredentials: _gitFree, ...first } = revision;
-  const base = {
-    ...context,
-    signal: t.signal,
-    requirements: {
-      ...requirements,
-      workspaceMounts: [],
-      environment: requirements.environment.filter(
-        ({ name }) => name !== "OPENCLAW_NODE_SETUP_CODE",
-      ),
-    },
-  };
-  const predecessor = { ...base, revision: first };
-  const name = managed.harnessResource(predecessor).resourceName;
-  const current = retainedSandboxGateway(gateway, name);
-  await managed.provisionHarness(predecessor);
-  const created = structuredClone(current());
-  assert.ok(created.id);
-  assert.equal(asRecord(created.spec?.policy)?.network_middlewares, undefined);
-  await managed.cleanup(predecessor);
-  assert.equal(current().phase, "SANDBOX_PHASE_STOPPED");
-
-  const kubernetes = fixture.protectedGit.computeDriver;
-  if (inspected) {
-    selectFixtureRelease(t);
-  }
-  const successor = inspected
-    ? capturedWorkspaceRevision(fixture, kubernetes, "fixture-standing-approval")
-    : repositoryScopedRevision(fixture, protectedRevision(fixture), "fixture-standing-approval");
-  const { id, egressPlan: plan } = successor;
-  const { providerInstanceId, grantId, repositoryId } =
-    successor.repositoryCredentials.bindings[0].grant;
-  const ctx = { ...base, revision: successor, plan };
-  const probePath = repositoryGitStartupProbePath(successor);
-  assert.equal(probePath, "/example/read-source.git/info/refs");
-  const prepared = await compute.configure(ctx);
-  let successorRequirements: HarnessWorkloadRequirements = base.requirements;
-  if (inspected) {
-    kubernetes.validateProtectedRepositoryNetworkPolicy(successor);
-    const url = kubernetes.getGatewayEndpoint(successor) + "/node";
-    successorRequirements = {
-      ...base.requirements,
-      image: fixtureRelease.agent,
-      environment: [
-        ...requirements.environment,
-        { name: "OCE_INSPECTED_WORKSPACE_NODE_URL", value: url },
-      ],
-    };
-    t.mock.method(
-      context.kubernetes,
-      "read",
-      async ({ metadata }: { metadata: Parameters<typeof workspaceNodeSetupSecret>[0] }) =>
-        workspaceNodeSetupSecret(
-          metadata,
-          successor.namespaceId,
-          successor.agentId,
-          workspaceNodeSetupSecretData({
-            url,
-            bootstrapToken: "fixture-setup",
-            expiresAtMs: Date.now() + 60_000,
-          }),
-        ),
-    );
-  }
-  const harness = {
-    ...ctx,
-    requirements: enrolledRequirements(successorRequirements, prepared, probePath),
-    transportToken: "fixture-transport",
-  };
-  const expires = Date.now() + 120_000;
-  const material: ProtectedGitHubRepositoryMaterial = {
-    value: "ghs_" + "a".repeat(36),
-    scope: "github-repository",
-    installationId: fixture.registry.githubInstallationId,
-    repositories: [{ repository: "example/read-source", repositoryId }],
-    expiresAt: new Date(expires).toISOString(),
-    providerInstanceId,
-    grantId,
-    apiOrigin: "https://api.github.com",
-    sessionId: randomUUID(),
-    preparationAttemptId: randomUUID(),
-    materialVersion: randomUUID(),
-  };
-  await bindGitWithFixtureRoutes(t, fixture.protectedGit, async (route) => {
-    assert.equal(route.revisionId, id);
-    return material;
-  });
-  assert.ok(fixture.authorityPort);
-  await fixture.authorityPort.release();
-  const result = await managed.provisionHarness(harness);
-  assert.equal(result.resourceName, name);
-  assert.equal(current().id, created.id);
-  assert.deepEqual(current().spec?.policy, created.spec?.policy);
-  const entry = await git["entries"].get(id);
-  assert.ok(entry);
-  const tamper = await scopedSupervisor(fixture, current(), entry.binding.provider, material.value);
-  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-  const signed = (payload: unknown[], signature: unknown) => {
-    assert.ok(typeof signature === "string");
-    const bytes = Buffer.from(JSON.stringify(payload));
-    assert.ok(verify(null, bytes, publicKey, Buffer.from(signature, "base64url")));
-  };
-  const startupId = randomUUID();
-  const challenge = {
-    profile: COMPUTE_RELEASE_PROFILE,
-    startupId,
-    ...harnessEgressEnrollment(plan, probePath),
-  };
-  const posts: string[] = [];
-  gateway.getServiceDocument = async (_url, path) => {
-    assert.equal(path, HARNESS_EGRESS_ENROLLMENT_PATH);
-    return { status: 200, json: challenge };
-  };
-  gateway.postServiceDocument = async (_url, path, _token, body) => {
-    assert.equal(path, HARNESS_EGRESS_ENROLLMENT_PATH);
-    const { probeNonce } = body;
-    if (probeNonce !== undefined) {
-      posts.push("probe");
-      assert.equal(body.startupId, startupId);
-      assert.equal(body.probePath, probePath);
-      assert.ok(typeof probeNonce === "string");
-      signed(
-        [COMPUTE_REPOSITORY_GIT_PROBE_PROFILE, startupId, probePath, probeNonce],
-        body.probeSignature,
-      );
-      const reasonCode = entry.preview.deny(
-        {
-          workspace,
-          sandboxId: created.id,
-          bindingId: plan.execution.executionId,
-          requestId: "signed-managed-probe",
-          target: {
-            reportedScheme: "https",
-            host: "github.com",
-            port: 443,
-            method: "GET",
-            path: probePath,
-            query: "service=git-upload-pack",
-          },
-          headers: [[HARNESS_REPOSITORY_GIT_PROBE_HEADER, probeNonce]],
-          body: new Uint8Array(),
-          deadlineAt: new Date(Date.now() + 5000).toISOString(),
-        },
-        created.id,
-      );
-      assert.match(reasonCode ?? "", /^oce_hook_/);
-      return { status: 200, json: { startupId, probePath, probeNonce, reasonCode } };
-    }
-    assert.deepEqual(body.challenge, challenge);
-    signed([body.challenge, body.installation, body.expiresAt], body.signature);
-    posts.push("release");
-    return { status: 200, json: { enrolled: true, startupId } };
-  };
-  let committed: EgressInstallation | undefined;
-  const reconcile = async () => {
-    entry.nextObserveAt = 0;
-    entry.nextRefreshAt = 0;
-    await git["reconcile"](entry);
-  };
-  const enroll = () =>
-    compute.enroll(
-      ctx,
-      result.proxyWiring,
-      {
-        recordEgressInstallation: async (installed) => {
-          committed = installed;
-        },
-        currentEgressInstallation: async () => committed,
-      },
-      async () => true,
-      async () => harness,
-      (startup, installed) =>
-        signComputeExecutionRelease(privateKey, startup, installed, probePath),
-      (startup, nonce) => signComputeRepositoryGitProbe(privateKey, startup, probePath, nonce),
-    );
-  await reconcile();
-  assert.equal(
-    await enroll(),
-    "held",
-    "the successor reaches the signed challenge using its loaded policy",
-  );
-  assert.deepEqual(posts, ["probe"]);
-  await reconcile();
-  assert.equal(entry.binding.credentialState, "active");
-  assert.equal(
-    await entry.provider.observe(entry.binding, created.id, t.signal),
-    undefined,
-    "a managed policy observation requires the bound revision verifier",
-  );
-
-  assert.ok(committed);
-  for (const fault of ["source", "forged annotation", "effective", "generation"] as const) {
-    tamper(fault);
-    await assert.rejects(
-      managed.enrollHarness(harness, committed, async () => {
-        assert.fail("changed policy must be refused before signing the release");
-      }),
-      /Cannot release this preview startup/,
-      fault,
-    );
-    assert.deepEqual(posts, ["probe"]);
-  }
-  tamper();
-  assert.equal(await enroll(), true);
-  assert.equal(git.previewReleased(id), true);
-  assert.deepEqual(posts, ["probe", "release"]);
-
-  const identity = await git.verifyExecution(successor, t.signal);
-  assert.ok(identity);
-  t.mock.method(Date, "now", () => expires + 1);
-  assert.deepEqual(
-    await git.verifyExecution(successor, t.signal),
-    identity,
-    "the same loaded revision qualifies for standing succession after expiry",
-  );
-  tamper("forged annotation");
-  assert.equal(await git.verifyExecution(successor, t.signal), undefined);
-  assert.deepEqual(posts, ["probe", "release"]);
 }

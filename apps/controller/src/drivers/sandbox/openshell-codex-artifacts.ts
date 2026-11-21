@@ -154,6 +154,10 @@ export function openShellProtectedCodexArtifacts(
   revision: Readonly<AgentRevision> | undefined,
 ): Readonly<OpenClawConfigurationDocument> {
   const snapshot = revision?.sandboxPolicy;
+  const nativeGit = revision?.executionAdmission.version === 8;
+  if (nativeGit && !snapshot?.repositoryNetworkPolicy?.grants.length) {
+    refuse();
+  }
   if (revision === undefined || snapshot === undefined) {
     return {};
   }
@@ -162,8 +166,10 @@ export function openShellProtectedCodexArtifacts(
     keys.push("repositoryNetworkPolicy");
     if (
       snapshot.repositoryNetworkPolicy === undefined ||
-      revision.executionAdmission.version !== 5 ||
-      revision.egressPlan?.repositoryGitAuthorization !== "online-request" ||
+      (nativeGit
+        ? revision.egressPlan?.repositoryGitAuthorization !== "network-policy"
+        : revision.executionAdmission.version !== 5 ||
+          revision.egressPlan?.repositoryGitAuthorization !== "online-request") ||
       !revision.repositoryCredentials?.bindings.length ||
       !revision.repositoryCredentials.bindings.every(
         ({ profile }) => profile === "github-repository",

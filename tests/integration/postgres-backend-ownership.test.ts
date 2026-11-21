@@ -63,11 +63,11 @@ import { stopProcess } from "../helpers/stop-process.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 import { assertSameAnswer, refusedAnswer } from "../helpers/refusal-answers.ts";
 import { claimIsolatedWork } from "../helpers/postgres-work-claim.ts";
+import { EMBEDDED_API_KEY_REQUIRED } from "../helpers/refusal-text.mjs";
 import {
-  EMBEDDED_API_KEY_REQUIRED,
   SERVICE_ACCOUNT_BACKEND_MISMATCH,
   SERVICE_ACCOUNT_NO_BACKEND_BINDING,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-credential-admission.ts";
 
 type BackendFixture = Awaited<ReturnType<typeof createBackendFixture>>;
 type AuthSession = Awaited<ReturnType<typeof signInWithEmailPassword>>;

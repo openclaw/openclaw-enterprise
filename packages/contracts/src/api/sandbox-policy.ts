@@ -89,9 +89,9 @@ export const SandboxPolicyViewResponse = Type.Object(
         policy: SandboxPolicySchema,
         configuration: Type.Optional(DriverConfigurationDescriptorSchema),
         editingEnabled: Type.Boolean(),
-        protectedExecution: Type.Boolean({
+        protectedExecution: Type.Union([Type.Boolean(), Type.Null()], {
           description:
-            "True while the active revision or the next deploy runs under protected execution. Saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. The current Sandbox and Compute pair must admit a first nonempty repository list or a nonempty replacement. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone.",
+            "Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy requires protected execution. Saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. The current Sandbox and Compute pair must admit a first repository list, including an empty list, or a nonempty replacement. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone.",
         }),
         ceiling: SandboxNetworkGrantsSchema,
         repositoryNetworkPolicyCeiling: Type.Array(RepositoryNetworkGrantSchema, {
@@ -101,7 +101,7 @@ export const SandboxPolicyViewResponse = Type.Object(
         }),
         repositoryNetworkPolicySaveSupported: Type.Boolean({
           description:
-            "Whether the state adapter supports withdrawal of a saved list or the current protected topology admits a candidate for a first save. PUT checks the requested list independently.",
+            "Whether the editor can request withdrawal of a saved list or submit a first list for validation. Before the first deployment, a qualified Driver pair can evaluate a first list if the selected and delegated scopes overlap or the pair accepts an empty list. PUT validates the complete proposed list.",
         }),
         defaults: Type.Union([Type.Null(), Type.Record(Type.String(), Type.Unknown())]),
         defaultsRevisionId: Type.Optional(RevisionId),
@@ -142,7 +142,7 @@ export const SandboxPolicyUpdateBody = Type.Object(
     repositoryNetworkPolicy: Type.Optional(
       Type.Array(RepositoryNetworkGrantSchema, {
         description:
-          "Omit to preserve the saved grants. A first list must be nonempty. A first list or nonempty replacement requires an admitted protected topology and empty additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported.",
+          "Omit to preserve the saved grants. An explicit empty list requests denial of all repository access. Save the first list before the first deployment. A first list or nonempty replacement requires an admitted protected topology and empty additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported.",
         maxItems: maxRepositoryNetworkGrants,
       }),
     ),
@@ -162,7 +162,7 @@ export const SandboxPolicyApplyBody = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction. This operation returns HTTP 409 when the saved policy or active Agent revision has a repository network policy. Applying the saved repository policy requires a deployment that can enforce it. If the policy is present only on the active revision, stop the Agent and confirm that its workload has stopped before investigating the mismatch.",
+      "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction. This operation returns HTTP 409 when the saved policy or active Agent revision has a repository network policy. Applying the saved repository policy requires a deployment that can enforce it. Use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.",
   },
 );
 export const SandboxPolicyEditingBody = Type.Object(
