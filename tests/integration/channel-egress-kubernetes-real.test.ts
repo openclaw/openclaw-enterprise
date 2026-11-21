@@ -1340,55 +1340,131 @@ test(
     assert.equal(directory.status, 200);
     assert.equal(proxy.observations.length, beforeDirectory);
 
-    // Inspect integrated public, audit, workload, and allowed Envoy inspection surfaces in
-    // memory. Assertions report only a boolean, never a protected value or raw transcript.
-    const protectedValues = [proxy.authorization, appToken, botToken];
-    const audit = await topology.adminRequest("GET", `${path}/audit-events`);
-    assert.equal(audit.status, 200);
-    const workerPods = await listed(
-      "pods",
-      topology.platformNamespace,
-      "app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/component=worker",
-    );
-    const envoyPods = await listed(
-      "pods",
-      fleet.envoyNamespace,
-      `gateway.envoyproxy.io/owning-gateway-name=${fleet.gatewayName}`,
-    );
-    assert.equal(workerPods.length, 1);
-    assert.ok(envoyPods.length > 0);
-    const envoyAddress = text(record(envoyPods[0]!.status).podIP);
-    const inspection = await kubectl(
-      "exec",
-      podName(workerPods[0]),
-      "-n",
-      topology.platformNamespace,
-      "--",
-      "node",
-      "-e",
-      "const r=await fetch(process.argv[1]);if(!r.ok)throw Error('inspection unavailable');process.stdout.write(await r.text())",
-      `http://${envoyAddress}:${fleet.inspectionPort}/config_dump?resource=dynamic_active_secrets&mask=name`,
-    );
-    const surfaces = [
-      JSON.stringify(await topology.request("GET", path)),
-      JSON.stringify(revision),
-      JSON.stringify(audit),
-      JSON.stringify(pod),
-      JSON.stringify(topology.harnessPod),
-      inspection,
-      await kubectl("logs", gatewayPod, "-n", topology.gatewayPlacement, "--tail=200"),
-      await kubectl("logs", podName(envoyPods[0]), "-n", fleet.envoyNamespace, "--tail=200"),
-    ];
-    for (const value of protectedValues) {
-      assert.equal(
-        surfaces.some(
-          (surface) =>
-            surface.includes(value) || surface.includes(Buffer.from(value).toString("base64")),
-        ),
-        false,
-        "A protected credential appeared in an integrated inspection surface.",
+    // Inspect protected values only in memory. Never include a value or raw surface in
+    // assertion output. The Basic payload and password catch partial or encoded leaks.
+    const proxyVariants = (authorization: string) => {
+      const payload = authorization.replace(/^Basic /u, "");
+      const decoded = Buffer.from(payload, "base64").toString("utf8");
+      const password = decoded.slice(decoded.indexOf(":") + 1);
+      assert.ok(
+        payload.length > 16 && password.length > 16,
+        "Proxy credential fixture is incomplete.",
       );
-    }
+      return [
+        authorization,
+        payload,
+        decoded,
+        password,
+        encodeURIComponent(authorization),
+        encodeURIComponent(decoded),
+      ];
+    };
+    const protectedValues = [
+      ...new Set(
+        [
+          ...[proxy, peerProxy, badProxy].flatMap((item) => proxyVariants(item.authorization)),
+          appToken,
+          botToken,
+        ].flatMap((value) => [value, Buffer.from(value).toString("base64")]),
+      ),
+    ];
+    const assertIntegratedContainment = async (
+      currentRevision: string,
+      currentGateway: string,
+      extraSurfaces: string[] = [],
+    ) => {
+      const audit = await topology.adminRequest("GET", `${path}/audit-events`);
+      assert.equal(audit.status, 200);
+      const workerPods = await listed(
+        "pods",
+        topology.platformNamespace,
+        "app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/component=worker",
+      );
+      const envoyPods = await listed(
+        "pods",
+        fleet.envoyNamespace,
+        `gateway.envoyproxy.io/owning-gateway-name=${fleet.gatewayName}`,
+      );
+      assert.equal(workerPods.length, 1);
+      assert.ok(envoyPods.length > 0);
+      assert.ok(topology.controllerApiPod, "Controller API Pod is missing.");
+      const envoyAddress = text(record(envoyPods[0]!.status).podIP);
+      const inspection = await kubectl(
+        "exec",
+        podName(workerPods[0]),
+        "-n",
+        topology.platformNamespace,
+        "--",
+        "node",
+        "-e",
+        "const r=await fetch(process.argv[1]);if(!r.ok)throw Error('inspection unavailable');process.stdout.write(await r.text())",
+        `http://${envoyAddress}:${fleet.inspectionPort}/config_dump?resource=dynamic_active_secrets&mask=name`,
+      );
+      const selector = `openclaw.dev/channel-egress-fleet=${fleet.gatewayName}`;
+      const generatedConfigMaps = await Promise.all(
+        [
+          ...new Set([topology.gatewayPlacement, topology.placement, topology.platformNamespace]),
+        ].map((namespace) => listed("configmaps", namespace)),
+      );
+      const workloadPods = await Promise.all(
+        [...new Set([topology.gatewayPlacement, topology.placement])].map((namespace) =>
+          listed("pods", namespace),
+        ),
+      );
+      const patchSurfaces = await Promise.all(
+        ["envoypatchpolicy", "httproutefilter", "httproute"].map((kind) =>
+          listed(kind, topology.platformNamespace, selector),
+        ),
+      );
+      assert.ok(patchSurfaces[0]!.length > 0, "Envoy patch policies are missing.");
+      const surfaces = [
+        JSON.stringify(await topology.request("GET", path)),
+        JSON.stringify(await topology.request("GET", `${path}/revisions/${currentRevision}`)),
+        JSON.stringify(audit),
+        JSON.stringify(await resource("pod", currentGateway, topology.gatewayPlacement)),
+        JSON.stringify(workloadPods),
+        JSON.stringify(generatedConfigMaps),
+        JSON.stringify(patchSurfaces),
+        inspection,
+        await kubectl("logs", currentGateway, "-n", topology.gatewayPlacement, "--tail=200"),
+        await kubectl(
+          "logs",
+          podName(topology.controllerApiPod),
+          "-n",
+          topology.platformNamespace,
+          "--tail=200",
+        ),
+        await kubectl(
+          "logs",
+          podName(workerPods[0]),
+          "-n",
+          topology.platformNamespace,
+          "--tail=200",
+        ),
+        ...(await Promise.all(
+          envoyPods.map((item) =>
+            kubectl("logs", podName(item), "-n", fleet.envoyNamespace, "--tail=200"),
+          ),
+        )),
+        ...extraSurfaces,
+      ];
+      assert.equal(
+        protectedValues.some((value) => surfaces.some((surface) => surface.includes(value))),
+        false,
+        "A protected credential or component appeared in an integrated inspection surface.",
+      );
+    };
+    const peerRevision = await topology.adminRequest(
+      "GET",
+      `${peerPath}/revisions/${peerDeploy.data.id}`,
+    );
+    assert.equal(peerRevision.status, 200);
+    await assertIntegratedContainment(text(deployed.data.id), gatewayPod, [
+      JSON.stringify(await topology.adminRequest("GET", peerPath)),
+      JSON.stringify(peerRevision),
+      JSON.stringify(peerPods[0]),
+      await kubectl("logs", peerPod, "-n", topology.gatewayPlacement, "--tail=200"),
+    ]);
 
     // A real proxy authentication refusal closes existing tunnels and must never permit direct fallback.
     const connectedBeforeRefusal = proxy.observations.filter((item) => item.connected).length;
@@ -1528,6 +1604,9 @@ test(
       "Untrusted TLS must stop CONNECT before credential delivery.",
     );
     await assertDeniedConnection(topology.gatewayPlacement, badGateway, slackAddress, 443);
+    await assertIntegratedContainment(text(badDeploy.data.id), badGateway, [
+      JSON.stringify(badPod),
+    ]);
     assert.deepEqual(
       (await topology.request("GET", `${path}/revisions/${badDeploy.data.id}`)).data.networkProxy,
       badSelection,
