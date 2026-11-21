@@ -85,7 +85,7 @@ deployed replacement and independent review remain incomplete.
 | Approved and denied tools | Scheduled real model turn in each selected Harness; include current policy reduction and app/MCP boundaries | Embedded OpenClaw and dedicated Codex both fail model authentication. No scheduled model turn ran. Policy-reduction and app/MCP cases still need implementation and real proof |
 | History after deletion | Successful one-shot and explicit deletion, then creator/admin and foreign-creator history requests | Never-run deleted job correctly returns 404 in native proof; completed-run history remains unverified |
 | Unknown outcomes | Lost mutation reply, post-dispatch revision change and failed audit append; count native dispatches | Real Gateway fault cases pass without create replay; lost create reply leaves a disabled recoverable job |
-| Revision replacement | Owned disposable Gateway workload and persistent state across replacement | OCC revision fencing passes with fixture Compute; physical workload replacement remains unverified |
+| Revision replacement | Owned disposable Gateway workload and persistent state across replacement | Genuine Gateway container replacement on retained native storage preserves a paused job and unchanged in-memory OCC ownership, without create/update replay. Production Kubernetes cutover with PostgreSQL-backed OCC remains unverified |
 | Independent review | Canonical autoreview, without provider or isolation bypass | CLI and sandbox preflight repaired; review of `b50e0e4704` returns `reviewer_unavailable`, `report_produced=false`, authentication failure |
 
 Use Node 24.22.1, pnpm 11.15.1 and Bun 1.4.4. Follow the
@@ -99,9 +99,9 @@ lane. Fixture or source-only checks do not satisfy native runtime acceptance.
 | Criterion | Established | Remaining |
 | --- | --- | --- |
 | AC1: Scheduling | Three schedule forms and normalization through the real native protocol | Approved-tool scheduled execution in both Harnesses |
-| AC2: Lifecycle | CRUD, pause/resume and stale-revision refusal through the real native protocol | Successful one-shot execution and retained history after deletion |
+| AC2: Lifecycle | CRUD, pause/resume, stale-revision refusal and two concurrent OCC edits exercising native atomic CAS | Successful one-shot execution and retained history after deletion |
 | AC3: Authority | HTTP session, exact-Agent, creator, service-key and Origin refusals | Real approved/denied tools, policy reduction and app/MCP restrictions in embedded and dedicated execution |
-| AC4: Recovery | Lost replies, CAS conflicts, failed audit and OCC revision fencing without create replay | Physical Gateway replacement with paused state, identity and history retained |
+| AC4: Recovery | Lost replies, native CAS, failed audit and revision fencing without create replay; physical Gateway replacement retains paused state and native identity with unchanged in-memory OCC ownership | PostgreSQL-backed production cutover and completed-run history across replacement |
 | AC5: Persistence and audit | PostgreSQL invariants, atomic audit, native-ID binding and deletion-worker cleanup with sibling preservation | Model-run evidence required by the other criteria; no persistence-specific gap remains in the selected cases |
 
 The runtime guide's `OCC_TEST_QA_OPENAI_KEY_FILE` and `OCC_TEST_QA_MODEL_API_KEY`
@@ -162,6 +162,20 @@ no token extraction, manual refresh or provider fallback was attempted.
   The file-watcher limit was restored to 128 after checking current usage. The
   task-owned AppArmor profiles, reviewer installation and model-key copy were
   removed; the normal host profiles and Codex installation were preserved.
+- `d56b6f1a5639e076eda51fa503b202b111b252d7` adds a model-free replacement and
+  concurrency proof. A transparent proxy holds one OCC update after its native
+  read while a second OCC update commits; native CAS rejects the first and retains
+  the winner. The test then stops and removes the actual Gateway container, starts
+  a new container on the retained native volume, changes the OCC revision and
+  verifies the paused job, native configuration revision and creator/native-ID
+  binding remain unchanged. Create/update counters exclude replay. Lost-create
+  replies and post-commit audit/revision failures remain covered in the same case.
+  OCC storage and Compute remain fixtures. This cannot establish durable OCC
+  ownership across an OCC restart or the production Kubernetes cutover workflow.
+  The production QA setup requires valid model authentication before those cases.
+  The suite passed 2 tests with 0 failures, 0 skips and 0 model calls. Its owned
+  containers, network and retained-state volume were removed. Type checking,
+  lint, documentation checks and flow validation passed.
 
 ## Manual Notes
 
@@ -169,6 +183,7 @@ no token extraction, manual refresh or provider fallback was attempted.
 
 ## Changelog
 
+- 2026-11-21: Add genuine Gateway replacement and concurrent native CAS proof without model calls; retain the PostgreSQL-backed production cutover and model-history gaps.
 - 2026-11-21: Repair local infrastructure, record both Harness authentication failures and canonical review status, add deletion-worker ownership proof, and audit AC1–AC5 without claiming model qualification.
 - 2026-11-21: Record broker protocol, persistence and upgrade results, and the blocked Kubernetes model proof. Keep policy and independent-review gaps explicit.
 - 2026-11-21: Real native protocol verification found that cron.add rejects caller-selected IDs. Use OCC IDs, native declaration keys, disabled creation and a durable one-time native binding before activation.

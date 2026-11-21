@@ -121,8 +121,12 @@ through the Agent deletion worker. These checks do not prove native model execut
 
 The native protocol case in `tests/integration/workspace-files-native.test.ts`
 uses a real Gateway with a transparent fault proxy and in-memory OCC persistence.
-It checks CRUD, owner filtering, lost replies, post-commit audit failure and revision
-fencing without running a model. Its Compute fixture is not production placement proof.
+It checks CRUD, owner filtering, concurrent native CAS, lost replies, post-commit
+audit failure and revision fencing. It also replaces the real Gateway container
+on retained native storage and verifies the paused job, native ID and OCC ownership
+record remain unchanged, without recreating or enabling the job. No model runs.
+OCC storage and Compute remain fixtures; this is not PostgreSQL-backed OCC restart
+or production Kubernetes cutover proof.
 
 The `agent-automations` [QA scenario](../testing/ci/qa-advisory.md) exercises the
 regular deployed Agent workflow, including a scheduled tool effect, native one-shot

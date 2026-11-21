@@ -131,7 +131,9 @@ The refusal case proves real HTTP/session/IAM behavior with in-memory state.
 The PostgreSQL case proves durable ownership and admission rollback using the
 [disposable database setup](../testing/postgresql.md).
 The native protocol case uses real OpenClaw and a transparent fault proxy, with
-fixture Compute and in-memory OCC state; it executes no model. The registered
+fixture Compute and in-memory OCC state. It checks concurrent native CAS and
+replaces the Gateway container on retained native storage while preserving a
+paused job and its OCC ownership record. It executes no model. The registered
 `agent-automations` QA scenario owns deployed scheduling, tool effects and history.
 See the [plan](../../specs/plans/20261121-agent-automations.md#verification) for
 actual results and outstanding proof. Missing model credentials are not mock proof.
