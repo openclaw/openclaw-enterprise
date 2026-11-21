@@ -399,6 +399,28 @@ async function configureInstallation(stack: SmokeStack, proxies: ControlledProxy
     ],
     { timeout: 4 * minute },
   );
+  // Deployment readiness does not mean the Local Setup NodePort has switched
+  // from the retired Pod. Verify the same host path the smoke API client uses.
+  let consecutive = 0;
+  await waitFor(
+    "Local Setup API host route after rollout",
+    async () => {
+      try {
+        const response = await fetch(new URL("/readyz", stack.origin), {
+          redirect: "error",
+          headers: { connection: "close" },
+          signal: AbortSignal.timeout(2_000),
+        });
+        await response.body?.cancel();
+        consecutive = response.ok ? consecutive + 1 : 0;
+        return { done: consecutive >= 2, state: { status: response.status, consecutive } };
+      } catch (error) {
+        consecutive = 0;
+        return { done: false, state: { error: (error as Error).name } };
+      }
+    },
+    2 * minute,
+  );
 }
 
 async function grantSecret(
