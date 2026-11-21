@@ -1249,9 +1249,6 @@ export function createSecretReferenceField({
     }
     searchQuery = "";
     input.select();
-    if (loadOnFocus && !secretsListed) {
-      void loadSecrets(true);
-    }
     // A field showing its error opens on click, typing or ArrowDown, not on focus: the console's
     // own check focuses it, and the open list covered the error under it (finding 1988).
     if (suppressFocusOpen || input.getAttribute("aria-invalid") === "true") {
@@ -1259,6 +1256,9 @@ export function createSecretReferenceField({
       return;
     }
     openListbox();
+    if (loadOnFocus && !secretsListed) {
+      void loadSecrets(true);
+    }
   });
   input.addEventListener("click", () => {
     if (!listboxOpen) {
