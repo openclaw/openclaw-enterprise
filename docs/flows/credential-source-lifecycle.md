@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-11-20
-last_updated_session: 01a1f7ec-0d9e-7803-96c3-eb88548e3788
+updated: "2026-11-20"
+last_updated_session: "authoring-run/5406c3c6-28fa-42a9-a7a7-4afa642738f1"
 ---
 
 # Credential source lifecycle flow
@@ -56,7 +56,7 @@ OCC authorizes `credential_source:update`, locks a ready source, and validates r
 
 ### 3. Bind and admit an Agent revision
 
-`packages/occ/src/index.ts:authorizeHarnessAuthSource`
+`packages/occ/src/harness-auth.ts:authorizeHarnessAuthSource`
 
 OCC checks `credential_source:operate` for existing bindings without requiring a lookup, so a caller can remove an obsolete binding. New bindings require a ready same-Namespace source and its recorded owner. Harness authentication requires the legacy Credential Gateway. PostgreSQL records Agent/source references and prevents deletion while referenced.
 
@@ -104,6 +104,8 @@ Inspect source `status`, worker reason codes, and withdrawal state. `CREDENTIAL_
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:33: Point Harness binding and snapshot checks to their source module. (authoring-run/5406c3c6-28fa-42a9-a7a7-4afa642738f1 - 56b116735a3a38a48eff35bf36152d3032b1d7d3)
 
 - 2026-11-20 10:13: Name the serving protected source owner as the legacy egress Driver. (01a1f7ec-0d9e-7803-96c3-eb88548e3788 - b02e93892)
 - 2026-11-20 08:10: Clarify serving and internal custody, registration checks, dispatch, and deletion retry behavior. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - 6c7aeed58)

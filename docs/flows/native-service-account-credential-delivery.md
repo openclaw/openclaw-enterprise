@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-20
-last_updated_session: authoring-run/a5334b64-f17c-4030-bf48-74ef016aa7cd
+updated: "2026-11-20"
+last_updated_session: "authoring-run/5406c3c6-28fa-42a9-a7a7-4afa642738f1"
 ---
 
 # Harness Authentication Binding Flow
@@ -86,7 +86,7 @@ valid `shutdown_date` today or earlier in UTC; other dates and the Anthropic and
 service-account catalogs remain unfiltered. Discovery does not prove a model call.
 
 `packages/occ/src/index.ts:OpenClawController.createAgent`, `updateAgent`,
-`authorizeHarnessAuthSource`
+`packages/occ/src/harness-auth.ts:authorizeHarnessAuthSource`
 
 Create and PATCH follow the [`harnessAuth` field semantics](../reference/agents.md#harness-authentication).
 API keys and imported `codex_pat` tokens use stable OCC Secret references and
@@ -115,7 +115,7 @@ credentials and their private Backend binding.
 
 ### 2. Freeze the admitted source and compatibility
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent`, `admitHarnessAuth`,
+`packages/occ/src/index.ts:OpenClawController.deployAgent`, `packages/occ/src/harness-auth.ts:admitHarnessAuth` and
 `credentialSourceHarnessAuthSnapshot`
 
 Deployment requires a nonnull binding, exact Agent `deploy`, and Configuration
@@ -330,6 +330,8 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:33: Point Harness binding and snapshot checks to their source module. (authoring-run/5406c3c6-28fa-42a9-a7a7-4afa642738f1 - 56b116735a3a38a48eff35bf36152d3032b1d7d3)
 
 - 2026-11-20 06:28: Trace retained Harness source checks and failed deploy grant rollback. (authoring-run/a5334b64-f17c-4030-bf48-74ef016aa7cd - 0d220dfad528032b978eaa8e9cb55885686add44)
 
