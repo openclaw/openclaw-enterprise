@@ -1,5 +1,6 @@
 import {
   normalizeAgentNetworkProxy,
+  validNetworkProxyAuthorization,
   type AgentNetworkProxy,
   type ComputeDriver,
   type HarnessExecutionMode,
@@ -11,6 +12,7 @@ import { enabledChannelEntries } from "./channel-secret-bindings.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import {
   ConfigurationHarnessError,
+  DependencyUnavailableError,
   NetworkProxySecretDriverError,
   ScopeViolationError,
   type SecretDriverOwnershipError,
@@ -60,10 +62,7 @@ export async function admitNetworkProxy(
 export async function authorizeNetworkProxySecret(
   state: PlatformUnitOfWork,
   authority: Pick<ControllerAuthority, "authorize">,
-  ownedSecretDriver: (
-    id: string,
-    failure: () => SecretDriverOwnershipError,
-  ) => SecretDriver,
+  ownedSecretDriver: (id: string, failure: () => SecretDriverOwnershipError) => SecretDriver,
   principalId: string,
   namespaceId: string,
   selection: Readonly<AgentNetworkProxy> | undefined,
@@ -75,8 +74,33 @@ export async function authorizeNetworkProxySecret(
   await authority.authorize(principalId, "operate", { kind: "secret", namespaceId, id });
   const secret = await state.secrets.lockSecret(namespaceId, id);
   if (secret === undefined) {
-    throw new ScopeViolationError("The Network proxy Secret does not belong to the exact Namespace.");
+    throw new ScopeViolationError(
+      "The Network proxy Secret does not belong to the exact Namespace.",
+    );
   }
-  ownedSecretDriver(secret.driverId, () => new NetworkProxySecretDriverError());
+  const driver = ownedSecretDriver(secret.driverId, () => new NetworkProxySecretDriverError());
+  await validateNetworkProxyCredential(driver, secret);
   return secret;
+}
+
+export async function validateNetworkProxyCredential(
+  driver: SecretDriver,
+  secret: Readonly<Secret>,
+): Promise<void> {
+  if (!driver.withValue) {
+    throw new DependencyUnavailableError(
+      "The selected Secret Driver cannot validate Network proxy credentials.",
+    );
+  }
+  let valid: boolean;
+  try {
+    valid = await driver.withValue(secret, async (value) => validNetworkProxyAuthorization(value));
+  } catch {
+    throw new DependencyUnavailableError("The Network proxy credential Secret is unavailable.");
+  }
+  if (!valid) {
+    throw new ScopeViolationError(
+      "The Network proxy credential Secret must contain a valid Basic authorization value.",
+    );
+  }
 }

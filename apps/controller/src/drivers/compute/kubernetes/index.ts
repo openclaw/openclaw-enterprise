@@ -125,6 +125,8 @@ import type {
   ErrorDetail,
   AgentDeploymentDiagnostics,
   AgentRevision,
+  AgentNetworkProxy,
+  HarnessExecutionMode,
   SandboxHarnessObservation,
   AgentRuntimeContainerStatus,
   AgentRuntimeDescribeOptions,
@@ -7474,7 +7476,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           this.reconcileHarnessTrust(revision, providerEndpoint, gatewayNamespace, namespace.name),
         );
         await this.prepareRevisionStage("gateway_channel_network_policy", () =>
-          this.reconcileChannelNetworkPolicy(revision, channels, gatewayNamespace),
+          this.reconcileChannelNetworkPolicy(revision, channels, gatewayNamespace, context),
         );
         await this.prepareRevisionStage("gateway_workspace_node_binding", () =>
           this.deliverWorkspaceNodeBinding(
@@ -8396,7 +8398,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             gatewayOwnership,
             namespace,
           );
-          await this.reconcileChannelNetworkPolicy(revision, channels, namespace);
+          await this.reconcileChannelNetworkPolicy(revision, channels, namespace, context);
           await this.reconcile(
             this.deployment(
               gatewayName,
@@ -8653,7 +8655,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       gatewayNamespace,
       secretEnvironment,
     );
-    await this.reconcileChannelNetworkPolicy(revision, channels, gatewayNamespace);
+    await this.reconcileChannelNetworkPolicy(revision, channels, gatewayNamespace, context);
     await this.harnessForRevision(revision).workspace.ensure({ revision, namespace });
     await this.reconcile(
       this.gatewayPrivateStateClaim(revision.agentId, gatewayOwnership, gatewayNamespace),
@@ -15486,6 +15488,16 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     };
   }
 
+  async admitGatewayChannelProxy(
+    selection: Readonly<AgentNetworkProxy>,
+    context: { readonly executionMode: HarnessExecutionMode; readonly channelsEnabled: boolean },
+  ): Promise<string> {
+    if (!this.channelEgress || !this.options.runtime || this.options.executionCluster) {
+      throw new ConfigurationFailure("Gateway channel Network proxy routing is unavailable.");
+    }
+    return this.channelEgress.admitProxy(selection, context);
+  }
+
   admitRevision(revision: Readonly<AgentRevision>): string | undefined {
     this.validateGatewayManagedMode(revision);
     let runtime: string | undefined;
@@ -16234,6 +16246,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     revision: AgentRevision,
     routing: PreparedChannelRouting | undefined,
     namespace: KubernetesNamespaceAddress,
+    context?: ComputeRevisionContext,
   ): Promise<void> {
     if (routing === undefined) {
       return;
@@ -16241,7 +16254,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (!this.channelEgress) {
       throw new ConfigurationFailure("Managed channel egress is unavailable.");
     }
-    await this.channelEgress.prepare(revision, namespace.name, routing);
+    await this.channelEgress.prepare(revision, namespace.name, routing, context);
   }
 
   /** Only preparation passes `preparation`, while a Gateway of another revision

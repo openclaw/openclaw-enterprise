@@ -16,7 +16,10 @@ import type {
 
 export type { NetworkDestinationRule } from "./network-destination.ts";
 export type { AgentNetworkProxy } from "./agent-network-proxy.ts";
-export { normalizeAgentNetworkProxy } from "./agent-network-proxy.ts";
+export {
+  normalizeAgentNetworkProxy,
+  validNetworkProxyAuthorization,
+} from "./agent-network-proxy.ts";
 export {
   NetworkDestinationRuleSchema,
   normalizeNetworkDestinationRules,
