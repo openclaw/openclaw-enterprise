@@ -582,6 +582,9 @@ function operationTarget(
 
 function requiredPermissions(operation: OccApiRoute): readonly RequiredPermission[] {
   if (isAgentAutomationOperation(operation)) {
+    if (operation.operationId === "createAgentAutomation") {
+      return [{ action: "operate", resourceKind: "agent", scope: "requested" }];
+    }
     return [
       { action: "operate", resourceKind: "agent", scope: "requested" },
       {
@@ -1083,7 +1086,9 @@ function permissionDescription(
   operation?: OccApiRoute,
 ): string {
   if (operation !== undefined && isAgentAutomationOperation(operation)) {
-    return "Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.";
+    const authority =
+      operation.operationId === "createAgentAutomation" ? "operate" : "operate or administer";
+    return `Requires a human session and ${authority} on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.`;
   }
   if (operation?.operationId === "listAgentAuditEvents") {
     return "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected audit metadata from the preceding 24 hours.";

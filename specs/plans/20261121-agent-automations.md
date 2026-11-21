@@ -37,7 +37,8 @@ Upstream changes and submissions require separate human approval.
 
 1. **Admission, in progress:** integrate the six routes with session admission,
    Native IAM, existing request audit and CSRF. Reject unsupported runtimes without
-   dispatch. The implemented response contract exposes errors only.
+   dispatch. Creation requires exact-Agent `operate`; the other five operations
+   also accept `administer`. The implemented response contract exposes errors only.
 2. **Native qualification, blocked:** obtain an approved upstream implementation,
    then qualify an immutable packaged runtime. The current pin is
    `cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef`.
@@ -105,6 +106,8 @@ scope. The documentation check passes without a new length exception.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 20:31: Correct creation admission to require operate before resource lookup. The real HTTP regression failed on commit `465a76013e` (administer-only POST returned 503 instead of 403) and passed after the correction. Administration still admits the other five operations to the qualification refusal.
 
 - 2026-11-20 20:28: Record passing local admission checks and the blocked independent review; native acceptance remains unrun.
 

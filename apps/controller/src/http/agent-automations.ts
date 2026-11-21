@@ -36,9 +36,12 @@ export function createAgentAutomationHandlers(options: {
     }
     const namespaceId = params.namespaceId!;
     const agentId = params.agentId!;
-    // This query checks administer or operate on the exact path resource before reading it.
-    // No browser credential is requested, and its admin mode is never used as a delegation.
-    const { agent } = await controller.getAgentBrowserAccess(context.actorId, namespaceId, agentId);
+    // Creation requires operate before lookup. Administration only admits management of
+    // existing jobs; no browser credential or admin delegation is selected by either query.
+    const agent =
+      context.operation.operationId === "createAgentAutomation"
+        ? await controller.getOperableAgent(context.actorId, namespaceId, agentId)
+        : (await controller.getAgentBrowserAccess(context.actorId, namespaceId, agentId)).agent;
     setAuditReadTarget({ kind: "agent", namespaceId: agent.namespaceId, id: agent.id });
     if (
       options.nativeAdmin?.enabled !== true ||

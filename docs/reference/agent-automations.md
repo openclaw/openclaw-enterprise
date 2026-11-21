@@ -21,7 +21,8 @@ All six paths begin with `/namespaces/{namespaceId}/agents/{agentId}/automations
 | DELETE | `/{automationId}`      | Required `expectedConfigRevision` query field            |
 | GET    | `/{automationId}/runs` | Optional `offset` and `limit`                            |
 
-A human controller session needs `operate` or `administer` on the exact Agent.
+A human controller session needs exact-Agent `operate` to create an automation.
+The other five operations accept exact-Agent `operate` or `administer`.
 Service keys are refused. Mutations require the configured Origin and session
 CSRF checks. Requests cannot supply native routing or authority headers, creator
 identity, native Agent identity, tool grants or extra body fields.

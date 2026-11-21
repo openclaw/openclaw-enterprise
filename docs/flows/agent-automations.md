@@ -27,7 +27,7 @@ execution authority, retained history and mutation recovery remain unimplemented
 graph TD
   A["Automation HTTP request"] --> B["Admit session and validate closed request"]
   B -->|"invalid input or service key"| R["Return request error"]
-  B --> C["Check Origin and exact-Agent IAM"]
+  B --> C["Check Origin and exact-Agent IAM:<br/>operate for creation;<br/>operate or administer for management"]
   C -->|"denied"| D["Return 403 and record denial"]
   C --> E["Read running Agent revision and Compute owner"]
   E -->|"unavailable or replacing"| U["Return dependency error"]
@@ -49,8 +49,10 @@ bounds. The normal Fastify route compiler checks these schemas.
 
 `apps/controller/src/http/agent-automations.ts:createAgentAutomationHandlers`
 requires a session, checks CSRF and mutation Origin, and rejects native authority
-headers. `packages/occ/src/agent-queries.ts:getAuthorizedAgent` checks exact-Agent
-`administer` or `operate` before reading the Agent. The handler does not select
+headers. Creation calls `packages/occ/src/controller.ts:getOperableAgent`, which
+uses `packages/occ/src/agent-queries.ts:getAuthorizedAgent` to require exact-Agent
+`operate` before reading the Agent. The other five operations accept exact-Agent
+`administer` or `operate` through the same query. The handler does not select
 browser credentials or treat browser administration as automation authority.
 
 ### 3. Resolve availability and refuse dispatch
@@ -97,5 +99,7 @@ required proof that remains outstanding.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 20:31: Require operate for creation while retaining administer for management (01a1fc52-9d88-7223-b8a1-3c98595d3fbe - 465a76013e2d8c6bcdf834e83d76b40c20520017)
 
 - 2026-11-20 20:23: Document uncommitted admission and refusal paths (01a1fc52-9d88-7223-b8a1-3c98595d3fbe - d4a3ab0c9603ce9678995160776dd78d94a7a688)

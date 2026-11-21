@@ -13749,12 +13749,11 @@ Request an Agent automation (runtime qualification pending)
 
 **Operation ID:** `createAgentAutomation`
 
-**Permissions:** Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.
+**Permissions:** Requires a human session and operate on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `operate` | `agent` | `requested` |
-| `administer` | `agent` | `requested` (instead of `operate`; automation dispatch remains unavailable) |
 
 ##### Parameters
 

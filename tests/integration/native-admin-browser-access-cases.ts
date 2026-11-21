@@ -81,8 +81,18 @@ export const registerAgentAutomationAdmissionCase: RegisterNativeAdminCases = (
           session,
           ...("body" in request ? { body: request.body } : {}),
         });
-        const result = fixture.fixtureResponse(response, 503, ErrorResponse, request.method);
-        assert.equal(result.error.code, "AUTOMATIONS_UNQUALIFIED");
+        // Administration manages existing jobs; only operate admits creation under the human.
+        const creationDenied = session === administrator && request.method === "POST";
+        const result = fixture.fixtureResponse(
+          response,
+          creationDenied ? 403 : 503,
+          ErrorResponse,
+          request.method,
+        );
+        assert.equal(result.error.code, creationDenied ? "FORBIDDEN" : "AUTOMATIONS_UNQUALIFIED");
+        if (creationDenied) {
+          assert.match(result.error.message, /operate/);
+        }
       }
     }
     const outsider = await createReadOnlySession(context, "automation-reader");

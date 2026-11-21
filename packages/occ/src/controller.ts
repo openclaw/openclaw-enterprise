@@ -396,6 +396,19 @@ export class OpenClawController {
     return this.composition.agentQueries.resolveAgentChat(principalId, agentId, namespaceScope);
   }
 
+  async getOperableAgent(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+  ): Promise<Readonly<Agent>> {
+    return this.composition.agentQueries.getAuthorizedAgent(
+      principalId,
+      namespaceId,
+      agentId,
+      "operate",
+    );
+  }
+
   async getAdministerableAgent(
     principalId: string,
     namespaceId: string,

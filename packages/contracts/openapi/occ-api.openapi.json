@@ -23091,7 +23091,7 @@
         ]
       },
       "post": {
-        "description": "Requires a human session and operate or administer on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.",
+        "description": "Requires a human session and operate on the exact Agent. Mutations require the configured Origin and session CSRF checks. Scheduling and disclosure remain unavailable until the native automation authority and retained-history contract is qualified; no cron RPC is dispatched.",
         "operationId": "createAgentAutomation",
         "parameters": [
           {
@@ -23280,13 +23280,7 @@
         "summary": "Request an Agent automation (runtime qualification pending)",
         "tags": ["Agent automations"],
         "x-openclaw-permissions": [
-          { "action": "operate", "resourceKind": "agent", "scope": "requested" },
-          {
-            "action": "administer",
-            "condition": "automation_admin_alternative",
-            "resourceKind": "agent",
-            "scope": "requested"
-          }
+          { "action": "operate", "resourceKind": "agent", "scope": "requested" }
         ]
       }
     },
