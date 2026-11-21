@@ -112,7 +112,8 @@
       "path": "tests/integration/skipper-private-git-network-origin.test.ts",
       "expectedTests": [
         "private Git network origin accepts only its broad fixture credential across three repositories",
-        "private Git network origin calibrates the exact issued A/B/C credential and observes retirement"
+        "private Git network origin calibrates the exact issued A/B/C credential and observes retirement",
+        "private Git network origin tracks the rotated credential and retains redaction fingerprints"
       ]
     },
     {

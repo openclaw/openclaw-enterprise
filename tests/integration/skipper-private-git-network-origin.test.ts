@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { request } from "node:https";
 import { join } from "node:path";
@@ -88,6 +89,14 @@ function send(
   );
 }
 
+function issueCredential(origin: Origin, repository_ids: number[], permissions: object) {
+  return send(origin, `/app/installations/${origin.installationId}/access_tokens`, {
+    method: "POST",
+    authorization: `Bearer ${origin.createAppJwt()}`,
+    body: JSON.stringify({ repository_ids, permissions }),
+  });
+}
+
 const nextCommit = (directory: string) => [
   "-C",
   directory,
@@ -174,12 +183,7 @@ test("private Git network origin calibrates the exact issued A/B/C credential an
   assert.ok(network);
   assert.equal(network.token, undefined, "issued mode must use the App issuance path");
 
-  const issue = (repository_ids: number[], permissions: object) =>
-    send(origin, `/app/installations/${origin.installationId}/access_tokens`, {
-      method: "POST",
-      authorization: `Bearer ${origin.createAppJwt()}`,
-      body: JSON.stringify({ repository_ids, permissions }),
-    });
+  const issue = (ids: number[], permissions: object) => issueCredential(origin, ids, permissions);
   assert.equal((await issue([73, 74], scopedRestFixturePermissions)).status, 403);
   const issued = await issue([73, 74, 75], scopedRestFixturePermissions);
   assert.equal(issued.status, 201);
@@ -351,4 +355,116 @@ test("private Git network origin calibrates the exact issued A/B/C credential an
     403,
   );
   assert.equal(origin.snapshot().tokens[0]?.revoked, true);
+});
+
+test("private Git network origin tracks the rotated credential and retains redaction fingerprints", async (t) => {
+  const origin = await startSkipperPrivateGitOrigin({
+    networkAcl: "issued",
+    repository: "fixture/a",
+  });
+  t.after(() => origin.close());
+  const network = origin.network;
+  assert.ok(network);
+  const permissions = { metadata: "read", contents: "write" };
+  const issue = async (lifetime: number) => {
+    const before = Date.now();
+    const response = await issueCredential(origin, [73, 74, 75], permissions);
+    assert.equal(response.status, 201);
+    const grant = JSON.parse(response.body) as { token: string; expires_at: string };
+    const expiry = Date.parse(grant.expires_at);
+    assert.ok(expiry >= before + lifetime && expiry <= Date.now() + lifetime, "issued lifetime");
+    return grant.token;
+  };
+  const advertise = (repo: string, token: string) =>
+    send(origin, `/${repo}.git/info/refs?service=git-receive-pack`, {
+      authorization: basic(token),
+    });
+
+  network.shortenNextTokenForRenewal();
+  assert.equal((await issueCredential(origin, [73, 74], permissions)).status, 403);
+  const previous = await issue(750_000);
+  const renewed = await issue(3_600_000);
+  assert.ok(previous !== renewed, "the new credential must be distinct");
+
+  // Independently establish broad write authority while both credentials are live.
+  for (const [token, credentialIndex] of [
+    [previous, 1],
+    [renewed, 2],
+  ] as const) {
+    for (const repository of repos) {
+      const reply = await advertise(repository, token);
+      assert.equal(reply.status, 200);
+      assert.equal(reply.type, "application/x-git-receive-pack-advertisement");
+      assert.deepEqual(network.requests().at(-1), {
+        repository,
+        operation: "receive-advertise",
+        method: "GET",
+        authenticated: true,
+        credentialIndex,
+      });
+    }
+  }
+
+  assert.equal(
+    (
+      await send(origin, "/installation/token", {
+        method: "DELETE",
+        authorization: `Bearer ${previous}`,
+      })
+    ).status,
+    204,
+  );
+  const repo = "fixture/c";
+  for (const rejected of [previous, alias]) {
+    assert.equal((await advertise(repo, rejected)).status, 401);
+    assert.deepEqual(network.requests().at(-1), {
+      repository: repo,
+      operation: "receive-advertise",
+      method: "GET",
+      authenticated: false,
+    });
+  }
+
+  const git = await gitClient(t, origin, renewed);
+  await git(["clone", "-q", `${origin.origin}/${repo}.git`, "peer"]);
+  await git(nextCommit("peer"));
+  const sha = (await git(["-C", "peer", "rev-parse", "HEAD"])).stdout.trim();
+  const beforePush = network.requests().length;
+  assert.equal(await network.ref(repo, origin.approvalRef), undefined);
+  await git(["-C", "peer", "push", "-q", "origin", `HEAD:${origin.approvalRef}`]);
+  assert.equal(await network.ref(repo, origin.approvalRef), sha);
+  assert.ok(
+    network
+      .requests()
+      .slice(beforePush)
+      .some(
+        (entry) =>
+          entry.repository === repo &&
+          entry.operation === "receive-pack" &&
+          entry.authenticated &&
+          entry.credentialIndex === 2,
+      ),
+    "observe the replacement credential on the write RPC",
+  );
+  assert.deepEqual(
+    origin.snapshot().tokens.map(({ index, revoked }) => ({ index, revoked })),
+    [
+      { index: 1, revoked: true },
+      { index: 2, revoked: false },
+    ],
+  );
+
+  const representations = [previous, renewed].flatMap((token) => [token, basic(token).slice(6)]);
+  const fingerprints = network.issuedCredentialFingerprints();
+  assert.deepEqual(
+    fingerprints,
+    representations.map((value) => [
+      Buffer.byteLength(value),
+      createHash("sha256").update(value).digest("hex"),
+    ]),
+  );
+  const observations = JSON.stringify([origin.snapshot(), network.requests(), fingerprints]);
+  for (const credential of representations) {
+    assert.ok(!observations.includes(credential), "credential leaked into observations");
+  }
 });
