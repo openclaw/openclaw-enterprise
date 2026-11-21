@@ -2401,7 +2401,8 @@ async function prepareFileWithState({
     }
     if (
       relativeFile === "tests/integration/auth-maintain.test.ts" ||
-      relativeFile === "tests/integration/postgres-break-glass-auth-maintain.test.ts"
+      relativeFile === "tests/integration/postgres-break-glass-auth-maintain.test.ts" ||
+      relativeFile === "tests/integration/postgres-oidc-identity-import.test.ts"
     ) {
       env.OCC_AUTH_MAINTAIN_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
