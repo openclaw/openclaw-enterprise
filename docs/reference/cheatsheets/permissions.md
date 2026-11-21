@@ -36,17 +36,8 @@ service principal. Grant `read_logs` and `read_audit` separately.
 | [`secret`](../api.md#secrets)                   | `create`, `read`, `update`, `delete`, `operate`                                                                     | Namespace collection for create; list needs Namespace `read` and returns only Secrets with exact `read`. Other actions target the exact Secret. `operate` is checked when a Secret is bound or used.                                                                                                                                                       |
 | [`credential_source`](../credential-sources.md) | `create`, `read`, `update`, `delete`, `operate`                                                                     | Namespace collection for create; list needs Namespace `read` and returns only sources with exact `read`. Other actions target the exact source. `operate` is checked when a source is bound or deployed. `update` also gates rotation and needs `secret:operate` on each Secret it reads; Roles bootstrapped before `update` existed must have it granted. |
 | [`agent`](../api.md#agents)                     | `create`, `read`, `update`, `delete`, `deploy`, `operate`, `administer`, `read_logs`, `manage_policy`, `read_audit` | Namespace for create; exact Agent otherwise. Native browser chat, administration, and audit reads require a human session. [HTTP chat](../agent-http-chat.md) also accepts service keys with `operate`. See [Read an Agent’s audit events](../../guides/topics/audit-log.md#read-an-agents-audit-events).                                                  |
-| [`sandbox_policy`](../sandbox-policies.md)      | `read`, `update`                                                                                                    | Exact Agent-owned policy, or an exact binding on its Agent. See the SandboxPolicy permission conditions below.                                                                                                                                                                                                                                             |
+| [`sandbox_policy`](../sandbox-policies.md)      | `read`, `update`                                                                                                    | Exact Agent-owned policy, or an exact binding on its Agent. Reads and discovery require Agent read; preview/save/apply require Agent manage_policy and enabled editing; apply also requires `read`, as do Agent deploy and an Agent update with repository bindings when saved additions exist.                                                            |
 | [`agent_revision`](../api.md#agent-revisions)   | `read`                                                                                                              | Exact AgentRevision, or an exact binding on its Agent; deployment-status reads use this permission too.                                                                                                                                                                                                                                                    |
-
-SandboxPolicy reads and discovery require Agent `read`. Preview, save, and live
-application require Agent `manage_policy` and enabled editing. Live application also
-requires SandboxPolicy `read`. Ordinary deployment and fresh first deployment
-require SandboxPolicy `read` for saved network policy additions or an explicit
-repository network policy list, even an empty list. Deploying an explicit list
-also requires Agent `manage_policy` and SandboxPolicy `update` on the exact
-resources. An Agent update that leaves
-repository bindings requires SandboxPolicy `read` when saved additions exist.
 
 Namespace, Preset, Agent, ServiceAccount, AgentRevision, Secret, and credential
 source lists check each returned resource. Listing Agents, ServiceAccounts or Presets also requires `namespace:read`;
@@ -96,6 +87,11 @@ operation was not authorized.`
 
 ## Additional checks
 
+- [Native browser access](../agent-native-admin.md#native-authority-and-drift)
+  delegates `operator.sessions.write` for exact-Agent `operate`, or
+  `operator.admin` for `administer`, under the person's native profile. Native
+  roles can narrow either grant. Agent `read` alone and service keys do not
+  admit a browser session.
 - [Experimental personal Codex login](../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login)
   (device login) requires Namespace `agent:create`, or exact `agent:read` and
   `agent:update` for an existing Agent. Start also requires

@@ -93,6 +93,8 @@ interface NativeAdminProxyResolution {
   readonly revisionId: string;
   readonly target: NativeAdminTarget;
   readonly gatewayBase: string;
+  readonly trustedHeaders: Readonly<Record<string, string>>;
+  readonly nativeSubject: string;
 }
 
 interface NativeAdminProxyDenial {
@@ -579,6 +581,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
               ? {}
               : { closeReason: socketEvent.closeReason }),
             parentSessionId: resolution.parentSessionId,
+            subject: resolution.nativeSubject,
             mode: resolution.mode,
             revisionId: resolution.revisionId,
             host: resolution.target.host,
@@ -828,6 +831,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         gatewayBase: resolution.gatewayBase,
         agentOrigin: resolution.target.origin,
         apiKey,
+        trustedHeaders: resolution.trustedHeaders,
       };
     } catch {
       return undefined;
@@ -850,7 +854,12 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         readonly status: "unsupported";
         readonly reason: "not-enabled" | "configuration" | "compute";
       } & NativeAdminTargetStatus)
-    | ({ readonly status: "available"; readonly gatewayBase: string } & NativeAdminTargetStatus);
+    | ({
+        readonly status: "available";
+        readonly gatewayBase: string;
+        readonly trustedHeaders: Readonly<Record<string, string>>;
+        readonly nativeSubject: string;
+      } & NativeAdminTargetStatus);
 
   // An exclusive Compute Driver stops the active revision's workload before a newer
   // revision starts, so nothing serves until that revision activates. If it fails, the
@@ -947,15 +956,25 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       warnComputeOwnerMismatch(revision, compute);
       throw dependencyUnavailable();
     }
-    const endpoint =
-      mode === "admin"
-        ? compute.getGatewayEndpoint?.(revision)
-        : compute.getGatewayChatEndpoint?.(revision);
-    const gatewayBase = nativeAdminGatewayHttpBase(endpoint ?? "");
-    if (gatewayBase === undefined) {
+    const transport = await compute.getGatewayBrowserRequest?.(
+      revision,
+      { installationId, principalId: input.actorId, mode },
+      AbortSignal.timeout(NATIVE_ADMIN_PROXY_ADMISSION_TIMEOUT_MS),
+    );
+    const gatewayBase = nativeAdminGatewayHttpBase(transport?.endpoint ?? "");
+    if (transport === undefined || gatewayBase === undefined) {
       return { status: "unsupported", reason: "compute", agent, revision, target, mode };
     }
-    return { status: "available", agent, revision, target, gatewayBase, mode };
+    return {
+      status: "available",
+      agent,
+      revision,
+      target,
+      gatewayBase,
+      mode,
+      trustedHeaders: transport.headers,
+      nativeSubject: transport.subject,
+    };
   }
 
   async function resolveNativeAdminAgentHost(
@@ -1624,6 +1643,8 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         revisionId: resolved.revision.id,
         target: resolved.target,
         gatewayBase: resolved.gatewayBase,
+        trustedHeaders: resolved.trustedHeaders,
+        nativeSubject: resolved.nativeSubject,
       };
     } catch (error) {
       // A dependency outage (IAM or State) is not a denial, though its error class extends

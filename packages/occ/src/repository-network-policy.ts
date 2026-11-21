@@ -1,3 +1,39 @@
+import type { AgentRevision, AgentRevisionRead } from "@openclaw-enterprise/contracts";
+import type { IAMDriver } from "@openclaw-enterprise/contracts";
+import { DependencyUnavailableError, ResourceStateConflictError } from "./errors.ts";
+
+function unchanged(check: () => boolean): boolean {
+  try {
+    return check();
+  } catch {
+    return false;
+  }
+}
+
+export function bindRepositoryPolicyAuthorization(current: () => IAMDriver) {
+  const driver = current();
+  try {
+    const authorize = driver.authorize;
+    if (typeof authorize === "function") {
+      return {
+        inputs: [driver, authorize] as const,
+        assertCurrent() {
+          if (!unchanged(() => current() === driver && driver.authorize === authorize)) {
+            throw new ResourceStateConflictError(
+              "The selected authorization Driver changed during repository network policy admission. Reload before editing.",
+            );
+          }
+        },
+      };
+    }
+  } catch {
+    // A Driver method getter can contain private diagnostics.
+  }
+  throw new DependencyUnavailableError(
+    "The selected authorization Driver could not verify the operation.",
+  );
+}
+
 import { types } from "node:util";
 import type {
   RepositoryNetworkGrant,
@@ -99,5 +135,27 @@ export function delegatedRepositoryCeiling(
   } catch {
     // Keep saved grants readable for withdrawal if delegated approvals cannot be checked.
     return [];
+  }
+}
+
+// Stop retires the active pointer. A provider can still complete an earlier
+// unscoped write after its Worker loses the claim. Retained revisions identify
+// every deployment that could have targeted this Agent's shared resources.
+export function hasOnlyScopedRepositoryRevisions(
+  history: readonly Readonly<AgentRevisionRead>[],
+): boolean {
+  return history.every(
+    (revision, index) =>
+      !("configurationReadError" in revision) &&
+      revision.revision === index + 1 &&
+      revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined,
+  );
+}
+
+export function assertScopedRepositoryHistory(history: readonly Readonly<AgentRevision>[]): void {
+  if (!hasOnlyScopedRepositoryRevisions(history)) {
+    throw new ResourceStateConflictError(
+      "This Agent has a deployment without a repository policy. Create a new Agent and save its repository policy before its first deployment.",
+    );
   }
 }

@@ -120,6 +120,19 @@ async function settledRevision(fixture: DispatchFixture, revision: WorkIdentity)
   });
 }
 
+function repositoryCompute(
+  compute: ComputeDriver,
+  expectedSandboxId: string | undefined,
+): ComputeDriver {
+  return {
+    ...compute,
+    validateRepositoryCredentials(harness, sandboxId) {
+      assert.equal(harness.mode, "embedded");
+      assert.equal(sandboxId, expectedSandboxId);
+    },
+  };
+}
+
 function computeSupportingRepositoryPolicy(compute: ComputeDriver): ComputeDriver {
   return { ...compute, validateProtectedRepositoryNetworkPolicy() {} };
 }
@@ -182,6 +195,174 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
     },
   );
 
+  test(
+    "a queued scoped deployment cannot replace an unscoped revision",
+    requiresPostgres,
+    async (context) => {
+      const fixture = await setup(context, {});
+      const owner = await fixture.agent("legacy-history");
+      const previous = await fixture.revision(owner, 1);
+      await fixture.start(fixture.compute);
+      await fixture.work(previous, "succeeded");
+      await fixture.stop();
+      const { options } = await saveRepositoryPolicy(fixture, owner, []);
+      const candidate = await fixture.revision(owner, 2, options);
+      const calls: string[] = [];
+      await fixture.start({
+        ...computeSupportingRepositoryPolicy(fixture.compute),
+        requiresStoppedPredecessors: () => true,
+        async bindAgent() {
+          calls.push("bind");
+        },
+        async prepareRevision(revision, ctx) {
+          calls.push("prepare");
+          return fixture.compute.prepareRevision(revision, ctx);
+        },
+        async stopRevision() {
+          calls.push("stop");
+        },
+        async retireRevision() {
+          calls.push("retire");
+        },
+      });
+      const result = await settledRevision(fixture, candidate);
+      assert.deepEqual(calls, []);
+      assert.equal(result.reasonCode, "REPOSITORY_POLICY_HISTORY_INCOMPATIBLE");
+      assert.equal((await fixture.currentAgent(owner))?.activeRevisionId, previous.id);
+    },
+  );
+  for (const deferred of [false, true]) {
+    test(
+      deferred
+        ? "a prior deferred scoped attempt fences shared predecessor maintenance after refusal"
+        : "shared predecessor maintenance can repair after a scoped candidate was never started",
+      requiresPostgres,
+      async (context) => {
+        const fixture = await setup(context, {});
+        const owner = await fixture.agent("legacy-maintenance-repair");
+        const previous = await fixture.revision(owner, 1);
+        const prepared: string[] = [];
+        const compute: ComputeDriver = {
+          ...computeSupportingRepositoryPolicy(fixture.compute),
+          maintenanceIntervalMs: 3_600_000,
+          prepareRevision(revision, ctx) {
+            prepared.push(revision.id);
+            return fixture.compute.prepareRevision(revision, ctx);
+          },
+        };
+        assert.equal(compute.requiresStoppedPredecessors, undefined);
+        await fixture.start(compute);
+        await fixture.work(previous, "succeeded");
+        await fixture.stop();
+        const { options } = await saveRepositoryPolicy(fixture, owner, []);
+        const candidate = await fixture.revision(owner, 2, options);
+        const queue = new PostgresWorkQueue(fixture.observerPool);
+        if (deferred) {
+          const earlier = await queue.claim();
+          assert.ok(earlier);
+          assert.equal(earlier.idempotencyKey, candidate.idempotencyKey);
+          await queue.defer(earlier, { code: "REVISION_INCOMPLETE" }, { delayMs: 1 });
+          // A prior attempt can have prepared a Gateway, despite the reset attempt count.
+          assert.equal((await queue.findWork(candidate.idempotencyKey))?.attemptCount, 0);
+        }
+        await fixture.start(compute);
+        const refused = await settledRevision(fixture, candidate);
+        const evidence = await queue.findWorkAttempt(candidate.idempotencyKey);
+        assert.equal(evidence?.candidateNotStarted, deferred ? undefined : true);
+        assert.deepEqual(prepared, [previous.id]);
+        const key = (await fixture.advanceMaintenance(previous)).rows[0]?.idempotency_key;
+        assert.ok(key);
+        const attempt = await waitFor("predecessor maintenance records its decision", () =>
+          queue.findWorkAttempt(key),
+        );
+        assert.ok(attempt);
+        if (deferred) {
+          assert.equal(refused.reasonCode, "REPOSITORY_POLICY_HISTORY_INCOMPATIBLE");
+          assert.equal(attempt.code, "SUCCESSOR_EXECUTION_ADMISSION_UNAVAILABLE");
+          assert.deepEqual(prepared, [previous.id]);
+        } else {
+          assert.deepEqual(prepared, [previous.id, previous.id]);
+          assert.equal(refused.reasonCode, "REPOSITORY_POLICY_HISTORY_INCOMPATIBLE");
+        }
+        assert.equal((await fixture.currentAgent(owner))?.activeRevisionId, previous.id);
+      },
+    );
+  }
+  test(
+    "a recovered exclusive refusal fences predecessor repair while a shared preparation is outstanding",
+    requiresPostgres,
+    async (context) => {
+      const fixture = await setup(context, { leaseDurationMs: 60_000 });
+      const owner = await fixture.agent("replacement-placement-change");
+      const { options } = await saveRepositoryPolicy(fixture, owner, []);
+      const previous = await fixture.revision(owner, 1, options);
+      const loseResponse = Promise.withResolvers<void>();
+      const finishWrite = Promise.withResolvers<void>();
+      const prepared: string[] = [];
+      let outstanding: Promise<void> | undefined;
+      let gateway: string | undefined;
+      const shared: ComputeDriver = {
+        ...computeSupportingRepositoryPolicy(fixture.compute),
+        maintenanceIntervalMs: 3_600_000,
+        async prepareRevision(revision, ctx) {
+          prepared.push(revision.id);
+          if (revision.id !== previous.id) {
+            // The provider accepted a write whose response the first Worker loses.
+            // The write itself can outlive both its claim and the Worker.
+            outstanding = finishWrite.promise.then(() => {
+              gateway = revision.id;
+            });
+            await loseResponse.promise;
+            throw new Error("Shared preparation response lost.");
+          }
+          gateway = revision.id;
+          return fixture.compute.prepareRevision(revision, ctx);
+        },
+      };
+      assert.equal(shared.requiresStoppedPredecessors, undefined);
+      await fixture.start(shared);
+      await fixture.work(previous, "succeeded");
+      const candidate = await fixture.revision(owner, 2, options);
+      try {
+        await waitUntil("shared prepare accepted", () => outstanding !== undefined);
+        const original = await fixture.work(candidate, "claimed");
+        assert.ok(original.claim_token);
+        await fixture.expireClaim(candidate, original.claim_token);
+        const queue = new PostgresWorkQueue(fixture.observerPool);
+        assert.equal((await queue.recoverStale()).recovered, 1);
+        const stopping = fixture.stop();
+        loseResponse.resolve();
+        await stopping;
+        await fixture.start({
+          ...shared,
+          requiresStoppedPredecessors: () => true,
+          validateProtectedRepositoryNetworkPolicy(revision) {
+            if ("id" in revision && revision.id === candidate.id) {
+              throw new Error("Compute can no longer enforce this policy.");
+            }
+          },
+        });
+        const refused = await settledRevision(fixture, candidate);
+        assert.equal(refused.reasonCode, "EXECUTION_ADMISSION_UNAVAILABLE");
+        assert.equal(
+          (await queue.findWorkAttempt(candidate.idempotencyKey))?.candidateNotStarted,
+          undefined,
+        );
+        assert.equal((await fixture.currentAgent(owner))?.activeRevisionId, previous.id);
+        const key = (await fixture.advanceMaintenance(previous)).rows[0]?.idempotency_key;
+        assert.ok(key);
+        const repair = await settledRevision(fixture, { id: previous.id, idempotencyKey: key });
+        assert.equal(repair.reasonCode, "SUCCESSOR_EXECUTION_ADMISSION_UNAVAILABLE");
+        assert.deepEqual(prepared, [previous.id, candidate.id]);
+        assert.equal(gateway, previous.id);
+      } finally {
+        loseResponse.resolve();
+        finishWrite.resolve();
+        await outstanding;
+      }
+      assert.equal(gateway, candidate.id);
+    },
+  );
   for (const capability of [
     "legacy",
     "missing",
@@ -202,14 +383,19 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         const repository = repositoryBoundary();
         const fixture = await setup(context, { repoDriver: repository.driver });
         const owner = await fixture.agent("repository-policy-maintenance");
+        const initial =
+          capability === "legacy" || capability === "missing"
+            ? undefined
+            : await saveRepositoryPolicy(fixture, owner, []);
         const previous = await fixture.revision(owner, 1, {
+          ...initial?.options,
           repositoryCredentials: repository.snapshot,
         });
         const prepared: string[] = [];
         const stopped: string[] = [];
         const retired: string[] = [];
         const compute: ComputeDriver = {
-          ...fixture.compute,
+          ...repositoryCompute(fixture.compute, initial?.options.sandboxDriverId),
           ...(capability === "missing work" ? {} : { requiresStoppedPredecessors: () => true }),
           maintenanceIntervalMs: 3_600_000,
           async prepareRevision(revision, deploymentContext) {
@@ -234,7 +420,7 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
             retired.push(revision.id);
           },
         };
-        await fixture.start(compute);
+        await fixture.start(initial ? computeSupportingRepositoryPolicy(compute) : compute);
         await fixture.work(previous, "succeeded");
         await fixture.stop();
 
@@ -343,6 +529,7 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
             capability !== "revoked" &&
             capability !== "missing work" &&
             capability !== "mismatched work" &&
+            admitted.id !== previous.id &&
             admitted.id !== later?.id
           ) {
             throw new Error("Compute cannot enforce the admitted repository policy.");
@@ -417,7 +604,7 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
           // Let the real deployment refusal settle. A healthy predecessor can
           // resume maintenance, while a replacement stop cannot be rolled back.
           await fixture.observerPool.query(
-            "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1",
+            "UPDATE occ.controller_work SET available_at = created_at WHERE idempotency_key = $1",
             [candidate.idempotencyKey],
           );
           assert.equal(
@@ -437,7 +624,7 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
           if (capability !== "refused after stop began") {
             assert.equal(followup.reasonCode, "REVISION_ALREADY_ACTIVE");
             assert.deepEqual(prepared, [...beforeMaintenance.prepared, previous.id]);
-            assert.deepEqual(stopped, [candidate.id]);
+            assert.deepEqual(stopped, []);
           } else {
             assert.equal(followup.reasonCode, "SUCCESSOR_EXECUTION_ADMISSION_UNAVAILABLE");
             assert.deepEqual(prepared, beforeMaintenance.prepared);
@@ -474,17 +661,26 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
       const fixture = await setup(context, { repoDriver: repository.driver });
       const owner = await fixture.agent("held-repository-policy-successor");
       const queue = new PostgresWorkQueue(fixture.observerPool);
-      const older = await fixture.revision(
-        owner,
-        1,
-        active ? { repositoryCredentials: repository.snapshot } : undefined,
-      );
+      const initial =
+        enforcement === "legacy" ? undefined : await saveRepositoryPolicy(fixture, owner, []);
+      const older = await fixture.revision(owner, 1, {
+        ...initial?.options,
+        ...(active ? { repositoryCredentials: repository.snapshot } : {}),
+      });
       const prepared: string[] = [];
       const activated: string[] = [];
       const stopped: string[] = [];
       const retired: string[] = [];
       const compute: ComputeDriver = {
-        ...fixture.compute,
+        ...repositoryCompute(fixture.compute, initial?.options.sandboxDriverId),
+        // The predecessor itself remains enforceable during recovery.
+        // Only the successor's placement has lost its capability.
+        validateProtectedRepositoryNetworkPolicy(revision) {
+          assert.ok("id" in revision);
+          if (revision.id !== older.id) {
+            throw new Error("The replacement placement is unavailable.");
+          }
+        },
         maintenanceIntervalMs: 3_600_000,
         requiresStoppedPredecessors: (revision) =>
           placement === "exclusive" && revision.id === older.id,
@@ -528,7 +724,7 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         },
       };
       if (active) {
-        await fixture.start(compute);
+        await fixture.start(initial ? computeSupportingRepositoryPolicy(compute) : compute);
         if (overdue) {
           const original = await waitFor("original activation is pending", () =>
             queue.findWorkAttempt(older.idempotencyKey, "REVISION_FINALIZATION_INCOMPLETE"),
@@ -619,7 +815,10 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
           enforcement === "refused"
             ? {
                 ...compute,
-                async validateProtectedRepositoryNetworkPolicy() {
+                async validateProtectedRepositoryNetworkPolicy(revision) {
+                  if ("id" in revision && revision.id === older.id) {
+                    return;
+                  }
                   throw new Error("Compute cannot enforce the admitted repository policy.");
                 },
               }
@@ -721,12 +920,13 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
     });
   }
 
-  for (const [commitTiming, activationOrder] of [
-    ["before commit", "beforeCommit"],
-    ["after commit", "afterCommit"],
+  for (const [boundary, activationOrder] of [
+    ["preparation on shared Compute", "afterCommit"],
+    ["activation before commit", "beforeCommit"],
+    ["activation after commit", "afterCommit"],
   ] as const) {
     test(
-      `a successor claim prevents activation ${commitTiming} before the stale signal aborts`,
+      `a successor claim prevents ${boundary} before the stale signal aborts`,
       requiresPostgres,
       async (context) => {
         // Leave time before the next heartbeat so the database can transfer the claim
@@ -739,27 +939,30 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         const candidate = await fixture.revision(owner, 1, options);
         const release = Promise.withResolvers<void>();
         const activations: string[] = [];
-        let prepared = false;
-        let activationSignal: AbortSignal | undefined;
+        const beforePrepare = boundary === "preparation on shared Compute";
+        const preparations: string[] = [];
+        assert.equal(fixture.compute.requiresStoppedPredecessors, undefined);
+        let validationSignal: AbortSignal | undefined;
         let claimLost = false;
         await fixture.start(
           {
             ...fixture.compute,
             activationOrder,
             validateProtectedRepositoryNetworkPolicy() {
-              if (prepared) {
-                activationSignal = currentComputeAbortSignal();
+              // The earlier Secret-context check runs outside the Compute operation.
+              const signal = currentComputeAbortSignal();
+              const atBoundary = beforePrepare
+                ? preparations.length === 0
+                : preparations.length > 0;
+              if (signal && atBoundary) {
+                validationSignal = signal;
                 // Validation can return successfully even after the claim expires.
                 return release.promise;
               }
             },
             async prepareRevision(revision, deploymentContext) {
-              const observation = await fixture.compute.prepareRevision(
-                revision,
-                deploymentContext,
-              );
-              prepared = true;
-              return observation;
+              preparations.push(revision.id);
+              return fixture.compute.prepareRevision(revision, deploymentContext);
             },
             async activateRevision(revision) {
               activations.push(revision.id);
@@ -785,11 +988,12 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
         let recovered;
         try {
           const signal = await waitFor(
-            "activation-time repository policy validation",
-            () => activationSignal,
+            `${boundary} repository policy validation`,
+            () => validationSignal,
           );
           assert.equal(signal.aborted, false);
-          const activeRevisionId = activationOrder === "afterCommit" ? candidate.id : undefined;
+          const activeRevisionId =
+            !beforePrepare && activationOrder === "afterCommit" ? candidate.id : undefined;
           assert.equal((await fixture.currentAgent(owner))?.activeRevisionId, activeRevisionId);
           const original = await fixture.work(candidate, "claimed");
           assert.ok(original.claim_token);
@@ -804,12 +1008,85 @@ export function registerRevisionDispatchCases({ revisionTest, setup }: DispatchF
           release.resolve();
         }
         await waitUntil(
-          "claim loss or a stale activation after validation",
-          () => claimLost || activations.length > 0,
+          "claim loss or a stale Driver call after validation",
+          () => claimLost || activations.length > 0 || (beforePrepare && preparations.length > 0),
         );
+        assert.deepEqual(preparations, beforePrepare ? [] : [candidate.id]);
         assert.deepEqual(activations, [], "the stale worker must never call the activation Driver");
         await fixture.stop();
         assert.equal((await fixture.work(candidate, "claimed")).claim_token, recovered.claimToken);
+      },
+    );
+  }
+
+  for (const boundary of [
+    "binding",
+    "preparation",
+    "activation before commit",
+    "activation after commit",
+  ] as const) {
+    test(
+      `a current claim refuses revoked policy authority before ${boundary}`,
+      requiresPostgres,
+      async (context) => {
+        const fixture = await setup(context, { leaseDurationMs: 60_000 });
+        const owner = await fixture.agent("policy-revocation-during-validation", {
+          executionMode: "dedicated",
+        });
+        const { id: policyId, options } = await saveRepositoryPolicy(fixture, owner, []);
+        const previous = await fixture.revision(owner, 1, options);
+        await fixture.start(computeSupportingRepositoryPolicy(fixture.compute));
+        await fixture.work(previous, "succeeded");
+        await fixture.stop();
+        const candidate = await fixture.revision(owner, 2, options);
+        const resume = Promise.withResolvers<void>();
+        let blocked = false;
+        const calls: string[] = [];
+        const afterCommit = boundary === "activation after commit";
+        const expected =
+          boundary === "binding" ? [] : boundary === "preparation" ? ["bind"] : ["bind", "prepare"];
+        await fixture.start({
+          ...fixture.compute,
+          activationOrder: afterCommit ? "afterCommit" : "beforeCommit",
+          validateProtectedRepositoryNetworkPolicy() {
+            if (!blocked && calls.length === expected.length) {
+              blocked = true;
+              return resume.promise;
+            }
+          },
+          async bindAgent() {
+            calls.push("bind");
+          },
+          async prepareRevision(revision, ctx) {
+            calls.push("prepare");
+            return fixture.compute.prepareRevision(revision, ctx);
+          },
+          async activateRevision() {
+            calls.push("activate");
+          },
+        });
+        try {
+          await waitUntil(`validation before ${boundary}`, () => blocked);
+          const first = await fixture.work(candidate, "claimed");
+          assert.ok(first.claim_token);
+          await fixture.observerPool.query(
+            `INSERT INTO occ.iam_restrictions
+               (id, namespace_id, action, resource_kind, resource_id, effect)
+             VALUES ($1, $2, 'update', 'sandbox_policy', $3, 'deny')`,
+            [`restriction-${randomUUID()}`, fixture.namespace.id, policyId],
+          );
+          assert.equal((await fixture.work(candidate, "claimed")).claim_token, first.claim_token);
+          assert.deepEqual(calls, expected);
+        } finally {
+          resume.resolve();
+        }
+        const result = await settledRevision(fixture, candidate);
+        assert.deepEqual(calls, expected);
+        assert.equal(result.reasonCode, "AUTHORIZATION_DENIED");
+        assert.equal(
+          (await fixture.currentAgent(owner))?.activeRevisionId,
+          afterCommit ? candidate.id : previous.id,
+        );
       },
     );
   }

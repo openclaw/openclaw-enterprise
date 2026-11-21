@@ -5,7 +5,7 @@ import { mkdir, readdir, readFile, rmdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { waitUntil } from "../helpers/wait-for.ts";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));

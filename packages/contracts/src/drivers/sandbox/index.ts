@@ -1,3 +1,4 @@
+import type { RepositoryNetworkPolicy } from "../../repository-network-policy.ts";
 import type { CredentialSourceAttachment } from "../credential-gateway/index.ts";
 import type { EgressInstallation, ProxyWiring } from "../credential-proxy/index.ts";
 import type { RepositoryWorkerRestartDisposition } from "../compute/index.ts";
@@ -14,7 +15,6 @@ import type {
 } from "../../index.ts";
 import type { RepositoryExecutionIdentity } from "../repo/index.ts";
 import type { SandboxLogChunk, SandboxLogContext, SandboxLogRequest } from "../../runtime-logs.ts";
-import type { RepositoryNetworkPolicy } from "../../repository-network-policy.ts";
 import type {
   ProtectedCodexArtifactPolicyAdmission,
   SandboxNetworkGrant,

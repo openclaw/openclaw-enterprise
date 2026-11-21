@@ -102,7 +102,20 @@ export function parseRepositoryNetworkPolicyCeiling(
   );
 }
 
-/** Validate and bind a requested ACL to the trusted Installation delegation limit. */
+/** Match the persisted format, including a strict ordering that excludes duplicates. */
+export function isCanonicalRepositoryGrantList(
+  value: unknown,
+): value is readonly RepositoryNetworkGrant[] {
+  try {
+    const grants = parseGrants(value, "/repositoryNetworkPolicy");
+    return grants.every(
+      (grant, index) => index === 0 || grants[index - 1]!.repository < grant.repository,
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function admitRepositoryNetworkPolicy(
   value: unknown,
   ceiling: unknown,

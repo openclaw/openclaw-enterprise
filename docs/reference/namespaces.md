@@ -234,7 +234,7 @@ workload is ready.
 - [IAM](authorization.md)
 - [Controller configuration](settings.md)
 - [Platform architecture](../design.md)
-- [Namespace lifecycle implementation](../../packages/occ/src/index.ts)
+- [Namespace lifecycle implementation](../../packages/occ/src/namespace-operations.ts)
 - [Local testing](../testing/local.md)
 
 ## Manual Notes

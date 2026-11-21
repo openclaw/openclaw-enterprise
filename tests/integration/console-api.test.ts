@@ -2243,6 +2243,15 @@ test("deployment delivers a Channel Secret only through the captured validator",
     channel.validateCredentials = validate;
     await use("CHANNEL_TOKEN", "channel", accepted);
   }
+  Object.defineProperty(validate, "call", {
+    async value(
+      _driver: unknown,
+      _values: Readonly<Record<string, unknown>>,
+      use: ChannelCredentialReader,
+    ) {
+      await use("CHANNEL_TOKEN", "channel", diverted);
+    },
+  });
   channel.validateCredentials = validate;
   controller.registerDriver(channel);
   controller.selectDriver("channel", channel.id);
@@ -2256,6 +2265,11 @@ test("deployment delivers a Channel Secret only through the captured validator",
     },
   });
   assert.equal(first.status, 202);
+  assert.equal(
+    diverted.mock.callCount(),
+    0,
+    "the validator's own call must never receive a Secret",
+  );
   assert.equal(accepted.mock.callCount(), 1);
 
   // After the capability's two method checks, snapshot lookup installs an alternate validator
@@ -2472,8 +2486,8 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   const policyPath = `${path}/sandbox-policy/networking`;
   const readRevisions = () =>
     controller.transact((unit) => unit.revisions.listRevisions(namespace.id, agent.id));
-  const previous = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  assert.equal((await readRevisions())[0]?.sandboxPolicy?.repositoryNetworkPolicy, undefined);
+  const legacy = await createAgent(namespace.id, "Legacy deployment");
+  const previous = await fixture.seedActiveAgentRevision(namespace.id, legacy.id);
   // Ordinary admission checks credentials first; explicit policy must pass Compute first.
   assertSteps("credential status", "admit revision", "snapshot runtime inputs");
   const enabled = await fixture.request("PATCH", `${policyPath}/editing`, {
@@ -2534,7 +2548,7 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
     [],
   );
   assertSteps();
-  assert.equal((await readRevisions()).length, 1);
+  assert.deepEqual(await readRevisions(), []);
 
   const desired = await setDesiredRepositoryPolicy(controller, namespace.id, agent.id, []);
   const deniedRead = restrict(fixture.policy, "read", "sandbox_policy", {
@@ -2545,13 +2559,26 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   assertApiError(denied, 403, "FORBIDDEN");
   assert.match(JSON.stringify(denied.body), /SandboxPolicy read/);
   assertSteps();
-  assert.equal((await readRevisions()).length, 1);
+  assert.deepEqual(await readRevisions(), []);
   liftRestriction(fixture.policy, deniedRead);
 
   const apply = (revisionId: string, expectedVersion: number) =>
     fixture.request("POST", `${policyPath}/apply`, { body: { revisionId, expectedVersion } });
   // The saved deny-all policy cannot be applied to the previous, ordinary revision.
-  const savedApply = await apply(previous.revision.id, desired.version);
+  const enableLegacy = await fixture.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/agents/${legacy.id}/sandbox-policy/networking/editing`,
+    { body: { enabled: true } },
+  );
+  assert.equal(enableLegacy.status, 200);
+  const legacyPolicy = await setDesiredRepositoryPolicy(controller, namespace.id, legacy.id, []);
+  const savedApply = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${legacy.id}/sandbox-policy/networking/apply`,
+    {
+      body: { revisionId: previous.revision.id, expectedVersion: legacyPolicy.version },
+    },
+  );
   assertApiError(savedApply, 409, "RESOURCE_CONFLICT");
   assert.match(
     JSON.stringify(savedApply.body),
@@ -2584,7 +2611,7 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   const denyAllContext = validateProtectedRepositoryNetworkPolicy.mock.calls.at(-1)?.arguments[0];
   assert.deepEqual(denyAllContext?.sandboxPolicy, revision?.sandboxPolicy);
 
-  await fixture.activateRevision(namespace.id, agent.id, deployed.id, previous.revision.id);
+  await fixture.activateRevision(namespace.id, agent.id, deployed.id);
   checkedResponse(
     fixture,
     await fixture.request("PUT", policyPath, {
@@ -2605,7 +2632,7 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
     await controller.transact((unit) => unit.sandboxPolicies.find(namespace.id, agent.id)),
     approved,
   );
-  assert.equal((await readRevisions()).length, 2);
+  assert.equal((await readRevisions()).length, 1);
 
   const repositoryDeployment = await fixture.deployAgent(namespace.id, agent.id);
   const repositoryRevision = (await readRevisions()).find(
@@ -2729,6 +2756,30 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
   assert.deepEqual(await readFreshRevisions(), []);
   controller.selectDriver("repo", namespacePolicy.id);
 
+  // A Repo can revoke Namespace permission without changing its registration or method.
+  let namespaceAllowsGrant = true;
+  const allows = () => namespaceAllowsGrant;
+  Object.defineProperty(namespacePolicy, "repositoryNetworkPolicyAllows", {
+    configurable: true,
+    value: allows,
+  });
+  try {
+    const statusCalls = credentialStatus.mock.callCount();
+    const provisioningCalls = provisionCredentials.mock.callCount();
+    validateProtectedRepositoryNetworkPolicy.mock.mockImplementationOnce(async (context) => {
+      await validatePolicy(context);
+      namespaceAllowsGrant = false;
+    });
+    const denied = await deployFresh();
+    assertApiError(denied, 409, "RESOURCE_CONFLICT");
+    assertSteps(...policyChecks);
+    assert.equal(credentialStatus.mock.callCount(), statusCalls);
+    assert.equal(provisionCredentials.mock.callCount(), provisioningCalls);
+    assert.deepEqual(await readFreshRevisions(), []);
+  } finally {
+    Reflect.deleteProperty(namespacePolicy, "repositoryNetworkPolicyAllows");
+  }
+
   // Replacing the approving method with an accessor during Compute validation
   // invalidates the original approval. Refuse before reading credential status.
   const approvalGetter = t.mock.fn(() => () => true);
@@ -2850,6 +2901,73 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
     [confirmed.id],
   );
   assert.deepEqual(freshRevisions[0]?.sandboxPolicy?.repositoryNetworkPolicy?.grants, requested);
+
+  await t.test(
+    "Channel provider receives a bound Secret only after scoped policy admission",
+    async () => {
+      const token = await fixture.createSecret(
+        namespace.id,
+        "Channel credential",
+        "synthetic-channel-value",
+      );
+      const bound = await fixture.createAgent(
+        namespace.id,
+        "Scoped Agent with a Channel",
+        createHarnessConfiguration("openclaw", "gpt-4.1"),
+        {
+          executionMode: "dedicated",
+          secretBindings: { CHANNEL_TOKEN: { source: token.ref, delivery: { type: "env" } } },
+        },
+      );
+      const boundPath = `/namespaces/${namespace.id}/agents/${bound.id}`;
+      await setDesiredRepositoryPolicy(controller, namespace.id, bound.id, requested);
+      const channel = new SlackChannelDriver(async () =>
+        assert.fail("Unexpected real provider call"),
+      );
+      const provider = t.mock.fn(async () => {});
+      channel.validateCredentials = async (_values, use) => {
+        await use("CHANNEL_TOKEN", "channel", provider);
+      };
+      controller.registerDriver(channel);
+      controller.selectDriver("channel", channel.id);
+      const expectNoHandoff = async (guarded: boolean) => {
+        const status = credentialStatus.mock.callCount();
+        const provision = provisionCredentials.mock.callCount();
+        const reply = guarded
+          ? await fixture.request("POST", boundPath + "/deploy-first", {
+              body: {
+                key: "scoped-channel",
+                expectedConfigurationId: bound.configurationId,
+                expectedGeneration: 1,
+              },
+            })
+          : await fixture.request("POST", boundPath + "/deploy");
+        assertApiError(reply, 409, "RESOURCE_CONFLICT");
+        assert.equal(provider.mock.callCount(), 0);
+        assert.equal(credentialStatus.mock.callCount(), status);
+        assert.equal(provisionCredentials.mock.callCount(), provision);
+        assert.deepEqual(
+          await controller.transact((unit) => unit.revisions.listRevisions(namespace.id, bound.id)),
+          [],
+        );
+      };
+      validateProtectedRepositoryNetworkPolicy.mock.mockImplementationOnce(async () => {
+        throw new Error("unsupported topology");
+      });
+      await expectNoHandoff(false);
+      Object.defineProperty(namespacePolicy, "repositoryNetworkPolicyAllows", {
+        value: () => false,
+        configurable: true,
+      });
+      try {
+        await expectNoHandoff(true);
+      } finally {
+        Reflect.deleteProperty(namespacePolicy, "repositoryNetworkPolicyAllows");
+      }
+      await fixture.deployAgent(namespace.id, bound.id);
+      assert.equal(provider.mock.callCount(), 1);
+    },
+  );
 });
 
 test("deploy refuses an explicit repository policy without a supported Sandbox Driver or delegation", async (t) => {
