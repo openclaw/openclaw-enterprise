@@ -2842,10 +2842,13 @@ test(
         // All three pending receipts, schema changes and main-row annotations roll back.
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         // 0078 replaces the custody guard in place; abort its CREATE FUNCTION statement.
+        // Prefix 86 reaches 0087's admission-column ALTER TABLE without a later GRANT.
         const rollbackTag =
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [91, "ALTER TABLE"],
+                [90, "ALTER TABLE"],
                 [89, "CREATE FUNCTION"],
                 [88, "CREATE TRIGGER"],
                 [87, "ALTER TABLE"],
