@@ -31,6 +31,8 @@ The validated bundled `repository.openShell` Git-only installation retains a sco
 A team can separately [approve Git access until it removes that approval](github-installation-access.md#let-a-team-keep-git-access-until-it-removes-approval).
 OCE renews short-lived installation tokens so the team can keep working in the same Agent and conversation.
 
+The [selected GitHub draft authority proposal](selected-github-draft-authority.md) describes how an Agent gains authority to update its original drafts.
+
 The [proposed protected Codex artifact amendment](contracts.md#protected-codex-artifact-downloads)
 adds explicitly qualified credential-free download authority to the same frozen
 admission. Its deployment qualification remains pending.
